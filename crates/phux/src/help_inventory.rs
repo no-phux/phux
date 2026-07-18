@@ -90,6 +90,7 @@ phux agent set
 phux agent show
 phux ask
 phux attach
+phux completions
 phux config
 phux config agents
 phux config init

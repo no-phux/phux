@@ -58,6 +58,7 @@ impl From<SignalArg> for TerminalSignal {
 pub(crate) mod agent;
 pub(crate) mod ask;
 pub(crate) mod attach;
+pub(crate) mod completions;
 pub(crate) mod config;
 pub(crate) mod config_action;
 pub(crate) mod detach;
@@ -982,6 +983,17 @@ pub(crate) enum Command {
         /// the device in its server list. Omitted: the device picks a default.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+    },
+
+    /// Print a shell completion script to stdout.
+    ///
+    /// Rendered from the live command tree, so it never drifts from the real
+    /// verbs and flags. Install it per your shell, e.g.
+    /// `phux completions bash > ~/.local/share/bash-completion/completions/phux`.
+    Completions {
+        /// The shell to generate a completion script for.
+        #[arg(value_name = "SHELL")]
+        shell: clap_complete::Shell,
     },
 }
 
