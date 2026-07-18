@@ -17,6 +17,7 @@
 #![allow(clippy::doc_markdown, reason = "test narrative uses bare wire names")]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use std::time::Duration;

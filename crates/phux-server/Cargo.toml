@@ -218,6 +218,13 @@ tempfile.workspace = true
 # HTTP/3 CONNECT are still exercised end-to-end). Test builds only.
 wtransport = { version = "0.7.1", default-features = false, features = ["ring", "dangerous-configuration"] }
 
+# Consolidated integration-test harness (phux-mmxz.2): one binary that folds in
+# the bulk of tests/*.rs as modules under tests/it/, cutting CI link time. Needs
+# an explicit entry because Cargo only auto-discovers tests/*.rs, not nested dirs.
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
 [[bench]]
 name = "capture"
 harness = false

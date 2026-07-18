@@ -17,6 +17,7 @@
 #![allow(clippy::panic, reason = "tests")]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use portable_pty::CommandBuilder;

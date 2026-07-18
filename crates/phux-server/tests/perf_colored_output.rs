@@ -38,6 +38,7 @@
     reason = "perf gate prints the measured latency for triage on failure"
 )]
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use std::time::Duration;
