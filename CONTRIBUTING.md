@@ -97,6 +97,13 @@ If your change conflicts with these, open a [Discussion] before a PR.
 
 ## Git workflow
 
+- **Start new work from a fresh `origin/main`.** Local `main` drifts
+  behind the remote (an agent once branched off a local `main` that sat
+  156 commits stale, basing new work on dead code). Fetch first and
+  branch off the remote tip — never off local `main`:
+  ```bash
+  just new-branch <branch-name>   # git fetch origin && git switch -c <branch-name> origin/main
+  ```
 - **Linear history is the default.** Prefer fast-forward merges or
   rebases. Do NOT create merge commits with `--no-ff` on `main` — the
   log must stay linear and bisect-friendly. For a multi-branch
@@ -135,9 +142,11 @@ If your change conflicts with these, open a [Discussion] before a PR.
 When fanning out parallel agent work (e.g. four agents in wave 1 of
 the protocol epic):
 
-1. **Pre-create explicit worktrees** before launching agents:
+1. **Pre-create explicit worktrees** off a fresh remote tip before
+   launching agents (local `main` drifts — see the Git workflow section):
    ```bash
-   git worktree add /tmp/phux-<wave>-<task> -b <branch-name> main
+   git fetch origin
+   git worktree add /tmp/phux-<wave>-<task> -b <branch-name> origin/main
    ```
    Do NOT rely on the Claude Code Agent tool's `isolation: worktree`
    flag for parallel launches — in wave 1 only 2 of 4 agents got real

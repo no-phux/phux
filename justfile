@@ -11,6 +11,11 @@ default:
 scaffold-config:
     XDG_CONFIG_HOME="{{justfile_directory()}}/.phux-xdg" cargo run -q -p phux -- config init
 
+# Start new work from a fresh remote tip: fetch origin, then branch off
+# origin/main (never stale local main). See CONTRIBUTING.md "Git workflow".
+new-branch name:
+    git fetch origin && git switch -c {{name}} origin/main
+
 # Quick type-check across the workspace.
 check:
     cargo check --workspace --all-targets
