@@ -90,8 +90,9 @@ mod help_inventory;
           satellite  Manage configured federation satellites\n  \
           pair       Mint a pairing token for a remote consumer\n  \
           stdio-bridge  Bridge stdio to the local server socket (SSH-stdio)\n\n\
-        SHELL\n  \
-          completions  Print a shell completion script (bash/zsh/fish/…)\n\n\
+        SHELL & DOCS\n  \
+          completions  Print a shell completion script (bash/zsh/fish/…)\n  \
+          man          Print the manual page in roff (man phux)\n\n\
         TARGET is the selector grammar: a session name, `name:window`,\n\
         `name:window.pane`, `@id`, or `.` (focused). `=` is reserved for the attached TUI's client-local focus MRU. The same\n\
         grammar works across kill/snapshot/send-keys/run/wait/ask.",
@@ -260,6 +261,7 @@ fn main() -> ExitCode {
         Some(Command::Completions { shell }) => {
             commands::completions::run_completions(shell, Cli::command())
         }
+        Some(Command::Man) => commands::man::run_man(Cli::command()),
         Some(Command::New {
             name,
             session,

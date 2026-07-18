@@ -105,6 +105,7 @@ phux insert-pane
 phux kill
 phux launch
 phux ls
+phux man
 phux move-pane
 phux new
 phux pair

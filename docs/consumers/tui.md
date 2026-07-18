@@ -151,6 +151,7 @@ phux satellite <COMMAND>      # add/list/remove federation satellites
 phux stdio-bridge             # splice stdin/stdout to the local server socket
                               # (the remote end of the SSH-stdio transport)
 phux completions SHELL        # print a shell completion script (bash/zsh/fish/…)
+phux man                      # print the manual page in roff (man phux)
 phux --version                # print version
 phux help [COMMAND]
 ```

@@ -68,6 +68,10 @@ clap = { version = "4", features = ["derive"] }
 # Official clap companion; generates shell completion scripts from the parsed
 # CLI so `phux completions <shell>` can never drift from the real command tree.
 clap_complete = "4"
+# Sibling clap companion; renders the roff man page from the same parsed CLI so
+# `phux man` stays in lockstep with the shipped verbs and flags. Versioned on
+# its own 0.x track (not clap's 4.x), but built against clap 4.
+clap_mangen = "0.3"
 bytes = "1"
 slotmap = "1"
 smallvec = "1.15"

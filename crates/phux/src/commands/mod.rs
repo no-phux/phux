@@ -65,6 +65,7 @@ pub(crate) mod detach;
 pub(crate) mod kill;
 pub(crate) mod launch;
 pub(crate) mod ls;
+pub(crate) mod man;
 pub(crate) mod new;
 pub(crate) mod overlay;
 pub(crate) mod pair;
@@ -995,6 +996,14 @@ pub(crate) enum Command {
         #[arg(value_name = "SHELL")]
         shell: clap_complete::Shell,
     },
+
+    /// Print the manual page (roff) to stdout.
+    ///
+    /// Rendered from the live command tree, so it never drifts from the real
+    /// verbs and flags. Install it, e.g.
+    /// `phux man > ~/.local/share/man/man1/phux.1`, or preview with
+    /// `phux man | man -l -`.
+    Man,
 }
 
 /// `phux tag <action>` — list and edit a Terminal's L3 tags.
