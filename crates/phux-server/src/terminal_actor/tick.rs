@@ -111,7 +111,7 @@ pub fn adaptive_tick_interval(srtt: std::time::Duration) -> std::time::Duration 
 
 /// Lower clamp on the loss-tolerant retransmit timeout (phux-v45.8).
 ///
-/// A state-sync consumer on a lossy/forwarded leg (ADR-0042) advances its
+/// A state-sync consumer on a lossy/forwarded leg (ADR-0043) advances its
 /// reference on `FRAME_ACK`, not on emit, so an un-acked frame is retransmitted
 /// (re-diffed against the last-acked reference) if no ack lands within a
 /// retransmit window. This floors that window so a near-zero-RTT link does not
@@ -130,7 +130,7 @@ pub const RETRANSMIT_DEFAULT: std::time::Duration = std::time::Duration::from_mi
 
 /// Retransmit-timeout (RTO) for a loss-tolerant consumer given its smoothed
 /// RTT: `clamp(3·srtt, RETRANSMIT_MIN, RETRANSMIT_MAX)`, or
-/// [`RETRANSMIT_DEFAULT`] while no sample exists (phux-v45.8, ADR-0042).
+/// [`RETRANSMIT_DEFAULT`] while no sample exists (phux-v45.8, ADR-0043).
 ///
 /// The `3·srtt` factor (vs the tick cadence's `srtt/2`) is deliberately
 /// conservative: a retransmit is only for a *suspected loss*, so it waits

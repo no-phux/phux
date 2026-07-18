@@ -1,7 +1,7 @@
-//! phux-51n6.3 / ADR-0042 — state-diff output-mode convergence + pacing.
+//! phux-51n6.3 / ADR-0043 — state-diff output-mode convergence + pacing.
 //!
 //! Proves the two properties the negotiated `OutputMode::StateSync` emitter
-//! must guarantee (ADR-0018 / ADR-0042):
+//! must guarantee (ADR-0018 / ADR-0043):
 //!
 //! 1. **Convergence.** A consumer served the per-consumer synthesized deltas
 //!    (the `synthesize_against_reference` reference-grid path the tick uses)

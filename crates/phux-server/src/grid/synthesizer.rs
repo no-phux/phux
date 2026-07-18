@@ -955,7 +955,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         }
     }
 
-    /// phux-v45.8 / ADR-0042: diff the current tick's rendered rows against
+    /// phux-v45.8 / ADR-0043: diff the current tick's rendered rows against
     /// `base` **without advancing `base`**, emitting every row that differs
     /// from it (an absolute, cumulative delta). This is the loss-tolerant
     /// emission primitive: `base` is the consumer's last-*acked* reference, so
@@ -973,7 +973,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     /// did or did not receive: the only requirement is that the consumer's
     /// mirror is at some grid on the `base`→live path (guaranteed on the
     /// reliable-delivery-with-drops model — the relay drops whole frames but
-    /// never reorders delivered ones; see ADR-0042 for the residual bound).
+    /// never reorders delivered ones; see ADR-0043 for the residual bound).
     ///
     /// Returns the delta bytes; empty when live is byte-identical to `base`.
     pub(crate) fn diff_against_base(
@@ -1029,7 +1029,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         out
     }
 
-    /// phux-v45.8 / ADR-0042: snapshot the current tick's rendered grid into a
+    /// phux-v45.8 / ADR-0043: snapshot the current tick's rendered grid into a
     /// standalone [`ConsumerReference`] so a loss-tolerant consumer can advance
     /// its *acked* reference to exactly the grid state a later `FRAME_ACK`
     /// covers. Requires a preceding [`Self::prepare_tick`] this tick.

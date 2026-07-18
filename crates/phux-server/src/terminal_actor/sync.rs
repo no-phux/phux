@@ -227,7 +227,7 @@ pub struct ConsumerSyncState {
     /// forces emission for every consumer regardless of this flag.
     pub wants_state_sync: bool,
     /// Whether this consumer is on a lossy/forwarded leg and uses the
-    /// advance-on-ack loss-tolerant emission model (phux-v45.8, ADR-0042).
+    /// advance-on-ack loss-tolerant emission model (phux-v45.8, ADR-0043).
     ///
     /// `false` (the default) keeps the v0.1 emit-once model: the reference
     /// (`reference`) advances on emit and `FRAME_ACK` only drives backpressure

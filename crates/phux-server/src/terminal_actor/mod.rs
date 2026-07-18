@@ -1160,7 +1160,7 @@ impl TerminalActor {
     }
 
     /// Switch an already-registered consumer to the advance-on-ack
-    /// loss-tolerant emission model (phux-v45.8, ADR-0042).
+    /// loss-tolerant emission model (phux-v45.8, ADR-0043).
     ///
     /// Idempotent-ish: sets [`ConsumerSyncState::loss_tolerant`] and primes
     /// [`ConsumerSyncState::acked_reference`] to the live grid so the first
@@ -1280,7 +1280,7 @@ impl TerminalActor {
         }
         consumer.last_acked_seq = seq;
 
-        // Loss-tolerant reference advance (phux-v45.8, ADR-0042). A cumulative
+        // Loss-tolerant reference advance (phux-v45.8, ADR-0043). A cumulative
         // ack for `seq` acknowledges every emission up to and including it, so
         // the consumer's acked reference advances to the grid snapshot of the
         // highest emitted `seq` this ack covers, and every pending snapshot at
@@ -4559,7 +4559,7 @@ mod tests {
         );
     }
 
-    // ---- phux-v45.8 / ADR-0042: loss-tolerant (advance-on-ack) state sync ----
+    // ---- phux-v45.8 / ADR-0043: loss-tolerant (advance-on-ack) state sync ----
 
     /// Render a `Terminal`'s viewport into right-trimmed rows, skipping
     /// wide-cell tails — enough to assert grid equivalence between a

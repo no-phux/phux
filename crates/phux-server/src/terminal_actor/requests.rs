@@ -94,7 +94,7 @@ pub struct ConsumerAttachRequest {
     /// stays on the raw PTY broadcast (the human-TUI default).
     pub wants_state_sync: bool,
     /// Whether this consumer is on a lossy/forwarded leg and should use the
-    /// advance-on-ack loss-tolerant emission model (phux-v45.8, ADR-0042).
+    /// advance-on-ack loss-tolerant emission model (phux-v45.8, ADR-0043).
     ///
     /// Only meaningful together with `wants_state_sync` (a raw broadcast-pump
     /// consumer has no per-consumer reference to make loss-tolerant). When

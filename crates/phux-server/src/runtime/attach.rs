@@ -1119,7 +1119,7 @@ pub(crate) async fn handle_attach(
                     // fan-out can drop whole frames, is the deferred follow-up
                     // (the satellite cannot see the downstream drop from the
                     // link's reliable transport); the advance-on-ack mechanism
-                    // it flips on is fully implemented here (ADR-0042).
+                    // it flips on is fully implemented here (ADR-0043).
                     loss_tolerant: false,
                     reply: attach_reply_tx,
                 })
