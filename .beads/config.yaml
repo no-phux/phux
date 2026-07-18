@@ -7,3 +7,4 @@ gc.endpoint_origin: inherited_city
 gc.endpoint_status: verified
 sync:
     remote: "https://github.com/phall1/phux.git"
+    git-remote: origin
