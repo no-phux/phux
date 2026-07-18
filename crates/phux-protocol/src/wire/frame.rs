@@ -1133,6 +1133,17 @@ pub enum Command {
     AttachTerminal {
         /// The Terminal whose content stream to subscribe to.
         terminal_id: TerminalId,
+        /// When `true`, the server activates loss-tolerant (advance-on-ack)
+        /// state-sync for this consumer (ADR-0043): the pane advances its
+        /// reference to the last *acked* frame, so a downstream fan-out drop
+        /// the consumer's own reliable link cannot observe is healed on the
+        /// next diff. A federation hub sets this when it relays an attach to a
+        /// satellite on behalf of a forwarded consumer (`phux-kztd`); direct
+        /// and local attaches leave it `false`. Encoded as a trailing `bool`
+        /// byte *after* `terminal_id`; a decoder reading a pre-`phux-kztd`
+        /// body (which ended after `terminal_id`) finds no byte and defaults
+        /// it to `false`, so the field is wire-additive.
+        loss_tolerant: bool,
     },
     /// Drop the caller's per-Terminal subscriptions on `terminal_id`
     /// (SPEC §5.1 `DETACH_TERMINAL`, phux-v45.7): the output stream wired
@@ -3179,9 +3190,13 @@ fn decode_spawn_error(dec: &mut Decoder<'_>) -> Result<SpawnError, DecodeError> 
 )]
 pub(super) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
     match command {
-        Command::AttachTerminal { terminal_id } => {
+        Command::AttachTerminal {
+            terminal_id,
+            loss_tolerant,
+        } => {
             enc.write_u8(COMMAND_TAG_ATTACH_TERMINAL);
             encode_terminal_id(terminal_id, enc);
+            enc.write_u8(u8::from(*loss_tolerant));
         }
         Command::DetachTerminal { terminal_id } => {
             enc.write_u8(COMMAND_TAG_DETACH_TERMINAL);
@@ -3336,9 +3351,24 @@ fn decode_input_event(dec: &mut Decoder<'_>) -> Result<InputEvent, DecodeError> 
 pub(super) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let tag = dec.read_u8()?;
     match tag {
-        COMMAND_TAG_ATTACH_TERMINAL => Ok(Command::AttachTerminal {
-            terminal_id: decode_terminal_id(dec)?,
-        }),
+        COMMAND_TAG_ATTACH_TERMINAL => {
+            let terminal_id = decode_terminal_id(dec)?;
+            // `loss_tolerant` is a trailing additive bool (`phux-kztd`): a
+            // pre-`phux-kztd` body ends after `terminal_id`, so an absent
+            // byte (cursor at the frame-body end) means `false`. A present
+            // byte is read as a bool (non-zero is `true`). `at_body_end`
+            // (not `remaining().is_empty()`) keeps a following frame's bytes
+            // from being misread as `loss_tolerant`.
+            let loss_tolerant = if dec.at_body_end() {
+                false
+            } else {
+                dec.read_u8()? != 0
+            };
+            Ok(Command::AttachTerminal {
+                terminal_id,
+                loss_tolerant,
+            })
+        }
         COMMAND_TAG_DETACH_TERMINAL => Ok(Command::DetachTerminal {
             terminal_id: decode_terminal_id(dec)?,
         }),

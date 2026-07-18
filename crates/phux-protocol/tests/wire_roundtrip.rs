@@ -648,6 +648,32 @@ fn hello_decoder_accepts_legacy_body_without_caps() {
 }
 
 #[test]
+fn attach_terminal_round_trips_both_loss_tolerant_values() {
+    // phux-kztd: the trailing additive `loss_tolerant` bool must survive a
+    // full frame round-trip in both states (the absent-byte-defaults-false
+    // path is the shared `at_body_end` mechanism proven by GET_SCREEN's
+    // `cells`; the decode-table arm for ATTACH_TERMINAL is a line-for-line
+    // copy of it).
+    for loss_tolerant in [false, true] {
+        let frame = FrameKind::Command {
+            request_id: 7,
+            command: Command::AttachTerminal {
+                terminal_id: TerminalId::local(3),
+                loss_tolerant,
+            },
+        };
+        let mut buf = BytesMut::new();
+        frame.encode(&mut buf);
+        let (decoded, tail) = FrameKind::decode(&buf).expect("frame decodes");
+        assert!(tail.is_empty());
+        assert_eq!(
+            decoded, frame,
+            "loss_tolerant={loss_tolerant} must round-trip"
+        );
+    }
+}
+
+#[test]
 fn hello_decoder_treats_unknown_color_support_tag_as_truecolor() {
     // A CLIENT_CAPS field (id 5) whose first (color_support) byte is an unknown
     // tag (0xFF) maps to TrueColor per the `#[non_exhaustive]` contract.
@@ -1724,6 +1750,7 @@ fn command_attach_detach_terminal_round_trip() {
         for command in [
             Command::AttachTerminal {
                 terminal_id: terminal_id.clone(),
+                loss_tolerant: true,
             },
             Command::DetachTerminal {
                 terminal_id: terminal_id.clone(),

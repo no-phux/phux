@@ -979,6 +979,7 @@ async fn attach_terminal_until_ok(hub: &mut UnixStream, sat_id: &TerminalId) -> 
             request_id,
             Command::AttachTerminal {
                 terminal_id: sat_id.clone(),
+                loss_tolerant: false,
             },
         )
         .await;

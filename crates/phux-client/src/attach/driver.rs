@@ -2550,6 +2550,10 @@ async fn main_loop<W: super::RenderSink>(
                                 request_id,
                                 command: Command::AttachTerminal {
                                     terminal_id: terminal_id.clone(),
+                                    // A direct client attach is reliable; the
+                                    // hub sets loss-tolerance when it relays
+                                    // this on a forwarded leg (phux-kztd).
+                                    loss_tolerant: false,
                                 },
                             })
                             .await?;

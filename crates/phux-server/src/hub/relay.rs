@@ -1411,12 +1411,19 @@ pub(crate) fn satellite_route(terminal_id: &TerminalId) -> Option<(SatelliteHost
 )]
 pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
     match command {
-        Command::AttachTerminal { terminal_id } => {
+        Command::AttachTerminal { terminal_id, .. } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
                 host,
                 Command::AttachTerminal {
                     terminal_id: TerminalId::local(id),
+                    // phux-kztd: the relayed leg is loss-tolerant. This
+                    // consumer is the hub reaching the satellite on behalf of
+                    // a forwarded client; the satellite advances-on-ack
+                    // (ADR-0043) so a fan-out drop on the hub's downstream —
+                    // invisible to the satellite's own reliable link — is
+                    // healed on the next diff rather than stranding the mirror.
+                    loss_tolerant: true,
                 },
             ))
         }
@@ -1634,6 +1641,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachTerminal {
                 terminal_id: TerminalId::local(terminal),
+                loss_tolerant: false,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -1700,6 +1708,7 @@ mod tests {
         let commands = [
             Command::AttachTerminal {
                 terminal_id: sat.clone(),
+                loss_tolerant: false,
             },
             Command::DetachTerminal {
                 terminal_id: sat.clone(),
@@ -2620,6 +2629,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachTerminal {
                 terminal_id: TerminalId::local(9),
+                loss_tolerant: false,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -2686,6 +2696,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachTerminal {
                 terminal_id: TerminalId::local(9),
+                loss_tolerant: false,
             },
             reply: reply_b,
             subscribe: Some(ProxySubscription {
@@ -2763,6 +2774,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachTerminal {
                 terminal_id: TerminalId::local(9),
+                loss_tolerant: false,
             },
             reply,
             subscribe: Some(ProxySubscription {

@@ -515,9 +515,10 @@ pub(crate) async fn handle_command(
     }
 
     let result = match command {
-        Command::AttachTerminal { terminal_id } => {
-            handle_attach_terminal(state, client_id, &terminal_id, out_tx).await
-        }
+        Command::AttachTerminal {
+            terminal_id,
+            loss_tolerant,
+        } => handle_attach_terminal(state, client_id, &terminal_id, loss_tolerant, out_tx).await,
         Command::DetachTerminal { terminal_id } => {
             handle_detach_terminal(state, client_id, &terminal_id)
         }
@@ -650,6 +651,7 @@ async fn handle_attach_terminal(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::TerminalId,
+    loss_tolerant: bool,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) -> CommandResult {
     use crate::terminal_actor::{ConsumerAttachRequest, PaneOutput, SnapshotRequest};
@@ -697,10 +699,12 @@ async fn handle_attach_terminal(
                     client_caps.output_mode,
                     phux_protocol::caps::OutputMode::StateSync
                 ),
-                // phux-v45.8: `ATTACH_TERMINAL` over a reliable transport; the
-                // emit-once model is correct. Forwarded-leg loss-tolerance is
-                // the deferred activation (ADR-0042).
-                loss_tolerant: false,
+                // phux-kztd: honor the wire flag. A direct/local attach sends
+                // `false` (emit-once is correct over its reliable link); a hub
+                // relaying on behalf of a forwarded consumer sends `true`, so
+                // this pane advances-on-ack (ADR-0043) and heals a downstream
+                // fan-out drop the satellite's own link cannot observe.
+                loss_tolerant,
                 reply: attach_reply_tx,
             })
             .await
@@ -977,7 +981,7 @@ async fn handle_satellite_command(
         },
         Some(relay) => match &command {
             Command::SubscribeTerminalEvents { terminal_id, .. }
-            | Command::AttachTerminal { terminal_id } => match terminal_id.local_id() {
+            | Command::AttachTerminal { terminal_id, .. } => match terminal_id.local_id() {
                 Some(id) => {
                     relay
                         .command_subscribing(
