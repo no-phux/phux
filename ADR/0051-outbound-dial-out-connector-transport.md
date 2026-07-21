@@ -46,8 +46,8 @@ The missing piece is purely directional: today the server only accepts.
    through the held connection. The relay is a rendezvous, not a peer: no
    sessions, no minted frames, no acks.
 2. **Stream discipline (the load-bearing shape).** The connector leg gets
-   its own ALPN, **`phux-relay/1`** — reserved normatively here; the
-   `phux-protocol::policy` constant lands with the implementation bead.
+   its own ALPN, **`phux-relay/1`** — reserved normatively here and now
+   owned by `phux_protocol::policy::QUIC_RELAY_ALPN` (bead phux-zwuz).
    Connector-initiated stream 0 carries only the connector's auth preamble,
    reserved for future control use. **Every relay-initiated bidi stream is
    exactly one bridged consumer** — QUIC stream-ID parity disambiguates
@@ -87,7 +87,8 @@ The missing piece is purely directional: today the server only accepts.
    (in-test quinn endpoint, pure byte splice), a connector test task
    (a hand-rolled in-test quinn client — string-literal `phux-relay/1`
    ALPN plus a faithful pinned-fingerprint verifier crib, because
-   `phux_dial::quic::dial` hardcodes the consumer ALPN — per-stream splice
+   `phux_dial::quic::dial` hardcoded the consumer ALPN before phux-zwuz
+   added `dial_with_alpn` — per-stream splice
    onto the server UDS, consumer preamble checked connector-side before
    splicing), and a consumer driving the full handshake. No new deps, no
    production source touched.

@@ -5,7 +5,9 @@
 //! `phux server --quic` listener and carries the identical length-prefixed phux
 //! frames (`docs/spec/proto.md` §5) the UDS path does; only the byte stream
 //! underneath differs. This module owns the QUIC-specific establishment —
-//! building the rustls client config (TLS 1.3 + the phux ALPN), verifying the
+//! building the rustls client config (TLS 1.3 + a caller-selected ALPN; the
+//! production consumer ALPN by default, while the ADR-0051 relay-connector
+//! leg selects its own via [`dial_with_alpn`]), verifying the
 //! server certificate (a fingerprint **pin** for routable hosts, or a loopback
 //! **skip** for local dev), connecting, and writing the optional bearer-token
 //! preamble — and hands back the raw quinn stream halves. The framing itself
@@ -70,6 +72,10 @@ pub fn parse_token_hex(token: &str) -> Result<Vec<u8>, DialError> {
 /// Connect to the QUIC listener and return the established bidi-stream
 /// halves, the auth preamble already written.
 ///
+/// Offers the production consumer ALPN ([`QUIC_ALPN`]); every consumer and
+/// hub-satellite dial goes through here. Legs that negotiate a different
+/// protocol id (the ADR-0051 relay-connector tunnel) use [`dial_with_alpn`].
+///
 /// The quinn [`Endpoint`](quinn::Endpoint) and
 /// [`Connection`](quinn::Connection) are returned alongside so the caller
 /// can keep the endpoint's I/O driver alive for the connection's lifetime and
@@ -92,6 +98,42 @@ pub async fn dial(
     ),
     DialError,
 > {
+    dial_with_alpn(d, QUIC_ALPN).await
+}
+
+/// Connect to a QUIC listener offering an explicit ALPN, and return the
+/// established bidi-stream halves, the auth preamble already written.
+///
+/// QUIC mandates ALPN, so the parameter is non-optional. Ordinary consumers
+/// use [`dial`], which offers the production ALPN; pass a different token
+/// only for a leg that deliberately negotiates a distinct protocol — the
+/// ADR-0051 dial-out connector leg passes
+/// `phux_protocol::policy::QUIC_RELAY_ALPN` so a relay can tell its tunnel
+/// apart from consumer connections at the handshake, never from the bytes.
+///
+/// The quinn [`Endpoint`](quinn::Endpoint) and
+/// [`Connection`](quinn::Connection) are returned alongside so the caller
+/// can keep the endpoint's I/O driver alive for the connection's lifetime and
+/// issue a clean `CONNECTION_CLOSE` on teardown (rather than leaving the server
+/// to reap an abandoned connection at the idle timeout).
+///
+/// # Errors
+///
+/// Returns [`DialError::Unreachable`] when the handshake times out (nothing
+/// answered) and [`DialError::Connect`] on any other bind, handshake,
+/// certificate, or preamble failure.
+pub async fn dial_with_alpn(
+    d: &QuicDial,
+    alpn: &[u8],
+) -> Result<
+    (
+        quinn::Endpoint,
+        quinn::Connection,
+        quinn::SendStream,
+        quinn::RecvStream,
+    ),
+    DialError,
+> {
     // Bind an ephemeral client UDP socket in the target's address family — a
     // v4 client socket cannot reach a v6 listener and vice versa.
     let bind = if d.addr.is_ipv6() {
@@ -101,7 +143,7 @@ pub async fn dial(
     };
     let mut endpoint = quinn::Endpoint::client(bind)
         .map_err(|err| DialError::Connect(format!("bind QUIC client socket: {err}")))?;
-    endpoint.set_default_client_config(client_config(&d.trust)?);
+    endpoint.set_default_client_config(client_config(&d.trust, alpn)?);
 
     let conn = endpoint
         .connect(d.addr, &d.server_name)
@@ -146,11 +188,11 @@ async fn write_preamble(send: &mut quinn::SendStream, token: &[u8]) -> Result<()
     Ok(())
 }
 
-/// Build the quinn client config: rustls TLS 1.3 with the phux ALPN, the chosen
-/// certificate verifier, and a transport config matching the server's idle /
-/// keep-alive timings.
-fn client_config(trust: &CertTrust) -> Result<quinn::ClientConfig, DialError> {
-    let crypto = crate::tls::client_config(trust, Some(QUIC_ALPN))?;
+/// Build the quinn client config: rustls TLS 1.3 with the given ALPN, the
+/// chosen certificate verifier, and a transport config matching the server's
+/// idle / keep-alive timings.
+fn client_config(trust: &CertTrust, alpn: &[u8]) -> Result<quinn::ClientConfig, DialError> {
+    let crypto = crate::tls::client_config(trust, Some(alpn))?;
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
         .map_err(|err| DialError::Connect(format!("build QUIC crypto: {err}")))?;
     let mut config = quinn::ClientConfig::new(Arc::new(quic_crypto));
@@ -198,5 +240,15 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:4433".parse().expect("addr");
         let err = handshake_error(addr, &quinn::ConnectionError::VersionMismatch);
         assert!(matches!(err, DialError::Connect(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn client_config_accepts_arbitrary_alpn() {
+        // quinn's ClientConfig is not introspectable, so this is a smoke
+        // test that a non-default ALPN builds a config at all; real ALPN
+        // negotiation on the relay leg is covered by the relay connector
+        // integration test (crates/phux-server/tests/relay_connector_spike.rs).
+        client_config(&CertTrust::SkipVerify, b"phux-relay/1")
+            .expect("a non-default ALPN builds a client config");
     }
 }

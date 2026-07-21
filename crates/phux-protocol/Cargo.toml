@@ -16,8 +16,9 @@ workspace = true
 
 [features]
 # By default phux-protocol is a near-empty shell: stable IDs, capability
-# atoms, and the protocol-version constant. This is what docs.rs and
-# crates.io see — it has no git-only deps, so it publishes cleanly.
+# atoms, the protocol-version constant, and the policy vocabulary (ALPN
+# constants, peer identity). This is what docs.rs and crates.io see — it
+# has no git-only deps, so it publishes cleanly.
 default = []
 # `server` activates the full type surface, including libghostty-vt input-
 # atom re-exports (ADR-0008) and the wire codec. Every in-workspace

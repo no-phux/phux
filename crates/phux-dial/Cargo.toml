@@ -13,9 +13,10 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-# QUIC_ALPN lives in `phux_protocol::policy`; default features keep this
-# crate on the protocol shell (no libghostty graph) — the dialer moves
-# bytes, it never decodes frames.
+# The ALPN constants (`QUIC_ALPN`, `QUIC_RELAY_ALPN`) live in
+# `phux_protocol::policy`, which sits on the crate's default (ungated)
+# shell — the dialer needs no features and stays off the libghostty
+# graph; it moves bytes, it never decodes frames.
 phux-protocol.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

@@ -13,9 +13,9 @@
 //!   the [`input`] and [`wire`] modules, plus all re-exports of
 //!   `libghostty-vt` input atoms (per [ADR-0008]). Every in-workspace
 //!   consumer enables this feature. Without `server` this crate is a
-//!   near-empty shell exposing only [`ids`], [`caps`], and [`Version`];
-//!   that subset is the minimal surface external consumers can depend on
-//!   without pulling in the full terminal-emulator type surface.
+//!   near-empty shell exposing only [`ids`], [`caps`], [`policy`], and
+//!   [`Version`]; that subset is the minimal surface external consumers can
+//!   depend on without pulling in the full terminal-emulator type surface.
 //!
 //! [`docs/spec/`]: https://github.com/phall1/phux/tree/main/docs/spec
 //! [ADR-0008]: https://github.com/phall1/phux/blob/main/ADR/0008-use-libghostty-types-directly.md
@@ -27,14 +27,16 @@
 
 // The wire codec and its input atoms are libghostty-free (ADR-0024) and so
 // build for any target, including wasm browser consumers. libghostty
-// conversions for the atoms live behind the `server` feature.
+// conversions for the atoms live behind the `server` feature. The policy
+// vocabulary (ALPN constants, peer-identity/audit types) is likewise on the
+// ungated shell: it is pure std/serde, and the wire crate must own the ALPN
+// bytes for consumers like `phux-dial` that deliberately stay off the
+// `server` feature.
 pub mod input;
 pub mod wire;
 
 pub mod caps;
 pub mod ids;
-
-#[cfg(feature = "server")]
 pub mod policy;
 
 #[cfg(feature = "server")]
