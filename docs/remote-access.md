@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-07-15
+last-reviewed: 2026-07-21
 ---
 
 # Remote access over an overlay network
@@ -11,7 +11,9 @@ the whole setup over ssh and registers the result, so `phux attach HOST` works
 with no flags. The manual path — put both ends on a WireGuard-class overlay,
 mint credentials with phux pair, attach to the overlay address over QUIC or TLS
 WebSocket — is documented below for Tailscale, Headscale, and raw WireGuard,
-plus troubleshooting for routing, auth, and fingerprint failures.
+plus troubleshooting for routing, auth, and fingerprint failures. A fourth
+path — dialing through a self-hosted reference relay — is documented but not
+yet end-to-end.
 
 ---
 
@@ -222,6 +224,41 @@ phux attach --ws wss://10.8.0.1:8787 --token HEX --cert-fingerprint FP
 
 With raw WireGuard there is no MagicDNS; use the tunnel IP or your own DNS.
 
+## Path D: via a reference relay
+
+**Not yet an end-to-end path.** The server-side connector that completes
+this path is still in progress (bead phux-qf2w). What exists today: the
+reference relay itself (`phux relay run` / `phux relay pair`) and the
+consumer side (`phux attach --quic` against a relay, with
+`--tls-server-name` naming the route). What does not exist yet: the
+connector — a phux server cannot enroll itself with a relay and hold the
+tunnel. Until phux-qf2w lands, nothing a consumer dials through a relay
+reaches a server; do not plan a deployment around this path yet.
+
+Paths A-C put both ends on one overlay so the client can reach the server's
+address. A relay inverts the direction: the server dials out to a relay you
+host, and consumers dial the relay — nothing on the server's network needs
+to accept an inbound connection. The tradeoff is stated plainly in the
+operations doc: the relay sees phux traffic in plaintext, and self-hosting
+the relay is the mitigation. Relay setup, the three state files, the
+enrollment flow, revocation, and the trust model live in
+[operations.md](./operations.md#running-the-reference-relay); the design is
+ADR-0057, building on
+[ADR-0051](../ADR/0051-outbound-dial-out-connector-transport.md).
+
+The consumer-side dial already has its final shape (until a connector holds
+the route's tunnel it fails during the TLS handshake, or with a
+route-offline close on an enrolled route):
+
+```sh
+phux attach --quic RELAY_HOST:4433 --tls-server-name ROUTE \
+  --cert-fingerprint RELAY_FP --token SERVER_TOKEN
+```
+
+`RELAY_FP` pins the relay's certificate (the consumer's TLS terminates at
+the relay); `SERVER_TOKEN` is the server's own `phux pair` token, verified
+by the server, never by the relay.
+
 ## Troubleshooting
 
 Failures fall into three classes, and the symptom tells you which one you have.
@@ -259,7 +296,8 @@ behavior by requesting state-sync output — see
 
 `ssh HOST phux stdio-bridge` remains a valid manual path where SSH is already
 the trust boundary — no token or pin is involved on that transport. Hosted
-relays, rendezvous servers, STUN/TURN, and reverse tunnels are deliberately
-out of scope for the self-host repo; see
+relay infrastructure, rendezvous servers, STUN/TURN, and reverse tunnels
+remain deliberately out of scope for the self-host repo; the self-hosted
+reference relay (Path D above) is the one carve-out, per ADR-0057. See
 [ADR-0037](../ADR/0037-overlay-network-reachability.md). For the full attach
 and pair CLI surface, see [the reference TUI](./consumers/tui.md).

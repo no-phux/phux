@@ -45,6 +45,7 @@ phux-client = { path = "crates/phux-client" }
 phux-client-core = { path = "crates/phux-client-core" }
 phux-config = { path = "crates/phux-config" }
 phux-dial = { path = "crates/phux-dial" }
+phux-relay = { path = "crates/phux-relay" }
 phux-plugin = { path = "crates/phux-plugin" }
 phux-mcp = { path = "crates/phux-mcp" }
 portable-pty-adopt = { path = "crates/portable-pty-adopt" }

@@ -72,6 +72,7 @@ pub(crate) mod overlay;
 pub(crate) mod pair;
 pub(crate) mod paste;
 pub(crate) mod plugin;
+pub(crate) mod relay;
 pub(crate) mod remote;
 pub(crate) mod rename;
 pub(crate) mod run;
@@ -943,6 +944,22 @@ pub(crate) enum Command {
         /// Override the UDS path.
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
+    },
+
+    /// Run a standalone relay, or enroll a route with it.
+    ///
+    /// The relay is a separate rendezvous process for reaching a phux
+    /// server that cannot accept inbound connections: the server dials
+    /// OUT to the relay and registers a tunnel for a named route, remote
+    /// consumers dial IN naming that route, and the relay splices the
+    /// two as opaque bytes — it never reads what crosses. `run` serves
+    /// in the foreground; `pair` enrolls a route name and mints the
+    /// token the server's tunnel authenticates with. Relay state (the
+    /// route-token store and a self-signed certificate) lives at fixed
+    /// paths under the phux state directory.
+    Relay {
+        #[command(subcommand)]
+        action: relay::RelayAction,
     },
 
     /// Mint a pairing token for a remote consumer.

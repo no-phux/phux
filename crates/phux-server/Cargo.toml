@@ -212,6 +212,12 @@ dhat.workspace = true
 # sleeps.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
+# The relay e2e test (tests/relay_e2e.rs) runs the PRODUCTION
+# `RelayRuntime` between a real server and a phux-dial consumer. Dev-only
+# and one-directional on purpose: phux-relay must never depend on
+# phux-server (ADR-0051 invariant 4 — the relay shares no code with the
+# daemon), so the test dependency points the other way.
+phux-relay.workspace = true
 # The WebTransport tests dial the listener with wtransport's native client;
 # `dangerous-configuration` unlocks `with_no_cert_validation` so the test
 # client trusts the throwaway self-signed leaf (the TLS handshake and full

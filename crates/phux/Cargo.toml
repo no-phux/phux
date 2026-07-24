@@ -23,6 +23,10 @@ phux-server.workspace = true
 phux-client.workspace = true
 phux-config.workspace = true
 phux-plugin.workspace = true
+# `phux relay` fronts the reference relay: `run` drives its runtime in the
+# foreground and `pair` mints route-bound tunnel tokens (workspace crate;
+# no new third-party dependency enters).
+phux-relay.workspace = true
 clap.workspace = true
 # `phux completion <shell>` generates the completion script from the same
 # clap tree the binary already parses with, so the two can never drift.

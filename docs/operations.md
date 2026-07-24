@@ -1,15 +1,16 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-07-15
+last-reviewed: 2026-07-21
 ---
 
 # Operations
 
 **TL;DR.** How phux behaves at its operational seams: error translation at
 the wire boundary, structured and redaction-safe logging, workspace continuity,
-remote-listener authentication, and the exact trust boundary. phux has no
-durable access audit log or runtime status command today.
+remote-listener authentication, running the reference relay, and the exact
+trust boundary. phux has no durable access audit log or runtime status command
+today.
 
 ---
 
@@ -318,9 +319,132 @@ private ranges find the address with their usual tooling. `PHUX_TAILSCALE`
 substitutes the CLI that `phux pair` runs (default: `tailscale` on PATH),
 mirroring `PHUX_SSH` for the hub dialer.
 
-Hosted relays, rendezvous servers, and NAT hole-punching that would remove the
-both-ends-install requirement are deliberately out of scope for the self-host
-repo; see ADR-0037.
+Hosted relay infrastructure, rendezvous servers, and NAT hole-punching that
+would remove the both-ends-install requirement remain out of scope for the
+self-host repo (see ADR-0037). The one carve-out, per ADR-0057, is the
+self-hosted reference relay below: a relay you run yourself, never one anyone
+hosts for you.
+
+### Running the reference relay
+
+phux ships a minimal reference relay in-tree — the runnable artifact behind
+the dial-out connector design
+([ADR-0051](../ADR/0051-outbound-dial-out-connector-transport.md), ADR-0057).
+A server behind NAT dials out to the relay and holds one QUIC tunnel per
+named route; remote consumers dial the relay, name the route via TLS SNI, and
+are spliced onto that tunnel byte for byte. Be blunt about the trust
+tradeoff, because ADR-0051 is: **the relay terminates TLS on both legs, so it
+sees every phux frame in plaintext** — every keystroke and every rendered
+cell crosses the relay decrypted. The mitigation is not a protocol feature;
+it is self-hosting. Run the relay yourself, on a host you trust — that is the
+entire reason it ships in this repo. It is a reference relay for self-hosters
+and development, not infrastructure software: no accounts, no high
+availability, no metrics, no config file. That scope fence is normative
+(ADR-0057).
+
+The server-side connector that dials a relay is still in progress (bead
+phux-qf2w); until it lands, the relay and the consumer side exist without an
+end-to-end path — see [Remote access, Path D](./remote-access.md#path-d-via-a-reference-relay).
+
+The surface is two commands:
+
+```sh
+# Enroll a route: mints its tunnel token, provisions the certificate on
+# first use, and prints the fingerprint both legs pin.
+phux relay pair --route studio
+
+# Run the relay in the foreground (Ctrl-C to stop). --listen has no
+# default; binding is always explicit. --max-conns (default 64) is the
+# sole limiting knob.
+phux relay run --listen 0.0.0.0:4433
+```
+
+`phux relay pair` prints the credentials once, in the spirit of `phux
+pair`; its output looks like:
+
+```
+Tunnel token for route "studio" (a secret — give it to the phux server once):
+  <64-hex token>
+
+Relay certificate SHA-256 (pin it on the dialing side to defeat MITM):
+  <colon-separated hex fingerprint>
+
+Token written to <state-dir>/relay-tokens
+```
+
+Route names ride TLS SNI, so they follow the DNS-label grammar: lowercase
+`[a-z0-9-]`, at most 63 characters, no leading or trailing hyphen. Anything
+else is rejected with a nonzero exit — never normalized. Pairing an
+already-enrolled route replaces that route's token, so rotation is one
+command and token and route stay one-to-one. The store rewrite is atomic
+(a running relay never observes a torn or empty file), but concurrent
+`phux relay pair` invocations are last-write-wins — run one at a time.
+
+`phux relay run` prints the standard `phux` build banner and a listening
+line to stderr, then blocks. The listening line carries the resolved bind
+address (so `--listen 127.0.0.1:0` shows the OS-assigned port), the
+enrolled-route count, and the certificate fingerprint both legs pin:
+
+```
+phux <version> (pre-alpha; see docs/spec/)
+phux relay listening on 0.0.0.0:4433 (routes=1; cert sha256 <colon-separated hex fingerprint>; Ctrl-C to stop)
+```
+
+Lifecycle lines follow on stderr via `tracing`: tunnel up/down per route,
+per-reason refusals (bad tunnel token, no live tunnel for an enrolled route,
+connection cap reached), and a warning when a newer claim supersedes a live
+tunnel (claims are last-writer-wins; that warning is the operator's
+theft-detection surface). These lines are a diagnostic surface, not
+machine-stable output. Shutdown on Ctrl-C or SIGTERM is immediate — a
+reference relay makes no availability promise.
+
+**State files.** Exactly three, at fixed paths in the phux state directory
+(`$XDG_STATE_HOME/phux`, or `$HOME/.local/state/phux` when unset) — siblings
+of the server's `remote-*` files:
+
+- `relay-tokens` — one `<64-char hex token> <route>` line per enrolled
+  route; `#` comments and blank lines are ignored; mode `0600`. The relay
+  re-reads this file on every connection attempt, so `phux relay pair` takes
+  effect on a running relay and deleting a line revokes at the next
+  handshake — no restart, no reload signal. A live tunnel survives its
+  token's deletion until it drops or the relay restarts; restarting the
+  relay is the immediate revocation path.
+- `relay-cert.pem` / `relay-key.pem` — the relay's self-signed TLS pair,
+  provisioned on first use and left untouched when both files exist, so the
+  pinned fingerprint stays stable across restarts. Operator-supplied
+  certificates work by placing PEM files at these paths. The key is written
+  mode `0600`.
+
+There are no path flags and no `PHUX_RELAY_*` environment variables. Listing
+enrollments is reading the file; revoking is deleting a line; re-pairing
+rotates.
+
+**Enrollment flow.**
+
+1. On the relay host, enroll the route: `phux relay pair --route studio`.
+2. Hand the printed token to the server operator out-of-band. It is the
+   bearer credential the server-side connector presents when it dials the
+   relay and claims the route (connector in progress, bead phux-qf2w).
+3. Consumers dial the relay as if it were the server, naming the route with
+   SNI and pinning the relay's certificate:
+
+   ```sh
+   phux attach --quic RELAY_HOST:4433 --tls-server-name studio \
+     --cert-fingerprint RELAY_FP --token SERVER_TOKEN
+   ```
+
+   `RELAY_FP` is the relay fingerprint from `phux relay pair` — the
+   consumer's TLS terminates at the relay, so that is the certificate it
+   sees. `SERVER_TOKEN` is the server's own `phux pair` token: it crosses
+   the relay as opaque bytes and is verified by the server, never by the
+   relay.
+
+Refusals are distinguishable at the consumer. An unknown or absent route
+name fails during the TLS handshake itself — no phux bytes are exchanged,
+and the relay is indistinguishable from a non-phux TLS endpoint. An enrolled
+route with no live tunnel completes the handshake and then closes with a
+distinct route-offline application code. "Wrong route name" and "server not
+dialed in" therefore produce different failures.
 
 ### Output mode for remote consumers
 

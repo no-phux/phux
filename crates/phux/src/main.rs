@@ -95,6 +95,7 @@ mod help_inventory;
           satellite  Manage configured federation satellites\n  \
           pair       Mint a pairing token for a remote consumer\n  \
           enroll     Set up a remote server over ssh, end to end\n  \
+          relay      Run a standalone relay, or enroll a route with it\n  \
           stdio-bridge  Bridge stdio to the local server socket (SSH-stdio)\n\n\
         TARGET is the selector grammar: a session name, `name:window`,\n\
         `name:window.pane`, `@id`, or `.` (focused). `=` is reserved for the attached TUI's client-local focus MRU. The same\n\
@@ -419,6 +420,7 @@ fn main() -> ExitCode {
         Some(Command::Satellite { action }) => commands::satellite::run_satellite(&action),
         Some(Command::Tag { socket, action }) => commands::tag::run_tag(&action, socket),
         Some(Command::StdioBridge { socket }) => commands::stdio_bridge::run_stdio_bridge(socket),
+        Some(Command::Relay { action }) => commands::relay::run_relay(action),
         Some(Command::Pair {
             tokens,
             cert,
@@ -630,6 +632,81 @@ mod tests {
 
         // A target is required.
         assert!(Cli::try_parse_from(["phux", "paste"]).is_err());
+    }
+
+    /// `phux relay run` requires an explicit `--listen` (no default bind
+    /// address) and caps connections at 64 unless `--max-conns` says
+    /// otherwise; `phux relay pair` requires `--route`. A zero cap is a
+    /// parse error, not a runtime surprise.
+    #[test]
+    fn relay_verbs_parse_and_validate_flags() {
+        use crate::commands::relay::RelayAction;
+
+        let cli = Cli::try_parse_from(["phux", "relay", "run", "--listen", "127.0.0.1:4433"])
+            .expect("`phux relay run --listen` parses");
+        let Some(Command::Relay {
+            action: RelayAction::Run { listen, max_conns },
+        }) = cli.command
+        else {
+            panic!("expected Relay Run");
+        };
+        assert_eq!(listen, "127.0.0.1:4433".parse().unwrap());
+        assert_eq!(max_conns, 64, "default cap");
+
+        let cli = Cli::try_parse_from([
+            "phux",
+            "relay",
+            "run",
+            "--listen",
+            "0.0.0.0:4433",
+            "--max-conns",
+            "8",
+        ])
+        .expect("explicit --max-conns parses");
+        let Some(Command::Relay {
+            action: RelayAction::Run { max_conns, .. },
+        }) = cli.command
+        else {
+            panic!("expected Relay Run");
+        };
+        assert_eq!(max_conns, 8);
+
+        assert!(
+            Cli::try_parse_from(["phux", "relay", "run"]).is_err(),
+            "--listen is required"
+        );
+        assert!(
+            Cli::try_parse_from(["phux", "relay", "run", "--listen", "not-an-addr"]).is_err(),
+            "LISTEN must be a socket address"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "phux",
+                "relay",
+                "run",
+                "--listen",
+                "127.0.0.1:1",
+                "--max-conns",
+                "0",
+            ])
+            .is_err(),
+            "a zero cap is refused at parse time"
+        );
+
+        let cli = Cli::try_parse_from(["phux", "relay", "pair", "--route", "devbox"])
+            .expect("`phux relay pair --route` parses");
+        let Some(Command::Relay {
+            action: RelayAction::Pair { route },
+        }) = cli.command
+        else {
+            panic!("expected Relay Pair");
+        };
+        assert_eq!(route, "devbox");
+
+        assert!(
+            Cli::try_parse_from(["phux", "relay", "pair"]).is_err(),
+            "--route is required"
+        );
     }
 
     #[test]

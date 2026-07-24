@@ -1,0 +1,53 @@
+[package]
+name = "phux-relay"
+description = "phux reference relay (ADR-0051/0052): a single-tenant byte relay bridging dial-out connector tunnels to inbound consumers, with SNI routing and route-bound enrollment tokens."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The ALPN constants (`QUIC_ALPN`, `QUIC_RELAY_ALPN`) live in
+# `phux_protocol::policy`, on the crate's default (ungated) shell — the
+# relay needs no features and stays off the libghostty graph; it moves
+# bytes, it never decodes frames (ADR-0051 invariants 1 and 5).
+phux-protocol.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+# QUIC endpoint terminating BOTH relay legs (connector tunnels and
+# consumers) on one socket; same quinn stack + features as the server's
+# `QuicListener` and phux-dial (workspace dep).
+quinn.workspace = true
+# rustls server config: TLS 1.3 only, dual ALPN, and the SNI
+# cert-resolver gate that refuses unknown/absent route names during the
+# handshake (ADR-0052 Decision 1).
+rustls.workspace = true
+# Self-signed relay certificate provisioning, mirroring phux-server's
+# `transport::tls` (same version/features phux-server declares).
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+# SHA-256 leaf-certificate fingerprint for the out-of-band pairing pin.
+sha2 = "0.10"
+# Hex encode/decode of route-bound enrollment tokens.
+hex = "0.4"
+# Constant-time token comparison so the route-token store leaks no
+# timing oracle (same discipline as phux-server's `auth::TokenStore`).
+subtle = "2"
+# OS CSPRNG for enrollment-token minting. `std` so its Error implements
+# `std::error::Error` (phux-server gets this via feature unification;
+# declared explicitly here so the relay stands alone).
+getrandom = { version = "0.2", features = ["std"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+# The integration tests drive both relay legs through the production
+# dialer: consumers via `phux_dial::quic::dial` (pinned fingerprint,
+# bearer preamble), the stub connector via `dial_with_alpn` +
+# `QUIC_RELAY_ALPN`. Workspace-internal; no new external dependency.
+phux-dial.workspace = true
