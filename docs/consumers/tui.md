@@ -160,6 +160,8 @@ phux worktree open TARGET [--attach]
                               # ensure the bound session exists (idempotent)
 phux worktree remove TARGET [--force]
                               # kill the bound session, then git worktree remove
+phux doctor [--json]          # diagnose the install: config, socket path,
+                              # server reachability, plugin manifests
 phux completion SHELL         # print a shell completion script on stdout
                               # (bash, elvish, fish, powershell, zsh);
                               # generated from this binary's own parser, so it
@@ -211,6 +213,44 @@ the existing split geometry. All three accept `--json` and `--socket`.
 
 Detach (`C-a d`) remains an interactive TUI-only action because it acts on the
 calling client's attachment.
+
+### 1.3.1 `phux doctor` composes the checks that already exist
+
+Every check `doctor` runs already existed as its own verb: `config check`,
+`plugin validate`, a socket-length guard buried in the spawn path, a
+`GET_STATE` probe inside `ls`. Knowing to run all four, in the right order,
+and how to read each one is precisely the knowledge someone debugging phux
+does not have.
+
+```console
+$ phux doctor
+ok   config       ~/.config/phux/config.toml is valid
+ok   socket-path  /run/user/1000/phux/phux.sock
+warn server       no server at /run/user/1000/phux/phux.sock
+                  -> start one with `phux` (auto-spawns) or `phux server`
+ok   plugins      2 manifest(s) valid
+
+no failures, 1 warning(s)
+```
+
+Three states, not two. A check that **could not run** reports `warn`, never
+`ok` — a stopped server is a normal state, and rendering it green would be a
+lie while rendering it red would train people to ignore red lines. Only
+`FAIL` means verified-broken, and only `FAIL` sets the exit code to 1, so
+`phux doctor` can gate a setup script without failing on a machine where
+phux simply is not running yet.
+
+Every non-passing check carries a next step. A diagnosis that names a
+problem without naming an action is half a diagnosis.
+
+`doctor` is strictly read-only. A diagnostic that repairs things is one
+nobody can trust to describe the system.
+
+The socket-path check earns its place: an over-long path fails as a connect
+that times out with no explanation, and nobody guesses `sockaddr_un` on
+their own. A socket file with nothing behind it is reported as a failure
+rather than a missing server, because every CLI verb will refuse until it is
+cleared.
 
 ### 1.4 Worktrees bind to sessions by derived name
 

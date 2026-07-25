@@ -200,6 +200,16 @@ fn validate_registry(json: bool) -> ExitCode {
     }
 }
 
+/// How many configured plugin manifests load cleanly.
+///
+/// Exposed for `phux doctor`, which needs the verdict and not the entries.
+/// Returning a count rather than `Vec<RegistryEntry>` keeps the registry's
+/// internals private to this module — a diagnostic has no business reaching
+/// into them.
+pub(crate) fn valid_manifest_count() -> Result<usize, String> {
+    load_registry().map(|entries| entries.len())
+}
+
 pub(super) fn fail(message: &str) -> ExitCode {
     eprintln!("phux: {message}");
     ExitCode::FAILURE

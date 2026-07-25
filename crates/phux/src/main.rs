@@ -84,6 +84,7 @@ mod help_inventory;
         ORGANIZE\n  \
           tag        Read and write a pane's tags (address them with #tag)\n  \
           completion Print a shell completion script for phux\n  \
+          doctor     Diagnose the install: config, socket, server, plugins\n  \
           config     Inspect config and run configured plugin actions\n  \
           plugin     Manage local plugin manifests in config\n  \
           workspace  Inspect worktrees and save/restore session archives\n  \
@@ -424,6 +425,7 @@ fn main() -> ExitCode {
         }) => commands::pair::run_pair(tokens, cert, qr, host, name),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell),
         Some(Command::Worktree(action)) => commands::worktree::run_worktree(&action),
+        Some(Command::Doctor { json, socket }) => commands::doctor::run_doctor(json, socket),
         None => commands::attach::run_naked(),
     }
 }

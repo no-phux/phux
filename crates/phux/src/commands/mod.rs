@@ -62,6 +62,7 @@ pub(crate) mod completion;
 pub(crate) mod config;
 pub(crate) mod config_action;
 pub(crate) mod detach;
+pub(crate) mod doctor;
 pub(crate) mod kill;
 pub(crate) mod launch;
 pub(crate) mod ls;
@@ -1005,6 +1006,24 @@ pub(crate) enum Command {
         /// Shell dialect to generate for.
         #[arg(value_name = "SHELL")]
         shell: clap_complete::Shell,
+    },
+
+    /// Diagnose a phux install: config, socket, server, plugins.
+    ///
+    /// Composes the checks that already exist as separate verbs and reports
+    /// one verdict, because knowing which four commands to run and how to
+    /// read each one is exactly what someone debugging phux does not have.
+    ///
+    /// Read-only. Exits 1 if any check failed; warnings alone exit 0,
+    /// since a stopped server is a normal state and not a broken install.
+    Doctor {
+        /// Emit a stable JSON document instead of human text.
+        #[arg(long)]
+        json: bool,
+
+        /// Override the UDS path probed for a running server.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
     },
 
     /// Manage git worktrees and the sessions bound to them.

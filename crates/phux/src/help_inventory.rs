@@ -101,6 +101,7 @@ phux config reload
 phux config run
 phux config show
 phux detach
+phux doctor
 phux give
 phux insert-pane
 phux kill
