@@ -3812,11 +3812,21 @@ mod tests {
             .run_until(async {
                 let dir = tempfile::tempdir().expect("tempdir");
                 let marker = dir.path().join("flushed");
+                let armed = dir.path().join("armed");
 
+                // The script announces that its HUP trap is installed. Without
+                // that handshake the test races the shell: a distinct process
+                // group is established at exec, but `trap` runs afterwards, so
+                // a SIGHUP arriving in between is handled by the DEFAULT
+                // disposition — the shell dies silently and the marker is
+                // never written. That gap is why this test failed under a
+                // fully parallel `just test` (phux-2390) with an empty marker
+                // in 0.7s: not a timeout, a missing synchronization point.
                 let script = dir.path().join("foreground.sh");
                 std::fs::write(
                     &script,
                     "trap 'printf flushed > \"$PHUX_TEST_MARKER\"; exit 0' HUP\n\
+                     printf armed > \"$PHUX_TEST_ARMED\"\n\
                      while :; do sleep 30; done\n",
                 )
                 .expect("write foreground script");
@@ -3827,6 +3837,7 @@ mod tests {
                 cmd.arg("-c");
                 cmd.arg(format!("set -m; /bin/sh {}", script.display()));
                 cmd.env("PHUX_TEST_MARKER", &marker);
+                cmd.env("PHUX_TEST_ARMED", &armed);
 
                 let token = CancellationToken::new();
                 let bundle = TerminalActor::build_with_token(20, 5, Some(cmd), 1000, token.clone())
@@ -3853,6 +3864,18 @@ mod tests {
                     .await
                     .expect("foreground job must acquire a distinct process group");
                 assert_ne!(foreground_group, shell_group);
+
+                // Wait for the trap to be armed before signalling. This is
+                // the synchronization the test was missing; the process-group
+                // check above proves the job exists, not that it can handle a
+                // signal yet.
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    while !armed.exists() {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("foreground job must install its SIGHUP trap");
 
                 // Kill the pane. The actor's shutdown runs SIGHUP + grace.
                 token.cancel();
