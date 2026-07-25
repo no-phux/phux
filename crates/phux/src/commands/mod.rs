@@ -995,7 +995,7 @@ pub(crate) enum Command {
     ///
     /// Install it the way your shell prefers, for example:
     ///
-    ///   phux completion zsh  > "${fpath[1]}/_phux"
+    ///   phux completion zsh  > ~/.zfunc/_phux   (~/.zfunc must be on $fpath)
     ///   phux completion bash > ~/.local/share/bash-completion/completions/phux
     ///   phux completion fish > ~/.config/fish/completions/phux.fish
     ///
