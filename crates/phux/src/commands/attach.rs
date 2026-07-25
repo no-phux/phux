@@ -9,6 +9,7 @@ use phux_config::loader as config_loader;
 use phux_protocol::wire::frame::AttachTarget;
 use phux_server::runtime::default_socket_path;
 
+use crate::commands::remote::{self, Endpoint, RemoteEntry};
 use crate::commands::{DEFAULT_SESSION_NAME, print_attach_error, server::maybe_auto_spawn_server};
 use crate::print_banner;
 
@@ -309,7 +310,79 @@ async fn wait_until_connectable(dial: &Dial, deadline: Duration) -> bool {
 /// If the socket isn't there (or refuses connections), this also
 /// attempts a best-effort auto-spawn of `phux server` before
 /// connecting — see [`maybe_auto_spawn_server`].
+/// Attach through a registered `[[remote]]` entry (ADR-0055).
+///
+/// The registry supplies the endpoint, the pin, and the token, so the
+/// operator types a name instead of two 64-hex strings. `session` overrides
+/// the entry's own pinned session when the caller named one.
+///
+/// `ssh://` re-execs `ssh -t HOST phux attach` rather than dialing: there is
+/// no consumer-side ssh transport (`Dial` is QUIC or WebSocket), and there
+/// does not need to be — the session still lives on the remote server and
+/// still survives the connection dropping.
+pub(crate) fn run_attach_remote(entry: &RemoteEntry, session: Option<String>) -> ExitCode {
+    let endpoint = match Endpoint::parse(&entry.endpoint) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            eprintln!("phux: remote {:?}: {err}", entry.name);
+            return ExitCode::FAILURE;
+        }
+    };
+    let session = session.or_else(|| entry.session.clone());
+
+    let token = match remote::read_token(entry) {
+        Ok(token) => token,
+        Err(err) => {
+            eprintln!("phux: remote {:?}: {err}", entry.name);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match endpoint {
+        Endpoint::Quic(target) => {
+            run_attach_quic(session, target, token, entry.cert_fingerprint.clone(), None)
+        }
+        Endpoint::Ws(url) => {
+            run_attach_ws(session, url, token, entry.cert_fingerprint.clone(), None)
+        }
+        Endpoint::Ssh(host) => run_attach_over_ssh(&host, session.as_deref()),
+    }
+}
+
+/// Replace this process with `ssh -t HOST phux attach [SESSION]`.
+///
+/// `exec` rather than spawn-and-wait so the operator's terminal, signals, and
+/// exit code belong to ssh directly — an intermediate parent would only add a
+/// process that mangles Ctrl-C. `-t` forces a TTY, which the interactive
+/// attach requires.
+fn run_attach_over_ssh(host: &str, session: Option<&str>) -> ExitCode {
+    use std::os::unix::process::CommandExt as _;
+
+    let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
+    let mut command = std::process::Command::new(&program);
+    command.arg("-t").arg(host).arg("phux").arg("attach");
+    if let Some(session) = session {
+        command.arg(session);
+    }
+
+    // `exec` only returns on failure.
+    let err = command.exec();
+    eprintln!("phux: could not exec {}: {err}", program.to_string_lossy());
+    ExitCode::FAILURE
+}
+
 pub(crate) fn run_attach(session: Option<String>, socket: Option<PathBuf>) -> ExitCode {
+    // A name in the registry is a deliberate operator statement — they ran
+    // `phux enroll` or `phux remote add` for it — so it wins over the
+    // local-session reading of the same word. `--socket` is an explicit
+    // local intent and suppresses the lookup.
+    if socket.is_none()
+        && let Some(name) = session.as_deref()
+        && let Some(entry) = remote::find(name)
+    {
+        return run_attach_remote(&entry, None);
+    }
+
     let socket_path = socket.unwrap_or_else(default_socket_path);
     // phux-iwuc: fail before auto-spawn with the sockaddr_un limit named,
     // instead of the 2s spawn timeout + a doomed connect.

@@ -6,11 +6,12 @@ last-reviewed: 2026-07-15
 
 # Remote access over an overlay network
 
-**TL;DR.** Reach a self-hosted phux server from another network by putting both
-ends on a WireGuard-class overlay, minting credentials with phux pair, and
-attaching to the overlay address over QUIC or TLS WebSocket. Covers Tailscale,
-Headscale, and raw WireGuard end to end, plus troubleshooting for routing,
-auth, and fingerprint failures.
+**TL;DR.** Run `phux enroll HOST` from the client and you are done: it drives
+the whole setup over ssh and registers the result, so `phux attach HOST` works
+with no flags. The manual path — put both ends on a WireGuard-class overlay,
+mint credentials with phux pair, attach to the overlay address over QUIC or TLS
+WebSocket — is documented below for Tailscale, Headscale, and raw WireGuard,
+plus troubleshooting for routing, auth, and fingerprint failures.
 
 ---
 
@@ -33,6 +34,38 @@ rendezvous servers, and hole-punching are deliberately out of scope. The trust
 model and environment knobs live in
 [operations.md](./operations.md#connecting-from-another-network-overlay-reachability);
 this page owns the step-by-step task.
+
+## The short way: `phux enroll`
+
+If you can already `ssh` to the host, skip everything below and run one
+command from the client:
+
+```sh
+phux enroll mini
+```
+
+It confirms phux is installed on `mini`, installs the host's service unit so
+the server survives reboot, mints a pairing token there, reads back the
+certificate fingerprint and the overlay address, writes the token locally
+0600, and registers a `[[remote]]` entry. Afterwards:
+
+```sh
+phux attach mini
+```
+
+No token, no fingerprint, no address typed by hand. This grants nothing ssh
+did not already grant — whoever can `ssh mini` can run `phux pair` there and
+read the token themselves ([ADR-0055](../ADR/0055-always-on-server-and-ssh-bootstrapped-enrollment.md)).
+
+A host with no overlay address, or one whose certificate could not be read,
+has nothing dialable; enrollment says so and registers an `ssh://` entry
+instead. That still gives you `phux attach mini` against a server whose
+sessions outlive the connection — it just tunnels through ssh rather than
+dialing QUIC. Re-run `phux enroll` once the overlay is up to upgrade the
+transport.
+
+The rest of this page is the manual path: what `enroll` automates, and what
+to do when it cannot reach the host.
 
 ## Common steps: pair, then listen
 

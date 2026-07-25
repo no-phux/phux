@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{plugin::PluginConfigEntry, satellite::SatelliteConfigEntry};
+use crate::{
+    plugin::PluginConfigEntry, remote::RemoteConfigEntry, satellite::SatelliteConfigEntry,
+};
 
 /// Top-level config. See `docs/consumers/tui.md` §4.2.
 ///
@@ -52,6 +54,11 @@ pub struct Config {
     /// Hub-and-spoke federation satellites declared for this host.
     #[serde(default)]
     pub satellites: Vec<SatelliteConfigEntry>,
+
+    /// Remote phux servers this machine attaches to (ADR-0055). Written by
+    /// `phux enroll` and `phux remote add`; read by `phux attach <name>`.
+    #[serde(default)]
+    pub remote: Vec<RemoteConfigEntry>,
 
     /// Color slots (theme). Free-form key/value of color strings.
     #[serde(default)]

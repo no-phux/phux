@@ -17,6 +17,7 @@ mod error;
 pub mod integration; // phux-ark7 (ADR-0042): agent integration templates + launch
 mod layer;
 pub mod plugin;
+pub mod remote;
 pub mod satellite;
 mod schema;
 
@@ -31,6 +32,7 @@ pub use error::{ConfigError, byte_offset_to_line_col};
 pub use layer::{
     ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, merged_config_with_provenance,
 };
+pub use remote::RemoteConfigEntry;
 pub use satellite::SatelliteConfigEntry;
 pub use schema::{
     Action, Config, CwdInheritance, DefaultsCfg, ExperimentalCfg, HookEntry, KeybindingsCfg,

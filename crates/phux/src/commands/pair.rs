@@ -126,6 +126,7 @@ pub(crate) fn run_pair(
     qr: bool,
     host: Option<String>,
     name: Option<String>,
+    json: bool,
 ) -> ExitCode {
     let tokens = tokens
         .or_else(|| std::env::var_os("PHUX_WS_TOKENS").map(PathBuf::from))
@@ -153,15 +154,23 @@ pub(crate) fn run_pair(
         }
     };
 
-    println!("Pairing token (a secret — give it to the device once):");
-    println!("  {token}");
-    println!();
+    // `--json` keeps stdout a single document (the repo-wide contract in
+    // docs/consumers/agents.md): the human blocks below are suppressed and
+    // every diagnostic still goes to stderr. `phux enroll` consumes this
+    // over ssh, which is what keeps a 64-hex token out of human hands.
+    if !json {
+        println!("Pairing token (a secret — give it to the device once):");
+        println!("  {token}");
+        println!();
+    }
 
     let fingerprint = match phux_server::transport::tls::cert_fingerprint(&cert) {
         Ok(fingerprint) => {
-            println!("Server certificate SHA-256 (verify on the device to defeat MITM):");
-            println!("  {fingerprint}");
-            println!();
+            if !json {
+                println!("Server certificate SHA-256 (verify on the device to defeat MITM):");
+                println!("  {fingerprint}");
+                println!();
+            }
             Some(fingerprint)
         }
         Err(err) => {
@@ -174,7 +183,7 @@ pub(crate) fn run_pair(
     // returns an empty vec when nothing is detected — so this block can
     // never affect the exit code.
     let overlay = super::overlay::detect();
-    if !overlay.is_empty() {
+    if !json && !overlay.is_empty() {
         println!("Overlay network addresses (dial one of these from the device):");
         for addr in &overlay {
             println!("  {addr}");
@@ -185,13 +194,26 @@ pub(crate) fn run_pair(
     // The one-tap link (and its QR form) carries the token — it is as much
     // a secret as the token line above, shown once on the same terminal.
     let ws_addr = std::env::var("PHUX_WS_ADDR").ok();
-    if let Some(url) = resolve_server_url(host.as_deref(), &overlay, ws_addr.as_deref()) {
-        let link = build_connect_link(&url, name.as_deref(), fingerprint.as_deref(), &token);
+    let link = resolve_server_url(host.as_deref(), &overlay, ws_addr.as_deref())
+        .map(|url| build_connect_link(&url, name.as_deref(), fingerprint.as_deref(), &token));
+
+    if json {
+        return print_pair_json(
+            &token,
+            fingerprint.as_deref(),
+            &overlay,
+            ws_addr.as_deref(),
+            link.as_deref(),
+            &tokens,
+        );
+    }
+
+    if let Some(link) = &link {
         println!("One-tap connect link (open on the device — carries the token):");
         println!("  {link}");
         println!();
         if qr {
-            match render_qr(&link) {
+            match render_qr(link) {
                 Ok(art) => {
                     println!("Scan to pair:");
                     println!();
@@ -210,6 +232,45 @@ pub(crate) fn run_pair(
 
     println!("Token written to {}", tokens.display());
     ExitCode::SUCCESS
+}
+
+/// Emit the machine-readable pairing document.
+///
+/// `quic_addr` and `ws_addr` are reported as the server's *configured bind*
+/// (from the environment the listener reads), not a dialable address — the
+/// consumer pairs them with an overlay address to build an endpoint. They are
+/// null when this host has no listener configured, which is exactly the
+/// signal `phux enroll` uses to fall back to `ssh://`.
+fn print_pair_json(
+    token: &str,
+    fingerprint: Option<&str>,
+    overlay: &[IpAddr],
+    ws_addr: Option<&str>,
+    connect_link: Option<&str>,
+    tokens_path: &std::path::Path,
+) -> ExitCode {
+    let document = serde_json::json!({
+        "token": token,
+        "cert_fingerprint": fingerprint,
+        "overlay_addresses": overlay
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>(),
+        "ws_addr": ws_addr,
+        "quic_addr": std::env::var("PHUX_QUIC_ADDR").ok(),
+        "connect_link": connect_link,
+        "tokens_path": tokens_path.display().to_string(),
+    });
+    match serde_json::to_string_pretty(&document) {
+        Ok(text) => {
+            println!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("phux pair: could not encode JSON: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]

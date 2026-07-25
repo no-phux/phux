@@ -58,6 +58,8 @@ mod help_inventory;
         ATTACH / SERVE\n  \
           attach     Attach to a session (interactive)\n  \
           server     Run a server in the foreground\n  \
+          remote     Register the servers `phux attach <name>` can reach\n  \
+          service    Keep a server running across logout and reboot\n  \
           upgrade    Hot-swap the running server binary, keeping sessions alive\n\n\
         INSPECT\n  \
           ls         List sessions\n  \
@@ -92,6 +94,7 @@ mod help_inventory;
         FEDERATION\n  \
           satellite  Manage configured federation satellites\n  \
           pair       Mint a pairing token for a remote consumer\n  \
+          enroll     Set up a remote server over ssh, end to end\n  \
           stdio-bridge  Bridge stdio to the local server socket (SSH-stdio)\n\n\
         TARGET is the selector grammar: a session name, `name:window`,\n\
         `name:window.pane`, `@id`, or `.` (focused). `=` is reserved for the attached TUI's client-local focus MRU. The same\n\
@@ -422,10 +425,62 @@ fn main() -> ExitCode {
             qr,
             host,
             name,
-        }) => commands::pair::run_pair(tokens, cert, qr, host, name),
+            json,
+        }) => commands::pair::run_pair(tokens, cert, qr, host, name, json),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell),
         Some(Command::Worktree(action)) => commands::worktree::run_worktree(&action),
         Some(Command::Doctor { json, socket }) => commands::doctor::run_doctor(json, socket),
+        Some(Command::Enroll {
+            host,
+            name,
+            endpoint,
+            quic_port,
+            no_service,
+            ssh_only,
+            session,
+        }) => commands::enroll::run_enroll(
+            &host,
+            name.as_deref(),
+            endpoint.as_deref(),
+            quic_port,
+            !no_service,
+            ssh_only,
+            session.as_deref(),
+        ),
+        Some(Command::Remote { action }) => match action {
+            commands::RemoteAction::Add {
+                name,
+                endpoint,
+                token_file,
+                cert_fingerprint,
+                session,
+            } => commands::remote::run_add(
+                &name,
+                &endpoint,
+                token_file.as_deref(),
+                cert_fingerprint.as_deref(),
+                session.as_deref(),
+            ),
+            commands::RemoteAction::List { json } => commands::remote::run_list(json),
+            commands::RemoteAction::Remove { name } => commands::remote::run_remove(&name),
+        },
+        Some(Command::Service { action }) => match action {
+            commands::ServiceAction::Install {
+                quic,
+                listen,
+                restore,
+                socket,
+                print,
+            } => commands::service::run_install(quic, listen, restore, socket, print),
+            commands::ServiceAction::Uninstall => commands::service::run_uninstall(),
+            commands::ServiceAction::Status => commands::service::run_status(),
+            commands::ServiceAction::Logs { follow, lines } => {
+                commands::service::run_logs(follow, lines)
+            }
+            commands::ServiceAction::PruneLogs { dry_run } => {
+                commands::service::run_prune_logs(dry_run)
+            }
+        },
         None => commands::attach::run_naked(),
     }
 }

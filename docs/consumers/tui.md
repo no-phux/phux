@@ -166,6 +166,22 @@ phux completion SHELL         # print a shell completion script on stdout
                               # (bash, elvish, fish, powershell, zsh);
                               # generated from this binary's own parser, so it
                               # never advertises a verb the build lacks
+phux enroll HOST [--name N] [--endpoint HOST:PORT] [--quic-port P]
+                 [--no-service] [--ssh-only] [--session N]
+                              # set up a remote server over ssh end to end
+                              # (ADR-0055): confirm phux is installed there,
+                              # install its service unit, mint a pairing
+                              # token, and register the result locally, so
+                              # `phux attach HOST` needs no flags afterwards.
+                              # Falls back to an ssh:// entry when the host
+                              # has nothing dialable
+phux remote <add|list|remove> # the registry `phux attach NAME` resolves
+phux service <install|uninstall|status|logs|prune-logs>
+                              # per-user service unit (launchd LaunchAgent on
+                              # macOS, systemd user unit on Linux) that keeps
+                              # a server running across logout and reboot.
+                              # `install --restore` brackets the server with
+                              # workspace save/restore
 phux --version                # print version
 phux help [COMMAND]
 ```

@@ -63,6 +63,7 @@ pub(crate) mod config;
 pub(crate) mod config_action;
 pub(crate) mod detach;
 pub(crate) mod doctor;
+pub(crate) mod enroll;
 pub(crate) mod kill;
 pub(crate) mod launch;
 pub(crate) mod ls;
@@ -71,17 +72,20 @@ pub(crate) mod overlay;
 pub(crate) mod pair;
 pub(crate) mod paste;
 pub(crate) mod plugin;
+pub(crate) mod remote;
 pub(crate) mod rename;
 pub(crate) mod run;
 pub(crate) mod satellite;
 pub(crate) mod send_keys;
 pub(crate) mod server;
+pub(crate) mod service;
 pub(crate) mod snapshot;
 pub(crate) mod spatial;
 pub(crate) mod spawn;
 pub(crate) mod stdio_bridge;
 pub(crate) mod supervise;
 pub(crate) mod tag;
+pub(crate) mod toml_registry;
 pub(crate) mod upgrade;
 pub(crate) mod wait;
 pub(crate) mod watch;
@@ -985,8 +989,79 @@ pub(crate) enum Command {
         /// the device in its server list. Omitted: the device picks a default.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+
+        /// Emit the pairing material as JSON on stdout instead of the
+        /// human-readable report. This is what `phux enroll` reads over ssh.
+        #[arg(long)]
+        json: bool,
     },
 
+    /// Set up a remote server over ssh, end to end.
+    ///
+    /// Confirms phux is installed on HOST, installs its service unit so the
+    /// server survives reboot, mints a pairing token there, and registers
+    /// the result locally — so `phux attach HOST` works afterwards with no
+    /// flags and no hex strings typed by hand. Uses the ssh trust you
+    /// already have; it grants nothing ssh did not already grant.
+    ///
+    /// A host with no reachable listener falls back to an ssh:// entry,
+    /// which still gives you sessions that outlive the connection.
+    Enroll {
+        /// ssh destination, exactly as you would type it after `ssh`
+        /// (`mini`, `me@mini`, or a `~/.ssh/config` alias).
+        host: String,
+
+        /// Local label to register. Defaults to HOST without any `user@`.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+
+        /// Address to register instead of the remote's detected overlay
+        /// address. Accepts `HOST:PORT` (dialed over QUIC) or a full
+        /// `quic://`/`wss://` URI.
+        #[arg(long, value_name = "HOST:PORT")]
+        endpoint: Option<String>,
+
+        /// QUIC port to configure on the remote and register.
+        #[arg(long, value_name = "PORT", default_value_t = crate::commands::enroll::default_quic_port())]
+        quic_port: u16,
+
+        /// Skip installing the remote's service unit. The server will not
+        /// come back on its own after a reboot.
+        #[arg(long)]
+        no_service: bool,
+
+        /// Register an ssh:// entry without contacting the host at all.
+        #[arg(long, conflicts_with_all = ["endpoint", "no_service"])]
+        ssh_only: bool,
+
+        /// Session to attach on arrival.
+        #[arg(long, value_name = "NAME")]
+        session: Option<String>,
+    },
+
+    /// Manage the registry of remote phux servers this machine attaches to.
+    ///
+    /// A registered name is what `phux attach <name>` resolves: endpoint,
+    /// certificate pin, and a path to the pairing token, stored once.
+    /// `phux enroll HOST` writes these entries for you over ssh.
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
+
+    /// Keep a server running across logout and reboot.
+    ///
+    /// Generates this host's native per-user service unit — a `launchd`
+    /// `LaunchAgent` on macOS, a systemd user unit on Linux — with the
+    /// server's environment baked in, so a rebooted host comes back with a
+    /// server instead of waiting for someone to log in and start one.
+    /// A restarted server has no terminals: every pane's process died with
+    /// the host. `install --restore` brings back session names, layout, and
+    /// cwd, not running processes.
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
     /// Print a shell completion script on stdout.
     ///
     /// The script is generated from the binary's own argument parser, so it
@@ -1034,6 +1109,113 @@ pub(crate) enum Command {
     /// stale — phux stores no worktree state and the server knows no git.
     #[command(subcommand)]
     Worktree(WorktreeAction),
+}
+
+/// `phux remote <action>` — CRUD over the client-side server registry.
+#[derive(Debug, Subcommand)]
+pub(crate) enum RemoteAction {
+    /// Register a remote server, or replace an entry with the same name.
+    Add {
+        /// Local label. This is what `phux attach <name>` resolves.
+        name: String,
+
+        /// `quic://HOST:PORT`, `wss://HOST:PORT`, or `ssh://HOST`.
+        ///
+        /// `ssh://` needs no pairing — it rides your existing ssh trust and
+        /// re-execs `ssh -t HOST phux attach`. The other two need a token
+        /// and a certificate pin.
+        endpoint: String,
+
+        /// Absolute path to a file holding the pairing token minted by
+        /// `phux pair` on the remote host.
+        #[arg(long, value_name = "PATH")]
+        token_file: Option<std::path::PathBuf>,
+
+        /// The remote's TLS certificate SHA-256 fingerprint, as printed by
+        /// `phux pair`. Required for `quic://` and `wss://`.
+        #[arg(long, value_name = "FP")]
+        cert_fingerprint: Option<String>,
+
+        /// Session to attach on arrival. Omitted: the remote server's own
+        /// last-attach memory decides.
+        #[arg(long, value_name = "NAME")]
+        session: Option<String>,
+    },
+
+    /// List registered remotes.
+    List {
+        /// Emit JSON on stdout instead of the table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Remove a registered remote. Its token file is left in place.
+    Remove {
+        /// Registered name.
+        name: String,
+    },
+}
+
+/// `phux service <action>` — manage the per-user service unit.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ServiceAction {
+    /// Write the unit and hand it to the init system.
+    ///
+    /// Idempotent: rerunning reconciles an existing unit, so changing a
+    /// listener address is `install` again with the new flag.
+    Install {
+        /// Accept QUIC clients on this `HOST:PORT`. A routable address
+        /// (e.g. `0.0.0.0:8788`) engages TLS and requires a `phux pair`
+        /// token. Prefer this over `--listen` where UDP is open.
+        #[arg(long, value_name = "HOST:PORT")]
+        quic: Option<String>,
+
+        /// Accept WebSocket clients on this `HOST:PORT`. The fallback for
+        /// networks that block UDP.
+        #[arg(long, value_name = "HOST:PORT")]
+        listen: Option<String>,
+
+        /// Save the workspace on stop and restore it on start. Off by
+        /// default: a session list repopulated with fresh shells is a
+        /// surprise unless asked for. Restores names, layout, and cwd —
+        /// never running processes.
+        #[arg(long)]
+        restore: bool,
+
+        /// Override the UDS path the supervised server binds.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+
+        /// Print the unit (and the restore wrapper) to stdout without
+        /// writing or loading anything.
+        #[arg(long)]
+        print: bool,
+    },
+
+    /// Unload the unit and remove what `install` wrote.
+    Uninstall,
+
+    /// Report whether a unit is installed and running.
+    Status,
+
+    /// Show the supervised server's log.
+    Logs {
+        /// Follow the log as it grows.
+        #[arg(short, long)]
+        follow: bool,
+
+        /// How many trailing lines to show.
+        #[arg(short = 'n', long, default_value_t = 200)]
+        lines: u32,
+    },
+
+    /// Delete the accumulated per-pid `client-*.log` files.
+    #[command(name = "prune-logs")]
+    PruneLogs {
+        /// Report how many would be removed, and remove nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// `phux worktree <action>` — git worktrees bound to sessions by name.

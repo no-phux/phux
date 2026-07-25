@@ -102,6 +102,7 @@ phux config run
 phux config show
 phux detach
 phux doctor
+phux enroll
 phux give
 phux insert-pane
 phux kill
@@ -120,6 +121,10 @@ phux plugin list
 phux plugin unlink
 phux plugin update
 phux plugin validate
+phux remote
+phux remote add
+phux remote list
+phux remote remove
 phux rename
 phux run
 phux satellite
@@ -128,6 +133,12 @@ phux satellite list
 phux satellite remove
 phux send-keys
 phux server
+phux service
+phux service install
+phux service logs
+phux service prune-logs
+phux service status
+phux service uninstall
 phux signal
 phux snapshot
 phux spawn
