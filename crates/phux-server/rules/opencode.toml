@@ -1,0 +1,92 @@
+# Agent-state detection manifest for OpenCode (ADR-0046).
+#
+# Every predicate here is derived from the shipped CLI's own observable
+# output, captured from a live pane. Provenance for each is recorded on the
+# rule, because a rule whose provenance nobody can restate is a rule nobody
+# can safely change.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not. A permanently-red sidebar destroys trust in the whole
+# feature and is strictly worse than having no feature. So: when in doubt,
+# do not write the rule. An under-specified manifest degrades to `idle`,
+# which is the fail-safe the detector applies when nothing matches.
+#
+# OpenCode differs structurally from Claude Code and Codex, and the
+# difference decides the whole manifest: its OSC title is the CONVERSATION
+# title, not a spinner. Over one driven turn the only two titles observed
+# were `OpenCode` and `OC | Terminal haiku and explanation`. So the title
+# proves nothing about whether a turn is running, and every rule here is a
+# screen rule.
+
+kind = "opencode"
+name = "opencode"
+
+# The `opencode` on PATH is a shim; the process that actually owns the tty
+# reports `opencode2`, either directly or under a `node` wrapper (both
+# observed via `ps` against a live pane). `@opencode-ai` is the npm scope
+# directory in the program path, matched by the identifier's tier-2
+# path-component pass — it is the one token that is stable across
+# architectures, unlike `cli-darwin-arm64`.
+binaries = ["opencode", "opencode2", "@opencode-ai"]
+
+# --- Screen rules -----------------------------------------------------------
+
+# While a turn runs, OpenCode paints an interrupt affordance into its footer
+# next to an animated dot indicator. When no turn is running, that half of
+# the footer is empty.
+#
+# VERIFIED against OpenCode 1.17.18 (captured screens:
+# `fixtures/opencode/idle_prompt.txt` line 17 vs
+# `fixtures/opencode/working.txt` line 23):
+#
+#   idle:      "                          tab agents  ctrl+p commands"
+#   working:   "   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt   tab agents  ctrl+p commands"
+#
+# The rule keys on `esc interrupt` rather than the dot glyphs: the dots are
+# an animation whose frame count and character may change, while the
+# interrupt affordance is a functional label the UI owes the user.
+#
+# `bottom-lines` scopes it to the live footer, so the same words appearing
+# in transcript output — OpenCode quoting its own help text, say — are
+# structurally out of reach.
+[[rules]]
+id = "footer-interrupt-affordance"
+state = "working"
+priority = 90
+region = "bottom-lines"
+visible-working = true
+match = { contains = "esc interrupt" }
+
+# --- Rules deliberately NOT written ------------------------------------------
+#
+# NO `blocked` RULE. This is the important gap in this manifest, and it is a
+# gap rather than a guess on purpose.
+#
+# The attempt: OpenCode 1.17.18 was asked to run `curl -s https://example.com`
+# in a pane. It ran the command WITHOUT prompting, so no permission dialog
+# was ever painted and none could be captured. `opencode --auto` exists to
+# "auto-approve permissions that are not explicitly denied", which implies a
+# default asking path, but neither `~/.config/opencode/cli.json` nor
+# `oh-my-opencode.json` carried a permission key, and the default did not
+# ask for that command.
+#
+# The near-miss is worth recording, because it is exactly the failure mode
+# ADR-0046 §D exists to prevent. The capture loop's own grep matched the word
+# "permission" — inside the fetched HTML of example.com ("This domain is for
+# use in documentation examples without needing permission"). A substring
+# rule written from that would have marked every pane that ever printed the
+# word `permission` as blocked-on-human, forever.
+#
+# So: no blocked rule until someone captures a real OpenCode permission
+# dialog. `blocked` then simply never fires for OpenCode panes, which is the
+# fail-safe direction — a missed blocked costs a notification, a false
+# blocked costs the feature.
+#
+# No `idle` rule. The composer and its placeholder are painted identically
+# whether or not a turn is running (compare the two fixtures), so there is no
+# positive idle evidence on screen. `idle` is the detector's fail-safe
+# default (ADR-0046 §D) and needs no rule to be reached.
+#
+# No title rule, for the reason in the header: the title is the conversation
+# title. An `OC | ...` prefix might look like a marker, but it is present
+# while idle too — it is just what the conversation is called.

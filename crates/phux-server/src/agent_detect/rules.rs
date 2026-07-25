@@ -33,6 +33,11 @@ const BUILTIN_CLAUDE: &str = include_str!("../../rules/claude.toml");
 /// see the file's header.
 const BUILTIN_CODEX: &str = include_str!("../../rules/codex.toml");
 
+/// The built-in manifest for `OpenCode`. Every predicate in it is derived
+/// from the shipped CLI's own observable output, captured from a live pane;
+/// see the file's header.
+const BUILTIN_OPENCODE: &str = include_str!("../../rules/opencode.toml");
+
 /// Env knob: `PHUX_AGENT_DETECT=0` disables the detector wholesale by
 /// yielding an empty rule set (the actor then never constructs a detector).
 const ENV_DETECT: &str = "PHUX_AGENT_DETECT";
@@ -421,6 +426,7 @@ fn build() -> RuleSet {
     }
     load_manifest(&mut set, "builtin:claude", BUILTIN_CLAUDE);
     load_manifest(&mut set, "builtin:codex", BUILTIN_CODEX);
+    load_manifest(&mut set, "builtin:opencode", BUILTIN_OPENCODE);
 
     let Some(dir) = overrides_dir() else {
         return set;
@@ -1081,6 +1087,87 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         let set = global();
         assert_eq!(set.kind_for_binary("claude"), Some("claude"));
         assert_eq!(set.kind_for_binary("codex"), Some("codex"));
+        assert_eq!(set.kind_for_binary("opencode2"), Some("opencode"));
+    }
+
+    // --- OpenCode goldens ---------------------------------------------------
+    //
+    // REAL viewports captured from OpenCode 1.17.18 in a phux pane. Note the
+    // structural difference from Claude/Codex: `OpenCode`'s OSC title is the
+    // conversation title, not a spinner, so every rule here is a screen rule
+    // and the title argument is irrelevant to the outcome.
+
+    fn opencode_idle_screen() -> Vec<String> {
+        lines(
+            include_str!("fixtures/opencode/idle_prompt.txt")
+                .lines()
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
+    }
+
+    fn opencode_working_screen() -> Vec<String> {
+        lines(
+            include_str!("fixtures/opencode/working.txt")
+                .lines()
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
+    }
+
+    fn opencode_eval(title: &str, screen: &[String]) -> super::Evaluation {
+        let set = compile(super::BUILTIN_OPENCODE);
+        let manifest = set.manifest("opencode").expect("opencode manifest");
+        manifest.evaluate(&Screen {
+            title,
+            lines: screen,
+        })
+    }
+
+    /// The footer's interrupt affordance is the working signal.
+    #[test]
+    fn opencode_footer_interrupt_is_working() {
+        let got = opencode_eval("OC | whatever", &opencode_working_screen());
+        assert_eq!(got.state, Some(DetectedState::Working));
+    }
+
+    /// The real idle screen must not read as working. Both screens paint the
+    /// same composer, so this is the discriminator doing its job.
+    #[test]
+    fn opencode_idle_screen_is_not_working() {
+        let got = opencode_eval("OpenCode", &opencode_idle_screen());
+        assert_ne!(got.state, Some(DetectedState::Working));
+    }
+
+    /// The title is the conversation title and must not influence the
+    /// verdict. A title that merely mentions the word must not flip state.
+    #[test]
+    fn opencode_title_does_not_decide_state() {
+        let idle_a = opencode_eval("OpenCode", &opencode_idle_screen()).state;
+        let idle_b = opencode_eval("OC | esc interrupt", &opencode_idle_screen()).state;
+        assert_eq!(idle_a, idle_b, "the title changed the verdict");
+    }
+
+    /// No `blocked` rule exists yet (no real `OpenCode` permission dialog has
+    /// been captured), so nothing may produce one. This test is the guard on
+    /// that gap: if someone adds a blocked rule from a guess, the manifest's
+    /// own fixtures should be the first thing they check it against.
+    #[test]
+    fn opencode_never_reports_blocked_from_its_fixtures() {
+        for screen in [opencode_idle_screen(), opencode_working_screen()] {
+            let got = opencode_eval("OpenCode", &screen);
+            assert_ne!(got.state, Some(DetectedState::Blocked));
+        }
+    }
+
+    /// The shipped built-in must compile and index every observed process
+    /// name, including the npm-scope path component.
+    #[test]
+    fn builtin_opencode_manifest_compiles_and_indexes_its_binaries() {
+        let set = compile(super::BUILTIN_OPENCODE);
+        for name in ["opencode", "opencode2", "@opencode-ai"] {
+            assert_eq!(set.kind_for_binary(name), Some("opencode"), "missed {name}");
+        }
     }
 
     #[test]

@@ -27,6 +27,33 @@ pty-serial = { max-threads = 1 }
 filter = 'package(phux-server) & kind(test)'
 test-group = 'pty-serial'
 
+# One LIB test needs the same treatment, and the filter above misses it
+# because `kind(test)` selects integration targets (tests/*.rs) only.
+#
+# `pane_kill_lets_foreground_process_flush_before_death` spawns a real
+# `/bin/sh` under `set -m`, hangs it up, and asserts the foreground job wrote
+# its flush marker. What it is really asserting is that the process got
+# scheduled inside `PANE_KILL_GRACE` — a deliberate 500ms product budget
+# ("kept short so pane close stays snappy"), not a test constant. Competing
+# with fifteen other tests for CPU, a shell can miss that window purely
+# through starvation, and the assertion then fails with an empty marker while
+# the product behaved exactly as designed.
+#
+# `test-group` alone is NOT enough here, and it is worth saying why: a group
+# with `max-threads = 1` only serialises members against EACH OTHER, so this
+# test still ran alongside fifteen unrelated ones and still lost the race
+# (measured: 2 failures in 3 full-suite runs with the group applied).
+# `threads-required = 'num-cpus'` is the knob that actually clears the
+# machine for it.
+#
+# Giving it the whole thread budget is the honest fix. Lengthening the grace
+# would change shipped behavior to suit a test, and lengthening the test's
+# own timeouts does nothing — no timeout is what fires; the final assertion
+# is, with an empty marker.
+[[profile.default.overrides]]
+filter = 'package(phux-server) & test(pane_kill_lets_foreground_process_flush_before_death)'
+threads-required = 'num-cpus'
+
 # The `ci` profile is behavior-identical to `default` — nextest consults the
 # selected profile's settings first and falls back to profile.default, so the
 # retry policy and the pty-serial override above still apply. It exists only
