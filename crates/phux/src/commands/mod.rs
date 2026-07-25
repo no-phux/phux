@@ -85,6 +85,7 @@ pub(crate) mod upgrade;
 pub(crate) mod wait;
 pub(crate) mod watch;
 pub(crate) mod workspace;
+pub(crate) mod worktree;
 
 /// Default name the `phux server` subcommand pre-seeds, and the name
 /// the `phux attach` auto-spawn path requests when the user doesn't
@@ -1004,6 +1005,120 @@ pub(crate) enum Command {
         /// Shell dialect to generate for.
         #[arg(value_name = "SHELL")]
         shell: clap_complete::Shell,
+    },
+
+    /// Manage git worktrees and the sessions bound to them.
+    ///
+    /// Each worktree binds to one session whose name is derived from the
+    /// worktree's directory basename. The derivation is a pure function of
+    /// the path, so the binding is computed on demand and can never go
+    /// stale — phux stores no worktree state and the server knows no git.
+    #[command(subcommand)]
+    Worktree(WorktreeAction),
+}
+
+/// `phux worktree <action>` — git worktrees bound to sessions by name.
+#[derive(Debug, Subcommand)]
+pub(crate) enum WorktreeAction {
+    /// List the repository's worktrees and their bound sessions.
+    ///
+    /// The `bound` column reads `live` when a session by the derived name
+    /// exists, `-` when it does not, and `?` when no server is running —
+    /// "no server" and "no session" are different facts.
+    List {
+        /// Path inside the repository or worktree to list from.
+        #[arg(default_value = ".")]
+        path: std::path::PathBuf,
+
+        /// Emit a stable JSON document instead of human text.
+        #[arg(long)]
+        json: bool,
+
+        /// Override the UDS path consulted for the `bound` column.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
+
+    /// Create a worktree and a session rooted in it.
+    ///
+    /// An existing local branch is checked out; a missing one is created,
+    /// from `--from` when given and from the current HEAD otherwise. The
+    /// worktree lands beside the repository as `<repo>-<branch>` unless
+    /// `--path` says otherwise.
+    New {
+        /// Branch to check out, or to create when it does not exist.
+        branch: String,
+
+        /// Where to put the worktree. Defaults to a sibling of the repo.
+        #[arg(long, value_name = "PATH")]
+        path: Option<std::path::PathBuf>,
+
+        /// Start point for a newly created branch (default: current HEAD).
+        #[arg(long, value_name = "REF")]
+        from: Option<String>,
+
+        /// Session name, overriding the name derived from the path.
+        #[arg(long, short = 's', value_name = "NAME")]
+        session: Option<String>,
+
+        /// Path inside the repository the worktree belongs to.
+        #[arg(long, default_value = ".", value_name = "PATH")]
+        repo: std::path::PathBuf,
+
+        /// Override the UDS path.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+
+        /// Attach to the new session instead of creating it headlessly.
+        #[arg(long)]
+        attach: bool,
+
+        /// Command to run in the new session instead of the default shell.
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+
+    /// Open the session bound to an existing worktree, creating it if absent.
+    ///
+    /// Idempotent: an already-live session is reported and left alone, so
+    /// scripts and keybindings can call this without checking first.
+    Open {
+        /// Worktree path, branch, or derived session name.
+        target: String,
+
+        /// Path inside the repository the worktree belongs to.
+        #[arg(long, default_value = ".", value_name = "PATH")]
+        repo: std::path::PathBuf,
+
+        /// Override the UDS path.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+
+        /// Attach to the session instead of only reporting its name.
+        #[arg(long)]
+        attach: bool,
+    },
+
+    /// Remove a worktree, killing the session bound to it first.
+    ///
+    /// The session is killed before git runs, because git refuses to remove
+    /// a worktree whose files are held open and a shell sitting in that
+    /// directory holds it open. Refuses the worktree you are standing in.
+    Remove {
+        /// Worktree path, branch, or derived session name.
+        target: String,
+
+        /// Pass --force to git, removing a worktree with local changes.
+        #[arg(long)]
+        force: bool,
+
+        /// Path inside the repository the worktree belongs to.
+        #[arg(long, default_value = ".", value_name = "PATH")]
+        repo: std::path::PathBuf,
+
+        /// Override the UDS path.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
     },
 }
 

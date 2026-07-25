@@ -86,7 +86,8 @@ mod help_inventory;
           completion Print a shell completion script for phux\n  \
           config     Inspect config and run configured plugin actions\n  \
           plugin     Manage local plugin manifests in config\n  \
-          workspace  Inspect worktrees and save/restore session archives\n\n\
+          workspace  Inspect worktrees and save/restore session archives\n  \
+          worktree   Create, open, list, and remove worktree-bound sessions\n\n\
         FEDERATION\n  \
           satellite  Manage configured federation satellites\n  \
           pair       Mint a pairing token for a remote consumer\n  \
@@ -422,6 +423,7 @@ fn main() -> ExitCode {
             name,
         }) => commands::pair::run_pair(tokens, cert, qr, host, name),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell),
+        Some(Command::Worktree(action)) => commands::worktree::run_worktree(&action),
         None => commands::attach::run_naked(),
     }
 }

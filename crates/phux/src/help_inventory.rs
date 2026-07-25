@@ -142,7 +142,12 @@ phux watch
 phux workspace
 phux workspace inspect
 phux workspace restore
-phux workspace save";
+phux workspace save
+phux worktree
+phux worktree list
+phux worktree new
+phux worktree open
+phux worktree remove";
 
 #[test]
 fn command_inventory_matches_snapshot() {

@@ -85,6 +85,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0051](./0051-outbound-dial-out-connector-transport.md) | Outbound dial-out (connector) transport mode | Accepted (walks through [0037](./0037-overlay-network-reachability.md)'s deferred door; builds on [0031](./0031-remote-consumer-auth-and-encryption.md), [0038](./0038-hub-satellite-auth.md)) |
 | [0052](./0052-connector-route-identity-and-config.md) | Connector route identity, registration, and config surface | Proposed (settles [0051](./0051-outbound-dial-out-connector-transport.md) open questions 1/4/5) |
 | [0053](./0053-acknowledged-idempotent-input.md) | Acknowledged idempotent input batches | Accepted (builds on [0021](./0021-control-plane-commands.md), [0024](./0024-wire-owns-input-atoms.md), and [0044](./0044-dedicated-input-lane.md)) |
+| [0054](./0054-worktree-bound-sessions.md) | Worktree-bound sessions by name convention | Accepted (composes existing verbs; adds no server state, consistent with [0009](./0009-phux-vs-mux-positioning.md)) |
 
 ## When to write an ADR
 

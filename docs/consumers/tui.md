@@ -150,6 +150,13 @@ phux plugin <COMMAND>         # install/update/link/list/toggle/unlink/validate 
 phux satellite <COMMAND>      # add/list/remove federation satellites
 phux stdio-bridge             # splice stdin/stdout to the local server socket
                               # (the remote end of the SSH-stdio transport)
+phux worktree list [--json]   # worktrees + their bound session and liveness
+phux worktree new BRANCH [--path P] [--from REF] [-s NAME] [--attach] [-- CMD...]
+                              # git worktree add, then create the bound session
+phux worktree open TARGET [--attach]
+                              # ensure the bound session exists (idempotent)
+phux worktree remove TARGET [--force]
+                              # kill the bound session, then git worktree remove
 phux completion SHELL         # print a shell completion script on stdout
                               # (bash, elvish, fish, powershell, zsh);
                               # generated from this binary's own parser, so it
@@ -201,6 +208,47 @@ the existing split geometry. All three accept `--json` and `--socket`.
 
 Detach (`C-a d`) remains an interactive TUI-only action because it acts on the
 calling client's attachment.
+
+### 1.4 Worktrees bind to sessions by derived name
+
+`phux worktree` composes `git worktree` with `new` / `ls` / `kill`
+(ADR-0054). The server learns nothing about git and stores no worktree
+state; the binding between a checkout and a session is a **pure function of
+the worktree path**. The directory basename is sanitized — anything outside
+`[A-Za-z0-9._-]` collapses to `-`, runs of `-` collapse to one, and
+selector sigils (`@`, `#`, `=`, `.`) are trimmed from the edges — so
+`~/src/phux-feat-auth` binds to the session `phux-feat-auth`. Because the
+name is derived and never stored, it cannot go stale when git deletes a
+worktree or an operator moves the directory.
+
+```sh
+phux worktree new feat/auth        # git worktree add + create the session
+phux worktree list                 # paths, branches, derived names, liveness
+phux worktree open feat/auth       # idempotent: create-if-absent, else report
+phux worktree remove feat/auth     # kill the session, then remove the worktree
+```
+
+`new` and `open` are **headless by default** and print the session name;
+pass `--attach` for the interactive behavior. `new` puts the worktree beside
+the repository as `<repo>-<branch>` unless `--path` says otherwise, checks
+out an existing branch or creates a missing one (from `--from`, else the
+current HEAD), and refuses when the derived name collides with another
+worktree's — pass `-s NAME` to disambiguate.
+
+`remove` checks cleanliness before it kills anything, so a refusal has no
+side effects, then kills the bound session and **waits for it to leave the
+snapshot** before handing over to git. That ordering is not cosmetic: git
+refuses to remove a worktree whose files are held open, and a shell sitting
+in that directory holds it open. It refuses the worktree you are standing in.
+
+The `bound` column distinguishes three states, not two: `live` (a session by
+that name exists), `-` (it does not), and `?` (no server is running, which is
+a different fact from "no session").
+
+A session created by hand in a worktree under some other name is not
+recognized as bound — `list` shows the worktree as unbound. Closing that gap
+needs pane cwd in the session snapshot, which is a wire change ADR-0054
+deliberately does not make.
 
 > **Status (design intent, not shipped):** `windows`, `panes`, and
 > `messages` are listed in earlier drafts as future read verbs; none

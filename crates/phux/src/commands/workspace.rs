@@ -22,12 +22,12 @@ struct RepoInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct WorktreeInfo {
-    path: PathBuf,
-    head: Option<String>,
-    branch: Option<String>,
-    detached: bool,
-    current: bool,
+pub(crate) struct WorktreeInfo {
+    pub(crate) path: PathBuf,
+    pub(crate) head: Option<String>,
+    pub(crate) branch: Option<String>,
+    pub(crate) detached: bool,
+    pub(crate) current: bool,
 }
 
 #[derive(Default)]
@@ -82,7 +82,10 @@ fn inspect_workspace(path: &Path) -> Result<WorkspaceReport, String> {
     })
 }
 
-fn parse_worktrees(input: &[u8], current_root: &Path) -> Result<Vec<WorktreeInfo>, String> {
+pub(crate) fn parse_worktrees(
+    input: &[u8],
+    current_root: &Path,
+) -> Result<Vec<WorktreeInfo>, String> {
     let mut entries = Vec::new();
     let mut builder = WorktreeBuilder::default();
     for field in input.split(|byte| *byte == 0) {
@@ -137,12 +140,12 @@ fn short_branch(branch: &str) -> String {
         .to_owned()
 }
 
-fn git_text(path: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git_text(path: &Path, args: &[&str]) -> Result<String, String> {
     let bytes = git_bytes(path, args)?;
     String::from_utf8(bytes).map_err(|err| format!("git output was not UTF-8: {err}"))
 }
 
-fn git_bytes(path: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+pub(crate) fn git_bytes(path: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(path)
