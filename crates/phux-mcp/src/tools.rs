@@ -659,6 +659,20 @@ mod tests {
         }
     }
 
+    /// `phux-mcp --schema` renders the catalog as a standalone document.
+    /// The dump has to survive a round-trip, because its whole purpose is to
+    /// be read by a tool that is not this binary.
+    #[test]
+    fn the_catalog_round_trips_as_a_standalone_json_document() {
+        let rendered = serde_json::to_string_pretty(&catalog()).expect("catalog serializes");
+        let parsed: Value = serde_json::from_str(&rendered).expect("dump re-parses");
+        assert_eq!(parsed, catalog(), "the dump lost information");
+        assert!(
+            parsed.as_array().is_some_and(|a| !a.is_empty()),
+            "the dump is not a non-empty array"
+        );
+    }
+
     /// `phux_new` exposes a required `name` and optional `cwd`/`command`/
     /// `socket` props, with `command` typed as a string array.
     #[test]

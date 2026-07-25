@@ -169,6 +169,26 @@ JSON Schema `object`. Tools that take no required argument (e.g.
 shared agent shapes owned by [`agents.md`](./agents.md) §4; each tool
 names its shape and links there.
 
+### 3.0 Reading the catalog without a session
+
+`phux-mcp --schema` prints the same array `tools/list` returns, as a
+standalone pretty-printed JSON document, and exits:
+
+```sh
+phux-mcp --schema | jq -r '.[].name'
+phux-mcp --schema > phux-tools.json
+```
+
+It needs neither a running phux server nor a JSON-RPC handshake: the
+catalog is a compile-time constant of the binary, so the tool surface is
+readable before anything is wired up. Useful for pinning the surface in a
+test, diffing it across releases, or generating a client.
+
+The flag lives on `phux-mcp` rather than as `phux api schema` because this
+binary already owns the schemas. Exposing them from the main `phux` binary
+would mean either duplicating them — after which they drift — or linking
+the whole MCP stack into every `phux ls`.
+
 ### 3.1 `phux_ls`
 
 Lists phux sessions on the running server. No target.

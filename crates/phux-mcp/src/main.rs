@@ -66,7 +66,33 @@ type Dispatcher = Arc<dyn Fn(String, Value) -> DispatchFuture + Send + Sync>;
 /// Newer MCP revisions are additive; bump when we adopt one.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// Argument that dumps the tool catalog instead of serving.
+const SCHEMA_FLAG: &str = "--schema";
+
 fn main() -> std::process::ExitCode {
+    // `phux-mcp --schema` prints the same catalog `tools/list` returns and
+    // exits. Handled before the runtime is built because it needs neither a
+    // runtime nor a server: the catalog is a compile-time constant of this
+    // binary, so an agent can read the tool surface without a phux server
+    // running and without speaking JSON-RPC to discover it.
+    //
+    // It lives here rather than as `phux api schema` because this binary
+    // already owns the catalog. Exposing it from the main `phux` binary
+    // would mean either duplicating the schemas — which then drift — or
+    // linking the whole MCP stack into every `phux ls`.
+    if std::env::args().skip(1).any(|arg| arg == SCHEMA_FLAG) {
+        return match serde_json::to_string_pretty(&tools::catalog()) {
+            Ok(rendered) => {
+                println!("{rendered}");
+                std::process::ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("phux-mcp: could not render the tool catalog: {err}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
+
     // Current-thread runtime: the phux client surface is async and its
     // client-side libghostty Terminal is !Send (ADR-0003).
     let rt = match tokio::runtime::Builder::new_current_thread()
