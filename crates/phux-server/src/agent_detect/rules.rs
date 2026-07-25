@@ -28,6 +28,11 @@ use super::regions::{Region, Screen, extract};
 /// from the shipped CLI's own observable output; see the file's header.
 const BUILTIN_CLAUDE: &str = include_str!("../../rules/claude.toml");
 
+/// The built-in manifest for `OpenAI` Codex. Every predicate in it is derived
+/// from the shipped CLI's own observable output, captured from a live pane;
+/// see the file's header.
+const BUILTIN_CODEX: &str = include_str!("../../rules/codex.toml");
+
 /// Env knob: `PHUX_AGENT_DETECT=0` disables the detector wholesale by
 /// yielding an empty rule set (the actor then never constructs a detector).
 const ENV_DETECT: &str = "PHUX_AGENT_DETECT";
@@ -415,6 +420,7 @@ fn build() -> RuleSet {
         return set;
     }
     load_manifest(&mut set, "builtin:claude", BUILTIN_CLAUDE);
+    load_manifest(&mut set, "builtin:codex", BUILTIN_CODEX);
 
     let Some(dir) = overrides_dir() else {
         return set;
@@ -941,6 +947,140 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         let manifest = set.manifest("claude").expect("claude manifest");
         assert_eq!(manifest.name, "claude");
         assert!(!manifest.rules.is_empty());
+    }
+
+    // --- Codex goldens ------------------------------------------------------
+    //
+    // REAL viewports and REAL titles captured from Codex 0.145.0 running in a
+    // phux pane: the screens via `phux snapshot --json`, the titles by
+    // recording every `title_changed` event over one driven turn. Re-capture
+    // them when Codex's TUI changes; do not hand-edit them.
+
+    fn codex_screen(body: &str) -> Vec<String> {
+        lines(body.lines().collect::<Vec<_>>().as_slice())
+    }
+
+    fn codex_idle_screen() -> Vec<String> {
+        codex_screen(include_str!("fixtures/codex/idle_prompt.txt"))
+    }
+
+    fn codex_working_screen() -> Vec<String> {
+        codex_screen(include_str!("fixtures/codex/working.txt"))
+    }
+
+    fn codex_blocked_screen() -> Vec<String> {
+        codex_screen(include_str!("fixtures/codex/blocked_approval.txt"))
+    }
+
+    /// Two frames of the ten-frame braille spinner Codex animates in its OSC
+    /// title while a turn runs. Both observed ~15 times over one turn.
+    const CODEX_TITLE_BUSY_A: &str = "\u{280b} tmp";
+    const CODEX_TITLE_BUSY_B: &str = "\u{2834} tmp";
+    /// The title when no turn is running: the bare cwd basename, no prefix.
+    /// Covers idle AND waiting-on-approval alike, which is why it has no rule.
+    const CODEX_TITLE_QUIET: &str = "tmp";
+
+    fn codex_eval(title: &str, screen: &[String]) -> super::Evaluation {
+        let set = compile(super::BUILTIN_CODEX);
+        let manifest = set.manifest("codex").expect("codex manifest");
+        manifest.evaluate(&Screen {
+            title,
+            lines: screen,
+        })
+    }
+
+    /// The spinner proves `working`, on every frame of the animation.
+    #[test]
+    fn codex_spinner_title_is_working() {
+        for title in [CODEX_TITLE_BUSY_A, CODEX_TITLE_BUSY_B] {
+            let got = codex_eval(title, &codex_working_screen());
+            assert_eq!(
+                got.state,
+                Some(DetectedState::Working),
+                "spinner frame {title:?} must read as working"
+            );
+        }
+    }
+
+    /// The whole Braille block is matched, not ten enumerated codepoints, so a
+    /// Codex that reorders or extends its spinner keeps working.
+    #[test]
+    fn codex_matches_any_braille_spinner_frame() {
+        for cp in ['\u{2800}', '\u{280f}', '\u{283c}', '\u{28ff}'] {
+            let title = format!("{cp} tmp");
+            let got = codex_eval(&title, &codex_idle_screen());
+            assert_eq!(
+                got.state,
+                Some(DetectedState::Working),
+                "braille frame {title:?} must read as working"
+            );
+        }
+    }
+
+    /// The bare title asserts nothing. It means "not running a turn", which
+    /// covers idle AND waiting-on-approval; claiming `idle` here would outrank
+    /// the screen and mask every approval prompt.
+    #[test]
+    fn codex_bare_title_asserts_nothing() {
+        let got = codex_eval(CODEX_TITLE_QUIET, &codex_idle_screen());
+        assert_ne!(
+            got.state,
+            Some(DetectedState::Working),
+            "a bare title must not read as working"
+        );
+    }
+
+    /// The captured approval dialog reads as `blocked`, with the quiet title
+    /// that really accompanies it.
+    #[test]
+    fn codex_approval_prompt_is_blocked() {
+        let got = codex_eval(CODEX_TITLE_QUIET, &codex_blocked_screen());
+        assert_eq!(got.state, Some(DetectedState::Blocked));
+    }
+
+    /// The guard that matters: prose alone must not trip `blocked`. The
+    /// transcript can legitimately contain the question stem inside a quoted
+    /// session; without a numbered option line it is not a live dialog.
+    #[test]
+    fn codex_question_stem_without_an_option_list_is_not_blocked() {
+        let screen = lines(&[
+            "  I was going to ask: would you like to run the following command?",
+            "  ...but I decided against it.",
+        ]);
+        let got = codex_eval(CODEX_TITLE_QUIET, &screen);
+        assert_ne!(
+            got.state,
+            Some(DetectedState::Blocked),
+            "prose without an option list must not read as blocked"
+        );
+    }
+
+    /// A false `blocked` is the expensive failure (ADR-0046 D). The real idle
+    /// screen must not produce one.
+    #[test]
+    fn codex_idle_screen_is_not_blocked() {
+        let got = codex_eval(CODEX_TITLE_QUIET, &codex_idle_screen());
+        assert_ne!(got.state, Some(DetectedState::Blocked));
+    }
+
+    /// The shipped built-in must compile. If this fails, `rules/codex.toml`
+    /// is broken and the detector silently does nothing in production.
+    #[test]
+    fn builtin_codex_manifest_compiles_and_indexes_its_binaries() {
+        let set = compile(super::BUILTIN_CODEX);
+        assert_eq!(set.kind_for_binary("codex"), Some("codex"));
+        let manifest = set.manifest("codex").expect("codex manifest");
+        assert_eq!(manifest.name, "codex");
+        assert!(!manifest.rules.is_empty());
+    }
+
+    /// Both built-ins must coexist: registering a second manifest must not
+    /// displace the first, and neither kind may capture the other's binary.
+    #[test]
+    fn builtin_manifests_do_not_collide() {
+        let set = global();
+        assert_eq!(set.kind_for_binary("claude"), Some("claude"));
+        assert_eq!(set.kind_for_binary("codex"), Some("codex"));
     }
 
     #[test]

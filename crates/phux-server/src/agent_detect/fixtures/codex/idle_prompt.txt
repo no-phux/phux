@@ -1,0 +1,24 @@
+╭──────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.145.0)                       │
+│                                                  │
+│ model:       gpt-5.6-sol high   /model to change │
+│ directory:   /private/tmp                        │
+│ permissions: YOLO mode                           │
+╰──────────────────────────────────────────────────╯
+
+  Tip: Try the Desktop app. Run 'codex app' or visit
+  https://chatgpt.com/codex?app-landing-page=true
+
+• You have 3 usage limit resets available. Run /usage to use one.
+
+
+› Find and fix a bug in @filename
+
+  gpt-5.6-sol high · /private/tmp
+
+
+
+
+
+
+

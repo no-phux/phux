@@ -1,0 +1,24 @@
+
+› run the shell command: curl -s https://example.com | head -5
+
+
+• I’ll run that exact read-only network command and return its output.
+
+• The explicit escalation route isn’t available under this environment’s
+  approval policy, so I’m retrying through the normal command path.
+
+• Running curl -s https://example.com | head -5
+
+
+  Would you like to run the following command?
+
+  Environment: local
+
+  $ curl -s https://example.com | head -5
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `curl -s https://
+     example.com` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel

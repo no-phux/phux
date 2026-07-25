@@ -1,0 +1,138 @@
+# Agent-state detection manifest for OpenAI Codex (ADR-0046).
+#
+# Every predicate here is derived from the shipped CLI's own observable
+# output, captured from a live pane. Provenance for each is recorded on the
+# rule, because a rule whose provenance nobody can restate is a rule nobody
+# can safely change.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not. A permanently-red sidebar destroys trust in the whole
+# feature and is strictly worse than having no feature. So: when in doubt,
+# do not write the rule. An under-specified manifest degrades to `idle`,
+# which is the fail-safe the detector applies when nothing matches.
+#
+# Codex's shape is structurally the same as Claude Code's: an ANIMATED
+# title prefix proves `working`, and the absence of it means "not working",
+# which covers idle AND waiting-on-an-approval alike. So the title rules
+# below only ever assert `working`, and `blocked` comes from the screen.
+
+kind = "codex"
+name = "codex"
+
+# `codex` is the argv[0] basename of the Homebrew/npm binary.
+binaries = ["codex"]
+
+# --- Title rules (highest-value, cheapest signal) ---------------------------
+
+# While a turn is running, Codex writes an ANIMATED braille spinner into the
+# OSC title ahead of the working directory's basename; when it is NOT running
+# a turn the title is the bare basename with no prefix.
+#
+# VERIFIED against Codex 0.145.0 by driving a real turn in a phux pane and
+# recording every `title_changed` event. The complete observed set over one
+# turn was exactly ten braille frames, each ~15-16 times, plus the bare
+# title twice (once before the turn, once after):
+#
+#     '⠋ tmp' U+280B      '⠴ tmp' U+2834
+#     '⠙ tmp' U+2819      '⠦ tmp' U+2826
+#     '⠹ tmp' U+2839      '⠧ tmp' U+2827
+#     '⠸ tmp' U+2838      '⠇ tmp' U+2807
+#     '⠼ tmp' U+283C      '⠏ tmp' U+280F
+#     'tmp'   (no prefix, not working)
+#
+# That is the canonical ten-frame braille spinner. The rule matches the whole
+# Braille Patterns block (U+2800-U+28FF) rather than enumerating ten
+# codepoints: a future Codex that reorders or extends its spinner keeps
+# working, and no plausible real title begins with a braille glyph followed
+# by a space.
+#
+# The bare title is deliberately NOT given an `idle` rule. It means "not
+# running a turn", which covers BOTH idle and waiting-on-an-approval.
+# Asserting `idle` from it would outrank (title beats screen) the approval
+# `blocked` rule below and mask every approval prompt. "Not working" is
+# already the detector's fail-safe default, so the absence of a match says
+# it for us.
+[[rules]]
+id = "title-busy-spinner"
+state = "working"
+priority = 100
+region = "title"
+visible-working = true
+match = { line-regex = "^[⠀-⣿] " }
+
+# --- Screen rules -----------------------------------------------------------
+
+# A command-approval prompt. Codex asks before running a command that is not
+# in its trusted set (`--ask-for-approval untrusted`, and the default policy
+# for non-sandboxed commands).
+#
+# VERIFIED against 0.145.0 (captured screen:
+# `fixtures/codex/blocked_approval.txt`), which renders:
+#
+#       Would you like to run the following command?
+#
+#       Environment: local
+#
+#       $ curl -s https://example.com | head -5
+#
+#     › 1. Yes, proceed (y)
+#       2. Yes, and don't ask again for commands that start with `curl -s ...
+#       3. No, and tell Codex what to do differently (esc)
+#
+#       Press enter to confirm or esc to cancel
+#
+# The region is the whole viewport, deliberately. Claude's manifest can use
+# `after-last-rule` because its dialog sits below a horizontal rule; the
+# captured Codex approval screen contains NO rule glyphs at all, so that
+# region yields nothing and the rule could never fire. `bottom-lines` does
+# not work either: the six trailing rows hold the option list and the
+# confirm footer, but the question stem is eleven rows above them.
+#
+# Viewport is broad, so the guards carry the weight — all three must hold:
+#
+#   1. The approval-specific question stem. Matched as a stable prefix
+#      rather than the whole sentence, because the trailing noun varies.
+#   2. The live dialog's confirm footer. This is modal chrome, not
+#      transcript text: it is only painted while the dialog owns the input.
+#   3. A numbered option line, optionally carrying the U+203A caret.
+#
+# Codex may legitimately PRINT any one of these inside a quoted shell
+# session or a diff. Printing all three, with the footer, is not something
+# a transcript does. And if a stale dialog is still visible in scrollback
+# while a new turn runs, the title spinner asserts `working`, which outranks
+# every screen rule.
+[[rules]]
+id = "prompt-command-approval"
+state = "blocked"
+priority = 80
+region = "viewport"
+visible-blocker = true
+match = { all = [
+  { contains = "would you like to run" },
+  { contains = "press enter to confirm or esc to cancel" },
+  { line-regex = '^\s*(›\s*)?\d+\.\s+\S' },
+] }
+
+# --- Rules deliberately NOT written ------------------------------------------
+#
+# No `working` rule keyed on the on-screen "• Working (Ns • esc to interrupt)"
+# footer, even though it was captured (`fixtures/codex/working.txt` line 19)
+# and is a real string. The title already proves `working` from the first
+# frame, and it does so ~4s earlier than the footer is worth polling for.
+# A second rule asserting the same state buys nothing and doubles the surface
+# that rots when Codex restyles its footer. It is recorded here rather than
+# written so that a future maintainer who needs a screen-side `working`
+# backstop — for a terminal that suppresses OSC titles — knows the string
+# exists and has been seen, instead of inventing one.
+#
+# No `idle` rule. Codex's composer placeholder ("Find and fix a bug in
+# @filename") is present in the idle capture, but it is also present *behind*
+# a running turn: the working capture shows the composer and the spinner
+# footer at the same time. As positive idle evidence it would therefore be
+# wrong exactly when it mattered, and `visible-idle` is precisely what
+# bypasses the working -> idle debounce. `idle` is the detector's fail-safe
+# default (ADR-0046 §D), so it needs no rule to be reached.
+#
+# No `freeze` rule. Claude Code needs one for its transcript viewer, which
+# hides all live chrome. No equivalent full-screen mode was observed in
+# Codex 0.145.0; if one exists, it wants its own capture rather than a guess.
