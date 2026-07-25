@@ -344,7 +344,7 @@ pub struct TerminalActor {
     paste_enc: RefCell<PerTerminalPasteEncoder>,
     input_rx: mpsc::Receiver<TerminalInput>,
     /// Bounded lane-to-actor handoff of already encoded PTY bytes.
-    encoded_input_rx: mpsc::Receiver<Vec<u8>>,
+    encoded_input_rx: mpsc::Receiver<EncodedInputRequest>,
     /// Publishes terminal-derived input modes and dimensions to the input lane.
     input_snapshot_tx: watch::Sender<InputEncoderSnapshot>,
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
@@ -413,7 +413,7 @@ pub struct TerminalActor {
     pty_rx: Option<mpsc::UnboundedReceiver<PtyEvent>>,
     /// Outbound bytes destined for the PTY writer thread. `None` for
     /// the no-PTY test variant.
-    pty_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    pty_tx: Option<mpsc::Sender<EncodedInputRequest>>,
     /// PTY backing resources. Kept alive for the actor's lifetime;
     /// dropped on shutdown to send EOF to the slave and tear down the
     /// reader/writer threads.
@@ -1001,10 +1001,10 @@ impl TerminalActor {
             return;
         };
         if let Some(color) = foreground {
-            let _ = pty_tx.send(color_query_reply(10, color));
+            let _ = pty_tx.try_send(EncodedInputRequest::legacy(color_query_reply(10, color)));
         }
         if let Some(color) = background {
-            let _ = pty_tx.send(color_query_reply(11, color));
+            let _ = pty_tx.try_send(EncodedInputRequest::legacy(color_query_reply(11, color)));
         }
     }
 
@@ -1031,7 +1031,7 @@ impl TerminalActor {
     fn install_effects(
         terminal: &mut GhosttyTerminal<'static, 'static>,
         size_report: &Rc<Cell<SizeReportSize>>,
-        pty_tx: Option<&mpsc::UnboundedSender<Vec<u8>>>,
+        pty_tx: Option<&mpsc::Sender<EncodedInputRequest>>,
     ) -> Result<(), TerminalActorError> {
         terminal.on_size({
             let size_report = Rc::clone(size_report);
@@ -1043,7 +1043,7 @@ impl TerminalActor {
                 // No upgrade ⇒ the writer bridge (and child) are gone;
                 // the reply has no recipient. Drop it.
                 if let Some(tx) = tx.upgrade() {
-                    let _ = tx.send(bytes.to_vec());
+                    let _ = tx.try_send(EncodedInputRequest::legacy(bytes.to_vec()));
                 }
             })?;
         }
@@ -1921,7 +1921,7 @@ impl TerminalActor {
     /// test can inject a PTY-output burst (the returned
     /// [`mpsc::UnboundedSender<PtyEvent>`]) and observe the encoded input
     /// the actor forwards toward the PTY writer thread (the returned
-    /// [`mpsc::UnboundedReceiver<Vec<u8>>`]). Faithful to production
+    /// [`mpsc::Receiver<EncodedInputRequest>`]). Faithful to production
     /// wiring: queued output is consumed by `vt_write`; serviced input
     /// surfaces on the writer receiver. `pty` stays `None` — the run loop
     /// only reads `pty_tx` for input forwarding and `pty` for cwd/EOF,
@@ -1931,10 +1931,10 @@ impl TerminalActor {
         &mut self,
     ) -> (
         mpsc::UnboundedSender<PtyEvent>,
-        mpsc::UnboundedReceiver<Vec<u8>>,
+        mpsc::Receiver<EncodedInputRequest>,
     ) {
         let (evt_tx, evt_rx) = mpsc::unbounded_channel::<PtyEvent>();
-        let (writer_tx, writer_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (writer_tx, writer_rx) = mpsc::channel::<EncodedInputRequest>(DEFAULT_INPUT_MAILBOX);
         self.pty_rx = Some(evt_rx);
         self.pty_tx = Some(writer_tx);
         (evt_tx, writer_rx)
@@ -2044,7 +2044,7 @@ impl TerminalActor {
                     debug!(?input, "input encoded to zero bytes; nothing to write");
                     return;
                 }
-                self.service_encoded_input(bytes);
+                self.service_encoded_input(EncodedInputRequest::legacy(bytes));
             }
             Ok(None) => {
                 debug!(?input, "input gated/dropped by encoder");
@@ -2056,16 +2056,20 @@ impl TerminalActor {
     }
 
     /// Forward bytes encoded by the dedicated input lane to the PTY writer.
-    fn service_encoded_input(&self, bytes: Vec<u8>) {
-        if bytes.is_empty() {
+    fn service_encoded_input(&self, request: EncodedInputRequest) {
+        if request.bytes.is_empty() && request.completion.is_none() {
             return;
         }
         if let Some(tx) = self.pty_tx.as_ref() {
-            let len = bytes.len();
-            if tx.send(bytes).is_err() {
-                debug!("PTY writer channel closed; dropping input");
-            } else {
-                debug!(len, "input queued to PTY writer");
+            let len = request.bytes.len();
+            match tx.try_send(request) {
+                Ok(()) => debug!(len, "input queued to PTY writer"),
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    debug!("PTY writer queue full; dropping input");
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    debug!("PTY writer channel closed; dropping input");
+                }
             }
         } else {
             debug!("no PTY; encoded input discarded");
@@ -2537,8 +2541,8 @@ impl TerminalActor {
                 // Bytes already encoded on the dedicated input lane. This
                 // bounded mailbox is the production input path and shares the
                 // actor's highest scheduling priority.
-                Some(bytes) = self.encoded_input_rx.recv() => {
-                    self.service_encoded_input(bytes);
+                Some(request) = self.encoded_input_rx.recv() => {
+                    self.service_encoded_input(request);
                     for _ in 1..MAX_INPUT_COALESCE {
                         match self.encoded_input_rx.try_recv() {
                             Ok(next) => self.service_encoded_input(next),
@@ -3328,11 +3332,11 @@ mod tests {
         actor.terminal.borrow_mut().vt_write(second);
         actor.answer_color_queries(second);
         assert_eq!(
-            pty_input.try_recv().expect("OSC 10 reply"),
+            pty_input.try_recv().expect("OSC 10 reply").bytes,
             b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\"
         );
         assert_eq!(
-            pty_input.try_recv().expect("OSC 11 reply"),
+            pty_input.try_recv().expect("OSC 11 reply").bytes,
             b"\x1b]11;rgb:1212/1818/1b1b\x1b\\"
         );
     }
@@ -3930,7 +3934,7 @@ mod tests {
                         .await
                         .expect("input must be serviced mid-burst, not after it");
                 assert_eq!(
-                    got,
+                    got.map(|request| request.bytes),
                     Some(b"x".to_vec()),
                     "queued keystroke should reach the PTY writer while the burst drains",
                 );
@@ -5463,7 +5467,9 @@ mod tests {
                 let mut found = false;
                 for round in 0..64 {
                     if round % 16 == 0 {
-                        pty_in.send(b"go\n".to_vec()).expect("pty write");
+                        pty_in
+                            .try_send(EncodedInputRequest::legacy(b"go\n".to_vec()))
+                            .expect("pty write");
                     }
                     match tokio::time::timeout(std::time::Duration::from_millis(100), out.recv())
                         .await

@@ -105,19 +105,8 @@ impl PerTerminalPasteEncoder {
     ) -> Result<PasteOutcome<'_>, Error> {
         // Trust handling. Trusted payloads bypass safety classification;
         // untrusted ones go through `is_safe` against the policy.
-        if event.trust == PasteTrust::Untrusted {
-            // `is_safe` takes &str — we only run it if the payload is valid
-            // UTF-8. Non-UTF-8 untrusted payloads count as unsafe.
-            let safe = std::str::from_utf8(&event.data).is_ok_and(is_safe);
-            match (self.policy, safe) {
-                (UntrustedPolicy::Reject, false) => return Ok(PasteOutcome::Rejected),
-                (
-                    UntrustedPolicy::Reject | UntrustedPolicy::Sanitize | UntrustedPolicy::Allow,
-                    _,
-                ) => {
-                    // Fall through to encode.
-                }
-            }
+        if self.would_reject(event) {
+            return Ok(PasteOutcome::Rejected);
         }
 
         // Copy the payload into the scratch buffer; `paste::encode` mutates
@@ -140,6 +129,14 @@ impl PerTerminalPasteEncoder {
         };
         self.out.truncate(written);
         Ok(PasteOutcome::Encoded(&self.out))
+    }
+
+    /// Whether the current policy rejects this paste before encoding.
+    pub(crate) fn would_reject(&self, event: &PasteEvent) -> bool {
+        event.trust == PasteTrust::Untrusted
+            && self.policy == UntrustedPolicy::Reject
+            // `is_safe` accepts UTF-8 only; arbitrary untrusted bytes are unsafe.
+            && !std::str::from_utf8(&event.data).is_ok_and(is_safe)
     }
 }
 

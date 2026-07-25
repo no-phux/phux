@@ -422,6 +422,11 @@ impl<'a> Decoder<'a> {
                                 server_caps = server_caps
                                     .with_layers(crate::caps::LayerSet::from_wire(d.read_u8()?));
                             }
+                            if !d.at_body_end() {
+                                server_caps = server_caps.with_features(
+                                    crate::caps::ServerFeatureSet::from_wire(d.read_u32_be()?),
+                                );
+                            }
                         }
                         field::hello_ok::SERVER_ID => server_id = value.to_vec(),
                         _ => {}

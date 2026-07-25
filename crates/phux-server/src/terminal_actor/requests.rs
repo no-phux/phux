@@ -190,6 +190,36 @@ pub struct ConsumerAckRequest {
 /// has stalled, which is its own bug to investigate.
 pub const DEFAULT_INPUT_MAILBOX: usize = 64;
 
+/// Bytes destined for the PTY writer, optionally carrying final write/flush
+/// completion for acknowledged input.
+#[derive(Debug)]
+pub(crate) struct EncodedInputRequest {
+    /// Fully encoded PTY bytes.
+    pub(crate) bytes: Vec<u8>,
+    /// `true` after `write_all` and `flush` both succeed; `false` on either
+    /// writer failure. Dropping the sender reports indeterminate delivery.
+    pub(crate) completion: Option<std::sync::mpsc::Sender<bool>>,
+}
+
+impl EncodedInputRequest {
+    pub(crate) const fn legacy(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            completion: None,
+        }
+    }
+
+    pub(crate) const fn acknowledged(
+        bytes: Vec<u8>,
+        completion: std::sync::mpsc::Sender<bool>,
+    ) -> Self {
+        Self {
+            bytes,
+            completion: Some(completion),
+        }
+    }
+}
+
 /// Default capacity of the per-pane output broadcast channel.
 ///
 /// Bytes fan out to subscribed clients. Sized for "burst tolerance" —
@@ -414,7 +444,7 @@ pub struct TerminalHandle {
     /// Bounded handoff for bytes already encoded on the dedicated input lane.
     /// The lane uses `try_send`, so a saturated actor never blocks input
     /// routing or grows memory without bound.
-    pub encoded_input: mpsc::Sender<Vec<u8>>,
+    pub(crate) encoded_input: mpsc::Sender<EncodedInputRequest>,
     /// Latest complete `Send` input-encoder state captured by the actor after
     /// every terminal mutation.
     pub input_snapshot: tokio::sync::watch::Receiver<crate::input::InputEncoderSnapshot>,

@@ -23,15 +23,14 @@ PTY bytes. The same wire format serves a TUI, a GUI, and an agent
 consumer, because the structured representation is layout- and
 terminal-mode-agnostic until the server encodes it.
 
-Per ADR-0008, the input *atom* types (`KeyAction`, `PhysicalKey`,
-`ModSet`, `MouseAction`, `MouseButton`, `FocusEvent`) **are** libghostty-
-vt's types — re-exported under phux-flavored names. The outer wrapper
-structs (`KeyEvent`, `MouseEvent`) are phux-defined because libghostty's
-event objects are allocator-lifetime-bound and not directly serializable;
-their fields are still libghostty's types.
+Per [ADR-0024], the protocol owns the input atom types (`KeyAction`,
+`PhysicalKey`, `ModSet`, `MouseAction`, `MouseButton`, `FocusEvent`) so the
+codec remains usable by non-native consumers. Their discriminants match the
+corresponding libghostty-vt values; the server performs explicit conversions at
+the engine boundary.
 
-The server constructs libghostty events from wire events with a
-field-for-field copy (no enum conversion), hands them to libghostty's
+The server constructs libghostty events from wire events with explicit,
+field-for-field conversions, hands them to libghostty's
 encoders (which know per-terminal state: KIP flags, cursor-key mode,
 mouse protocol, etc.), and writes the resulting bytes to the PTY.
 Encoder configuration never traverses the wire — the server is the one
@@ -39,6 +38,7 @@ with the `Terminal` and the encoder. See [ADR-0006] and [ADR-0008].
 
 [ADR-0006]: ../../ADR/0006-input-mirrors-libghostty.md
 [ADR-0008]: ../../ADR/0008-use-libghostty-types-directly.md
+[ADR-0024]: ../../ADR/0024-wire-owns-input-atoms.md
 
 ---
 
@@ -61,8 +61,8 @@ KeyEvent {
 }
 
 KeyAction = enum {
-    PRESS   = 0,
-    RELEASE = 1,
+    RELEASE = 0,
+    PRESS   = 1,
     REPEAT  = 2,
 }
 ```
@@ -152,8 +152,8 @@ add new values. Decoders MUST treat unknown values as `UNIDENTIFIED`.
 ```
 ModSet = bitset (u16) {
     SHIFT        = 0x0001,
-    ALT          = 0x0002,
-    CTRL         = 0x0004,
+    CTRL         = 0x0002,
+    ALT          = 0x0004,
     SUPER        = 0x0008,    // also macOS Command, Windows key
     CAPS_LOCK    = 0x0010,
     NUM_LOCK     = 0x0020,
@@ -163,8 +163,8 @@ ModSet = bitset (u16) {
     // 1 = right key. Platforms that cannot distinguish sides MUST
     // leave these bits zero.
     SHIFT_SIDE   = 0x0040,
-    ALT_SIDE     = 0x0080,
-    CTRL_SIDE    = 0x0100,
+    CTRL_SIDE    = 0x0080,
+    ALT_SIDE     = 0x0100,
     SUPER_SIDE   = 0x0200,
 }
 ```
@@ -255,7 +255,7 @@ INPUT_MOUSE {
 
 MouseEvent {
     action: MouseAction,
-    button: optional<MouseButton>,
+    button: MouseButton,            // UNKNOWN when no button applies
     mods: ModSet,
     position: MousePosition,
 }
@@ -343,22 +343,25 @@ metadata convention of the TUI consumer (see
 ```
 INPUT_PASTE {
     terminal_id: TerminalId,
-    data: bytes,
-    bracketed: bool,
+    event: PasteEvent,
+}
+
+PasteEvent {
     trust: PasteTrust,
+    data: bytes,
 }
 
 PasteTrust = enum {
-    UNTRUSTED = 0,   // server SHOULD apply paste::is_safe; reject or sanitize
+    TRUSTED   = 0,   // caller asserted safety
+    UNTRUSTED = 1,   // server SHOULD apply paste::is_safe; reject or sanitize
                      //   per server config
-    TRUSTED   = 1,   // server forwards verbatim; caller asserted safety
 }
 ```
 
 Server uses `libghostty_vt::paste` utilities: `paste::is_safe(data)` to
-classify content, `paste::encode(data, bracketed, buf)` to produce
-final bytes (handles bracketed-paste sequences and unsafe-control-byte
-stripping).
+classify content and `paste::encode` to produce final bytes. Bracketing is not
+a wire field; the server derives it from the target Terminal's current DEC mode
+2004 state.
 
 When `trust = UNTRUSTED`, the server's per-Terminal policy applies:
 `reject` (default — return an `ERROR { code: UNSAFE_PASTE }`),
@@ -368,7 +371,7 @@ bracketing but skips safety classification.
 
 ---
 
-## 6. INPUT_RAW
+## 6. INPUT_RAW (reserved)
 
 ```
 INPUT_RAW {
@@ -377,31 +380,27 @@ INPUT_RAW {
 }
 ```
 
-Escape hatch. Bytes in `data` are written verbatim to the Terminal's PTY.
-Reserved for cases not modelled by `INPUT_KEY` / `INPUT_PASTE` /
-`INPUT_MOUSE` / `INPUT_FOCUS` (chiefly: direct PTY testing and command
-interpolation from configs). Servers MUST NOT silently re-interpret
-`INPUT_RAW`; clients SHOULD avoid using it in normal operation.
+The `0x13` frame type and shape are reserved but are not implemented by the
+reference codec or server. A future implementation is an escape hatch for
+direct PTY testing; clients MUST NOT send it without a later negotiated
+capability.
 
 ---
 
 ## 7. Input authority
 
-Input authority is governed by the caller's `TerminalRole` for the
-target Terminal ([L1.md §roles and takeover policy](./L1.md)). A
-client whose role for a Terminal is `VIEWER`
-MUST NOT send `INPUT_KEY`, `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_FOCUS`,
-or `INPUT_RAW` for that Terminal. A server receiving such a message from
-a viewer MUST reject it with `ERROR { code: PERMISSION_DENIED }` and
-MUST NOT write bytes to the PTY.
+Attached `INPUT_*` frames require an active subscription to the target
+Terminal. The input lease ([ADR-0033]) then governs every input surface: while
+held, only the lease holder's attached input, `ROUTE_INPUT`, or `APPLY_INPUT`
+may reach the PTY. Other attached/fire-and-forget input is dropped;
+`APPLY_INPUT` receives `ERROR(INPUT_LEASE_HELD)` before handoff.
 
-A client whose role for a Terminal is `PRIMARY` MAY send input for that
-Terminal. Transport authentication remains out of band
-([proto.md §10](./proto.md)); roles are
-an in-protocol concurrency policy, not an authentication mechanism.
+The same four atoms (`KEY` / `MOUSE` / `FOCUS` / `PASTE`) can also be delivered
+without an attach via `ROUTE_INPUT` or the acknowledged `APPLY_INPUT` batch
+([L1.md §5.1](./L1.md)). These headless control-plane paths do not require a
+subscription. The current one-server-per-user trust model authenticates the
+caller at the transport boundary; per-connection `PRIMARY` / `VIEWER` roles are
+not materialized for headless commands. If they are added, they MUST gate an
+attached read-only viewer without disabling authenticated headless control.
 
-The same four atoms (`KEY` / `MOUSE` / `FOCUS` / `PASTE`) can also be
-delivered out of band, without an attach, via the `ROUTE_INPUT` control
-command ([L1.md §5.1](./L1.md)). That path bundles the atom into an
-`InputEvent` tagged union and feeds it to the Terminal directly; the
-same `PRIMARY`/`VIEWER` authority and fire-and-forget semantics apply.
+[ADR-0033]: ../../ADR/0033-input-authority-and-process-signals.md

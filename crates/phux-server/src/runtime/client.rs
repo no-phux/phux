@@ -6,7 +6,9 @@ use std::path::Path;
 
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, LayerSet, ServerCapabilities};
+use phux_protocol::caps::{
+    ClientCapabilities, LayerSet, ServerCapabilities, ServerFeature, ServerFeatureSet,
+};
 use phux_protocol::policy::{ConsumerId as PolicyConsumerId, PeerIdentity};
 use phux_protocol::wire::frame::{AgentEvent, ErrorCode, FrameKind, TERMINAL_AGENT_KEY};
 use tokio::net::UnixStream;
@@ -762,8 +764,10 @@ where
                     protocol_major: PROTOCOL_VERSION.major,
                     protocol_minor: PROTOCOL_VERSION.minor,
                     protocol_patch: PROTOCOL_VERSION.patch,
-                    server_caps: ServerCapabilities::new().with_layers(LayerSet::all()),
-                    server_id: std::process::id().to_be_bytes().to_vec(),
+                    server_caps: ServerCapabilities::new()
+                        .with_layers(LayerSet::all())
+                        .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
+                    server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
                 };
                 if out_tx.send(Outbound::Frame(hello_ok)).await.is_err() {
                     trace!(?client_id, "HELLO_OK send dropped: writer gone");

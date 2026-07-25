@@ -44,10 +44,14 @@ pub mod sgr;
 pub mod kitty_replay;
 
 pub use caps::{
-    ClientCapabilities, ColorSupport, ImageProtocol, ImageProtocolSet, KeyboardProtocol,
-    KeyboardProtocolSet, Layer, LayerSet, TerminalColor, TerminalDefaultColors,
+    ACKNOWLEDGED_INPUT, ClientCapabilities, ColorSupport, ImageProtocol, ImageProtocolSet,
+    KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet, ServerFeature, ServerFeatureSet,
+    TerminalColor, TerminalDefaultColors,
 };
-pub use ids::{ClientId, FrameId, GroupId, SatelliteHost, SessionId, TerminalId, WindowId};
+pub use ids::{
+    ClientId, FrameId, GroupId, InputOperationId, SatelliteHost, SessionId, TerminalId, WindowId,
+};
+pub use wire::frame::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
 
 /// Protocol version this crate implements.
 ///

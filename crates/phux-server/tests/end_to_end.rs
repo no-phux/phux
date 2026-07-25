@@ -8,7 +8,7 @@ mod common;
 
 use std::time::Duration;
 
-use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
+use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_HELLO_OK, TYPE_TERMINAL_OUTPUT,
@@ -83,11 +83,12 @@ fn handshake_hello_round_trip() {
         );
         // The body must echo the server's selected version and advertise
         // the tiers it mounts (L1+L2+L3) per SPEC §6.1.
-        match hello_ok {
+        let server_id = match hello_ok {
             FrameKind::HelloOk {
                 protocol_major,
                 protocol_minor,
                 server_caps,
+                server_id,
                 ..
             } => {
                 assert_eq!(
@@ -103,9 +104,29 @@ fn handshake_hello_round_trip() {
                     LayerSet::all(),
                     "reference server advertises the full tier set",
                 );
+                assert!(
+                    server_caps
+                        .features
+                        .contains(ServerFeature::AcknowledgedInput),
+                    "reference server advertises acknowledged input",
+                );
+                assert_eq!(server_id.len(), 16);
+                server_id
             }
             other => panic!("expected HELLO_OK, got {other:?}"),
+        };
+
+        let mut second_stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut second_stream, &hello_frame()).await;
+        let (_, second_hello) = recv_typed(&mut second_stream).await;
+        match second_hello {
+            FrameKind::HelloOk {
+                server_id: second_id,
+                ..
+            } => assert_eq!(second_id, server_id, "one state has one incarnation id"),
+            other => panic!("expected second HELLO_OK, got {other:?}"),
         }
+        drop(second_stream);
         send_frame(&mut stream, &attach_by_name("default")).await;
 
         let (type_byte, attached) = recv_typed(&mut stream).await;

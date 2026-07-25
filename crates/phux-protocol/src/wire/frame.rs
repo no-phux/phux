@@ -27,8 +27,8 @@ use bytes::BytesMut;
 
 use crate::caps::{ClientCapabilities, ServerCapabilities};
 use crate::ids::{
-    ClientId, GroupId, SatelliteHost, SessionId, TERMINAL_ID_TAG_LOCAL, TERMINAL_ID_TAG_SATELLITE,
-    TerminalId,
+    ClientId, GroupId, InputOperationId, SatelliteHost, SessionId, TERMINAL_ID_TAG_LOCAL,
+    TERMINAL_ID_TAG_SATELLITE, TerminalId,
 };
 use crate::input::InputEvent;
 use crate::input::focus::FocusEvent;
@@ -547,6 +547,12 @@ pub(crate) const COMMAND_TAG_REPORT_ASKED: u8 = 0x12;
 /// `FrameKind::Detach`, which detaches the sending connection, this targets
 /// other clients by session name.
 pub(crate) const COMMAND_TAG_DETACH_CLIENTS: u8 = 0x13;
+/// Wire tag for [`Command::ApplyInput`].
+pub(crate) const COMMAND_TAG_APPLY_INPUT: u8 = 0x14;
+/// Maximum number of events in one [`Command::ApplyInput`] batch.
+pub const MAX_APPLY_INPUT_EVENTS: usize = 256;
+/// Maximum encoded bytes in the nested [`Command::ApplyInput`] command body.
+pub const MAX_APPLY_INPUT_COMMAND_BODY: usize = 64 * 1024;
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
 // mirror the four `INPUT_*` frame atoms (`docs/spec/input.md`).
@@ -649,12 +655,16 @@ pub enum ErrorCode {
     /// The server has run out of a resource needed to satisfy the request
     /// (file descriptors, memory, PTYs, ...).
     ResourceExhausted = 202,
+    /// An untrusted paste in an atomic input batch failed the safety policy.
+    UnsafePaste = 203,
     /// ADR-0033: a cooperative `ACQUIRE_INPUT` was refused because another
     /// client already holds the Terminal's input lease. The diagnostic names
     /// the current holder. A `Seize`-mode acquire never surfaces this — it
     /// preempts the holder instead. (`203` is reserved for `UNSAFE_PASTE` in
     /// SPEC §14, so this takes `204`.)
     InputLeaseHeld = 204,
+    /// Input reached the pane write path, but final PTY delivery is unknown.
+    InputDeliveryUnknown = 205,
 
     /// Catch-all for unexpected server-side failures. Carries
     /// `u16::MAX = 65535` on the wire.
@@ -688,7 +698,9 @@ impl ErrorCode {
             200 => Self::InvalidCommand,
             201 => Self::PermissionDenied,
             202 => Self::ResourceExhausted,
+            203 => Self::UnsafePaste,
             204 => Self::InputLeaseHeld,
+            205 => Self::InputDeliveryUnknown,
             65535 => Self::InternalError,
             _ => return None,
         })
@@ -1198,6 +1210,16 @@ pub enum Command {
         terminal_id: TerminalId,
         /// The structured input event (key/mouse/focus/paste).
         event: InputEvent,
+    },
+    /// Atomically validate, encode, write, and acknowledge an ordered input
+    /// batch. Retries with the same operation id and payload are idempotent.
+    ApplyInput {
+        /// Non-zero client-generated operation identifier.
+        operation_id: InputOperationId,
+        /// The Terminal to receive the complete batch.
+        terminal_id: TerminalId,
+        /// Ordered structured input events.
+        events: Vec<InputEvent>,
     },
     /// Atomically terminate every Terminal in `ids` under the server's
     /// single state lock — the one irreducible multi-terminal op left
@@ -2253,6 +2275,9 @@ impl FrameKind {
                 });
                 enc.write_field_with(field::hello_ok::SERVER_CAPS, |e| {
                     e.write_u8(server_caps.layers.as_wire());
+                    if !server_caps.features.is_empty() {
+                        e.write_u32_be(server_caps.features.as_wire());
+                    }
                 });
                 // server_id is opaque bytes; the field is already
                 // length-delimited so the raw bytes are the value.
@@ -3210,6 +3235,21 @@ pub(super) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
             encode_terminal_id(terminal_id, enc);
             encode_input_event(event, enc);
         }
+        Command::ApplyInput {
+            operation_id,
+            terminal_id,
+            events,
+        } => {
+            enc.write_u8(COMMAND_TAG_APPLY_INPUT);
+            for byte in operation_id.as_bytes() {
+                enc.write_u8(*byte);
+            }
+            encode_terminal_id(terminal_id, enc);
+            enc.write_u16_be(u16::try_from(events.len()).unwrap_or(u16::MAX));
+            for event in events {
+                encode_input_event(event, enc);
+            }
+        }
         Command::KillTerminals { ids } => {
             enc.write_u8(COMMAND_TAG_KILL_TERMINALS);
             // Length-prefixed list: u16 count, then each tagged TerminalId.
@@ -3334,6 +3374,7 @@ fn decode_input_event(dec: &mut Decoder<'_>) -> Result<InputEvent, DecodeError> 
     reason = "one match arm per Command wire tag; the dispatch is a flat decode table, clearer whole than split"
 )]
 pub(super) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    let command_body_len = dec.remaining_in_body();
     let tag = dec.read_u8()?;
     match tag {
         COMMAND_TAG_ATTACH_TERMINAL => Ok(Command::AttachTerminal {
@@ -3372,6 +3413,31 @@ pub(super) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeErr
             terminal_id: decode_terminal_id(dec)?,
             event: decode_input_event(dec)?,
         }),
+        COMMAND_TAG_APPLY_INPUT => {
+            if command_body_len > MAX_APPLY_INPUT_COMMAND_BODY {
+                return Err(DecodeError::ApplyInputLimitExceeded);
+            }
+            let mut bytes = [0; 16];
+            for byte in &mut bytes {
+                *byte = dec.read_u8()?;
+            }
+            let operation_id =
+                InputOperationId::new(bytes).ok_or(DecodeError::InvalidInputOperationId)?;
+            let terminal_id = decode_terminal_id(dec)?;
+            let count = dec.read_u16_be()? as usize;
+            if count > MAX_APPLY_INPUT_EVENTS {
+                return Err(DecodeError::ApplyInputLimitExceeded);
+            }
+            let mut events = dec.bounded_capacity(count);
+            for _ in 0..count {
+                events.push(decode_input_event(dec)?);
+            }
+            Ok(Command::ApplyInput {
+                operation_id,
+                terminal_id,
+                events,
+            })
+        }
         COMMAND_TAG_KILL_TERMINALS => {
             let count = dec.read_u16_be()? as usize;
             let mut ids = Vec::with_capacity(count);

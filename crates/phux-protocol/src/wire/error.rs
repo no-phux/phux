@@ -58,6 +58,15 @@ pub enum DecodeError {
         value: u32,
     },
 
+    /// An acknowledged-input operation id used the reserved all-zero value.
+    #[error("input operation id must not be zero")]
+    InvalidInputOperationId,
+
+    /// An `APPLY_INPUT` command exceeded its event-count or command-body
+    /// limit and was rejected before allocating the event vector.
+    #[error("APPLY_INPUT batch exceeds protocol limits")]
+    ApplyInputLimitExceeded,
+
     /// A [`crate::wire::info::LayoutNode`] tree nested deeper than the
     /// decoder's recursion bound (see
     /// [`crate::wire::info::MAX_LAYOUT_DEPTH`]).

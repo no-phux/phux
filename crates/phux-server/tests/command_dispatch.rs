@@ -39,11 +39,14 @@ mod common;
 
 use std::time::Duration;
 
-use phux_protocol::ids::{GroupId, TerminalId};
+use phux_protocol::ids::{GroupId, InputOperationId, TerminalId};
+use phux_protocol::input::InputEvent;
+use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, StateScope, TYPE_ATTACHED,
     TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_SNAPSHOT,
 };
+use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
@@ -74,6 +77,72 @@ async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> Comma
         }
     }
     panic!("no COMMAND_RESULT with request_id={request_id} within deadline");
+}
+
+#[test]
+fn apply_input_acks_after_real_pty_write_and_flush() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "IFS= read -r line; printf 'APPLIED:%s\\n' \"$line\"; sleep 1",
+        ]);
+        let (_shutdown_tx, _server) =
+            crate::common::spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        send_frame(&mut stream, &attach_by_name("work")).await;
+        let terminal_id = loop {
+            let (_, frame) = recv_typed(&mut stream).await;
+            if let FrameKind::Attached { snapshot, .. } = frame {
+                break snapshot.panes[0].id.clone();
+            }
+        };
+
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 77,
+                command: Command::ApplyInput {
+                    operation_id: InputOperationId::new([0x77; 16]).unwrap(),
+                    terminal_id,
+                    events: vec![InputEvent::Paste(PasteEvent {
+                        trust: PasteTrust::Trusted,
+                        data: b"hello-ack\n".to_vec(),
+                    })],
+                },
+            },
+        )
+        .await;
+
+        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+        let mut output = Vec::new();
+        let mut acknowledged = false;
+        while tokio::time::Instant::now() < deadline {
+            let (_, frame) = recv_typed(&mut stream).await;
+            match frame {
+                FrameKind::CommandResult {
+                    request_id: 77,
+                    result,
+                } => {
+                    assert_eq!(result, CommandResult::Ok);
+                    acknowledged = true;
+                }
+                FrameKind::TerminalOutput { bytes, .. } => output.extend_from_slice(&bytes),
+                _ => {}
+            }
+            if acknowledged
+                && output
+                    .windows(b"APPLIED:hello-ack".len())
+                    .any(|window| window == b"APPLIED:hello-ack")
+            {
+                return;
+            }
+        }
+        panic!("acknowledged={acknowledged}; real PTY output={output:?}");
+    });
 }
 
 #[test]

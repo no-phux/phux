@@ -230,6 +230,68 @@ impl Default for LayerSet {
     }
 }
 
+/// Wire bit advertising acknowledged, idempotent input batches.
+pub const ACKNOWLEDGED_INPUT: u32 = 0x0000_0010;
+
+/// An additive server-owned protocol feature.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ServerFeature {
+    /// The server accepts idempotent `Command::ApplyInput` batches.
+    AcknowledgedInput = ACKNOWLEDGED_INPUT,
+}
+
+/// Bit-field of additive server-owned protocol features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ServerFeatureSet(u32);
+
+impl ServerFeatureSet {
+    const KNOWN: u32 = ServerFeature::AcknowledgedInput as u32;
+
+    /// Empty set for servers that advertise no additive features.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Build a set containing all listed features.
+    #[must_use]
+    pub const fn with(features: &[ServerFeature]) -> Self {
+        let mut bits = 0;
+        let mut i = 0;
+        while i < features.len() {
+            bits |= features[i] as u32;
+            i += 1;
+        }
+        Self(bits)
+    }
+
+    /// Test whether `feature` is advertised.
+    #[must_use]
+    pub const fn contains(self, feature: ServerFeature) -> bool {
+        self.0 & (feature as u32) != 0
+    }
+
+    /// True when no feature bits are set.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Raw wire bits, with unknown bits excluded.
+    #[must_use]
+    pub const fn as_wire(self) -> u32 {
+        self.0 & Self::KNOWN
+    }
+
+    /// Decode known feature bits while ignoring future unknown bits.
+    #[must_use]
+    pub const fn from_wire(bits: u32) -> Self {
+        Self(bits & Self::KNOWN)
+    }
+}
+
 /// One image-transport protocol the client may advertise (SPEC §6.2).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -530,6 +592,8 @@ pub struct ServerCapabilities {
     /// always implemented; the server adds L2 / L3 when those services
     /// are wired. See [`LayerSet`].
     pub layers: LayerSet,
+    /// Additive server-owned protocol features.
+    pub features: ServerFeatureSet,
 }
 
 impl ServerCapabilities {
@@ -539,6 +603,7 @@ impl ServerCapabilities {
     pub const fn new() -> Self {
         Self {
             layers: LayerSet::new(),
+            features: ServerFeatureSet::new(),
         }
     }
 
@@ -546,6 +611,13 @@ impl ServerCapabilities {
     #[must_use]
     pub const fn with_layers(mut self, layers: LayerSet) -> Self {
         self.layers = layers;
+        self
+    }
+
+    /// Builder setter for [`Self::features`].
+    #[must_use]
+    pub const fn with_features(mut self, features: ServerFeatureSet) -> Self {
+        self.features = features;
         self
     }
 }
@@ -750,5 +822,15 @@ mod tests {
     fn client_capabilities_builder() {
         let caps = ClientCapabilities::new().with_color_support(ColorSupport::Indexed16);
         assert_eq!(caps.color_support, ColorSupport::Indexed16);
+    }
+
+    #[test]
+    fn acknowledged_input_feature_bit_is_stable() {
+        assert_eq!(ACKNOWLEDGED_INPUT, 0x0000_0010);
+        assert_eq!(ServerFeature::AcknowledgedInput as u32, ACKNOWLEDGED_INPUT);
+        let set = ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput]);
+        assert!(set.contains(ServerFeature::AcknowledgedInput));
+        assert_eq!(set.as_wire(), 0x0000_0010);
+        assert_eq!(ServerFeatureSet::from_wire(u32::MAX), set);
     }
 }

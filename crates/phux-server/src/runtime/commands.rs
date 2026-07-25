@@ -465,6 +465,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::GetState { .. } => "get_state",
         Command::GetScreen { .. } => "get_screen",
         Command::RouteInput { .. } => "route_input",
+        Command::ApplyInput { .. } => "apply_input",
         Command::AcquireInput { .. } => "acquire_input",
         Command::ReleaseInput { .. } => "release_input",
         Command::SignalTerminal { .. } => "signal_terminal",
@@ -481,6 +482,10 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
     name = "handle_command",
     skip_all,
     fields(?client_id, request_id, kind = command_kind(&command)),
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one flat dispatch arm per wire command keeps the catalog auditable"
 )]
 pub(crate) async fn handle_command(
     state: &SharedState,
@@ -530,6 +535,20 @@ pub(crate) async fn handle_command(
         Command::RouteInput { terminal_id, event } => match input_lane {
             Some(lane) => lane.route_command(client_id, terminal_id, event).await,
             None => handle_route_input(state, client_id, &terminal_id, event),
+        },
+        Command::ApplyInput {
+            operation_id,
+            terminal_id,
+            events,
+        } => match input_lane {
+            Some(lane) => {
+                lane.apply_input(client_id, operation_id, terminal_id, events)
+                    .await
+            }
+            None => CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: "acknowledged input lane unavailable".to_owned(),
+            },
         },
         Command::KillTerminals { ids } => handle_kill_terminals(state, &ids),
         Command::DetachClients { session } => handle_detach_clients(state, session.as_deref()),

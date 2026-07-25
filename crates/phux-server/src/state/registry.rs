@@ -39,6 +39,7 @@ impl ServerState {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            server_incarnation: super::ServerIncarnation::random(),
             registry: Registry::new(),
             attached: HashMap::new(),
             viewport_clock: 0,

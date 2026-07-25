@@ -13,10 +13,10 @@
 use bytes::BytesMut;
 use phux_protocol::caps::{
     ClientCapabilities, ColorSupport, ImageProtocol, ImageProtocolSet, KeyboardProtocol,
-    KeyboardProtocolSet, Layer, LayerSet, OutputMode, ServerCapabilities, TerminalColor,
-    TerminalDefaultColors,
+    KeyboardProtocolSet, Layer, LayerSet, OutputMode, ServerCapabilities, ServerFeature,
+    ServerFeatureSet, TerminalColor, TerminalDefaultColors,
 };
-use phux_protocol::ids::{ClientId, GroupId, SessionId, TerminalId, WindowId};
+use phux_protocol::ids::{ClientId, GroupId, InputOperationId, SessionId, TerminalId, WindowId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
@@ -24,8 +24,8 @@ use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ControlAction, ErrorCode,
-    InputMode, Scope, SpawnError, SpawnResult, StateScope, TerminalLifecycle, TerminalSignal,
-    ViewportInfo,
+    InputMode, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, Scope, SpawnError,
+    SpawnResult, StateScope, TerminalLifecycle, TerminalSignal, ViewportInfo,
 };
 use phux_protocol::wire::info::{
     LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
@@ -360,6 +360,8 @@ fn arb_error_code() -> impl Strategy<Value = ErrorCode> {
         Just(ErrorCode::InvalidCommand),
         Just(ErrorCode::PermissionDenied),
         Just(ErrorCode::ResourceExhausted),
+        Just(ErrorCode::UnsafePaste),
+        Just(ErrorCode::InputDeliveryUnknown),
         Just(ErrorCode::InternalError),
     ]
 }
@@ -1197,6 +1199,9 @@ fn error_code_wire_values_match_spec() {
     assert_eq!(ErrorCode::InvalidCommand.as_wire(), 200);
     assert_eq!(ErrorCode::PermissionDenied.as_wire(), 201);
     assert_eq!(ErrorCode::ResourceExhausted.as_wire(), 202);
+    assert_eq!(ErrorCode::UnsafePaste.as_wire(), 203);
+    assert_eq!(ErrorCode::InputLeaseHeld.as_wire(), 204);
+    assert_eq!(ErrorCode::InputDeliveryUnknown.as_wire(), 205);
     assert_eq!(ErrorCode::InternalError.as_wire(), 65535);
 }
 
@@ -1992,6 +1997,125 @@ fn command_route_input_round_trips() {
         assert_eq!(decoded, frame);
         assert!(tail.is_empty());
     }
+}
+
+#[test]
+fn command_apply_input_round_trips_and_rejects_malformed_payloads() {
+    let operation_id = InputOperationId::new([0x5a; 16]).unwrap();
+    let frame = FrameKind::Command {
+        request_id: 0x0102_0304,
+        command: Command::ApplyInput {
+            operation_id,
+            terminal_id: TerminalId::local(5),
+            events: vec![
+                InputEvent::Focus(FocusEvent::Gained),
+                InputEvent::Paste(PasteEvent {
+                    trust: PasteTrust::Trusted,
+                    data: b"hello".to_vec(),
+                }),
+            ],
+        },
+    };
+    let mut encoded = BytesMut::new();
+    frame.encode(&mut encoded);
+    assert_eq!(
+        encoded.as_ref(),
+        &[
+            0x00, 0x00, 0x00, 0x30, 0x31, 0x01, 0x04, 0x04, 0x01, 0x02, 0x03, 0x04, 0x02, 0x04,
+            0x25, 0x14, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,
+            0x5a, 0x5a, 0x5a, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x02, 0x02, 0x00, 0x03,
+            0x00, 0x00, 0x00, 0x00, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f,
+        ],
+        "APPLY_INPUT wire bytes are stable"
+    );
+    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+    assert_eq!(decoded, frame);
+    assert!(tail.is_empty());
+
+    let id_offset = encoded
+        .windows(16)
+        .position(|window| window == [0x5a; 16])
+        .expect("operation id bytes");
+
+    let mut zero_id = encoded.to_vec();
+    zero_id[id_offset..id_offset + 16].fill(0);
+    assert_eq!(
+        FrameKind::decode(&zero_id).unwrap_err(),
+        DecodeError::InvalidInputOperationId
+    );
+
+    // Local TerminalId is tag + u32, then u16 count; mutate the first event tag.
+    let mut unknown_event = encoded.to_vec();
+    unknown_event[id_offset + 16 + 5 + 2] = 0xff;
+    assert!(matches!(
+        FrameKind::decode(&unknown_event),
+        Err(DecodeError::UnknownEnumValue {
+            field: "InputEvent",
+            value: 0xff,
+        })
+    ));
+
+    let count_offset = id_offset + 16 + 5;
+    let mut over_count = encoded.to_vec();
+    over_count[count_offset..count_offset + 2].copy_from_slice(
+        &u16::try_from(MAX_APPLY_INPUT_EVENTS + 1)
+            .unwrap()
+            .to_be_bytes(),
+    );
+    assert_eq!(
+        FrameKind::decode(&over_count).unwrap_err(),
+        DecodeError::ApplyInputLimitExceeded
+    );
+
+    assert!(matches!(
+        FrameKind::decode(&encoded[..id_offset + 8]),
+        Err(DecodeError::UnexpectedEof)
+    ));
+
+    let oversized = FrameKind::Command {
+        request_id: 1,
+        command: Command::ApplyInput {
+            operation_id,
+            terminal_id: TerminalId::local(5),
+            events: vec![InputEvent::Paste(PasteEvent {
+                trust: PasteTrust::Trusted,
+                data: vec![b'x'; MAX_APPLY_INPUT_COMMAND_BODY],
+            })],
+        },
+    };
+    let mut oversized_bytes = BytesMut::new();
+    oversized.encode(&mut oversized_bytes);
+    assert_eq!(
+        FrameKind::decode(&oversized_bytes).unwrap_err(),
+        DecodeError::ApplyInputLimitExceeded
+    );
+}
+
+#[test]
+fn hello_ok_server_feature_round_trips_and_old_caps_default_empty() {
+    let frame = FrameKind::HelloOk {
+        protocol_major: 0,
+        protocol_minor: 5,
+        protocol_patch: 0,
+        server_caps: ServerCapabilities::new()
+            .with_layers(LayerSet::all())
+            .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
+        server_id: vec![],
+    };
+    let mut encoded = BytesMut::new();
+    frame.encode(&mut encoded);
+    assert!(
+        encoded
+            .windows(5)
+            .any(|window| window == [LayerSet::all().as_wire(), 0, 0, 0, 0x10]),
+        "server feature bits must trail the one-byte layer set"
+    );
+    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+    assert_eq!(decoded, frame);
+    assert!(tail.is_empty());
+
+    let old = ServerCapabilities::new().with_layers(LayerSet::all());
+    assert!(old.features.is_empty());
 }
 
 #[test]

@@ -71,6 +71,37 @@ pub use upgrade_blob::RebuildError;
 /// persistence to a Group scope and the TUI needs a Group to write into.
 pub const DEFAULT_GROUP_ID: GroupId = GroupId::new(1);
 
+/// Opaque process-incarnation identifier advertised during `HELLO_OK`.
+///
+/// Debug output is redacted so traces cannot accidentally expose a stable
+/// cross-connection correlation token.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ServerIncarnation([u8; 16]);
+
+impl ServerIncarnation {
+    #[allow(
+        clippy::expect_used,
+        reason = "a server cannot safely start without its OS-generated incarnation id"
+    )]
+    fn random() -> Self {
+        let mut bytes = [0; 16];
+        getrandom::getrandom(&mut bytes).expect("OS CSPRNG unavailable for server incarnation");
+        Self(bytes)
+    }
+
+    /// Borrow the opaque bytes for `HELLO_OK.server_id`.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for ServerIncarnation {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ServerIncarnation(<redacted>)")
+    }
+}
+
 /// One hub-side satellite input lease (phux-v45.7, phux-v45.13).
 ///
 /// Records which hub consumer holds the relayed ADR-0033 lease over a
@@ -95,6 +126,8 @@ pub(crate) struct SatelliteLease {
 /// [`SharedState`] before sharing with per-client tasks.
 #[derive(Debug)]
 pub struct ServerState {
+    /// Random identity for this in-memory state incarnation.
+    server_incarnation: ServerIncarnation,
     /// Canonical domain state.
     pub registry: Registry,
     /// Currently attached clients, keyed by server-assigned id.
@@ -376,6 +409,14 @@ impl Default for ServerState {
     }
 }
 
+impl ServerState {
+    /// Return this state's stable, redaction-safe process incarnation.
+    #[must_use]
+    pub const fn server_incarnation(&self) -> ServerIncarnation {
+        self.server_incarnation
+    }
+}
+
 /// Convenience newtype: `Arc<Mutex<ServerState>>`. This is the type
 /// per-client tasks clone and hold.
 ///
@@ -442,6 +483,17 @@ mod tests {
     use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 
     use phux_protocol::wire::frame::{FrameKind, Scope};
+
+    #[test]
+    fn server_incarnation_is_stable_per_state_and_distinct_between_states() {
+        let first = ServerState::new();
+        let stable = first.server_incarnation();
+        assert_eq!(first.server_incarnation(), stable);
+        assert_eq!(format!("{stable:?}"), "ServerIncarnation(<redacted>)");
+
+        let second = ServerState::new();
+        assert_ne!(stable, second.server_incarnation());
+    }
     use tokio::sync::{broadcast, mpsc};
     use tokio_util::sync::CancellationToken;
 

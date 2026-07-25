@@ -1685,6 +1685,15 @@ mod tests {
             .is_none()
         );
         assert!(route_to_satellite(&Command::Upgrade).is_none());
+        assert!(
+            route_to_satellite(&Command::ApplyInput {
+                operation_id: phux_protocol::InputOperationId::new([1; 16]).expect("id"),
+                terminal_id: TerminalId::satellite("devbox", 7),
+                events: vec![],
+            })
+            .is_none(),
+            "APPLY_INPUT is local-only and must never touch a satellite link"
+        );
         // Mixed batches partition in handle_kill_terminals, not here.
         assert!(
             route_to_satellite(&Command::KillTerminals {

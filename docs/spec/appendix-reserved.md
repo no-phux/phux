@@ -44,6 +44,13 @@ their own one-byte tag inside it. Allocated tags:
 | `0x09` | `KILL_TERMINALS`            | [L1.md](./L1.md) | shipped |
 | `0x0c` | `GET_TERMINAL_STATE`        | [L1.md](./L1.md) | shipped |
 | `0x0d` | `SUBSCRIBE_TERMINAL_EVENTS` | [L1.md](./L1.md) | shipped |
+| `0x0e` | `UPGRADE`                   | [L1.md](./L1.md) | shipped |
+| `0x0f` | `ACQUIRE_INPUT`             | [L1.md](./L1.md) | shipped |
+| `0x10` | `RELEASE_INPUT`             | [L1.md](./L1.md) | shipped |
+| `0x11` | `SIGNAL_TERMINAL`           | [L1.md](./L1.md) | shipped |
+| `0x12` | `REPORT_ASKED`              | [L1.md](./L1.md) | shipped |
+| `0x13` | `DETACH_CLIENTS`            | [L1.md](./L1.md) | shipped |
+| `0x14` | `APPLY_INPUT`               | [L1.md](./L1.md) | shipped |
 
 `KILL_TERMINALS` at tag `0x09` reuses the slot freed by the removed
 `CREATE_SESSION` command. Per

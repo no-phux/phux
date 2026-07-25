@@ -75,6 +75,41 @@ id_type!(
     GroupId
 );
 
+/// Opaque client-generated identifier for one acknowledged input operation.
+///
+/// The all-zero value is reserved and cannot be constructed. Debug output is
+/// deliberately redacted because operation identifiers may be correlated with
+/// sensitive input activity.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InputOperationId([u8; 16]);
+
+impl InputOperationId {
+    /// Construct a non-zero operation identifier.
+    #[must_use]
+    pub const fn new(bytes: [u8; 16]) -> Option<Self> {
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] != 0 {
+                return Some(Self(bytes));
+            }
+            index += 1;
+        }
+        None
+    }
+
+    /// Borrow the 16-byte wire representation.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for InputOperationId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("InputOperationId(<redacted>)")
+    }
+}
+
 /// Federation-routing host identifier for a [`TerminalId::Satellite`].
 ///
 /// Per [ADR-0007] the satellite link is an opaque host token negotiated at
@@ -287,5 +322,19 @@ impl FrameId {
 impl core::fmt::Display for FrameId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "FrameId({})", self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InputOperationId;
+
+    #[test]
+    fn input_operation_id_rejects_zero_and_redacts_debug() {
+        assert!(InputOperationId::new([0; 16]).is_none());
+        let id = InputOperationId::new([0x5a; 16]).expect("non-zero id");
+        assert_eq!(id.as_bytes(), &[0x5a; 16]);
+        assert_eq!(format!("{id:?}"), "InputOperationId(<redacted>)");
+        assert!(!format!("{id:?}").contains("5a"));
     }
 }

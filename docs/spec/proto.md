@@ -241,6 +241,12 @@ Server → Client:  HELLO_OK {
 }
 ```
 
+`server_id` is an opaque 128-bit server-incarnation value. It MUST remain
+stable across connections to the same in-memory server state and MUST change
+whenever reconnect-safety state is lost, including a normal restart or a
+graceful re-exec that does not preserve that state. Consumers MUST compare it
+as opaque bytes and MUST NOT derive host identity from it.
+
 `VersionRange` is `{ min: Version, max: Version }` inclusive. The
 client's `versions` field lists ranges it supports (typically one).
 
@@ -302,20 +308,20 @@ ClientCapabilities {
 }
 
 ServerCapabilities {
-    features: bitset<ServerFeature>,
-    // ServerFeature variants:
-    //   REATTACH_REPLAY    — server retains scrollback for reattaching clients
-    //   TERMINAL_RECORDING — server can record Terminal I/O to disk
-    //   AGENT_HOOKS        — server supports typed agent-style hooks
-    //   IMAGE_PASSTHROUGH  — server forwards image protocols transparently
-    //   <reserved>         — slot formerly `CC_FRONTEND` per ADR-0010;
-    //                        **reclaimed** per ADR-0017. Decoders MUST
-    //                        ignore the bit if set. A future minor may
-    //                        re-use the slot.
-    max_message_size: u32,
     layers: bitset<Layer>,         // tiers the server implements (§11; ADR-0015)
+    features: bitset<ServerFeature>, // optional trailing u32
+}
+
+ServerFeature = bitset (u32) {
+    ACKNOWLEDGED_INPUT = 0x00000010, // APPLY_INPUT (L1.md §6.2.1; ADR-0053)
 }
 ```
+
+`ServerCapabilities` is a positional prefix: `layers` is the first byte and
+`features` is an optional trailing `u32` big-endian bitset. A one-byte legacy
+value therefore decodes with an empty feature set. Decoders MUST ignore unknown
+feature bits. A client MUST use `APPLY_INPUT` only when
+`ACKNOWLEDGED_INPUT` is advertised.
 
 The HELLO body is field-tagged TLV per
 [appendix-encoding.md](./appendix-encoding.md): `client_name`, the version
@@ -364,13 +370,14 @@ transport/topology — it needs no `ClientCapabilities` field and changes no wir
 bytes (`FRAME_ACK` and `seq` already round-trip). A consumer MUST NOT assume
 which strategy serves it; both converge to the same grid.
 
-The `CC_FRONTEND` bit on `features` is **reclaimed** per
+The former `CC_FRONTEND` feature slot is **reclaimed** per
 [ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md). Earlier drafts
 reserved it for a server that could "speak tmux control mode as an
 alternative frontend." Under ADR-0017 the reference TUI has no
 protocol-level privilege, and `tmux control mode` (when added) is one
-L1/L3 consumer among several — no capability bit required.
-Decoders MUST ignore the slot.
+L1/L3 consumer among several — no capability bit required. The `0x10` slot now
+advertises `ACKNOWLEDGED_INPUT`; older decoders ignore its additive trailing
+field.
 
 Servers MUST adapt outbound `TERMINAL_OUTPUT` (see [L1.md §state
 synchronization](./L1.md)) byte streams to each
@@ -676,11 +683,12 @@ ErrorCode = enum {
     INVALID_COMMAND      = 200,
     PERMISSION_DENIED    = 201,
     RESOURCE_EXHAUSTED   = 202,
-    UNSAFE_PASTE         = 203,  // RESERVED, not yet emitted: no variant in the
-                                 //   shipped enum; the value is held for an
-                                 //   unsafe-paste guard and skipped by 204.
+    UNSAFE_PASTE         = 203,  // APPLY_INPUT rejected an unsafe paste before
+                                 //   writing any batch bytes
     INPUT_LEASE_HELD     = 204,  // ADR-0033: cooperative ACQUIRE_INPUT lost
                                  //   to an existing input-lease holder
+    INPUT_DELIVERY_UNKNOWN = 205,// APPLY_INPUT reached PTY handoff but write /
+                                 //   flush completion is indeterminate
 
     INTERNAL_ERROR       = 65535,
 }
@@ -688,11 +696,10 @@ ErrorCode = enum {
 
 This catalog tracks the shipped `#[non_exhaustive]` `ErrorCode` enum in
 `phux-protocol` (`wire::frame`), which is the source of truth for the
-wire bytes. Two values are **reserved but not emitted** by the reference
-implementation: `OUT_OF_TIER = 5` (the L2 tier it guarded was dissolved
-by [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md))
-and `UNSAFE_PASTE = 203` (held for a future unsafe-paste guard; `204`
-already skips it). Codes `102` and `103` ship under the names
+wire bytes. `OUT_OF_TIER = 5` remains reserved but is not emitted because the
+L2 tier it guarded was dissolved by
+[ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md).
+Codes `102` and `103` ship under the names
 `SESSION_NOT_FOUND` / `WINDOW_NOT_FOUND`; the substrate no longer carries
 a session or window concept, so the names read as the TUI-convention
 lookups they back. Decoders MUST accept the byte values regardless of the

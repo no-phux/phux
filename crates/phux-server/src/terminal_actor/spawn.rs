@@ -1,6 +1,6 @@
 //! Submodule for terminal actor internals.
 
-use super::TerminalActorError;
+use super::{EncodedInputRequest, TerminalActorError};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -272,7 +272,7 @@ pub fn shell_command(command: &str) -> CommandBuilder {
 }
 type SpawnedPty = (
     mpsc::UnboundedReceiver<PtyEvent>,
-    mpsc::UnboundedSender<Vec<u8>>,
+    mpsc::Sender<EncodedInputRequest>,
     PtyOwned,
 );
 
@@ -357,7 +357,8 @@ fn start_pty_bridge(
     let master = Arc::new(Mutex::new(master));
 
     let (pty_tx_to_actor, pty_rx_for_actor) = mpsc::unbounded_channel::<PtyEvent>();
-    let (input_tx_to_writer, mut input_rx_for_writer) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (input_tx_to_writer, mut input_rx_for_writer) =
+        mpsc::channel::<EncodedInputRequest>(super::DEFAULT_INPUT_MAILBOX);
 
     let reader_thread = std::thread::Builder::new()
         .name("phux-pty-reader".to_owned())
@@ -394,20 +395,28 @@ fn start_pty_bridge(
         .spawn(move || {
             // A write/flush error is terminal for the pane's input path:
             // the thread exits and every byte queued after it is dropped
-            // on the floor (the channel sender stays alive and `send`
-            // keeps succeeding). Log loudly — without this line the
+            // on the floor. Log loudly — without this line the
             // failure is invisible: output, snapshots, and command acks
             // all keep working while input silently goes nowhere.
-            while let Some(bytes) = input_rx_for_writer.blocking_recv() {
-                if let Err(err) = writer.write_all(&bytes) {
+            while let Some(request) = input_rx_for_writer.blocking_recv() {
+                if let Err(err) = writer.write_all(&request.bytes) {
                     error!(?err, "pty writer: write failed; pane input is now dead");
+                    if let Some(completion) = request.completion {
+                        let _ = completion.send(false);
+                    }
                     break;
                 }
                 if let Err(err) = writer.flush() {
                     error!(?err, "pty writer: flush failed; pane input is now dead");
+                    if let Some(completion) = request.completion {
+                        let _ = completion.send(false);
+                    }
                     break;
                 }
-                debug!(len = bytes.len(), "pty write flushed");
+                debug!(len = request.bytes.len(), "pty write flushed");
+                if let Some(completion) = request.completion {
+                    let _ = completion.send(true);
+                }
             }
         })
         .map_err(|e| TerminalActorError::PtyIo(e.to_string()))?;
