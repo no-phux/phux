@@ -87,6 +87,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0053](./0053-acknowledged-idempotent-input.md) | Acknowledged idempotent input batches | Accepted (builds on [0021](./0021-control-plane-commands.md), [0024](./0024-wire-owns-input-atoms.md), and [0044](./0044-dedicated-input-lane.md)) |
 | [0054](./0054-worktree-bound-sessions.md) | Worktree-bound sessions by name convention | Accepted (composes existing verbs; adds no server state, consistent with [0009](./0009-phux-vs-mux-positioning.md)) |
 | [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md) | Always-on server and ssh-bootstrapped enrollment | Proposed (makes [0031](./0031-remote-consumer-auth-and-encryption.md)/[0037](./0037-overlay-network-reachability.md) usable; mirrors [0038](./0038-hub-satellite-auth.md)'s pin posture) |
+| [0056](./0056-cross-session-terminal-move.md) | Cross-session Terminal move | Accepted (opens the door [0050](./0050-explicit-spawn-ownership.md) left shut for existing Terminals; layout stays L3 per [0019](./0019-tui-multi-pane-rendering.md)) |
 
 ## When to write an ADR
 
