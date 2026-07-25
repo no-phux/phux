@@ -30,7 +30,7 @@ use crate::layout::{Direction, SplitDir, Workspace};
 use crate::predict::{Overlay, PredictionState};
 use crate::render::Theme;
 use crate::render::overlay::{
-    HelpOverlay, OverlayOutcome, OverlayState, PromptOverlay, SelectItem, SelectList,
+    ContextMenu, HelpOverlay, OverlayOutcome, OverlayState, PromptOverlay, SelectItem, SelectList,
 };
 
 /// Mutable context the input-dispatch path needs to update on a chord
@@ -408,6 +408,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                 } else {
                     *mouse
                 };
+                let was_active = ctx.overlays.is_active();
                 match ctx.overlays.handle_mouse(&routed) {
                     OverlayOutcome::Copy(req) => {
                         if let Some(fid) = focused_pane.as_ref()
@@ -440,6 +441,14 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                         }
                     }
                     OverlayOutcome::None => {}
+                }
+                // phux-wrnm: a pointer dismissal (clicking outside a context
+                // menu) leaves the overlay's cells on screen with nothing
+                // scheduled to erase them — the key path has always
+                // repainted on dismiss; the mouse path never did, because
+                // until now no overlay could be dismissed by a click.
+                if was_active && !ctx.overlays.is_active() {
+                    layout_changed = true;
                 }
             }
             continue;
@@ -560,15 +569,16 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                 let strip = super::paint::sidebar_rect(ctx.viewport, res);
                 let (cell_x, cell_y) = (quantize_cell(mouse.x), quantize_cell(mouse.y));
                 if strip_contains(strip, cell_x, cell_y) {
+                    let hit = sidebar_click_action(
+                        strip,
+                        ctx.workspace.windows.len(),
+                        ctx.sidebar_agents,
+                        cell_x,
+                        cell_y,
+                    );
                     if matches!(mouse.action, MouseAction::Press)
                         && mouse.button == MouseButton::Left
-                        && let Some(resolved) = sidebar_click_action(
-                            strip,
-                            ctx.workspace.windows.len(),
-                            ctx.sidebar_agents,
-                            cell_x,
-                            cell_y,
-                        )
+                        && let Some(resolved) = hit
                     {
                         tracing::debug!(action = %resolved.action, "sidebar: click dispatched");
                         let effects = run_action(&resolved, ctx, focused_pane.as_ref(), panes);
@@ -586,6 +596,45 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                         {
                             layout_changed = true;
                         }
+                    } else if matches!(mouse.action, MouseAction::Press)
+                        && mouse.button == MouseButton::Right
+                    {
+                        // phux-wrnm: a right press on a window block (or an
+                        // agents-section row, which resolves to the window
+                        // holding that agent) selects that window first —
+                        // acting on what you pointed at is the whole promise
+                        // of a context menu — and then opens the window menu
+                        // for it. Every other cell of the strip is session
+                        // chrome and gets the session menu, so a right-click
+                        // anywhere on the sidebar does something useful.
+                        let window_row = hit.filter(|r| r.action == "select-window");
+                        let is_window = window_row.is_some();
+                        if let Some(resolved) = window_row {
+                            let effects = run_action(&resolved, ctx, focused_pane.as_ref(), panes);
+                            if apply_action_effects(
+                                effects,
+                                out,
+                                conn,
+                                ctx,
+                                focused_pane,
+                                detach_pending,
+                                predict,
+                                panes,
+                            )
+                            .await?
+                            {
+                                layout_changed = true;
+                            }
+                        }
+                        let spec = if is_window {
+                            super::context_menu::window_menu(
+                                ctx.keybindings,
+                                &active_window_name(ctx),
+                            )
+                        } else {
+                            super::context_menu::session_menu(ctx.keybindings, ctx.session_name)
+                        };
+                        open_context_menu(ctx, spec, (cell_x, cell_y));
                     }
                     continue;
                 }
@@ -614,9 +663,10 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                 };
                 let (cell_x, cell_y) = (quantize_cell(mouse.x), quantize_cell(mouse.y));
                 if ctx.viewport.1 > 0 && cell_y == bar_row {
+                    let hit = bar_click_action(ctx.status_bar, cell_x);
                     if matches!(mouse.action, MouseAction::Press)
                         && mouse.button == MouseButton::Left
-                        && let Some(resolved) = bar_click_action(ctx.status_bar, cell_x)
+                        && let Some(resolved) = hit
                     {
                         tracing::debug!(action = %resolved.action, "status bar: tab click dispatched");
                         let effects = run_action(&resolved, ctx, focused_pane.as_ref(), panes);
@@ -634,6 +684,42 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                         {
                             layout_changed = true;
                         }
+                    } else if matches!(mouse.action, MouseAction::Press)
+                        && mouse.button == MouseButton::Right
+                    {
+                        // phux-wrnm: right press on a tab selects that window
+                        // (same as a left click) and opens its window menu;
+                        // elsewhere on the bar — the session name, the
+                        // widgets, the blank padding — the session menu. The
+                        // menu is clamped into the content rect, so a
+                        // bottom-docked bar opens it upward, over the panes.
+                        let is_window = hit.is_some();
+                        if let Some(resolved) = hit {
+                            let effects = run_action(&resolved, ctx, focused_pane.as_ref(), panes);
+                            if apply_action_effects(
+                                effects,
+                                out,
+                                conn,
+                                ctx,
+                                focused_pane,
+                                detach_pending,
+                                predict,
+                                panes,
+                            )
+                            .await?
+                            {
+                                layout_changed = true;
+                            }
+                        }
+                        let spec = if is_window {
+                            super::context_menu::window_menu(
+                                ctx.keybindings,
+                                &active_window_name(ctx),
+                            )
+                        } else {
+                            super::context_menu::session_menu(ctx.keybindings, ctx.session_name)
+                        };
+                        open_context_menu(ctx, spec, (cell_x, cell_y));
                     }
                     continue;
                 }
@@ -742,6 +828,30 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                             slot.viewport_scrolled = true;
                         }
                         layout_changed = true;
+                        continue;
+                    }
+                    // phux-wrnm (ADR-0058): a right press on a pane whose app
+                    // has NOT enabled mouse tracking opens the pane context
+                    // menu at the pointer. The gate is the same boundary
+                    // drag-to-copy respects: an inner program that asked for
+                    // the mouse (vim, htop, a TUI with its own right-click
+                    // menu) keeps every button, and the keyboard-bindable
+                    // `context-menu` action is the way in for those panes.
+                    // Click-to-focus above has already run, so the menu acts
+                    // on the pane you pointed at, not the one you left.
+                    if matches!(mouse.action, MouseAction::Press)
+                        && mouse.button == MouseButton::Right
+                        && panes
+                            .get(&target)
+                            .is_some_and(|slot| !terminal_wants_mouse_tracking(slot))
+                    {
+                        let zoomed = ctx.zoomed.as_ref() == Some(&target);
+                        let spec = super::context_menu::pane_menu(ctx.keybindings, zoomed);
+                        open_context_menu(
+                            ctx,
+                            spec,
+                            (quantize_cell(mouse.x), quantize_cell(mouse.y)),
+                        );
                         continue;
                     }
                     // Drag-to-copy (tmux convention): a left press on a pane
@@ -1178,6 +1288,40 @@ fn bar_click_action(
     })
 }
 
+/// phux-wrnm: push `spec` as a context menu anchored at the viewport cell
+/// `anchor` (ADR-0058).
+///
+/// The menu is clamped inside the pane content rect — the same rect the
+/// panes tile into and centered modals are placed against — so it can
+/// never occlude the sidebar strip or the status-bar row, including when
+/// the click that opened it landed on that chrome.
+fn open_context_menu(
+    ctx: &mut DispatchCtx<'_>,
+    spec: super::context_menu::MenuSpec,
+    anchor: (u16, u16),
+) {
+    let area = content_rect(ctx.viewport, ctx.bar, ctx.sidebar);
+    tracing::debug!(
+        title = %spec.title,
+        rows = spec.rows.len(),
+        anchor_x = anchor.0,
+        anchor_y = anchor.1,
+        "context menu: opened",
+    );
+    ctx.overlays.push(Box::new(ContextMenu::new(
+        spec.title, spec.rows, anchor, area, ctx.theme,
+    )));
+}
+
+/// The active window's name, or an empty string when the workspace has no
+/// windows yet. Used as the window menu's title.
+fn active_window_name(ctx: &DispatchCtx<'_>) -> String {
+    ctx.workspace
+        .windows
+        .get(ctx.workspace.active)
+        .map_or_else(String::new, |w| w.name.clone())
+}
+
 /// Quantise an f64 pointer position (1-px-per-cell per SPEC §9.2.1) to an
 /// outer-viewport cell, saturating into `u16` like the mouse hit-test.
 #[allow(
@@ -1600,6 +1744,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "toggle-zoom",
     "toggle-sidebar",
     "command-palette",
+    "context-menu",
     "window-picker",
     "session-picker",
     "agent-fleet",
@@ -2019,6 +2164,17 @@ fn run_action(
                 items,
                 ctx.theme,
             )));
+        }
+        "context-menu" => {
+            // phux-wrnm (ADR-0058): the keyboard route to the pane menu, and
+            // the only route for a pane whose app owns the mouse. Anchored
+            // just inside the focused pane's top-left corner so it opens over
+            // the pane it acts on, wherever that pane sits in the layout.
+            let rect = focused_pane_rect(ctx, focused);
+            let anchor = (rect.x.saturating_add(2), rect.y.saturating_add(1));
+            let zoomed = ctx.zoomed.is_some();
+            let spec = super::context_menu::pane_menu(ctx.keybindings, zoomed);
+            open_context_menu(ctx, spec, anchor);
         }
         "window-picker" => {
             // phux-4li.19 / nav: push the `<leader> w` grouped window
@@ -5400,6 +5556,18 @@ mod tests {
         })
     }
 
+    /// phux-wrnm: the same press with the right button.
+    fn right_press_at(x: u16, y: u16) -> InputEvent {
+        use phux_protocol::input::key::ModSet;
+        InputEvent::Mouse(MouseEvent {
+            action: MouseAction::Press,
+            button: MouseButton::Right,
+            mods: ModSet::empty(),
+            x: f64::from(x),
+            y: f64::from(y),
+        })
+    }
+
     /// Drive `dispatch_input_events` with a left-docked sidebar reservation
     /// and one mouse event; returns `(active_window, overlay_active,
     /// pending_window_count)` so the callers can assert each affordance's
@@ -5542,6 +5710,26 @@ mod tests {
         assert_eq!(pending, 0);
     }
 
+    /// phux-wrnm: a right press on a window block selects that window (a
+    /// menu acts on what you pointed at) and then opens its window menu.
+    #[tokio::test]
+    async fn sidebar_right_press_on_a_window_block_selects_it_and_opens_its_menu() {
+        let (active, overlay_active, pending) = dispatch_sidebar_click(right_press_at(3, 3)).await;
+        assert_eq!(active, 1, "right-clicking window 1's block selects it");
+        assert!(overlay_active, "and opens the window menu for it");
+        assert_eq!(pending, 0);
+    }
+
+    /// phux-wrnm: every other cell of the strip is session chrome, so a
+    /// right press there opens the session menu rather than doing nothing.
+    #[tokio::test]
+    async fn sidebar_right_press_on_blank_chrome_opens_the_session_menu() {
+        let (active, overlay_active, pending) = dispatch_sidebar_click(right_press_at(3, 10)).await;
+        assert_eq!(active, 0, "no window was pointed at, so none is selected");
+        assert!(overlay_active, "the session menu opens");
+        assert_eq!(pending, 0);
+    }
+
     // ---------- phux-foz.12: status-bar window-tab hit targets ----------
 
     /// Build a status-bar painter with the `windows` widget in the left
@@ -5603,7 +5791,7 @@ mod tests {
         ev: InputEvent,
         position: crate::render::chrome::status_bar::Position,
         with_painter: bool,
-    ) -> (usize, Vec<FrameKind>) {
+    ) -> (usize, Vec<FrameKind>, bool) {
         let painter = painted_windows_bar(position, 80, 24);
         let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
         let mut conn = Connection::from_stream(a);
@@ -5695,7 +5883,7 @@ mod tests {
                 Err(_) => break,
             }
         }
-        (workspace.active, received)
+        (workspace.active, received, overlays.is_active())
     }
 
     /// A left press on window 1's tab in the BOTTOM bar (the user-reported
@@ -5706,7 +5894,7 @@ mod tests {
         use crate::render::chrome::status_bar::Position;
         // "0:bash 1:vim" — column 8 is inside window 1's tab; bottom bar
         // row of a 24-row viewport is y = 23.
-        let (active, received) =
+        let (active, received, _) =
             dispatch_bar_click(left_press_at(8, 23), Position::Bottom, true).await;
         assert_eq!(active, 1, "clicking window 1's tab must select it");
         assert!(
@@ -5720,7 +5908,8 @@ mod tests {
     #[tokio::test]
     async fn bar_click_honors_top_placement() {
         use crate::render::chrome::status_bar::Position;
-        let (active, received) = dispatch_bar_click(left_press_at(8, 0), Position::Top, true).await;
+        let (active, received, _) =
+            dispatch_bar_click(left_press_at(8, 0), Position::Top, true).await;
         assert_eq!(active, 1, "top-docked tab click must select window 1");
         assert!(received.is_empty());
     }
@@ -5733,7 +5922,7 @@ mod tests {
         use crate::render::chrome::status_bar::Position;
         // Column 6 is the tab separator; column 40 is blank padding.
         for x in [6, 40] {
-            let (active, received) =
+            let (active, received, _) =
                 dispatch_bar_click(left_press_at(x, 23), Position::Bottom, true).await;
             assert_eq!(active, 0, "col {x} must not select");
             assert!(
@@ -5748,7 +5937,7 @@ mod tests {
     #[tokio::test]
     async fn bar_claim_leaves_pane_content_alone() {
         use crate::render::chrome::status_bar::Position;
-        let (active, received) =
+        let (active, received, _) =
             dispatch_bar_click(left_press_at(8, 23), Position::Top, true).await;
         assert_eq!(active, 0, "a pane click must not select a window");
         match received.as_slice() {
@@ -5757,12 +5946,38 @@ mod tests {
         }
     }
 
+    /// phux-wrnm: a right press on a tab selects that window and opens its
+    /// window menu — the tab-bar equivalent of right-clicking a browser tab.
+    #[tokio::test]
+    async fn bar_right_press_on_a_tab_selects_it_and_opens_the_window_menu() {
+        use crate::render::chrome::status_bar::Position;
+        let (active, received, overlay) =
+            dispatch_bar_click(right_press_at(8, 23), Position::Bottom, true).await;
+        assert_eq!(active, 1, "right-clicking a tab selects its window");
+        assert!(overlay, "and opens that window's menu");
+        assert!(received.is_empty(), "nothing reaches a pane: {received:?}");
+    }
+
+    /// phux-wrnm: off the tabs the bar is session chrome — the session name,
+    /// the widgets, the padding — so a right press there opens the session
+    /// menu instead of being swallowed.
+    #[tokio::test]
+    async fn bar_right_press_off_the_tabs_opens_the_session_menu() {
+        use crate::render::chrome::status_bar::Position;
+        // Column 40 is blank padding on the "0:bash 1:vim" strip.
+        let (active, received, overlay) =
+            dispatch_bar_click(right_press_at(40, 23), Position::Bottom, true).await;
+        assert_eq!(active, 0, "no tab pointed at ⇒ no window switch");
+        assert!(overlay, "the session menu opens");
+        assert!(received.is_empty(), "nothing reaches a pane: {received:?}");
+    }
+
     /// A bar reservation without a lent painter (headless paths, stale
     /// fixtures) still claims the row safely: consumed, no panic, no select.
     #[tokio::test]
     async fn bar_click_without_painter_is_consumed() {
         use crate::render::chrome::status_bar::Position;
-        let (active, received) =
+        let (active, received, _) =
             dispatch_bar_click(left_press_at(8, 23), Position::Bottom, false).await;
         assert_eq!(active, 0);
         assert!(received.is_empty());
@@ -5868,6 +6083,33 @@ mod tests {
         Option<TerminalId>,
         std::collections::HashSet<TerminalId>,
     ) {
+        let mut overlays = OverlayState::new();
+        let (frames, drag, focused, optout, _repaint) =
+            dispatch_mouse_two_pane_into(&mut overlays, events, seed_optout, seed_vt, cell_px)
+                .await;
+        (frames, drag, focused, optout)
+    }
+
+    /// [`dispatch_mouse_two_pane_with`] against a caller-owned overlay
+    /// stack, so a test can assert what the batch pushed (phux-wrnm: the
+    /// right-click menus) as well as what it sent.
+    #[allow(
+        clippy::future_not_send,
+        reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+    )]
+    async fn dispatch_mouse_two_pane_into(
+        overlays: &mut OverlayState,
+        events: Vec<InputEvent>,
+        seed_optout: &[TerminalId],
+        seed_vt: &[(TerminalId, &[u8])],
+        cell_px: (u16, u16),
+    ) -> (
+        Vec<FrameKind>,
+        Option<DragGrab>,
+        Option<TerminalId>,
+        std::collections::HashSet<TerminalId>,
+        bool,
+    ) {
         let mut workspace = two_pane_workspace();
         let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
         let mut conn = Connection::from_stream(a);
@@ -5887,7 +6129,6 @@ mod tests {
         let mut next_request_id = 1;
         let mut pending_splits = HashMap::new();
         let mut pending_windows = HashMap::new();
-        let mut overlays = OverlayState::new();
         let theme = Theme::default();
         let mut switch_request = None;
         let mut session_name = String::new();
@@ -5899,6 +6140,7 @@ mod tests {
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let repainted;
         {
             let mut ctx = DispatchCtx {
                 resolver: None,
@@ -5909,7 +6151,7 @@ mod tests {
                 next_request_id: &mut next_request_id,
                 pending_splits: &mut pending_splits,
                 pending_windows: &mut pending_windows,
-                overlays: &mut overlays,
+                overlays,
                 keybindings: None,
                 theme: &theme,
                 sessions: &[],
@@ -5934,7 +6176,7 @@ mod tests {
                 agent_meta: &fleet_agent_meta,
                 vcs: &mut fleet_vcs,
             };
-            dispatch_input_events(
+            repainted = dispatch_input_events(
                 &mut out,
                 &mut conn,
                 events,
@@ -5964,7 +6206,7 @@ mod tests {
                 Err(_) => break, // EOF after the writer dropped
             }
         }
-        (received, drag, focused_pane, mouse_optout)
+        (received, drag, focused_pane, mouse_optout, repainted)
     }
 
     /// phux-npb3 hardening: a second Press arriving while a divider drag is
@@ -6196,6 +6438,138 @@ mod tests {
             }
             other => panic!("expected exactly one INPUT_MOUSE, got {other:?}"),
         }
+    }
+
+    // ---------- phux-wrnm: right-click context menus (ADR-0058) ----------
+
+    /// A right press over a pane whose app has NOT asked for the mouse
+    /// opens the pane menu and forwards nothing: the button belongs to the
+    /// client here, exactly as the left button does for drag-to-copy.
+    #[tokio::test]
+    async fn right_press_on_a_pane_opens_the_pane_menu() {
+        let mut overlays = OverlayState::new();
+        let (received, _, _, _, _) = dispatch_mouse_two_pane_into(
+            &mut overlays,
+            vec![InputEvent::Mouse(mev(
+                MouseAction::Press,
+                MouseButton::Right,
+                70.0,
+                5.0,
+            ))],
+            &[],
+            &[(tid(2), b"")],
+            (1, 1),
+        )
+        .await;
+        assert!(overlays.is_active(), "the pane menu must be pushed");
+        assert!(
+            overlays.wants_pointer_hover(),
+            "a menu hover-tracks the pointer, so the driver raises ?1003h",
+        );
+        assert!(
+            received.is_empty(),
+            "the right press is consumed by the menu; got {received:?}",
+        );
+    }
+
+    /// Click-to-focus runs first, so the menu acts on the pane you pointed
+    /// at rather than the one that happened to hold focus.
+    #[tokio::test]
+    async fn right_press_focuses_the_pane_under_the_pointer_first() {
+        let mut overlays = OverlayState::new();
+        let (_, _, focused, _, _) = dispatch_mouse_two_pane_into(
+            &mut overlays,
+            vec![InputEvent::Mouse(mev(
+                MouseAction::Press,
+                MouseButton::Right,
+                70.0,
+                5.0,
+            ))],
+            &[],
+            &[(tid(2), b"")],
+            (1, 1),
+        )
+        .await;
+        assert_eq!(focused, Some(tid(2)), "the right-clicked pane takes focus");
+        assert!(overlays.is_active());
+    }
+
+    /// An inner program that turned mouse tracking on owns every button —
+    /// including the right one, which many TUIs bind to their own menu. The
+    /// client must forward rather than steal it (the keyboard `context-menu`
+    /// action is the way in for those panes).
+    #[tokio::test]
+    async fn right_press_in_a_mouse_tracking_pane_forwards_instead_of_opening_a_menu() {
+        let mut overlays = OverlayState::new();
+        let (received, _, _, _, _) = dispatch_mouse_two_pane_into(
+            &mut overlays,
+            vec![InputEvent::Mouse(mev(
+                MouseAction::Press,
+                MouseButton::Right,
+                70.0,
+                5.0,
+            ))],
+            &[],
+            &[(tid(2), b"\x1b[?1000h\x1b[?1006h")],
+            (1, 1),
+        )
+        .await;
+        assert!(
+            !overlays.is_active(),
+            "the app owns the mouse; no menu may cover it",
+        );
+        match received.as_slice() {
+            [FrameKind::InputMouse { terminal_id, event }] => {
+                assert_eq!(*terminal_id, tid(2));
+                assert_eq!(event.button, MouseButton::Right);
+            }
+            other => panic!("expected the right press to be forwarded, got {other:?}"),
+        }
+    }
+
+    /// Clicking away closes the menu — and schedules the repaint that
+    /// erases it. Without the dismissal repaint the box stayed painted over
+    /// the panes until unrelated output happened to redraw them.
+    #[tokio::test]
+    async fn clicking_outside_the_menu_closes_it_and_repaints() {
+        let mut overlays = OverlayState::new();
+        let (_, _, _, _, repainted) = dispatch_mouse_two_pane_into(
+            &mut overlays,
+            vec![
+                // Open at the far right of pane 2, then click back over pane 1.
+                InputEvent::Mouse(mev(MouseAction::Press, MouseButton::Right, 70.0, 5.0)),
+                InputEvent::Mouse(mev(MouseAction::Press, MouseButton::Left, 2.0, 2.0)),
+            ],
+            &[],
+            &[(tid(2), b"")],
+            (1, 1),
+        )
+        .await;
+        assert!(!overlays.is_active(), "the click outside dismissed it");
+        assert!(repainted, "dismissal must schedule a repaint");
+    }
+
+    /// A pane that opted out via `set-pane mouse off` gets no menu either:
+    /// the whole point of the opt-out is that the client stops claiming
+    /// that pane's pointer events (phux-npb3).
+    #[tokio::test]
+    async fn right_press_on_an_opted_out_pane_opens_nothing() {
+        let mut overlays = OverlayState::new();
+        let (received, _, _, _, _) = dispatch_mouse_two_pane_into(
+            &mut overlays,
+            vec![InputEvent::Mouse(mev(
+                MouseAction::Press,
+                MouseButton::Right,
+                70.0,
+                5.0,
+            ))],
+            &[tid(2)],
+            &[(tid(2), b"")],
+            (1, 1),
+        )
+        .await;
+        assert!(!overlays.is_active());
+        assert!(received.is_empty(), "opted out ⇒ nothing forwarded either");
     }
 
     /// SPEC input.md §3.1: forwarded `INPUT_MOUSE` positions are surface-space

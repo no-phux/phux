@@ -199,6 +199,12 @@ pub const REGISTRY: &[ActionSpec] = &[
         args: &[],
     },
     ActionSpec {
+        name: "context-menu",
+        category: Category::Pane,
+        description: "Open the context menu for the focused pane (ADR-0058)",
+        args: &[],
+    },
+    ActionSpec {
         name: "new-window",
         category: Category::Window,
         description: "Open a new window",
@@ -390,10 +396,24 @@ pub fn palette_items(
 /// The chord annotation for a palette row: the bound chord's literal
 /// keystrokes, or `"unbound"` (also when the config failed to load).
 fn chord_annotation(keybindings: Option<&KeybindingsCfg>, resolved: &ResolvedAction) -> String {
-    keybindings.map_or_else(
-        || "unbound".to_owned(),
-        |kb| bound_chord(kb, resolved).unwrap_or_else(|| "unbound".to_owned()),
-    )
+    bound_chord_for(keybindings, resolved).unwrap_or_else(|| "unbound".to_owned())
+}
+
+/// The chord bound to `resolved`, or `None` when it is unbound (or the
+/// config failed to load).
+///
+/// The palette renders `None` as the literal `"unbound"` because its rows
+/// are a table with a shortcut column. The context menus (phux-wrnm) leave
+/// an unbound row's annotation blank instead — a menu is not a reference
+/// table, and a column of "unbound" reads as noise. Both go through this
+/// one resolver so the two surfaces can never disagree about which chord
+/// runs a row.
+#[must_use]
+pub fn bound_chord_for(
+    keybindings: Option<&KeybindingsCfg>,
+    resolved: &ResolvedAction,
+) -> Option<String> {
+    bound_chord(keybindings?, resolved)
 }
 
 /// Find the chord a user has bound to `target`, formatted as the literal

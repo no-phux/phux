@@ -32,6 +32,9 @@
 pub mod action_registry;
 pub mod actions;
 pub mod connection;
+// phux-wrnm: what is on each right-click menu (ADR-0058). The overlay that
+// renders one lives in `render::overlay::menu`.
+mod context_menu;
 pub mod copy;
 pub mod driver;
 mod exec_widgets;

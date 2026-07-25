@@ -2073,6 +2073,10 @@ async fn main_loop<W: super::RenderSink>(
         let want_capture =
             desired_mouse_capture(mouse_capture_cfg, focused_pane.as_ref(), &mouse_optout);
         sync_mouse_capture(out, want_capture).map_err(AttachError::Io)?;
+        // phux-wrnm: hover reporting follows the overlay stack the same way
+        // capture follows focus — raised while a context menu wants to track
+        // the pointer with no button held, dropped as soon as it closes.
+        sync_hover_tracking(out, overlays.wants_pointer_hover()).map_err(AttachError::Io)?;
         // phux-fysb: the off-loop stdout writer dropped a stale backlog under
         // a slow terminal. Repaint the latest state from scratch — a
         // self-contained full frame (or overlay) supersedes the dropped
@@ -4499,7 +4503,46 @@ fn sync_mouse_capture<W: Write>(out: &mut W, want: bool) -> io::Result<()> {
     if want {
         out.write_all(b"\x1b[?1002h\x1b[?1006h")?;
     } else {
+        // Any-motion is a strict superset of button-event tracking; drop it
+        // first so a capture-off transition while a menu is open cannot
+        // leave `?1003h` armed on the host terminal.
+        if HOVER_TRACKING_ACTIVE.swap(false, Ordering::SeqCst) {
+            out.write_all(b"\x1b[?1003l")?;
+        }
         out.write_all(b"\x1b[?1006l\x1b[?1002l")?;
+    }
+    out.flush()
+}
+
+/// Whether the client upgraded the outer terminal to any-motion reporting
+/// (`?1003h`) on top of its button-event capture (phux-wrnm).
+///
+/// ADR-0048 deliberately enables only `?1002h`: hover traffic the client
+/// discards is wasted bytes on every pointer move. A context menu is the
+/// one thing that *does* consume it — it hover-tracks the row under the
+/// pointer with no button held — so the mode is raised while such an
+/// overlay is on the stack and dropped the moment it closes. Kept as its
+/// own flag (not folded into [`MOUSE_CAPTURE_ACTIVE`]) so the capture
+/// reconcile and the reset path each restore exactly what they set.
+static HOVER_TRACKING_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Reconcile any-motion reporting with `want` (phux-wrnm).
+///
+/// A no-op unless the state changed, like [`sync_mouse_capture`]. Never
+/// raises `?1003h` while capture is off: with no capture the client has no
+/// business reporting motion at all, and the host terminal owns the mouse.
+/// Leaving hover mode re-asserts `?1002h` — some terminals treat the two
+/// DECSETs as one tracking mode and `?1003l` alone would drop button
+/// reporting with it, killing divider drags.
+fn sync_hover_tracking<W: Write>(out: &mut W, want: bool) -> io::Result<()> {
+    let want = want && MOUSE_CAPTURE_ACTIVE.load(Ordering::SeqCst);
+    if HOVER_TRACKING_ACTIVE.swap(want, Ordering::SeqCst) == want {
+        return Ok(());
+    }
+    if want {
+        out.write_all(b"\x1b[?1003h")?;
+    } else {
+        out.write_all(b"\x1b[?1003l\x1b[?1002h")?;
     }
     out.flush()
 }
@@ -4513,6 +4556,13 @@ fn sync_mouse_capture<W: Write>(out: &mut W, want: bool) -> io::Result<()> {
 /// `ALT_SCREEN_ACTIVE == false` and skips the leave sequence.
 pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     write_reset(out)?;
+    // phux-wrnm: a context menu open at detach (or at SIGINT) left the
+    // terminal in any-motion mode; drop that before the capture pair so the
+    // host is handed back exactly what it had.
+    if HOVER_TRACKING_ACTIVE.swap(false, Ordering::SeqCst) {
+        out.write_all(b"\x1b[?1003l")?;
+        out.flush()?;
+    }
     // ADR-0048: drop our own mouse tracking BEFORE leaving the alt screen,
     // so the host terminal's native click-drag selection is restored on
     // detach. `?1006l` then `?1002l` undoes the entry pair in reverse.
@@ -5940,6 +5990,49 @@ mod tests {
         sync_mouse_capture(&mut out, true).unwrap();
         assert_eq!(out, b"\x1b[?1002h\x1b[?1006h");
         assert!(MOUSE_CAPTURE_ACTIVE.load(Ordering::SeqCst));
+
+        MOUSE_CAPTURE_ACTIVE.store(false, Ordering::SeqCst);
+    }
+
+    /// phux-wrnm: hover reporting is raised only while something consumes
+    /// it, only on top of live capture, and always unwound — including when
+    /// capture itself drops while a menu is still open.
+    #[test]
+    fn sync_hover_tracking_rides_on_top_of_capture() {
+        let _guard = TERMINAL_RESET_TEST_LOCK
+            .lock()
+            .expect("terminal reset test lock");
+        MOUSE_CAPTURE_ACTIVE.store(false, Ordering::SeqCst);
+        HOVER_TRACKING_ACTIVE.store(false, Ordering::SeqCst);
+
+        // No capture ⇒ the client has no business reporting motion.
+        let mut out = Vec::new();
+        sync_hover_tracking(&mut out, true).unwrap();
+        assert!(out.is_empty(), "capture off ⇒ no hover bytes: {out:?}");
+        assert!(!HOVER_TRACKING_ACTIVE.load(Ordering::SeqCst));
+
+        // With capture live, opening a menu raises any-motion once.
+        MOUSE_CAPTURE_ACTIVE.store(true, Ordering::SeqCst);
+        sync_hover_tracking(&mut out, true).unwrap();
+        assert_eq!(out, b"\x1b[?1003h");
+        out.clear();
+        sync_hover_tracking(&mut out, true).unwrap();
+        assert!(out.is_empty(), "no transition ⇒ no bytes: {out:?}");
+
+        // Closing it drops any-motion and re-asserts button-event tracking,
+        // so divider drags survive the round trip.
+        sync_hover_tracking(&mut out, false).unwrap();
+        assert_eq!(out, b"\x1b[?1003l\x1b[?1002h");
+
+        // Capture dropping (focus moved to an opted-out pane) while a menu
+        // is open must not strand `?1003h` on the host terminal.
+        out.clear();
+        sync_hover_tracking(&mut out, true).unwrap();
+        assert_eq!(out, b"\x1b[?1003h");
+        out.clear();
+        sync_mouse_capture(&mut out, false).unwrap();
+        assert_eq!(out, b"\x1b[?1003l\x1b[?1006l\x1b[?1002l");
+        assert!(!HOVER_TRACKING_ACTIVE.load(Ordering::SeqCst));
 
         MOUSE_CAPTURE_ACTIVE.store(false, Ordering::SeqCst);
     }

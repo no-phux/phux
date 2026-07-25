@@ -1240,6 +1240,7 @@ test, so this table cannot silently drift):
 | `copy-mode`       |                                             |
 | `show-help`       |                                             |
 | `command-palette` | (opens the palette — §5.5)                  |
+| `context-menu`    | (opens the focused pane's context menu — §7.1, ADR-0058) |
 | `window-picker`   | (opens the grouped window picker — §5.5)    |
 | `session-picker`  | (opens the session picker — §5.5)           |
 | `agent-fleet`     | (opens the fleet dashboard — §5.6)          |
@@ -1686,15 +1687,25 @@ the pointer over a divider whenever the inner program has no mouse mode.
 |                          | with `?1007l`). In copy-mode it       |
 |                          | scrolls the focused pane's local      |
 |                          | viewport                              |
-| Right-click in pane      | Forwarded to the inner program        |
+| Right-click in pane      | Opens the pane context menu (§7.1);   |
+|                          | forwarded to the inner program        |
+|                          | instead when that program has mouse   |
+|                          | tracking on                           |
 | Click on status bar row  | A `windows`-widget tab selects that   |
 |                          | window (`select-window { index }`,    |
 |                          | phux-foz.12); every other cell on the |
 |                          | row is consumed as chrome (no-op)     |
+| Right-click on the bar   | A tab selects its window and opens    |
+|                          | the window menu; elsewhere on the row |
+|                          | opens the session menu (§7.1)         |
 | Click on a sidebar row   | Select that window (window blocks and |
 |                          | agent rows); `+ new` / `= menu` / the |
 |                          | collapse chevron run their actions    |
 |                          | (§6.4)                                |
+| Right-click the sidebar  | A window or agent row selects that    |
+|                          | window and opens the window menu;     |
+|                          | every other cell opens the session    |
+|                          | menu (§7.1)                           |
 
 Only divider cells change meaning. Every event inside a pane's rectangle
 is forwarded to that pane with pane-local coordinates, so an inner TUI
@@ -1727,6 +1738,57 @@ it — that is the mouse path back in — but the client never synthesizes
 pane. Nothing crosses the wire; a pane's opt-out ends when it closes.
 
 We do not ship copy-mode mouse drag selection — see §11.
+
+### 7.1 Context menus
+
+> **Status:** Shipped (ADR-0058).
+
+The right button opens a menu anchored at the pointer, listing the
+actions that apply to what you clicked. Three menus, one per target:
+
+| Right-click on            | Menu    | Rows                                |
+|---------------------------|---------|-------------------------------------|
+| A pane                    | pane    | Split right, Split down, Zoom /     |
+|                           |         | Unzoom, Copy mode, All commands…,   |
+|                           |         | Close pane                          |
+| A status-bar tab or a     | window  | New window, Rename window…, Pick    |
+| sidebar window/agent row  |         | window…, All commands…, Close       |
+|                           |         | window                              |
+| Any other chrome cell     | session | New window, Pick window…, Pick      |
+|                           |         | session…, Rename session…, Agent    |
+|                           |         | fleet, Toggle sidebar, All          |
+|                           |         | commands…, Detach                   |
+
+A menu row commits the same `ResolvedAction` a keybinding would, so it
+runs through one dispatch path and nothing is menu-only. Each row shows
+the chord bound to it, when there is one.
+
+Right-clicking a window's tab or sidebar row **selects that window
+first**, then opens the menu for it — the menu acts on what you pointed
+at, not on whatever was active.
+
+**Driving one.** Both idioms work, with no mode to choose:
+
+- Press, drag onto a row, release — the row under the pointer is picked.
+- Press and release, move, then click a row — a left or right press on a
+  row picks it.
+
+The pointer hovers rows as it moves (the client raises `?1003h`
+any-motion reporting for as long as a menu is open, and drops it again
+on close). Arrow keys, `j` / `k`, `C-n` / `C-p`, `Home` / `End` move the
+selection; `Enter` picks; `Esc`, `q`, or a click outside dismisses. A
+click on the menu's border or on a separator does nothing.
+
+**Panes that own the mouse.** An inner program with mouse tracking on
+(vim, htop, an agent TUI, anything with its own right-click menu) keeps
+every button, so no menu opens over it — the same boundary drag-to-copy
+respects. Bind the `context-menu` action to open the pane menu from the
+keyboard there, or use the command palette. A pane opted out via
+`set-pane mouse off` has no menu either, by the same logic.
+
+The menu never covers the sidebar or the status-bar row: it is clamped
+into the pane content rect, flipping left and up at the edges, so a
+click on a bottom-docked bar opens the box upward over the panes.
 
 ---
 

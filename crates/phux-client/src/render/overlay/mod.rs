@@ -32,6 +32,7 @@ use ratatui::style::Color;
 
 pub mod copy_mode;
 pub mod help;
+pub mod menu;
 pub mod prompt;
 pub mod select_list;
 pub mod selection;
@@ -41,6 +42,7 @@ pub mod widgets;
 
 pub use copy_mode::CopyModeOverlay;
 pub use help::HelpOverlay;
+pub use menu::{ContextMenu, MenuRow};
 pub use prompt::PromptOverlay;
 pub use select_list::{SelectItem, SelectList};
 // The shared copy-mode selection contract (ADR-0045). This module is the single
@@ -135,6 +137,17 @@ pub trait RenderOverlay {
     /// were not there, so a passthrough overlay can never eat or delay a
     /// chord. Default `false` — every modal overlay captures input.
     fn is_input_passthrough(&self) -> bool {
+        false
+    }
+
+    /// phux-wrnm: `true` for an overlay that hover-tracks the pointer with
+    /// no button held (the context menu). The driver upgrades the outer
+    /// terminal's mouse reporting from button-event (`?1002h`) to
+    /// any-motion (`?1003h`) while such an overlay is on the stack, and
+    /// drops back the moment it closes — hover traffic is worth the bytes
+    /// only while something on screen consumes it (ADR-0048's rationale
+    /// for not enabling `?1003h` by default stands otherwise).
+    fn wants_pointer_hover(&self) -> bool {
         false
     }
 
@@ -251,6 +264,15 @@ impl OverlayState {
     #[must_use]
     pub fn top_is_passthrough(&self) -> bool {
         self.stack.last().is_some_and(|o| o.is_input_passthrough())
+    }
+
+    /// phux-wrnm: `true` when any stacked overlay hover-tracks the pointer
+    /// (see [`RenderOverlay::wants_pointer_hover`]). The driver reconciles
+    /// the outer terminal's motion reporting against this each loop
+    /// iteration, exactly the way it reconciles capture against focus.
+    #[must_use]
+    pub fn wants_pointer_hover(&self) -> bool {
+        self.stack.iter().any(|o| o.wants_pointer_hover())
     }
 
     /// Push `overlay` onto the top of the stack. It becomes the input
