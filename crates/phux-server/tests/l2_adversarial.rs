@@ -145,14 +145,25 @@ async fn subscribe_to_events(stream: &mut UnixStream, terminal_id: Option<&Termi
 
 /// Helper: read a single `EVENT` frame from the subscription. Returns `None` on timeout or EOF.
 async fn read_event(stream: &mut UnixStream, deadline: Instant) -> Option<AgentEvent> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return None;
-    }
-    match timeout(remaining, recv_typed(stream)).await {
-        Ok((_type_byte, FrameKind::Event { event, .. })) => Some(event),
-        Ok(_) => None,  // skip non-event frames
-        Err(_) => None, // timeout
+    // Keep reading until an Event arrives or the deadline expires. The
+    // earlier version returned `None` for a non-Event frame, which every
+    // `while let Some(..)` caller reads as end-of-stream — so a subscriber
+    // that happened to be handed an interleaved non-Event frame first
+    // stopped collecting with zero events while its peer, served an Event
+    // first, collected normally. That is the whole of the
+    // `A=0 B=1` flake in `test_concurrent_subscription_isolation`: not a
+    // subscription-isolation failure, just this helper ending one reader's
+    // loop early. The comment always said "skip"; now the code does.
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match timeout(remaining, recv_typed(stream)).await {
+            Ok((_type_byte, FrameKind::Event { event, .. })) => return Some(event),
+            Ok(_) => {}            // non-event frame: skip it and keep waiting
+            Err(_) => return None, // deadline reached
+        }
     }
 }
 
