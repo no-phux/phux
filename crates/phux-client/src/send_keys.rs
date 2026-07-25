@@ -2,12 +2,13 @@
 //! ADR-0022, phux-3j3).
 //!
 //! Each CLI argument is either a **named key** (`Enter`, `Tab`, `Escape`,
-//! `Up`, `C-c`, `M-x`, …) or a **literal string** sent character by
-//! character — matching `tmux send-keys`, so it's legible to a model that
-//! already knows tmux. We translate each arg to its byte sequence and feed
-//! the *same* [`StdinParser`] the
-//! interactive client uses for real keystrokes, so the resulting
-//! `KeyEvent`s are identical to typing — no hand-rolled char→key table.
+//! `Up`, `C-c`, `M-x`, …) or a **literal string**. Literal strings normally
+//! type character by character, matching `tmux send-keys`. A literal run
+//! immediately before `Enter` is instead a submission-safe paste followed by
+//! the real key, so a paste-aware TUI can distinguish text from submission.
+//! Named-key bytes and ordinary literal bytes feed the *same* [`StdinParser`]
+//! the interactive client uses for real keystrokes; no hand-rolled char→key
+//! table is involved.
 //!
 //! The built events ride the side-effect-free `ROUTE_INPUT` control
 //! command (L1.md §5.1) rather than an `ATTACH` + `INPUT_KEY` stream. So,
@@ -77,19 +78,75 @@ fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
 
 /// Translate all key-spec args into structured [`InputEvent`]s.
 ///
-/// Concatenates the args' bytes through one [`StdinParser`] (so an `Up`
-/// arg yields the arrow `KeyEvent`, a bare `Escape` is flushed at the
-/// end, etc.). The events are then routed by id via `ROUTE_INPUT`; they
-/// are not addressed to a Terminal here.
+/// A contiguous literal run immediately followed by `Enter`/`Return` is one
+/// trusted paste event followed by the real Enter key. The server then honors
+/// the pane's live DEC mode 2004 state: paste-aware TUIs receive explicit
+/// bracketed-paste delimiters before Enter, so they cannot mistake a fast text
+/// burst plus carriage return for a multiline paste. Literal input elsewhere
+/// retains tmux-shaped character-by-character semantics.
+///
+/// The events are routed by id via `ROUTE_INPUT`; they are not addressed to a
+/// Terminal here.
 #[must_use]
 pub fn events_for(args: &[String]) -> Vec<InputEvent> {
     let mut parser = StdinParser::default();
     let mut events = Vec::new();
-    for arg in args {
-        events.extend(parser.feed(&spec_to_bytes(arg)));
+    let mut index = 0;
+
+    while index < args.len() {
+        if is_named_spec(&args[index]) {
+            events.extend(parser.feed(&spec_to_bytes(&args[index])));
+            index += 1;
+            continue;
+        }
+
+        let literal_start = index;
+        while index < args.len() && !is_named_spec(&args[index]) {
+            index += 1;
+        }
+        if index < args.len() && is_enter_spec(&args[index]) {
+            events.extend(parser.flush());
+            let data = args[literal_start..index]
+                .iter()
+                .flat_map(|arg| arg.bytes())
+                .collect();
+            events.push(InputEvent::Paste(PasteEvent {
+                trust: PasteTrust::Trusted,
+                data,
+            }));
+        } else {
+            for arg in &args[literal_start..index] {
+                events.extend(parser.feed(arg.as_bytes()));
+            }
+        }
     }
     events.extend(parser.flush());
     events
+}
+
+fn is_enter_spec(arg: &str) -> bool {
+    matches!(arg.to_ascii_lowercase().as_str(), "enter" | "return")
+}
+
+fn is_named_spec(arg: &str) -> bool {
+    matches!(
+        arg.to_ascii_lowercase().as_str(),
+        "enter"
+            | "return"
+            | "tab"
+            | "escape"
+            | "esc"
+            | "space"
+            | "bspace"
+            | "backspace"
+            | "up"
+            | "down"
+            | "right"
+            | "left"
+            | "home"
+            | "end"
+    ) || strip_prefix_ci(arg, "c-").is_some_and(|rest| rest.chars().count() == 1)
+        || strip_prefix_ci(arg, "m-").is_some()
 }
 
 /// Resolve `target` to the Terminal id of its focused pane, against a
@@ -293,10 +350,31 @@ mod tests {
     }
 
     #[test]
-    fn events_emit_one_key_per_char() {
-        let events = events_for(&["ab".to_owned(), "Enter".to_owned()]);
-        // 'a', 'b', and Enter — three key events.
-        assert_eq!(events.len(), 3, "got {events:?}");
-        assert!(matches!(events[0], InputEvent::Key(_)));
+    fn literal_text_before_enter_becomes_submission_safe_paste() {
+        let events = events_for(&[
+            "Reply with ".to_owned(),
+            "OK".to_owned(),
+            "Enter".to_owned(),
+        ]);
+        assert_eq!(events.len(), 2, "got {events:?}");
+        assert_eq!(
+            events[0],
+            InputEvent::Paste(PasteEvent {
+                trust: PasteTrust::Trusted,
+                data: b"Reply with OK".to_vec(),
+            })
+        );
+        assert!(matches!(events[1], InputEvent::Key(_)));
+    }
+
+    #[test]
+    fn literal_text_without_enter_remains_character_keys() {
+        let events = events_for(&["ab".to_owned()]);
+        assert_eq!(events.len(), 2, "got {events:?}");
+        assert!(
+            events
+                .iter()
+                .all(|event| matches!(event, InputEvent::Key(_)))
+        );
     }
 }

@@ -100,8 +100,11 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
 - **`phux send-keys [--socket P] TARGET KEYS...`** — route named keys or
   literal strings to one resolved pane by id (`ROUTE_INPUT`). `TARGET` is
   required. No JSON. `KEYS` are tmux-shaped: named keys (`Enter`, `Tab`,
-  `Escape`, `Up`, `C-c`, `M-x`) or a literal string sent character by
-  character.
+  `Escape`, `Up`, `C-c`, `M-x`) or literal strings. Literals normally type
+  character by character. A contiguous literal run immediately before
+  `Enter`/`Return` becomes one trusted paste followed by the real Enter key;
+  this honors live bracketed-paste mode so agent TUIs cannot absorb the
+  submit key into a fast text burst.
 - **`phux paste [--untrusted] [--socket P] TARGET [TEXT]`** — deliver a
   payload to one resolved pane as a single paste event (`ROUTE_INPUT`).
   `TARGET` is required; `TEXT` is the payload, read from stdin when omitted
@@ -113,10 +116,11 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   if typed. **A paste INSERTS; it does not SUBMIT.** Paste-aware shells and
   REPLs (bash on readline 8.1+, python 3.13+'s PyREPL) buffer the bracketed
   block and wait for a real Enter — follow with
-  `phux send-keys TARGET Enter` to run what you pasted. Prefer `paste` over
-  `send-keys` for anything multiline or indented: `send-keys` types
-  character by character, so the target program's auto-indent reacts to
-  every newline and corrupts indented blocks, while a paste arrives intact.
+  `phux send-keys TARGET Enter` to run what you pasted. Prefer `paste` for
+  anything multiline or indented when you want insertion without submission:
+  ordinary `send-keys` literals type character by character, while a dedicated
+  paste arrives intact. The submission shorthand
+  `phux send-keys TARGET "text" Enter` is also bracketed-paste-aware.
   Pastes are **trusted by default** — the agent vouches for content it
   composed, the same ungated input authority `send-keys` has. `--untrusted`
   opts into the server's safety gate: the payload is classified, and the
@@ -809,10 +813,10 @@ phux paste repl "$(cat snippet.py)"
 phux send-keys repl Enter
 ```
 
-`send-keys` would type the block character by character, letting the REPL's
-auto-indent mangle every indented line; `paste` delivers it as one bracketed
-block (when the pane's program supports DEC mode 2004) and the program
-inserts it verbatim, waiting for the explicit Enter.
+`send-keys` without a trailing `Enter` would type the block character by
+character, letting the REPL's auto-indent mangle every indented line; `paste`
+delivers it as one bracketed block (when the pane's program supports DEC mode
+2004) and the program inserts it verbatim, waiting for the explicit Enter.
 
 The fleet extension is discover → create → place → shape → act → observe →
 surface asks → verify. See the executable

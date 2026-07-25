@@ -652,10 +652,11 @@ pub(crate) enum Command {
     /// Send keys to a pane.
     ///
     /// tmux-shaped: each KEY is a named key (`Enter`, `Tab`, `Escape`,
-    /// `Up`, `C-c`, `M-x`, …) or a literal string sent character by
-    /// character. TARGET is a selector (see the top-level help); it
-    /// resolves client-side to one pane and the events route to it by id,
-    /// so the live pane is neither attached nor resized.
+    /// `Up`, `C-c`, `M-x`, …) or a literal string. Literals normally type
+    /// character by character; a literal run immediately before `Enter` is
+    /// delivered as a submission-safe paste followed by the real key, honoring
+    /// the pane's live bracketed-paste mode. TARGET is resolved client-side to
+    /// one pane, so the live pane is neither attached nor resized.
     ///
     /// Flags (`--socket`) MUST precede TARGET: KEYS is a trailing var-arg,
     /// so anything after TARGET is taken as a key to send.
@@ -684,8 +685,8 @@ pub(crate) enum Command {
     /// When the pane's program has bracketed paste (DEC mode 2004) switched
     /// on, the server wraps the payload in paste markers and the program
     /// receives it as a single block — auto-indent stays off and multiline
-    /// text arrives intact, unlike `send-keys`, which types character by
-    /// character. Without the mode, the raw bytes are delivered as if typed.
+    /// text arrives intact. Without the mode, the raw bytes are delivered as
+    /// if typed.
     ///
     /// A paste INSERTS; it does not SUBMIT. Paste-aware shells and REPLs
     /// buffer the block until a real Enter — follow with
