@@ -143,6 +143,9 @@ phux wait [TARGET]            # poll a pane until a condition holds
 phux watch [TARGET]           # stream a pane's live events
 phux ask TARGET QUESTION      # report an agent ask event for a pane
 phux config <init|path|show>  # scaffold + inspect config
+phux config check [PATH] [--json]
+                              # report every unknown key / wrong value with
+                              # its full dotted path and originating layer
 phux config plugins [--json]  # compatibility alias: inspect plugin manifests
 phux config agents [--json]   # inspect configured plugin agent states
 phux config run PLUGIN ACTION # execute a configured plugin action
@@ -401,6 +404,10 @@ phux config show --layers   # provenance: which layer of the extends
                             #   (schema_version 1)
 phux config plugins --json  # print configured plugin manifests as JSON
 phux config agents --json   # print configured plugin agent states as JSON
+phux config check           # every unknown key and wrong value, each
+                            #   with its full dotted path and the layer
+                            #   file that introduced it. --json for the
+                            #   stable document (schema_version 1)
 phux config reload          # validate, then apply the config to running
                             #   clients in place (see 4.3)
 phux plugin list --json     # inspect the plugin registry
@@ -906,6 +913,56 @@ phux satellite remove devbox
 
 `add` is add-or-update and replaces the whole entry, so repeat the auth
 flags when re-adding a name; omitting them clears the stored auth material.
+
+### 4.2.1 Validating: `phux config check`
+
+The loader already refuses an unknown key — [`Config`](../../crates/phux-config/src/schema.rs)
+carries `deny_unknown_fields`, so a typo is a hard error, not a silent
+no-op. What the loader is not is *locatable*. It reports:
+
+```text
+config.toml: 1:1: unknown field `enabledd`, expected one of `enabled`, `width`, `position`
+```
+
+Three things are wrong with that. It names only the leaf field, and
+`enabledd` does not say which table it is in — several tables have an
+`enabled`, a `width`, and a `position`. The `1:1` is not where the typo is;
+it is the no-span fallback, because what is being deserialized is the
+*merged layer stack*, not your file. And it stops at the first problem, so a
+config with four typos takes four edit-run cycles.
+
+`phux config check` fixes all three:
+
+```console
+$ phux config check
+keybindings.which-key: bad value: invalid type: string "yes", expected a boolean
+keybindings.wich-key: unknown key: unknown field `wich-key`, expected one of `prefix`, `prefix-table`, `global`, `which-key`, `which-key-delay-ms`
+sidebar.enabledd: unknown key: unknown field `enabledd`, expected one of `enabled`, `width`, `position`
+  from /etc/phux/team-baseline.toml
+3 problems
+```
+
+The dotted paths come from the schema walk itself, so they cannot drift the
+way a hand-maintained key list would. The `from` line appears only when the
+key came from somewhere other than the file you named — with `extends`
+(ADR-0039) in play, "is this typo mine or the distro's?" is the question you
+actually have, and a line number in your own file would not answer it.
+
+Faults are classified because they have different fixes: an **unknown key**
+is a typo or a key removed in a later version; a **bad value** is a real key
+with the wrong type.
+
+Exit codes are three-way so a dotfiles CI job can react differently to each:
+
+| Exit | Meaning |
+|---|---|
+| 0 | clean, or no config file at all (the shipped defaults apply) |
+| 1 | findings — the config loads nothing, or loads wrong |
+| 2 | the check could not run: unreadable file, malformed TOML, cyclic `extends` |
+
+A missing file reports `no config file (shipped defaults apply)` rather than
+`ok`, because a bare "ok" would hide the common case of checking the wrong
+path.
 
 ### 4.3 Reloading
 

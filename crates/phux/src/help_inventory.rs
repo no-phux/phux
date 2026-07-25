@@ -93,6 +93,7 @@ phux attach
 phux completion
 phux config
 phux config agents
+phux config check
 phux config init
 phux config path
 phux config plugins

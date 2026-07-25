@@ -29,6 +29,7 @@ pub(crate) fn run_config(action: &ConfigAction) -> ExitCode {
             println!("{}", config_loader::config_path().display());
             ExitCode::SUCCESS
         }
+        ConfigAction::Check { path, json } => run_config_check(path.as_deref(), *json),
         ConfigAction::Init { force, distro } => run_config_init(*force, distro.as_deref()),
         ConfigAction::Show {
             default,
@@ -45,6 +46,127 @@ pub(crate) fn run_config(action: &ConfigAction) -> ExitCode {
             cwd,
             json,
         } => run_config_action(plugin, action, *timeout, cwd.clone(), *json),
+    }
+}
+
+/// `phux config check [PATH] [--json]` (phux-q9wj.3).
+///
+/// Reports every unknown key and wrong value in the resolved layer stack,
+/// each with its full dotted path and the layer file that introduced it.
+///
+/// Exit codes: 0 clean, 1 findings, 2 the check could not run (unreadable
+/// file, malformed TOML, cyclic `extends`). The three are distinct because a
+/// CI gate wants to fail differently on "your config has a typo" than on "I
+/// could not read your config at all".
+fn run_config_check(path: Option<&Path>, json: bool) -> ExitCode {
+    let path = path.map_or_else(config_loader::config_path, Path::to_path_buf);
+
+    // A missing file is clean, not an error: no config means no overrides,
+    // exactly as the loader treats it.
+    let mut missing = false;
+    let body = match std::fs::read_to_string(&path) {
+        Ok(body) => body,
+        // A missing file is clean, but say so rather than printing "ok" for
+        // a path that does not exist — the operator may have checked the
+        // wrong file, and a bare "ok" would hide that.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            missing = true;
+            String::new()
+        }
+        Err(err) => {
+            eprintln!("phux: cannot read {}: {err}", path.display());
+            return ExitCode::from(2);
+        }
+    };
+
+    let report = match phux_config::check::check(&body, &path) {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("phux: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if json {
+        return print_check_json(&path, &report, missing);
+    }
+    print_check_human(&path, &report, missing)
+}
+
+/// Human rendering: one line per finding, path first so the column scans.
+fn print_check_human(path: &Path, report: &phux_config::CheckReport, missing: bool) -> ExitCode {
+    if missing {
+        println!(
+            "{}: no config file (shipped defaults apply)",
+            path.display()
+        );
+        return ExitCode::SUCCESS;
+    }
+    if report.is_ok() {
+        println!("{}: ok", path.display());
+        return ExitCode::SUCCESS;
+    }
+
+    for finding in &report.findings {
+        println!(
+            "{}: {}: {}",
+            finding.path,
+            finding.fault.label(),
+            finding.message
+        );
+        // Only worth a line when it is not the file the user just named;
+        // repeating their own path on every finding is noise.
+        let origin = finding.origin();
+        if origin != path.display().to_string() {
+            println!("  from {origin}");
+        }
+    }
+
+    let n = report.findings.len();
+    let plural = if n == 1 { "problem" } else { "problems" };
+    if report.truncated {
+        println!("{n} {plural} (list truncated; fix these and re-run)");
+    } else {
+        println!("{n} {plural}");
+    }
+    ExitCode::FAILURE
+}
+
+/// JSON rendering for scripts and CI.
+fn print_check_json(path: &Path, report: &phux_config::CheckReport, missing: bool) -> ExitCode {
+    let findings: Vec<_> = report
+        .findings
+        .iter()
+        .map(|finding| {
+            serde_json::json!({
+                "path": finding.path,
+                "fault": finding.fault.label(),
+                "message": finding.message,
+                "origin": finding.origin(),
+            })
+        })
+        .collect();
+    let doc = serde_json::json!({
+        "schema_version": 1,
+        "config": path,
+        "exists": !missing,
+        "ok": report.is_ok(),
+        "truncated": report.truncated,
+        "findings": findings,
+    });
+    match serde_json::to_string_pretty(&doc) {
+        Ok(rendered) => {
+            println!("{rendered}");
+            if report.is_ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(err) => {
+            eprintln!("phux: could not render check JSON: {err}");
+            ExitCode::from(2)
+        }
     }
 }
 

@@ -19,6 +19,9 @@ serde.workspace = true
 # for `Cell::text` (see phux-x7a).
 smallvec.workspace = true
 toml.workspace = true
+# Full dotted paths on schema errors, for `phux config check` and for the
+# loader's own message.
+serde_path_to_error.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

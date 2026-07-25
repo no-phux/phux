@@ -131,6 +131,15 @@ toml = "1"
 # hand-written config into a generated document; `toml_edit` is the maintained
 # mutable-document companion to the TOML stack.
 toml_edit = "0.23"
+# The config schema already rejects unknown keys (`deny_unknown_fields`),
+# but serde's error names only the leaf field — `unknown field \`wich-key\``,
+# with no parent table — which is ambiguous the moment two tables share a
+# key name (`enabled`, `width`, `position`). `serde_path_to_error` wraps the
+# deserializer and reports the full dotted path (`keybindings.wich-key`) for
+# both unknown-field and wrong-type errors. Deriving the path from the
+# schema walk is the only approach that cannot drift; a hand-maintained key
+# list is exactly the kind of thing that rots. One small pure-Rust crate.
+serde_path_to_error = "0.1"
 # libghostty is our canonical terminal backend (ADR-0008). Both phux-protocol
 # and phux-server depend on it — phux-protocol re-exports types, phux-server
 # drives the emulator.

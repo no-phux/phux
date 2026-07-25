@@ -29,6 +29,26 @@ pub(crate) enum ConfigAction {
     /// whether or not the file exists.
     Path,
 
+    /// Validate the config and report every problem, with full key paths.
+    ///
+    /// The loader already refuses an unknown key, but it names only the leaf
+    /// field (`unknown field 'enabledd'`) and stops at the first one. This
+    /// reports `sidebar.enabledd`, names the layer file that introduced it,
+    /// and finds every problem in one pass — so a config with four typos
+    /// takes one edit, not four.
+    ///
+    /// Exits 0 when clean and 1 when anything was found, so it can gate a
+    /// dotfiles CI run.
+    Check {
+        /// Config file to check. Defaults to the resolved config path.
+        #[arg(value_name = "PATH")]
+        path: Option<std::path::PathBuf>,
+
+        /// Emit a stable JSON document instead of human text.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Print the effective config (shipped defaults + your overrides) as
     /// TOML. With `--default`, print the shipped defaults verbatim
     /// instead, ignoring any user config. With `--layers`, print which

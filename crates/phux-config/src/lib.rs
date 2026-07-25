@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod check; // phux-q9wj.3 (`phux config check`: schema-unknown keys)
 pub mod distro;
 mod error;
 pub mod integration; // phux-ark7 (ADR-0042): agent integration templates + launch
@@ -25,6 +26,7 @@ pub mod loader; // phux-nz4.2
 pub mod scaffold; // phux-ijp (config init: commented projection of default.toml)
 pub mod widget; // phux-nz4.4 (note: schema::Widget is the TOML enum; widget::Widget is the trait)
 
+pub use check::{CheckReport, Fault, Finding};
 pub use error::{ConfigError, byte_offset_to_line_col};
 pub use layer::{
     ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, merged_config_with_provenance,
