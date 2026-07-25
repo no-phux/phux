@@ -71,6 +71,12 @@ pub(crate) fn spawn_agent_state_drain(
             // changed and no hook is owed.
             let hook = state.with_mut(|s| {
                 let scope = Scope::Terminal(wire_terminal_id.clone());
+                // No dispatcher means no hook can run, so skip the work
+                // entirely: reading the prior record costs a metadata lookup
+                // and a JSON decode on every published transition, and a
+                // server with no `[[hooks.agent-state-changed]]` entry must
+                // not pay for a notification nobody asked for.
+                let hooks_live = s.hook_dispatcher().is_some();
                 match event {
                     AgentDetectEvent::Retract => {
                         // Only ever delete a record we authored. A human's
@@ -78,9 +84,13 @@ pub(crate) fn spawn_agent_state_drain(
                         if !s.agent_records().detector_owns(&wire_terminal_id) {
                             return None;
                         }
-                        let from = crate::agent_state::stored_state(
-                            s.metadata().get(&scope, TERMINAL_AGENT_KEY).as_deref(),
-                        );
+                        let from = hooks_live
+                            .then(|| {
+                                crate::agent_state::stored_state(
+                                    s.metadata().get(&scope, TERMINAL_AGENT_KEY).as_deref(),
+                                )
+                            })
+                            .flatten();
                         // ... and "we authored it" is not the same as "all of
                         // it is ours". After `phux agent set --name reviewer`
                         // the detector keeps filling `state` in, and that write
@@ -96,13 +106,17 @@ pub(crate) fn spawn_agent_state_drain(
                                 s.metadata_set(&scope, TERMINAL_AGENT_KEY, bytes);
                                 s.agent_records_mut()
                                     .note_detector_retract(&wire_terminal_id);
-                                return retract_hook(&wire_terminal_id, from.as_deref());
+                                return hooks_live
+                                    .then(|| retract_hook(&wire_terminal_id, from.as_deref()))
+                                    .flatten();
                             }
                         }
                         s.metadata_delete(&scope, TERMINAL_AGENT_KEY);
                         s.agent_records_mut()
                             .note_detector_retract(&wire_terminal_id);
-                        retract_hook(&wire_terminal_id, from.as_deref())
+                        hooks_live
+                            .then(|| retract_hook(&wire_terminal_id, from.as_deref()))
+                            .flatten()
                     }
                     AgentDetectEvent::State(report) => {
                         // ADR-0046 §E: an explicit SET_METADATA that supplied
@@ -111,7 +125,9 @@ pub(crate) fn spawn_agent_state_drain(
                             return None;
                         }
                         let existing = s.metadata().get(&scope, TERMINAL_AGENT_KEY);
-                        let from = crate::agent_state::stored_state(existing.as_deref());
+                        let from = hooks_live
+                            .then(|| crate::agent_state::stored_state(existing.as_deref()))
+                            .flatten();
                         let to = report.state.as_str();
                         let bytes = crate::agent_state::compose(
                             existing.as_deref(),
@@ -121,13 +137,17 @@ pub(crate) fn spawn_agent_state_drain(
                         );
                         s.metadata_set(&scope, TERMINAL_AGENT_KEY, bytes);
                         s.agent_records_mut().note_detector_write(&wire_terminal_id);
-                        state_change_hook(
-                            &wire_terminal_id,
-                            &report.kind,
-                            &report.name,
-                            from.as_deref(),
-                            to,
-                        )
+                        hooks_live
+                            .then(|| {
+                                state_change_hook(
+                                    &wire_terminal_id,
+                                    &report.kind,
+                                    &report.name,
+                                    from.as_deref(),
+                                    to,
+                                )
+                            })
+                            .flatten()
                     }
                 }
             });
