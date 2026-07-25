@@ -58,6 +58,7 @@ impl From<SignalArg> for TerminalSignal {
 pub(crate) mod agent;
 pub(crate) mod ask;
 pub(crate) mod attach;
+pub(crate) mod completion;
 pub(crate) mod config;
 pub(crate) mod config_action;
 pub(crate) mod detach;
@@ -982,6 +983,27 @@ pub(crate) enum Command {
         /// the device in its server list. Omitted: the device picks a default.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+    },
+
+    /// Print a shell completion script on stdout.
+    ///
+    /// The script is generated from the binary's own argument parser, so it
+    /// always matches the verbs this build actually accepts. It contacts no
+    /// server and reads no config, which is what makes it safe to run from a
+    /// shell startup file.
+    ///
+    /// Install it the way your shell prefers, for example:
+    ///
+    ///   phux completion zsh  > "${fpath[1]}/_phux"
+    ///   phux completion bash > ~/.local/share/bash-completion/completions/phux
+    ///   phux completion fish > ~/.config/fish/completions/phux.fish
+    ///
+    /// Regenerate after upgrading phux; a stale script completes verbs the
+    /// installed binary no longer has.
+    Completion {
+        /// Shell dialect to generate for.
+        #[arg(value_name = "SHELL")]
+        shell: clap_complete::Shell,
     },
 }
 

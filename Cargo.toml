@@ -65,6 +65,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 # the `MakeWriter` trait `tracing-subscriber` expects.
 tracing-appender = "0.2"
 clap = { version = "4", features = ["derive"] }
+# `phux completion <shell>` renders the clap command tree as a shell
+# completion script. First-party to clap, shares its version train, and is
+# only reachable from that one subcommand — no runtime cost elsewhere.
+clap_complete = "4"
 bytes = "1"
 slotmap = "1"
 smallvec = "1.15"

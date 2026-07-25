@@ -24,6 +24,9 @@ phux-client.workspace = true
 phux-config.workspace = true
 phux-plugin.workspace = true
 clap.workspace = true
+# `phux completion <shell>` generates the completion script from the same
+# clap tree the binary already parses with, so the two can never drift.
+clap_complete.workspace = true
 # `phux pair --qr` renders the pairing connect-link as a scannable terminal QR.
 qrcode.workspace = true
 dhat = { workspace = true, optional = true }

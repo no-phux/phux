@@ -83,6 +83,7 @@ mod help_inventory;
           signal     Send a POSIX signal to a pane's process group\n\n\
         ORGANIZE\n  \
           tag        Read and write a pane's tags (address them with #tag)\n  \
+          completion Print a shell completion script for phux\n  \
           config     Inspect config and run configured plugin actions\n  \
           plugin     Manage local plugin manifests in config\n  \
           workspace  Inspect worktrees and save/restore session archives\n\n\
@@ -420,6 +421,7 @@ fn main() -> ExitCode {
             host,
             name,
         }) => commands::pair::run_pair(tokens, cert, qr, host, name),
+        Some(Command::Completion { shell }) => commands::completion::run_completion(shell),
         None => commands::attach::run_naked(),
     }
 }

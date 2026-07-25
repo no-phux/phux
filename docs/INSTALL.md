@@ -172,6 +172,28 @@ phux-mcp     # JSON-RPC over stdio; wire it into your MCP client
 Tool catalog and JSON contracts: [`consumers/mcp.md`](./consumers/mcp.md). The
 plain-CLI version of the same surface: [`consumers/agents.md`](./consumers/agents.md).
 
+## Shell completions
+
+`phux completion SHELL` writes a completion script to stdout for `bash`,
+`elvish`, `fish`, `powershell`, or `zsh`. The script is generated from the
+binary's own argument parser, so it can only ever offer verbs the installed
+build actually accepts. It contacts no server and reads no config, which is
+what makes it safe to call from a shell startup file.
+
+```sh
+# zsh — any directory on $fpath works
+phux completion zsh > "${fpath[1]}/_phux"
+
+# bash
+phux completion bash > ~/.local/share/bash-completion/completions/phux
+
+# fish
+phux completion fish > ~/.config/fish/completions/phux.fish
+```
+
+Regenerate after upgrading phux. A stale script keeps completing verbs the
+new binary may have renamed or dropped.
+
 ## Platform support
 
 | Platform | Status |
