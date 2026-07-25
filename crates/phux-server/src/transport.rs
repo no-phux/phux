@@ -58,6 +58,15 @@ pub(crate) trait Incoming {
     type Reader: FrameReader + 'static;
     type Writer: FrameWriter + 'static;
     async fn accept(&self) -> io::Result<(Self::Reader, Self::Writer, PeerIdentity)>;
+    /// Whether an accept error means the whole incoming source is gone.
+    ///
+    /// Socket listeners keep serving after transient per-connection errors.
+    /// A dial-out connector wraps one established QUIC connection, so an
+    /// `accept_bi` error means the relay leg is lost and its supervisor must
+    /// redial.
+    fn accept_errors_are_fatal(&self) -> bool {
+        false
+    }
     /// Short transport label for logs (`"uds"` / `"ws"`).
     fn kind(&self) -> &'static str;
 }

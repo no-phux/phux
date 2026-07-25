@@ -12,6 +12,7 @@ pub(crate) mod agent_asked;
 pub(crate) mod agent_detect;
 pub(crate) mod agent_state;
 pub mod auth;
+pub mod connector;
 pub mod cwd_query;
 pub mod downsample;
 pub mod extract;

@@ -12,8 +12,8 @@ with no flags. The manual path — put both ends on a WireGuard-class overlay,
 mint credentials with phux pair, attach to the overlay address over QUIC or TLS
 WebSocket — is documented below for Tailscale, Headscale, and raw WireGuard,
 plus troubleshooting for routing, auth, and fingerprint failures. A fourth
-path — dialing through a self-hosted reference relay — is documented but not
-yet end-to-end.
+path uses the self-hosted reference relay when the server cannot accept an
+inbound connection.
 
 ---
 
@@ -226,38 +226,54 @@ With raw WireGuard there is no MagicDNS; use the tunnel IP or your own DNS.
 
 ## Path D: via a reference relay
 
-**Not yet an end-to-end path.** The server-side connector that completes
-this path is still in progress (bead phux-qf2w). What exists today: the
-reference relay itself (`phux relay run` / `phux relay pair`) and the
-consumer side (`phux attach --quic` against a relay, with
-`--tls-server-name` naming the route). What does not exist yet: the
-connector — a phux server cannot enroll itself with a relay and hold the
-tunnel. Until phux-qf2w lands, nothing a consumer dials through a relay
-reaches a server; do not plan a deployment around this path yet.
-
 Paths A-C put both ends on one overlay so the client can reach the server's
 address. A relay inverts the direction: the server dials out to a relay you
 host, and consumers dial the relay — nothing on the server's network needs
-to accept an inbound connection. The tradeoff is stated plainly in the
-operations doc: the relay sees phux traffic in plaintext, and self-hosting
-the relay is the mitigation. Relay setup, the three state files, the
-enrollment flow, revocation, and the trust model live in
+to accept an inbound connection. The tradeoff is stated plainly: the relay
+terminates TLS on both legs and sees phux traffic in plaintext. Self-hosting
+the relay on a trusted machine is the mitigation.
+
+Set up the route end to end:
+
+1. On the relay host, run `phux relay pair --route ROUTE`, save its printed
+   tunnel token out of band, then start
+   `phux relay run --listen 0.0.0.0:4433`.
+2. On the server host, put that tunnel token in a mode-`0600` file and add:
+
+   ```toml
+   [[connector]]
+   relay = "RELAY_HOST:4433"
+   token-file = "/home/me/.local/state/phux/relay-route.token"
+   cert-fingerprint = "RELAY_FP"
+   ```
+
+3. Start or restart `phux server`. It supervises every configured connector;
+   `--connect RELAY_HOST:4433` selects one exact entry for diagnosis.
+4. Attach the consumer, using the route as TLS SNI and the server's ordinary
+   `phux pair` token as the consumer credential:
+
+   ```sh
+   phux attach --quic RELAY_HOST:4433 --tls-server-name ROUTE \
+     --cert-fingerprint RELAY_FP --token SERVER_TOKEN
+   ```
+
+`RELAY_FP` pins the relay's certificate on both network legs.
+`SERVER_TOKEN` crosses the relay opaquely and is verified by the server;
+the tunnel token only authorizes the connector to claim its enrolled route.
+The connector re-reads its token file on every redial, so rotation is
+`phux relay pair --route ROUTE`, replace the file, then restart either side
+when immediate cutover is required.
+
+An unknown route fails the TLS handshake. An enrolled route with no live
+tunnel closes as route-offline. A bad tunnel token or certificate pin leaves
+the local server running and produces an `outbound connector lost; scheduling
+redial` diagnostic. A bad `SERVER_TOKEN` resets only that consumer stream;
+the tunnel and other consumers remain live. Full relay state-file,
+revocation, and trust-boundary details are in
 [operations.md](./operations.md#running-the-reference-relay); the design is
 ADR-0057, building on
-[ADR-0051](../ADR/0051-outbound-dial-out-connector-transport.md).
-
-The consumer-side dial already has its final shape (until a connector holds
-the route's tunnel it fails during the TLS handshake, or with a
-route-offline close on an enrolled route):
-
-```sh
-phux attach --quic RELAY_HOST:4433 --tls-server-name ROUTE \
-  --cert-fingerprint RELAY_FP --token SERVER_TOKEN
-```
-
-`RELAY_FP` pins the relay's certificate (the consumer's TLS terminates at
-the relay); `SERVER_TOKEN` is the server's own `phux pair` token, verified
-by the server, never by the relay.
+[ADR-0051](../ADR/0051-outbound-dial-out-connector-transport.md) and
+[ADR-0052](../ADR/0052-connector-route-identity-and-config.md).
 
 ## Troubleshooting
 

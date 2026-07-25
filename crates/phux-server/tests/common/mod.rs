@@ -33,6 +33,7 @@
 #![allow(unreachable_pub, reason = "tests/common shared-helpers pattern")]
 
 pub mod builder;
+pub mod relay;
 pub mod screen;
 pub mod tracing_capture;
 

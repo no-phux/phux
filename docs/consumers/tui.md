@@ -106,10 +106,13 @@ phux attach --ws ws://127.0.0.1:8787
                               # attach over the WebSocket/TCP fallback locally
 phux attach --ws wss://HOST:PORT --cert-fingerprint FP --token HEX
                               # attach over TLS WebSocket when UDP/QUIC is blocked
-phux server [--session N] [--listen HOST:PORT] [--quic HOST:PORT] [--hub]
+phux server [--session N] [--listen HOST:PORT] [--quic HOST:PORT]
+            [--connect HOST:PORT] [--hub]
                               # run server in foreground
                               # --listen also accepts WebSocket clients (= PHUX_WS_ADDR)
                               # --quic also accepts QUIC clients (= PHUX_QUIC_ADDR)
+                              # --connect selects one [[connector]] relay;
+                              # without it every configured relay is supervised
                               # --hub validates [[satellites]] into the runtime
                               # satellite table at startup, dials each enabled
                               # satellite (quic/wss per ADR-0038; ssh:// over
@@ -969,6 +972,34 @@ phux satellite remove devbox
 
 `add` is add-or-update and replaces the whole entry, so repeat the auth
 flags when re-adding a name; omitting them clears the stored auth material.
+
+
+**Outbound relay connectors** live under `[[connector]]`. Each entry names
+the self-hosted reference relay endpoint this server dials and holds as a
+reverse tunnel (ADR-0051/ADR-0052):
+
+```toml
+[[connector]]
+relay = "relay.example:4433"
+token-file = "/home/me/.local/state/phux/relay-studio.token"
+cert-fingerprint = "AB:CD:..."
+```
+
+`token-file` contains the route token printed by `phux relay pair --route
+ROUTE`; it must be owner-only and is re-read on every dial attempt.
+`cert-fingerprint` pins the relay leaf certificate. Both are mandatory for
+a routable relay and optional only on loopback for development. Unknown
+keys, malformed `HOST:PORT` values, and incomplete routable entries fail
+server startup before the local socket binds.
+
+`phux server` supervises every entry independently with capped exponential
+backoff. `phux server --connect HOST:PORT` selects the exact matching entry
+and reuses its credentials; an endpoint not present in config is accepted
+only when it is loopback. The relay token authorizes the tunnel, not a
+consumer: each bridged consumer must still present a token from the server's
+ordinary `phux pair` token store. See
+[Remote access, Path D](../remote-access.md#path-d-via-a-reference-relay) for
+the complete enrollment and rotation flow.
 
 ### 4.2.1 Validating: `phux config check`
 

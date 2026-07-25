@@ -132,6 +132,15 @@ pub(crate) struct QuicReader {
     recv: quinn::RecvStream,
     header: [u8; LENGTH_PREFIX],
 }
+impl QuicReader {
+    /// Wrap one already-authenticated QUIC receive stream in phux framing.
+    pub(crate) const fn from_stream(recv: quinn::RecvStream) -> Self {
+        Self {
+            recv,
+            header: [0u8; LENGTH_PREFIX],
+        }
+    }
+}
 
 impl FrameReader for QuicReader {
     async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
@@ -163,6 +172,12 @@ impl FrameReader for QuicReader {
 /// QUIC write half.
 pub(crate) struct QuicWriter {
     send: quinn::SendStream,
+}
+impl QuicWriter {
+    /// Wrap one already-authenticated QUIC send stream in phux framing.
+    pub(crate) const fn from_stream(send: quinn::SendStream) -> Self {
+        Self { send }
+    }
 }
 
 impl FrameWriter for QuicWriter {
@@ -228,11 +243,8 @@ impl Incoming for QuicListener {
             };
 
             return Ok((
-                QuicReader {
-                    recv,
-                    header: [0u8; LENGTH_PREFIX],
-                },
-                QuicWriter { send },
+                QuicReader::from_stream(recv),
+                QuicWriter::from_stream(send),
                 peer_identity,
             ));
         }
@@ -249,7 +261,7 @@ impl Incoming for QuicListener {
 /// success, or `None` on a missing, oversized, malformed, or unrecognized
 /// token. Deriving the id from the presented token (not the matched stored one)
 /// keeps it off the constant-time comparison and never logs the secret.
-async fn authorize_preamble(
+pub(crate) async fn authorize_preamble(
     recv: &mut quinn::RecvStream,
     store: &crate::auth::TokenStore,
 ) -> Option<String> {

@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    plugin::PluginConfigEntry, remote::RemoteConfigEntry, satellite::SatelliteConfigEntry,
+    connector::ConnectorConfigEntry, plugin::PluginConfigEntry, remote::RemoteConfigEntry,
+    satellite::SatelliteConfigEntry,
 };
 
 /// Top-level config. See `docs/consumers/tui.md` §4.2.
@@ -54,6 +55,10 @@ pub struct Config {
     /// Hub-and-spoke federation satellites declared for this host.
     #[serde(default)]
     pub satellites: Vec<SatelliteConfigEntry>,
+
+    /// Outbound relay links this server supervises (ADR-0052).
+    #[serde(default)]
+    pub connector: Vec<ConnectorConfigEntry>,
 
     /// Remote phux servers this machine attaches to (ADR-0055). Written by
     /// `phux enroll` and `phux remote add`; read by `phux attach <name>`.

@@ -148,20 +148,21 @@ pub struct ServerConfig {
 /// [`ServerRuntime`] configuration at startup (phux-v45.10).
 ///
 /// A graceful upgrade (ADR-0032) re-execs the current binary; the new image
-/// must be started with the same transport and federation surface the old one
-/// was serving, or `--listen` / `--quic` / `--webtransport` / `--hub`
-/// silently vanish across `phux server upgrade`. These are derived from the
-/// runtime's own fields — the values the builder methods
+/// must be started with the same transport, connector, and federation surface
+/// the old one was serving, or `--listen` / `--quic` / `--webtransport` /
+/// `--connect` / `--hub` silently vanish across `phux server upgrade`. These
+/// are derived from the runtime's own fields — the values the builder methods
 /// ([`ServerRuntime::listen_ws`], [`ServerRuntime::listen_quic`],
-/// [`ServerRuntime::listen_webtransport`], [`ServerRuntime::hub`]) actually
-/// applied — not from a stashed copy of the original argv, so config-derived
+/// [`ServerRuntime::listen_webtransport`], [`ServerRuntime::connectors`],
+/// [`ServerRuntime::hub`]) actually applied — not from a stashed copy of the
+/// original argv, so config-derived
 /// state stays consistent with what the server is really running.
 ///
 /// Environment-derived fallbacks (`PHUX_WS_ADDR`, `PHUX_QUIC_ADDR`,
 /// `PHUX_WT_ADDR`) are deliberately *not* captured here: the environment
 /// survives the `execve`, so the resumed image re-derives them with the same
 /// precedence (explicit flag wins over environment) as the original start.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeFlags {
     /// WebSocket listen address from `phux server --listen <ADDR>`
     /// ([`ServerRuntime::listen_ws`]). Re-emitted as `--listen` on resume.
@@ -176,6 +177,10 @@ pub struct RuntimeFlags {
     /// (with a warning), so this stays `None` there and nothing is
     /// re-emitted.
     pub wt_addr: Option<SocketAddr>,
+    /// Ad-hoc relay endpoint from `phux server --connect HOST:PORT`.
+    /// Re-emitted on resume; configured `[[connector]]` entries are re-read
+    /// from disk by the new image.
+    pub connect: Option<String>,
     /// Federation-hub mode from `phux server --hub` ([`ServerRuntime::hub`]).
     /// Re-emitted as `--hub` on resume; the resumed image re-reads and
     /// re-validates the `[[satellites]]` registry from config, exactly like a
@@ -316,6 +321,21 @@ pub enum ServerError {
     /// satellites, so startup fails instead.
     #[error("hub: {0}")]
     Hub(#[from] crate::hub::HubTableError),
+    /// Outbound connector configuration was unsafe or malformed.
+    #[error("connector: {0}")]
+    Connector(#[from] crate::connector::ConnectorError),
+
+    /// The server token store needed to authorize bridged consumers could not
+    /// be loaded. A connector must fail closed rather than admit consumers
+    /// without the server's own authorization.
+    #[error("connector consumer token store {path}: {source}")]
+    ConnectorTokenStore {
+        /// Token-store path.
+        path: PathBuf,
+        /// Parse or I/O failure.
+        #[source]
+        source: crate::auth::AuthError,
+    },
 }
 
 /// Server runtime owning the listener loop and per-client task scaffolding.
@@ -356,6 +376,12 @@ pub struct ServerRuntime {
     /// point every enabled entry's endpoint is validated into the runtime
     /// [`crate::hub::HubTable`]; a validation failure fails startup.
     satellites: Vec<phux_config::SatelliteConfigEntry>,
+    /// Outbound relay entries selected by the binary from `[[connector]]`
+    /// configuration (or one `--connect` override).
+    connectors: Vec<phux_config::ConnectorConfigEntry>,
+    /// Raw `--connect HOST:PORT` override, retained only so graceful upgrade
+    /// can reconstruct the same CLI surface.
+    connect_override: Option<String>,
 }
 
 impl ServerRuntime {
@@ -371,6 +397,8 @@ impl ServerRuntime {
             resume_fd: None,
             hub: false,
             satellites: Vec::new(),
+            connectors: Vec::new(),
+            connect_override: None,
         }
     }
 
@@ -452,6 +480,21 @@ impl ServerRuntime {
         self
     }
 
+    /// Supervise outbound relay connector entries.
+    ///
+    /// `connect_override` is the original ad-hoc CLI endpoint, if any, and is
+    /// retained for graceful-upgrade argv reconstruction.
+    #[must_use]
+    pub fn connectors(
+        mut self,
+        entries: Vec<phux_config::ConnectorConfigEntry>,
+        connect_override: Option<String>,
+    ) -> Self {
+        self.connectors = entries;
+        self.connect_override = connect_override;
+        self
+    }
+
     /// Run the server until `shutdown` resolves.
     ///
     /// Builds a `new_current_thread` tokio runtime internally and blocks on
@@ -511,6 +554,25 @@ impl ServerRuntime {
             state.with_mut(|s| s.set_hub_table(table.clone()));
         }
 
+        // Connector planning is a startup gate, not a retry condition:
+        // malformed endpoints and routable entries missing a pin/token fail
+        // before the UDS is bound. Token contents stay on disk and are re-read
+        // by each supervisor attempt.
+        let connector_specs = crate::connector::plan_connectors(&self.connectors)?;
+        let connector_consumer_tokens = if connector_specs.is_empty() {
+            None
+        } else {
+            let path = std::env::var_os("PHUX_WS_TOKENS")
+                .map_or_else(crate::auth::default_token_store_path, PathBuf::from);
+            let store = crate::auth::TokenStore::load(&path).map_err(|source| {
+                ServerError::ConnectorTokenStore {
+                    path: path.clone(),
+                    source,
+                }
+            })?;
+            Some(std::sync::Arc::new(store))
+        };
+
         // Graceful upgrade (ADR-0032): when resuming, read the handoff blob and
         // adopt the inherited listener instead of binding a fresh socket. The
         // session tree is rebuilt from the blob inside the LocalSet below.
@@ -555,6 +617,7 @@ impl ServerRuntime {
             #[cfg(not(feature = "webtransport"))]
             wt_addr: None,
             hub: self.hub,
+            connect: self.connect_override.clone(),
         };
         state.with_mut(|s| {
             s.set_upgrade_context(listener.as_raw_fd(), socket_path.clone(), runtime_flags);
@@ -687,6 +750,16 @@ impl ServerRuntime {
                         s.set_hub_relays(relays.clone());
                     });
                     crate::hub::link::spawn_links(table, &statuses, &relays, &root_token);
+                }
+
+                if let Some(tokens) = &connector_consumer_tokens {
+                    crate::connector::spawn_connectors(
+                        connector_specs,
+                        tokens,
+                        &state,
+                        &input_lane_handle,
+                        &root_token,
+                    );
                 }
 
                 // Graceful-upgrade resume (ADR-0032): rebuild the whole

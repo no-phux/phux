@@ -199,6 +199,14 @@ pub(crate) enum Command {
         #[arg(long, value_name = "HOST:PORT")]
         webtransport: Option<std::net::SocketAddr>,
 
+        /// Dial one relay outbound on `HOST:PORT`. If a matching
+        /// `[[connector]]` entry exists, its token file and certificate pin
+        /// are used; otherwise only a loopback endpoint is accepted for
+        /// unauthenticated development. Without this flag, every configured
+        /// connector is supervised independently.
+        #[arg(long, value_name = "HOST:PORT")]
+        connect: Option<String>,
+
         /// Run as a federation hub: consume the `[[satellites]]`
         /// registry from `config.toml` at startup, validating every enabled
         /// entry's endpoint (`quic://`, `ws://`, `wss://`, or `ssh://`) into

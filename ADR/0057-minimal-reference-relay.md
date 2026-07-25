@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-07-21
+last-reviewed: 2026-07-25
 ---
 
 # 0057 — A minimal reference relay in-tree
@@ -12,7 +12,7 @@ shape and ADR-0052's SNI routing and enrollment binding exactly. A dev
 and self-host tool, not infrastructure software: no accounts, no config
 file, no persistence beyond a route-bound token store and a keypair.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-07-21
 
 ## Context
@@ -25,8 +25,7 @@ phux-b1ma decided in-tree. What existed before: a spike test only
 token store that answers "which route" (ADR-0052 Decision 2 needs that).
 Implementation hard-depended on bead phux-zwuz (`QUIC_RELAY_ALPN` in
 `phux_protocol::policy` plus the ALPN-parameterized dialer), now landed.
-(ADR-0052 is proposed separately and must merge before this ADR; its
-mentions here stay plain text until it lands.)
+ADR-0052 is accepted and implemented by the server-side connector.
 
 ## Decision
 

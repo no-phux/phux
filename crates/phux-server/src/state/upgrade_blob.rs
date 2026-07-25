@@ -89,7 +89,7 @@ impl ServerState {
     ) -> Option<(RawFd, &std::path::Path, crate::runtime::RuntimeFlags)> {
         self.upgrade_ctx
             .as_ref()
-            .map(|(fd, path, flags)| (*fd, path.as_path(), *flags))
+            .map(|(fd, path, flags)| (*fd, path.as_path(), flags.clone()))
     }
 
     /// Clone every pane's [`TerminalHandle`] so the runtime can query each

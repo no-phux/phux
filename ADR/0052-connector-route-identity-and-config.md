@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-07-21
+last-reviewed: 2026-07-25
 ---
 
 # 0052 — Connector route identity, registration, and config surface
@@ -13,22 +13,22 @@ its auth preamble. Config is a `[[connector]]` array of relay endpoints;
 the connector lands as a hub-link sibling whose bridged streams enter the
 standard consumer dispatch with real identity and token verification.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-07-21
 
 ## Context
 
 [ADR-0051](./0051-outbound-dial-out-connector-transport.md) fixed the
 tunnel shape and proved it with a spike, but named three questions that
-must be settled before the implementation bead (phux-8lyr epic): how a
-consumer names which tunneled server it wants (open question 1), where the
-production connector lands and how bridged streams become consumers (open
-question 4), and the config surface (open question 5). This ADR (bead
-phux-tmmb) settles those three. It deliberately does not touch 0051's
-other deferrals: client-address attestation, head-of-line coupling, and
-end-to-end encryption through the relay stay deferred, and whether OSS
-phux ships a reference relay binary is a separate decision (bead
-phux-b1ma), not assumed here.
+must be settled before the implementation epic (phux-8lyr): how a consumer
+names which tunneled server it wants (open question 1), where the production
+connector lands and how bridged streams become consumers (open question 4),
+and the config surface (open question 5). This ADR settled those three and
+the connector implementation landed on 2026-07-25. It deliberately does not
+touch 0051's other deferrals: client-address attestation, head-of-line
+coupling, and end-to-end encryption through the relay stay deferred.
+Shipping the self-hosted reference relay was decided separately by
+[ADR-0057](./0057-minimal-reference-relay.md).
 
 Two facts shape the route-identity answer. First, the relay already
 terminates both TLS legs (0051 Decision 6), so the consumer's ClientHello
@@ -60,13 +60,14 @@ coupling.
    control protocol arrive, if ever, under a bumped ALPN; enrollment
    binding is forward-compatible with both.
 3. **Config is a `[[connector]]` array of tables.** Each entry: `relay`
-   (HOST:PORT), `cert_fingerprint` (the relay's, required for any
-   non-loopback relay — fail-closed, the ADR-0038 posture), `token_file`
+   (`HOST:PORT`), `cert-fingerprint` (the relay's, required for any
+   non-loopback relay — fail-closed, the ADR-0038 posture), `token-file`
    (0o600, never inline). An array from day one because a second relay
    must be additive, not a retrofit (ADR-0007's lesson); each entry is
    its own independently supervised link. `phux server --connect
-   HOST:PORT` configures a single ad-hoc entry for dev use and inherits
-   the same fail-closed rule.
+   HOST:PORT` selects an exact configured entry and its credentials, or
+   accepts an ad-hoc endpoint only on loopback. Routable ad-hoc entries
+   refuse startup because the CLI has no inline secret surface.
 4. **The connector lands beside the hub link, and bridged streams enter
    the standard dispatch.** A `connector` module in `phux-server`,
    sibling of `hub/link.rs`, reusing its supervision discipline (backoff
@@ -139,6 +140,7 @@ fingerprint at load time, not dial time.
 ## Related
 
 - ADR-0051 — tunnel shape, auth model, spike (parent decision).
+- ADR-0057 — shipped self-hosted reference relay.
 - ADR-0007, ADR-0031, ADR-0037, ADR-0038 — inherited invariants and
   auth posture, linked from 0051.
 - Beads: phux-8lyr (epic), phux-tmmb (this ADR), phux-zwuz (ALPN and

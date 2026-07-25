@@ -342,9 +342,11 @@ and development, not infrastructure software: no accounts, no high
 availability, no metrics, no config file. That scope fence is normative
 (ADR-0057).
 
-The server-side connector that dials a relay is still in progress (bead
-phux-qf2w); until it lands, the relay and the consumer side exist without an
-end-to-end path — see [Remote access, Path D](./remote-access.md#path-d-via-a-reference-relay).
+The server-side connector is part of `phux server`. It validates every
+`[[connector]]` entry before binding, dials each relay independently, and
+redials a lost tunnel with capped exponential backoff. A bad entry fails
+startup; a network, certificate, or token failure is logged and retried
+without taking the local server down.
 
 The surface is two commands:
 
@@ -422,10 +424,32 @@ rotates.
 **Enrollment flow.**
 
 1. On the relay host, enroll the route: `phux relay pair --route studio`.
-2. Hand the printed token to the server operator out-of-band. It is the
-   bearer credential the server-side connector presents when it dials the
-   relay and claims the route (connector in progress, bead phux-qf2w).
-3. Consumers dial the relay as if it were the server, naming the route with
+2. Copy the printed tunnel token to an owner-only file on the server host,
+   then register the relay endpoint and its printed certificate fingerprint:
+
+   ```sh
+   install -m 600 /dev/stdin ~/.local/state/phux/relay-studio.token
+   # paste the 64-hex tunnel token, then EOF
+   ```
+
+   ```toml
+   [[connector]]
+   relay = "relay.example:4433"
+   token-file = "/home/me/.local/state/phux/relay-studio.token"
+   cert-fingerprint = "AB:CD:..."
+   ```
+
+   The secret stays in the file, never in `config.toml`. Routable relays
+   require both fields. Loopback alone may omit them for development.
+3. Mint the server's ordinary consumer credential with `phux pair` if the
+   remote device does not already have one. The connector authenticates
+   consumers against that same server token store; relay enrollment grants
+   no access to a terminal.
+4. Start or restart `phux server`. With no selector it supervises every
+   configured connector. `phux server --connect relay.example:4433` selects
+   exactly the matching entry and its credentials; an unconfigured ad-hoc
+   endpoint is allowed only on loopback.
+5. Consumers dial the relay as if it were the server, naming the route with
    SNI and pinning the relay's certificate:
 
    ```sh
@@ -438,6 +462,13 @@ rotates.
    sees. `SERVER_TOKEN` is the server's own `phux pair` token: it crosses
    the relay as opaque bytes and is verified by the server, never by the
    relay.
+
+The connector token file is re-read on every dial attempt. To rotate it,
+run `phux relay pair --route studio` again, atomically replace the server's
+owner-only token file, then force a redial (restart the server or relay) if
+the old live tunnel must be revoked immediately. Otherwise the next natural
+redial picks up the new token. Deleting the route from `relay-tokens` refuses
+future dials but, like rotation, does not sever the current tunnel by itself.
 
 Refusals are distinguishable at the consumer. An unknown or absent route
 name fails during the TLS handshake itself — no phux bytes are exchanged,

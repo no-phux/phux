@@ -657,6 +657,9 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         });
                     }
                     Err(err) => {
+                        if listener.accept_errors_are_fatal() {
+                            return Err(err.into());
+                        }
                         // Accept errors are typically transient (EMFILE,
                         // ECONNABORTED). Log and continue rather than killing
                         // the server.

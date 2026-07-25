@@ -312,6 +312,16 @@ which-key-delay-ms = 600
 # token-file = "/home/me/.local/state/phux/satellites/devbox.token"
 # cert-fingerprint = "AB:CD:..."
 
+# Outbound connectors let this server reach consumers through a self-hosted
+# relay without accepting inbound traffic. Each link is supervised
+# independently; the relay terminates TLS and can see plaintext phux frames.
+# Keep the enrollment token in an owner-only file, never inline.
+#
+# [[connector]]
+# relay = "relay.example:4433"
+# token-file = "/home/me/.local/state/phux/connectors/relay.token"
+# cert-fingerprint = "AB:CD:..."
+
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per
 # window as `{index}:{name}`; by default the active tab is bold +

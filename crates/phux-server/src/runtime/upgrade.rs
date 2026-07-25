@@ -1,9 +1,8 @@
 //! Graceful-upgrade orchestration (ADR-0032): build the handoff blob, clear
-//! `FD_CLOEXEC` on the descriptors the new image must inherit, validate the
-//! on-disk binary, and re-exec it as `server --resume <fd>` plus the server's
-//! effective runtime flags (`--listen` / `--quic` / `--webtransport` /
-//! `--hub`, phux-v45.10) so the resumed image serves the same surface the old
-//! one did.
+//! `FD_CLOEXEC` on inherited descriptors, validate the on-disk binary, and
+//! re-exec it as `server --resume <fd>` plus the effective runtime flags
+//! (`--listen` / `--quic` / `--webtransport` / `--connect` / `--hub`) so the
+//! resumed image serves the same surface the old one did.
 //!
 //! Split into [`prepare_upgrade`] (everything reversible — if it fails the old
 //! image keeps serving and no child is stranded) and [`UpgradePlan::exec`]
@@ -50,8 +49,8 @@ pub(super) struct UpgradePlan {
     socket_path: PathBuf,
     /// The server's effective runtime flags (phux-v45.10), read back from the
     /// upgrade context the runtime captured at startup. Re-emitted on the
-    /// resume argv so `--listen` / `--quic` / `--webtransport` / `--hub`
-    /// survive the re-exec.
+    /// resume argv so `--listen` / `--quic` / `--webtransport` / `--connect`
+    /// / `--hub` survive the re-exec.
     flags: RuntimeFlags,
     _blob_file: std::fs::File,
 }
@@ -125,7 +124,11 @@ impl UpgradePlan {
     /// attached.
     pub(super) fn exec(self) -> std::io::Error {
         Command::new(&self.current_exe)
-            .args(resume_args(self.blob_fd, &self.socket_path, self.flags))
+            .args(resume_args(
+                self.blob_fd,
+                &self.socket_path,
+                self.flags.clone(),
+            ))
             .exec()
     }
 }
@@ -153,6 +156,10 @@ fn resume_args(blob_fd: RawFd, socket_path: &Path, flags: RuntimeFlags) -> Vec<O
     if let Some(addr) = flags.wt_addr {
         args.push(OsString::from("--webtransport"));
         args.push(OsString::from(addr.to_string()));
+    }
+    if let Some(relay) = flags.connect {
+        args.push(OsString::from("--connect"));
+        args.push(OsString::from(relay));
     }
     if flags.hub {
         args.push(OsString::from("--hub"));
@@ -203,6 +210,7 @@ mod tests {
             ws_addr: ws.map(addr),
             quic_addr: quic.map(addr),
             wt_addr: wt.map(addr),
+            connect: None,
             hub,
         }
     }
@@ -323,6 +331,17 @@ mod tests {
         assert_eq!(args_as_strings(RuntimeFlags::default()), BASE);
     }
 
+    #[test]
+    fn resume_args_preserves_ad_hoc_connector() {
+        let flags = RuntimeFlags {
+            connect: Some("relay.example:4433".to_owned()),
+            ..RuntimeFlags::default()
+        };
+        let mut expected: Vec<String> = BASE.iter().map(ToString::to_string).collect();
+        expected.extend(["--connect".to_owned(), "relay.example:4433".to_owned()]);
+        assert_eq!(args_as_strings(flags), expected);
+    }
+
     /// The flags land in the plan from the shared-state upgrade context —
     /// the same channel `prepare_upgrade` reads — not from anywhere argv-ish.
     #[test]
@@ -334,7 +353,7 @@ mod tests {
         );
         let captured = flags(Some(WS), Some(QUIC), Some(WT), true);
         state.with_mut(|s| {
-            s.set_upgrade_context(3, PathBuf::from("/tmp/phux.sock"), captured);
+            s.set_upgrade_context(3, PathBuf::from("/tmp/phux.sock"), captured.clone());
         });
         let (fd, path, roundtripped) = state
             .with(|s| {

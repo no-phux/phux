@@ -19,6 +19,25 @@ const AUTO_SPAWN_SOCKET_TIMEOUT: Duration = Duration::from_secs(2);
 /// that the typical happy path resolves in a single poll.
 const AUTO_SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+fn select_connectors(
+    configured: Vec<phux_config::ConnectorConfigEntry>,
+    connect: Option<&str>,
+) -> Vec<phux_config::ConnectorConfigEntry> {
+    match connect {
+        Some(relay) => vec![
+            configured
+                .into_iter()
+                .find(|entry| entry.relay == relay)
+                .unwrap_or_else(|| phux_config::ConnectorConfigEntry {
+                    relay: relay.to_owned(),
+                    token_file: None,
+                    cert_fingerprint: None,
+                }),
+        ],
+        None => configured,
+    }
+}
+
 /// Build a current-thread tokio runtime and drive `ServerRuntime`
 /// until Ctrl-C.
 ///
@@ -38,6 +57,7 @@ pub(crate) fn run_server(
     listen: Option<std::net::SocketAddr>,
     quic: Option<std::net::SocketAddr>,
     webtransport: Option<std::net::SocketAddr>,
+    connect: Option<String>,
     hub: bool,
     daemonize: bool,
     seed_command: Option<&str>,
@@ -118,6 +138,22 @@ pub(crate) fn run_server(
         |cfg| phux_server::hooks::HookCatalog::from_config(&cfg, &config_loader::config_path()),
     );
 
+    // Connector configuration is security-sensitive. Unlike appearance and
+    // convenience defaults above, a malformed registry must not be treated as
+    // an empty registry: that would silently stop the server dialing out.
+    let configured_connectors = match config_loader::load() {
+        Ok(cfg) => cfg.connector,
+        Err(err) => {
+            eprintln!("phux server: cannot read connector registry: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let connector_entries = select_connectors(configured_connectors, connect.as_deref());
+    if let Err(err) = phux_server::connector::plan_connectors(&connector_entries) {
+        eprintln!("phux server failed: connector: {err}");
+        return ExitCode::FAILURE;
+    }
+
     let cfg = ServerConfig {
         socket_path: socket_path.clone(),
         pre_seeded_session: Some(session.to_owned()),
@@ -156,6 +192,12 @@ pub(crate) fn run_server(
     if hub {
         extra.push_str(" [hub]");
     }
+    if !connector_entries.is_empty() {
+        let _ = std::fmt::Write::write_fmt(
+            &mut extra,
+            format_args!(" + connectors={}", connector_entries.len()),
+        );
+    }
     eprintln!(
         "phux server listening on {}{extra} (session={session}; Ctrl-C to stop)",
         socket_path.display()
@@ -170,6 +212,9 @@ pub(crate) fn run_server(
     }
     if let Some(addr) = webtransport {
         server = server.listen_webtransport(addr);
+    }
+    if !connector_entries.is_empty() {
+        server = server.connectors(connector_entries, connect);
     }
     // Hub mode (phux-v45.1, ADR-0007): hand the `[[satellites]]` registry to
     // the runtime, which validates it into the satellite table before
@@ -295,5 +340,48 @@ pub(crate) fn maybe_auto_spawn_server(
             ));
         }
         std::thread::sleep(AUTO_SPAWN_POLL_INTERVAL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connector(relay: &str, token: &str) -> phux_config::ConnectorConfigEntry {
+        phux_config::ConnectorConfigEntry {
+            relay: relay.to_owned(),
+            token_file: Some(PathBuf::from(token)),
+            cert_fingerprint: Some("AB".to_owned()),
+        }
+    }
+
+    #[test]
+    fn configured_connectors_all_run_by_default() {
+        let configured = vec![
+            connector("one.example:4433", "/one"),
+            connector("two.example:4433", "/two"),
+        ];
+        assert_eq!(select_connectors(configured.clone(), None), configured);
+    }
+
+    #[test]
+    fn connect_selects_one_configured_relay_with_its_credentials() {
+        let selected = select_connectors(
+            vec![
+                connector("one.example:4433", "/one"),
+                connector("two.example:4433", "/two"),
+            ],
+            Some("two.example:4433"),
+        );
+        assert_eq!(selected, vec![connector("two.example:4433", "/two")]);
+    }
+
+    #[test]
+    fn connect_allows_an_ad_hoc_loopback_relay() {
+        let selected = select_connectors(Vec::new(), Some("127.0.0.1:4433"));
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].relay, "127.0.0.1:4433");
+        assert!(selected[0].token_file.is_none());
+        assert!(selected[0].cert_fingerprint.is_none());
     }
 }

@@ -83,12 +83,12 @@ amends / extends) are hand-curated from each ADR's body.
 | [0049](./0049-client-local-focus-and-advisory-attention.md) | Client-local focus and advisory agent attention | Accepted (reaffirms [0019](./0019-tui-multi-pane-rendering.md)) |
 | [0050](./0050-explicit-spawn-ownership.md) | Explicit spawn ownership, client-owned placement | Accepted |
 | [0051](./0051-outbound-dial-out-connector-transport.md) | Outbound dial-out (connector) transport mode | Accepted (walks through [0037](./0037-overlay-network-reachability.md)'s deferred door; builds on [0031](./0031-remote-consumer-auth-and-encryption.md), [0038](./0038-hub-satellite-auth.md)) |
-| [0052](./0052-connector-route-identity-and-config.md) | Connector route identity, registration, and config surface | Proposed (settles [0051](./0051-outbound-dial-out-connector-transport.md) open questions 1/4/5) |
+| [0052](./0052-connector-route-identity-and-config.md) | Connector route identity, registration, and config surface | Accepted (settles [0051](./0051-outbound-dial-out-connector-transport.md) open questions 1/4/5) |
 | [0053](./0053-acknowledged-idempotent-input.md) | Acknowledged idempotent input batches | Accepted (builds on [0021](./0021-control-plane-commands.md), [0024](./0024-wire-owns-input-atoms.md), and [0044](./0044-dedicated-input-lane.md)) |
 | [0054](./0054-worktree-bound-sessions.md) | Worktree-bound sessions by name convention | Accepted (composes existing verbs; adds no server state, consistent with [0009](./0009-phux-vs-mux-positioning.md)) |
 | [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md) | Always-on server and ssh-bootstrapped enrollment | Proposed (makes [0031](./0031-remote-consumer-auth-and-encryption.md)/[0037](./0037-overlay-network-reachability.md) usable; mirrors [0038](./0038-hub-satellite-auth.md)'s pin posture) |
 | [0056](./0056-cross-session-terminal-move.md) | Cross-session Terminal move | Accepted (opens the door [0050](./0050-explicit-spawn-ownership.md) left shut for existing Terminals; layout stays L3 per [0019](./0019-tui-multi-pane-rendering.md)) |
-| [0057](./0057-minimal-reference-relay.md) | A minimal reference relay in-tree | Proposed (implements [0051](./0051-outbound-dial-out-connector-transport.md) and ADR-0052; backs 0051's trust-honesty claim) |
+| [0057](./0057-minimal-reference-relay.md) | A minimal reference relay in-tree | Accepted (implements [0051](./0051-outbound-dial-out-connector-transport.md) and ADR-0052; backs 0051's trust-honesty claim) |
 
 ## When to write an ADR
 
