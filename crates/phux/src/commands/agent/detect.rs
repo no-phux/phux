@@ -64,6 +64,9 @@ fn report_from_record(
     let kind = match slug.as_str() {
         "codex" => AgentKind::Codex,
         "claude" => AgentKind::Claude,
+        "opencode" => AgentKind::OpenCode,
+        "pi" => AgentKind::Pi,
+        "omp" => AgentKind::Omp,
         other if plugins.iter().any(|plugin| plugin.id == other) => AgentKind::Plugin,
         _ => AgentKind::Declared,
     };
@@ -285,6 +288,30 @@ mod tests {
         assert_eq!(state.state, AgentState::Working);
         assert_eq!(state.sources.len(), 1, "no heuristic source may run");
         assert_eq!(state.sources[0].kind, "agent_record");
+    }
+
+    #[test]
+    fn shipped_detector_kinds_have_first_class_cli_identities() {
+        use phux_client::agent_meta::{AgentMetaState, AgentRecord};
+
+        for (slug, expected) in [
+            ("codex", AgentKind::Codex),
+            ("claude", AgentKind::Claude),
+            ("opencode", AgentKind::OpenCode),
+            ("pi", AgentKind::Pi),
+            ("omp", AgentKind::Omp),
+        ] {
+            let mut evidence = PaneEvidence::for_test("@6", None, &[]);
+            evidence.record = Some(AgentRecord {
+                name: slug.to_owned(),
+                kind: Some(slug.to_owned()),
+                state: AgentMetaState::Idle,
+                ..AgentRecord::default()
+            });
+
+            let state = infer_agent_state(&evidence, &[]);
+            assert_eq!(state.agent.kind, expected, "{slug}");
+        }
     }
 
     /// ADR-0040: an unrecognized kind slug still reports as a first-class

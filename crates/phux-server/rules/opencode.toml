@@ -57,30 +57,37 @@ region = "bottom-lines"
 visible-working = true
 match = { contains = "esc interrupt" }
 
+# An external-directory permission request replaces the live input box with a
+# modal action set.
+#
+# VERIFIED against OpenCode 1.17.18 (captured screen:
+# `fixtures/opencode/blocked_permission.txt`). The dialog is a contiguous run
+# of box-drawn rows at the bottom of the viewport:
+#
+#     △ Permission required
+#       ← Access external directory /tmp
+#
+#     Patterns
+#
+#     - /tmp/*
+#
+#      Allow once   Allow always   Reject  ...
+#
+# `prompt-box` strips those live borders and excludes the transcript above.
+# Requiring both the modal heading and all three actions adds an independent
+# guard against ordinary output that happens to mention permissions.
+[[rules]]
+id = "permission-required-dialog"
+state = "blocked"
+priority = 100
+region = "prompt-box"
+visible-blocker = true
+match = { all = [
+  { contains = "permission required" },
+  { line-regex = '^\s*.*Allow once\s+Allow always\s+Reject\b' },
+] }
+
 # --- Rules deliberately NOT written ------------------------------------------
-#
-# NO `blocked` RULE. This is the important gap in this manifest, and it is a
-# gap rather than a guess on purpose.
-#
-# The attempt: OpenCode 1.17.18 was asked to run `curl -s https://example.com`
-# in a pane. It ran the command WITHOUT prompting, so no permission dialog
-# was ever painted and none could be captured. `opencode --auto` exists to
-# "auto-approve permissions that are not explicitly denied", which implies a
-# default asking path, but neither `~/.config/opencode/cli.json` nor
-# `oh-my-opencode.json` carried a permission key, and the default did not
-# ask for that command.
-#
-# The near-miss is worth recording, because it is exactly the failure mode
-# ADR-0046 §D exists to prevent. The capture loop's own grep matched the word
-# "permission" — inside the fetched HTML of example.com ("This domain is for
-# use in documentation examples without needing permission"). A substring
-# rule written from that would have marked every pane that ever printed the
-# word `permission` as blocked-on-human, forever.
-#
-# So: no blocked rule until someone captures a real OpenCode permission
-# dialog. `blocked` then simply never fires for OpenCode panes, which is the
-# fail-safe direction — a missed blocked costs a notification, a false
-# blocked costs the feature.
 #
 # No `idle` rule. The composer and its placeholder are painted identically
 # whether or not a turn is running (compare the two fixtures), so there is no

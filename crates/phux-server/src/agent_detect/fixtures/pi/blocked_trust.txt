@@ -1,0 +1,17 @@
+────────────────────────────────────────────────────────────────────────────────
+
+ Trust project folder?
+ /private/tmp/phux-detection
+
+ This allows pi to load .pi settings and resources, install missing project
+ packages, and execute project extensions.
+
+ → Trust
+   Trust parent folder (/private/tmp)
+   Trust (this session only)
+   Do not trust
+   Do not trust (this session only)
+
+ ↑↓ navigate  enter select  escape/ctrl+c cancel
+
+────────────────────────────────────────────────────────────────────────────────

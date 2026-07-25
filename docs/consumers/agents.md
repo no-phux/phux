@@ -571,19 +571,20 @@ differs only in the human output; JSON always includes the evidence trail:
 }
 ```
 
-`agent.kind` is `codex`, `claude`, `plugin`, or `unknown`. `state` is
-`unknown`, `idle`, `working`, `blocked`, or `done`; `attention` is `none`,
-`low`, `normal`, or `high`. `sources` is sorted by descending confidence and is
-the provenance contract: current sources include `title_ask`, `screen`,
-`semantic_cells`, `identity`, and `plugin_report`. The detector is deliberately
-explainable rather than magical: a plugin report is lower precedence than a
-live `phux-ask` title sentinel or an explicit blocked/completed screen cue, and
-unknown/missing signals stay `unknown` or low-confidence `idle`.
+`agent.kind` is `codex`, `claude`, `opencode`, `pi`, `omp`, `plugin`,
+`declared`, or `unknown`. `state` is `unknown`, `idle`, `working`, `blocked`,
+or `done`; `attention` is `none`, `low`, `normal`, or `high`. `sources` is
+sorted by descending confidence and is the provenance contract: current
+sources include `agent_record`, `title_ask`, `screen`, `semantic_cells`,
+`identity`, and `plugin_report`. A structured `phux.agent/v1` record outranks
+heuristics; without one, a plugin report remains lower precedence than a live
+`phux-ask` title sentinel or an explicit blocked/completed screen cue.
+Unknown/missing signals stay `unknown` or low-confidence `idle`.
 
 This is a public clean-room projection. It does not copy external agent
-manifests or private tradecraft rules; Codex and Claude recognition comes from
-public, user-visible pane text/title evidence plus optional local phux plugin
-declarations.
+manifests or private tradecraft rules; built-in recognition comes from
+publicly observable process identity and captured pane chrome, plus optional
+local phux plugin declarations.
 
 ### 4.8 `PluginActionOutput` — `phux config run --json`
 

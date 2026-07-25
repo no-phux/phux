@@ -1,0 +1,24 @@
+
+ Planning detailed 2000-word answer
+
+╭─── 🐍 ⣷ running Draft ownership explanation ─────────────────────────────────╮
+│ prompt = '''Write a self-contained, technically precise explanation of the   │
+│ Rust ownership model for a technical reader. Target exactly 2000 words by    │
+│ whitespace count. Cover: motivation and memory safety; stack/heap and scope; │
+│ the three ownership rules; moves and Copy; Clone; borrowing and references;  │
+│ shared vs mutable references and exclusivity; non-lexical lifetimes; slices; │
+│ dangling-reference prevention; lifetimes and lifetime annotations;           │
+│ structs/methods/functions; collections and indexing/get; pattern matching and│
+│ partial moves; Drop and RAII; Rc, Arc, RefCell, Mutex and interior           │
+│ mutability; closures and move closures; async/thread implications; common    │
+│ compiler errors and practical API design; limitations and unsafe Rust. Use   │
+│ headings, concrete Rust examples, and nuanced explanations. Do not mention   │
+│ the word-count requirement in the response. Output only the article.'''      │
+│ draft = completion(prompt, model='slow')                                     │
+│ len(draft.split()), draft[:1000]                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ⠏ Draft ownership explanation ⟦esc⟧
+
+╭── π  > ⬢ GPT-5.6-Sol · ◒ high > 🌳 …tion ▶───────────────────────────────────╮
+╰─                                                                            ─╯

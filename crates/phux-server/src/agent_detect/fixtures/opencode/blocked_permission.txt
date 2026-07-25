@@ -1,0 +1,23 @@
+  ┃  containing exactly x.
+  ┃
+
+     + Thought: Verifying apply_patch usage outside workspace · 2.3s
+
+     The dedicated write tool is unavailable, so I’m using the required patch
+     editor to create the exact file content.
+
+     ~ Preparing patch...
+
+     ▣  Build · GPT-5.6 Sol
+
+  ┃
+  ┃  △ Permission required
+  ┃    ← Access external directory /tmp
+  ┃
+  ┃  Patterns
+  ┃
+  ┃  - /tmp/*
+  ┃
+  ┃
+  ┃   Allow once   Allow always   Reject  ctrl+f fullscreen  ⇆ select  enter con
+  ┃

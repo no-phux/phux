@@ -95,8 +95,9 @@ content is **not** logged — the detector logs its derived state transitions at
 rule set, so no detector is constructed and no pane is scanned. Consumers fall
 back to their pre-ADR-0046 title heuristics.
 
-**Rule manifests.** Built-in manifests are compiled into the binary. Additional
-or replacement manifests are read from `$PHUX_AGENT_RULES_DIR` (default
+**Rule manifests.** Built-in manifests for Claude Code, Codex, OpenCode, Pi, and
+OMP are compiled into the binary. Additional or replacement manifests are read
+from `$PHUX_AGENT_RULES_DIR` (default
 `$XDG_CONFIG_HOME/phux/agent-rules`), one TOML file per agent kind; a manifest
 replaces the built-in of the same `kind`. Manifests are loaded and their patterns
 compiled **once**, on first use. A manifest that fails to parse, or that carries

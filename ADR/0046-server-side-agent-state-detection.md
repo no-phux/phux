@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-07-12
+last-reviewed: 2026-07-25
 ---
 
 # 0046 — The server derives agent state; detection is level-triggered
@@ -77,7 +77,12 @@ value, which every pane needs continuously and which no agent CLI reports.
    identity (`name` / `kind` / `session`) is preserved field-for-field and the
    detector fills `state` around it. The detector deletes only records it itself
    wrote.*
-9. **Staleness is answered by re-identification, not a TTL.** Identity is
+9. **Built-ins are capture-backed.** The binary ships manifests for Claude
+   Code, Codex, OpenCode, Pi, and OMP. Every screen predicate is pinned to an
+   unedited `phux snapshot --json` viewport captured from the named CLI; idle,
+   working, blocked, and historical-dialog false-positive behavior are tested
+   before a manifest ships.
+10. **Staleness is answered by re-identification, not a TTL.** Identity is
    re-derived every ~5 s from the PTY's foreground process group; when the agent
    is gone and the detector owns the record, the record is deleted. A dead
    process does not keep a live badge.

@@ -1,0 +1,36 @@
+# Agent-state detection manifest for Pi Coding Agent (ADR-0046).
+#
+# Predicates were verified against Pi 0.80.7 running in a phux pane. Fixtures
+# under agent_detect/fixtures/pi are unedited `phux snapshot --json`
+# viewports captured from that binary.
+
+kind = "pi"
+name = "pi"
+
+# The npm launcher sets the foreground process name to `pi`; do not include
+# `pi-coding-agent`, which is also an implementation path component of OMP.
+binaries = ["pi"]
+
+# VERIFIED: while a turn is active, Pi paints an animated braille cell followed
+# by the otherwise stable `Working...` status in the live bottom chrome.
+[[rules]]
+id = "bottom-working-status"
+state = "working"
+priority = 60
+region = "bottom-lines"
+visible-working = true
+match = { line-regex = '^\s*[⠀-⣿]\s+Working\.\.\.\s*$' }
+
+# VERIFIED: before an untrusted project starts, Pi replaces the editor with a
+# trust chooser. The destructive choice plus the chooser's exact key hint are
+# both among the six trailing non-empty lines only while that chooser is live.
+[[rules]]
+id = "project-trust-dialog"
+state = "blocked"
+priority = 80
+region = "bottom-lines"
+visible-blocker = true
+match = { all = [
+  { contains = "do not trust (this session only)" },
+  { contains = "escape/ctrl+c cancel" },
+] }

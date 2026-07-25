@@ -24,19 +24,15 @@ use tracing::{debug, warn};
 use super::DetectedState;
 use super::regions::{Region, Screen, extract};
 
-/// The built-in manifest for Claude Code. Every predicate in it is derived
-/// from the shipped CLI's own observable output; see the file's header.
-const BUILTIN_CLAUDE: &str = include_str!("../../rules/claude.toml");
-
-/// The built-in manifest for `OpenAI` Codex. Every predicate in it is derived
-/// from the shipped CLI's own observable output, captured from a live pane;
-/// see the file's header.
-const BUILTIN_CODEX: &str = include_str!("../../rules/codex.toml");
-
-/// The built-in manifest for `OpenCode`. Every predicate in it is derived
-/// from the shipped CLI's own observable output, captured from a live pane;
-/// see the file's header.
-const BUILTIN_OPENCODE: &str = include_str!("../../rules/opencode.toml");
+/// Built-in manifests. Every predicate in these files is derived from the
+/// shipped CLI's observable output and pinned by captured-screen tests below.
+const BUILTIN_MANIFESTS: [(&str, &str); 5] = [
+    ("claude", include_str!("../../rules/claude.toml")),
+    ("codex", include_str!("../../rules/codex.toml")),
+    ("opencode", include_str!("../../rules/opencode.toml")),
+    ("pi", include_str!("../../rules/pi.toml")),
+    ("omp", include_str!("../../rules/omp.toml")),
+];
 
 /// Env knob: `PHUX_AGENT_DETECT=0` disables the detector wholesale by
 /// yielding an empty rule set (the actor then never constructs a detector).
@@ -424,9 +420,9 @@ fn build() -> RuleSet {
         debug!("agent-detect: disabled by PHUX_AGENT_DETECT=0");
         return set;
     }
-    load_manifest(&mut set, "builtin:claude", BUILTIN_CLAUDE);
-    load_manifest(&mut set, "builtin:codex", BUILTIN_CODEX);
-    load_manifest(&mut set, "builtin:opencode", BUILTIN_OPENCODE);
+    for (kind, manifest) in BUILTIN_MANIFESTS {
+        load_manifest(&mut set, &format!("builtin:{kind}"), manifest);
+    }
 
     let Some(dir) = overrides_dir() else {
         return set;
@@ -497,6 +493,13 @@ mod tests {
         let mut set = RuleSet::default();
         set.install(spec).expect("manifest compiles");
         set
+    }
+
+    fn builtin(kind: &str) -> &'static str {
+        super::BUILTIN_MANIFESTS
+            .iter()
+            .find_map(|(candidate, manifest)| (*candidate == kind).then_some(*manifest))
+            .expect("built-in manifest")
     }
 
     fn lines(raw: &[&str]) -> Vec<String> {
@@ -743,7 +746,7 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
 
     // --- The shipped Claude Code manifest -----------------------------------
     //
-    // These pin `rules/claude.toml` against faithful reproductions of the four
+    // These pin `rules/claude.toml` against faithful reproductions of the
     // screens Claude Code actually paints. They are the regression net for the
     // one thing that can silently rot: the CLI changes its chrome and our
     // manifest quietly stops matching (or, far worse, starts matching the
@@ -805,7 +808,7 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
     const CLAUDE_TITLE_QUIET: &str = "\u{2733} phux";
 
     fn claude_eval(title: &str, screen: &[String]) -> super::Evaluation {
-        let set = compile(super::BUILTIN_CLAUDE);
+        let set = compile(builtin("claude"));
         let manifest = set.manifest("claude").expect("claude manifest");
         manifest.evaluate(&Screen {
             title,
@@ -941,18 +944,111 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         assert!(got.freeze, "a pager carries no agent-state information");
     }
 
-    /// The shipped built-in must compile. If this fails, `rules/claude.toml`
-    /// is broken and the detector silently does nothing in production.
+    fn captured(raw: &str) -> Vec<String> {
+        raw.lines().map(str::to_owned).collect()
+    }
+
+    /// Pi and OMP are pinned to idle, working, and blocked viewports captured
+    /// from the corresponding shipped CLI. This catches both silent signal
+    /// drift and the more dangerous false-blocked regression.
     #[test]
-    fn builtin_claude_manifest_compiles_and_indexes_its_binaries() {
-        // `global()` is env-sensitive; compile the embedded text directly so
-        // the test is hermetic.
-        let set = compile(super::BUILTIN_CLAUDE);
-        assert_eq!(set.kind_for_binary("claude"), Some("claude"));
-        assert_eq!(set.kind_for_binary("claude-code"), Some("claude"));
-        let manifest = set.manifest("claude").expect("claude manifest");
-        assert_eq!(manifest.name, "claude");
-        assert!(!manifest.rules.is_empty());
+    fn captured_agent_screens_match_only_their_live_state() {
+        let fixtures = [
+            (
+                "pi",
+                include_str!("fixtures/pi/idle_prompt.txt"),
+                include_str!("fixtures/pi/working.txt"),
+                include_str!("fixtures/pi/blocked_trust.txt"),
+                "bottom-working-status",
+                "project-trust-dialog",
+            ),
+            (
+                "omp",
+                include_str!("fixtures/omp/idle_prompt.txt"),
+                include_str!("fixtures/omp/working.txt"),
+                include_str!("fixtures/omp/blocked_tool_approval.txt"),
+                "bottom-running-status",
+                "tool-approval-dialog",
+            ),
+        ];
+
+        for (kind, idle, working, blocked, working_rule, blocked_rule) in fixtures {
+            let set = compile(builtin(kind));
+            let manifest = set.manifest(kind).expect("manifest");
+
+            let idle = captured(idle);
+            let got = manifest.evaluate(&Screen {
+                title: "",
+                lines: &idle,
+            });
+            assert_eq!(got.state, None, "{kind}: idle is the fail-safe");
+            assert!(!got.visible_blocker, "{kind}: idle is not blocked");
+
+            let working = captured(working);
+            let got = manifest.evaluate(&Screen {
+                title: "",
+                lines: &working,
+            });
+            assert_eq!(
+                got.state,
+                Some(DetectedState::Working),
+                "{kind}: captured working screen",
+            );
+            assert_eq!(got.matched.as_deref(), Some(working_rule));
+            assert!(got.visible_working);
+            assert!(!got.visible_blocker);
+
+            let blocked = captured(blocked);
+            let got = manifest.evaluate(&Screen {
+                title: "",
+                lines: &blocked,
+            });
+            assert_eq!(
+                got.state,
+                Some(DetectedState::Blocked),
+                "{kind}: captured blocked screen",
+            );
+            assert_eq!(got.matched.as_deref(), Some(blocked_rule));
+            assert!(got.visible_blocker);
+
+            let mut transcript_then_idle = blocked;
+            transcript_then_idle.extend(idle);
+            let got = manifest.evaluate(&Screen {
+                title: "",
+                lines: &transcript_then_idle,
+            });
+            assert_ne!(
+                got.state,
+                Some(DetectedState::Blocked),
+                "{kind}: a historical dialog above live idle chrome must not block",
+            );
+            assert!(!got.visible_blocker);
+        }
+    }
+
+    /// Every shipped built-in must compile and own each declared binary alias;
+    /// otherwise that agent kind silently disappears in production.
+    #[test]
+    fn every_builtin_manifest_compiles_and_indexes_its_binaries() {
+        // `global()` is env-sensitive; compile each embedded manifest directly
+        // so this test is hermetic.
+        let expected = [
+            ("claude", &["claude", "claude-code"][..]),
+            ("codex", &["codex"][..]),
+            ("opencode", &["opencode", "opencode2"][..]),
+            ("pi", &["pi"][..]),
+            ("omp", &["omp"][..]),
+        ];
+
+        for (kind, binaries) in expected {
+            let set = compile(builtin(kind));
+            for binary in binaries {
+                assert_eq!(set.kind_for_binary(binary), Some(kind));
+            }
+            let manifest = set.manifest(kind).expect("manifest");
+            assert_eq!(manifest.name, kind);
+            assert!(!manifest.rules.is_empty());
+        }
     }
 
     // --- Codex goldens ------------------------------------------------------
@@ -987,7 +1083,7 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
     const CODEX_TITLE_QUIET: &str = "tmp";
 
     fn codex_eval(title: &str, screen: &[String]) -> super::Evaluation {
-        let set = compile(super::BUILTIN_CODEX);
+        let set = compile(builtin("codex"));
         let manifest = set.manifest("codex").expect("codex manifest");
         manifest.evaluate(&Screen {
             title,
@@ -1073,7 +1169,7 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
     /// is broken and the detector silently does nothing in production.
     #[test]
     fn builtin_codex_manifest_compiles_and_indexes_its_binaries() {
-        let set = compile(super::BUILTIN_CODEX);
+        let set = compile(builtin("codex"));
         assert_eq!(set.kind_for_binary("codex"), Some("codex"));
         let manifest = set.manifest("codex").expect("codex manifest");
         assert_eq!(manifest.name, "codex");
@@ -1115,8 +1211,17 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         )
     }
 
+    fn opencode_blocked_screen() -> Vec<String> {
+        lines(
+            include_str!("fixtures/opencode/blocked_permission.txt")
+                .lines()
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
+    }
+
     fn opencode_eval(title: &str, screen: &[String]) -> super::Evaluation {
-        let set = compile(super::BUILTIN_OPENCODE);
+        let set = compile(builtin("opencode"));
         let manifest = set.manifest("opencode").expect("opencode manifest");
         manifest.evaluate(&Screen {
             title,
@@ -1148,12 +1253,18 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         assert_eq!(idle_a, idle_b, "the title changed the verdict");
     }
 
-    /// No `blocked` rule exists yet (no real `OpenCode` permission dialog has
-    /// been captured), so nothing may produce one. This test is the guard on
-    /// that gap: if someone adds a blocked rule from a guess, the manifest's
-    /// own fixtures should be the first thing they check it against.
+    /// The captured external-directory permission dialog reads as `blocked`;
+    /// the idle and working goldens do not.
     #[test]
-    fn opencode_never_reports_blocked_from_its_fixtures() {
+    fn opencode_permission_dialog_is_blocked_without_false_positives() {
+        let blocked = opencode_eval("OC | whatever", &opencode_blocked_screen());
+        assert_eq!(blocked.state, Some(DetectedState::Blocked));
+        assert_eq!(
+            blocked.matched.as_deref(),
+            Some("permission-required-dialog")
+        );
+        assert!(blocked.visible_blocker);
+
         for screen in [opencode_idle_screen(), opencode_working_screen()] {
             let got = opencode_eval("OpenCode", &screen);
             assert_ne!(got.state, Some(DetectedState::Blocked));
@@ -1164,7 +1275,7 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
     /// name, including the npm-scope path component.
     #[test]
     fn builtin_opencode_manifest_compiles_and_indexes_its_binaries() {
-        let set = compile(super::BUILTIN_OPENCODE);
+        let set = compile(builtin("opencode"));
         for name in ["opencode", "opencode2", "@opencode-ai"] {
             assert_eq!(set.kind_for_binary(name), Some("opencode"), "missed {name}");
         }

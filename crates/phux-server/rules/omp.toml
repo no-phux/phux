@@ -1,0 +1,37 @@
+# Agent-state detection manifest for Oh My Pi (OMP) (ADR-0046).
+#
+# Predicates were verified against OMP 17.1.2 running in a phux pane. Fixtures
+# under agent_detect/fixtures/omp are unedited `phux snapshot --json`
+# viewports captured from that binary.
+
+kind = "omp"
+name = "omp"
+
+# The launcher currently runs as `bun /.../bin/omp`; identify.rs unwraps bun
+# and matches this program-path basename without conflating OMP with Pi.
+binaries = ["omp"]
+
+# VERIFIED: active inference and tool execution paint an animated braille cell
+# and a bracketed escape hint in the live bottom status line.
+[[rules]]
+id = "bottom-running-status"
+state = "working"
+priority = 60
+region = "bottom-lines"
+visible-working = true
+match = { line-regex = '^\s*[⠀-⣿]\s+.+\s+⟦esc⟧\s*$' }
+
+# VERIFIED: OMP's per-tool approval is fenced by horizontal rules. Prompt-box
+# extraction yields only that live dialog; requiring both choices and the exact
+# navigation hint avoids matching a tool transcript after the dialog closes.
+[[rules]]
+id = "tool-approval-dialog"
+state = "blocked"
+priority = 80
+region = "prompt-box"
+visible-blocker = true
+match = { all = [
+  { line-regex = '^\s*❯\s*Approve\s*$' },
+  { line-regex = '^\s*Deny\s*$' },
+  { contains = "up/down navigate  enter select  esc cancel" },
+] }
