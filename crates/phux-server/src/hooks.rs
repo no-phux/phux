@@ -60,6 +60,16 @@ pub const FOCUS_CHANGED: &str = "focus-changed";
 pub const CLIENT_ATTACHED: &str = "client-attached";
 /// Hook point: client detach (any reason).
 pub const CLIENT_DETACHED: &str = "client-detached";
+/// Hook point: a pane's derived agent state changed (ADR-0046).
+pub const AGENT_STATE_CHANGED: &str = "agent-state-changed";
+
+/// The `to` value the agent hook reports when the detector withdraws a
+/// record: the agent is gone, so its state is no longer knowable.
+///
+/// Matches the `unknown` word the L3 agent vocabulary already uses for a
+/// withdrawn state, so a `when = { to = "unknown" }` clause reads the same
+/// as the record a client would see.
+pub const AGENT_STATE_UNKNOWN: &str = "unknown";
 
 /// One fired hook event: a name from the §9 catalog plus its context.
 ///
@@ -145,6 +155,39 @@ impl HookEvent {
             context.push(("session".to_owned(), session.to_owned()));
         }
         Self::new(CLIENT_DETACHED, context)
+    }
+
+    /// [`AGENT_STATE_CHANGED`]: fired when the detector's published agent
+    /// state for a pane actually changes (ADR-0046).
+    ///
+    /// This is the notification seam. phux ships no sound player and no
+    /// desktop-notification client — a `run` action reaching whatever the
+    /// host already has (`osascript`, `notify-send`, `afplay`, `tput bel`)
+    /// composes better than a built-in that must be configured to be
+    /// silenced. What the server owes the operator is the *edge*, delivered
+    /// once, with enough context to decide.
+    ///
+    /// `from` is absent when the pane had no prior record, which is how a
+    /// first sighting is distinguished from a transition. Both `from` and
+    /// `to` use the L3 agent-state vocabulary.
+    #[must_use]
+    pub fn agent_state_changed(
+        terminal_id: &phux_protocol::ids::TerminalId,
+        kind: &str,
+        name: &str,
+        from: Option<&str>,
+        to: &str,
+    ) -> Self {
+        let mut context = terminal_context(terminal_id);
+        context.push(("agent-kind".to_owned(), kind.to_owned()));
+        if !name.is_empty() {
+            context.push(("agent-name".to_owned(), name.to_owned()));
+        }
+        if let Some(from) = from {
+            context.push(("from".to_owned(), from.to_owned()));
+        }
+        context.push(("to".to_owned(), to.to_owned()));
+        Self::new(AGENT_STATE_CHANGED, context)
     }
 }
 

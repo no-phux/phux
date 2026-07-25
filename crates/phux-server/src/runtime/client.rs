@@ -65,15 +65,22 @@ pub(crate) fn spawn_agent_state_drain(
 
     tokio::task::spawn_local(async move {
         while let Some(event) = rx.recv().await {
-            state.with_mut(|s| {
+            // Resolved under the lock, fired outside it: `fire_hook` re-takes
+            // the state lock to clone the dispatcher handle, so firing from
+            // inside `with_mut` would deadlock. `None` means nothing actually
+            // changed and no hook is owed.
+            let hook = state.with_mut(|s| {
                 let scope = Scope::Terminal(wire_terminal_id.clone());
                 match event {
                     AgentDetectEvent::Retract => {
                         // Only ever delete a record we authored. A human's
                         // declaration is not ours to retract.
                         if !s.agent_records().detector_owns(&wire_terminal_id) {
-                            return;
+                            return None;
                         }
+                        let from = crate::agent_state::stored_state(
+                            s.metadata().get(&scope, TERMINAL_AGENT_KEY).as_deref(),
+                        );
                         // ... and "we authored it" is not the same as "all of
                         // it is ours". After `phux agent set --name reviewer`
                         // the detector keeps filling `state` in, and that write
@@ -89,33 +96,90 @@ pub(crate) fn spawn_agent_state_drain(
                                 s.metadata_set(&scope, TERMINAL_AGENT_KEY, bytes);
                                 s.agent_records_mut()
                                     .note_detector_retract(&wire_terminal_id);
-                                return;
+                                return retract_hook(&wire_terminal_id, from.as_deref());
                             }
                         }
                         s.metadata_delete(&scope, TERMINAL_AGENT_KEY);
                         s.agent_records_mut()
                             .note_detector_retract(&wire_terminal_id);
+                        retract_hook(&wire_terminal_id, from.as_deref())
                     }
                     AgentDetectEvent::State(report) => {
                         // ADR-0046 §E: an explicit SET_METADATA that supplied
                         // a `state` outranks the detector entirely.
                         if s.agent_records().is_declared(&wire_terminal_id) {
-                            return;
+                            return None;
                         }
                         let existing = s.metadata().get(&scope, TERMINAL_AGENT_KEY);
+                        let from = crate::agent_state::stored_state(existing.as_deref());
+                        let to = report.state.as_str();
                         let bytes = crate::agent_state::compose(
                             existing.as_deref(),
                             &report.kind,
                             &report.name,
-                            report.state.as_str(),
+                            to,
                         );
                         s.metadata_set(&scope, TERMINAL_AGENT_KEY, bytes);
                         s.agent_records_mut().note_detector_write(&wire_terminal_id);
+                        state_change_hook(
+                            &wire_terminal_id,
+                            &report.kind,
+                            &report.name,
+                            from.as_deref(),
+                            to,
+                        )
                     }
                 }
             });
+            if let Some(event) = hook {
+                crate::hooks::fire_hook(&state, event);
+            }
         }
     });
+}
+
+/// The `agent-state-changed` event for a detector write, unless the store
+/// already held that state.
+///
+/// The detector's edge filter models its OWN emissions, not the store, so a
+/// republish after someone else wrote the record can land on the state that
+/// is already there. Comparing against the store keeps the hook a true edge —
+/// a notifier that fires on a non-change is a notifier the operator turns off.
+fn state_change_hook(
+    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    kind: &str,
+    name: &str,
+    from: Option<&str>,
+    to: &str,
+) -> Option<crate::hooks::HookEvent> {
+    if from == Some(to) {
+        return None;
+    }
+    Some(crate::hooks::HookEvent::agent_state_changed(
+        wire_terminal_id,
+        kind,
+        name,
+        from,
+        to,
+    ))
+}
+
+/// The `agent-state-changed` event for a withdrawn record, unless the record
+/// was already `unknown` (a retract that changes nothing owes no hook).
+fn retract_hook(
+    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    from: Option<&str>,
+) -> Option<crate::hooks::HookEvent> {
+    if from == Some(crate::hooks::AGENT_STATE_UNKNOWN) {
+        return None;
+    }
+    Some(crate::hooks::HookEvent::agent_state_changed(
+        wire_terminal_id,
+        "",
+        "",
+        from,
+        crate::hooks::AGENT_STATE_UNKNOWN,
+    ))
 }
 
 /// Re-arm the pane detector's edge filter after someone ELSE wrote its
@@ -1448,7 +1512,7 @@ mod agent_drain_tests {
     use phux_protocol::ids::TerminalId as WireTerminalId;
     use phux_protocol::wire::frame::{Scope, TERMINAL_AGENT_KEY};
 
-    use super::spawn_agent_state_drain;
+    use super::{retract_hook, spawn_agent_state_drain, state_change_hook};
     use crate::agent_detect::record::AgentRecordJson;
     use crate::agent_detect::{AgentDetectEvent, AgentReport, DetectedState};
     use crate::state::SharedState;
@@ -1459,6 +1523,83 @@ mod agent_drain_tests {
             name: "claude".to_owned(),
             state,
         }
+    }
+
+    // --- agent-state-changed hook (the notification seam) -------------------
+
+    fn terminal() -> WireTerminalId {
+        WireTerminalId::local(1)
+    }
+
+    fn ctx(event: &crate::hooks::HookEvent, key: &str) -> Option<String> {
+        event.context.get(key).cloned()
+    }
+
+    /// A first sighting has no `from`: "we have never seen this pane" is a
+    /// different fact from "it was idle", and a notifier that conflates them
+    /// announces every agent launch as a transition.
+    #[test]
+    fn first_sighting_reports_no_prior_state() {
+        let event = state_change_hook(&terminal(), "claude", "claude", None, "working")
+            .expect("a first sighting is an edge");
+        assert_eq!(event.name, crate::hooks::AGENT_STATE_CHANGED);
+        assert_eq!(ctx(&event, "from"), None);
+        assert_eq!(ctx(&event, "to").as_deref(), Some("working"));
+        assert_eq!(ctx(&event, "agent-kind").as_deref(), Some("claude"));
+    }
+
+    /// The transition the whole feature exists for: an agent that stopped and
+    /// wants a human. The hook must carry both ends so a `when` clause can
+    /// fire on `blocked` alone.
+    #[test]
+    fn working_to_blocked_carries_both_ends() {
+        let event = state_change_hook(&terminal(), "claude", "rev", Some("working"), "blocked")
+            .expect("working -> blocked is an edge");
+        assert_eq!(ctx(&event, "from").as_deref(), Some("working"));
+        assert_eq!(ctx(&event, "to").as_deref(), Some("blocked"));
+        assert_eq!(ctx(&event, "agent-name").as_deref(), Some("rev"));
+    }
+
+    /// The detector's edge filter models its own emissions, not the store, so
+    /// a republish can land on the state already recorded. That is not an
+    /// edge, and firing there is how a notifier earns being turned off.
+    #[test]
+    fn republishing_the_stored_state_fires_nothing() {
+        assert!(
+            state_change_hook(&terminal(), "claude", "claude", Some("idle"), "idle").is_none(),
+            "idle -> idle is not a transition"
+        );
+    }
+
+    /// An anonymous record must not export an empty `agent-name`: a hook
+    /// child reading `PHUX_AGENT_NAME=""` cannot tell "unnamed" from "unset".
+    #[test]
+    fn empty_agent_name_is_omitted_rather_than_blank() {
+        let event = state_change_hook(&terminal(), "codex", "", None, "working")
+            .expect("a first sighting is an edge");
+        assert_eq!(ctx(&event, "agent-name"), None);
+    }
+
+    /// A withdrawn record is an edge too — the agent exited, and a fleet view
+    /// that never hears about it keeps showing a dead pane as working.
+    #[test]
+    fn retract_reports_the_unknown_landing_state() {
+        let event = retract_hook(&terminal(), Some("working")).expect("a retract is an edge");
+        assert_eq!(ctx(&event, "from").as_deref(), Some("working"));
+        assert_eq!(
+            ctx(&event, "to").as_deref(),
+            Some(crate::hooks::AGENT_STATE_UNKNOWN)
+        );
+    }
+
+    /// Retracting an already-withdrawn record changes nothing and owes no
+    /// hook, or a flapping detector becomes a stream of duplicate alerts.
+    #[test]
+    fn retracting_an_already_unknown_record_fires_nothing() {
+        assert!(
+            retract_hook(&terminal(), Some(crate::hooks::AGENT_STATE_UNKNOWN)).is_none(),
+            "unknown -> unknown is not a transition"
+        );
     }
 
     /// Drive the real drain task to quiescence over `events`, and hand back the

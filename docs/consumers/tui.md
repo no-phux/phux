@@ -1765,7 +1765,7 @@ but focus authority and advisory attention navigation remain client-local.
 > `[[hooks.<name>]]` entries ships in `phux-config` (see `schema.rs`),
 > and the server-side dispatcher (`phux-server::hooks`) fires a starter
 > set of real events: `after-new-pane`, `pane-exit`, `focus-changed`,
-> `client-attached`, and `client-detached`. Enabled plugin manifests'
+> `client-attached`, `client-detached`, and `agent-state-changed`. Enabled plugin manifests'
 > `[[events]]` entries whose `on` names one of these events fire through
 > the same dispatcher. The remaining hook points in the table below
 > (`after-new-session`, `after-new-window`, `after-kill-pane`,
@@ -1809,6 +1809,7 @@ Hook points (initial):
 | `client-attached`     | client attach completed                  |
 | `client-detached`     | client detach (any reason)               |
 | `focus-changed`       | any client changes focus                 |
+| `agent-state-changed` | a pane's derived agent state changed     |
 | `output-silenced`     | configurable silence threshold elapsed   |
 | `output-active`       | first byte after a silence               |
 
@@ -1835,6 +1836,47 @@ Server-side execution semantics (the shipped subset):
   a fixed number of hook children run concurrently, each under a timeout
   with kill-on-drop. A slow or wedged hook never blocks the terminal
   actor hot path.
+
+### 9.1 Agent notifications ride `agent-state-changed`
+
+`agent-state-changed` fires when the ADR-0046 detector's *published* state
+for a pane actually changes. Its context adds `agent-kind`, `agent-name`
+(omitted when the record is anonymous, so a hook child can tell "unnamed"
+from "unset"), `from`, and `to` — exported as `PHUX_AGENT_KIND`,
+`PHUX_AGENT_NAME`, `PHUX_FROM`, and `PHUX_TO`.
+
+`from` is **absent** on a first sighting. "We have never seen this pane" is
+a different fact from "it was idle", and a notifier that conflates them
+announces every agent launch as a transition. A withdrawn record (the agent
+exited) arrives as `to = "unknown"`.
+
+This is deliberately the *only* notification surface. phux ships no sound
+player and no desktop-notification client:
+
+```toml
+# Tell me when an agent stops and wants a human.
+[[hooks.agent-state-changed]]
+when   = { to = "blocked" }
+action = { kind = "run", command = "afplay /System/Library/Sounds/Glass.aiff" }
+
+# ... and when one finishes its turn.
+[[hooks.agent-state-changed]]
+when   = { to = "idle" }
+action = { kind = "run", command = "osascript -e 'display notification \"turn done\" with title \"phux\"'" }
+```
+
+A built-in notifier would have to grow a config surface for the player, the
+sound, the per-state mapping, and the mute switch — reimplementing, badly,
+what `osascript`, `notify-send`, `afplay`, and `tput bel` already do. What
+the server owes the operator is the *edge*, delivered once, with enough
+context to decide. Remember that hooks are **first-match-wins per event**,
+so order the `when` clauses most-specific first.
+
+The hook is a true edge in both directions: the detector's own filter models
+its emissions rather than the store, so the drain compares against the
+recorded state and fires nothing when a republish lands on the state already
+there. A notifier that fires on a non-change is a notifier the operator
+turns off.
 
 ---
 

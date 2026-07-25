@@ -176,6 +176,20 @@ pub(crate) fn compose(existing: Option<&[u8]>, kind: &str, name: &str, state: &s
     record.encode()
 }
 
+/// The `state` word currently stored for a pane, if any.
+///
+/// Read before a detector write so the `agent-state-changed` hook can report
+/// the edge it crossed rather than only where it landed. An absent or
+/// undecodable record yields `None`, which the hook renders as "no prior
+/// state" — honestly distinct from a transition out of `idle`.
+pub(crate) fn stored_state(existing: Option<&[u8]>) -> Option<String> {
+    let record = AgentRecordJson::decode(existing?)?;
+    if record.state.is_empty() {
+        return None;
+    }
+    Some(record.state)
+}
+
 /// Withdraw the detector's `state` from a stored record, preserving every
 /// field a human authored.
 ///
