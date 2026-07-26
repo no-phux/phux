@@ -9,12 +9,14 @@ mod common;
 use std::time::Duration;
 
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
+use phux_protocol::ids::FileUploadId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_HELLO_OK, TYPE_TERMINAL_OUTPUT,
-    TYPE_TERMINAL_SNAPSHOT,
+    Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_HELLO_OK,
+    TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
 };
 use portable_pty::CommandBuilder;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
@@ -63,6 +65,16 @@ async fn shutdown_and_join(
         "socket {} should be unlinked after shutdown",
         socket_path.display(),
     );
+}
+
+async fn recv_command_result(stream: &mut UnixStream, expected_request: u32) -> CommandResult {
+    loop {
+        let (_, frame) = recv_typed(stream).await;
+        if let FrameKind::CommandResult { request_id, result } = frame {
+            assert_eq!(request_id, expected_request);
+            return result;
+        }
+    }
 }
 
 #[test]
@@ -153,6 +165,101 @@ fn handshake_hello_round_trip() {
         let (type_byte, _snap) = recv_typed(&mut stream).await;
         assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
 
+        drop(stream);
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn put_file_round_trip_publishes_only_the_verified_file() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let upload_dir = tmp.path().join("uploads");
+        // This integration-test binary has no other PutFile test, so no task
+        // can read the process-global override while it is changing.
+        unsafe { std::env::set_var("PHUX_UPLOAD_DIR", &upload_dir) };
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut stream, &hello_frame()).await;
+        let (_, hello) = recv_typed(&mut stream).await;
+        assert!(matches!(hello, FrameKind::HelloOk { .. }));
+        send_frame(&mut stream, &attach_by_name("default")).await;
+        let (_, attached) = recv_typed(&mut stream).await;
+        let terminal_id = match attached {
+            FrameKind::Attached { snapshot, .. } => snapshot.panes[0].id.clone(),
+            other => panic!("expected ATTACHED, got {other:?}"),
+        };
+        let _ = recv_typed(&mut stream).await; // authoritative terminal snapshot
+
+        let bytes = b"wire-native image bytes";
+        let split = 7;
+        let upload_id = FileUploadId::new([0x5a; 16]).unwrap();
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 41,
+                command: Command::PutFile {
+                    upload_id,
+                    terminal_id: terminal_id.clone(),
+                    extension: "PNG".to_owned(),
+                    offset: 0,
+                    data: bytes[..split].to_vec(),
+                    final_chunk: false,
+                    sha256: None,
+                },
+            },
+        )
+        .await;
+        assert_eq!(
+            recv_command_result(&mut stream, 41).await,
+            CommandResult::OkWith(CommandValue::FileUpload(
+                phux_protocol::wire::frame::FileUploadAck {
+                    next_offset: u64::try_from(split).unwrap(),
+                    path: None,
+                }
+            ))
+        );
+        assert!(
+            std::fs::read_dir(&upload_dir).unwrap().all(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with('.')),
+            "a non-final chunk must expose no public file"
+        );
+
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 42,
+                command: Command::PutFile {
+                    upload_id,
+                    terminal_id,
+                    extension: "png".to_owned(),
+                    offset: u64::try_from(split).unwrap(),
+                    data: bytes[split..].to_vec(),
+                    final_chunk: true,
+                    sha256: Some(Sha256::digest(bytes).into()),
+                },
+            },
+        )
+        .await;
+        let path = match recv_command_result(&mut stream, 42).await {
+            CommandResult::OkWith(CommandValue::FileUpload(ack)) => {
+                assert_eq!(ack.next_offset, u64::try_from(bytes.len()).unwrap());
+                ack.path.expect("verified final path")
+            }
+            other => panic!("expected file-upload acknowledgement, got {other:?}"),
+        };
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(
+            std::path::Path::new(&path).starts_with(&upload_dir),
+            "server must choose a path inside its upload sandbox"
+        );
+
+        unsafe { std::env::remove_var("PHUX_UPLOAD_DIR") };
         drop(stream);
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });
