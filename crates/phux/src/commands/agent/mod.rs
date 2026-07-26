@@ -2,6 +2,7 @@ mod config;
 mod detect;
 mod model;
 mod record;
+mod shim;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -74,6 +75,17 @@ pub(crate) enum AgentAction {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
+    #[command(about = "Make plain `claude` launch inside phux and publish lifecycle state")]
+    InstallClaude {
+        /// Shell rc file to activate (auto-detected from SHELL).
+        #[arg(long, value_parser = ["zsh", "bash", "fish"])]
+        shell: Option<String>,
+        /// Absolute path to the real Claude executable (auto-detected from PATH).
+        #[arg(long, value_name = "PATH")]
+        real: Option<PathBuf>,
+    },
+    #[command(about = "Remove the claude-in-phux shim and shell activation")]
+    UninstallClaude,
 }
 
 pub(crate) fn run_agent(action: &AgentAction) -> ExitCode {
@@ -107,6 +119,10 @@ pub(crate) fn run_agent(action: &AgentAction) -> ExitCode {
             socket.clone(),
         ),
         AgentAction::Clear { target, socket } => run_agent_clear(target.as_deref(), socket.clone()),
+        AgentAction::InstallClaude { shell, real } => {
+            shim::run_install_claude(shell.as_deref(), real.as_deref())
+        }
+        AgentAction::UninstallClaude => shim::run_uninstall_claude(),
     }
 }
 
@@ -145,9 +161,11 @@ fn run_agent_one(action: &AgentAction) -> ExitCode {
             json,
             socket,
         } => (target.as_deref(), *json, socket.clone(), AgentView::Explain),
-        AgentAction::List { .. } | AgentAction::Set { .. } | AgentAction::Clear { .. } => {
-            return ExitCode::FAILURE;
-        }
+        AgentAction::List { .. }
+        | AgentAction::Set { .. }
+        | AgentAction::Clear { .. }
+        | AgentAction::InstallClaude { .. }
+        | AgentAction::UninstallClaude => return ExitCode::FAILURE,
     };
     let selector = match parse_selector(target) {
         Ok(selector) => selector,

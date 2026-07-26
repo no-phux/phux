@@ -74,6 +74,21 @@ records the remaining operator surface.
 
 ## Agent-state detection
 
+To make adoption automatic rather than relying on every operator to remember a
+special launch command, run this once on each box:
+
+```sh
+phux agent install-claude
+```
+
+After a new shell starts, plain interactive `claude` creates and attaches a
+phux session when invoked outside one, or runs in the current pane when already
+inside. The shim injects additional Claude hook settings for lifecycle
+publication: prompts set `working`, permissions/notifications set `blocked`
+and emit `phux ask`, stops set `done`, and session exit clears the record.
+Administrative and noninteractive Claude commands bypass the shim. Remove the
+owned files and the marked shell-rc block with `phux agent uninstall-claude`.
+
 The server derives each pane's `phux.agent/v1` record on a timer
 ([ADR-0046](../ADR/0046-server-side-agent-state-detection.md)). What it reads,
 exactly, and nothing else:

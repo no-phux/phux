@@ -156,6 +156,18 @@ command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "cl
 working_directory = "workspace"
 ```
 
+For the product path — where typing plain `claude` outside phux should create
+and attach a self-identifying phux session — install the first-party shell shim
+once per box:
+
+```sh
+phux agent install-claude
+```
+
+The fixture wrapper below remains the integration-template path used by
+`phux launch`; the installed shim adds automatic entry plus Claude lifecycle
+hooks (`working`, `blocked`, `done`, and `phux ask` notifications).
+
 ### Launch through `phux launch` (recommended)
 
 phux **does** ship a launch executor: `phux launch <integration>`

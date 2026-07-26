@@ -201,6 +201,19 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
 - **`phux agent clear [TARGET] [--socket P]`** — delete the declared record
   (`DELETE_METADATA`); consumers fall back to the OSC-title and screen
   heuristics. Prints `@N<TAB>-` on confirmation.
+- **`phux agent install-claude [--shell zsh|bash|fish] [--real PATH]`** —
+  make plain interactive `claude` invocations enter phux automatically. The
+  installer leaves the real Claude binary untouched, writes a phux-owned shim
+  under `$XDG_DATA_HOME/phux/shims`, and adds one marked PATH block to the
+  detected shell rc. Outside phux, the shim creates and attaches a new session
+  in the caller's working directory; inside a pane it runs Claude in place.
+  Claude lifecycle hooks publish `working`, `blocked`, and `done` records, and
+  blocked notifications also emit `phux ask`, so phone and TUI fleet views see
+  attention without screen inference. Noninteractive/admin invocations such as
+  `claude -p`, `claude mcp`, and `claude --version` bypass phux.
+- **`phux agent uninstall-claude`** — remove only the phux-owned shim, hook
+  settings, manifest, and marked shell-rc block. User shell configuration and
+  the real Claude installation are otherwise untouched.
 - **`phux new [-s NAME] [-c CWD] [-- COMMAND...] [--json] [--socket P]`** —
   create a new session. Without `--json` it creates and attaches: an explicit
   `-s NAME` that already exists is an error (like tmux's duplicate-session

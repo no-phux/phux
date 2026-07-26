@@ -145,6 +145,8 @@ phux run TARGET CMD...        # run a command in a pane, capture $?
 phux wait [TARGET]            # poll a pane until a condition holds
 phux watch [TARGET]           # stream a pane's live events
 phux ask TARGET QUESTION      # report an agent ask event for a pane
+phux agent install-claude     # make plain interactive `claude` enter phux
+phux agent uninstall-claude   # remove its shim, hooks, and shell activation
 phux config <init|path|show>  # scaffold + inspect config
 phux config check [PATH] [--json]
                               # report every unknown key / wrong value with
