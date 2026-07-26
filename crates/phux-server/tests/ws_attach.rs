@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
+use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
@@ -92,9 +93,9 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
         // binary message, the phux-web contract.
         let hello = FrameKind::Hello {
             client_name: "ws-attach-test".to_owned(),
-            protocol_major: 0,
-            protocol_minor: 2,
-            protocol_patch: 0,
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
             client_caps: ClientCapabilities::default(),
         };
         ws.send(Message::Binary(encode(&hello))).await.unwrap();

@@ -14,6 +14,7 @@
 use std::time::Duration;
 
 use bytes::BytesMut;
+use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
@@ -127,9 +128,9 @@ fn wt_hello_attach_receives_attached_and_snapshot() {
         let (mut send, mut recv) = connection.open_bi().await.unwrap().await.unwrap();
         let hello = FrameKind::Hello {
             client_name: "wt-attach-test".to_owned(),
-            protocol_major: 0,
-            protocol_minor: 2,
-            protocol_patch: 0,
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
             client_caps: ClientCapabilities::default(),
         };
         send.write_all(&encode(&hello)).await.unwrap();

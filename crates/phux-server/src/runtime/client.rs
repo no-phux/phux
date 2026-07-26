@@ -671,12 +671,43 @@ pub(crate) async fn accept_loop<L: Incoming>(
     }
 }
 
+/// The wire carries one concrete version rather than a range. A patch release
+/// is editorial/behavior-preserving, while a major or minor change may alter
+/// the wire contract; therefore only `major.minor` must match.
+const fn protocol_is_compatible(client_major: u16, client_minor: u16) -> bool {
+    client_major == PROTOCOL_VERSION.major && client_minor == PROTOCOL_VERSION.minor
+}
+
+fn incompatible_protocol_message(
+    client_major: u16,
+    client_minor: u16,
+    client_patch: u16,
+) -> String {
+    let client = (client_major, client_minor, client_patch);
+    let server = (
+        PROTOCOL_VERSION.major,
+        PROTOCOL_VERSION.minor,
+        PROTOCOL_VERSION.patch,
+    );
+    let remediation = if client < server {
+        "update the phux app/client"
+    } else {
+        "update the phux server"
+    };
+    format!(
+        "incompatible protocol: client offered {client_major}.{client_minor}.{client_patch}, \
+         server requires {}.{}.x; {remediation} so protocol major.minor match",
+        PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor,
+    )
+}
+
 /// Per-client task. Reads frames in a loop and dispatches each one.
 ///
 /// Outbound messages are routed through a per-client `mpsc` channel
 /// drained by a sibling writer task (also `spawn_local`'d). This gives
 /// us one place to back-pressure on slow clients without entangling
 /// the read side, and matches the `tx: mpsc::Sender<Outbound>` shape
+///
 /// `ServerState::attach` already wants. The channel carries
 /// [`Outbound`] so every typed [`FrameKind`] send shares one ordering
 /// domain.
@@ -784,6 +815,26 @@ where
                     color_support = ?client_caps.color_support,
                     "HELLO",
                 );
+                if !protocol_is_compatible(protocol_major, protocol_minor) {
+                    let message = incompatible_protocol_message(
+                        protocol_major,
+                        protocol_minor,
+                        protocol_patch,
+                    );
+                    warn!(?client_id, %message, "HELLO protocol mismatch");
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::VersionIncompatible,
+                            message,
+                        }))
+                        .await;
+                    // Closing the last sender lets the writer flush the ERROR
+                    // before this task closes the transport.
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
+                    return Ok(());
+                }
                 // Policy check: authorize HELLO before proceeding.
                 let policy_ok = {
                     let peer = state
@@ -841,10 +892,10 @@ where
                     s.set_client_layers(client_id, client_caps.layers);
                 });
                 // SPEC §6.1: server replies with HELLO_OK before ATTACH
-                // is processed on this connection. The single-version
-                // reference server echoes its own PROTOCOL_VERSION as the
-                // selected version (no `VERSION_INCOMPATIBLE` negotiation
-                // yet) and advertises the full tier set it mounts (L1+L2+L3);
+                // is processed on this connection. The compatible
+                // single-version client and server agree on major.minor; the
+                // server selects its current patch and advertises the full
+                // tier set it mounts (L1+L2+L3).
                 // the negotiated set is the intersection with the client's
                 // `layers`. `server_id` is the opaque process identity.
                 let hello_ok = FrameKind::HelloOk {

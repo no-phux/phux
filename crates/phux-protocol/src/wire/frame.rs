@@ -1621,10 +1621,10 @@ pub enum FrameKind {
     /// server-owned fields append without a wire break (SPEC §6 "skip them
     /// by length").
     ///
-    /// Version *negotiation* (rejecting an incompatible client with
-    /// `ERROR { VERSION_INCOMPATIBLE }`) is not yet enforced by the
-    /// reference server; the single-version protocol echoes its own
-    /// `PROTOCOL_VERSION` as the selected version.
+    /// The reference server accepts the client's concrete version only when
+    /// `major.minor` matches its own, selects its current patch, and otherwise
+    /// sends `ERROR { VERSION_INCOMPATIBLE }` with an upgrade direction before
+    /// closing the connection.
     HelloOk {
         /// Selected major version (wire-breaking axis pre-1.0).
         protocol_major: u16,

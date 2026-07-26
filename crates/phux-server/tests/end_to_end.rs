@@ -8,12 +8,13 @@ mod common;
 
 use std::time::Duration;
 
+use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
 use phux_protocol::ids::FileUploadId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_HELLO_OK,
-    TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_DETACHED,
+    TYPE_ERROR, TYPE_HELLO_OK, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
 };
 use portable_pty::CommandBuilder;
 use sha2::{Digest, Sha256};
@@ -36,11 +37,19 @@ const SERVER_JOIN_DEADLINE: Duration = Duration::from_secs(5);
 /// `phux-client::attach::driver::handshake` shape: `TrueColor` + all
 /// layers advertised.
 fn hello_frame() -> FrameKind {
+    hello_for_version(
+        PROTOCOL_VERSION.major,
+        PROTOCOL_VERSION.minor,
+        PROTOCOL_VERSION.patch,
+    )
+}
+
+fn hello_for_version(major: u16, minor: u16, patch: u16) -> FrameKind {
     FrameKind::Hello {
         client_name: "phux-end-to-end-test".to_owned(),
-        protocol_major: 0,
-        protocol_minor: 1,
-        protocol_patch: 0,
+        protocol_major: major,
+        protocol_minor: minor,
+        protocol_patch: patch,
         client_caps: ClientCapabilities::new()
             .with_color_support(ColorSupport::TrueColor)
             .with_layers(LayerSet::all()),
@@ -166,6 +175,57 @@ fn handshake_hello_round_trip() {
         assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
 
         drop(stream);
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn incompatible_handshake_returns_actionable_error() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+
+        let cases = [
+            (
+                PROTOCOL_VERSION.minor + 1,
+                "update the phux server",
+                "newer client",
+            ),
+            (
+                PROTOCOL_VERSION.minor - 1,
+                "update the phux app/client",
+                "older client",
+            ),
+        ];
+        for (minor, remediation, label) in cases {
+            let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+            send_frame(
+                &mut stream,
+                &hello_for_version(PROTOCOL_VERSION.major, minor, 0),
+            )
+            .await;
+            let (type_byte, response) = recv_typed(&mut stream).await;
+            assert_eq!(type_byte, TYPE_ERROR, "{label} must receive ERROR");
+            match response {
+                FrameKind::Error { code, message, .. } => {
+                    assert_eq!(code, ErrorCode::VersionIncompatible);
+                    assert!(
+                        message.contains(&format!(
+                            "client offered {}.{minor}.0",
+                            PROTOCOL_VERSION.major
+                        )),
+                        "{label} error must name the offered version: {message}",
+                    );
+                    assert!(
+                        message.contains(remediation),
+                        "{label} error must prescribe the correct upgrade: {message}",
+                    );
+                }
+                other => panic!("expected VERSION_INCOMPATIBLE, got {other:?}"),
+            }
+        }
+
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });
 }

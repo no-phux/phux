@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-07-10
+last-reviewed: 2026-07-25
 ---
 
 # proto — connection lifecycle, framing, and protocol meta
@@ -213,16 +213,18 @@ within the payload as defined per-message and per-field.
 ## 6. Version negotiation
 
 The protocol uses semantic versioning: `major.minor.patch`. This
-document specifies version `0.5.0`.
+document specifies version `0.6.0`.
 
-- **Major** version changes are wire-breaking.
-- **Minor** version changes add new messages or new fields. A peer
-  encountering an unknown message type at a known minor version MUST log
-  and drop the message. A peer encountering a **field id** it does not
-  recognize within a known message MUST skip that field by its declared
-  length (the field-tagged TLV extensibility rule of
-  [appendix-encoding.md](./appendix-encoding.md)).
-- **Patch** version changes are editorial and MUST NOT change behavior.
+- **Major** and **minor** versions identify the implemented wire contract. The
+  reference wire currently carries one concrete version rather than a range,
+  so peers MUST have equal `major.minor` values. A peer encountering an unknown
+  message type at that version MUST log and drop the message. A peer
+  encountering a **field id** it does not recognize within a known message MUST
+  skip that field by its declared length (the field-tagged TLV extensibility
+  rule of [appendix-encoding.md](./appendix-encoding.md)).
+- **Patch** version changes are editorial or behavior-preserving and MUST NOT
+  change encoded bytes. Peers with equal `major.minor` values MAY differ in
+  patch.
 
 ### 6.1 The HELLO handshake
 
@@ -230,7 +232,7 @@ Every connection opens with a HELLO exchange. The client speaks first:
 
 ```
 Client → Server:  HELLO {
-    versions: list<VersionRange>,
+    version: Version,
     client_caps: ClientCapabilities,   // includes layers: bitset<Layer>
 }
 
@@ -247,13 +249,11 @@ whenever reconnect-safety state is lost, including a normal restart or a
 graceful re-exec that does not preserve that state. Consumers MUST compare it
 as opaque bytes and MUST NOT derive host identity from it.
 
-`VersionRange` is `{ min: Version, max: Version }` inclusive. The
-client's `versions` field lists ranges it supports (typically one).
-
-The server MUST select the highest version that lies in some range of
-the client's `versions` AND is supported by the server itself, and echo
-it back as `version`. If no such version exists, the server MUST send
-`ERROR { code: VERSION_INCOMPATIBLE }` and close.
+The current wire encodes one concrete client version. The server MUST accept it
+only when its `major.minor` equals the server's supported `major.minor`, then
+echo the server's current patch in `HELLO_OK`. If they differ, the server MUST
+send `ERROR { code: VERSION_INCOMPATIBLE }` naming both versions and the older
+peer to upgrade, then close before processing `ATTACH` or other stateful frames.
 
 The `layers` bit-field on `ClientCapabilities` and `ServerCapabilities`
 declares which conformance tiers (§11 Conformance) each side speaks. Per

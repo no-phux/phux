@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use phux_dial::{CertTrust, QuicDial};
+use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::policy::QUIC_RELAY_ALPN;
@@ -254,9 +255,9 @@ async fn recv_wire(consumer: &mut Consumer) -> FrameKind {
 fn hello(client_name: &str) -> FrameKind {
     FrameKind::Hello {
         client_name: client_name.to_owned(),
-        protocol_major: 0,
-        protocol_minor: 2,
-        protocol_patch: 0,
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
         client_caps: ClientCapabilities::default(),
     }
 }
