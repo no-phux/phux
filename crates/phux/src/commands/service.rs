@@ -105,6 +105,9 @@ pub(crate) struct ServicePlan {
     /// so a default-socket install stays portable across a host whose
     /// `XDG_RUNTIME_DIR` changes.
     pub(crate) socket: Option<PathBuf>,
+    /// Run the supervised server as a federation hub, loading and maintaining
+    /// every enabled `[[satellites]]` route from `config.toml`.
+    pub(crate) hub: bool,
     /// The socket the server will actually bind, resolved at install time.
     ///
     /// The wrapper script tests this path to learn when the server is
@@ -152,7 +155,11 @@ impl ServicePlan {
         if self.restore.is_some() {
             return vec!["/bin/sh".to_owned(), path_string(&self.wrapper)];
         }
-        vec![path_string(&self.binary), "server".to_owned()]
+        let mut args = vec![path_string(&self.binary), "server".to_owned()];
+        if self.hub {
+            args.push("--hub".to_owned());
+        }
+        args
     }
 }
 
@@ -274,6 +281,7 @@ pub(crate) fn render_wrapper_script(plan: &ServicePlan) -> String {
     let socket_arg = plan.socket.as_ref().map_or_else(String::new, |socket| {
         format!(" --socket {}", sh_quote(&path_string(socket)))
     });
+    let hub_arg = if plan.hub { " --hub" } else { "" };
 
     format!(
         "#!/bin/sh\n\
@@ -305,7 +313,7 @@ pub(crate) fn render_wrapper_script(plan: &ServicePlan) -> String {
          trap 'save; [ -n \"$server\" ] && kill -TERM \"$server\" 2>/dev/null; \
          wait \"$server\" 2>/dev/null; exit 0' TERM INT\n\
          \n\
-         \"$phux\" server{socket_arg} &\n\
+         \"$phux\" server{hub_arg}{socket_arg} &\n\
          server=$!\n\
          \n\
          # Restore once the server is listening. Bounded at ~10s so a server\n\
@@ -332,6 +340,7 @@ fn resolve_plan(
     listen: Option<String>,
     restore: bool,
     socket: Option<PathBuf>,
+    hub: bool,
 ) -> Result<ServicePlan, String> {
     let binary = std::env::current_exe()
         .map_err(|err| format!("could not resolve the running phux binary: {err}"))?;
@@ -353,6 +362,7 @@ fn resolve_plan(
         key: std::env::var_os("PHUX_WS_TLS_KEY")
             .map_or_else(phux_server::transport::tls::default_key_path, PathBuf::from),
         socket,
+        hub,
         socket_path,
         log: state.join("server.log"),
         restore: restore.then(|| state.join("workspace.json")),
@@ -378,9 +388,10 @@ pub(crate) fn run_install(
     listen: Option<String>,
     restore: bool,
     socket: Option<PathBuf>,
+    hub: bool,
     print: bool,
 ) -> ExitCode {
-    let plan = match resolve_plan(quic, listen, restore, socket) {
+    let plan = match resolve_plan(quic, listen, restore, socket, hub) {
         Ok(plan) => plan,
         Err(err) => {
             eprintln!("phux service: {err}");
@@ -879,6 +890,7 @@ mod tests {
             cert: PathBuf::from("/home/u/.local/state/phux/remote-cert.pem"),
             key: PathBuf::from("/home/u/.local/state/phux/remote-key.pem"),
             socket: None,
+            hub: false,
             socket_path: PathBuf::from("/run/user/1000/phux/phux.sock"),
             log: PathBuf::from("/home/u/.local/state/phux/server.log"),
             restore: None,
@@ -907,6 +919,20 @@ mod tests {
         assert!(plist.contains("<string>/usr/local/bin/phux</string>"));
         assert!(plist.contains("<string>server</string>"));
         assert!(!plist.contains("/bin/sh"));
+    }
+
+    #[test]
+    fn hub_flag_reaches_direct_units_and_restore_wrapper() {
+        let mut plan = plan();
+        plan.hub = true;
+        assert!(
+            render_launchd_plist(&plan)
+                .contains("<string>server</string>\n    <string>--hub</string>")
+        );
+        assert!(render_systemd_unit(&plan).contains("ExecStart=/usr/local/bin/phux server --hub"));
+
+        plan.restore = Some(PathBuf::from("/home/u/archive.json"));
+        assert!(render_wrapper_script(&plan).contains("\"$phux\" server --hub &"));
     }
 
     #[test]

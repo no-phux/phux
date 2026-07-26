@@ -172,6 +172,22 @@ SSH; the remote bridge is an ordinary local UDS client on the target host.
 
 **Federation hub (current):** Satellites are phux servers on other machines. A server started with `--hub` dials enabled `[[satellites]]`, aggregates their Terminal inventory, and routes host-qualified Terminal operations over the same wire ([ADR-0007](../ADR/0007-mosh-class-transport-and-satellites.md)). Routes are hub-and-spoke and Terminal-scoped: remote sessions/windows are not merged, and relayed VT bytes remain opaque.
 
+The hub-side enrollment path is two commands: install the hub flag into the
+mini's persistent per-user service once, then bootstrap each satellite over
+existing SSH trust:
+
+```sh
+phux service install --hub
+phux satellite enroll user@devbox
+```
+
+`satellite enroll` verifies the remote binary, installs its service, runs
+`phux pair --json`, stores the bearer token owner-only, pins the certificate,
+and writes the complete local `[[satellites]]` entry. When the satellite has no
+dialable listener it falls back to `ssh://user@devbox`; sessions still live on
+the satellite, and the hub maintains the SSH-stdio route with capped backoff.
+Use `--ssh-only` to choose that route without probing or pairing.
+
 Current remote transports:
 - **WebSocket/TCP:** `phux server --listen HOST:PORT`; loopback can be plaintext
   for browser/dev use, while routable binds auto-provision TLS and require a

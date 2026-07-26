@@ -325,11 +325,11 @@ The line between shipped and promised is kept explicit:
   archive; live PTY handoff belongs to `phux upgrade`, not restore
 - Predictive local echo behind the opt-in `[experimental]` configuration,
   with authoritative reconciliation and adaptive backoff
+- Federation hubs that keep QUIC, WebSocket, or SSH-stdio satellite links
+  connected, aggregate their terminal inventory, and route host-qualified
+  commands; `phux satellite enroll HOST` bootstraps a box over SSH
 
 **Designed and addressed-for, not wired yet**
-
-- Federation across machines. The wire already carries `SATELLITE { host, id }`;
-  nothing routes it yet. That is the v0.2 arc.
 - A native GUI consumer and a typed public Rust SDK crate.
 
 Anything not in the first two lists is a direction, not a feature.

@@ -132,6 +132,7 @@ phux rename
 phux run
 phux satellite
 phux satellite add
+phux satellite enroll
 phux satellite list
 phux satellite remove
 phux send-keys

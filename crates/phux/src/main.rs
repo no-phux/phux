@@ -474,8 +474,9 @@ fn main() -> ExitCode {
                 listen,
                 restore,
                 socket,
+                hub,
                 print,
-            } => commands::service::run_install(quic, listen, restore, socket, print),
+            } => commands::service::run_install(quic, listen, restore, socket, hub, print),
             commands::ServiceAction::Uninstall => commands::service::run_uninstall(),
             commands::ServiceAction::Status => commands::service::run_status(),
             commands::ServiceAction::Logs { follow, lines } => {
@@ -785,5 +786,49 @@ mod tests {
             Cli::try_parse_from(["phux", "swap-pane", "@1"]).is_err(),
             "swap-pane requires exactly two selector arguments"
         );
+    }
+    #[test]
+    fn persistent_hub_and_satellite_enrollment_flags_parse() {
+        use crate::commands::{SatelliteAction, ServiceAction};
+
+        let cli = Cli::try_parse_from(["phux", "service", "install", "--hub"])
+            .expect("persistent hub mode parses");
+        let Some(Command::Service {
+            action: ServiceAction::Install { hub, .. },
+        }) = cli.command
+        else {
+            panic!("expected Service Install");
+        };
+        assert!(hub);
+
+        let cli = Cli::try_parse_from([
+            "phux",
+            "satellite",
+            "enroll",
+            "user@devbox",
+            "--name",
+            "edge",
+            "--quic-port",
+            "9443",
+            "--no-service",
+        ])
+        .expect("one-command satellite enrollment parses");
+        let Some(Command::Satellite {
+            action:
+                SatelliteAction::Enroll {
+                    host,
+                    name,
+                    quic_port,
+                    no_service,
+                    ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected Satellite Enroll");
+        };
+        assert_eq!(host, "user@devbox");
+        assert_eq!(name.as_deref(), Some("edge"));
+        assert_eq!(quic_port, 9443);
+        assert!(no_service);
     }
 }

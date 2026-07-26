@@ -153,7 +153,7 @@ phux config plugins [--json]  # compatibility alias: inspect plugin manifests
 phux config agents [--json]   # inspect configured plugin agent states
 phux config run PLUGIN ACTION # execute a configured plugin action
 phux plugin <COMMAND>         # install/update/link/list/toggle/unlink/validate plugins
-phux satellite <COMMAND>      # add/list/remove federation satellites
+phux satellite <COMMAND>      # enroll/add/list/remove federation satellites
 phux stdio-bridge             # splice stdin/stdout to the local server socket
                               # (the remote end of the SSH-stdio transport)
 phux worktree list [--json]   # worktrees + their bound session and liveness
@@ -183,8 +183,8 @@ phux service <install|uninstall|status|logs|prune-logs>
                               # per-user service unit (launchd LaunchAgent on
                               # macOS, systemd user unit on Linux) that keeps
                               # a server running across logout and reboot.
-                              # `install --restore` brackets the server with
-                              # workspace save/restore
+                              # `install --hub` persists federation hub mode;
+                              # `install --restore` adds workspace save/restore
 phux --version                # print version
 phux help [COMMAND]
 ```
@@ -962,6 +962,20 @@ cert-fingerprint = "AB:CD:..."
 The lifecycle verbs edit `[[satellites]]` in `config.toml` without
 starting a server:
 
+
+The normal path is one capture-free command per box. Run it on the hub:
+
+```
+phux service install --hub
+phux satellite enroll user@devbox
+```
+
+`enroll` verifies the satellite's `phux`, installs its always-on service,
+mints and stores its credentials, and writes the complete registry entry. It
+prefers pinned QUIC on a detected overlay address and falls back to
+`ssh://user@devbox`; `--ssh-only` selects that fallback without probing.
+The lower-level `add` form remains available for externally provisioned
+credentials:
 ```
 phux satellite add devbox quic://devbox.example:8788 \
     --token-file /home/me/.local/state/phux/satellites/devbox.token \

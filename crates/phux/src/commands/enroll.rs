@@ -275,7 +275,7 @@ fn finish(
 }
 
 /// Write a pairing token owner-only, creating the directory it lives in.
-fn write_token(path: &Path, token: &str) -> Result<(), String> {
+pub(crate) fn write_token(path: &Path, token: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
@@ -307,7 +307,7 @@ fn write_token(path: &Path, token: &str) -> Result<(), String> {
 /// Confirm `phux` is on the remote `PATH` before doing anything that assumes
 /// it, so the failure names the real problem instead of surfacing as a
 /// baffling empty pair document.
-fn remote_phux_version(ssh_host: &str) -> Result<String, String> {
+pub(crate) fn remote_phux_version(ssh_host: &str) -> Result<String, String> {
     ssh_capture(ssh_host, &["phux", "--version"])
 }
 
@@ -317,7 +317,7 @@ fn remote_phux_version(ssh_host: &str) -> Result<String, String> {
 /// uses, so a custom ssh wrapper works for both. `BatchMode=yes` turns a
 /// missing key into a prompt-free error rather than a hung enrollment
 /// waiting on a password nobody is watching for.
-fn ssh_capture(ssh_host: &str, argv: &[&str]) -> Result<String, String> {
+pub(crate) fn ssh_capture(ssh_host: &str, argv: &[&str]) -> Result<String, String> {
     let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
     let output = std::process::Command::new(&program)
         .arg("-o")

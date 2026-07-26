@@ -1212,6 +1212,12 @@ pub(crate) enum ServiceAction {
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
 
+        /// Run the supervised server as a federation hub. The service loads
+        /// enabled `[[satellites]]` entries and keeps their links connected
+        /// across login, logout, and reboot.
+        #[arg(long)]
+        hub: bool,
+
         /// Print the unit (and the restore wrapper) to stdout without
         /// writing or loading anything.
         #[arg(long)]
@@ -1532,6 +1538,47 @@ pub(crate) enum SatelliteAction {
     /// List configured satellites.
     #[command(visible_alias = "ls")]
     List {
+        /// Emit a stable JSON document instead of human text.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Bootstrap a satellite over SSH and register it on this hub.
+    ///
+    /// Confirms phux is installed on HOST, installs its always-on service,
+    /// mints and stores its transport credentials, then writes the complete
+    /// `[[satellites]]` entry locally. If no routable listener is available,
+    /// the route falls back to `ssh://HOST`.
+    Enroll {
+        /// SSH destination, e.g. `devbox` or `user@cloud.example`.
+        host: String,
+
+        /// Hub-local satellite name. Defaults to HOST without user or domain
+        /// punctuation that is not valid in a satellite name.
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Dialable satellite endpoint. Bare values become `quic://...`;
+        /// full `ssh://`, `quic://`, `ws://`, and `wss://` URIs are accepted.
+        #[arg(long, value_name = "URI")]
+        endpoint: Option<String>,
+
+        /// QUIC port used for service installation and overlay discovery.
+        #[arg(
+            long,
+            default_value_t = enroll::default_quic_port(),
+            value_name = "PORT"
+        )]
+        quic_port: u16,
+
+        /// Skip installing the satellite's always-on service.
+        #[arg(long)]
+        no_service: bool,
+
+        /// Register `ssh://HOST` without probing, pairing, or installing.
+        #[arg(long)]
+        ssh_only: bool,
+
         /// Emit a stable JSON document instead of human text.
         #[arg(long)]
         json: bool,
