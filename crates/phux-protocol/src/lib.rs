@@ -46,14 +46,18 @@ pub mod sgr;
 pub mod kitty_replay;
 
 pub use caps::{
-    ACKNOWLEDGED_INPUT, ClientCapabilities, ColorSupport, ImageProtocol, ImageProtocolSet,
-    KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet, ServerFeature, ServerFeatureSet,
-    TerminalColor, TerminalDefaultColors,
+    ACKNOWLEDGED_INPUT, ClientCapabilities, ColorSupport, FILE_UPLOAD, ImageProtocol,
+    ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet, ServerFeature,
+    ServerFeatureSet, TerminalColor, TerminalDefaultColors,
 };
 pub use ids::{
-    ClientId, FrameId, GroupId, InputOperationId, SatelliteHost, SessionId, TerminalId, WindowId,
+    ClientId, FileUploadId, FrameId, GroupId, InputOperationId, SatelliteHost, SessionId,
+    TerminalId, WindowId,
 };
-pub use wire::frame::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
+pub use wire::frame::{
+    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
+    MAX_FILE_UPLOAD_SIZE,
+};
 
 /// Protocol version this crate implements.
 ///
@@ -87,9 +91,14 @@ pub use wire::frame::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
 /// the client extracts the selected text from its own libghostty `Terminal` and
 /// copies it locally (OSC 52). Removing a wire frame is wire-breaking, so pre-1.0
 /// this bumps the minor.
+///
+/// Bumped from `0.5.0` to `0.6.0` by ADR-0059: `PUT_FILE` adds a sandboxed,
+/// chunked, acknowledged upload command and `FILE_UPLOAD` negotiation bit.
+/// Older clients and servers remain valid but MUST negotiate the capability
+/// before using the new command.
 pub const PROTOCOL_VERSION: Version = Version {
     major: 0,
-    minor: 5,
+    minor: 6,
     patch: 0,
 };
 

@@ -314,6 +314,7 @@ ServerCapabilities {
 
 ServerFeature = bitset (u32) {
     ACKNOWLEDGED_INPUT = 0x00000010, // APPLY_INPUT (L1.md §6.2.1; ADR-0053)
+    FILE_UPLOAD       = 0x00000020, // PUT_FILE (L1.md §6.2.2; ADR-0059)
 }
 ```
 
@@ -321,7 +322,8 @@ ServerFeature = bitset (u32) {
 `features` is an optional trailing `u32` big-endian bitset. A one-byte legacy
 value therefore decodes with an empty feature set. Decoders MUST ignore unknown
 feature bits. A client MUST use `APPLY_INPUT` only when
-`ACKNOWLEDGED_INPUT` is advertised.
+`ACKNOWLEDGED_INPUT` is advertised and MUST use `PUT_FILE` only when
+`FILE_UPLOAD` is advertised.
 
 The HELLO body is field-tagged TLV per
 [appendix-encoding.md](./appendix-encoding.md): `client_name`, the version
@@ -483,11 +485,11 @@ The `COMMAND` / `COMMAND_RESULT` envelope (§5, per
 [ADR-0021](../../ADR/0021-control-plane-commands.md)) round-trips
 through the codec. The wire carries `KILL_TERMINAL` (tag 0x03),
 `GET_STATE` (tag 0x05), `KILL_TERMINALS` (tag 0x09),
-`DETACH_CLIENTS` (tag 0x13), and the
-agent-convenience commands `GET_SCREEN` (tag 0x07), `ROUTE_INPUT`
-(tag 0x08), `GET_TERMINAL_STATE` (tag 0x0c), and
-`SUBSCRIBE_TERMINAL_EVENTS` (tag 0x0d); the remaining §5.1 catalog
-entries are reserved and decode as `UnknownEnumValue` until allocated.
+`DETACH_CLIENTS` (tag 0x13), `APPLY_INPUT` (tag 0x14), and `PUT_FILE`
+(tag 0x15), plus the agent-convenience commands `GET_SCREEN` (tag 0x07),
+`ROUTE_INPUT` (tag 0x08), `GET_TERMINAL_STATE` (tag 0x0c), and
+`SUBSCRIBE_TERMINAL_EVENTS` (tag 0x0d); the remaining §5.1 catalog entries
+are reserved and decode as `UnknownEnumValue` until allocated.
 
 `DETACH_CLIENTS { session: optional<str> }` force-detaches clients from
 *outside* the attach UI (backs `phux detach`): its body is a presence

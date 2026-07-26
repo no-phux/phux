@@ -469,6 +469,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::AcquireInput { .. } => "acquire_input",
         Command::ReleaseInput { .. } => "release_input",
         Command::SignalTerminal { .. } => "signal_terminal",
+        Command::PutFile { .. } => "put_file",
         _ => "other",
     }
 }
@@ -502,6 +503,52 @@ pub(crate) async fn handle_command(
         handle_upgrade(state, request_id, out_tx).await;
         return;
     }
+
+    // PUT_FILE chunks may carry 8 MiB. Route this variant by ownership before
+    // the borrowed generic helper so a hub does not clone the payload merely
+    // to rewrite a satellite TerminalId.
+    let command = match command {
+        Command::PutFile {
+            upload_id,
+            terminal_id,
+            extension,
+            offset,
+            data,
+            final_chunk,
+            sha256,
+        } => match crate::hub::relay::satellite_route(&terminal_id) {
+            Some((sat_host, local_id)) => {
+                handle_satellite_command(
+                    state,
+                    client_id,
+                    request_id,
+                    &sat_host,
+                    Command::PutFile {
+                        upload_id,
+                        terminal_id: phux_protocol::ids::TerminalId::local(local_id),
+                        extension,
+                        offset,
+                        data,
+                        final_chunk,
+                        sha256,
+                    },
+                    out_tx,
+                )
+                .await;
+                return;
+            }
+            None => Command::PutFile {
+                upload_id,
+                terminal_id,
+                extension,
+                offset,
+                data,
+                final_chunk,
+                sha256,
+            },
+        },
+        other => other,
+    };
 
     // Federation relay (phux-v45.4, ADR-0007 §4): a command targeting a
     // satellite-owned terminal never touches local dispatch — see
@@ -582,6 +629,29 @@ pub(crate) async fn handle_command(
             terminal_id,
             signal,
         } => handle_signal_terminal(state, client_id, &terminal_id, signal).await,
+        Command::PutFile {
+            upload_id,
+            terminal_id,
+            extension,
+            offset,
+            data,
+            final_chunk,
+            sha256,
+        } => {
+            super::upload::handle_put_file(
+                state,
+                super::upload::PutFileChunk {
+                    upload_id,
+                    terminal_id,
+                    extension,
+                    offset,
+                    data,
+                    final_chunk,
+                    sha256,
+                },
+            )
+            .await
+        }
         Command::ReportAsked {
             terminal_id,
             id,

@@ -110,6 +110,42 @@ impl core::fmt::Debug for InputOperationId {
     }
 }
 
+/// Opaque client-generated identifier for one chunked file upload.
+///
+/// The all-zero value is reserved and cannot be constructed. The identifier
+/// names the server-side partial file across reconnects, so retrying a chunk
+/// with the same id and offset is idempotent. Debug output is redacted because
+/// identifiers can be correlated with user files.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileUploadId([u8; 16]);
+
+impl FileUploadId {
+    /// Construct a non-zero upload identifier.
+    #[must_use]
+    pub const fn new(bytes: [u8; 16]) -> Option<Self> {
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] != 0 {
+                return Some(Self(bytes));
+            }
+            index += 1;
+        }
+        None
+    }
+
+    /// Borrow the 16-byte wire representation.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for FileUploadId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("FileUploadId(<redacted>)")
+    }
+}
+
 /// Federation-routing host identifier for a [`TerminalId::Satellite`].
 ///
 /// Per [ADR-0007] the satellite link is an opaque host token negotiated at

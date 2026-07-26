@@ -67,6 +67,14 @@ pub enum DecodeError {
     #[error("APPLY_INPUT batch exceeds protocol limits")]
     ApplyInputLimitExceeded,
 
+    /// A file-upload id used the reserved all-zero value.
+    #[error("file upload id must not be zero")]
+    InvalidFileUploadId,
+
+    /// A `PUT_FILE` command exceeded its per-chunk or whole-file limit.
+    #[error("PUT_FILE chunk exceeds protocol limits")]
+    FileUploadLimitExceeded,
+
     /// A [`crate::wire::info::LayoutNode`] tree nested deeper than the
     /// decoder's recursion bound (see
     /// [`crate::wire::info::MAX_LAYOUT_DEPTH`]).

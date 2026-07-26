@@ -16,7 +16,9 @@ use phux_protocol::caps::{
     KeyboardProtocolSet, Layer, LayerSet, OutputMode, ServerCapabilities, ServerFeature,
     ServerFeatureSet, TerminalColor, TerminalDefaultColors,
 };
-use phux_protocol::ids::{ClientId, GroupId, InputOperationId, SessionId, TerminalId, WindowId};
+use phux_protocol::ids::{
+    ClientId, FileUploadId, GroupId, InputOperationId, SessionId, TerminalId, WindowId,
+};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
@@ -24,8 +26,9 @@ use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ControlAction, ErrorCode,
-    InputMode, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, Scope, SpawnError,
-    SpawnResult, StateScope, TerminalLifecycle, TerminalSignal, ViewportInfo,
+    FileUploadAck, InputMode, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
+    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, Scope, SpawnError, SpawnResult, StateScope,
+    TerminalLifecycle, TerminalSignal, ViewportInfo,
 };
 use phux_protocol::wire::info::{
     LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
@@ -2088,6 +2091,90 @@ fn command_apply_input_round_trips_and_rejects_malformed_payloads() {
     assert_eq!(
         FrameKind::decode(&oversized_bytes).unwrap_err(),
         DecodeError::ApplyInputLimitExceeded
+    );
+}
+
+#[test]
+fn command_put_file_and_ack_round_trip_with_limits() {
+    let upload_id = FileUploadId::new([0x6b; 16]).unwrap();
+    let frame = FrameKind::Command {
+        request_id: 0x0a0b_0c0d,
+        command: Command::PutFile {
+            upload_id,
+            terminal_id: TerminalId::satellite("mini", 5),
+            extension: "png".to_owned(),
+            offset: 4,
+            data: b"tail".to_vec(),
+            final_chunk: true,
+            sha256: Some([0x7c; 32]),
+        },
+    };
+    let mut encoded = BytesMut::new();
+    frame.encode(&mut encoded);
+    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+    assert_eq!(decoded, frame);
+    assert!(tail.is_empty());
+
+    let ack = FrameKind::CommandResult {
+        request_id: 0x0a0b_0c0d,
+        result: CommandResult::OkWith(CommandValue::FileUpload(FileUploadAck {
+            next_offset: 8,
+            path: Some("/home/u/.local/share/phux/uploads/phux-upload-id.png".to_owned()),
+        })),
+    };
+    let mut ack_bytes = BytesMut::new();
+    ack.encode(&mut ack_bytes);
+    let (decoded_ack, tail) = FrameKind::decode(&ack_bytes).unwrap();
+    assert_eq!(decoded_ack, ack);
+    assert!(tail.is_empty());
+
+    let id_offset = encoded
+        .windows(16)
+        .position(|window| window == [0x6b; 16])
+        .expect("upload id bytes");
+    let mut zero_id = encoded.to_vec();
+    zero_id[id_offset..id_offset + 16].fill(0);
+    assert_eq!(
+        FrameKind::decode(&zero_id).unwrap_err(),
+        DecodeError::InvalidFileUploadId
+    );
+
+    let over_total = FrameKind::Command {
+        request_id: 1,
+        command: Command::PutFile {
+            upload_id,
+            terminal_id: TerminalId::local(5),
+            extension: "png".to_owned(),
+            offset: MAX_FILE_UPLOAD_SIZE,
+            data: vec![1],
+            final_chunk: false,
+            sha256: None,
+        },
+    };
+    let mut over_total_bytes = BytesMut::new();
+    over_total.encode(&mut over_total_bytes);
+    assert_eq!(
+        FrameKind::decode(&over_total_bytes).unwrap_err(),
+        DecodeError::FileUploadLimitExceeded
+    );
+
+    let over_chunk = FrameKind::Command {
+        request_id: 2,
+        command: Command::PutFile {
+            upload_id,
+            terminal_id: TerminalId::local(5),
+            extension: "jpg".to_owned(),
+            offset: 0,
+            data: vec![0; MAX_FILE_UPLOAD_CHUNK + 1],
+            final_chunk: false,
+            sha256: None,
+        },
+    };
+    let mut over_chunk_bytes = BytesMut::new();
+    over_chunk.encode(&mut over_chunk_bytes);
+    assert_eq!(
+        FrameKind::decode(&over_chunk_bytes).unwrap_err(),
+        DecodeError::FileUploadLimitExceeded
     );
 }
 

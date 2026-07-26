@@ -27,8 +27,8 @@ use bytes::BytesMut;
 
 use crate::caps::{ClientCapabilities, ServerCapabilities};
 use crate::ids::{
-    ClientId, GroupId, InputOperationId, SatelliteHost, SessionId, TERMINAL_ID_TAG_LOCAL,
-    TERMINAL_ID_TAG_SATELLITE, TerminalId,
+    ClientId, FileUploadId, GroupId, InputOperationId, SatelliteHost, SessionId,
+    TERMINAL_ID_TAG_LOCAL, TERMINAL_ID_TAG_SATELLITE, TerminalId,
 };
 use crate::input::InputEvent;
 use crate::input::focus::FocusEvent;
@@ -48,6 +48,11 @@ use super::info::{
 /// Maximum permitted value of the wire-frame `length` field, per `docs/spec/proto.md` §5
 /// ("at most `16_777_216` (16 MiB)").
 pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
+/// Maximum payload bytes in one [`Command::PutFile`] chunk. The 8 MiB ceiling
+/// leaves ample room below the 16 MiB frame cap for envelope and metadata.
+pub const MAX_FILE_UPLOAD_CHUNK: usize = 8 * 1024 * 1024;
+/// Maximum completed file size accepted by [`Command::PutFile`].
+pub const MAX_FILE_UPLOAD_SIZE: u64 = 64 * 1024 * 1024;
 
 // -----------------------------------------------------------------------------
 // Message discriminants from SPEC §7. Only the variants implemented in this
@@ -553,6 +558,8 @@ pub(crate) const COMMAND_TAG_APPLY_INPUT: u8 = 0x14;
 pub const MAX_APPLY_INPUT_EVENTS: usize = 256;
 /// Maximum encoded bytes in the nested [`Command::ApplyInput`] command body.
 pub const MAX_APPLY_INPUT_COMMAND_BODY: usize = 64 * 1024;
+/// Wire tag for [`Command::PutFile`].
+pub(crate) const COMMAND_TAG_PUT_FILE: u8 = 0x15;
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
 // mirror the four `INPUT_*` frame atoms (`docs/spec/input.md`).
@@ -589,6 +596,8 @@ pub(crate) const COMMAND_VALUE_TAG_STATE: u8 = 0x02;
 pub(crate) const COMMAND_VALUE_TAG_JSON: u8 = 0x03;
 /// Wire tag for [`CommandValue::Bytes`].
 pub(crate) const COMMAND_VALUE_TAG_BYTES: u8 = 0x04;
+/// Wire tag for [`CommandValue::FileUpload`].
+pub(crate) const COMMAND_VALUE_TAG_FILE_UPLOAD: u8 = 0x05;
 
 // -----------------------------------------------------------------------------
 // ErrorCode enum — SPEC §14.
@@ -1327,6 +1336,27 @@ pub enum Command {
         /// The signal to deliver.
         signal: TerminalSignal,
     },
+    /// Write one acknowledged chunk of a file into the target host's
+    /// server-owned upload sandbox (ADR-0059). `terminal_id` selects the host
+    /// and proves the destination is useful to an existing pane; the server
+    /// chooses the path. Retries with the same upload id, offset, and bytes are
+    /// idempotent. The final chunk carries the expected SHA-256 digest.
+    PutFile {
+        /// Non-zero client-generated identifier stable across chunk retries.
+        upload_id: FileUploadId,
+        /// A Terminal on the host that must be able to read the completed file.
+        terminal_id: TerminalId,
+        /// Filename extension without a leading dot.
+        extension: String,
+        /// Byte offset at which this chunk begins.
+        offset: u64,
+        /// Raw file bytes for this chunk.
+        data: Vec<u8>,
+        /// Whether this is the final chunk.
+        final_chunk: bool,
+        /// Expected whole-file SHA-256 digest; required on the final chunk.
+        sha256: Option<[u8; 32]>,
+    },
     /// Report that an agent in `terminal_id` is blocked on a human-answerable
     /// question. This is the explicit hook source selected by ADR-0036. The
     /// server validates the payload, then emits [`AgentEvent::Asked`] to the
@@ -1346,6 +1376,15 @@ pub enum Command {
     },
 }
 
+/// Acknowledgement for one [`Command::PutFile`] chunk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileUploadAck {
+    /// The next byte offset the server expects.
+    pub next_offset: u64,
+    /// Absolute completed path, present only after the final digest verifies.
+    pub path: Option<String>,
+}
+
 /// A successful command's payload (SPEC §5, `CommandValue`).
 ///
 /// `#[non_exhaustive]` for forward-compatible additions.
@@ -1363,6 +1402,8 @@ pub enum CommandValue {
     Json(String),
     /// Opaque bytes (e.g. an L3 metadata value).
     Bytes(Vec<u8>),
+    /// Acknowledgement for a sandboxed file-upload chunk.
+    FileUpload(FileUploadAck),
 }
 
 /// The outcome of a [`Command`], carried by [`FrameKind::CommandResult`]
@@ -3320,6 +3361,34 @@ pub(super) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
             encode_terminal_id(terminal_id, enc);
             enc.write_u8(signal.to_u8());
         }
+        Command::PutFile {
+            upload_id,
+            terminal_id,
+            extension,
+            offset,
+            data,
+            final_chunk,
+            sha256,
+        } => {
+            enc.write_u8(COMMAND_TAG_PUT_FILE);
+            for byte in upload_id.as_bytes() {
+                enc.write_u8(*byte);
+            }
+            encode_terminal_id(terminal_id, enc);
+            enc.write_str(extension);
+            enc.write_u64_be(*offset);
+            enc.write_bytes(data);
+            enc.write_u8(u8::from(*final_chunk));
+            match sha256 {
+                Some(digest) => {
+                    enc.write_u8(1);
+                    for byte in digest {
+                        enc.write_u8(*byte);
+                    }
+                }
+                None => enc.write_u8(0),
+            }
+        }
         Command::ReportAsked {
             terminal_id,
             id,
@@ -3507,12 +3576,57 @@ pub(super) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeErr
                 signal,
             })
         }
+        COMMAND_TAG_PUT_FILE => decode_put_file_command(dec),
         COMMAND_TAG_REPORT_ASKED => decode_report_asked_command(dec),
         other => Err(DecodeError::UnknownEnumValue {
             field: "Command",
             value: u32::from(other),
         }),
     }
+}
+
+fn decode_put_file_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    let mut id_bytes = [0; 16];
+    for byte in &mut id_bytes {
+        *byte = dec.read_u8()?;
+    }
+    let upload_id = FileUploadId::new(id_bytes).ok_or(DecodeError::InvalidFileUploadId)?;
+    let terminal_id = decode_terminal_id(dec)?;
+    let extension = dec.read_str()?;
+    if extension.len() > 16 {
+        return Err(DecodeError::FileUploadLimitExceeded);
+    }
+    let extension = extension.to_owned();
+    let offset = dec.read_u64_be()?;
+    let data = dec.read_bytes()?;
+    let data_len = u64::try_from(data.len()).map_err(|_| DecodeError::FileUploadLimitExceeded)?;
+    if data.len() > MAX_FILE_UPLOAD_CHUNK
+        || offset
+            .checked_add(data_len)
+            .is_none_or(|end| end > MAX_FILE_UPLOAD_SIZE)
+    {
+        return Err(DecodeError::FileUploadLimitExceeded);
+    }
+    let data = data.to_vec();
+    let final_chunk = dec.read_u8()? != 0;
+    let sha256 = if dec.read_u8()? == 0 {
+        None
+    } else {
+        let mut digest = [0; 32];
+        for byte in &mut digest {
+            *byte = dec.read_u8()?;
+        }
+        Some(digest)
+    };
+    Ok(Command::PutFile {
+        upload_id,
+        terminal_id,
+        extension,
+        offset,
+        data,
+        final_chunk,
+        sha256,
+    })
 }
 
 fn decode_report_asked_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
@@ -3640,6 +3754,17 @@ fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) {
             enc.write_u8(COMMAND_VALUE_TAG_BYTES);
             enc.write_bytes(b);
         }
+        CommandValue::FileUpload(ack) => {
+            enc.write_u8(COMMAND_VALUE_TAG_FILE_UPLOAD);
+            enc.write_u64_be(ack.next_offset);
+            match &ack.path {
+                Some(path) => {
+                    enc.write_u8(1);
+                    enc.write_str(path);
+                }
+                None => enc.write_u8(0),
+            }
+        }
     }
 }
 
@@ -3651,6 +3776,18 @@ fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue, DecodeErr
         COMMAND_VALUE_TAG_STATE => Ok(CommandValue::State(decode_session_snapshot(dec)?)),
         COMMAND_VALUE_TAG_JSON => Ok(CommandValue::Json(dec.read_str()?.to_owned())),
         COMMAND_VALUE_TAG_BYTES => Ok(CommandValue::Bytes(dec.read_bytes()?.to_vec())),
+        COMMAND_VALUE_TAG_FILE_UPLOAD => {
+            let next_offset = dec.read_u64_be()?;
+            let path = if dec.read_u8()? == 0 {
+                None
+            } else {
+                Some(dec.read_str()?.to_owned())
+            };
+            Ok(CommandValue::FileUpload(FileUploadAck {
+                next_offset,
+                path,
+            }))
+        }
         other => Err(DecodeError::UnknownEnumValue {
             field: "CommandValue",
             value: u32::from(other),

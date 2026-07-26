@@ -110,6 +110,10 @@ fn handshake_hello_round_trip() {
                         .contains(ServerFeature::AcknowledgedInput),
                     "reference server advertises acknowledged input",
                 );
+                assert!(
+                    server_caps.features.contains(ServerFeature::FileUpload),
+                    "reference server advertises sandboxed file upload",
+                );
                 assert_eq!(server_id.len(), 16);
                 server_id
             }

@@ -853,7 +853,10 @@ where
                     protocol_patch: PROTOCOL_VERSION.patch,
                     server_caps: ServerCapabilities::new()
                         .with_layers(LayerSet::all())
-                        .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
+                        .with_features(ServerFeatureSet::with(&[
+                            ServerFeature::AcknowledgedInput,
+                            ServerFeature::FileUpload,
+                        ])),
                     server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
                 };
                 if out_tx.send(Outbound::Frame(hello_ok)).await.is_err() {

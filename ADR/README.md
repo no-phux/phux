@@ -89,6 +89,8 @@ amends / extends) are hand-curated from each ADR's body.
 | [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md) | Always-on server and ssh-bootstrapped enrollment | Proposed (makes [0031](./0031-remote-consumer-auth-and-encryption.md)/[0037](./0037-overlay-network-reachability.md) usable; mirrors [0038](./0038-hub-satellite-auth.md)'s pin posture) |
 | [0056](./0056-cross-session-terminal-move.md) | Cross-session Terminal move | Accepted (opens the door [0050](./0050-explicit-spawn-ownership.md) left shut for existing Terminals; layout stays L3 per [0019](./0019-tui-multi-pane-rendering.md)) |
 | [0057](./0057-minimal-reference-relay.md) | A minimal reference relay in-tree | Accepted (implements [0051](./0051-outbound-dial-out-connector-transport.md) and ADR-0052; backs 0051's trust-honesty claim) |
+| [0058](./0058-right-click-context-menus.md) | Right-click context menus for panes, windows, and sessions | Accepted |
+| [0059](./0059-sandboxed-chunked-file-upload.md) | Sandboxed chunked file upload | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md), [0021](./0021-control-plane-commands.md), and [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 
 ## When to write an ADR
 

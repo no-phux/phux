@@ -232,6 +232,8 @@ impl Default for LayerSet {
 
 /// Wire bit advertising acknowledged, idempotent input batches.
 pub const ACKNOWLEDGED_INPUT: u32 = 0x0000_0010;
+/// Wire bit advertising chunked, acknowledged `Command::PutFile` uploads.
+pub const FILE_UPLOAD: u32 = 0x0000_0020;
 
 /// An additive server-owned protocol feature.
 #[repr(u32)]
@@ -240,6 +242,8 @@ pub const ACKNOWLEDGED_INPUT: u32 = 0x0000_0010;
 pub enum ServerFeature {
     /// The server accepts idempotent `Command::ApplyInput` batches.
     AcknowledgedInput = ACKNOWLEDGED_INPUT,
+    /// The server accepts sandboxed, chunked `Command::PutFile` uploads.
+    FileUpload = FILE_UPLOAD,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -247,7 +251,8 @@ pub enum ServerFeature {
 pub struct ServerFeatureSet(u32);
 
 impl ServerFeatureSet {
-    const KNOWN: u32 = ServerFeature::AcknowledgedInput as u32;
+    const KNOWN: u32 =
+        (ServerFeature::AcknowledgedInput as u32) | (ServerFeature::FileUpload as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -825,12 +830,16 @@ mod tests {
     }
 
     #[test]
-    fn acknowledged_input_feature_bit_is_stable() {
+    fn server_feature_bits_are_stable() {
         assert_eq!(ACKNOWLEDGED_INPUT, 0x0000_0010);
+        assert_eq!(FILE_UPLOAD, 0x0000_0020);
         assert_eq!(ServerFeature::AcknowledgedInput as u32, ACKNOWLEDGED_INPUT);
-        let set = ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput]);
+        assert_eq!(ServerFeature::FileUpload as u32, FILE_UPLOAD);
+        let set =
+            ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput, ServerFeature::FileUpload]);
         assert!(set.contains(ServerFeature::AcknowledgedInput));
-        assert_eq!(set.as_wire(), 0x0000_0010);
+        assert!(set.contains(ServerFeature::FileUpload));
+        assert_eq!(set.as_wire(), 0x0000_0030);
         assert_eq!(ServerFeatureSet::from_wire(u32::MAX), set);
     }
 }

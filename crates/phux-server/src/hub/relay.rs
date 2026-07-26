@@ -1528,6 +1528,29 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                 },
             ))
         }
+        Command::PutFile {
+            upload_id,
+            terminal_id,
+            extension,
+            offset,
+            data,
+            final_chunk,
+            sha256,
+        } => {
+            let (host, id) = satellite_route(terminal_id)?;
+            Some((
+                host,
+                Command::PutFile {
+                    upload_id: *upload_id,
+                    terminal_id: TerminalId::local(id),
+                    extension: extension.clone(),
+                    offset: *offset,
+                    data: data.clone(),
+                    final_chunk: *final_chunk,
+                    sha256: *sha256,
+                },
+            ))
+        }
         Command::ReportAsked {
             terminal_id,
             id: asked_id,

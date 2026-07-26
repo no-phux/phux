@@ -48,6 +48,7 @@ pub mod commands;
 pub mod input_lane;
 mod resume;
 mod upgrade;
+mod upload;
 
 pub(crate) use attach::*;
 pub(crate) use client::*;
