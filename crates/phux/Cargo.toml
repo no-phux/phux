@@ -27,6 +27,13 @@ phux-plugin.workspace = true
 # foreground and `pair` mints route-bound tunnel tokens (workspace crate;
 # no new third-party dependency enters).
 phux-relay.workspace = true
+# `phux rec` and `phux --rec` export half: the asciicast codec, the offline
+# VT replayer, and the in-process GIF/APNG encoders. Taken with its default
+# `render` feature ON — the binary is the one consumer that must be able to
+# produce an animation, and doing it in-process is the whole point (ADR-0060:
+# no agg/vhs/ffmpeg at runtime). Workspace crate; the only third-party rows it
+# adds to the lockfile are `gif` and its single dependency `weezl`.
+phux-record.workspace = true
 clap.workspace = true
 # `phux completion <shell>` generates the completion script from the same
 # clap tree the binary already parses with, so the two can never drift.

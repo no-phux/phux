@@ -279,3 +279,40 @@ enabled = false
     assert_eq!(value["plugins"][0]["actions"][0]["id"], "open");
     assert_eq!(value["plugins"][0]["enabled"], false);
 }
+
+/// `phux rec --json` against a dead socket: the connect error is the only
+/// output, and it goes to stderr. An agent that pipes stdout into a JSON
+/// parser must get either one object or nothing — never a banner, never a
+/// half-written result line.
+#[test]
+fn rec_json_no_server_is_silent_stdout_and_banner_free() {
+    let tmp = TempDir::new().expect("tempdir");
+    let out = tmp.path().join("demo.cast");
+    let sock = dead_socket();
+    let (code, stdout, stderr) = run(&[
+        "rec",
+        "--json",
+        "-o",
+        out.to_str().expect("utf-8 temp path"),
+        "--socket",
+        &sock,
+    ]);
+
+    assert_ne!(code, 0, "`rec --json` with no server should exit nonzero");
+    assert!(
+        stdout.is_empty(),
+        "`rec --json` with no server must leave stdout empty (no banner, no partial JSON); got {stdout:?}"
+    );
+    assert!(
+        !stderr.contains(BANNER_FRAGMENT),
+        "`rec --json` must not print the banner to stderr; got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("no server"),
+        "the error should explain there is no server; got {stderr:?}"
+    );
+    assert!(
+        !out.exists(),
+        "a capture that never started must not leave an empty cast behind"
+    );
+}

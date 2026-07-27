@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use clap::{Subcommand, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_protocol::wire::frame::{
@@ -29,6 +29,52 @@ pub(crate) enum SignalArg {
 pub(crate) enum SpawnSplit {
     Horizontal,
     Vertical,
+}
+
+/// Output format for a recording, shared by `--rec-format` on the attach
+/// path and `--format` on the `rec` verb.
+///
+/// `Apng` covers both the `.png` and `.apng` extensions: a recording is an
+/// animation, and this surface never produces a still frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum RecFormat {
+    /// asciinema cast — the archival, re-renderable artifact.
+    Cast,
+    /// Animated GIF — shareable and embeddable anywhere.
+    Gif,
+    /// Animated PNG — truecolor, no quantization, larger files.
+    Apng,
+}
+
+/// The `--rec` / `--rec-format` pair, declared on exactly the two paths that
+/// raise a TUI: the root command (naked `phux`) and `phux attach`.
+///
+/// Shared through `#[command(flatten)]` rather than a `global = true` arg on
+/// the root: a global would parse — and advertise itself in `--help` — on
+/// every verb, including the headless ones that can never tee a composited
+/// frame. Scoping it here makes `phux ls --help` honest by construction
+/// instead of by a runtime rejection. Headless capture is `phux rec`.
+#[derive(Debug, Args)]
+pub(crate) struct RecOpts {
+    /// Record this session while it runs and write the result to PATH.
+    // Written out as `long_help` because clap reflows doc-comment paragraphs
+    // into one run-on line; the example block only survives with real
+    // newlines.
+    #[arg(
+        long = "rec",
+        value_name = "PATH",
+        long_help = "Record this session while it runs and write the result to PATH.\n\n\
+            The format follows the extension (.cast, .gif, .png, .apng); pass\n\
+            --rec-format to override. A path with no extension gets `.gif`.\n\n\
+            Examples:\n  \
+            phux --rec demo.gif\n  \
+            phux attach work --rec demo.cast"
+    )]
+    pub(crate) rec: Option<std::path::PathBuf>,
+
+    /// Output format for --rec, overriding the extension.
+    #[arg(long = "rec-format", value_enum, value_name = "FMT", requires = "rec")]
+    pub(crate) rec_format: Option<RecFormat>,
 }
 
 /// Validates a split ratio as finite and strictly between zero and one.
@@ -72,6 +118,7 @@ pub(crate) mod overlay;
 pub(crate) mod pair;
 pub(crate) mod paste;
 pub(crate) mod plugin;
+pub(crate) mod rec;
 pub(crate) mod relay;
 pub(crate) mod remote;
 pub(crate) mod rename;
@@ -153,6 +200,12 @@ pub(crate) enum Command {
         /// `--quic` or `--ws`.
         #[arg(long, value_name = "NAME", requires = "remote")]
         tls_server_name: Option<String>,
+
+        /// Tee this attach's composited output to a recording. Declared here
+        /// (and on the root command) rather than globally so it only shows up
+        /// on the verbs that raise a TUI.
+        #[command(flatten)]
+        rec: RecOpts,
     },
 
     /// Run a phux server in the foreground.
@@ -786,6 +839,76 @@ pub(crate) enum Command {
 
         /// Emit one JSON object per line instead of the human form. stdout
         /// stays pure JSON (diagnostics go to stderr).
+        #[arg(long)]
+        json: bool,
+
+        /// Override the UDS path.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
+
+    /// Record a pane and export it as an asciinema cast, an animated GIF, or
+    /// an APNG.
+    // The user-facing text is spelled out in `long_about` (the same shape the
+    // root command uses) because clap reflows doc-comment paragraphs: as a
+    // doc comment the three examples below collapse onto one run-on line.
+    #[command(
+        about = "Record a pane and export it as a cast, GIF, or APNG",
+        long_about = "Record a pane and export it as an asciinema cast, an animated GIF, or an APNG.\n\n\
+            TARGET is a selector (default: the focused pane). Recording is a pure observer: \
+            it does not attach the session and never resizes the pane, so it is safe to run \
+            against a live session someone is using.\n\n\
+            The format follows the output extension (.cast, .gif, .png, .apng); pass --format \
+            to override. Use --from to re-render an existing recording without capturing \
+            anything.\n\n\
+            Examples:\n  \
+            phux rec -o demo.gif\n  \
+            phux rec work:1.0 -o demo.cast --duration 30\n  \
+            phux rec --from demo.cast -o demo.gif --fps 20"
+    )]
+    Rec {
+        /// Pane selector. Defaults to the focused pane.
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+
+        /// Output path. The extension picks the format unless --format is
+        /// given; a path with no extension gets `.gif`.
+        #[arg(short = 'o', long = "out", value_name = "PATH")]
+        out: std::path::PathBuf,
+
+        /// Output format, overriding the extension.
+        #[arg(long, value_enum, value_name = "FMT")]
+        format: Option<RecFormat>,
+
+        /// Re-render an existing .cast instead of capturing a live pane.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["target", "duration"])]
+        from: Option<std::path::PathBuf>,
+
+        /// Stop after SECS of recording (default: until Ctrl-C or the pane
+        /// exits).
+        #[arg(long, value_name = "SECS")]
+        duration: Option<u64>,
+
+        /// Animation sample rate for GIF/APNG output.
+        #[arg(long, value_name = "FPS", default_value_t = 10,
+              value_parser = clap::value_parser!(u8).range(1..=50))]
+        fps: u8,
+
+        /// Collapse any pause longer than SECS down to SECS. 0 disables.
+        #[arg(long = "idle-limit", value_name = "SECS", default_value_t = 2.0)]
+        idle_limit: f64,
+
+        /// Stop encoding and warn once the output reaches BYTES.
+        #[arg(long = "max-bytes", value_name = "BYTES", default_value_t = 8 * 1024 * 1024)]
+        max_bytes: u64,
+
+        /// asciicast format version to write (2 is the interoperable
+        /// default).
+        #[arg(long = "cast-version", value_name = "N", default_value_t = 2,
+              value_parser = clap::value_parser!(u8).range(2..=3))]
+        cast_version: u8,
+
+        /// Emit one JSON result object on stdout.
         #[arg(long)]
         json: bool,
 

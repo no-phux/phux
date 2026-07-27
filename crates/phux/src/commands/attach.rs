@@ -1,17 +1,42 @@
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
+use phux_client::attach::record::SessionRecorder;
 use phux_client::attach::{self, AttachError, CertTrust, Dial, QuicDial, WsDial};
 use phux_client::predict::PredictiveConfig;
 use phux_config::loader as config_loader;
 use phux_protocol::wire::frame::AttachTarget;
+use phux_record::cast::CastVersion;
 use phux_server::runtime::default_socket_path;
 
+use crate::commands::rec::RecordSpec;
 use crate::commands::remote::{self, Endpoint, RemoteEntry};
 use crate::commands::{DEFAULT_SESSION_NAME, print_attach_error, server::maybe_auto_spawn_server};
 use crate::print_banner;
+
+/// A live `--rec` recorder, shared between reconnect attempts.
+///
+/// `Rc<RefCell<..>>` and not a plain `&mut` because the tee lives inside the
+/// driver's render sink for the duration of one attach, and a graceful-upgrade
+/// reconnect (ADR-0032) starts a *second* attach against the *same* recording.
+type RecorderHandle = Rc<RefCell<SessionRecorder>>;
+
+/// Export the `--rec` capture and report it, once the TUI is down.
+///
+/// Deliberately after `attach_with_reconnect` returns and before any error
+/// reporting: raw mode is restored and the alt screen is gone, so stdout is
+/// the user's terminal again. A recording is worth reporting even when the
+/// attach itself ended badly — the bytes up to the failure are on disk and
+/// playable.
+fn finalize_recording(rec: Option<&RecordSpec>) {
+    if let Some(spec) = rec {
+        crate::commands::rec::finalize(spec);
+    }
+}
 
 /// Naked `phux` invocation (phux-k61.1).
 ///
@@ -36,7 +61,7 @@ use crate::print_banner;
 ///    surfacing a dead-end "no session" error.
 ///
 /// The shared cascade lives in [`attach_default_with_fallback`].
-pub(crate) fn run_naked() -> ExitCode {
+pub(crate) fn run_naked(rec: Option<&RecordSpec>) -> ExitCode {
     // The naked invocation is a human launching their session and
     // watching it come up (possibly auto-spawning a server). One line of
     // build identity is welcome here; one-shot verbs stay silent.
@@ -88,12 +113,15 @@ pub(crate) fn run_naked() -> ExitCode {
         }
     };
 
-    match rt.block_on(attach_with_reconnect(
+    let result = rt.block_on(attach_with_reconnect(
         &Dial::uds(&socket_path),
         AttachTarget::Last,
         predict_cfg,
         Some(&default_name),
-    )) {
+        rec,
+    ));
+    finalize_recording(rec);
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             print_attach_error(&err, &socket_path, &default_name);
@@ -146,9 +174,32 @@ pub(crate) async fn run_attach_once(
     target: AttachTarget,
     predict_cfg: PredictiveConfig,
 ) -> Result<(), AttachError> {
+    run_attach_once_rec(dial, target, predict_cfg, None).await
+}
+
+/// [`run_attach_once`] with an optional live recorder.
+///
+/// Split from the plain form so callers that cannot record — `phux new`,
+/// which attaches as the tail of a create — are not forced to pass a `None`
+/// that means nothing to them.
+#[allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+)]
+pub(crate) async fn run_attach_once_rec(
+    dial: &Dial,
+    target: AttachTarget,
+    predict_cfg: PredictiveConfig,
+    rec: Option<RecorderHandle>,
+) -> Result<(), AttachError> {
     // `run_with_predict_dial` with `predict.enabled = false` is identical to the
     // non-predictive path, so one call covers both transports and both modes.
-    attach::run_with_predict_dial(dial, target, predict_cfg).await
+    // The recorded entry point differs only in wrapping the driver's render
+    // sink with the tee, so the two branches share every other behaviour.
+    match rec {
+        Some(rec) => attach::run_recorded_dial(dial, target, predict_cfg, rec).await,
+        None => attach::run_with_predict_dial(dial, target, predict_cfg).await,
+    }
 }
 
 /// Attach to the user's default session with the naked-`phux` fallback
@@ -168,14 +219,21 @@ pub(crate) async fn attach_default_with_fallback(
     dial: &Dial,
     default_name: &str,
     predict_cfg: PredictiveConfig,
+    rec: Option<&RecorderHandle>,
 ) -> Result<(), AttachError> {
-    match run_attach_once(dial, AttachTarget::Last, predict_cfg).await {
+    match run_attach_once_rec(dial, AttachTarget::Last, predict_cfg, rec.map(Rc::clone)).await {
         Ok(()) => Ok(()),
         Err(AttachError::Refused(message)) => {
             eprintln!(
                 "phux: no prior-attach session (server said: {message}); creating `{default_name}`"
             );
-            run_attach_once(dial, default_create_target(default_name), predict_cfg).await
+            run_attach_once_rec(
+                dial,
+                default_create_target(default_name),
+                predict_cfg,
+                rec.map(Rc::clone),
+            )
+            .await
         }
         Err(err) => Err(err),
     }
@@ -236,22 +294,79 @@ async fn attach_with_reconnect(
     target: AttachTarget,
     predict_cfg: PredictiveConfig,
     default_name: Option<&str>,
+    rec: Option<&RecordSpec>,
 ) -> Result<(), AttachError> {
-    loop {
+    // Created ONCE, outside the loop, and cloned into each attempt: a
+    // graceful-upgrade reconnect must continue the SAME recording. Creating
+    // it per attempt would truncate the cast at every server hot-swap, which
+    // is precisely the moment a user most wants the recording to be intact.
+    // The file is opened here, on the cooked terminal, so a bad path is an
+    // ordinary CLI error rather than a failure behind the alt screen.
+    let recorder: Option<RecorderHandle> = match rec {
+        // v2 and not v3: v3 is not backward compatible, and every consumer
+        // that reads v3 also reads v2 (ADR-0060). The interactive surface has
+        // no version knob, so the interoperable one is the only defensible
+        // choice; `phux rec --cast-version 3` is where a user opts in.
+        Some(spec) => Some(Rc::new(RefCell::new(SessionRecorder::create(
+            &spec.cast_path,
+            None,
+            CastVersion::V2,
+        )?))),
+        None => None,
+    };
+
+    let outcome = loop {
         let result = match default_name {
-            Some(name) => attach_default_with_fallback(dial, name, predict_cfg).await,
-            None => run_attach_once(dial, target.clone(), predict_cfg).await,
+            Some(name) => {
+                attach_default_with_fallback(dial, name, predict_cfg, recorder.as_ref()).await
+            }
+            None => {
+                run_attach_once_rec(
+                    dial,
+                    target.clone(),
+                    predict_cfg,
+                    recorder.as_ref().map(Rc::clone),
+                )
+                .await
+            }
         };
         match result {
-            Ok(()) => return Ok(()),
+            Ok(()) => break Ok(()),
             Err(AttachError::Disconnected) => {
                 if wait_until_connectable(dial, RECONNECT_DEADLINE).await {
                     eprintln!("phux: server restarted; re-attaching…");
                 } else {
-                    return Err(AttachError::Disconnected);
+                    break Err(AttachError::Disconnected);
                 }
             }
-            Err(other) => return Err(other),
+            Err(other) => break Err(other),
+        }
+    };
+
+    close_recorder(recorder);
+    outcome
+}
+
+/// Flush the residual UTF-8 tail, backfill `duration`, and close the cast.
+///
+/// Every clone handed to an attach attempt has been dropped by the time this
+/// runs, so `try_unwrap` reclaims the recorder. A clone that somehow outlived
+/// the loop is logged and the file left as-is: the prefix on disk is a valid,
+/// playable asciicast, and abandoning it would be strictly worse than a
+/// missing `duration` key. Diagnostics go through `tracing` (file-only on the
+/// client) and never to stderr, which the TUI has only just released.
+fn close_recorder(recorder: Option<RecorderHandle>) {
+    let Some(handle) = recorder else {
+        return;
+    };
+    match Rc::try_unwrap(handle) {
+        Ok(cell) => {
+            if let Err(err) = cell.into_inner().finish() {
+                tracing::warn!(error = %err, "closing the session recording failed");
+            }
+        }
+        Err(_) => {
+            tracing::warn!("session recorder still referenced at shutdown; cast left unfinalized");
         }
     }
 }
@@ -320,7 +435,11 @@ async fn wait_until_connectable(dial: &Dial, deadline: Duration) -> bool {
 /// no consumer-side ssh transport (`Dial` is QUIC or WebSocket), and there
 /// does not need to be — the session still lives on the remote server and
 /// still survives the connection dropping.
-pub(crate) fn run_attach_remote(entry: &RemoteEntry, session: Option<String>) -> ExitCode {
+pub(crate) fn run_attach_remote(
+    entry: &RemoteEntry,
+    session: Option<String>,
+    rec: Option<&RecordSpec>,
+) -> ExitCode {
     let endpoint = match Endpoint::parse(&entry.endpoint) {
         Ok(endpoint) => endpoint,
         Err(err) => {
@@ -339,12 +458,25 @@ pub(crate) fn run_attach_remote(entry: &RemoteEntry, session: Option<String>) ->
     };
 
     match endpoint {
-        Endpoint::Quic(target) => {
-            run_attach_quic(session, target, token, entry.cert_fingerprint.clone(), None)
-        }
-        Endpoint::Ws(url) => {
-            run_attach_ws(session, url, token, entry.cert_fingerprint.clone(), None)
-        }
+        Endpoint::Quic(target) => run_attach_quic(
+            session,
+            target,
+            token,
+            entry.cert_fingerprint.clone(),
+            None,
+            rec,
+        ),
+        Endpoint::Ws(url) => run_attach_ws(
+            session,
+            url,
+            token,
+            entry.cert_fingerprint.clone(),
+            None,
+            rec,
+        ),
+        // `exec`s into ssh, so this process — and any recorder it holds —
+        // ceases to exist here. Recording a `ssh://` remote means running
+        // `phux --rec` on the far side.
         Endpoint::Ssh(host) => run_attach_over_ssh(&host, session.as_deref()),
     }
 }
@@ -371,7 +503,20 @@ fn run_attach_over_ssh(host: &str, session: Option<&str>) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// `phux attach [NAME]` with no recording.
+///
+/// Kept as a distinct entry point so callers that can never record — the
+/// worktree verbs, which attach as the tail of a create — do not have to
+/// carry a `None` they cannot ever populate.
 pub(crate) fn run_attach(session: Option<String>, socket: Option<PathBuf>) -> ExitCode {
+    run_attach_rec(session, socket, None)
+}
+
+pub(crate) fn run_attach_rec(
+    session: Option<String>,
+    socket: Option<PathBuf>,
+    rec: Option<&RecordSpec>,
+) -> ExitCode {
     // A name in the registry is a deliberate operator statement — they ran
     // `phux enroll` or `phux remote add` for it — so it wins over the
     // local-session reading of the same word. `--socket` is an explicit
@@ -380,7 +525,7 @@ pub(crate) fn run_attach(session: Option<String>, socket: Option<PathBuf>) -> Ex
         && let Some(name) = session.as_deref()
         && let Some(entry) = remote::find(name)
     {
-        return run_attach_remote(&entry, None);
+        return run_attach_remote(&entry, None, rec);
     }
 
     let socket_path = socket.unwrap_or_else(default_socket_path);
@@ -461,9 +606,11 @@ pub(crate) fn run_attach(session: Option<String>, socket: Option<PathBuf>) -> Ex
             AttachTarget::Last,
             predict_cfg,
             Some(&default_name),
+            rec,
         )),
-        other => rt.block_on(attach_with_reconnect(&dial, other, predict_cfg, None)),
+        other => rt.block_on(attach_with_reconnect(&dial, other, predict_cfg, None, rec)),
     };
+    finalize_recording(rec);
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -590,6 +737,7 @@ pub(crate) fn run_attach_quic(
     token: Option<String>,
     cert_fingerprint: Option<String>,
     server_name: Option<String>,
+    rec: Option<&RecordSpec>,
 ) -> ExitCode {
     print_banner();
 
@@ -658,12 +806,15 @@ pub(crate) fn run_attach_quic(
         |name| (AttachTarget::ByName(name), None),
     );
 
-    match rt.block_on(attach_with_reconnect(
+    let result = rt.block_on(attach_with_reconnect(
         &dial,
         attach_target,
         predict_cfg,
         default,
-    )) {
+        rec,
+    ));
+    finalize_recording(rec);
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("phux: QUIC attach to {target} failed: {err}");
@@ -682,6 +833,7 @@ pub(crate) fn run_attach_ws(
     token: Option<String>,
     cert_fingerprint: Option<String>,
     tls_server_name: Option<String>,
+    rec: Option<&RecordSpec>,
 ) -> ExitCode {
     print_banner();
 
@@ -761,7 +913,15 @@ pub(crate) fn run_attach_ws(
         |name| (AttachTarget::ByName(name), None),
     );
 
-    match rt.block_on(attach_with_reconnect(&dial, target, predict_cfg, default)) {
+    let result = rt.block_on(attach_with_reconnect(
+        &dial,
+        target,
+        predict_cfg,
+        default,
+        rec,
+    ));
+    finalize_recording(rec);
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("phux: WebSocket attach failed: {err}");

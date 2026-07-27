@@ -123,6 +123,7 @@ phux plugin list
 phux plugin unlink
 phux plugin update
 phux plugin validate
+phux rec
 phux relay
 phux relay pair
 phux relay run

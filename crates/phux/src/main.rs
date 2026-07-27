@@ -50,6 +50,13 @@ mod help_inventory;
 #[derive(Debug, Parser)]
 #[command(
     version,
+    // The root command's only args are the `--rec` pair, and they belong to
+    // the naked `phux` attach alone. Letting clap reject `phux --rec X <verb>`
+    // outright is what makes deleting the old hand-rolled scope check safe:
+    // `phux attach --rec X` has its own copy of the flag, and everything else
+    // wants `phux rec <target> -o X`, so a root `--rec` in front of a verb is
+    // always a mistake and now says so instead of being silently dropped.
+    args_conflicts_with_subcommands = true,
     about = "A terminal multiplexer you can drive by hand or script.",
     long_about = "phux — a libghostty-backed terminal multiplexer and control plane.\n\n\
         Run `phux` with no arguments to attach to your session (auto-starting a\n\
@@ -65,6 +72,7 @@ mod help_inventory;
           ls         List sessions\n  \
           snapshot   Capture a pane's screen as JSON or a boxed view\n  \
           watch      Stream a pane's live events (bell, title, output, lifecycle)\n  \
+          rec        Record a pane to an asciinema cast, a GIF, or an APNG\n  \
           agent      List, show, explain, set, or clear per-pane agent state\n\n\
         DRIVE\n  \
           new        Create a session\n  \
@@ -126,9 +134,26 @@ mod help_inventory;
         `phux help server` and docs/operations.md for the remote/TLS details."
 )]
 struct Cli {
+    /// Recording options for the naked `phux` attach. `phux attach` carries
+    /// its own copy; every other verb is pointed at `phux rec`.
+    #[command(flatten)]
+    rec: commands::RecOpts,
+
     /// Subcommand. Defaults to attaching to the last session if omitted.
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+/// Resolve `--rec` into a full recording plan, or report why it cannot be.
+///
+/// Called on the cooked terminal, before the attach path raises the alt
+/// screen, so a bad path or an unrecognized extension is a plain stderr line
+/// and a failing exit code rather than a surprise after the TUI is up.
+fn plan_rec(opts: &commands::RecOpts) -> Result<Option<commands::rec::RecordSpec>, ExitCode> {
+    opts.rec
+        .as_deref()
+        .map(|path| commands::rec::spec::plan(path, opts.rec_format))
+        .transpose()
 }
 
 /// Print the one-line build banner to stderr.
@@ -219,27 +244,39 @@ fn main() -> ExitCode {
             token,
             cert_fingerprint,
             tls_server_name,
-        }) => match (quic, ws) {
-            (Some(addr), None) => commands::attach::run_attach_quic(
-                session,
-                addr,
-                token,
-                cert_fingerprint,
-                tls_server_name,
-            ),
-            (None, Some(url)) => commands::attach::run_attach_ws(
-                session,
-                url,
-                token,
-                cert_fingerprint,
-                tls_server_name,
-            ),
-            (None, None) => commands::attach::run_attach(session, socket),
-            (Some(_), Some(_)) => {
-                eprintln!("phux: choose only one remote attach transport (--quic or --ws)");
-                ExitCode::FAILURE
+            rec,
+        }) => {
+            // `phux attach` owns its own `--rec`; the root copy is reserved
+            // for the naked invocation below.
+            let rec_spec = match plan_rec(&rec) {
+                Ok(spec) => spec,
+                Err(code) => return code,
+            };
+            let rec_spec = rec_spec.as_ref();
+            match (quic, ws) {
+                (Some(addr), None) => commands::attach::run_attach_quic(
+                    session,
+                    addr,
+                    token,
+                    cert_fingerprint,
+                    tls_server_name,
+                    rec_spec,
+                ),
+                (None, Some(url)) => commands::attach::run_attach_ws(
+                    session,
+                    url,
+                    token,
+                    cert_fingerprint,
+                    tls_server_name,
+                    rec_spec,
+                ),
+                (None, None) => commands::attach::run_attach_rec(session, socket, rec_spec),
+                (Some(_), Some(_)) => {
+                    eprintln!("phux: choose only one remote attach transport (--quic or --ws)");
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         Some(Command::Server {
             session,
             socket,
@@ -391,6 +428,31 @@ fn main() -> ExitCode {
             json,
             socket,
         }) => commands::watch::run_watch(session.as_deref(), json, socket),
+        Some(Command::Rec {
+            target,
+            out,
+            format,
+            from,
+            duration,
+            fps,
+            idle_limit,
+            max_bytes,
+            cast_version,
+            json,
+            socket,
+        }) => commands::rec::run_rec(commands::rec::RecArgs {
+            target: target.as_deref(),
+            out: &out,
+            format,
+            from: from.as_deref(),
+            duration,
+            fps,
+            idle_limit,
+            max_bytes,
+            cast_version,
+            json,
+            socket,
+        }),
         Some(Command::Ask {
             target,
             id,
@@ -486,7 +548,13 @@ fn main() -> ExitCode {
                 commands::service::run_prune_logs(dry_run)
             }
         },
-        None => commands::attach::run_naked(),
+        None => {
+            let rec_spec = match plan_rec(&cli.rec) {
+                Ok(spec) => spec,
+                Err(code) => return code,
+            };
+            commands::attach::run_naked(rec_spec.as_ref())
+        }
     }
 }
 
@@ -710,6 +778,50 @@ mod tests {
             Cli::try_parse_from(["phux", "relay", "pair"]).is_err(),
             "--route is required"
         );
+    }
+
+    /// `--rec` is scoped by declaration, not by a runtime check: it parses on
+    /// the root command (naked `phux`) and on `attach`, and nowhere else. The
+    /// in-front-of-a-verb form is refused too — as a global flag it used to
+    /// parse on every verb and then be rejected by hand, which made
+    /// `phux ls --help` advertise a flag `ls` could never honour.
+    #[test]
+    fn rec_is_scoped_to_the_two_attaching_paths() {
+        let cli = Cli::try_parse_from(["phux", "--rec", "demo.gif"]).expect("naked `phux --rec`");
+        assert_eq!(
+            cli.rec.rec.as_deref(),
+            Some(std::path::Path::new("demo.gif"))
+        );
+        assert!(cli.command.is_none());
+
+        let cli = Cli::try_parse_from(["phux", "attach", "work", "--rec", "demo.cast"])
+            .expect("`phux attach NAME --rec PATH`");
+        assert!(
+            cli.rec.rec.is_none(),
+            "the subcommand's own --rec is the one that carries the value"
+        );
+        let Some(Command::Attach { session, rec, .. }) = cli.command else {
+            panic!("expected Attach");
+        };
+        assert_eq!(session.as_deref(), Some("work"));
+        assert_eq!(rec.rec.as_deref(), Some(std::path::Path::new("demo.cast")));
+
+        for argv in [
+            ["phux", "ls", "--rec", "demo.gif"].as_slice(),
+            ["phux", "snapshot", "--rec", "demo.gif"].as_slice(),
+            // A root `--rec` in front of any verb: `phux rec` is the headless
+            // capture, so this is always a mistake.
+            ["phux", "--rec", "demo.gif", "ls"].as_slice(),
+            ["phux", "--rec", "demo.gif", "attach", "work"].as_slice(),
+            // --rec-format is meaningless without a destination.
+            ["phux", "--rec-format", "gif"].as_slice(),
+            ["phux", "attach", "--rec-format", "gif"].as_slice(),
+        ] {
+            assert!(
+                Cli::try_parse_from(argv).is_err(),
+                "{argv:?} must not parse"
+            );
+        }
     }
 
     #[test]
