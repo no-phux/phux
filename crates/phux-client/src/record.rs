@@ -190,13 +190,6 @@ async fn subscribe(
         }
     }
 
-    conn.send(&FrameKind::Command {
-        request_id: REQUEST_ATTACH,
-        command: Command::AttachTerminal {
-            terminal_id: terminal_id.clone(),
-        },
-    })
-    .await?;
     // SPEC §5 permits the priming TERMINAL_SNAPSHOT to arrive before the
     // COMMAND_RESULT, and the reference server always sends it that way
     // (crates/phux-server/src/runtime/commands.rs: the snapshot is pushed
@@ -204,24 +197,20 @@ async fn subscribe(
     // interleave is the normal case, not an edge case -- but a frame
     // observed here is CONSUMED, and the snapshot is never re-sent. Dropping
     // it silently is what made an entire capture come back as a 0x0 grid
-    // with nothing playable in it. Hand every non-reply frame back to the
-    // caller instead, so the pump can absorb them in arrival order.
-    let mut primed = Vec::new();
-    loop {
-        match conn.recv().await? {
-            FrameKind::CommandResult { request_id, result } if request_id == REQUEST_ATTACH => {
-                match result {
-                    CommandResult::Error { message, .. } => {
-                        return Err(AttachError::Refused(message));
-                    }
-                    // `CommandResult` is `#[non_exhaustive]`; every non-error
-                    // outcome means the subscription stands.
-                    _ok => break,
-                }
-            }
-            FrameKind::Error { message, .. } => return Err(AttachError::Refused(message)),
-            other => primed.push(other),
-        }
+    // with nothing playable in it. `Connection::request` hands every non-reply
+    // frame back, so the pump can absorb them in arrival order; an ERROR
+    // among them reaches `Capture::absorb`, which fails the capture.
+    let (result, primed) = conn
+        .request(
+            REQUEST_ATTACH,
+            Command::AttachTerminal {
+                terminal_id: terminal_id.clone(),
+            },
+        )
+        .await?
+        .into_parts();
+    if let CommandResult::Error { message, .. } = result {
+        return Err(AttachError::Refused(message));
     }
 
     conn.send(&FrameKind::SubscribeEvents {
@@ -267,7 +256,17 @@ async fn pump(
     let interrupt = tokio::signal::ctrl_c();
     tokio::pin!(interrupt);
 
-    let mut last_progress: Option<Instant> = None;
+    // First tick, fired from the priming snapshot rather than from the first
+    // frame the loop below receives. Two reasons, both of which only became
+    // visible once the unit tests started running against the reference
+    // server's ordering (phux-h5hj.3): the opening screen is already an event
+    // by the time the loop starts, and a pane that exits immediately delivers
+    // `PANE_CLOSED` as the loop's *first* frame — which `break`s before ever
+    // reaching the tick at the bottom. Ticking only inside the loop therefore
+    // left a short capture with no counter update at all, which is exactly
+    // the 250 ms dead zone this callback exists to avoid.
+    let mut last_progress: Option<Instant> = Some(Instant::now());
+    progress(start.elapsed(), state.events.len());
     loop {
         let frame = tokio::select! {
             () = &mut deadline => break,
@@ -498,19 +497,8 @@ impl Capture {
 )]
 mod tests {
     use super::*;
-    use phux_protocol::caps::ServerCapabilities;
+    use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer};
     use tokio::net::UnixStream;
-
-    /// What the scripted server does once it has sent the script.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum EndOfScript {
-        /// Keep serving until the client sends `DETACH_TERMINAL`, then
-        /// return. This is the shape that lets a test inspect the full set
-        /// of client-sent frames.
-        AwaitDetach,
-        /// Drop the connection, so the client observes a transport EOF.
-        HangUp,
-    }
 
     fn terminal() -> TerminalId {
         TerminalId::local(7)
@@ -541,135 +529,26 @@ mod tests {
         }
     }
 
-    /// A minimal server that answers the handshake, then pushes `script`
-    /// once the client subscribes. Returns every frame the client sent, in
-    /// order — which is what the non-resize regression guard inspects.
-    async fn scripted_server(
-        mut server: Connection,
-        script: Vec<FrameKind>,
-        end: EndOfScript,
-    ) -> Vec<FrameKind> {
-        let mut seen = Vec::new();
-        loop {
-            let Ok(frame) = server.recv().await else {
-                break;
-            };
-            let is_detach = matches!(
-                &frame,
-                FrameKind::Command {
-                    command: Command::DetachTerminal { .. },
-                    ..
-                }
-            );
-            match &frame {
-                FrameKind::Hello { .. } => {
-                    server
-                        .send(&FrameKind::HelloOk {
-                            protocol_major: PROTOCOL_VERSION.major,
-                            protocol_minor: PROTOCOL_VERSION.minor,
-                            protocol_patch: PROTOCOL_VERSION.patch,
-                            server_caps: ServerCapabilities::new(),
-                            server_id: Vec::new(),
-                        })
-                        .await
-                        .expect("send HELLO_OK");
-                }
-                FrameKind::Command {
-                    request_id,
-                    command: Command::AttachTerminal { .. },
-                } => {
-                    server
-                        .send(&FrameKind::CommandResult {
-                            request_id: *request_id,
-                            result: CommandResult::Ok,
-                        })
-                        .await
-                        .expect("send COMMAND_RESULT");
-                }
-                FrameKind::SubscribeEvents { .. } => {
-                    for frame in &script {
-                        server.send(frame).await.expect("send scripted frame");
-                    }
-                    if end == EndOfScript::HangUp {
-                        seen.push(frame.clone());
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            seen.push(frame);
-            if is_detach {
-                break;
-            }
-        }
-        seen
-    }
-
-    /// A server that pushes the priming snapshot BEFORE the
-    /// `COMMAND_RESULT`, which is what the reference server actually does
-    /// (`crates/phux-server/src/runtime/commands.rs` sends `TERMINAL_SNAPSHOT`
-    /// "before the pump's first delta and before the Ok reply").
+    /// A session whose client will attach a Terminal.
     ///
-    /// [`scripted_server`] answers in the other order, so every test built on
-    /// it passes even when the handshake throws the snapshot away. Recording
-    /// against a real server then returns a 0x0 grid and nothing playable.
-    /// This harness is the one that reproduces it.
-    async fn priming_server(mut server: Connection, prime: FrameKind, script: Vec<FrameKind>) {
-        loop {
-            let Ok(frame) = server.recv().await else {
-                break;
-            };
-            match &frame {
-                FrameKind::Hello { .. } => {
-                    server
-                        .send(&FrameKind::HelloOk {
-                            protocol_major: PROTOCOL_VERSION.major,
-                            protocol_minor: PROTOCOL_VERSION.minor,
-                            protocol_patch: PROTOCOL_VERSION.patch,
-                            server_caps: ServerCapabilities::new(),
-                            server_id: Vec::new(),
-                        })
-                        .await
-                        .expect("send HELLO_OK");
-                }
-                FrameKind::Command {
-                    request_id,
-                    command: Command::AttachTerminal { .. },
-                } => {
-                    // Snapshot first, ack second. This ordering is the point.
-                    server.send(&prime).await.expect("send priming snapshot");
-                    server
-                        .send(&FrameKind::CommandResult {
-                            request_id: *request_id,
-                            result: CommandResult::Ok,
-                        })
-                        .await
-                        .expect("send COMMAND_RESULT");
-                }
-                FrameKind::SubscribeEvents { .. } => {
-                    for frame in &script {
-                        server.send(frame).await.expect("send scripted frame");
-                    }
-                }
-                _ => {}
-            }
-        }
+    /// The priming `TERMINAL_SNAPSHOT` is not optional and is not a "script"
+    /// frame: [`crate::testkit`] sends it *before* the `ATTACH_TERMINAL` ack,
+    /// because that is what `handle_attach_terminal` does. Every test below
+    /// therefore exercises the interleave, not just the one guard that was
+    /// written after the bug escaped.
+    fn attached(cols: u16, rows: u16, replay: &[u8]) -> ScriptSpec {
+        ScriptSpec::new().priming_snapshot(&terminal(), cols, rows, replay)
     }
 
     #[test]
     fn snapshot_arriving_before_the_command_result_is_not_dropped() {
-        let recorded = block_on(async {
-            let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-            let mut client = Connection::from_stream(client_stream);
-            let server = Connection::from_stream(server_stream);
-            tokio::task::spawn_local(priming_server(
-                server,
-                snapshot(120, 40, b"opening screen"),
-                vec![output(1, b" more"), pane_closed(Some(0))],
-            ));
-            record_on_connection(&mut client, terminal(), None, |_, _| {}).await
-        })
-        .expect("recording");
+        let (recorded, _seen) = block_on(run(
+            attached(120, 40, b"opening screen")
+                .push(output(1, b" more"))
+                .push(pane_closed(Some(0))),
+            None,
+        ));
+        let recorded = recorded.expect("recording");
 
         assert_eq!(
             (recorded.cols, recorded.rows),
@@ -692,14 +571,13 @@ mod tests {
 
     /// Run one scripted session and return both halves' results.
     async fn run(
-        script: Vec<FrameKind>,
-        end: EndOfScript,
+        spec: ScriptSpec,
         max_duration: Option<Duration>,
     ) -> (Result<HeadlessRecording, AttachError>, Vec<FrameKind>) {
         let (client_stream, server_stream) = UnixStream::pair().expect("pair");
         let mut client = Connection::from_stream(client_stream);
-        let server = Connection::from_stream(server_stream);
-        let server_side = tokio::task::spawn_local(scripted_server(server, script, end));
+        let server_side =
+            tokio::task::spawn_local(ScriptedServer::on_stream(server_stream, spec).run());
         let recorded = record_on_connection(&mut client, terminal(), max_duration, |_, _| {}).await;
         let seen = server_side.await.expect("server task");
         (recorded, seen)
@@ -723,8 +601,7 @@ mod tests {
     #[test]
     fn sends_hello_then_attach_terminal_then_subscribe_events() {
         let (recorded, seen) = block_on(run(
-            vec![snapshot(80, 24, b"hi"), pane_closed(Some(0))],
-            EndOfScript::AwaitDetach,
+            attached(80, 24, b"hi").push(pane_closed(Some(0))),
             None,
         ));
         recorded.expect("recording");
@@ -756,11 +633,8 @@ mod tests {
 
     #[test]
     fn hello_advertises_truecolor_and_the_default_l1_layerset() {
-        let (_recorded, seen) = block_on(run(
-            vec![snapshot(80, 24, b""), pane_closed(Some(0))],
-            EndOfScript::AwaitDetach,
-            None,
-        ));
+        let (_recorded, seen) =
+            block_on(run(attached(80, 24, b"").push(pane_closed(Some(0))), None));
         let Some(FrameKind::Hello {
             client_caps,
             client_name,
@@ -797,14 +671,11 @@ mod tests {
         // A full session: snapshot, output, a resize-shaped second snapshot,
         // more output, then the pane closing.
         let (recorded, seen) = block_on(run(
-            vec![
-                snapshot(120, 34, b"first"),
-                output(1, b"more"),
-                snapshot(100, 30, b"repaint"),
-                output(2, b"tail"),
-                pane_closed(Some(0)),
-            ],
-            EndOfScript::AwaitDetach,
+            attached(120, 34, b"first")
+                .push(output(1, b"more"))
+                .push(snapshot(100, 30, b"repaint"))
+                .push(output(2, b"tail"))
+                .push(pane_closed(Some(0))),
             None,
         ));
         recorded.expect("recording");
@@ -830,8 +701,7 @@ mod tests {
     #[test]
     fn first_snapshot_seeds_dims_and_emits_replay_bytes_at_time_zero() {
         let (recorded, _seen) = block_on(run(
-            vec![snapshot(120, 34, b"opening grid"), pane_closed(Some(0))],
-            EndOfScript::AwaitDetach,
+            attached(120, 34, b"opening grid").push(pane_closed(Some(0))),
             None,
         ));
         let recorded = recorded.expect("recording");
@@ -849,12 +719,9 @@ mod tests {
     #[test]
     fn second_snapshot_with_new_dims_emits_r_then_o() {
         let (recorded, _seen) = block_on(run(
-            vec![
-                snapshot(80, 24, b"a"),
-                snapshot(100, 30, b"b"),
-                pane_closed(Some(0)),
-            ],
-            EndOfScript::AwaitDetach,
+            attached(80, 24, b"a")
+                .push(snapshot(100, 30, b"b"))
+                .push(pane_closed(Some(0))),
             None,
         ));
         let recorded = recorded.expect("recording");
@@ -881,12 +748,9 @@ mod tests {
         // This is the lag-recovery resync the output pump injects. It is a
         // repaint, not a resize.
         let (recorded, _seen) = block_on(run(
-            vec![
-                snapshot(80, 24, b"a"),
-                snapshot(80, 24, b"resync"),
-                pane_closed(Some(0)),
-            ],
-            EndOfScript::AwaitDetach,
+            attached(80, 24, b"a")
+                .push(snapshot(80, 24, b"resync"))
+                .push(pane_closed(Some(0))),
             None,
         ));
         let recorded = recorded.expect("recording");
@@ -901,14 +765,11 @@ mod tests {
     #[test]
     fn terminal_output_frames_become_o_events_in_arrival_order() {
         let (recorded, _seen) = block_on(run(
-            vec![
-                snapshot(80, 24, b""),
-                output(9, b"one"),
-                output(4, b"two"),
-                output(7, b"three"),
-                pane_closed(Some(0)),
-            ],
-            EndOfScript::AwaitDetach,
+            attached(80, 24, b"")
+                .push(output(9, b"one"))
+                .push(output(4, b"two"))
+                .push(output(7, b"three"))
+                .push(pane_closed(Some(0))),
             None,
         ));
         let recorded = recorded.expect("recording");
@@ -929,13 +790,10 @@ mod tests {
     #[test]
     fn pane_closed_event_emits_x_with_the_exit_status_and_stops() {
         let (recorded, _seen) = block_on(run(
-            vec![
-                snapshot(80, 24, b""),
-                pane_closed(Some(42)),
+            attached(80, 24, b"")
+                .push(pane_closed(Some(42)))
                 // Never delivered: the client stops on PaneClosed.
-                output(1, b"after the end"),
-            ],
-            EndOfScript::AwaitDetach,
+                .push(output(1, b"after the end")),
             None,
         ));
         let recorded = recorded.expect("recording");
@@ -950,11 +808,7 @@ mod tests {
 
     #[test]
     fn pane_closed_without_a_status_records_the_unknown_sentinel() {
-        let (recorded, _seen) = block_on(run(
-            vec![snapshot(80, 24, b""), pane_closed(None)],
-            EndOfScript::AwaitDetach,
-            None,
-        ));
+        let (recorded, _seen) = block_on(run(attached(80, 24, b"").push(pane_closed(None)), None));
         let recorded = recorded.expect("recording");
         let last = recorded.events.last().expect("an exit event");
         assert_eq!(last.code, EventCode::Exit);
@@ -964,15 +818,11 @@ mod tests {
     #[test]
     fn error_frame_becomes_attach_error_refused() {
         let (recorded, _seen) = block_on(run(
-            vec![
-                snapshot(80, 24, b""),
-                FrameKind::Error {
-                    request_id: None,
-                    code: phux_protocol::wire::frame::ErrorCode::TerminalNotFound,
-                    message: "no such terminal".to_owned(),
-                },
-            ],
-            EndOfScript::AwaitDetach,
+            attached(80, 24, b"").push(FrameKind::Error {
+                request_id: None,
+                code: phux_protocol::wire::frame::ErrorCode::TerminalNotFound,
+                message: "no such terminal".to_owned(),
+            }),
             None,
         ));
         match recorded {
@@ -984,8 +834,9 @@ mod tests {
     #[test]
     fn transport_eof_finalizes_successfully() {
         let (recorded, _seen) = block_on(run(
-            vec![snapshot(80, 24, b"grid"), output(1, b"bytes")],
-            EndOfScript::HangUp,
+            attached(80, 24, b"grid")
+                .push(output(1, b"bytes"))
+                .end(EndOfScript::HangUp),
             None,
         ));
         let recorded = recorded.expect("an EOF is a clean stop, not a failure");
@@ -1001,8 +852,7 @@ mod tests {
         // The script leaves the connection open with nothing more to send,
         // so only the duration cap can end the capture.
         let (recorded, seen) = block_on(run(
-            vec![snapshot(80, 24, b"grid"), output(1, b"bytes")],
-            EndOfScript::AwaitDetach,
+            attached(80, 24, b"grid").push(output(1, b"bytes")),
             Some(Duration::from_millis(120)),
         ));
         let recorded = recorded.expect("the duration cap is a successful stop");
@@ -1021,11 +871,8 @@ mod tests {
 
     #[test]
     fn detach_terminal_is_sent_on_clean_exit() {
-        let (recorded, seen) = block_on(run(
-            vec![snapshot(80, 24, b""), pane_closed(Some(0))],
-            EndOfScript::AwaitDetach,
-            None,
-        ));
+        let (recorded, seen) =
+            block_on(run(attached(80, 24, b"").push(pane_closed(Some(0))), None));
         recorded.expect("recording");
         let last = seen.last().expect("at least one client frame");
         assert!(
@@ -1045,13 +892,10 @@ mod tests {
         // U+2500 BOX DRAWINGS LIGHT HORIZONTAL, cut mid-sequence. A
         // per-frame from_utf8_lossy would produce two U+FFFD here.
         let (recorded, _seen) = block_on(run(
-            vec![
-                snapshot(80, 24, b""),
-                output(1, &[0xe2, 0x94]),
-                output(2, &[0x80]),
-                pane_closed(Some(0)),
-            ],
-            EndOfScript::AwaitDetach,
+            attached(80, 24, b"")
+                .push(output(1, &[0xe2, 0x94]))
+                .push(output(2, &[0x80]))
+                .push(pane_closed(Some(0))),
             None,
         ));
         let recorded = recorded.expect("recording");
@@ -1072,8 +916,9 @@ mod tests {
     #[test]
     fn a_truncated_utf8_tail_surfaces_as_a_replacement_character() {
         let (recorded, _seen) = block_on(run(
-            vec![snapshot(80, 24, b""), output(1, &[0xe2, 0x94])],
-            EndOfScript::HangUp,
+            attached(80, 24, b"")
+                .push(output(1, &[0xe2, 0x94]))
+                .end(EndOfScript::HangUp),
             None,
         ));
         let recorded = recorded.expect("recording");
@@ -1091,10 +936,9 @@ mod tests {
         let calls = local.block_on(&rt, async {
             let (client_stream, server_stream) = UnixStream::pair().expect("pair");
             let mut client = Connection::from_stream(client_stream);
-            let server = Connection::from_stream(server_stream);
-            let script = vec![snapshot(80, 24, b"grid"), pane_closed(Some(0))];
+            let spec = attached(80, 24, b"grid").push(pane_closed(Some(0)));
             let server_side =
-                tokio::task::spawn_local(scripted_server(server, script, EndOfScript::AwaitDetach));
+                tokio::task::spawn_local(ScriptedServer::on_stream(server_stream, spec).run());
             let mut calls: Vec<(Duration, usize)> = Vec::new();
             let recorded = record_on_connection(&mut client, terminal(), None, |at, count| {
                 calls.push((at, count));

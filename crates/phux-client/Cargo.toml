@@ -12,6 +12,15 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[features]
+# phux-h5hj.3: exposes `phux_client::testkit`, the single scripted server the
+# workspace's client-side unit tests speak to. Off by default because it is
+# test scaffolding, not product surface; this crate's own `#[cfg(test)]` build
+# gets the module without it, and downstream crates opt in from
+# `[dev-dependencies]`. No extra dependencies — the harness is built from this
+# crate's existing tokio + phux-protocol surface.
+testkit = []
+
 [dependencies]
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true

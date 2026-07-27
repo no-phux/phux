@@ -36,11 +36,19 @@ pub mod l2;
 pub mod layout_ops;
 pub mod record;
 pub mod render;
+pub mod resize;
 pub mod run;
 pub mod selector;
 pub mod send_keys;
 pub mod snapshot;
 pub mod state;
+// The one scripted server every client-side test speaks to (phux-h5hj.3).
+// Compiled for this crate's own unit tests, and behind the `testkit` feature
+// for the downstream crates (`phux-mcp`, the `phux` binary) whose unit tests
+// used to hand-roll their own fake — and therefore encoded whatever their
+// author believed the server does.
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 pub mod vcs;
 pub mod wait;
 pub mod watch;

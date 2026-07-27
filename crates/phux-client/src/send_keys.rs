@@ -27,7 +27,7 @@ use phux_protocol::wire::info::SessionSnapshot;
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::attach::input::StdinParser;
-use crate::snapshot::command;
+use crate::state::report_degradation;
 
 /// Translate one key-spec argument to the bytes a terminal would receive.
 ///
@@ -198,15 +198,24 @@ pub async fn send(
 ) -> Result<TerminalId, AttachError> {
     let mut conn = Connection::connect(socket).await?;
     // Resolve the focused pane without attaching (side-effect-free).
-    let snapshot = match command(
-        &mut conn,
-        1,
-        Command::GetState {
-            scope: StateScope::Server,
-        },
-    )
-    .await?
-    {
+    //
+    // GET_STATE on a hub interleaves one uncorrelated ERROR per unreachable
+    // satellite ahead of the merged snapshot, so this cannot use
+    // `into_result_ignoring_interleaved`. A degraded snapshot here is not
+    // fatal — the focused pane we are looking for is usually local — but it
+    // changes what "no such session" means, so it is reported rather than
+    // dropped (`report_degradation` logs; the CLI prints).
+    let (result, interleaved) = conn
+        .request(
+            1,
+            Command::GetState {
+                scope: StateScope::Server,
+            },
+        )
+        .await?
+        .into_parts();
+    report_degradation(&interleaved);
+    let snapshot = match result {
         CommandResult::OkWith(CommandValue::State(snap)) => snap,
         CommandResult::Error { message, .. } => return Err(AttachError::Refused(message)),
         other => {
@@ -271,15 +280,22 @@ pub async fn paste_to(
     trust: PasteTrust,
 ) -> Result<(), AttachError> {
     let mut conn = Connection::connect(socket).await?;
-    match command(
-        &mut conn,
-        1,
-        Command::RouteInput {
-            terminal_id: pane,
-            event: InputEvent::Paste(PasteEvent { trust, data }),
-        },
-    )
-    .await?
+    // Ignoring the interleave is safe here for the same reason the whole
+    // module is side-effect-free: this connection never attaches or
+    // subscribes, so no fanout reaches its mailbox, and the server's
+    // `handle_route_input` (or the input lane's `route_command`) emits
+    // nothing to the caller ahead of the ack — the pane's resulting bytes go
+    // to that pane's *subscribers*, which this caller deliberately is not.
+    match conn
+        .request(
+            1,
+            Command::RouteInput {
+                terminal_id: pane,
+                event: InputEvent::Paste(PasteEvent { trust, data }),
+            },
+        )
+        .await?
+        .into_result_ignoring_interleaved()
     {
         CommandResult::Ok => Ok(()),
         CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
@@ -303,15 +319,18 @@ async fn route_keys(
         // request_id 1 may have been a preceding GET_STATE; route-input
         // acks start at 2 so a shared connection never reuses an id.
         let request_id = u32::try_from(i).unwrap_or(u32::MAX - 1).saturating_add(2);
-        match command(
-            conn,
-            request_id,
-            Command::RouteInput {
-                terminal_id: pane.clone(),
-                event,
-            },
-        )
-        .await?
+        // Unsubscribed connection + a handler that pushes nothing before the
+        // ack; see `paste_to` for the full argument.
+        match conn
+            .request(
+                request_id,
+                Command::RouteInput {
+                    terminal_id: pane.clone(),
+                    event,
+                },
+            )
+            .await?
+            .into_result_ignoring_interleaved()
         {
             CommandResult::Ok => {}
             CommandResult::Error { message, .. } => return Err(AttachError::Refused(message)),

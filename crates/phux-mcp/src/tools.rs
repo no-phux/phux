@@ -614,11 +614,10 @@ fn string_array(args: &Value, key: &str) -> Result<Vec<String>, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
+    use phux_client::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::ids::{SessionId, WindowId};
     use phux_protocol::wire::frame::{FrameKind, Scope, TERMINAL_TAGS_KEY};
     use phux_protocol::wire::info::{SessionInfo, TerminalInfo, WindowInfo};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
 
     #[test]
@@ -980,49 +979,38 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("mcp-tag.sock");
         let listener = UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            for _ in 0..4 {
-                let frame = read_frame(&mut stream).await;
-                let FrameKind::GetMetadata {
-                    request_id,
-                    scope: Scope::Terminal(terminal_id),
-                    key,
-                } = frame
-                else {
-                    panic!("expected terminal GET_METADATA, got {frame:?}");
-                };
-                assert_eq!(key, TERMINAL_TAGS_KEY);
-                let value = matches!(terminal_id.local_id(), Some(100 | 200))
-                    .then(|| serde_json::to_vec(&vec!["build"]).unwrap());
-                write_frame(&mut stream, &FrameKind::MetadataValue { request_id, value }).await;
-            }
+        // The shared harness owns the correlation (one METADATA_VALUE per
+        // request id, in order); this closure supplies only the values.
+        let spec = ScriptSpec::new().metadata(|scope, key| {
+            assert_eq!(key, TERMINAL_TAGS_KEY);
+            let Scope::Terminal(terminal_id) = scope else {
+                panic!("tag lookup must be terminal-scoped, got {scope:?}");
+            };
+            matches!(terminal_id.local_id(), Some(100 | 200))
+                .then(|| serde_json::to_vec(&vec!["build"]).unwrap())
         });
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
 
         let pane = resolve_one(&socket, &selector::parse("#build").unwrap(), &fixture())
             .await
             .unwrap();
         assert_eq!(pane, TerminalId::local(100));
-        server.await.unwrap();
-    }
-
-    async fn read_frame(stream: &mut tokio::net::UnixStream) -> FrameKind {
-        let mut header = [0_u8; 4];
-        stream.read_exact(&mut header).await.unwrap();
-        let body_len = usize::try_from(u32::from_be_bytes(header)).unwrap();
-        let mut encoded = Vec::with_capacity(4 + body_len);
-        encoded.extend_from_slice(&header);
-        encoded.resize(4 + body_len, 0);
-        stream.read_exact(&mut encoded[4..]).await.unwrap();
-        let (frame, tail) = FrameKind::decode(&encoded).unwrap();
-        assert!(tail.is_empty());
-        frame
-    }
-
-    async fn write_frame(stream: &mut tokio::net::UnixStream, frame: &FrameKind) {
-        let mut encoded = BytesMut::new();
-        frame.encode(&mut encoded);
-        stream.write_all(&encoded).await.unwrap();
+        let seen = server.await.unwrap();
+        // One per pane, satellite panes included. The hand-written fake this
+        // replaced served exactly four and then dropped the socket, so the
+        // fifth (satellite-scoped) lookup was answered by a transport EOF
+        // rather than by the server — `fetch_tag_index`'s best-effort
+        // degradation was masking the gap instead of the test covering it.
+        assert_eq!(
+            seen.len(),
+            fixture().panes.len(),
+            "one GET_METADATA per pane in the snapshot, pipelined; got {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .all(|frame| matches!(frame, FrameKind::GetMetadata { .. })),
+            "the tag lookup sends nothing but GET_METADATA; got {seen:?}"
+        );
     }
 
     /// Build a snapshot: session "work" (id 1, focused, pane 100 focused)

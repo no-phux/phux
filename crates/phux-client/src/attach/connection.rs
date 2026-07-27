@@ -13,7 +13,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use bytes::{Buf, BytesMut};
-use phux_protocol::wire::frame::{FrameKind, MAX_FRAME_LEN};
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, MAX_FRAME_LEN};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -57,6 +57,39 @@ impl Dial {
 /// independent after that. The struct keeps them together so the simple "send +
 /// recv on the same task" case is one type. Both transports carry the identical
 /// SPEC §5 framing — the variant only changes the byte plumbing underneath.
+///
+/// # The COMMAND interleave contract
+///
+/// `docs/spec/L1.md` §5: "A `COMMAND` is asynchronous: the server MAY emit
+/// other messages (including events relevant to the command's effect) before
+/// `COMMAND_RESULT`. Clients MUST tolerate that ordering."
+///
+/// This is not a theoretical allowance — the reference server exercises it on
+/// paths a client cannot avoid, and the frames it emits ahead of the ack are
+/// **never re-sent**:
+///
+/// - `ATTACH_TERMINAL`: `handle_attach_terminal`
+///   (`crates/phux-server/src/runtime/commands.rs`) pushes the authoritative
+///   `TERMINAL_SNAPSHOT` "before the pump's first delta and before the Ok
+///   reply". A caller that drops it has no opening screen and no geometry —
+///   the exact defect that made every `phux rec` capture come back as a 0x0
+///   grid.
+/// - `GET_STATE` on a federation hub: `handle_get_state_federated` pushes an
+///   uncorrelated `ERROR` frame per unreachable satellite, deliberately
+///   ("observable degradation, not silence"), *before* returning the merged
+///   snapshot the ack carries. A caller that drops it reports a silently
+///   partial view of the fleet as if it were complete.
+/// - Any command on a connection that also holds a subscription
+///   (`ATTACH_TERMINAL`, `SUBSCRIBE_EVENTS`, an event registration): the
+///   handler's internal `.await` points let the pane actor's `EVENT` and
+///   `TERMINAL_OUTPUT` fanout reach this client's mailbox first.
+///
+/// Because a consumed frame is gone, `recv` alone cannot express a correct
+/// request/response. [`Connection::request`] is the safe form: it hands back
+/// the interleaved frames with the ack so a caller cannot lose them by
+/// omission. Reach for raw [`Connection::send`] + [`Connection::recv`] only in
+/// a full-duplex loop that already routes every frame kind (the attach
+/// driver).
 #[derive(Debug)]
 pub struct Connection {
     reader: FrameReader,
@@ -307,6 +340,165 @@ impl Connection {
     /// into a single paint (phux-jhv8).
     pub fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
         self.reader.try_recv()
+    }
+
+    /// Send one `COMMAND` and wait for its reply, keeping every frame the
+    /// server interleaved ahead of it.
+    ///
+    /// This is the only correct request/response primitive on a `Connection`
+    /// — see the interleave contract on the type. The hand-rolled
+    /// `loop { match recv() { mine => return, _ => {} } }` it replaces is
+    /// *silently lossy*: the frames it drops are already consumed off the
+    /// socket and nothing re-sends them.
+    ///
+    /// # Why the frames come back in the return value
+    ///
+    /// Three shapes were possible; only one makes the loss impossible rather
+    /// than merely discouraged.
+    ///
+    /// - A `FnMut(FrameKind)` callback would let the discarding caller write
+    ///   `|_| {}` — a shorter, more innocent-looking spelling of the very bug
+    ///   this exists to prevent. It is also synchronous, so a caller that
+    ///   wants to *await* on each frame (feed a pump, write a cast event)
+    ///   cannot use it.
+    /// - A caller-supplied `&mut Vec<FrameKind>` sink has the same hole:
+    ///   `&mut Vec::new()` reads as ordinary setup, and a `&mut` out-param
+    ///   cannot be `#[must_use]`.
+    /// - Returning them inside [`Reply`] — which also owns the
+    ///   [`CommandResult`] — means the ack is *unreachable* without passing
+    ///   through a named accessor, and the only way to drop the frames is
+    ///   [`Reply::into_result_ignoring_interleaved`], whose name is the audit
+    ///   trail. `grep` for it and you have the complete list of places that
+    ///   claim the server cannot interleave; each one owes a citation of the
+    ///   server handler that makes the claim true.
+    ///
+    /// The `Vec` is allocated per call and is empty in the common case, which
+    /// is the right trade for a control-plane round trip: these are one per
+    /// CLI verb, not per keystroke.
+    ///
+    /// # Terminating frames
+    ///
+    /// Either a `COMMAND_RESULT` carrying `request_id`, or an `ERROR` frame
+    /// *correlated* to it (`proto.md` §9: `request_id` is "present if the
+    /// error is associated with a COMMAND"), which is normalized to
+    /// [`CommandResult::Error`]. Honouring the correlated `ERROR` is not
+    /// cosmetic — every hand-rolled loop in the workspace waited on
+    /// `COMMAND_RESULT` alone and would hang forever against a peer that
+    /// answers the way L1 §5 permits (`ERROR { code: INVALID_COMMAND }` for a
+    /// command the server does not implement). A hub already normalizes that
+    /// shape on the return leg from a satellite
+    /// (`crates/phux-server/src/hub/relay.rs`, `handle_inbound`); this does
+    /// the same for a direct peer.
+    ///
+    /// An *uncorrelated* `ERROR` (`request_id: None`) is not terminal — it is
+    /// the federation degradation notice, and it lands in
+    /// [`Reply::interleaved`] like any other pushed frame.
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decode failures from [`Self::send`] /
+    /// [`Self::recv`]; a server that closes without replying surfaces as
+    /// [`AttachError::Disconnected`].
+    pub async fn request(
+        &mut self,
+        request_id: u32,
+        command: Command,
+    ) -> Result<Reply, AttachError> {
+        self.send(&FrameKind::Command {
+            request_id,
+            command,
+        })
+        .await?;
+        let mut interleaved = Vec::new();
+        loop {
+            match self.recv().await? {
+                FrameKind::CommandResult {
+                    request_id: got,
+                    result,
+                } if got == request_id => {
+                    return Ok(Reply {
+                        result,
+                        interleaved,
+                    });
+                }
+                FrameKind::Error {
+                    request_id: Some(got),
+                    code,
+                    message,
+                } if got == request_id => {
+                    return Ok(Reply {
+                        result: CommandResult::Error { code, message },
+                        interleaved,
+                    });
+                }
+                other => interleaved.push(other),
+            }
+        }
+    }
+}
+
+/// The complete outcome of one [`Connection::request`]: the ack, plus every
+/// frame the server pushed ahead of it.
+///
+/// Deliberately opaque. The fields are reachable only through methods, so a
+/// caller cannot destructure away the half it did not think about — the whole
+/// point of the type (see [`Connection::request`] for the design rationale and
+/// the interleave contract on [`Connection`] for why the frames matter).
+#[derive(Debug)]
+#[must_use = "the reply carries frames the server will never re-send; dropping \
+              it loses them"]
+pub struct Reply {
+    /// The `COMMAND_RESULT` payload, or a correlated `ERROR` normalized into
+    /// one.
+    result: CommandResult,
+    /// Frames observed while waiting, in arrival order.
+    interleaved: Vec<FrameKind>,
+}
+
+impl Reply {
+    /// The ack and the interleaved frames, in arrival order.
+    ///
+    /// The default way to consume a reply: binding both halves is what makes
+    /// forgetting one a visible act rather than an omission.
+    #[must_use]
+    pub fn into_parts(self) -> (CommandResult, Vec<FrameKind>) {
+        (self.result, self.interleaved)
+    }
+
+    /// Borrow the ack without consuming the reply.
+    #[must_use]
+    pub const fn result(&self) -> &CommandResult {
+        &self.result
+    }
+
+    /// Borrow the frames the server interleaved ahead of the ack.
+    #[must_use]
+    pub fn interleaved(&self) -> &[FrameKind] {
+        &self.interleaved
+    }
+
+    /// Take the ack and drop the interleaved frames on the floor.
+    ///
+    /// **Only correct when the server provably pushes nothing to this
+    /// connection's mailbox before the ack** — i.e. the handler emits no frame
+    /// of its own *and* the connection holds no subscription that could fan
+    /// out onto it. Cite the server handler in a comment at every call site;
+    /// this method name is how the next audit finds you.
+    ///
+    /// A non-empty drop is logged at `warn`, so the failure mode is at worst
+    /// noisy rather than silent. The dropped frames are still gone: the log is
+    /// a diagnostic, not a recovery.
+    #[must_use]
+    pub fn into_result_ignoring_interleaved(self) -> CommandResult {
+        if !self.interleaved.is_empty() {
+            tracing::warn!(
+                dropped = self.interleaved.len(),
+                frames = ?self.interleaved,
+                "COMMAND reply discarded frames the server interleaved ahead of \
+                 the ack; the server will not re-send them",
+            );
+        }
+        self.result
     }
 }
 
@@ -602,5 +794,160 @@ mod tests {
     fn decode_buffered_empty_is_none() {
         let mut buf = BytesMut::new();
         assert!(decode_buffered(&mut buf).expect("empty").is_none());
+    }
+
+    // --- Connection::request -------------------------------------------
+    //
+    // `Connection` holds `!Send` transport halves, so the scripted server
+    // side runs on a `LocalSet` rather than `tokio::spawn`.
+
+    use phux_protocol::ids::TerminalId;
+    use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
+    use tokio::net::UnixStream;
+
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        tokio::task::LocalSet::new().block_on(&rt, fut)
+    }
+
+    /// Drive one `request` against a server that replies with `script` in
+    /// order, and return the resulting reply.
+    fn request_against(script: Vec<FrameKind>) -> Reply {
+        block_on(async {
+            let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+            let mut client = Connection::from_stream(client_stream);
+            let mut server = Connection::from_stream(server_stream);
+            tokio::task::spawn_local(async move {
+                // Consume the COMMAND, then play the script back verbatim.
+                server.recv().await.expect("COMMAND");
+                for frame in &script {
+                    server.send(frame).await.expect("scripted frame");
+                }
+            });
+            client
+                .request(
+                    7,
+                    Command::GetState {
+                        scope: phux_protocol::wire::frame::StateScope::Server,
+                    },
+                )
+                .await
+                .expect("reply")
+        })
+    }
+
+    fn ack(request_id: u32) -> FrameKind {
+        FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::Ok,
+        }
+    }
+
+    fn snapshot() -> FrameKind {
+        FrameKind::TerminalSnapshot {
+            terminal_id: TerminalId::local(1),
+            cols: 120,
+            rows: 40,
+            vt_replay_bytes: b"opening screen".to_vec(),
+            scrollback_bytes: None,
+        }
+    }
+
+    #[test]
+    fn pre_ack_snapshot_is_returned_instead_of_discarded() {
+        // `handle_attach_terminal` pushes TERMINAL_SNAPSHOT before the Ok
+        // reply and never re-sends it. The hand-rolled wait loop this API
+        // replaces dropped it, which is what made every `phux rec` capture a
+        // 0x0 grid with no opening screen.
+        let reply = request_against(vec![snapshot(), ack(7)]);
+        assert!(matches!(reply.result(), CommandResult::Ok));
+        assert!(
+            matches!(reply.interleaved(), [FrameKind::TerminalSnapshot { .. }]),
+            "the pre-ack snapshot must reach the caller, got {:?}",
+            reply.interleaved()
+        );
+    }
+
+    #[test]
+    fn satellite_degradation_error_is_not_swallowed_by_get_state() {
+        // `handle_get_state_federated` emits one uncorrelated ERROR per
+        // unreachable satellite *before* the merged snapshot's ack, on
+        // purpose ("observable degradation, not silence"). Swallowing it
+        // turns a partial fleet view into a confidently complete-looking one.
+        let reply = request_against(vec![
+            FrameKind::Error {
+                request_id: None,
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                message: "no satellite route to build-box".to_owned(),
+            },
+            ack(7),
+        ]);
+        assert!(
+            matches!(reply.result(), CommandResult::Ok),
+            "an uncorrelated ERROR is degradation, not the command's answer"
+        );
+        match reply.interleaved() {
+            [FrameKind::Error { message, .. }] => {
+                assert_eq!(message, "no satellite route to build-box");
+            }
+            other => panic!("degradation notice must survive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn correlated_error_answers_the_request_instead_of_hanging_forever() {
+        // proto.md §9: ERROR.request_id is "present if the error is
+        // associated with a COMMAND", and L1 §5 requires an unimplemented
+        // command to be refused with ERROR { INVALID_COMMAND }. Every
+        // hand-rolled loop waited on COMMAND_RESULT alone, so this shape
+        // would wedge the caller until the transport died.
+        let reply = request_against(vec![FrameKind::Error {
+            request_id: Some(7),
+            code: ErrorCode::InvalidCommand,
+            message: "command not supported by this server".to_owned(),
+        }]);
+        match reply.result() {
+            CommandResult::Error { code, message } => {
+                assert_eq!(*code, ErrorCode::InvalidCommand);
+                assert_eq!(message, "command not supported by this server");
+            }
+            other => panic!("a correlated ERROR is this command's answer, got {other:?}"),
+        }
+        assert!(reply.interleaved().is_empty());
+    }
+
+    #[test]
+    fn another_requests_ack_is_kept_not_consumed() {
+        // Pipelined requests share a connection: a COMMAND_RESULT for a
+        // different request_id belongs to someone else's correlation and must
+        // survive for them, not vanish into this wait.
+        let reply = request_against(vec![ack(99), ack(7)]);
+        assert!(
+            matches!(
+                reply.interleaved(),
+                [FrameKind::CommandResult { request_id: 99, .. }]
+            ),
+            "got {:?}",
+            reply.interleaved()
+        );
+    }
+
+    #[test]
+    fn frames_are_returned_in_arrival_order() {
+        let bell = FrameKind::Bell {
+            terminal_id: TerminalId::local(1),
+        };
+        let reply = request_against(vec![snapshot(), bell, ack(7)]);
+        assert!(
+            matches!(
+                reply.interleaved(),
+                [FrameKind::TerminalSnapshot { .. }, FrameKind::Bell { .. }]
+            ),
+            "got {:?}",
+            reply.interleaved()
+        );
     }
 }

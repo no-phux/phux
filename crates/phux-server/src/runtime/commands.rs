@@ -312,11 +312,24 @@ pub(crate) const EVENT_SINK_CAPACITY: usize = 64;
 /// is re-published, not lost.
 pub(crate) const AGENT_STATE_SINK_CAPACITY: usize = 8;
 
-/// message to the socket. Encodes [`Outbound::Frame`] via
-/// `FrameKind::encode`.
+/// Handle a client's `TERMINAL_RESIZE` (L1 §3.1).
 ///
-/// Exits when the channel closes — i.e. the client task drops its
-/// sender.
+/// The explicit, per-Terminal counterpart to [`handle_viewport_resize`]: the
+/// caller names one Terminal and its exact cell dimensions, rather than
+/// reporting a viewport the window-size policy then folds across every
+/// subscriber. It deliberately does NOT consult
+/// [`crate::state::ServerState::resolve_terminal_geometry`] — the point of
+/// the frame is to set a size a view could not have produced, which is what
+/// makes it the only way a headless caller (an agent, `phux resize`) can
+/// size a pane at all. The resize applies whether or not anyone is attached;
+/// under the view-derived `window-size` policies the next attach / detach /
+/// `VIEWPORT_RESIZE` recomputes geometry from views and supersedes it, and
+/// under `WindowSize::Manual` nothing ever does. That precedence is
+/// documented for consumers in `docs/consumers/tui.md` §4.2 and is why
+/// `phux resize` reads the result back instead of trusting the send.
+///
+/// No reply frame: the S→C `TERMINAL_RESIZED` discriminant is spec-only, so
+/// every not-found path here is a `debug!` and a drop.
 pub(crate) fn handle_terminal_resize(
     state: &SharedState,
     client_id: ClientId,
@@ -360,6 +373,17 @@ pub(crate) fn handle_terminal_resize(
             );
             return;
         };
+        // Clamp to the same one-cell floor `TerminalActor::handle_resize`
+        // applies. libghostty has no zero-dimension grid, so a `0` on either
+        // axis becomes a `1` down there regardless; recording the raw request
+        // here would leave the registry claiming `0x24` for a grid that is
+        // really `1x24`, and `GET_STATE` — which `phux resize` reads back to
+        // decide whether the resize took — would report a size no pane has.
+        // The wire codec still round-trips zero faithfully (L1 §3.1); this is
+        // the "treat zero as a no-op rather than a kernel error" SHOULD,
+        // applied consistently on both sides of the actor boundary.
+        let cols = cols.max(1);
+        let rows = rows.max(1);
         // Keep the registry's recorded dims in sync so future
         // `TERMINAL_SNAPSHOT` payloads report the post-resize cols/rows.
         // Mirrors what `handle_viewport_resize` does for VIEWPORT_RESIZE.

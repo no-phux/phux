@@ -33,5 +33,10 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 
 [dev-dependencies]
-bytes.workspace = true
+# phux-h5hj.3: the one scripted server the workspace's client-side unit tests
+# speak to. Opting in from here (rather than from `[dependencies]`) keeps the
+# harness out of the shipped adapter while the test build still gets it — and
+# replaces this crate's hand-rolled frame reader, which encoded whatever its
+# author believed the server does.
+phux-client = { workspace = true, features = ["testkit"] }
 tempfile.workspace = true

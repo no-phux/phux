@@ -4755,7 +4755,8 @@ fn install_panic_hook_once() {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-    use phux_protocol::caps::{ServerCapabilities, TerminalColor, TerminalDefaultColors};
+    use crate::testkit::{ScriptSpec, ScriptedServer};
+    use phux_protocol::caps::{TerminalColor, TerminalDefaultColors};
     use tokio::net::UnixStream;
 
     static TERMINAL_RESET_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -5791,30 +5792,20 @@ mod tests {
     async fn handshake_waits_for_hello_ok() {
         let (client_stream, server_stream) = UnixStream::pair().expect("pair");
         let mut client = Connection::from_stream(client_stream);
-        let mut server = Connection::from_stream(server_stream);
+        let server =
+            tokio::spawn(ScriptedServer::on_stream(server_stream, ScriptSpec::new()).run());
 
-        let server_side = async move {
-            let frame = server.recv().await.expect("server recv hello");
-            assert!(
-                matches!(frame, FrameKind::Hello { .. }),
-                "first client frame must be HELLO"
-            );
-            server
-                .send(&FrameKind::HelloOk {
-                    protocol_major: PROTOCOL_VERSION.major,
-                    protocol_minor: PROTOCOL_VERSION.minor,
-                    protocol_patch: PROTOCOL_VERSION.patch,
-                    server_caps: ServerCapabilities::new(),
-                    server_id: Vec::new(),
-                })
-                .await
-                .expect("server send hello_ok");
-        };
-
-        let (res, ()) = tokio::join!(handshake(&mut client, None), server_side);
+        let res = handshake(&mut client, None).await;
         assert!(
             res.is_ok(),
             "handshake should succeed when HELLO_OK arrives"
+        );
+        drop(client);
+        let seen = server.await.expect("scripted server task");
+        assert!(
+            matches!(seen.first(), Some(FrameKind::Hello { .. })),
+            "first client frame must be HELLO, got {:?}",
+            seen.first()
         );
     }
 
@@ -5826,29 +5817,17 @@ mod tests {
         };
         let (client_stream, server_stream) = UnixStream::pair().expect("pair");
         let mut client = Connection::from_stream(client_stream);
-        let mut server = Connection::from_stream(server_stream);
+        let server =
+            tokio::spawn(ScriptedServer::on_stream(server_stream, ScriptSpec::new()).run());
 
-        let server_side = async move {
-            let FrameKind::Hello { client_caps, .. } =
-                server.recv().await.expect("server recv hello")
-            else {
-                panic!("first client frame must be HELLO");
-            };
-            assert_eq!(client_caps.default_colors, Some(colors));
-            server
-                .send(&FrameKind::HelloOk {
-                    protocol_major: PROTOCOL_VERSION.major,
-                    protocol_minor: PROTOCOL_VERSION.minor,
-                    protocol_patch: PROTOCOL_VERSION.patch,
-                    server_caps: ServerCapabilities::new(),
-                    server_id: Vec::new(),
-                })
-                .await
-                .expect("server send hello_ok");
-        };
-
-        let (res, ()) = tokio::join!(handshake(&mut client, Some(colors)), server_side);
+        let res = handshake(&mut client, Some(colors)).await;
         assert!(res.is_ok());
+        drop(client);
+        let seen = server.await.expect("scripted server task");
+        let Some(FrameKind::Hello { client_caps, .. }) = seen.first() else {
+            panic!("first client frame must be HELLO, got {:?}", seen.first());
+        };
+        assert_eq!(client_caps.default_colors, Some(colors));
     }
 
     #[tokio::test(flavor = "current_thread")]
