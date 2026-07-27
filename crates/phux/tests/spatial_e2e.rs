@@ -21,6 +21,14 @@ use phux_protocol::ids::{GroupId, SessionId, TerminalId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
+/// Idle lifetime for this file's harness server, as a backstop UNDER the
+/// `Drop` kill (ADR-0063). The guard is still the primary cleanup; it cannot
+/// run if the test process is `SIGKILL`ed or the runner is reaped mid-job, and
+/// what leaks then is a daemon holding a live PTY on a socket nobody will
+/// ever look at again. Ten minutes is far longer than any gap between this
+/// file's client connections, so it can only fire after the harness is gone.
+const SERVER_IDLE_LIMIT_SECS: &str = "600";
+
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
 const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
@@ -50,6 +58,7 @@ impl ServerGuard {
         let child = Command::new(PHUX)
             .args(["server", "--session", SESSION, "--socket"])
             .arg(&socket)
+            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

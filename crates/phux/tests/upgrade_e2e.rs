@@ -27,6 +27,18 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
 const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
+
+/// Idle lifetime for the harness server, as a backstop UNDER the `Drop` kill
+/// (ADR-0063). The guard is still the primary cleanup; it cannot run if the
+/// test process is `SIGKILL`ed, and what leaks then is a daemon holding a live
+/// PTY forever. Ten minutes is far longer than any gap between this file's
+/// client connections, so it can only fire after the harness is gone.
+///
+/// It carries a second signal here for free: the re-exec argv is rebuilt by
+/// the server itself from `RuntimeFlags`, so if an upgrade ever dropped the
+/// lifetime, the resumed image in this very test would be the immortal one.
+const SERVER_IDLE_LIMIT_SECS: &str = "600";
+
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 struct ServerGuard {
@@ -61,6 +73,7 @@ impl ServerGuard {
                 "--socket",
             ])
             .arg(&socket)
+            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

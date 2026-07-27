@@ -56,6 +56,19 @@ MAX_BYTES=1048576
 # frame stays up before the animation loops.
 IDLE_LIMIT=2.5
 
+# Lifetime for the private server, as a backstop UNDER the trap below
+# (ADR-0063). The trap is still the primary cleanup — it reclaims the
+# socket the instant the script ends — but a trap cannot run if this
+# script is SIGKILLed or the machine's shell is torn out from under it,
+# and what leaks then is a daemon holding two live PTYs. The server exits
+# on its own once nothing has talked to it for this long.
+#
+# Sized far above any gap in the schedule below: the longest stretch with
+# no client connected is a few seconds between beats, and the take itself
+# keeps `phux rec` connected for its whole 25s duration. A whole run is
+# well under a minute, so this can only fire after the script is gone.
+SERVER_IDLE_LIMIT=300
+
 SERVER_PID=""
 cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
@@ -63,7 +76,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$PHUX" server --session "$SUBJECT" --socket "$SOCKET" >/dev/null 2>&1 &
+"$PHUX" server --session "$SUBJECT" --socket "$SOCKET" \
+  --exit-after-idle "$SERVER_IDLE_LIMIT" >/dev/null 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 100); do
   [ -S "$SOCKET" ] && break

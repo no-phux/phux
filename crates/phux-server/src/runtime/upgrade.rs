@@ -164,6 +164,15 @@ fn resume_args(blob_fd: RawFd, socket_path: &Path, flags: RuntimeFlags) -> Vec<O
     if flags.hub {
         args.push(OsString::from("--hub"));
     }
+    if let Some(idle) = flags.exit_after_idle {
+        // The flag's unit is whole seconds. Round UP so a sub-second value
+        // (library-only; the CLI floor is 1s) survives as 1 rather than
+        // collapsing to `--exit-after-idle 0`, which would make the resumed
+        // image exit the moment its last client dropped.
+        let secs = idle.as_secs() + u64::from(idle.subsec_nanos() > 0);
+        args.push(OsString::from("--exit-after-idle"));
+        args.push(OsString::from(secs.to_string()));
+    }
     args
 }
 
@@ -212,6 +221,7 @@ mod tests {
             wt_addr: wt.map(addr),
             connect: None,
             hub,
+            exit_after_idle: None,
         }
     }
 
@@ -339,6 +349,36 @@ mod tests {
         };
         let mut expected: Vec<String> = BASE.iter().map(ToString::to_string).collect();
         expected.extend(["--connect".to_owned(), "relay.example:4433".to_owned()]);
+        assert_eq!(args_as_strings(flags), expected);
+    }
+
+    /// An ephemeral server's lifetime survives its own upgrade. Dropping it
+    /// here would silently promote a bounded harness daemon to an immortal
+    /// one — the leak this flag exists to close, reintroduced by the one
+    /// operation whose whole promise is "same server, new image".
+    #[test]
+    fn resume_args_preserves_ephemeral_lifetime() {
+        let flags = RuntimeFlags {
+            exit_after_idle: Some(std::time::Duration::from_secs(90)),
+            ..RuntimeFlags::default()
+        };
+        let mut expected: Vec<String> = BASE.iter().map(ToString::to_string).collect();
+        expected.extend(["--exit-after-idle".to_owned(), "90".to_owned()]);
+        assert_eq!(args_as_strings(flags), expected);
+    }
+
+    /// A sub-second lifetime (reachable only through `ServerConfig`, which
+    /// tests use) rounds UP. Truncation would emit `--exit-after-idle 0`,
+    /// making the resumed image exit the instant its last client dropped —
+    /// strictly more eager than the server it replaced.
+    #[test]
+    fn resume_args_rounds_sub_second_lifetime_up() {
+        let flags = RuntimeFlags {
+            exit_after_idle: Some(std::time::Duration::from_millis(300)),
+            ..RuntimeFlags::default()
+        };
+        let mut expected: Vec<String> = BASE.iter().map(ToString::to_string).collect();
+        expected.extend(["--exit-after-idle".to_owned(), "1".to_owned()]);
         assert_eq!(args_as_strings(flags), expected);
     }
 

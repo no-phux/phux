@@ -399,6 +399,26 @@ pub struct ServerState {
     /// firing an event is then a no-op. Set once at startup via
     /// [`Self::set_hook_dispatcher`].
     hook_dispatcher: Option<crate::hooks::HookDispatcher>,
+    /// Number of client connections currently open across every transport
+    /// (UDS, WebSocket, QUIC, WebTransport). Incremented the instant an
+    /// accept succeeds and decremented when that connection's task ends —
+    /// see [`Self::note_connection_opened`] / [`Self::note_connection_closed`].
+    ///
+    /// This counts *connections*, not attached clients: a one-shot control
+    /// verb (`phux ls`, `phux send-keys`, `phux new --json`) connects,
+    /// issues a `COMMAND`, and leaves without ever appearing in
+    /// [`Self::attached`]. Only the connection count sees it.
+    live_connections: u32,
+    /// When the server last had zero open connections, or `None` while at
+    /// least one is open.
+    ///
+    /// Seeded to "now" at construction so a server that has *never* been
+    /// connected to is idle from birth — the leak shape that motivated
+    /// `--exit-after-idle` is a bootstrapped daemon whose harness died
+    /// before it ever dialed in. Read by the runtime's idle-exit watchdog;
+    /// nothing else consumes it, and it is inert unless that watchdog was
+    /// spawned.
+    idle_since: Option<std::time::Instant>,
 }
 
 impl Default for ServerState {

@@ -137,6 +137,59 @@ re-derives from scratch, so a wrong value corrects itself rather than sticking.
 A stale manifest therefore shows up as agents that never leave `idle` — not as a
 sidebar stuck on red.
 
+## Server lifetime
+
+A phux server stops on exactly three conditions. The first two are the
+defaults; the third has to be asked for.
+
+1. **Signalled.** Ctrl-C on a foreground `phux server`, or any signal that
+   ends the process.
+2. **Last pane reaped**, once at least one client has been served. When a
+   pane's process exits the runtime reaps it, cascading to its window and
+   session; an empty server exits. The "served a client" guard exists so a
+   freshly auto-spawned server whose seed pane dies before anyone connects
+   stays up long enough for the launching `phux` to repopulate it.
+3. **Unattended past `--exit-after-idle SECS`**, if that flag was passed.
+
+`phux server --exit-after-idle SECS` is for **ephemeral** servers: a test
+harness or CI job that bootstraps a private server per run on a temp socket
+and cannot guarantee its own cleanup step will execute. Such a server exits
+once no client has been *connected* for `SECS` — live panes and all. Both
+"nobody ever connected" (the clock runs from startup) and "the last client
+left" are covered.
+
+Notes that matter in practice:
+
+- **Connected, not attached.** One-shot control verbs (`phux ls`,
+  `phux send-keys`, `phux new --json`) count: each connect postpones the
+  exit. A scripted harness that never attaches is safe.
+- **Quiet does not mean idle.** An open connection pins the server alive no
+  matter how long it sends nothing, so an attached human is never reaped.
+- **The exit is the graceful one.** It runs the same teardown as Ctrl-C:
+  each pane's process group is SIGHUPed, given a grace period, and the child
+  is reaped; the socket is unlinked.
+- **It survives `phux upgrade`.** The lifetime is re-passed on the re-exec,
+  so upgrading an ephemeral server does not make it permanent.
+- **It is not a config default and should not become one.** A server a human
+  attaches to must keep the multiplexer contract. See
+  [ADR-0063](../ADR/0063-ephemeral-server-lifetime.md).
+
+```sh
+# A private, self-terminating server for a scripted run.
+phux server --session ci --socket /tmp/phux-ci-$$.sock --exit-after-idle 120 &
+```
+
+Lifetime drills:
+
+```sh
+# Runtime rule, in process (default test pool).
+cargo nextest run -p phux-server server_idle_exit
+
+# Real daemon: exits unattended, reaps its PTY child, and the
+# no-flag control stays up.
+cargo test -p phux --test idle_exit_e2e -- --ignored
+```
+
 ## Workspace continuity and update survival
 
 phux has two different continuity mechanisms. They are intentionally separate:

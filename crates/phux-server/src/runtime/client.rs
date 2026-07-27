@@ -637,6 +637,14 @@ pub(crate) async fn accept_loop<L: Incoming>(
                 match accept {
                     Ok((reader, writer, peer_identity)) => {
                         debug!(transport = listener.kind(), "client connected");
+                        // phux-n6rv: count the live connection before the task
+                        // exists, so the idle-exit watchdog can never observe a
+                        // window where the server looks unattended between
+                        // `accept` returning and the client task being polled.
+                        // Paired with `note_connection_closed` at the end of
+                        // that task; every transport funnels through here, so
+                        // this is the one place the pair has to hold.
+                        state.with_mut(crate::state::ServerState::note_connection_opened);
                         // Allocate the per-client routing id up-front so the
                         // task can detach itself cleanly on EOF.
                         let client_id = state.with_mut(crate::state::ServerState::new_client_id);
@@ -654,6 +662,14 @@ pub(crate) async fn accept_loop<L: Incoming>(
                             // path that will land alongside the protocol
                             // variants.
                             detach_and_release_consumer_state(&task_state, client_id);
+                            // phux-n6rv: re-arm the idle clock if this was the
+                            // last connection. Runs after the detach above so
+                            // "unattended" and "detached" become true in the
+                            // same tick. A task ABORTED by shutdown never gets
+                            // here, which is harmless: the only reader of the
+                            // clock is the watchdog, and shutdown is already
+                            // underway.
+                            task_state.with_mut(crate::state::ServerState::note_connection_closed);
                         });
                     }
                     Err(err) => {

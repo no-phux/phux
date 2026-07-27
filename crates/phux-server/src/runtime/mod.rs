@@ -143,6 +143,22 @@ pub struct ServerConfig {
     /// registers its handle in shared state; when empty (the default) no
     /// dispatcher task exists and firing events is a no-op.
     pub hook_catalog: crate::hooks::HookCatalog,
+    /// Opt-in lifetime for an **ephemeral** server: exit once no client
+    /// connection has been open for this long, whether or not panes are
+    /// still alive (`phux server --exit-after-idle <SECS>`, ADR-0063).
+    ///
+    /// `None` (the default) is the tmux contract: the server lives until its
+    /// last pane is reaped ([`crate::state::ServerState::has_served_client`]
+    /// gates that). That default is deliberately untouched — a human's
+    /// multiplexer must not vanish because they walked away. This field is
+    /// for the other caller: a harness that bootstraps a server per run on a
+    /// private socket and has no way to guarantee its own cleanup step runs.
+    ///
+    /// The clock is armed at construction and re-armed whenever the last
+    /// connection closes, so it covers both "never had a client" and "last
+    /// client left". Expiry cancels the root token — the identical path
+    /// Ctrl-C takes, so pane teardown is the graceful one.
+    pub exit_after_idle: Option<Duration>,
 }
 
 /// The server's effective opt-in runtime flags, captured from the running
@@ -187,6 +203,18 @@ pub struct RuntimeFlags {
     /// re-validates the `[[satellites]]` registry from config, exactly like a
     /// fresh `--hub` start.
     pub hub: bool,
+    /// Ephemeral-server lifetime from `phux server --exit-after-idle <SECS>`
+    /// ([`ServerConfig::exit_after_idle`]). Re-emitted as `--exit-after-idle`
+    /// on resume, rounded to whole seconds because that is the flag's unit.
+    ///
+    /// Captured for the same reason as the listen addresses: a graceful
+    /// upgrade of a harness server that silently dropped its lifetime would
+    /// turn a bounded daemon into an immortal one, which is precisely the
+    /// bug being fixed. Sub-second values (reachable only through the
+    /// library API, which tests use) round up to one second rather than to
+    /// zero — a resumed server must not become *more* eager to exit than the
+    /// one it replaced, and never `--exit-after-idle 0`.
+    pub exit_after_idle: Option<Duration>,
 }
 
 impl ServerConfig {
@@ -205,8 +233,79 @@ impl ServerConfig {
             window_size: phux_config::WindowSize::default(),
             policy_bundle: None,
             hook_catalog: crate::hooks::HookCatalog::default(),
+            exit_after_idle: None,
         }
     }
+}
+
+/// Floor on the idle watchdog's re-check interval.
+///
+/// The watchdog normally sleeps exactly as long as the remaining idle
+/// budget, so the steady state is one timer per idle window, not a poll
+/// loop. The floor only matters when that remaining budget has already
+/// reached zero but the deadline check has not yet fired (a connection that
+/// opened and closed between the two), where sleeping `Duration::ZERO`
+/// would spin the runtime. 50ms is far below any plausible
+/// `--exit-after-idle` and far above a scheduler tick.
+const IDLE_WATCH_MIN_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Exit the server once it has been unattended for `idle_limit` (ADR-0063,
+/// `phux server --exit-after-idle`).
+///
+/// Spawned on the `LocalSet` only when the operator opted in. "Unattended"
+/// is *zero open client connections*, not *no attached clients*: one-shot
+/// control verbs never enter `ServerState::attached`, so a harness that only
+/// ever drives the server with `phux send-keys` would otherwise be reaped
+/// mid-script. The clock is armed from `SharedState::new`, so a server
+/// nobody ever dialed exits on the same deadline as one whose last client
+/// left.
+///
+/// Expiry cancels the **root** token rather than exiting the process: that
+/// is the same signal Ctrl-C and the last-pane self-exit deliver, so panes
+/// tear down through the one graceful path (`TerminalActor::shutdown_pty`
+/// SIGHUPs the pane's process group and reaps the child) and the socket is
+/// unlinked on the way out.
+fn spawn_idle_exit_watchdog(
+    state: SharedState,
+    idle_limit: Duration,
+    root_token: CancellationToken,
+) {
+    tokio::task::spawn_local(async move {
+        loop {
+            // Sleep exactly as long as the current idle budget allows. While
+            // a client is connected `idle_since` is `None` and there is no
+            // deadline to compute, so re-check after a full interval — the
+            // connection cannot close without the count going through zero,
+            // which re-arms the clock we will then read.
+            let remaining = state.with(|s| {
+                s.idle_since().map_or(idle_limit, |since| {
+                    idle_limit.saturating_sub(since.elapsed())
+                })
+            });
+            let nap = remaining.max(IDLE_WATCH_MIN_INTERVAL);
+            tokio::select! {
+                () = root_token.cancelled() => return,
+                () = tokio::time::sleep(nap) => {}
+            }
+            // Re-read rather than trusting the sleep: a client may have
+            // connected (and even disconnected) while we napped, in which
+            // case the clock was re-armed and the deadline moved.
+            let expired = state.with(|s| {
+                s.idle_since()
+                    .is_some_and(|since| since.elapsed() >= idle_limit)
+            });
+            if expired {
+                if !root_token.is_cancelled() {
+                    info!(
+                        idle_limit_secs = idle_limit.as_secs_f64(),
+                        "unattended for the configured idle limit; server exiting"
+                    );
+                    root_token.cancel();
+                }
+                return;
+            }
+        }
+    });
 }
 
 /// Resolve the default Unix-domain-socket path.
@@ -619,6 +718,7 @@ impl ServerRuntime {
             wt_addr: None,
             hub: self.hub,
             connect: self.connect_override.clone(),
+            exit_after_idle: self.cfg.exit_after_idle,
         };
         state.with_mut(|s| {
             s.set_upgrade_context(listener.as_raw_fd(), socket_path.clone(), runtime_flags);
@@ -688,6 +788,10 @@ impl ServerRuntime {
         // (phux-d4rf), matching the pane-spawn injection above (phux-cufw).
         let hook_catalog = self.cfg.hook_catalog.clone();
         let hook_socket_path = socket_path.clone();
+        // Ephemeral-server lifetime (ADR-0063). Captured here and consumed
+        // inside the LocalSet below, where the watchdog can `spawn_local`
+        // alongside the accept loops it races.
+        let exit_after_idle = self.cfg.exit_after_idle;
         // Dedicated input lane (phux-51n6.2, ADR-0044): a separate OS thread
         // that runs the input routing stage off the main runtime, so a
         // keystroke's lease/subscription gating and mailbox delivery preempt a
@@ -719,6 +823,19 @@ impl ServerRuntime {
                         debug!("shutdown future resolved; cancelling root token");
                         token.cancel();
                     });
+                }
+
+                // Ephemeral-server lifetime (ADR-0063). Armed before the
+                // seed/resume paths so the "nobody ever connected" case is
+                // covered from the earliest possible instant — that is the
+                // leak shape: a harness bootstraps a daemon, dies, and the
+                // daemon it never dialed holds a live PTY forever.
+                if let Some(idle_limit) = exit_after_idle {
+                    info!(
+                        idle_limit_secs = idle_limit.as_secs_f64(),
+                        "ephemeral server: will exit when unattended for the idle limit"
+                    );
+                    spawn_idle_exit_watchdog(state.clone(), idle_limit, root_token.clone());
                 }
 
                 // Event-hook dispatcher (docs/consumers/tui.md §9,

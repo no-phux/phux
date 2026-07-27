@@ -59,6 +59,7 @@ pub(crate) fn run_server(
     webtransport: Option<std::net::SocketAddr>,
     connect: Option<String>,
     hub: bool,
+    exit_after_idle: Option<u64>,
     daemonize: bool,
     seed_command: Option<&str>,
     resume: Option<std::os::fd::RawFd>,
@@ -173,6 +174,10 @@ pub(crate) fn run_server(
         window_size,
         policy_bundle: None,
         hook_catalog,
+        // Ephemeral lifetime (ADR-0063). Absent by default: the multiplexer
+        // contract — live until the last pane is gone — is what a human
+        // expects and is deliberately untouched.
+        exit_after_idle: exit_after_idle.map(Duration::from_secs),
     };
 
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -205,6 +210,12 @@ pub(crate) fn run_server(
             &mut extra,
             format_args!(" + connectors={}", connector_entries.len()),
         );
+    }
+    // An ephemeral server has a lifetime a human would otherwise have to
+    // infer from a flag they may not have typed themselves (a wrapper
+    // script did), so the banner says so out loud.
+    if let Some(secs) = exit_after_idle {
+        let _ = std::fmt::Write::write_fmt(&mut extra, format_args!(" [exit-after-idle={secs}s]"));
     }
     eprintln!(
         "phux server listening on {}{extra} (session={session}; Ctrl-C to stop)",
