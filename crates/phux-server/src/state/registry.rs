@@ -604,10 +604,8 @@ impl ServerState {
                 viewport_seq: 0,
             },
         );
-        // The server has now served at least one client, so the
-        // tmux-model self-exit (phux-60s) is armed — see the
-        // `has_served_client` field doc.
-        self.has_served_client = true;
+        // Attaching arms tmux-model last-session self-exit (phux-60s).
+        self.arm_self_exit();
 
         // Subscribe to EVERY pane in the session, across all its windows —
         // not just the active one (phux-fysb.2). A multi-pane client renders
@@ -838,8 +836,12 @@ impl ServerState {
         &mut self.agent_records
     }
 
-    /// Whether any client has ever attached (arms the phux-60s self-exit).
-    /// See the `has_served_client` field documentation for the rationale.
+    /// Arm tmux-model last-session self-exit.
+    pub(crate) const fn arm_self_exit(&mut self) {
+        self.has_served_client = true;
+    }
+
+    /// Whether last-session self-exit has been armed.
     #[must_use]
     pub const fn has_served_client(&self) -> bool {
         self.has_served_client

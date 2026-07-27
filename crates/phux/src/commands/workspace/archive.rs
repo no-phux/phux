@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -76,6 +77,7 @@ pub(super) fn run_restore(archive_path: &Path, socket: Option<PathBuf>) -> ExitC
             &create.name,
             create.command,
             create.cwd,
+            BTreeMap::default(),
         )) {
             Ok(_) => restored.push(create.name),
             Err(code) => return code,

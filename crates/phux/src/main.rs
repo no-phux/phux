@@ -315,8 +315,9 @@ fn main() -> ExitCode {
             cwd,
             socket,
             json,
+            env,
             command,
-        }) => commands::new::run_new(name, session, cwd, socket, json, command),
+        }) => commands::new::run_new(name, session, cwd, socket, json, command, env),
         Some(Command::Spawn {
             satellite,
             target,
@@ -632,6 +633,51 @@ mod tests {
         };
         assert_eq!(name, None);
         assert_eq!(session.as_deref(), Some("flagged"));
+    }
+
+    #[test]
+    fn new_json_accepts_repeatable_environment_assignments() {
+        let cli = Cli::try_parse_from([
+            "phux",
+            "new",
+            "--json",
+            "-s",
+            "managed",
+            "--env",
+            "GC_SESSION=managed",
+            "--env",
+            "COMPLEX=a=b",
+        ])
+        .expect("`phux new --json --env KEY=VALUE` must parse");
+        let Some(Command::New { env, .. }) = cli.command else {
+            panic!("expected New");
+        };
+        assert_eq!(
+            env,
+            vec![
+                ("GC_SESSION".to_owned(), "managed".to_owned()),
+                ("COMPLEX".to_owned(), "a=b".to_owned()),
+            ],
+        );
+
+        assert!(
+            Cli::try_parse_from(["phux", "new", "-s", "interactive", "--env", "KEY=value"])
+                .is_err(),
+            "--env must require headless --json until CreateIfMissing carries environment",
+        );
+        assert!(
+            Cli::try_parse_from([
+                "phux",
+                "new",
+                "--json",
+                "-s",
+                "managed",
+                "--env",
+                "MISSING_EQUALS",
+            ])
+            .is_err(),
+            "--env must reject values that are not KEY=VALUE",
+        );
     }
 
     /// phux-foz.5: `phux config reload` parses, with and without an

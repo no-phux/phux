@@ -245,16 +245,17 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   explicit resize holds ([`tui.md`](./tui.md) §4.2). You do not have to guess
   which happened — the verb reads the server's real geometry back before
   exiting and exits `1` when it is not the requested one. Shape in §4.15.
-- **`phux new [-s NAME] [-c CWD] [-- COMMAND...] [--json] [--socket P]`** —
-  create a new session. Without `--json` it creates and attaches: an explicit
-  `-s NAME` that already exists is an error (like tmux's duplicate-session
-  refusal); an omitted name starts from `defaults.session-name-template` and
-  gains a numeric suffix when needed; a server is auto-spawned if none is
-  running. With `--json` it
-  creates the session without attaching (no attach, no resize), then prints the
-  seed pane id as JSON and exits. `--json` requires an explicit `-s NAME` and
-  errors if that name is already in use (create-only, never create-or-attach).
-  Shape in §4.4.
+- **`phux new [-s NAME] [-c CWD] [-- COMMAND...] [--json]
+  [-e KEY=VALUE]... [--socket P]`** — create a new session. Without `--json`
+  it creates and attaches: an explicit `-s NAME` that already exists is an
+  error (like tmux's duplicate-session refusal); an omitted name starts from
+  `defaults.session-name-template` and gains a numeric suffix when needed; a
+  server is auto-spawned if none is running. With `--json` it creates the
+  session without attaching (no attach, no resize), then prints the seed pane
+  id as JSON and exits. `--json` requires an explicit `-s NAME` and errors if
+  that name is already in use (create-only, never create-or-attach). Repeat
+  `--env KEY=VALUE` to add seed-process environment entries; `--env` requires
+  `--json`. Shape in §4.4.
 - **`phux launch INTEGRATION [--list|--print] [--target TARGET
   [--split horizontal|vertical] [--ratio R]] [-c CWD] [--json] [--socket P]
   [-- ARGS...]`** — resolve an enabled plugin integration and spawn it through
@@ -500,9 +501,11 @@ and its seed pane's wire-local id, then exits `0` without attaching:
 ```
 
 It is create-only: `--json` requires an explicit `-s NAME` and errors (exit `1`)
-if that name is already in use. Unlike the versioned `ScreenState` /
-`RunResult` / `SessionListJson` shapes, this is a flat ad-hoc object with no
-`schema_version`. The wire decomposition behind it is in §2.
+if that name is already in use. Repeat `--env KEY=VALUE` to inject environment
+entries into the seed process; values may contain additional `=` characters.
+Unlike the versioned `ScreenState` / `RunResult` / `SessionListJson` shapes,
+this is a flat ad-hoc object with no `schema_version`. The wire decomposition
+behind it is in §2.
 
 ### 4.5 Plugin registry — `phux plugin ... --json`
 

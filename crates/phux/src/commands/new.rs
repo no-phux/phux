@@ -33,6 +33,7 @@ pub(crate) fn run_new(
     socket: Option<PathBuf>,
     json: bool,
     command: Vec<String>,
+    env: Vec<(String, String)>,
 ) -> ExitCode {
     // The session name can come from the positional NAME or the `-s` flag;
     // they are the same field with two spellings. Reject a genuine conflict
@@ -60,7 +61,7 @@ pub(crate) fn run_new(
     };
 
     if json {
-        return run_new_json(&rt, &socket_path, requested, cwd, command);
+        return run_new_json(&rt, &socket_path, requested, cwd, command, env);
     }
 
     // If a server is up, snapshot its session names so we can enforce
@@ -160,6 +161,7 @@ pub(crate) fn run_new_json(
     session: Option<String>,
     cwd: Option<PathBuf>,
     command: Vec<String>,
+    env: Vec<(String, String)>,
 ) -> ExitCode {
     let Some(name) = session else {
         eprintln!("phux: `phux new --json` requires an explicit -s NAME");
@@ -187,12 +189,14 @@ pub(crate) fn run_new_json(
     } else {
         Some(command)
     };
+    let env = env.into_iter().collect();
 
     match rt.block_on(create_session_via_metadata(
         socket_path,
         &name,
         command,
         cwd,
+        env,
     )) {
         Ok(terminal_id) => {
             let payload = serde_json::json!({ "session": name, "terminal_id": terminal_id });
@@ -221,11 +225,13 @@ pub(crate) async fn create_session_via_metadata(
     name: &str,
     command: Option<Vec<String>>,
     cwd: Option<String>,
+    env: std::collections::BTreeMap<String, String>,
 ) -> Result<u64, ExitCode> {
     let create_bytes = serde_json::to_vec(&serde_json::json!({
         "name": name,
         "command": command,
         "cwd": cwd,
+        "env": env,
     }))
     .map_err(|err| {
         eprintln!("phux: failed to serialize create request: {err}");

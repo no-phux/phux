@@ -8,6 +8,7 @@
 //! worktree path** — [`session_name_for`] — so it can never be stale. There is
 //! no mapping table to invalidate when git deletes a worktree behind our back.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -300,6 +301,7 @@ fn bind_session(
             socket,
             false,
             command,
+            Vec::new(),
         );
     }
 
@@ -331,6 +333,7 @@ fn bind_session(
         name,
         command,
         Some(cwd.to_string_lossy().into_owned()),
+        BTreeMap::default(),
     )) {
         Ok(_) => {
             outln!("{name}");

@@ -87,6 +87,21 @@ fn parse_spawn_ratio(value: &str) -> Result<f32, String> {
     }
 }
 
+/// Parse one environment assignment without imposing shell-variable naming
+/// rules: `execve` only forbids an empty key, `=`, and NUL.
+fn parse_env_assignment(value: &str) -> Result<(String, String), String> {
+    let (key, value) = value
+        .split_once('=')
+        .ok_or_else(|| "environment assignment must be KEY=VALUE".to_owned())?;
+    if key.is_empty() {
+        return Err("environment key must not be empty".to_owned());
+    }
+    if key.contains('\0') || value.contains('\0') {
+        return Err("environment assignment must not contain NUL".to_owned());
+    }
+    Ok((key.to_owned(), value.to_owned()))
+}
+
 impl From<SignalArg> for TerminalSignal {
     fn from(arg: SignalArg) -> Self {
         match arg {
@@ -350,6 +365,17 @@ pub(crate) enum Command {
         /// Requires `-s NAME`.
         #[arg(long)]
         json: bool,
+
+        /// Environment assignment for the seed process. Repeat for multiple
+        /// variables. Headless `--json` mode only.
+        #[arg(
+            short = 'e',
+            long = "env",
+            value_name = "KEY=VALUE",
+            requires = "json",
+            value_parser = parse_env_assignment
+        )]
+        env: Vec<(String, String)>,
 
         /// Command (and arguments) to run in the seed pane instead of the
         /// default shell. Must follow `--`: `phux new work -- htop`.

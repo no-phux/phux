@@ -345,15 +345,13 @@ pub struct ServerState {
     /// new panes in that window inherit the latest value. Cleared with the
     /// window's bookkeeping on teardown.
     window_last_cwd: HashMap<WindowId, PathBuf>,
-    /// Whether any client has ever attached to this server.
+    /// Whether last-session self-exit has been armed.
     ///
-    /// Gates the tmux-model self-exit (phux-60s): the server only exits
-    /// when its last session is reaped **after** it has served at least
-    /// one client. A freshly auto-spawned server whose seed pane dies
-    /// before anyone attaches therefore stays alive (empty) instead of
-    /// vanishing mid-handshake — the launching `phux` then repopulates it
-    /// via `CreateIfMissing`. Without this guard the auto-spawn → attach
-    /// flow races the server's own self-exit.
+    /// A client attach or successful headless session create arms the
+    /// tmux-model self-exit (phux-60s). A freshly auto-spawned server whose
+    /// seed pane dies before either interaction stays alive instead of
+    /// vanishing mid-handshake — the launching `phux` can repopulate it via
+    /// `CreateIfMissing`.
     has_served_client: bool,
     /// Monotonic stamp handed out on every viewport announcement
     /// ([`Self::set_client_viewport`]). Orders announcements across

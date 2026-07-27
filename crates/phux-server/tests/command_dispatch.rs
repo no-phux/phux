@@ -729,6 +729,87 @@ async fn get_server_snapshot(
     }
 }
 
+/// A successful headless session create is a control client interaction: it
+/// arms last-session self-exit just like an attached TUI. Environment entries
+/// in the create request must reach the seed process unchanged.
+#[test]
+fn headless_session_create_forwards_env_and_arms_last_session_exit() {
+    run_local(async {
+        use phux_protocol::wire::frame::{SESSION_CREATE_KEY, Scope};
+
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let marker_path = tmp.path().join("seed-env");
+        let (_shutdown_tx, server) =
+            spawn_server_seed_pty_no_cmd(socket_path.clone(), Some("bootstrap"));
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        let value = serde_json::to_vec(&serde_json::json!({
+            "name": "managed",
+            "command": [
+                "/bin/sh",
+                "-c",
+                "printf %s \"$GC_PHUX_TEST_VALUE\" > \"$1\"; sleep 60",
+                "sh",
+                marker_path,
+            ],
+            "cwd": serde_json::Value::Null,
+            "env": {
+                "GC_PHUX_TEST_VALUE": "forwarded",
+            },
+        }))
+        .unwrap();
+        send_frame(
+            &mut stream,
+            &FrameKind::SetMetadata {
+                request_id: 10,
+                scope: Scope::Global,
+                key: SESSION_CREATE_KEY.to_owned(),
+                value,
+            },
+        )
+        .await;
+        let _created = read_session_create_terminal_id(&mut stream, 11)
+            .await
+            .expect("managed seed pane");
+
+        let marker = timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(value) = tokio::fs::read_to_string(&marker_path).await {
+                    break value;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("seed process did not write environment marker");
+        assert_eq!(marker, "forwarded");
+
+        let snapshot = get_server_snapshot(&mut stream, 12).await;
+        assert_eq!(snapshot.sessions.len(), 2, "bootstrap + managed");
+        let ids = snapshot.panes.into_iter().map(|pane| pane.id).collect();
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 13,
+                command: Command::KillTerminals { ids },
+            },
+        )
+        .await;
+        assert_eq!(
+            await_command_result(&mut stream, 13).await,
+            CommandResult::Ok
+        );
+        drop(stream);
+
+        timeout(Duration::from_secs(2), server)
+            .await
+            .expect("headless-managed server stayed alive after its last session exited")
+            .expect("server task panicked")
+            .expect("server failed during self-exit");
+    });
+}
+
 /// The `cwd` (canonicalized) of the snapshot pane whose local wire id is
 /// `local_id`, or `None` if the pane is absent or carries no cwd.
 fn pane_cwd_by_local_id(

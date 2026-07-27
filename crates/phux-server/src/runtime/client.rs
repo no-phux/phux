@@ -1216,24 +1216,18 @@ pub(crate) async fn handle_get_metadata(
     }
 }
 
-/// Parse the JSON body of a `SESSION_CREATE_KEY` write into
-/// `(name, command, cwd)`. Returns `None` if the bytes are not valid JSON,
-/// the top level is not an object, or `name` is missing/non-string. `command`
-/// (an array of strings) and `cwd` (a string) are optional; a malformed
-/// optional field is treated as absent rather than failing the whole parse.
-fn parse_session_create_request(
-    value: &[u8],
-) -> Option<(String, Option<Vec<String>>, Option<String>)> {
-    let v: serde_json::Value = serde_json::from_slice(value).ok()?;
-    let obj = v.as_object()?;
-    let name = obj.get("name")?.as_str()?.to_owned();
-    let command = obj.get("command").and_then(|c| c.as_array()).map(|arr| {
-        arr.iter()
-            .filter_map(|e| e.as_str().map(str::to_owned))
-            .collect::<Vec<String>>()
-    });
-    let cwd = obj.get("cwd").and_then(|c| c.as_str()).map(str::to_owned);
-    Some((name, command, cwd))
+#[derive(serde::Deserialize)]
+struct SessionCreateRequest {
+    name: String,
+    command: Option<Vec<String>>,
+    cwd: Option<String>,
+    #[serde(default)]
+    env: std::collections::BTreeMap<String, String>,
+}
+
+/// Parse the typed JSON body of a `SESSION_CREATE_KEY` write.
+fn parse_session_create_request(value: &[u8]) -> Option<SessionCreateRequest> {
+    serde_json::from_slice(value).ok()
 }
 
 pub(crate) fn handle_set_metadata(
@@ -1251,18 +1245,24 @@ pub(crate) fn handle_set_metadata(
     // attach is a `SET_METADATA` write of the conventional
     // `SESSION_CREATE_KEY` under `Scope::Global`, replacing the removed
     // `CREATE_SESSION` verb. The value is a UTF-8 JSON object
-    // `{ name, command?, cwd? }`. The server seeds the session + pane; the
-    // caller reads the seed-pane id back via `GET_STATE` (SET_METADATA has
-    // no reply frame). A malformed value or a duplicate name is a silent
+    // `{ name, command?, cwd?, env? }`. The server seeds the session + pane;
+    // the caller reads the seed-pane id back via `GET_STATE` (SET_METADATA
+    // has no reply frame). A malformed value or a duplicate name is a silent
     // no-op (logged), matching the fire-and-forget shape of metadata writes.
     if key == SESSION_CREATE_KEY && matches!(scope, Scope::Global) {
         match parse_session_create_request(&value) {
-            Some((name, command, cwd)) => {
+            Some(SessionCreateRequest {
+                name,
+                command,
+                cwd,
+                env,
+            }) => {
                 let outcome = crate::runtime::commands::create_named_session(
                     state,
                     &name,
                     command,
                     cwd.as_deref(),
+                    env,
                     root_token,
                 );
                 // Publish the result under the conventional result key so the
@@ -1292,7 +1292,7 @@ pub(crate) fn handle_set_metadata(
                 warn!(
                     ?client_id,
                     request_id,
-                    "SET_METADATA(session-create): malformed JSON value (want {{name, command?, cwd?}}); ignoring",
+                    "SET_METADATA(session-create): malformed JSON value (want {{name, command?, cwd?, env?}}); ignoring",
                 );
             }
         }

@@ -1452,6 +1452,7 @@ pub(crate) fn create_named_session(
     name: &str,
     command: Option<Vec<String>>,
     cwd: Option<&str>,
+    env: std::collections::BTreeMap<String, String>,
     root_token: &CancellationToken,
 ) -> Result<phux_protocol::ids::TerminalId, String> {
     if state.with(|s| s.session_by_name(name).is_some()) {
@@ -1491,6 +1492,9 @@ pub(crate) fn create_named_session(
         // applied over a cwd-less builder, and dropped with a warn on an
         // invalid path so a bad cwd never fails the create.
         crate::terminal_actor::apply_spawn_cwd(&mut seed_cmd, cwd, name);
+        for (key, value) in env {
+            seed_cmd.env(key, value);
+        }
         crate::terminal_actor::apply_term(&mut seed_cmd, &term);
         seed_session_with_pty(state, name, seed_cmd, history_limit, root_token)
     } else {
@@ -1499,9 +1503,13 @@ pub(crate) fn create_named_session(
 
     match seed_result {
         Ok(core_terminal) => {
-            // Intern the wire id so it is stable and resolvable, and hand it
-            // back so the caller can publish it for the client to read.
-            let wire = state.with_mut(|s| s.intern_terminal_wire(core_terminal));
+            // A successful headless create arms the same last-session
+            // self-exit as an attached client. This keeps control-only
+            // servers from lingering after their managed sessions stop.
+            let wire = state.with_mut(|s| {
+                s.arm_self_exit();
+                s.intern_terminal_wire(core_terminal)
+            });
             Ok(wire)
         }
         Err(err) => {
