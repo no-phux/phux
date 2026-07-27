@@ -1204,6 +1204,16 @@ fn encode_graphemes(out: &mut Vec<u8>, graphemes: &[char]) {
 /// small while every styled or semantically-marked cell is still reported.
 /// `row`/`col` are the viewport-relative, zero-based coordinates of the
 /// cell's left edge (wide-cell tails are skipped by the caller).
+///
+/// This is one of three copies of the libghostty cell projection; the other
+/// two are `phux-client`'s `attach::render`'s `to_cell_style` and
+/// `phux-record`'s `replay::project_cell`. The duplication is deliberate —
+/// sharing would force `phux-core` to depend on `libghostty-vt` — and
+/// `crates/phux/tests/cell_projection_conformance.rs` is what keeps the three
+/// honest, running one VT corpus through all of them (`phux-h5hj.2`). That
+/// test also pins the two places this projection CANNOT match the dense ones:
+/// it emits no entry for a wide glyph's spacer tail, and it alone carries
+/// OSC-133 semantics.
 fn collect_cell(
     cell: &CellIteration<'_, '_>,
     row: u16,

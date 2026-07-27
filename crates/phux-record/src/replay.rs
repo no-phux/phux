@@ -33,6 +33,15 @@
 //! to take a `libghostty-vt` dependency — a much worse trade than three
 //! ~30-line walks that a single test failure catches. Change one, change all
 //! three.
+//!
+//! `crates/phux/tests/cell_projection_conformance.rs` is that single test
+//! failure (`phux-h5hj.2`). It feeds one corpus of VT sequences — truecolor
+//! and palette SGR, every attribute bit, wide CJK and their spacer tails,
+//! combining marks and ZWJ clusters, alt screen, scroll regions, DECAWM wrap,
+//! cursor position and visibility, and a settled screen — through all three
+//! projections and compares the results cell-for-cell. The `phux` binary
+//! crate hosts it because it is the only workspace member that already
+//! depends on all three.
 
 use libghostty_vt::render::{CellIteration, CellIterator, Dirty, RowIterator, Snapshot};
 use libghostty_vt::screen::CellWide;
