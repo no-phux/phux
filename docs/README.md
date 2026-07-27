@@ -27,6 +27,7 @@ You do not need to understand the protocol before using phux.
 | Install through Homebrew, a release, or source | [Install guide](./INSTALL.md) |
 | Decide whether phux fits your workflow today | [When to use phux](./when-to-use.md) |
 | Change the prefix, keys, status bar, or hooks | [Configuration](./CONFIG.md) |
+| Record a pane or a session as a cast, GIF, or APNG | [Recording](./consumers/recording.md) |
 | Reach your server from another network | [Remote access](./remote-access.md) |
 
 The shortest path is the quickstart. It gets a real session running first,
@@ -44,6 +45,7 @@ These pages are for people trying to get work done:
 - [Configuration](./CONFIG.md) owns keybindings, status, and hooks.
 - [Remote access](./remote-access.md) reaches a server across networks over an overlay.
 - [The reference TUI](./consumers/tui.md) is the interactive terminal guide.
+- [Recording](./consumers/recording.md) captures a pane or a whole session as a cast, GIF, or APNG.
 - [Agents and the CLI](./consumers/agents.md) is the headless CLI and JSON guide.
 - [The OpenCode integration](./consumers/opencode.md) adds OpenCode tools, target selection, and lifecycle metadata.
 - [The Pi integration](./consumers/pi.md) adds Pi tools, target selection, and lifecycle metadata.

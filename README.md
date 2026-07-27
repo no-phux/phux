@@ -25,12 +25,27 @@ last-reviewed: 2026-06-23
 
 </div>
 
-![phux demo: a live terminal session reattached and then driven headlessly by agent-style commands](docs/assets/demo.gif)
+![phux recording a terminal session and rendering it to a GIF, with no external tools](docs/assets/recording-demo.gif)
+
+<div align="center">
+<sub>
+
+This GIF was recorded and rendered by the binary it is demonstrating.
+No asciinema, no vhs, no agg, no ffmpeg -- `phux rec`, then `phux rec --from`.
+Regenerate it with [`scripts/demo-record.sh`](scripts/demo-record.sh).
+
+</sub></div>
 
 phux is a terminal multiplexer: attach, split panes, detach, and come back
 later to the same shells. The difference is underneath. In phux, a terminal is
 a first-class object on a wire, so your TUI, a GUI, and an AI agent can all
 hold the same live terminal instead of reading screenshots or copied text.
+
+Because a terminal is an object rather than a screenshot, phux can hand you a
+recording of one: `phux --rec demo.gif` while you work, or `phux rec <pane>
+-o demo.cast` against a pane someone else is using -- a pure observer that
+never attaches and never resizes what it is watching. See
+[Recording](docs/consumers/recording.md).
 
 If you are new here, install phux, run it, detach, reattach, and drive the same
 pane from a script without hunting through the docs.
@@ -285,6 +300,18 @@ and run smoke checks without private credentials.
 hyperlinks, OSC 133, and the modern keyboard protocol survive detach/reattach
 because phux does not re-parse your bytes in the middle. The same terminal
 engine ([libghostty][lghv]) runs on both ends of the wire.
+
+![a truecolor gradient, curly underlines, and an inline image surviving a detach and reattach, then the same session driven headlessly](docs/assets/demo.gif)
+
+<div align="center">
+<sub>
+
+Screen-recorded in a graphics-capable terminal, deliberately: an inline image
+is the one thing a cast cannot carry, so this clip is not re-renderable from
+`phux rec` output. See
+[Recording](docs/consumers/recording.md#2-what-a-recording-is-not).
+
+</sub></div>
 
 **Agents are first-class users.** An AI agent can drive the same terminal you
 are looking at, over the wire, with the same authority you have. There is no

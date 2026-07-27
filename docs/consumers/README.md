@@ -53,8 +53,9 @@ project locally, the way the web client does.
 | [pi.md](./pi.md) | Pi package: local installation, six terminal tools, target persistence, lifecycle metadata, human handoff, and current safety boundaries. |
 | [mcp.md](./mcp.md) | MCP adapter: a JSON-RPC stdio tool surface over the agent verbs, `phux_ask`, and plugin workspace profile discovery. |
 | [sdk.md](./sdk.md) | The workspace-internal `phux-client` free-function surface over the `phux-protocol` wire codec. |
+| [recording.md](./recording.md) | Session recording: the two capture surfaces, asciicast and the self-contained GIF/APNG renderer, tuning, and the limits. |
 
-Future consumers — a native GUI, a recorder, a tmux-CC adapter — get their
+Future consumers — a native GUI, a tmux-CC adapter — get their
 own files here when they materialize. Each file's frontmatter declares its
 own `stability`; a shipped surface is `stable`, a forward-looking sketch is
 `evolving`. Today the consumer surfaces are real but still pre-1.0, so most

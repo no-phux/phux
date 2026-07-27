@@ -91,6 +91,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0057](./0057-minimal-reference-relay.md) | A minimal reference relay in-tree | Accepted (implements [0051](./0051-outbound-dial-out-connector-transport.md) and ADR-0052; backs 0051's trust-honesty claim) |
 | [0058](./0058-right-click-context-menus.md) | Right-click context menus for panes, windows, and sessions | Accepted |
 | [0059](./0059-sandboxed-chunked-file-upload.md) | Sandboxed chunked file upload | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md), [0021](./0021-control-plane-commands.md), and [0031](./0031-remote-consumer-auth-and-encryption.md)) |
+| [0060](./0060-self-contained-session-recording.md) | Self-contained session recording | Accepted (a consumer-side projection over [0013](./0013-libghostty-bytes-on-wire.md)'s bytes; claims no protocol standing, per [0017](./0017-tui-not-protocol-privileged.md)) |
 
 ## When to write an ADR
 

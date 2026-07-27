@@ -162,6 +162,18 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   synthesizer); `command_finished.exit_code` is likewise always null until that
   shell-integration plumbing lands. The mechanism and the
   lifecycle/title/bell/dirty/idle events ship today.
+- **`phux rec -o PATH [--format FMT] [--from FILE] [--duration SECS]
+  [--fps N] [--idle-limit SECS] [--max-bytes N] [--cast-version N] [--json]
+  [--socket P] [TARGET]`** — record a pane and export it as an asciinema cast,
+  an animated GIF, or an APNG. `-o`/`--out` is the only required argument; its
+  extension picks the format (`.cast`, `.gif`, `.png`/`.apng`; no extension
+  means GIF) unless `--format` overrides it. Capture subscribes with `ATTACH_TERMINAL` and is
+  viewport-safe in the same sense as `snapshot` and `watch`: it neither
+  attaches the session nor resizes the pane. `--from` re-renders an existing
+  cast offline and never contacts the server. `--json` emits the result object
+  (§4.14). Ctrl-C stops the capture and still writes the artifact, so an
+  open-ended `phux rec -o demo.gif` under a subprocess deadline is the scripted
+  shape. Full surface in [`recording.md`](./recording.md).
 - **`phux ask TARGET [--id ID] [--suggest TEXT...] [--elapsed-seconds SECS]
   [--json] [--socket P] QUESTION`** — report that an agent in a pane is blocked
   on a human-answerable question. This is the opt-in hook ingress from
@@ -790,6 +802,42 @@ resolved `cwd`, `working_directory`, and `argv` without spawning. Placement does
 not add a second result shape: `--target`, `--split`, and `--ratio` affect the
 persisted topology while the launch JSON remains the object above.
 
+### 4.14 `phux rec --json`
+
+One object on stdout on success, and nothing else on stdout ever. Progress and
+every diagnostic go to stderr, and progress is suppressed entirely under
+`--json`:
+
+```json
+{
+  "path": "demo.gif",
+  "format": "gif",
+  "bytes": 188742,
+  "duration_ms": 42130,
+  "frames": 211,
+  "cols": 120,
+  "rows": 34,
+  "truncated": false
+}
+```
+
+`format` is one of `cast`, `gif`, `apng`. `duration_ms` is the recording's own
+timeline after the idle clamp, not wall time spent recording. `frames` is the
+count of encoded animation frames — for `format: "cast"` there are no frames,
+so it reports the cast's event count instead. `cols`/`rows` are the recorded
+grid. `truncated` is `true` when encoding stopped at `--max-bytes`: the file is
+a complete, playable container, just shorter than the capture.
+
+**Divergence from §4:** this object carries no `schema_version`. It is a
+result line rather than a projection of engine state, and it has no producing
+struct in `phux-core`. Read the keys, not a version.
+
+Exit codes: `0` on success, including a capture you ended with Ctrl-C; `1` on
+failure (no server, unresolvable target, unknown output extension, unreadable
+`--from` file, write or encode failure). A failed *export* is still exit `1`,
+but the captured `.cast` is deliberately retained and its path printed, so the
+recovery is `phux rec --from <that path> -o <target>`.
+
 ## 5. The read-act-wait loop and exit-code mirroring
 
 ### 5.1 The loop
@@ -857,6 +905,7 @@ Exit codes are not uniform across verbs:
 | `rename` | `0` renamed; `1` no server or transport failure; `2` unknown source session or destination name already exists. |
 | `launch` / `spawn` | `0` spawned/resolved/listed; `1` invalid integration, placement, server, or spawn failure. |
 | `watch` | streams until Ctrl-C, EOF, or caller termination; use a subprocess bound rather than treating its eventual signal status as agent outcome. |
+| `rec` | `0` ok, including a capture ended by Ctrl-C; `1` no server, unresolvable target, unknown output extension, unreadable `--from` file, or write/encode failure. |
 | `plugin` | `0` ok; `1` invalid/missing manifest, invalid config, refused registry write, or unknown plugin id. |
 | `workspace` | `0` ok; `1` missing git repo, invalid git output, no server for save/restore, invalid archive, or JSON render failure. |
 | `satellite` | `0` ok; `1` invalid name/endpoint, duplicate configured name, invalid config, refused registry write, or unknown satellite name. |

@@ -72,9 +72,14 @@ content is painted at the size you are recording at.
 - **GIF (Beat 1, required):** any screen-recorder that captures real pixels —
   [`vhs`](https://github.com/charmbracelet/vhs) if you want it scripted and
   deterministic, or a plain screen-capture-to-GIF. Kitty-graphics frames must
-  survive into the GIF, so this can't be a terminal-only recorder.
-- **asciinema (Beat 2, optional):** fine for the headless half if you'd rather
-  splice. [`agg`](https://github.com/asciinema/agg) renders a `.cast` to GIF.
+  survive into the GIF, so this can't be a terminal-only recorder. This has not
+  changed: phux's own recorder replays cells, and an inline image is not a
+  cell, so Beat 1's payload cannot survive a cast-and-re-render round trip.
+- **Beat 2:** phux records itself. `phux rec demo -o beat2.cast --duration 20`
+  captures the pane as a pure observer, and `phux rec --from beat2.cast -o
+  beat2.gif` renders the GIF with no `asciinema` and no `agg` in the loop. See
+  [`consumers/recording.md`](./consumers/recording.md) for the flags; the
+  `--fps` and `--idle-limit` knobs are the size levers.
 - Target **≤ 2 MB** so it loads before the reader scrolls past it. Trim
   generously; the demo is a hook, not a tutorial.
 

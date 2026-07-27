@@ -144,6 +144,10 @@ phux paste TARGET [TEXT]      # paste text into a pane (TEXT or stdin)
 phux run TARGET CMD...        # run a command in a pane, capture $?
 phux wait [TARGET]            # poll a pane until a condition holds
 phux watch [TARGET]           # stream a pane's live events
+phux rec [TARGET] -o PATH     # record a pane to a cast, GIF, or APNG (§10);
+                              # a pure observer — never attaches or resizes
+phux --rec PATH               # on `phux` / `phux attach` only: tee the
+                              # attached session's composited output to PATH
 phux ask TARGET QUESTION      # report an agent ask event for a pane
 phux agent install-claude     # make plain interactive `claude` enter phux
 phux agent uninstall-claude   # remove its shim, hooks, and shell activation
@@ -2102,32 +2106,42 @@ turns off.
 
 ---
 
-## 10. Recording and playback
+## 10. Recording
 
-> **Status:** Design — implementation pending a ticket filed during the
-> ADR-0013 follow-up sweep. Neither `phux capture --record` nor
-> `phux play` exists in the crates today, but the underlying
-> mechanism is now mechanical: under ADR-0013 the pane content on the
-> wire *is* the byte stream we would want to record.
+Two surfaces ship. `phux rec [TARGET] -o PATH` records one pane headlessly:
+it subscribes as a pure `ATTACH_TERMINAL` observer, so it neither attaches the
+session nor resizes the pane and is safe against a session someone is using.
+`phux --rec PATH` records the session you are attached to by teeing the
+client's own composited output, so the artifact carries the chrome — tiled
+panes, dividers, status bar, sidebar, overlays, cursor — and not just one
+pane's bytes.
 
-`phux capture --record TARGET --out FILE.cast` records a pane's session
-to an [asciinema] v3-compatible file. v3 is a strict superset of v2 in
-the features we need; players that only know v2 read v3 with reduced
-fidelity rather than failing.
+The output extension picks the format: `.cast` for an [asciinema] cast, `.gif`
+for an animated GIF, `.png`/`.apng` for an animated PNG, and a path with no
+extension gets `.gif`. GIF and APNG are encoded in-process — no `agg`, no
+`vhs`, no `ffmpeg`
+— and `phux rec --from FILE.cast -o out.gif` re-renders an existing cast
+offline at a different frame rate or idle limit.
 
-The record path is a tee on the server's outbound `PANE_OUTPUT` byte
-stream for the target pane, wrapped in asciinema timing metadata.
-There is no diff-to-bytes conversion step — the bytes are already
-what we need.
+The default asciicast version is **2**, and `--cast-version 3` is opt-in. v3
+is *not* backward compatible with v2: the header schema changed and event
+times became relative intervals, so a v2-only reader that tolerates a v3
+header replays a four-minute recording in a fraction of a second. There is no
+consumer that reads v3 but not v2.
 
-Replay is `phux play FILE.cast` — a thin wrapper that streams the
-recorded bytes into a new pane (via `INPUT_RAW`, where the server's
-canonical `Terminal` parses them like any other PTY output). We do
-not ship a full player; the ecosystem has plenty.
+[`recording.md`](./recording.md) is the full surface — flags, formats, and the
+three fidelity limits worth knowing before you record something long.
+[ADR-0060](../../ADR/0060-self-contained-session-recording.md) owns the
+reasoning.
 
-We do not record per-keystroke timing client-side; recordings reflect
-output as the server emitted it, which keeps the recording infrastructure
-server-local.
+**Superseding the earlier design.** This section previously specified
+`phux capture --record TARGET --out FILE.cast` plus a server-side
+`PANE_OUTPUT` tee, and `phux play FILE.cast` for replay. Neither verb was ever
+built and neither is coming: recording is consumer-side, the verb is `rec`,
+and `capture` is retired rather than aliased. Playback stays out of scope —
+`asciinema play` already exists and a `.cast` is the interoperable artifact
+precisely so phux does not have to ship a player. It is tracked as deferred
+work rather than refused outright.
 
 [asciinema]: https://asciinema.org/
 
