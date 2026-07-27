@@ -97,17 +97,26 @@ test:
 # IDs") and exits 94. A rename fails this lane loudly, exactly as `--test
 # <name>` used to.
 #
+# What a rename does NOT catch is a brand-new `*_e2e.rs` that nobody adds
+# here: its `#[ignore]`d tests would then run in no lane at all and sit green
+# forever. `just e2e-lane-check` (scripts/check-e2e-lanes.sh, a `just ci`
+# gate) closes that: every `crates/*/tests/*_e2e.rs` carrying an `#[ignore]`
+# must be named by this recipe or by `stress`. It found three binaries in
+# exactly that state — plugin_agent_bench_e2e, upgrade_e2e (whose own module
+# doc claimed "run via `just e2e`"), and workspace_archive_e2e — which is why
+# the filterset below now names them. They add ~2.6s to the lane.
+#
 # Corollary: if ci.yml's unit step ever gains `--all-features`, this recipe
 # must gain it too — otherwise the double-compile comes straight back. (Do not
 # actually do that; `--all-features` turns on `phux/dhat-heap`, which installs
 # dhat as the global allocator and would make the perf gates below measure
 # dhat rather than phux.)
 
-# Fast e2e lane (run_wait_e2e + agent_record_e2e + spatial_e2e + rec_e2e + perf gates) — gates every PR.
+# Fast e2e lane (every #[ignore]d phux e2e binary + the perf gates) — gates every PR.
 e2e:
     cargo nextest run --workspace --run-ignored all \
       --test-threads=1 --retries=2 \
-      -E 'binary_id(phux::run_wait_e2e) + binary_id(phux::agent_record_e2e) + binary_id(phux::spatial_e2e) + binary_id(phux::rec_e2e)'
+      -E 'binary_id(phux::run_wait_e2e) + binary_id(phux::agent_record_e2e) + binary_id(phux::spatial_e2e) + binary_id(phux::rec_e2e) + binary_id(phux::resize_e2e) + binary_id(phux::plugin_agent_bench_e2e) + binary_id(phux::upgrade_e2e) + binary_id(phux::workspace_archive_e2e)'
     cargo nextest run --workspace --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::perf_latency) + binary_id(phux-server::perf_colored_output)'
@@ -234,17 +243,64 @@ watch:
 docs-check:
     bash scripts/check-docs.sh
 
+# Homebrew formula generator vs the shapes release.yml's matrix can produce.
 formula-check:
     bash scripts/check-formula.sh
 
-# Everything CI must pass.
+# Drift gate for the one generated Rust source in the tree:
+# crates/phux-record/src/font/spleen_8x16.rs vs its vendored .bdf. Compile-free
+# (python3 + cmp). See scripts/check-generated-font.sh for why this is a check
+# and not a build.rs.
+
+# Generated glyph table vs its .bdf source — catches hand edits and stale regens.
+font-check:
+    bash scripts/check-generated-font.sh
+
+# Coverage gate for the `e2e` filterset above: every `crates/*/tests/*_e2e.rs`
+# carrying an `#[ignore]` must be named by a lane that runs ignored tests,
+# otherwise it executes nowhere and stays green on nothing. Compile-free.
+
+# Every #[ignore]d e2e binary is named by some lane — no test rots unrun.
+e2e-lane-check:
+    bash scripts/check-e2e-lanes.sh
+
+# Everything CI must pass, minus the lanes that need a real server (see
+# `ci-full`). This is the inner-loop bar: everything here is deterministic
+# and machine-independent, so a green run predicts a green `check` job.
+#
+# The gate list mirrors ci.yml's `check` job step for step — fmt, clippy,
+# rustdoc, deny, docs-check, formula-check, font-check, e2e-lane-check — plus
+# the unit test pool from the `test` job. Keep it that way: `just ci` losing a
+# gate CI still runs is how PR #306 shipped five rustdoc failures to a red
+# build after a green local run.
 #
 # The ratatui-confinement boundary (ADR-0020) used to be a grep guard
 # (`check-ratatui-boundary`); phux-0fv replaced it with a crate split, so
 # `cargo build`/`lint` now enforce it structurally — `phux-client-core` has
 # no `ratatui` dependency.
-ci: fmt-check lint docs-check formula-check test deny doc
+
+# The inner-loop bar — every deterministic gate CI runs. Run before pushing.
+ci: fmt-check lint docs-check formula-check font-check e2e-lane-check test deny doc
     @echo "ok"
+
+# The COMPLETE PR bar: `ci` plus the two lanes that spawn real processes.
+#
+# These are split out of `ci` rather than folded in because they are not
+# machine-independent: `e2e` spawns real PTY-backed servers and ends with two
+# wall-clock perf ceilings (`perf_latency`, `perf_colored_output`), which a
+# laptop under load can miss for reasons that say nothing about the diff.
+# Keeping them out of `ci` keeps the inner loop honest — a `ci` failure always
+# means a real defect — while this recipe reproduces what a PR is actually
+# judged on. Run it before pushing anything that touches the CLI surface, the
+# server lifecycle, or the example scripts.
+#
+# Not covered locally: the sccache/rust-cache/ci-metrics steps (runner
+# infrastructure) and the deploy-key-gated release lanes. See CONTRIBUTING.md
+# §"Bar for any change" for the full gate-by-gate map.
+
+# The complete PR bar — `ci` plus the real-server e2e and agent smoke lanes.
+ci-full: ci e2e agents-fleet-smoke
+    @echo "ok (full)"
 
 # Print the toolchain we are pinned to.
 toolchain:

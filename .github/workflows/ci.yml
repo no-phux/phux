@@ -10,7 +10,9 @@
 # compiled the whole workspace (and that zig blob) from scratch in parallel.
 # Here the work is grouped so the zig blob builds at most twice per run:
 #   * `check` — fmt + clippy + doc + deny, sharing one target dir (one zig
-#     build for the check/doc profile).
+#     build for the check/doc profile), plus the compile-free guard rails
+#     (docs, generated font, e2e lane coverage, formula) which add seconds
+#     and no compilation.
 #   * `test`  — unit tests + the `#[ignore]`d e2e/stress lane, sharing one
 #     target dir (one zig build for the test profile). Merging these two was
 #     pure waste before: `e2e` recompiled the exact test binaries `test`
@@ -217,8 +219,29 @@ jobs:
           timed doc    env RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --workspace --all-features
           timed deny   cargo deny check
           EOF
+      # Compile-free guard rails. None of these build anything (bash, python3,
+      # jq — all from the devshell), so they run in seconds and stay OUTSIDE
+      # the `docs_only` gate: they are cheap enough that skipping them buys
+      # nothing, and a docs-only PR that somehow touched them should still
+      # fail. Each has a matching `just` target so the local bar covers it.
       - name: docs-check
         run: nix develop -c bash scripts/check-docs.sh
+      # The generated glyph table (crates/phux-record/src/font/spleen_8x16.rs)
+      # is committed rather than built by a build.rs, which means nothing links
+      # it to its .bdf source. Regenerate and byte-compare so a hand edit or a
+      # bumped face without a regen cannot merge green.
+      - name: generated-font check
+        run: nix develop -c bash scripts/check-generated-font.sh
+      # `#[ignore]`d tests run only where a lane names their binary. Assert
+      # every crates/*/tests/*_e2e.rs is named somewhere, so a new e2e binary
+      # cannot sit unrun and green.
+      - name: e2e lane coverage
+        run: nix develop -c bash scripts/check-e2e-lanes.sh
+      # `just ci` has gated on this since it was written; CI never did, so the
+      # formula generator was strictly better covered locally than on the
+      # release path that actually consumes it.
+      - name: formula-check
+        run: nix develop -c bash scripts/check-formula.sh
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-05-28
+last-reviewed: 2026-07-27
 ---
 
 # Contributing to phux
@@ -31,17 +31,82 @@ phux away from any of those, it's the wrong proposal.
 A PR must pass:
 
 ```sh
-just ci
+just ci        # the inner loop: every deterministic gate CI runs
+just ci-full   # ci + the real-server lanes; the complete PR bar
 ```
 
-That target runs (and you must, locally, before pushing):
+`just ci` is the target you run on every save-and-push. `just ci-full` adds
+the two lanes that spawn real processes, and is what a PR is actually judged
+on — run it before pushing anything that touches the CLI surface, the server
+lifecycle, or the example scripts.
 
-1. `cargo fmt --all --check` — formatting is mechanical, not a style debate.
-2. `cargo clippy --all-targets --all-features -- -D warnings` — clippy is
-   pedantic on purpose. If a lint is wrong for our case, allow it with a
-   comment explaining why.
-3. `cargo nextest run --workspace --all-features` — all tests pass.
-4. `cargo deny check` — licenses, advisories, unauthorized sources.
+### Gate-by-gate: local vs CI
+
+The local bar is a **superset** of `.github/workflows/ci.yml` by design. It
+is not enough for `just ci` to be *similar* to CI: a gate that CI runs and
+`just ci` does not is a gate you discover by pushing. PR #306 shipped five
+`rustdoc::private_intra_doc_links` failures to a red build after a green
+local run, because `just ci` had no rustdoc step. Every row below is a
+commitment to keep the two columns aligned.
+
+| Gate | CI (`ci.yml`) | Local |
+|---|---|---|
+| formatting | `cargo fmt --check` | `just fmt-check` (adds `--all`) |
+| clippy | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | `just lint` (identical) |
+| rustdoc | `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --workspace --all-features` | `just doc` (identical) |
+| dependency hygiene | `cargo deny check` | `just deny` (identical) |
+| doc system | `scripts/check-docs.sh` | `just docs-check` (identical) |
+| generated glyph table | `scripts/check-generated-font.sh` | `just font-check` (identical) |
+| e2e lane coverage | `scripts/check-e2e-lanes.sh` | `just e2e-lane-check` (identical) |
+| Homebrew formula | `scripts/check-formula.sh` | `just formula-check` (identical) |
+| unit tests | `cargo nextest run --workspace` (default features) | `just test` (adds `--all-features`) |
+| fast e2e + perf gates | `just e2e` | `just e2e`, via `just ci-full` |
+| agent example smoke | `just agents-fleet-smoke` | same, via `just ci-full` |
+
+Two rows are worth reading twice:
+
+- **Unit tests are not a strict superset in the feature dimension.** CI runs
+  the *default* feature set; `just test` runs `--all-features`. Neither
+  contains the other, and that is deliberate — `--all-features` enables
+  `phux/dhat-heap`, which installs dhat as the global allocator and would
+  make the wall-clock perf gates measure dhat instead of phux. The default
+  feature set still gets compiled locally, by `just e2e`'s `--workspace`
+  build (and by `just check`).
+- **`just e2e` is not in `just ci`.** It spawns real PTY-backed servers and
+  ends in two wall-clock ceilings, which a laptop under load can miss for
+  reasons that say nothing about the diff. Keeping it out means a `just ci`
+  failure always indicates a real defect; `just ci-full` is where you pay
+  for the full picture.
+
+### Gates that are CI-only, and why
+
+These have no local equivalent and none is planned. If you are chasing a
+red build in one of them, the answer is on the runner, not on your machine.
+
+- **Draft / docs-only fast paths** (`changes` job). Pure GitHub event
+  plumbing — it decides which lanes to skip based on the PR diff and draft
+  state. There is nothing to run locally; locally you just run the gate.
+- **Caching and build acceleration** (Cachix, `Swatinem/rust-cache`,
+  sccache, the runner disk-headroom step). Runner infrastructure. A cache
+  miss is a slow CI run, never a wrong one.
+- **CI observability** (`scripts/ci/timed.sh`, the `lane signal` step, the
+  `ci-metrics` workflow, the `observatory` cold-build timings). These write
+  to a metrics branch and need the Actions API plus `contents:write`. Run
+  `just dep-stats` or `just timings` locally for the same lenses; use
+  `just ci-report` to read what CI recorded.
+- **Heavy stress storms** (`stress` workflow, post-merge and nightly). Not
+  slow because they are thorough — slow because a 2-core hosted runner
+  starves the server's current-thread runtime, turning a 0.3s test into 13
+  minutes. `just stress` runs them locally, where they are fast; they will
+  never be a PR gate.
+- **Commit-message linting** (`conventional-commits` workflow). Needs the
+  PR's base/head SHAs and the PR title, which only exist server-side. Write
+  conventional commits and it never fires.
+- **Release and publish lanes** (`release`, `release-please`,
+  `publish-crate`). Need tags, a deploy key, and a crates.io token.
+  `just release-preflight <tag>` runs the parts that do not — version
+  checks, install-surface drift, formula generation, and a `phux-protocol`
+  package dry-run.
 
 ## Additional expectations
 
@@ -53,6 +118,19 @@ That target runs (and you must, locally, before pushing):
   normative — code conforms to it, not the other way around. Bump the
   protocol version per the rules in [`docs/spec/proto.md`](./docs/spec/proto.md) §6
   and append an entry to [`docs/spec/CHANGELOG.md`](./docs/spec/CHANGELOG.md).
+- **Reach for a capability before you reach for a version bump.** The server
+  admits a client only when `major.minor` matches exactly, so a minor bump
+  breaks every deployment at once rather than degrading gracefully. New
+  frames, command tags, and fields ship as a `ServerFeature` bit, a
+  `ClientCapabilities` byte, or an additive field id; a version bump is for
+  changes no additive shape can express, and the PR says so out loud. The
+  rule is normative in [`docs/spec/proto.md`](./docs/spec/proto.md) §6.3 and
+  argued in [`ADR/0061`](./ADR/0061-capabilities-add-versions-break.md).
+- **Do not document what you did not build.** In `docs/spec/` and
+  `docs/consumers/`, a surface the reference implementation does not provide
+  carries an `impl-status` marker naming a code symbol, and `just docs-check`
+  verifies the marker against the code. See
+  [`docs/CONVENTIONS.md`](./docs/CONVENTIONS.md) §"Implementation status".
 - **Write an ADR for any decision that closes off a design space.** See
   [`ADR/README.md`](./ADR/README.md). You do not need an ADR for a bug
   fix; you do for "should this be in `core` or `server`?"
@@ -209,7 +287,10 @@ allocator — use for profiling only, never for production builds.
 ## Reviewing your own work before opening a PR
 
 - Did the public API change? Rustdoc updated?
-- Did wire bytes change? `docs/spec/` updated and CHANGELOG appended? Version bumped?
+- Did wire bytes change? `docs/spec/` updated and CHANGELOG appended? Could
+  the change have been a capability instead of a version bump (§6.3)?
+- Did a doc gain a sentence about behavior that does not exist yet? It needs
+  an `impl-status` marker, or it belongs in an ADR.
 - Could this be tested with `proptest`? Probably should be.
 - Is there a simpler shape with fewer abstractions? Prefer it.
 - Could a future contributor read this code cold and understand it?
