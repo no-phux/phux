@@ -103,11 +103,11 @@ test:
 # dhat as the global allocator and would make the perf gates below measure
 # dhat rather than phux.)
 
-# Fast e2e lane (run_wait_e2e + agent_record_e2e + spatial_e2e + perf gates) — gates every PR.
+# Fast e2e lane (run_wait_e2e + agent_record_e2e + spatial_e2e + rec_e2e + perf gates) — gates every PR.
 e2e:
     cargo nextest run --workspace --run-ignored all \
       --test-threads=1 --retries=2 \
-      -E 'binary_id(phux::run_wait_e2e) + binary_id(phux::agent_record_e2e) + binary_id(phux::spatial_e2e)'
+      -E 'binary_id(phux::run_wait_e2e) + binary_id(phux::agent_record_e2e) + binary_id(phux::spatial_e2e) + binary_id(phux::rec_e2e)'
     cargo nextest run --workspace --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::perf_latency) + binary_id(phux-server::perf_colored_output)'
