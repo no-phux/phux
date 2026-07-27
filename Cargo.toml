@@ -39,6 +39,7 @@ missing_errors_doc = "allow"
 [workspace.dependencies]
 # Internal.
 phux-protocol = { path = "crates/phux-protocol" }
+phux-record = { path = "crates/phux-record" }
 phux-core = { path = "crates/phux-core" }
 phux-server = { path = "crates/phux-server" }
 phux-client = { path = "crates/phux-client" }

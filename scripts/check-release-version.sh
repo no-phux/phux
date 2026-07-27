@@ -23,6 +23,7 @@ packages=(
   phux-core
   phux-mcp
   phux-protocol
+  phux-record
   phux-server
   portable-pty-adopt
 )

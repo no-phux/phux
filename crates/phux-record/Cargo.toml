@@ -1,0 +1,60 @@
+[package]
+name = "phux-record"
+description = "Offline asciicast codec, VT replayer, and self-contained GIF/APNG encoder."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["render"]
+# The split exists so `phux-client` can take this crate with
+# `default-features = false` and get ONLY the asciicast codec: the TUI build
+# then compiles no image encoders and no second libghostty handle. Everything
+# under `render` is offline export machinery that the live client never runs.
+render = ["dep:libghostty-vt", "dep:png", "dep:gif"]
+
+[dependencies]
+# `RenderedFrame` / `RenderedCell` / `CellStyle` / `CellColor` are the boundary
+# the replayer produces and the rasterizer consumes. Taking them from the
+# domain crate keeps this crate testable with hand-built frames and no
+# emulator in the loop.
+phux-core.workspace = true
+# asciicast is NDJSON: a JSON object header plus one JSON array per event.
+# We hand-order the header keys (serde_json's map is sorted, and the format
+# pins an order), but string escaping and number parsing are serde_json's.
+serde_json.workspace = true
+thiserror.workspace = true
+# Offline VT replay: the captured byte stream is fed back into the same
+# emulator the server drives, so an exported frame is what the terminal
+# would have shown. Gated behind `render` (ADR-0008).
+libghostty-vt = { workspace = true, optional = true }
+# APNG output. Already in the lockfile via phux-protocol's `server` feature,
+# so declaring it here adds no new dependency; png 0.18 ships `set_animated`
+# plus rational per-frame delays, which is exactly the animated-truecolor
+# encoder this needs.
+png = { workspace = true, optional = true }
+# Animated GIF container + LZW. `default-features = false` drops the bundled
+# `color_quant` quantizer: this crate builds its own exact palette, because
+# the 1-bit bitmap font means every output pixel is some cell's resolved fg
+# or bg and the distinct-color count stays under 256 (ADR-0060). The two
+# features we hand back are not optional in practice:
+#   * `std` gates the ENTIRE crate (`#![cfg(feature = "std")]` at its
+#     lib.rs); without it `gif` compiles to an empty module.
+#   * `raii_no_panic` makes the encoder's `Drop` swallow a failed trailer
+#     write instead of `unwrap()`ing it. Dropping an encoder whose sink has
+#     gone away (full disk, closed pipe) must not abort a user's export, and
+#     this workspace treats a panic in library code as a defect.
+# The net effect versus upstream's defaults is exactly the one intended:
+# `color_quant` is gone, and `cargo tree` shows `weezl` as the only
+# transitive dependency.
+gif = { version = "0.13", default-features = false, features = [
+  "std",
+  "raii_no_panic",
+], optional = true }
