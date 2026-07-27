@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.6.0](https://github.com/phall1/phux/compare/v0.5.0...v0.6.0) (2026-07-27)
+
+
+### Features
+
+* **cli:** add `phux play` -- a recording given back as a live pane ([f23f217](https://github.com/phall1/phux/commit/f23f21794511447b6d2fc28c5d79077d3937d7f1))
+* **server:** add --exit-after-idle so an ephemeral server cannot leak ([935080f](https://github.com/phall1/phux/commit/935080f7138d85c1dbd2363b3eb56e41ffb4fe22))
+
 ## [0.5.0](https://github.com/phall1/phux/compare/v0.4.0...v0.5.0) (2026-07-27)
 
 
