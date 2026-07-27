@@ -15,6 +15,18 @@ workspace = true
 [dependencies]
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
+# ADR-0060: the asciicast event/codec vocabulary the recording paths speak
+# (`--rec` tee and the headless observer). `default-features = false` drops
+# phux-record's `render` feature, so the TUI build never compiles `gif`,
+# `png`, or a second libghostty handle — the client needs only the codec.
+#
+# Declared by path rather than `workspace = true` because cargo refuses to
+# let a member turn off a workspace dependency's default features unless the
+# `[workspace.dependencies]` entry already has them off — and the `phux`
+# binary wants `render` on by default. Restore the inherited form the moment
+# the root entry gains `default-features = false` and the binary opts back in
+# with `features = ["render"]`.
+phux-record = { path = "../phux-record", default-features = false }
 # phux-0fv (ADR-0020): the ratatui-free pane-interior substrate — layout
 # math, multi-pane composition, predictive echo. This crate (the chrome +
 # attach loop) depends on it; never the reverse. The split makes the

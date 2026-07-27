@@ -52,6 +52,10 @@ pub mod paint;
 pub mod plugin_actions;
 pub mod plugin_panes;
 pub mod quic;
+// ADR-0060: the `phux --rec` tee. A `Write` wrapper on the one RenderSink the
+// driver already threads through the render path, so a recording is exactly
+// the bytes the human's glass received.
+pub mod record;
 pub mod reflow;
 mod reload;
 pub mod render;
@@ -68,8 +72,8 @@ pub mod ws;
 
 pub use connection::{CertTrust, Dial, QuicDial, WsDial};
 pub use driver::{
-    AttachError, run, run_headless_rendered, run_with_predict, run_with_predict_dial,
-    run_with_stdout, write_terminal_reset,
+    AttachError, run, run_headless_rendered, run_recorded_dial, run_with_predict,
+    run_with_predict_dial, run_with_stdout, write_terminal_reset,
 };
 
 // Multi-pane composition moved to `phux-client-core` with phux-0fv

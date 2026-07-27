@@ -20,10 +20,12 @@
     reason = "AttachError carries an io::Error which is naturally large; the variants are mutually exclusive and we never carry the result in a hot loop."
 )]
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,6 +57,7 @@ use super::paint::{
 };
 use super::plugin_actions::{self, PluginActionEntry, PluginRunResult};
 use super::plugin_panes;
+use super::record::{SessionRecorder, TeeSink};
 use super::render::{SelectionRect, TerminalRenderer, write_cup, write_reset};
 use super::repaint::{RepaintAccumulator, RepaintLevel};
 use super::server_frame::{AgentMetaIndex, handle_server_frame};
@@ -799,12 +802,23 @@ impl From<super::render::RenderError> for AttachError {
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 pub async fn run(socket: &Path, target: AttachTarget) -> Result<(), AttachError> {
-    run_buffered(&Dial::uds(socket), target, PredictiveConfig::disabled()).await
+    run_buffered(
+        &Dial::uds(socket),
+        target,
+        PredictiveConfig::disabled(),
+        None,
+    )
+    .await
 }
 
 /// Production attach: wrap stdout in the off-loop [`StdoutSink`](super::stdout_writer)
 /// so a slow terminal never blocks the select loop (phux-fysb), then run the
 /// session. Tests use the synchronous [`run_with_stdout`] seam directly.
+///
+/// `rec` is the `phux --rec` session recorder (ADR-0060). When present the
+/// render sink is wrapped in a [`TeeSink`] *above* the `StdoutSink`, so the
+/// recording sees every composited byte even in the moments the backlog cap
+/// makes the glass drop frames.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -813,19 +827,39 @@ async fn run_buffered(
     dial: &Dial,
     target: AttachTarget,
     predict: PredictiveConfig,
+    rec: Option<Rc<RefCell<SessionRecorder>>>,
 ) -> Result<(), AttachError> {
     let (mut sink, writer) = super::stdout_writer::spawn_stdout_writer();
+    // Cloned BEFORE any wrap: the resync flag belongs to the StdoutSink, not
+    // to whatever is layered on top of it.
     let resync = Arc::clone(&sink.needs_resync);
-    attach_session(
-        dial,
-        target,
-        &mut sink,
-        predict,
-        Some(resync.as_ref()),
-        Some(writer),
-        true,
-    )
-    .await
+    if let Some(rec) = rec {
+        let mut tee = TeeSink {
+            inner: &mut sink,
+            rec,
+        };
+        attach_session(
+            dial,
+            target,
+            &mut tee,
+            predict,
+            Some(resync.as_ref()),
+            Some(writer),
+            true,
+        )
+        .await
+    } else {
+        attach_session(
+            dial,
+            target,
+            &mut sink,
+            predict,
+            Some(resync.as_ref()),
+            Some(writer),
+            true,
+        )
+        .await
+    }
 }
 
 /// Like [`run`], with predictive local echo configurable per call.
@@ -847,7 +881,7 @@ pub async fn run_with_predict(
     target: AttachTarget,
     predict: PredictiveConfig,
 ) -> Result<(), AttachError> {
-    run_buffered(&Dial::uds(socket), target, predict).await
+    run_buffered(&Dial::uds(socket), target, predict, None).await
 }
 
 /// Dial-aware production attach (UDS *or* QUIC) with predictive echo config.
@@ -864,7 +898,27 @@ pub async fn run_with_predict_dial(
     target: AttachTarget,
     predict: PredictiveConfig,
 ) -> Result<(), AttachError> {
-    run_buffered(dial, target, predict).await
+    run_buffered(dial, target, predict, None).await
+}
+
+/// As [`run_with_predict_dial`], but tees the composited output stream into
+/// `rec` — the `phux --rec` session recording (ADR-0060).
+///
+/// The recorder is passed in (rather than opened here) because the CLI must
+/// keep the SAME recording across a graceful-upgrade reconnect: the attach
+/// loop can return and be re-entered, and a recorder created per attempt
+/// would truncate the cast at every reconnect.
+#[allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
+)]
+pub async fn run_recorded_dial(
+    dial: &Dial,
+    target: AttachTarget,
+    predict: PredictiveConfig,
+    rec: Rc<RefCell<SessionRecorder>>,
+) -> Result<(), AttachError> {
+    run_buffered(dial, target, predict, Some(rec)).await
 }
 
 /// Same as [`run`], but writes the entire composited output stream to a
@@ -5699,6 +5753,31 @@ mod tests {
             should_emit_frame_ack(true, None),
             None,
             "seq=0 / no-ack frames are never acked regardless of mode"
+        );
+    }
+
+    /// ADR-0060 guard: the `rec: None` arm of `run_buffered` must behave
+    /// exactly as the function did before the tee existed — the bare
+    /// `StdoutSink`, and the same pre-handshake failure delivered on the
+    /// cooked outer terminal (phux-roz) with no wrapper in the way.
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_buffered_without_a_recorder_passes_the_bare_sink() {
+        let socket =
+            std::env::temp_dir().join(format!("phux-rec-guard-{}-absent.sock", std::process::id()));
+        let err = run_buffered(
+            &Dial::uds(&socket),
+            AttachTarget::Last,
+            PredictiveConfig::disabled(),
+            None,
+        )
+        .await
+        .expect_err("there is no server at that socket");
+        assert!(
+            matches!(
+                err,
+                AttachError::Io(_) | AttachError::Connect(_) | AttachError::Unreachable(_)
+            ),
+            "the unrecorded path must still fail at connect, unchanged: {err:?}"
         );
     }
 
