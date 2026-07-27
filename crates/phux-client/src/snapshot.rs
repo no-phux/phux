@@ -15,7 +15,7 @@
 use std::path::Path;
 
 use phux_protocol::ids::TerminalId;
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, FrameKind};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
 
 pub use phux_core::screen::{
     CursorState, RENDERED_SCHEMA_VERSION, RenderedCell, RenderedFrame, SCHEMA_VERSION, ScreenState,
@@ -66,16 +66,22 @@ pub async fn get_screen_scrollback(
     cells: bool,
 ) -> Result<ScreenState, AttachError> {
     let mut conn = Connection::connect(socket).await?;
-    let result = command(
-        &mut conn,
-        1,
-        Command::GetScreen {
-            terminal_id,
-            request_scrollback,
-            cells,
-        },
-    )
-    .await?;
+    // Safe to ignore the interleave: this connection is freshly opened and
+    // never subscribes (no ATTACH, no ATTACH_TERMINAL, no SUBSCRIBE_EVENTS),
+    // so nothing fans out onto its mailbox, and the server's
+    // `handle_get_screen` is a pure projection that emits no frame of its own
+    // before the ack — it does not even take the client's `out_tx`.
+    let result = conn
+        .request(
+            1,
+            Command::GetScreen {
+                terminal_id,
+                request_scrollback,
+                cells,
+            },
+        )
+        .await?
+        .into_result_ignoring_interleaved();
     match result {
         CommandResult::OkWith(CommandValue::Json(json)) => serde_json::from_str(&json)
             .map_err(|err| AttachError::Protocol(format!("malformed GET_SCREEN JSON: {err}"))),
@@ -83,29 +89,5 @@ pub async fn get_screen_scrollback(
         other => Err(AttachError::Protocol(format!(
             "unexpected GET_SCREEN result: {other:?}"
         ))),
-    }
-}
-
-/// Send one command and return the matching `COMMAND_RESULT`, skipping any
-/// unrelated frames the server interleaves (SPEC §5).
-pub(crate) async fn command(
-    conn: &mut Connection,
-    request_id: u32,
-    command: Command,
-) -> Result<CommandResult, AttachError> {
-    conn.send(&FrameKind::Command {
-        request_id,
-        command,
-    })
-    .await?;
-    loop {
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = conn.recv().await?
-            && got == request_id
-        {
-            return Ok(result);
-        }
     }
 }

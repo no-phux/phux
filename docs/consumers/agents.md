@@ -82,7 +82,10 @@ in [ADR-0021](../../ADR/0021-control-plane-commands.md).
 `paste`, and `wait` neither attach nor resize the target pane: reads issue
 `GET_SCREEN`, and input rides `ROUTE_INPUT` to a pane id. `snapshot`/`wait`
 are side-effect-free; `run`/`send-keys`/`paste` deliberately mutate the live
-PTY. None changes an attached human's local focus or viewport.
+PTY. None changes an attached human's local focus or viewport. `resize` is
+the deliberate exception — changing the grid is its whole job — but it too
+never attaches, so it cannot drag a pane toward the 80x24 size a caller with
+no TTY would otherwise report.
 
 ## 2. The structured CLI surface (verb catalog)
 
@@ -226,6 +229,22 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
 - **`phux agent uninstall-claude`** — remove only the phux-owned shim, hook
   settings, manifest, and marked shell-rc block. User shell configuration and
   the real Claude installation are otherwise untouched.
+- **`phux resize [--json] [--socket P] TARGET COLSxROWS`** — set one resolved
+  pane's grid, with no TTY. `TARGET` is required; `COLSxROWS` is two whole
+  numbers of cells, each at least 1 (`120x40`). This is the only way to size a
+  pane without a terminal: every other path derives geometry from an attached
+  client's *viewport*, and a caller with no TTY reports 80x24. Nothing
+  attaches and nothing subscribes, so the call cannot itself shrink the pane
+  it is sizing.
+
+  The new size applies immediately, even with someone attached, and it is not
+  permanent against an attached view: under the default
+  `defaults.window-size = "smallest"` policy the next attach, detach, or
+  window resize recomputes the pane's geometry from the attached views and
+  supersedes it. `window-size = "manual"` is the setting under which an
+  explicit resize holds ([`tui.md`](./tui.md) §4.2). You do not have to guess
+  which happened — the verb reads the server's real geometry back before
+  exiting and exits `1` when it is not the requested one. Shape in §4.15.
 - **`phux new [-s NAME] [-c CWD] [-- COMMAND...] [--json] [--socket P]`** —
   create a new session. Without `--json` it creates and attaches: an explicit
   `-s NAME` that already exists is an error (like tmux's duplicate-session
@@ -331,8 +350,8 @@ then the `PHUX_SOCKET` environment variable, then the daemon default:
 ## 3. Targeting: the selector grammar
 
 One grammar, every targeted command — `kill`, `snapshot`, `wait`, `watch`,
-`send-keys`, `paste`, `run`, `ask`, launch/spawn placement, and the three
-spatial verbs all share `TARGET`.
+`send-keys`, `paste`, `run`, `ask`, `resize`, launch/spawn placement, and the
+three spatial verbs all share `TARGET`.
 It is resolved client-side against a server snapshot ([ADR-0021](../../ADR/0021-control-plane-commands.md)); the server
 never parses a selector.
 
@@ -345,7 +364,7 @@ A selector that names several panes (a whole session or window) narrows to a
 single pane: the focused pane when it is among the matches, else the first in
 snapshot order (the `pick_target_pane` tiebreak the MCP tools share).
 Optionality differs per verb: `snapshot`, `wait`, and `watch` may omit a target;
-`send-keys`, `paste`, `run`, `ask`, and every spatial verb require it. `launch`/`spawn`
+`send-keys`, `paste`, `run`, `ask`, `resize`, and every spatial verb require it. `launch`/`spawn`
 use an optional target only for explicit local placement. Spatial and placement
 targets are stricter than the selected-pane tiebreak: each must resolve to one
 exact local pane.
@@ -838,6 +857,34 @@ failure (no server, unresolvable target, unknown output extension, unreadable
 but the captured `.cast` is deliberately retained and its path printed, so the
 recovery is `phux rec --from <that path> -o <target>`.
 
+### 4.15 `phux resize --json`
+
+A `schema_version: 1` object naming what was asked for and what the server
+actually holds afterwards:
+
+```json
+{
+  "schema_version": 1,
+  "terminal_id": 7,
+  "requested": { "cols": 120, "rows": 40 },
+  "applied": { "cols": 120, "rows": 40 },
+  "held": true
+}
+```
+
+`applied` is read back from the server, not echoed from the request, so it is
+the geometry a following `phux snapshot` will report. `held` is `applied ==
+requested` on both axes and mirrors the exit code, so a script can branch on
+either. Without `--json` the same fact prints as one line, `120x40` — the
+applied size, so `phux resize demo 120x40` is safe to read with `$(...)`.
+
+**Divergence from the other `--json` verbs:** the object is printed on the
+failure path too, and stdout is not left empty. Elsewhere a nonzero exit means
+the command did not run; here it means the command ran and the server holds a
+different size, and that size is exactly what the caller needs in order to
+react. Transport failures — no server, unresolvable target — do leave stdout
+empty, as everywhere else.
+
 ## 5. The read-act-wait loop and exit-code mirroring
 
 ### 5.1 The loop
@@ -902,6 +949,7 @@ Exit codes are not uniform across verbs:
 | `run` | the child's own code clamped to `0..=255` (negative or `>255` saturate to `255`); `125` when phux gave up waiting for the sentinel (`--timeout`); `1` for no server / refused target / other. |
 | `wait` | `0` condition met; `124` on `--timeout`; `1` no server / parse / read error. |
 | `new` | `0` ok; `1` duplicate `-s` name / failure. |
+| `resize` | `0` the pane holds the requested geometry; `1` no server / selector miss / unknown pane, or the server holds a different size (an attached view's `window-size` policy owns it); `2` unusable `COLSxROWS` (clap usage error, raised before any connection). |
 | `rename` | `0` renamed; `1` no server or transport failure; `2` unknown source session or destination name already exists. |
 | `launch` / `spawn` | `0` spawned/resolved/listed; `1` invalid integration, placement, server, or spawn failure. |
 | `watch` | streams until Ctrl-C, EOF, or caller termination; use a subprocess bound rather than treating its eventual signal status as agent outcome. |

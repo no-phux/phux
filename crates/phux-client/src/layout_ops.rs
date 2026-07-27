@@ -476,6 +476,7 @@ fn swap_leaves(
 mod tests {
     use super::*;
     use crate::layout::{LayoutState, WindowState};
+    use crate::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::wire::frame::ErrorCode;
 
     fn tid(id: u32) -> TerminalId {
@@ -712,61 +713,23 @@ mod tests {
     async fn mutate_correlates_replies_and_confirms_set() {
         let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
         let mut client = Connection::from_stream(client_stream);
-        let mut server = Connection::from_stream(server_stream);
         let initial = two_window_workspace();
-        let initial_bytes = initial.encode_cbor().unwrap();
 
-        let server_task = tokio::spawn(async move {
-            let FrameKind::GetMetadata {
-                request_id: 10,
-                scope,
-                key,
-            } = server.recv().await.unwrap()
-            else {
-                panic!("expected initial GET");
-            };
-            assert_eq!(scope, Scope::Group(DEFAULT_LAYOUT_GROUP_ID));
-            assert_eq!(key, layout_key(SessionId::new(7)));
-            server
-                .send(&FrameKind::MetadataValue {
-                    request_id: 999,
-                    value: None,
-                })
-                .await
-                .unwrap();
-            server
-                .send(&FrameKind::MetadataValue {
-                    request_id: 10,
-                    value: Some(initial_bytes),
-                })
-                .await
-                .unwrap();
-
-            let FrameKind::SetMetadata {
-                request_id: 11,
-                value,
-                ..
-            } = server.recv().await.unwrap()
-            else {
-                panic!("expected SET");
-            };
-            let written = Workspace::decode_cbor(&value).unwrap();
-            assert_eq!(
-                leaves(written.windows[0].state.tree.as_ref().unwrap()),
-                vec![tid(2), tid(1)]
+        // The harness stores what this session SETs and hands it back on the
+        // confirming GET, so the read-modify-write round trip runs against
+        // the same read-your-own-write behaviour `handle_set_metadata` /
+        // `handle_get_metadata` give it — not a canned echo. The
+        // METADATA_VALUE for request 999 belongs to a different pipelined
+        // request and is pushed AHEAD of this one's reply, which is the only
+        // ordering in which mis-correlation is a hazard.
+        let spec = ScriptSpec::new()
+            .foreign_metadata_value(999)
+            .stored_metadata(
+                Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
+                &layout_key(SessionId::new(7)),
+                initial.encode_cbor().unwrap(),
             );
-
-            let FrameKind::GetMetadata { request_id: 12, .. } = server.recv().await.unwrap() else {
-                panic!("expected confirming GET");
-            };
-            server
-                .send(&FrameKind::MetadataValue {
-                    request_id: 12,
-                    value: Some(value),
-                })
-                .await
-                .unwrap();
-        });
+        let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
 
         let mut ops = LayoutOps::new(&mut client, SessionId::new(7), 10);
         let confirmed = ops
@@ -780,31 +743,55 @@ mod tests {
             leaves(confirmed.windows[0].state.tree.as_ref().unwrap()),
             vec![tid(2), tid(1)]
         );
-        server_task.await.unwrap();
+        // `ops` only borrows the connection; dropping the connection is what
+        // ends the harness's serve loop.
+        drop(client);
+
+        let seen = server_task.await.unwrap();
+        assert!(
+            matches!(
+                seen.first(),
+                Some(FrameKind::GetMetadata { request_id: 10, scope, key })
+                    if *scope == Scope::Group(DEFAULT_LAYOUT_GROUP_ID)
+                        && *key == layout_key(SessionId::new(7))
+            ),
+            "the read leg is a group-scoped GET on the session's layout key; got {:?}",
+            seen.first()
+        );
+        let Some(FrameKind::SetMetadata {
+            request_id: 11,
+            value,
+            ..
+        }) = seen.get(1)
+        else {
+            panic!("expected SET on request 11, got {:?}", seen.get(1));
+        };
+        let written = Workspace::decode_cbor(value).unwrap();
+        assert_eq!(
+            leaves(written.windows[0].state.tree.as_ref().unwrap()),
+            vec![tid(2), tid(1)]
+        );
+        assert!(
+            matches!(
+                seen.get(2),
+                Some(FrameKind::GetMetadata { request_id: 12, .. })
+            ),
+            "the confirming GET closes the CAS; got {:?}",
+            seen.get(2)
+        );
     }
 
     #[tokio::test]
     async fn correlated_error_is_reported() {
         let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
         let mut client = Connection::from_stream(client_stream);
-        let mut server = Connection::from_stream(server_stream);
-        let server_task = tokio::spawn(async move {
-            let FrameKind::GetMetadata { request_id, .. } = server.recv().await.unwrap() else {
-                panic!("expected GET");
-            };
-            server
-                .send(&FrameKind::Error {
-                    request_id: Some(request_id),
-                    code: ErrorCode::InvalidCommand,
-                    message: "foreign group".to_owned(),
-                })
-                .await
-                .unwrap();
-        });
+        let spec = ScriptSpec::new().refuse_metadata(ErrorCode::InvalidCommand, "foreign group");
+        let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
         let mut ops = LayoutOps::in_group(&mut client, SessionId::new(1), GroupId::new(77), 5);
         assert!(
             matches!(ops.read().await, Err(LayoutOpsError::Refused(message)) if message == "foreign group")
         );
+        drop(client);
         server_task.await.unwrap();
     }
 }

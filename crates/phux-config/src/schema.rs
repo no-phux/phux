@@ -193,10 +193,15 @@ pub struct DefaultsCfg {
     /// [ADR-0027](../../ADR/0027-terminal-references-and-l3-links.md) and
     /// [`WindowSize`].
     ///
-    /// Not yet consumed at the size-decision point: the multi-view /
-    /// multi-client geometry negotiation is a follow-up (the server today
-    /// uses last-writer-wins per SPEC §10.5; see phux-nk07). The key lands
-    /// first so consumers can target a stable name.
+    /// Consumed at the size-decision point: the server resolves a
+    /// Terminal's geometry by folding this policy across every subscriber's
+    /// viewport, on ATTACH and on every `VIEWPORT_RESIZE` (phux-nk07).
+    ///
+    /// It governs *views* only. An explicit `TERMINAL_RESIZE` — the frame
+    /// `phux resize` sends — names a size no viewport reported and applies
+    /// regardless; under the three view-derived values the next view event
+    /// recomputes over it, and under [`WindowSize::Manual`] nothing ever
+    /// does. See ADR-0062.
     #[serde(default, rename = "window-size")]
     pub window_size: WindowSize,
 }
@@ -279,9 +284,12 @@ pub enum WindowSize {
     Largest,
     /// Track the most recently resized view's size.
     Latest,
-    /// Hold a fixed size, ignoring view geometry. Implies a future resize
-    /// verb to set that size (out of scope here; named so the value is not
-    /// a later surprise — see ADR-0027).
+    /// Hold a fixed size, ignoring view geometry. The size is set by an
+    /// explicit `TERMINAL_RESIZE` (`phux resize TARGET COLSxROWS`), which
+    /// is the only thing that moves a Terminal's grid under this value —
+    /// attaches, detaches, and window resizes never recompute over it.
+    /// This is the setting under which a scripted geometry holds
+    /// (ADR-0027 named the value; ADR-0062 shipped the verb).
     Manual,
 }
 

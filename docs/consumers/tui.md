@@ -137,6 +137,9 @@ phux insert-pane TARGET NEW    # insert an already-created pane (no spawn)
 phux move-pane SOURCE TARGET   # relocate a pane beside another
 phux swap-pane FIRST SECOND    # exchange two pane leaves
 phux rename SESSION NEW-NAME  # rename a session
+phux resize TARGET COLSxROWS  # set a pane's grid with no TTY (§4.2
+                              # `window-size` for what happens when a
+                              # client is attached)
 phux snapshot [TARGET]        # dump pane grid (for piping/scripting)
 phux snapshot --rendered      # dump the client's composited multi-pane view
 phux send-keys TARGET KEYS... # send keys to a pane (scripting)
@@ -196,7 +199,7 @@ phux help [COMMAND]
 ```
 
 The agent-facing verbs — `new`, placed `launch`/`spawn`, `ls`, `snapshot`,
-`send-keys`, `paste`, `run`, `wait`, `watch`, `ask`, and the spatial verbs above — have
+`send-keys`, `paste`, `run`, `wait`, `watch`, `ask`, `resize`, and the spatial verbs above — have
 their JSON
 contracts and exit-code semantics documented in [`agents.md`](./agents.md);
 this file does not restate them.
@@ -318,6 +321,7 @@ recognized as bound — `list` shows the worktree as unbound. Closing that gap
 needs pane cwd in the session snapshot, which is a wire change ADR-0054
 deliberately does not make.
 
+<!-- impl-status: spec-only; probe: Command::Windows,Command::Panes,ConfigAction::Edit -->
 > **Status (design intent, not shipped):** `windows`, `panes`, and
 > `messages` are listed in earlier drafts as future read verbs; none
 > ships today. `config` ships `init` / `path` / `show` / `reload` (§4.3);
@@ -672,12 +676,23 @@ or session comes into being:
   mirrors tmux's `window-size`: `"smallest"` (use the smallest view —
   nothing is ever cropped; larger views letterbox), `"largest"` (use the
   largest view; smaller views may crop), `"latest"` (track the
-  most-recently-resized view), `"manual"` (hold a fixed size, which
-  implies a future resize verb). **Not yet wired** at the size-decision
-  point: the multi-view / multi-client geometry negotiation is a follow-up
-  (today the server uses last-writer-wins per the wire spec §10.5, tracked
-  as phux-nk07). The key parses, validates, and defaults today so
-  consumers and config can target a stable name.
+  most-recently-resized view), `"manual"` (hold a fixed size, set by
+  `phux resize`).
+
+  The three view-derived values decide only among *views*. An explicit
+  `phux resize TARGET COLSxROWS` is not a view: it names a size no viewport
+  reported, and the server applies it immediately whether or not anyone is
+  attached. What it does not do is win permanently. Under `"smallest"`,
+  `"largest"`, and `"latest"` the next view event — an attach, a detach, or
+  an attached client's window resize — recomputes the Terminal's geometry
+  from the views and supersedes it. Under `"manual"` no view event ever
+  recomputes, so an explicit resize is the only thing that sets the size and
+  it holds. That is the setting to reach for when a pane must stay at a
+  scripted geometry ([ADR-0062](../../ADR/0062-headless-resize-and-window-size-policy.md)).
+
+  `phux resize` reads the server's real geometry back before exiting and
+  fails loudly rather than silently, so a script never has to infer which of
+  these applied — see [`agents.md`](./agents.md) §4.15.
 
 **Experimental knobs** live under `[experimental]`. Today the only key
 is `predictive-echo` (boolean, default `false`), which opts `phux attach`
@@ -1516,6 +1531,7 @@ the `phux-4li` epic.
 
 ### 6.2 Resize behavior
 
+<!-- impl-status: shipped; probe: frozen -->
 > **Status:** Viewport-driven reflow ships. Automatic minimum-size freezing
 > now also ships (phux-foz.3): proportional re-flow and freezing are
 > implemented in the layout walk itself, so paint, reflow
@@ -1537,6 +1553,7 @@ holds at every viewport size.
 
 ### 6.3 Resize commands
 
+<!-- impl-status: shipped; probe: resize-pane -->
 > **Status:** Keyboard `resize-pane` actions and mouse divider dragging ship
 > (ADR-0048, phux-foz.3). `resize-pane` dispatches through the
 > single-dispatch action registry, `C-a H/J/K/L` are the default bindings
@@ -1561,6 +1578,7 @@ The new layout broadcasts to other attached clients via `SET_METADATA`
 
 ### 6.4 Window sidebar
 
+<!-- impl-status: shipped; probe: toggle-sidebar -->
 > **Status:** Shipped (`phux-4h5a`; herdr-shaped by `phux-p4vp`;
 > interactive per `phux-fce4`; sectioned + agent-aware per `phux-foz.9`).
 
@@ -1677,6 +1695,7 @@ dropped. The same targets stay keyboard-reachable through their actions
 
 ## 7. Mouse
 
+<!-- impl-status: shipped; probe: MouseEvent -->
 > **Status:** Shipped (ADR-0048; per-pane opt-out in phux-npb3).
 > Click-to-focus, drag-on-divider to resize, and default outer-terminal
 > mouse capture are implemented. The client enables its own mouse
@@ -1761,6 +1780,7 @@ We do not ship copy-mode mouse drag selection — see §11.
 
 ### 7.1 Context menus
 
+<!-- impl-status: shipped; probe: ContextMenu -->
 > **Status:** Shipped (ADR-0058).
 
 The right button opens a menu anchored at the pointer, listing the
@@ -1987,6 +2007,7 @@ but focus authority and advisory attention navigation remain client-local.
 
 ## 9. Hooks
 
+<!-- impl-status: partial; probe: after-new-pane -->
 > **Status:** Partially shipped (phux-r82.1). Config parsing for
 > `[[hooks.<name>]]` entries ships in `phux-config` (see `schema.rs`),
 > and the server-side dispatcher (`phux-server::hooks`) fires a starter

@@ -92,6 +92,13 @@ Server replies (frame type 0x81):
 
 **Why it matters:** this is where the client says "I want to see and control this terminal," and which role it claims. The server then allocates a subscription and begins the replay sequence.
 
+<!-- impl-status: spec-only; probe: RolePolicy -->
+> **Status: spec-only —** the `role_policy` block in the frame above. It is
+> not encoded on `ATTACH` today and the reference server keeps no role state,
+> so a client that omits it gets the same unconstrained subscription as one
+> that asks for `PRIMARY`. Send the rest of the frame as shown;
+> [L1.md §8.1](./L1.md) has the contract roles will satisfy when they land.
+
 ---
 
 ## Step 3: Receive initial state (snapshot)

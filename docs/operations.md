@@ -22,6 +22,15 @@ IPC boundary translate to `ERROR` messages with a stable `ErrorCode` and a
 human-readable message. [`spec/proto.md`](./spec/proto.md) owns that wire shape
 and the code catalog.
 
+A CLI verb whose **stdout reader hangs up** — `phux snapshot work | head -8`,
+or quitting `less` mid-listing — is not an error. Every stdout write in the
+`phux` binary goes through one helper that treats `BrokenPipe` as a clean end
+of the pipeline: the process exits `0`, silently, running no further output.
+Any other write failure (a full disk, `EIO`) is reported as one stderr line
+with a failing status. The bin crate keeps clippy's `print_stdout` lint armed
+so a new `println!` cannot reintroduce the panic that used to end that
+pipeline.
+
 ## Logging and observability
 
 Logs are both an operator surface and a leak surface; [ADR-0028](../ADR/0028-runtime-log-control.md) owns that decision and its slicing, and this section is the home for the facts.
@@ -52,6 +61,8 @@ Log sinks are created with mode `0o600` (owner-only) on Unix so another user on 
 ### Crash capture
 
 Panics are durable on both sides. The **client** panic hook logs the panic message plus a captured `std::backtrace::Backtrace` to its file sink *before* it restores the terminal (survives even though the default hook's stderr backtrace would vanish into the dead alt screen). The **server** panic hook logs task/actor panics with their backtrace through `tracing`, so a daemonized server's crash lands in the log file. Both honor `RUST_BACKTRACE` for trace verbosity.
+
+The server hook is armed by the **long-running daemons only** — `phux server` and `phux relay run` install it on entry, not `telemetry::init`. A one-shot CLI verb shares that subscriber but keeps the default panic hook: when it was armed process-wide, a CLI that died reported itself as a `server panic`, sending triage after a server that never faltered. Nothing in a one-shot verb needs a durable crash record, because the operator is reading its stderr as it happens.
 
 ### Reading a trace to localize lag
 

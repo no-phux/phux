@@ -132,6 +132,7 @@ phux remote add
 phux remote list
 phux remote remove
 phux rename
+phux resize
 phux run
 phux satellite
 phux satellite add

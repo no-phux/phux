@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use phux_protocol::TerminalId;
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind};
+use phux_protocol::wire::frame::{Command, CommandResult};
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
@@ -41,44 +41,30 @@ pub async fn report(
     payload: AskedPayload,
 ) -> Result<(), AttachError> {
     let mut conn = Connection::connect(socket).await?;
-    match command(
-        &mut conn,
-        1,
-        Command::ReportAsked {
-            terminal_id: pane,
-            id: payload.id,
-            question: payload.question,
-            suggestions: payload.suggestions,
-            elapsed_seconds: payload.elapsed_seconds,
-        },
-    )
-    .await?
+    // `handle_report_asked` broadcasts the resulting `Asked` event to the
+    // pane's *event subscribers* before returning its ack — so on a
+    // connection that had subscribed, the event would arrive ahead of the
+    // COMMAND_RESULT. A hook reporter never subscribes: this connection is
+    // opened here, sends exactly one command, and is dropped. Nothing can fan
+    // out onto its mailbox, so there is nothing to keep.
+    match conn
+        .request(
+            1,
+            Command::ReportAsked {
+                terminal_id: pane,
+                id: payload.id,
+                question: payload.question,
+                suggestions: payload.suggestions,
+                elapsed_seconds: payload.elapsed_seconds,
+            },
+        )
+        .await?
+        .into_result_ignoring_interleaved()
     {
         CommandResult::Ok => Ok(()),
         CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
         other => Err(AttachError::Protocol(format!(
             "unexpected REPORT_ASKED result: {other:?}"
         ))),
-    }
-}
-
-async fn command(
-    conn: &mut Connection,
-    request_id: u32,
-    command: Command,
-) -> Result<CommandResult, AttachError> {
-    conn.send(&FrameKind::Command {
-        request_id,
-        command,
-    })
-    .await?;
-    loop {
-        match conn.recv().await? {
-            FrameKind::CommandResult {
-                request_id: got,
-                result,
-            } if got == request_id => return Ok(result),
-            _ => {}
-        }
     }
 }

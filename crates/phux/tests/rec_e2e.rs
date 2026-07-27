@@ -19,8 +19,11 @@
 //!
 //! The load-bearing test here is `rec_does_not_resize_the_recorded_pane`.
 //! `phux-client`'s unit test proves the recorder never *sends* `ATTACH`;
-//! this one proves the consequence against a real server with a real human
-//! attached, which is the only place the regression would actually hurt.
+//! this one proves the consequence against a real server, which is the only
+//! place the regression would actually hurt. It parks the pane at a
+//! non-default size with `phux resize` first — without that the recorder's
+//! own 80x24 no-TTY viewport would resize an 80x24 pane to 80x24 and the
+//! assertion would pass vacuously.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -33,7 +36,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use phux_record::cast::{EventCode, read_cast};
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 /// Path to the freshly-built `phux` binary, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -187,81 +189,6 @@ fn read_bytes(path: &Path) -> Vec<u8> {
     bytes
 }
 
-/// A real `phux attach` TUI on a real PTY, killed on drop.
-///
-/// Its only job in this file is to put the pane at a size that is NOT the
-/// no-TTY default, so an errant session-scoped `ATTACH` from the recorder
-/// would be *observable*. See `rec_does_not_resize_the_recorded_pane`.
-struct AttachedClient {
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    _config: tempfile::TempDir,
-}
-
-impl Drop for AttachedClient {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl AttachedClient {
-    /// Attach at `cols`x`rows` and block until the server has reshaped the
-    /// pane away from the 80x24 no-TTY default.
-    fn start(server: &ServerGuard, cols: u16, rows: u16) -> Self {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("open attach PTY");
-        let config = tempfile::tempdir().expect("isolated config dir");
-        let mut command = CommandBuilder::new(PHUX);
-        command.args([
-            "attach",
-            "--socket",
-            server.socket.to_str().expect("UTF-8 socket"),
-            SESSION,
-        ]);
-        command.env("SHELL", "/bin/sh");
-        command.env("TERM", "xterm-256color");
-        command.env("RUST_LOG", "off");
-        command.env("XDG_CONFIG_HOME", config.path());
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .expect("spawn attached TUI");
-        drop(pair.slave);
-
-        // Drain paint output continuously: an undrained PTY backpressures
-        // the real client, which then stops servicing the resize it just
-        // negotiated and the wait below times out for the wrong reason.
-        let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
-        std::thread::spawn(move || {
-            let mut bytes = [0u8; 8192];
-            while let Ok(read) = reader.read(&mut bytes) {
-                if read == 0 {
-                    break;
-                }
-            }
-        });
-
-        let attached = Self {
-            child,
-            _config: config,
-        };
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < deadline {
-            if server.pane_size() != (80, 24) {
-                return attached;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!("attached client never resized the pane away from 80x24");
-    }
-}
-
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn rec_records_a_live_pane_to_a_playable_cast() {
@@ -317,25 +244,32 @@ fn rec_records_a_live_pane_to_a_playable_cast() {
     );
 }
 
-/// The observer guarantee, proved against a real server with a real human
-/// attached. This is the reason `phux rec` speaks `ATTACH_TERMINAL` and not
-/// `ATTACH`; see `phux-client`'s `record` module docs.
+/// The observer guarantee, proved against a real server. This is the reason
+/// `phux rec` speaks `ATTACH_TERMINAL` and not `ATTACH`; see `phux-client`'s
+/// `record` module docs.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn rec_does_not_resize_the_recorded_pane() {
     let server = ServerGuard::start();
-    // A human is attached at 100x30. This is not decoration: a headless
-    // caller's `current_viewport()` reports 80x24, so against an 80x24 pane
-    // an errant ATTACH would resize it to the size it already was and this
-    // test would pass while the bug shipped. The assertion below only has
-    // teeth because the pane is somewhere else.
-    let _human = AttachedClient::start(&server, 100, 30);
+    // Move the pane off the no-TTY default first. This is not decoration: a
+    // headless caller's `current_viewport()` reports 80x24, so against an
+    // 80x24 pane an errant ATTACH would resize it to the size it already was
+    // and this test would pass while the bug shipped. The assertion below
+    // only has teeth because the pane is somewhere else.
+    //
+    // This used to require standing up a real `phux attach` on a real PTY
+    // purely for its side effect on the grid, because there was no headless
+    // way to make a pane a non-default size. `phux resize` is that way
+    // (phux-h5hj.5), and it is strictly better scaffolding here: nothing is
+    // attached, so nothing but `phux rec` can be holding the pane's size
+    // when the assertion runs.
+    server.success(&["resize", SESSION, "120x40"]);
     let before = server.pane_size();
     assert_ne!(
         before,
         (80, 24),
-        "the attached client must move the pane off the no-TTY default or \
-         this test cannot observe the regression it exists to catch"
+        "the pane must sit off the no-TTY default or this test cannot \
+         observe the regression it exists to catch"
     );
 
     let out = server.out("observer.cast");
