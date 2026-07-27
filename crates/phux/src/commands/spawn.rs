@@ -69,7 +69,7 @@ pub(crate) fn run_spawn(
             split,
             ratio,
         ),
-        None => dispatch_spawn(&socket_path, &frame, request_id, "spawn"),
+        None => dispatch_spawn(&socket_path, &frame, "spawn"),
     };
     match result {
         Ok(SpawnResult::Ok(terminal_id)) => print_spawned(&terminal_id, json),
@@ -93,34 +93,43 @@ pub(crate) fn run_spawn(
 /// On a connect/transport failure this prints the `no server` diagnostic
 /// (attributed to `verb`) and returns the failure [`ExitCode`] in `Err`, so
 /// callers only handle the `SpawnResult` variants.
+///
+/// The correlation id is not a parameter: it is read out of `frame`'s own
+/// `request_id` field, so the id sent and the id waited on cannot drift.
 pub(crate) fn dispatch_spawn(
     socket_path: &Path,
     frame: &FrameKind,
-    request_id: u32,
     verb: &str,
 ) -> Result<SpawnResult, ExitCode> {
     let rt = cli_runtime()?;
-    rt.block_on(dispatch_spawn_async(socket_path, frame, request_id))
+    rt.block_on(dispatch_spawn_async(socket_path, frame))
         .map_err(|err| report_no_server(&err, socket_path, verb))
 }
 
+/// Open a connection, send `frame`, and return the correlated spawn outcome.
+///
+/// The wait used to be a hand-rolled `loop { recv() }` that matched
+/// `TERMINAL_SPAWNED` and dropped every other frame, which meant a peer
+/// answering with a correlated `ERROR` — the way `relay.rs`'s own
+/// `handle_inbound` says a satellite MAY answer a relayed spawn — wedged
+/// `phux spawn --satellite` until the transport died. It now rides
+/// [`Connection::request_spawn`], and a refusal is folded into the same
+/// `SpawnResult::Err` shape a hub already produces for exactly this case, so
+/// `report_spawn_error` renders it without a new code path.
 async fn dispatch_spawn_async(
     socket_path: &Path,
     frame: &FrameKind,
-    request_id: u32,
 ) -> Result<SpawnResult, phux_client::attach::AttachError> {
     let mut conn = Connection::connect(socket_path).await?;
-    conn.send(frame).await?;
-    loop {
-        if let FrameKind::TerminalSpawned {
-            request_id: got,
-            result,
-        } = conn.recv().await?
-            && got == request_id
-        {
-            return Ok(result);
-        }
+    let (answer, interleaved) = conn.request_spawn(frame).await?.into_parts();
+    for message in phux_client::state::degradation_notices(&interleaved) {
+        eprintln!("phux: warning: partial results — {message}");
     }
+    Ok(answer.unwrap_or_else(|refusal| {
+        SpawnResult::Err(SpawnError::SpawnFailed(format!(
+            "server refused the spawn: {refusal}"
+        )))
+    }))
 }
 
 /// Resolve an explicit local owner, spawn into its exact server window, then
@@ -172,7 +181,7 @@ pub(crate) fn dispatch_spawn_placed(
             return Err(ExitCode::FAILURE);
         };
         *owner_terminal = Some(owner.clone());
-        let spawned = dispatch_spawn_async(socket_path, &frame, request_id)
+        let spawned = dispatch_spawn_async(socket_path, &frame)
             .await
             .map_err(|err| report_no_server(&err, socket_path, verb))?;
         let SpawnResult::Ok(new_pane) = &spawned else {
@@ -329,7 +338,8 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use phux_client::layout::leaves;
-    use phux_protocol::wire::frame::CommandValue;
+    use phux_client::testkit::{ScriptSpec, ScriptedServer};
+    use phux_protocol::wire::frame::{CommandValue, ErrorCode};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -546,5 +556,49 @@ mod tests {
         );
         assert!(result.is_err());
         mock.join().expect("mock server");
+    }
+
+    /// Long enough that a loaded machine cannot trip it, short enough that a
+    /// genuine wedge fails this test instead of hanging the run.
+    const WEDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+    #[tokio::test]
+    async fn satellite_refusal_ends_the_spawn_instead_of_wedging_it() {
+        // phux-h5hj.12. `relay.rs`'s `handle_inbound` states the shape:
+        // "a satellite MAY answer a relayed spawn with a generic correlated
+        // ERROR instead of TERMINAL_SPAWNED". `dispatch_spawn_async` used to
+        // wait on TERMINAL_SPAWNED alone, so `phux spawn --satellite build-box`
+        // against such a peer printed nothing and never exited — the user's
+        // only way out was Ctrl-C, which looks identical to a hung server.
+        //
+        // The timeout is the assertion: on the pre-fix code this test does not
+        // fail, it hangs.
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let socket = temp.path().join("refusing.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let spec = ScriptSpec::new().refuse_spawn(
+            ErrorCode::UnsupportedSatelliteRoute,
+            "no satellite route to build-box",
+        );
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+
+        let result =
+            tokio::time::timeout(WEDGE_TIMEOUT, dispatch_spawn_async(&socket, &spawn_frame()))
+                .await
+                .expect("a refused spawn must return; a timeout here is the wedge itself")
+                .expect("transport");
+
+        // Folded into the shape a hub already produces for this case, so the
+        // CLI's existing `report_spawn_error` renders it.
+        match result {
+            SpawnResult::Err(SpawnError::SpawnFailed(reason)) => {
+                assert!(
+                    reason.contains("no satellite route to build-box"),
+                    "the refusal must reach the operator, got {reason:?}"
+                );
+            }
+            other => panic!("a correlated ERROR is this spawn's answer, got {other:?}"),
+        }
+        server.await.expect("scripted server");
     }
 }

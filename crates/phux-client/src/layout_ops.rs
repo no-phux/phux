@@ -16,8 +16,11 @@
 //! `GET_METADATA` followed by a whole-value `SET_METADATA`; concurrent writers
 //! can overwrite one another. The trailing `GET_METADATA` is both a flush
 //! barrier for the fire-and-forget SET and the value returned to the caller.
-//! Callers should use a dedicated connection because request waits consume and
-//! ignore unrelated frames.
+//! Callers should use a dedicated connection: the reads route through
+//! [`Connection::request_metadata`], which hands back anything the server
+//! interleaved, and this module has no consumer for a `TERMINAL_OUTPUT` or an
+//! `EVENT` so it discards them (loudly — see
+//! `Reply::into_result_ignoring_interleaved`).
 
 use phux_protocol::ids::{GroupId, SessionId, TerminalId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
@@ -218,14 +221,23 @@ impl<'a> LayoutOps<'a> {
 
     async fn get_value(&mut self) -> Result<Option<Vec<u8>>, LayoutOpsError> {
         let request_id = self.allocate_request_id();
-        self.conn
-            .send(&FrameKind::GetMetadata {
+        let reply = self
+            .conn
+            .request_metadata(
                 request_id,
-                scope: Scope::Group(self.group),
-                key: layout_key(self.session),
-            })
+                Scope::Group(self.group),
+                layout_key(self.session),
+            )
             .await?;
-        self.wait_for_metadata(request_id).await
+        // `handle_get_metadata` (`crates/phux-server/src/runtime/client.rs`)
+        // answers with METADATA_VALUE and pushes nothing of its own, and this
+        // type documents a dedicated connection — one that never sent
+        // ATTACH_TERMINAL or SUBSCRIBE_EVENTS, so no pane actor can fan out
+        // onto it. Nothing can be interleaved here; if something is, the
+        // discard is logged rather than silent.
+        reply
+            .into_result_ignoring_interleaved()
+            .map_err(|refusal| LayoutOpsError::Refused(refusal.message))
     }
 
     async fn write_and_confirm(
@@ -247,25 +259,6 @@ impl<'a> LayoutOps<'a> {
         let value = self.get_value().await?;
         let bytes = value.ok_or(LayoutOpsError::MissingLayout)?;
         Workspace::decode_cbor(&bytes).map_err(Into::into)
-    }
-
-    async fn wait_for_metadata(
-        &mut self,
-        expected: u32,
-    ) -> Result<Option<Vec<u8>>, LayoutOpsError> {
-        loop {
-            match self.conn.recv().await? {
-                FrameKind::MetadataValue { request_id, value } if request_id == expected => {
-                    return Ok(value);
-                }
-                FrameKind::Error {
-                    request_id: Some(request_id),
-                    message,
-                    ..
-                } if request_id == expected => return Err(LayoutOpsError::Refused(message)),
-                _ => {}
-            }
-        }
     }
 
     const fn allocate_request_id(&mut self) -> u32 {

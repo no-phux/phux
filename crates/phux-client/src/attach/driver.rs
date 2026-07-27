@@ -2541,6 +2541,30 @@ async fn main_loop<W: super::RenderSink>(
                                 }
                                 continue;
                             }
+                            // phux-h5hj.12: the same two lookups for the
+                            // *refusal* shape. `proto.md` §9 lets a server
+                            // answer a request it will not serve with a
+                            // correlated ERROR instead of the reply frame,
+                            // and a peer session's Group is exactly the kind
+                            // of scope a policy refuses. Without this arm the
+                            // pending entry is never removed: the row stays
+                            // blank for the life of the attach, the map grows
+                            // by one per refused read, and the ERROR falls
+                            // through to `handle_server_frame` as if it were
+                            // an unrelated notice. Dropping the entry is the
+                            // whole fix — a refused read has no value to
+                            // apply, and the fleet projection already renders
+                            // a session it knows nothing about.
+                            FrameKind::Error {
+                                request_id: Some(request_id),
+                                ..
+                            } if foreign_layout_pending.contains_key(&request_id)
+                                || foreign_agent_pending.contains_key(&request_id) =>
+                            {
+                                foreign_layout_pending.remove(&request_id);
+                                foreign_agent_pending.remove(&request_id);
+                                continue;
+                            }
                             other => other,
                         };
                         let defer_paint = frame_defers_paint(defer_flags[frame_idx], &f);

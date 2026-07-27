@@ -378,22 +378,26 @@ fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
         {
             return super::report_no_server(&err, &socket_path, "config reload");
         }
-        if let Err(err) = conn
-            .send(&FrameKind::GetMetadata {
-                request_id: 2,
-                scope: Scope::Global,
-                key: CONFIG_RELOAD_KEY.to_owned(),
-            })
+        // The read-back is a flush barrier: SET_METADATA has no reply, so
+        // without it this process can exit and close the socket before the
+        // server reads the SET. It goes through `request_metadata` because the
+        // wait that used to be here matched METADATA_VALUE alone — a server
+        // that refused the read with a correlated ERROR (`proto.md` §9) left
+        // `phux config reload` hanging with no output at all.
+        let reply = match conn
+            .request_metadata(2, Scope::Global, CONFIG_RELOAD_KEY.to_owned())
             .await
         {
-            return super::report_no_server(&err, &socket_path, "config reload");
-        }
-        loop {
-            match conn.recv().await {
-                Ok(FrameKind::MetadataValue { request_id: 2, .. }) => break,
-                Ok(_) => {}
-                Err(err) => return super::report_no_server(&err, &socket_path, "config reload"),
-            }
+            Ok(reply) => reply,
+            Err(err) => return super::report_no_server(&err, &socket_path, "config reload"),
+        };
+        // `handle_get_metadata` (`crates/phux-server/src/runtime/client.rs`)
+        // answers with METADATA_VALUE and pushes nothing of its own, and this
+        // connection is a fresh one-shot that never attached or subscribed —
+        // nothing can fan out onto it. A non-empty discard is logged.
+        if let Err(refusal) = reply.into_result_ignoring_interleaved() {
+            eprintln!("phux: config reload could not be confirmed: {refusal}");
+            return ExitCode::FAILURE;
         }
         outln!("config OK; reload signalled to attached clients");
         ExitCode::SUCCESS

@@ -50,6 +50,14 @@
 //!   [`PROTOCOL_VERSION`].
 //! - `GET_METADATA` / `SET_METADATA` — correlated `METADATA_VALUE` /
 //!   `COMMAND_RESULT` on the caller's `request_id`.
+//! - `SPAWN_TERMINAL` — `handle_spawn_terminal`
+//!   (`crates/phux-server/src/runtime/client.rs`) answers with
+//!   `TERMINAL_SPAWNED` on the caller's `request_id`, behind any frames
+//!   already queued for the connection. [`ScriptSpec::spawn_result`] is
+//!   therefore **mandatory** for a script whose client spawns.
+//!   [`ScriptSpec::refuse_spawn`] models the other legal answer: the
+//!   correlated `ERROR` a hub surfaces when a satellite refuses the relayed
+//!   spawn (`crates/phux-server/src/hub/relay.rs`, `handle_inbound`).
 //!
 //! # Scope
 //!
@@ -74,7 +82,7 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ServerCapabilities;
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, SpawnResult,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -128,6 +136,11 @@ pub struct ScriptSpec {
     /// When set, every metadata request is refused with a *correlated*
     /// `ERROR` instead of answered.
     metadata_error: Option<(ErrorCode, String)>,
+    /// The `TERMINAL_SPAWNED` payload a `SPAWN_TERMINAL` is answered with.
+    spawn: Option<SpawnResult>,
+    /// When set, every `SPAWN_TERMINAL` is refused with a *correlated*
+    /// `ERROR` instead of a `TERMINAL_SPAWNED`.
+    spawn_error: Option<(ErrorCode, String)>,
     /// Pushed once the client's `SUBSCRIBE_EVENTS` registers.
     script: Vec<FrameKind>,
     /// What to do after the script.
@@ -143,6 +156,8 @@ impl fmt::Debug for ScriptSpec {
             .field("metadata", &self.metadata.is_some())
             .field("metadata_store", &self.metadata_store)
             .field("metadata_error", &self.metadata_error)
+            .field("spawn", &self.spawn)
+            .field("spawn_error", &self.spawn_error)
             .field("script", &self.script)
             .field("end", &self.end)
             .finish()
@@ -261,6 +276,30 @@ impl ScriptSpec {
     #[must_use]
     pub fn refuse_metadata(mut self, code: ErrorCode, message: &str) -> Self {
         self.metadata_error = Some((code, message.to_owned()));
+        self
+    }
+
+    /// The `TERMINAL_SPAWNED` payload a `SPAWN_TERMINAL` is answered with.
+    ///
+    /// Mandatory for any script whose client spawns: without it the harness
+    /// panics rather than modelling a server that answers a spawn with
+    /// silence.
+    #[must_use]
+    pub fn spawn_result(mut self, result: SpawnResult) -> Self {
+        self.spawn = Some(result);
+        self
+    }
+
+    /// Refuse every `SPAWN_TERMINAL` with a *correlated* `ERROR`.
+    ///
+    /// A satellite MAY answer a relayed spawn this way instead of with
+    /// `TERMINAL_SPAWNED` — `crates/phux-server/src/hub/relay.rs`
+    /// (`handle_inbound`) normalizes exactly that shape on the return leg, so
+    /// it is a shape a hub's own clients can see. The correlation is what
+    /// stops the caller waiting forever.
+    #[must_use]
+    pub fn refuse_spawn(mut self, code: ErrorCode, message: &str) -> Self {
+        self.spawn_error = Some((code, message.to_owned()));
         self
     }
 
@@ -438,16 +477,41 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
                 .push((scope.clone(), key.clone(), value.clone()));
             Vec::new()
         }
+        // `handle_spawn_terminal` (`crates/phux-server/src/runtime/client.rs`)
+        // answers with `TERMINAL_SPAWNED` on the caller's `request_id`, after
+        // whatever this connection already had queued. A hub relaying to a
+        // satellite may instead surface the satellite's *correlated* `ERROR`
+        // (`crates/phux-server/src/hub/relay.rs`, `handle_inbound`), which is
+        // what [`ScriptSpec::refuse_spawn`] models.
+        FrameKind::SpawnTerminal { request_id, .. } => {
+            let mut out = std::mem::take(&mut spec.pre_ack);
+            if let Some((code, message)) = spec.spawn_error.clone() {
+                out.push(FrameKind::Error {
+                    request_id: Some(*request_id),
+                    code,
+                    message,
+                });
+                return out;
+            }
+            let result = spec.spawn.clone().expect(
+                "a scripted server whose client sends SPAWN_TERMINAL must declare an \
+                 outcome: handle_spawn_terminal always answers. Call \
+                 ScriptSpec::spawn_result or ScriptSpec::refuse_spawn.",
+            );
+            out.push(FrameKind::TerminalSpawned {
+                request_id: *request_id,
+                result,
+            });
+            out
+        }
         // Request-shaped frames the reference server *does* answer but this
         // harness has not modelled yet. Refusing loudly beats replying with
         // nothing: a silent no-reply wedges the client until its transport
         // dies, and the test that added the call would time out with no clue
         // why.
-        FrameKind::Attach { .. }
-        | FrameKind::SpawnTerminal { .. }
-        | FrameKind::ListMetadata { .. } => {
+        FrameKind::Attach { .. } | FrameKind::ListMetadata { .. } => {
             panic!(
-                "the scripted server has no reference ordering for {frame:?} yet. The                  real server answers it (ATTACHED / TERMINAL_SPAWNED / METADATA_LIST);                  add the arm to `reference_reply` with the handler citation rather than                  hand-rolling a fake for one test."
+                "the scripted server has no reference ordering for {frame:?} yet. The                  real server answers it (ATTACHED / METADATA_LIST); add the arm to                  `reference_reply` with the handler citation rather than hand-rolling a                  fake for one test."
             )
         }
         // Everything else is genuinely fire-and-forget on this wire —

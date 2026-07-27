@@ -97,7 +97,7 @@ fn spawn_resolved(
             split,
             ratio,
         ),
-        None => dispatch_spawn(&socket_path, &frame, request_id, "launch"),
+        None => dispatch_spawn(&socket_path, &frame, "launch"),
     };
     match result {
         Ok(SpawnResult::Ok(terminal_id)) => print_launched(resolved, &terminal_id, json),

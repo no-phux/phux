@@ -13,7 +13,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use bytes::{Buf, BytesMut};
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, MAX_FRAME_LEN};
+use phux_protocol::wire::frame::{
+    Command, CommandResult, ErrorCode, FrameKind, MAX_FRAME_LEN, Scope, SpawnResult,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -410,64 +412,247 @@ impl Connection {
         })
         .await?;
         let mut interleaved = Vec::new();
+        let answer = self
+            .await_answer(request_id, &mut interleaved, |frame| match frame {
+                FrameKind::CommandResult { request_id, result } => {
+                    Some((*request_id, result.clone()))
+                }
+                _ => None,
+            })
+            .await?;
+        // `CommandResult` already has an `Error` variant with exactly the
+        // `ERROR` frame's payload, so this pair folds the refusal into its
+        // reply type rather than surfacing an `Answer` — which is why the
+        // public signature is unchanged from before the engine existed.
+        let result = answer.unwrap_or_else(|refusal| CommandResult::Error {
+            code: refusal.code,
+            message: refusal.message,
+        });
+        Ok(Reply {
+            result,
+            interleaved,
+        })
+    }
+
+    /// Send one `GET_METADATA` and wait for its `METADATA_VALUE`, keeping
+    /// every frame the peer interleaved ahead of it.
+    ///
+    /// The L3 twin of [`Self::request`]. A refusal is an [`Answer::Err`]
+    /// rather than a `None` value: "the key is unset" and "the peer will not
+    /// serve this scope" are different facts, and collapsing them is how
+    /// `phux new` came to report "server did not register session" for a
+    /// server that had refused the read outright.
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decode failures from [`Self::send`] /
+    /// [`Self::recv`].
+    pub async fn request_metadata(
+        &mut self,
+        request_id: u32,
+        scope: Scope,
+        key: String,
+    ) -> Result<Reply<Answer<Option<Vec<u8>>>>, AttachError> {
+        self.send(&FrameKind::GetMetadata {
+            request_id,
+            scope,
+            key,
+        })
+        .await?;
+        let mut interleaved = Vec::new();
+        let result = self
+            .await_answer(request_id, &mut interleaved, |frame| match frame {
+                FrameKind::MetadataValue { request_id, value } => {
+                    Some((*request_id, value.clone()))
+                }
+                _ => None,
+            })
+            .await?;
+        Ok(Reply {
+            result,
+            interleaved,
+        })
+    }
+
+    /// Send one `SPAWN_TERMINAL` and wait for its `TERMINAL_SPAWNED`, keeping
+    /// every frame the peer interleaved ahead of it.
+    ///
+    /// The correlation id is read out of `frame` rather than passed alongside
+    /// it, so the id waited on and the id sent cannot disagree.
+    ///
+    /// A satellite MAY answer a relayed spawn with a correlated `ERROR`
+    /// instead of `TERMINAL_SPAWNED` — a hub already normalizes exactly that
+    /// shape on the return leg (`crates/phux-server/src/hub/relay.rs`,
+    /// `handle_inbound`: "a satellite MAY answer a relayed spawn with a
+    /// generic correlated ERROR"). This is the same normalization for a
+    /// direct peer, and without it `phux spawn --satellite` waits forever for
+    /// a frame that is never coming.
+    ///
+    /// # Errors
+    ///
+    /// [`AttachError::Protocol`] when `frame` is not a `SPAWN_TERMINAL`;
+    /// otherwise transport and decode failures from [`Self::send`] /
+    /// [`Self::recv`].
+    pub async fn request_spawn(
+        &mut self,
+        frame: &FrameKind,
+    ) -> Result<Reply<Answer<SpawnResult>>, AttachError> {
+        let FrameKind::SpawnTerminal { request_id, .. } = frame else {
+            return Err(AttachError::Protocol(format!(
+                "request_spawn needs a SPAWN_TERMINAL frame, got {frame:?}",
+            )));
+        };
+        let request_id = *request_id;
+        self.send(frame).await?;
+        let mut interleaved = Vec::new();
+        let result = self
+            .await_answer(request_id, &mut interleaved, |frame| match frame {
+                FrameKind::TerminalSpawned { request_id, result } => {
+                    Some((*request_id, result.clone()))
+                }
+                _ => None,
+            })
+            .await?;
+        Ok(Reply {
+            result,
+            interleaved,
+        })
+    }
+
+    /// The workspace's only correlation loop.
+    ///
+    /// Reads frames until the peer answers `request_id`, pushing every frame
+    /// that is not that answer onto `interleaved`. `recognize` reports the
+    /// request id and payload of a frame that is *this pair's* reply frame,
+    /// and `None` for anything else.
+    ///
+    /// # Why one engine and typed wrappers, rather than a public generic
+    ///
+    /// The catalogued bug is a caller that waits on one frame variant and
+    /// drops the rest, so a peer answering with a correlated `ERROR`
+    /// (`proto.md` §9) wedges it until the transport dies. Two shapes could
+    /// have fixed it; only one makes the broken version unwriteable.
+    ///
+    /// - **A public generic `request_frame(id, frame, predicate)`.** The
+    ///   caller supplies the correlation, which means the caller can get the
+    ///   correlation wrong — and the specific way every site here got it
+    ///   wrong was *omitting the `ERROR` arm*. Handing that arm back to the
+    ///   author who already forgot it once is not an abstraction, it is a
+    ///   rename.
+    /// - **This: one private engine, one public method per pair.** The
+    ///   `ERROR` arm is not the pair's business at all; adding a pair means
+    ///   naming its reply frame, and the author cannot forget a rule they are
+    ///   never asked to state. Adding a pair *without* the engine means
+    ///   writing a visible `loop { recv() }` next to three methods that
+    ///   don't — reviewable in the diff, which the discarding version never
+    ///   was.
+    ///
+    /// `recognize` takes `&FrameKind` and clones the payload out rather than
+    /// consuming the frame. That is the load-bearing detail: a closure taking
+    /// the frame by value could not hand back the ones it does not recognize,
+    /// and "the frame it did not recognize is now gone" is the entire bug
+    /// class. The cost is one clone of a control-plane payload per round
+    /// trip — these are one per CLI verb, not per keystroke.
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decode failures from [`Self::recv`]; a peer
+    /// that closes without answering surfaces as
+    /// [`AttachError::Disconnected`].
+    async fn await_answer<T>(
+        &mut self,
+        request_id: u32,
+        interleaved: &mut Vec<FrameKind>,
+        recognize: impl Fn(&FrameKind) -> Option<(u32, T)>,
+    ) -> Result<Answer<T>, AttachError> {
         loop {
-            match self.recv().await? {
-                FrameKind::CommandResult {
-                    request_id: got,
-                    result,
-                } if got == request_id => {
-                    return Ok(Reply {
-                        result,
-                        interleaved,
-                    });
-                }
-                FrameKind::Error {
-                    request_id: Some(got),
-                    code,
-                    message,
-                } if got == request_id => {
-                    return Ok(Reply {
-                        result: CommandResult::Error { code, message },
-                        interleaved,
-                    });
-                }
-                other => interleaved.push(other),
+            let frame = self.recv().await?;
+            if let Some((got, value)) = recognize(&frame)
+                && got == request_id
+            {
+                return Ok(Ok(value));
             }
+            // `proto.md` §9: an `ERROR` carrying a `request_id` is *that*
+            // request's answer. An uncorrelated one (`request_id: None`) is
+            // not — on this wire it is the hub's per-satellite degradation
+            // notice — so it falls through to `interleaved` like any other
+            // pushed frame.
+            if let FrameKind::Error {
+                request_id: Some(got),
+                code,
+                message,
+            } = &frame
+                && *got == request_id
+            {
+                return Ok(Err(Refusal {
+                    code: *code,
+                    message: message.clone(),
+                }));
+            }
+            interleaved.push(frame);
         }
     }
 }
 
-/// The complete outcome of one [`Connection::request`]: the ack, plus every
-/// frame the server pushed ahead of it.
+/// The peer's correlated `ERROR` answer to one request (`proto.md` §9).
+///
+/// Distinct from an uncorrelated `ERROR`, which answers nothing and reaches
+/// the caller through [`Reply::interleaved`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{code:?}: {message}")]
+pub struct Refusal {
+    /// The typed code the peer refused with.
+    pub code: ErrorCode,
+    /// The peer's human-readable explanation.
+    pub message: String,
+}
+
+/// A peer's answer to one correlated request: the reply payload, or the
+/// [`Refusal`] it answered with instead.
+///
+/// A plain `Result` on purpose. Every caller of a correlated round trip has
+/// to decide what a refusal means for it, and `Result` is the one shape the
+/// language will not let them skip: there is no accessor that yields the
+/// value while leaving the refusal unexamined, `?` and `map_err` compose the
+/// refusal into the caller's own error type, and [`Refusal`] is an
+/// `std::error::Error` so `thiserror` wrappers take it directly.
+pub type Answer<T> = Result<T, Refusal>;
+
+/// The complete outcome of one correlated round trip: the answer, plus every
+/// frame the peer pushed ahead of it.
 ///
 /// Deliberately opaque. The fields are reachable only through methods, so a
 /// caller cannot destructure away the half it did not think about — the whole
 /// point of the type (see [`Connection::request`] for the design rationale and
 /// the interleave contract on [`Connection`] for why the frames matter).
+///
+/// `T` is whatever the pair's answer is: [`CommandResult`] for
+/// [`Connection::request`] (which folds a refusal into `CommandResult::Error`
+/// because that variant already carries exactly the `ERROR` payload), and
+/// [`Answer`] for the pairs whose reply type has nowhere to put one.
 #[derive(Debug)]
 #[must_use = "the reply carries frames the server will never re-send; dropping \
               it loses them"]
-pub struct Reply {
-    /// The `COMMAND_RESULT` payload, or a correlated `ERROR` normalized into
-    /// one.
-    result: CommandResult,
+pub struct Reply<T = CommandResult> {
+    /// The pair's answer: its reply-frame payload, or the peer's refusal.
+    result: T,
     /// Frames observed while waiting, in arrival order.
     interleaved: Vec<FrameKind>,
 }
 
-impl Reply {
-    /// The ack and the interleaved frames, in arrival order.
+impl<T> Reply<T> {
+    /// The answer and the interleaved frames, in arrival order.
     ///
     /// The default way to consume a reply: binding both halves is what makes
     /// forgetting one a visible act rather than an omission.
     #[must_use]
-    pub fn into_parts(self) -> (CommandResult, Vec<FrameKind>) {
+    pub fn into_parts(self) -> (T, Vec<FrameKind>) {
         (self.result, self.interleaved)
     }
 
-    /// Borrow the ack without consuming the reply.
+    /// Borrow the answer without consuming the reply.
     #[must_use]
-    pub const fn result(&self) -> &CommandResult {
+    pub const fn result(&self) -> &T {
         &self.result
     }
 
@@ -477,7 +662,7 @@ impl Reply {
         &self.interleaved
     }
 
-    /// Take the ack and drop the interleaved frames on the floor.
+    /// Take the answer and drop the interleaved frames on the floor.
     ///
     /// **Only correct when the server provably pushes nothing to this
     /// connection's mailbox before the ack** — i.e. the handler emits no frame
@@ -489,13 +674,13 @@ impl Reply {
     /// noisy rather than silent. The dropped frames are still gone: the log is
     /// a diagnostic, not a recovery.
     #[must_use]
-    pub fn into_result_ignoring_interleaved(self) -> CommandResult {
+    pub fn into_result_ignoring_interleaved(self) -> T {
         if !self.interleaved.is_empty() {
             tracing::warn!(
                 dropped = self.interleaved.len(),
                 frames = ?self.interleaved,
-                "COMMAND reply discarded frames the server interleaved ahead of \
-                 the ack; the server will not re-send them",
+                "correlated reply discarded frames the server interleaved ahead \
+                 of the answer; the server will not re-send them",
             );
         }
         self.result
@@ -949,5 +1134,204 @@ mod tests {
             "got {:?}",
             reply.interleaved()
         );
+    }
+
+    // --- the non-COMMAND pairs (phux-h5hj.12) --------------------------
+    //
+    // `GET_METADATA` and `SPAWN_TERMINAL` are their own request frames with
+    // their own `request_id`, so `Connection::request` never covered them and
+    // each grew a hand-rolled wait that matched one reply variant and dropped
+    // the rest. Every test below fails by *hanging* against that version,
+    // which is exactly how the bug presented in the field — so each one is
+    // capped by a timeout rather than left to nextest's slow-test reaper.
+
+    /// Long enough that a loaded machine cannot trip it, short enough that a
+    /// genuine wedge fails the run instead of hanging it.
+    const WEDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+    /// Spawn the scripted server half and hand back the client half.
+    ///
+    /// The script is played verbatim once the client's request frame arrives,
+    /// exactly as [`request_against`] does for `COMMAND`.
+    fn scripted(script: Vec<FrameKind>) -> Connection {
+        let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+        let mut server = Connection::from_stream(server_stream);
+        tokio::task::spawn_local(async move {
+            server.recv().await.expect("request frame");
+            for frame in &script {
+                server.send(frame).await.expect("scripted frame");
+            }
+        });
+        Connection::from_stream(client_stream)
+    }
+
+    /// One `GET_METADATA` round trip against `script`.
+    ///
+    /// Capped by [`WEDGE_TIMEOUT`] because the defect under test is a wait
+    /// that never ends: without the cap a regression hangs the whole run
+    /// instead of failing this one test.
+    fn metadata_against(script: Vec<FrameKind>) -> Reply<Answer<Option<Vec<u8>>>> {
+        block_on(async {
+            let mut client = scripted(script);
+            tokio::time::timeout(
+                WEDGE_TIMEOUT,
+                client.request_metadata(7, Scope::Terminal(TerminalId::local(1)), "k".to_owned()),
+            )
+            .await
+            .expect("the read must resolve; a timeout here is the wedge itself")
+            .expect("metadata reply")
+        })
+    }
+
+    /// One `SPAWN_TERMINAL` round trip against `script`, same cap.
+    fn spawn_against(script: Vec<FrameKind>) -> Reply<Answer<SpawnResult>> {
+        block_on(async {
+            let mut client = scripted(script);
+            tokio::time::timeout(WEDGE_TIMEOUT, client.request_spawn(&spawn_frame(7)))
+                .await
+                .expect("the spawn must resolve; a timeout here is the wedge itself")
+                .expect("spawn reply")
+        })
+    }
+
+    fn metadata_value(request_id: u32, value: Option<&[u8]>) -> FrameKind {
+        FrameKind::MetadataValue {
+            request_id,
+            value: value.map(<[u8]>::to_vec),
+        }
+    }
+
+    fn refusal(request_id: u32) -> FrameKind {
+        FrameKind::Error {
+            request_id: Some(request_id),
+            code: ErrorCode::PermissionDenied,
+            message: "policy refused that scope".to_owned(),
+        }
+    }
+
+    #[test]
+    fn metadata_refusal_answers_the_request_instead_of_hanging_forever() {
+        // The bug: `phux tag`, `phux new`, `phux config reload` and `phux
+        // agent set` each waited on METADATA_VALUE alone, so this shape left
+        // the verb running with no output and no exit — after its write had
+        // already landed, in the `set` cases.
+        let reply = metadata_against(vec![refusal(7)]);
+        match reply.result() {
+            Err(refused) => {
+                assert_eq!(refused.code, ErrorCode::PermissionDenied);
+                assert_eq!(refused.message, "policy refused that scope");
+            }
+            Ok(other) => panic!("a correlated ERROR is this read's answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn metadata_refusal_is_distinct_from_an_unset_key() {
+        // Both used to reach the caller as "no value". They are different
+        // facts: `phux new` reported "server did not register session" for a
+        // server that had refused the read-back outright.
+        let refused = metadata_against(vec![refusal(7)]);
+        let unset = metadata_against(vec![metadata_value(7, None)]);
+        assert!(refused.result().is_err());
+        assert_eq!(unset.result().as_ref().ok(), Some(&None));
+    }
+
+    #[test]
+    fn metadata_wait_keeps_another_requests_reply() {
+        // Pipelined reads share a connection: a METADATA_VALUE for a
+        // different request_id belongs to someone else's correlation.
+        let reply = metadata_against(vec![
+            metadata_value(99, Some(b"theirs")),
+            metadata_value(7, None),
+        ]);
+        assert!(
+            matches!(
+                reply.interleaved(),
+                [FrameKind::MetadataValue { request_id: 99, .. }]
+            ),
+            "got {:?}",
+            reply.interleaved()
+        );
+    }
+
+    #[test]
+    fn metadata_wait_keeps_an_uncorrelated_degradation_notice() {
+        // A hub's per-satellite ERROR carries no request_id, so it answers
+        // nothing and must survive to the caller like any pushed frame.
+        let notice = FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::SatelliteUnreachable,
+            message: "satellite build-box is unreachable".to_owned(),
+        };
+        let reply = metadata_against(vec![notice, metadata_value(7, Some(b"v"))]);
+        assert_eq!(
+            reply.result().as_ref().ok(),
+            Some(&Some(b"v".to_vec())),
+            "an uncorrelated ERROR is not this read's answer",
+        );
+        assert!(matches!(
+            reply.interleaved(),
+            [FrameKind::Error {
+                request_id: None,
+                ..
+            }]
+        ));
+    }
+
+    fn spawn_frame(request_id: u32) -> FrameKind {
+        FrameKind::SpawnTerminal {
+            request_id,
+            group: phux_protocol::ids::GroupId::new(1),
+            command: None,
+            cwd: None,
+            env: None,
+            term: None,
+            satellite: Some(phux_protocol::ids::SatelliteHost::new("build-box")),
+            owner_terminal: None,
+        }
+    }
+
+    #[test]
+    fn spawn_refusal_answers_the_request_instead_of_hanging_forever() {
+        // `relay.rs`'s `handle_inbound` says a satellite MAY answer a relayed
+        // spawn with a generic correlated ERROR. `dispatch_spawn_async`
+        // matched TERMINAL_SPAWNED alone, so `phux spawn --satellite` against
+        // such a peer never returned.
+        let reply = spawn_against(vec![refusal(7)]);
+        assert!(
+            reply.result().is_err(),
+            "a correlated ERROR is this spawn's answer, got {:?}",
+            reply.result()
+        );
+    }
+
+    #[test]
+    fn spawn_wait_keeps_frames_pushed_ahead_of_the_reply() {
+        let spawned = FrameKind::TerminalSpawned {
+            request_id: 7,
+            result: SpawnResult::Ok(TerminalId::local(3)),
+        };
+        let reply = spawn_against(vec![snapshot(), spawned]);
+        assert!(matches!(reply.result(), Ok(SpawnResult::Ok(_))));
+        assert!(
+            matches!(reply.interleaved(), [FrameKind::TerminalSnapshot { .. }]),
+            "got {:?}",
+            reply.interleaved()
+        );
+    }
+
+    #[test]
+    fn spawn_rejects_a_frame_that_is_not_a_spawn() {
+        // The correlation id comes out of the frame, so a caller handing over
+        // the wrong frame has no id to wait on. Refuse loudly rather than
+        // wait on a fabricated one.
+        block_on(async {
+            let (client_stream, _server) = UnixStream::pair().expect("pair");
+            let mut client = Connection::from_stream(client_stream);
+            assert!(matches!(
+                client.request_spawn(&ack(1)).await,
+                Err(AttachError::Protocol(_))
+            ));
+        });
     }
 }
