@@ -18,6 +18,9 @@
 #   - spec-version-sync   : docs/spec/CHANGELOG.md head version agrees
 #                           with phux-protocol's PROTOCOL_VERSION
 #                           (skipped while the SPEC split is in flight)
+#   - impl-status         : every shipped/partial/spec-only claim in
+#                           docs/spec/ and docs/consumers/ agrees with
+#                           the code it names
 #
 # Usage:
 #   bash scripts/check-docs.sh             # run all gates
@@ -41,6 +44,7 @@ ALL_GATES=(
     dead-link
     adr-status
     spec-version-sync
+    impl-status
 )
 
 # ---------------------------------------------------------------------------
@@ -598,6 +602,243 @@ gate_spec_version_sync() {
 }
 
 # ---------------------------------------------------------------------------
+# Gate 7: impl-status
+# ---------------------------------------------------------------------------
+
+# docs/spec/ and docs/consumers/ describe behavior before it exists — that is
+# what spec-first means. The hazard is that a reader cannot tell which
+# sentences are shipped, and the repo has been bitten: tui.md §10 specified a
+# `phux capture --record` verb and a server-side output tee in the present
+# tense, and neither was ever built.
+#
+# The contract (docs/CONVENTIONS.md §"Implementation status") is that an
+# unbuilt surface carries a status claim naming a code symbol. This gate
+# resolves every such claim against the code, in BOTH directions: a
+# `spec-only` marker whose symbol now exists fails just as loudly as a
+# `shipped` claim whose symbol does not. Stale-in-the-other-direction is the
+# drift that actually recurs, because implementing something rarely prompts
+# anyone to go re-read the prose that said it was unimplemented.
+#
+# Two carriers, one vocabulary (`shipped` / `partial` / `spec-only`, plus
+# `TBD` for an unallocated reservation):
+#
+#   1. Catalog-table rows, whose last cell is the status word. Resolved
+#      against the wire discriminant constants in phux-protocol.
+#   2. Prose sections, which carry an HTML comment naming an arbitrary probe
+#      symbol immediately above a reader-visible `> **Status` callout.
+#
+# The gate cannot catch unmarked prose about an unbuilt feature — nothing
+# mechanical can. It catches the claims that are made.
+
+IMPL_STATUS_VOCAB='^(shipped|partial|spec-only|TBD)$'
+
+# The crate tree with comment-only lines stripped, materialized once. Every
+# probe then costs one grep of one file instead of a walk of the workspace.
+IMPL_CODE_CACHE=""
+
+# Built once by gate_impl_status, never from inside a command substitution —
+# a subshell would populate a copy of the variable and fire the cleanup trap
+# on its own exit, deleting the file out from under the caller.
+impl_code_cache_init() {
+    [[ -n "$IMPL_CODE_CACHE" ]] && return 0
+    IMPL_CODE_CACHE="$(mktemp "${TMPDIR:-/tmp}/phux-impl-status.XXXXXX")"
+    # shellcheck disable=SC2064
+    trap "rm -f '$IMPL_CODE_CACHE'" EXIT
+    # The comment filter is what makes a `spec-only` claim meaningful:
+    # `RolePolicy` is named in a phux-protocol doc comment that explains it is
+    # unencoded, and a naive grep would read that explanation as evidence of
+    # implementation.
+    find "$ROOT/crates" -type f -name '*.rs' -not -path '*/target/*' \
+        -print0 \
+        | xargs -0 cat \
+        | grep -vE '^[[:space:]]*(//|/\*|\*)' > "$IMPL_CODE_CACHE" || true
+}
+
+trim() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+# Does `probe` appear on a non-comment line of any crate source?
+#
+# Word boundaries are spelled out rather than using `\b`, which is a GNU
+# extension: `TYPE_SUBSCRIBE` must not match `TYPE_SUBSCRIBE_EVENTS`.
+probe_matches() {
+    local probe="$1"
+    grep -qE "(^|[^A-Za-z0-9_])${probe}([^A-Za-z0-9_]|\$)" "$IMPL_CODE_CACHE"
+}
+
+# Is there a wire discriminant constant for this message/command name?
+# The trailing colon anchors the match to the declaration, so `TYPE_SUBSCRIBE`
+# is not satisfied by `TYPE_SUBSCRIBE_EVENTS`.
+WIRE_CONSTS=""
+
+wire_const_exists() {
+    if [[ -z "$WIRE_CONSTS" ]]; then
+        WIRE_CONSTS="$(grep -rhoE 'const (TYPE|COMMAND_TAG)_[A-Z0-9_]+:' \
+            "$ROOT/crates/phux-protocol/src/wire" 2>/dev/null || true)"
+    fi
+    printf '%s\n' "$WIRE_CONSTS" \
+        | grep -qxE "const (TYPE|COMMAND_TAG)_${1}:"
+}
+
+# Carrier 1 — catalog tables under docs/spec/.
+impl_status_tables() {
+    local file line row last name probe_ok fenced
+    local name_re='`([A-Z][A-Z0-9_]+)`'
+    for file in "${FILES[@]}"; do
+        case "$file" in
+            "$ROOT"/docs/spec/*) ;;
+            *) continue ;;
+        esac
+        # The changelog narrates past releases in prose; its rows are not
+        # status claims about the current tree.
+        [[ "$file" == "$ROOT/docs/spec/CHANGELOG.md" ]] && continue
+
+        fenced=0
+        while IFS= read -r line; do
+            # Wire-body listings inside fences are illustrations, not claims.
+            if [[ "$line" == '```'* ]]; then
+                fenced=$((1 - fenced))
+                continue
+            fi
+            [[ "$fenced" -eq 1 ]] && continue
+            [[ "$line" == \|* ]] || continue
+            row="$(trim "$line")"
+            row="${row%|}"
+            last="$(trim "${row##*|}")"
+            [[ "$last" =~ $IMPL_STATUS_VOCAB ]] || continue
+
+            name=""
+            if [[ "$row" =~ $name_re ]]; then
+                name="${BASH_REMATCH[1]}"
+            fi
+            if [[ -z "$name" ]]; then
+                violate impl-status "$file" \
+                    "table row claims '$last' but names no \`MESSAGE_NAME\` to resolve it against: $row"
+                continue
+            fi
+
+            probe_ok=0
+            wire_const_exists "$name" && probe_ok=1
+
+            case "$last" in
+                shipped|partial)
+                    if [[ "$probe_ok" -eq 0 ]]; then
+                        violate impl-status "$file" \
+                            "\`$name\` is marked '$last' but no TYPE_$name / COMMAND_TAG_$name constant exists in crates/phux-protocol/src/wire/ — mark it 'spec-only' or wire it up"
+                    fi
+                    ;;
+                spec-only|TBD)
+                    if [[ "$probe_ok" -eq 1 ]]; then
+                        violate impl-status "$file" \
+                            "\`$name\` is marked '$last' but crates/phux-protocol/src/wire/ declares its discriminant — the codec shipped and the doc did not follow"
+                    fi
+                    ;;
+            esac
+        done < "$file"
+    done
+}
+
+# Carrier 2 — prose markers, anywhere in the doc tree, plus the reverse rule
+# that a `> **Status` callout under docs/spec/ or docs/consumers/ must have a
+# marker behind it. An unchecked status claim is exactly what this mechanism
+# exists to retire.
+impl_status_markers() {
+    local file line lineno status probes probe
+    local marker_re='^<!--[[:space:]]*impl-status:[[:space:]]*([A-Za-z-]+);[[:space:]]*probe:[[:space:]]*([A-Za-z0-9_,:-]+)[[:space:]]*-->[[:space:]]*$'
+    local probe_re='^[A-Za-z_][A-Za-z0-9_:-]*$'
+    local scoped pending_marker fenced
+    for file in "${FILES[@]}"; do
+        scoped=0
+        case "$file" in
+            "$ROOT"/docs/spec/*|"$ROOT"/docs/consumers/*) scoped=1 ;;
+        esac
+
+        lineno=0
+        fenced=0
+        # `pending_marker` is the status of a marker awaiting its callout;
+        # empty means the previous content line was not a marker.
+        pending_marker=""
+        while IFS= read -r line; do
+            lineno=$((lineno + 1))
+            line="${line%$'\r'}"
+
+            # A fenced block is showing the reader what a marker looks like
+            # (docs/CONVENTIONS.md does exactly this), not making a claim.
+            if [[ "$line" == '```'* ]]; then
+                fenced=$((1 - fenced))
+                continue
+            fi
+            [[ "$fenced" -eq 1 ]] && continue
+
+            if [[ "$line" =~ $marker_re ]]; then
+                status="${BASH_REMATCH[1]}"
+                probes="${BASH_REMATCH[2]}"
+                if ! [[ "$status" =~ $IMPL_STATUS_VOCAB ]]; then
+                    violate impl-status "$file" \
+                        "line $lineno: unknown impl-status '$status' (allowed: shipped, partial, spec-only, TBD)"
+                    pending_marker="invalid"
+                    continue
+                fi
+                local IFS_SAVE="$IFS"
+                IFS=','
+                # shellcheck disable=SC2086
+                set -- $probes
+                IFS="$IFS_SAVE"
+                for probe in "$@"; do
+                    if ! [[ "$probe" =~ $probe_re ]]; then
+                        violate impl-status "$file" \
+                            "line $lineno: probe '$probe' is not a plain symbol (letters, digits, '_', ':', '-')"
+                        continue
+                    fi
+                    if probe_matches "$probe"; then
+                        if [[ "$status" == "spec-only" || "$status" == "TBD" ]]; then
+                            violate impl-status "$file" \
+                                "line $lineno: marked '$status' but probe '$probe' matches non-comment code under crates/ — the implementation landed and the prose did not follow"
+                        fi
+                    else
+                        if [[ "$status" == "shipped" || "$status" == "partial" ]]; then
+                            violate impl-status "$file" \
+                                "line $lineno: marked '$status' but probe '$probe' matches no non-comment code under crates/ — fix the probe or the claim"
+                        fi
+                    fi
+                done
+                pending_marker="$status"
+                continue
+            fi
+
+            # Blank lines neither satisfy nor clear a pending marker.
+            [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+
+            if [[ "$line" == '> **Status'* ]]; then
+                if [[ -z "$pending_marker" && "$scoped" -eq 1 ]]; then
+                    violate impl-status "$file" \
+                        "line $lineno: '> **Status' callout with no '<!-- impl-status: ... -->' marker above it (docs/CONVENTIONS.md §Implementation status)"
+                fi
+            elif [[ -n "$pending_marker" ]]; then
+                violate impl-status "$file" \
+                    "line $lineno: impl-status marker is not followed by a '> **Status' callout; the machine-readable claim needs a reader-visible one"
+            fi
+            pending_marker=""
+        done < "$file"
+
+        if [[ -n "$pending_marker" ]]; then
+            violate impl-status "$file" \
+                "trailing impl-status marker with no '> **Status' callout after it"
+        fi
+    done
+}
+
+gate_impl_status() {
+    impl_code_cache_init
+    impl_status_tables
+    impl_status_markers
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
@@ -611,6 +852,7 @@ run_gate() {
         dead-link)           gate_dead_link           ;;
         adr-status)          gate_adr_status          ;;
         spec-version-sync)   gate_spec_version_sync   ;;
+        impl-status)         gate_impl_status         ;;
         *) echo "internal error: unknown gate '$gate'" >&2; exit 2 ;;
     esac
 }

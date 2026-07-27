@@ -92,6 +92,8 @@ amends / extends) are hand-curated from each ADR's body.
 | [0058](./0058-right-click-context-menus.md) | Right-click context menus for panes, windows, and sessions | Accepted |
 | [0059](./0059-sandboxed-chunked-file-upload.md) | Sandboxed chunked file upload | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md), [0021](./0021-control-plane-commands.md), and [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 | [0060](./0060-self-contained-session-recording.md) | Self-contained session recording | Accepted (a consumer-side projection over [0013](./0013-libghostty-bytes-on-wire.md)'s bytes; claims no protocol standing, per [0017](./0017-tui-not-protocol-privileged.md)) |
+| [0061](./0061-capabilities-add-versions-break.md) | Capabilities add, versions break | Accepted (generalizes the version-gate constraint that shaped [0060](./0060-self-contained-session-recording.md); the fleet-wide break it names is what [0032](./0032-graceful-server-upgrade.md) survives) |
+| [0062](./0062-headless-resize-and-window-size-policy.md) | Headless resize and the window-size policy | Accepted (settles the explicit-vs-view precedence [0027](./0027-terminal-references-and-l3-links.md) left to a "future resize verb"; takes no wire under [0061](./0061-capabilities-add-versions-break.md)) |
 
 ## When to write an ADR
 

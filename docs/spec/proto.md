@@ -202,7 +202,7 @@ Every message on the wire is a length-prefixed frame:
   transport.
 - `type` is the message discriminant. See the per-tier message catalogs
   in [L1.md](./L1.md), [L2.md](./L2.md), [L3.md](./L3.md), and the
-  proto-tier catalog in §6.3 below.
+  proto-tier catalog in §7.1 below.
 - The payload format is determined by `type`.
 
 There is no second framing layer. Application-level structure is encoded
@@ -414,6 +414,46 @@ carrying VT bytes, every client renders via local libghostty parse —
 there is no longer a structured-diff alternative. Decoders MUST accept
 the field for forward-compat and SHOULD ignore its value.
 
+### 6.3 Extension discipline: capabilities add, versions break
+
+§6 and §6.1 make `major.minor` equality a hard admission test with no
+grace window: a peer one minor apart is rejected at HELLO, before any
+stateful frame. The consequence is a rule about *how the wire grows*, and
+it is normative for anyone proposing a change to this document.
+
+- A `minor` bump is a **fleet-wide break**. Every consumer and every server
+  in a deployment change together or stop talking to each other. There is
+  no version range, no dual-speaking peer, and no deprecation window in
+  which an old client keeps working with reduced function.
+- Therefore a new frame type, a new `Command` tag, a new `ErrorCode`, or a
+  new field on an existing message MUST be introduced as an **optional,
+  negotiated capability** whenever the wire admits one — a `ServerFeature`
+  bit, a `ClientCapabilities` byte, or an additive field id that decoders
+  skip by length ([appendix-encoding.md](./appendix-encoding.md)) — and
+  MUST NOT be introduced by bumping `minor` if a capability-gated shape
+  exists. Peers that do not implement the capability keep interoperating
+  unchanged, which is the property a version bump destroys.
+- A `minor` bump is reserved for changes that **cannot** be expressed
+  additively: renumbering a tag, changing the meaning of bytes already on
+  the wire, reallocating a freed tag to unrelated behavior
+  ([appendix-reserved.md §2](./appendix-reserved.md)), or removing a
+  message peers depend on. Proposing one is proposing a synchronized
+  upgrade of every deployment, and the PR SHALL say so explicitly.
+- A capability bit is a permanent contract of its own. Once advertised it
+  is not withdrawn or re-pointed at different behavior; the `CC_FRONTEND`
+  slot above was reclaimed only because it had never shipped.
+
+The practical consequence is that a design which "needs a wire change"
+should first be re-derived over the frames that already exist. Session
+recording is the worked example: a server-side recorder wanted a new
+command tag and a new feature bit, and was rejected in favor of a
+consumer-side projection over the existing `ATTACH_TERMINAL` observer
+contract, precisely because the durability it bought did not justify a
+fleet-wide break. See
+[ADR-0061](../../ADR/0061-capabilities-add-versions-break.md) for the
+decision and [ADR-0060](../../ADR/0060-self-contained-session-recording.md)
+for that cost analysis.
+
 ---
 
 ## 7. Message catalog (proto tier)
@@ -447,8 +487,17 @@ The catalog is organized by **tier** per
 - **cmd** — typed command messages. Carry an L1 or L3 payload
   depending on the variant (see each tier's commands section).
 
-The **Status** column tracks reference-implementation coverage in
-this repository as of 2026-05-26. It is informative, not normative.
+The **Status** column tracks reference-implementation coverage in this
+repository. It does not constrain a conforming implementation — a consumer
+MUST NOT read it as permission to skip a `spec-only` message it does
+receive — but it is not decoration either: `just docs-check`'s
+`impl-status` gate resolves every status cell in this document, in
+[L1.md](./L1.md), [L3.md](./L3.md), and in
+[appendix-reserved.md](./appendix-reserved.md) against the wire constants
+in `crates/phux-protocol/src/wire/`, and fails when a cell and the codec
+disagree in either direction. The same marker carries prose sections that
+have no catalog row; the mechanism is defined in
+[docs/CONVENTIONS.md](../CONVENTIONS.md).
 
 - `shipped` — message is in [`phux_protocol::wire::frame::FrameKind`]
   and round-trips through the encoder/decoder.
@@ -554,6 +603,11 @@ DetachReason = enum {
 ```
 
 ### 7.3 SUBSCRIBE
+
+<!-- impl-status: spec-only; probe: TYPE_SUBSCRIBE -->
+> **Status: spec-only.** Discriminant `0x40` is reserved and nothing decodes
+> it. Per-Terminal event opt-in exists separately as `SUBSCRIBE_EVENTS`
+> (`0x41`) and `SUBSCRIBE_TERMINAL_EVENTS` (command tag `0x0d`).
 
 Reserved for opting in/out of notification streams (e.g. only the focused
 client should receive `BELL` for inactive Terminals). Format not yet

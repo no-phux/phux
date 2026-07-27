@@ -233,6 +233,81 @@ qualification is important, it goes in the TL;DR or the body.
 
 ---
 
+## Implementation status
+
+phux is spec-first, so `docs/spec/` and `docs/consumers/` routinely describe
+behavior before it exists. That is legitimate. What is not legitimate is a
+reader — human or agent — being unable to tell which sentences are shipped.
+The failure has happened: `docs/consumers/tui.md` §10 specified a
+`phux capture --record` verb and a server-side output tee as accepted design,
+asserted them in the present tense, and was never built. It contradicted what
+eventually shipped, and only human review caught it.
+
+### The rule
+
+**In `docs/spec/` and `docs/consumers/`, any described surface the reference
+implementation does not provide carries an implementation-status marker, and
+the marker names a code symbol so CI can check it.** Design with no marker
+reads as shipped. Design that is not yet worth marking belongs in `ADR/`,
+which is the tier whose whole job is to hold decisions ahead of code.
+
+### The marker
+
+The vocabulary is the one `docs/spec/proto.md` §7 already used for its
+message-catalog `Status` column, promoted from informative to checked:
+
+- `shipped` — the reference implementation provides it.
+- `partial` — on the wire or in the code, but at least one end does not yet
+  produce or consume it.
+- `spec-only` — described here, no implementation.
+
+Two carriers, one mechanism:
+
+**Catalog tables.** A table row whose last cell is one of the three words is
+resolved against the wire constants in `crates/phux-protocol/src/wire/`:
+`shipped` and `partial` require `TYPE_<NAME>` or `COMMAND_TAG_<NAME>` to
+exist, `spec-only` requires that it not. The gate fails in *both* directions,
+so implementing a `spec-only` frame and forgetting to flip the row is a
+CI failure rather than a slow rot.
+
+**Prose sections.** A section with no catalog row carries a machine-readable
+comment immediately above a reader-visible callout:
+
+```markdown
+<!-- impl-status: spec-only; probe: RolePolicy -->
+> **Status: spec-only.** Nothing in `phux-server` implements roles or
+> takeover; every subscription behaves as `PRIMARY`.
+```
+
+`probe` is one or more comma-separated Rust identifiers (`::` and `-`
+allowed, so `Command::Windows` and a `"kebab-case"` string literal both
+work). The gate searches every `crates/**/*.rs` line that is not a comment:
+`spec-only` requires zero matches, `shipped` and `partial` require at least
+one. A `> **Status` callout without a marker comment above it is itself a
+violation — an unchecked status claim is the thing this mechanism exists to
+prevent.
+
+### Why this and not the alternatives
+
+A **cross-reference gate mapping every spec section to an implementing
+symbol** was rejected: it demands a symbol for every paragraph, including the
+many that describe emergent behavior no single item owns, and the maintenance
+cost falls on every spec edit rather than on the rare unbuilt one.
+
+**Banning unimplemented design from `docs/spec/` outright** was rejected
+because the spec is normative and forward-looking by construction. `INPUT_RAW`
+holds discriminant `0x13` precisely so nothing else takes it; that reservation
+has to live in the spec, not in an ADR.
+
+What is left is marking, and the only marking worth having is marking a
+machine can falsify. No linter can catch an author who writes unmarked prose
+about an unbuilt feature — that is uncatchable, and this mechanism does not
+claim otherwise. What it does catch is the *stale* claim, in both directions,
+which is the drift that actually recurs: prose that outranks reality long
+after reality changed.
+
+---
+
 ## Style rules
 
 These are the house contract, not suggestions. The standing complaint
@@ -306,6 +381,7 @@ The discipline layer is mechanically checked. See
 | dead-link | A relative link that doesn't resolve |
 | adr-status | An ADR with a non-vocabulary `Status:` line |
 | spec-version-sync | `docs/spec/CHANGELOG.md` head version vs `phux-protocol`'s declared protocol version |
+| impl-status | A `shipped` / `partial` / `spec-only` claim in `docs/spec/` or `docs/consumers/` that the code contradicts, and a `> **Status` callout with no marker behind it |
 
 All run under `just docs-check`, which is in `just ci`. Adding a check
 is welcome — open a PR against `scripts/check-docs.sh` and reference
