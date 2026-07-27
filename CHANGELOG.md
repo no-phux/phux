@@ -9,6 +9,55 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.4.0](https://github.com/phall1/phux/compare/v0.3.1...v0.4.0) (2026-07-27)
+
+
+### Features
+
+* **agent:** detect codex opencode pi and omp (phux-dmsy.1) ([3c4a162](https://github.com/phall1/phux/commit/3c4a1620536bd37b08ef91608d4dd2e20b0c8976))
+* **agent:** make plain claude enter phux (phux-jsg.5) ([20402d7](https://github.com/phall1/phux/commit/20402d71543a3c867b6f2e58109eb9b96562eb6f))
+* **agents:** ship a verified Codex detection manifest (phux-dmsy.1) ([47c039a](https://github.com/phall1/phux/commit/47c039a762bb6c04d007112a82ba1c4e740f6402))
+* **agents:** ship a verified OpenCode manifest; deflake the pane-kill test ([9b2d8a2](https://github.com/phall1/phux/commit/9b2d8a25bb37603ef0f76b978396fd3bc653e3df))
+* **cli:** add `phux rec` and the `--rec` capture flags ([27ab421](https://github.com/phall1/phux/commit/27ab421dbbdea0a68002b22919e2b20315d09b69))
+* **cli:** add phux completion &lt;shell&gt; (phux-q9wj.1) ([ae70572](https://github.com/phall1/phux/commit/ae70572c75441c8b3252a4b5df271e754dece63c))
+* **cli:** add phux doctor to diagnose an install (phux-6zk0.1) ([9dd16fa](https://github.com/phall1/phux/commit/9dd16fa99adcd6302003e8f3895a5a588ab478bf))
+* **cli:** add phux worktree bound to sessions by name (phux-lzql, ADR-0054) ([6ccfdd0](https://github.com/phall1/phux/commit/6ccfdd0664379685251f75083d39803753592089))
+* **client:** capture sessions with a render tee and a headless observer ([187a618](https://github.com/phall1/phux/commit/187a6189add6b6488ec4e77bf5eb115fb117aad5))
+* **client:** right-click context menus for panes, windows, sessions (phux-wrnm, ADR-0058) ([3a02845](https://github.com/phall1/phux/commit/3a02845c5d2d19d8794e438ad362042ba3a43ed0))
+* **config:** add phux config check with full key paths (phux-q9wj.3) ([7b2f613](https://github.com/phall1/phux/commit/7b2f613ca87fa3d334f4aba56172b013d4005384))
+* **federation:** make hub enrollment operational (phux-jsg.4) ([77451c0](https://github.com/phall1/phux/commit/77451c0d24103583d57ed3454148e44a761e668f))
+* **mcp:** dump the tool catalog with phux-mcp --schema (phux-q9wj.2) ([4a46f54](https://github.com/phall1/phux/commit/4a46f54a78ecc3f47dc32f3a546e023cc941fb71))
+* **protocol,dial:** add QUIC_RELAY_ALPN and ALPN-parameterized quic dialer (phux-zwuz) ([6e58cc9](https://github.com/phall1/phux/commit/6e58cc9861c4e7c91664b950ef59af8bada87a50))
+* **protocol:** add acknowledged idempotent input ([f1a1306](https://github.com/phall1/phux/commit/f1a1306a1910aa52ec3a3b1d9081ae67062c8360))
+* **protocol:** add sandboxed chunked file upload ([942f07a](https://github.com/phall1/phux/commit/942f07a4fe3e3b542964620bafe894661de60f29))
+* **record:** add phux-record, an offline cast codec and self-contained GIF/APNG renderer ([3fa593c](https://github.com/phall1/phux/commit/3fa593c86d329059627e71d2815744b6a10f9484))
+* **relay:** ship the minimal OSS reference relay (phux-b1ma, ADR-0053) ([#263](https://github.com/phall1/phux/issues/263)) ([0ae9236](https://github.com/phall1/phux/commit/0ae92367a381ce9f7d87493752b7d1a2889194bf))
+* **remote:** always-on server and ssh-bootstrapped enrollment ([f2483ca](https://github.com/phall1/phux/commit/f2483caafa8b8f2761df1d37e11b0b2765c43970))
+* **server:** fire agent-state-changed hook on detector transitions (phux-dmsy) ([d08ce05](https://github.com/phall1/phux/commit/d08ce0597eeb99ffb0a45cb1f54986e853567ebe))
+* **server:** productize outbound connectors (phux-81yr phux-qf2w phux-xm52 phux-pt5m) ([5c2df5a](https://github.com/phall1/phux/commit/5c2df5a8fbc6f6b6c3a7cb550f9157761a52b16e))
+
+
+### Bug Fixes
+
+* **cli:** keep the zsh completion example out of rustdoc's link syntax ([c7614e1](https://github.com/phall1/phux/commit/c7614e16e486cec6af8704397067e2566b0c9989))
+* **cli:** submit pasted text before Enter (phux-hpkv) ([5b4ad83](https://github.com/phall1/phux/commit/5b4ad8383b17b8b38f6565a0283fd8e95ec8054c))
+* **test:** close the SIGHUP-vs-trap race in the pane-kill flush test (phux-2390) ([22715b6](https://github.com/phall1/phux/commit/22715b6f5496a172c59353bbab26c6f160316215))
+* **test:** stop read_event ending a reader's loop on a non-Event frame (phux-7my5) ([1b85e70](https://github.com/phall1/phux/commit/1b85e7038d2a715f2ae5319428caa8d95e7f0eb7))
+* **wire:** enforce protocol version negotiation ([b7ffd45](https://github.com/phall1/phux/commit/b7ffd459d09187bef850e1dac10bda002b1f467f))
+
+
+### Performance
+
+* **server:** skip agent hook work when no dispatcher is registered ([bcf1954](https://github.com/phall1/phux/commit/bcf19542e88dd9bac8e6321c875de727285acd11))
+
+
+### Documentation
+
+* **adr:** accept 0051; propose 0052 settling connector route identity and config (phux-tmmb) ([#261](https://github.com/phall1/phux/issues/261)) ([45d24c1](https://github.com/phall1/phux/commit/45d24c114f0a51ee004d2b33d8b4a73a38bd07cc))
+* **adr:** accept 0056 for cross-session Terminal move (phux-q9wj.4) ([8df5245](https://github.com/phall1/phux/commit/8df5245d7063224bf15ba0eb35a28abd2b6e197a))
+* **record:** add ADR-0060, the recording guide, and a self-recorded demo ([9da42d7](https://github.com/phall1/phux/commit/9da42d7e09f06f89860f7d7f925685799a99e467))
+* **record:** link private items as code spans, not intra-doc links ([74c55ee](https://github.com/phall1/phux/commit/74c55ee8345727e6b4b7a28a48b6de9736bd1bcb))
+
 ## [0.3.1](https://github.com/phall1/phux/compare/v0.3.0...v0.3.1) (2026-07-22)
 
 
