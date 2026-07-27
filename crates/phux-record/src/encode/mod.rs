@@ -30,7 +30,7 @@
 //!
 //! Both containers own their sink, and `--max-bytes` has to be enforced
 //! without buffering the animation. Every sink is therefore wrapped in a
-//! [`CountingWriter`] that shares a `Cell<u64>` with the encoder, so
+//! `CountingWriter` that shares a `Cell<u64>` with the encoder, so
 //! [`AnimEncoder::add_frame`] can report the running total after the
 //! container has already consumed the writer.
 

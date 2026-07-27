@@ -21,8 +21,8 @@
 //! *without* rasterizing it, so the two-pass render driver can size its
 //! palette before it encodes anything. It and [`Rasterizer::draw`] must never
 //! disagree; they are written over one shared resolution helper
-//! ([`Rasterizer::paint_of`]) and one shared glyph classifier
-//! ([`Rasterizer::glyph_of`]) precisely so they cannot drift, and
+//! (`Rasterizer::paint_of`) and one shared glyph classifier
+//! (`Rasterizer::glyph_of`) precisely so they cannot drift, and
 //! `colors_of_returns_exactly_the_colors_draw_emits` is the guard.
 
 use std::collections::HashSet;
@@ -135,7 +135,7 @@ pub struct Surface {
 
 /// What a cell's grapheme resolves to, once.
 ///
-/// Computed by [`Rasterizer::glyph_of`] and consumed by both the paint path
+/// Computed by `Rasterizer::glyph_of` and consumed by both the paint path
 /// and the colour-histogram path, so the two can never disagree about whether
 /// a cell shows ink.
 #[derive(Debug, Clone, Copy)]

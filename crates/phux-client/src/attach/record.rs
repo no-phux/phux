@@ -13,7 +13,7 @@
 //! lose every piece of chrome.
 //!
 //! The tee also sits deliberately UPSTREAM of
-//! [`StdoutSink`](super::stdout_writer)'s 256 KiB backlog drop. When a
+//! `StdoutSink`'s 256 KiB backlog drop. When a
 //! terminal backpressures, that sink discards the stale queue and asks the
 //! driver for a fresh full repaint — so a backpressured terminal loses frames
 //! on the glass but never in the recording, because the tee already saw the

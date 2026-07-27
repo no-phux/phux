@@ -7,7 +7,7 @@
 //! memory stays O(one surface) rather than O(all frames) — which is the whole
 //! reason it is two passes and not one buffered one.
 //!
-//! Both passes drive the same [`SampleWalk`]. That is not a tidiness
+//! Both passes drive the same `SampleWalk`. That is not a tidiness
 //! preference: if the two passes ever disagreed about how many frames a
 //! recording produces, APNG's `acTL` would promise a count the file does not
 //! contain, and the only honest way to guarantee they agree is for there to
