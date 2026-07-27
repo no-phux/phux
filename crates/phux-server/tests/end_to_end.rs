@@ -29,9 +29,10 @@ use crate::common::{
 };
 
 /// Bounded join: every server task must terminate within this window
-/// once the shutdown signal has been sent. Larger than `WIRE_RECV_TIMEOUT`
-/// so a tardy actor doesn't get mis-attributed to the test.
-const SERVER_JOIN_DEADLINE: Duration = Duration::from_secs(5);
+/// once the shutdown signal has been sent. Aliases the shared constant so
+/// this file cannot drift back to a hand-picked number (phux-br1f) — see
+/// `common::SERVER_JOIN_DEADLINE` for why the value is not load-bearing.
+const SERVER_JOIN_DEADLINE: Duration = common::SERVER_JOIN_DEADLINE;
 
 /// Build the canonical HELLO payload for these tests. Mirrors the
 /// `phux-client::attach::driver::handshake` shape: `TrueColor` + all

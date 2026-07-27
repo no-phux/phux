@@ -16,8 +16,11 @@
 //! received ZERO terminal-control bytes — specifically, no
 //! `\x1b[?1049h` (alt-screen-enter) and no `\x1b[?25l` (hide-cursor).
 //!
-//! The 500ms deadline guards against accidentally introducing a hang
-//! (e.g. a future refactor that swallows the connect error and loops).
+//! The deadline guards against accidentally introducing a hang (e.g. a
+//! future refactor that swallows the connect error and loops). It is a hang
+//! guard and nothing more — the assertions are on the returned error and on
+//! the bytes written, never on latency — so it is sized to be unreachable
+//! under load rather than hand-picked (phux-br1f).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,8 +28,13 @@ use std::time::Duration;
 use phux_client::attach::{self, AttachError};
 use phux_protocol::wire::frame::AttachTarget;
 
+/// Hang guard for the pre-handshake failure path. See the module docs: the
+/// value is deliberately not load-bearing, and a real hang still fails the
+/// run with the same message, just later.
+const NO_HANG_DEADLINE: Duration = Duration::from_secs(30);
+
 /// Pre-handshake failure (no socket file exists) must:
-///   1. Return `AttachError::Io` quickly (≤500ms; in practice immediate).
+///   1. Return `AttachError::Io` rather than hang (in practice immediate).
 ///   2. Write NOTHING to the supplied stdout sink — in particular, no
 ///      alt-screen-enter sequence. That's the regression guard.
 #[test]
@@ -50,7 +58,7 @@ fn no_alt_screen_on_missing_socket() {
 
     let result = rt.block_on(async {
         tokio::time::timeout(
-            Duration::from_millis(500),
+            NO_HANG_DEADLINE,
             attach::run_with_stdout(
                 &bogus,
                 AttachTarget::ByName("nonexistent".to_owned()),
@@ -60,7 +68,7 @@ fn no_alt_screen_on_missing_socket() {
         .await
     });
 
-    let result = result.expect("attach::run_with_stdout hung past 500ms deadline");
+    let result = result.expect("attach::run_with_stdout hung instead of failing the connect");
     let err = result.expect_err("attach against missing socket should fail");
 
     assert!(
@@ -108,13 +116,13 @@ fn no_alt_screen_on_bogus_parent_dir() {
 
     let result = rt.block_on(async {
         tokio::time::timeout(
-            Duration::from_millis(500),
+            NO_HANG_DEADLINE,
             attach::run_with_stdout(&bogus, AttachTarget::Last, &mut captured),
         )
         .await
     });
 
-    let result = result.expect("attach::run_with_stdout hung past 500ms deadline");
+    let result = result.expect("attach::run_with_stdout hung instead of failing the connect");
     let err = result.expect_err("attach against impossible path should fail");
     assert!(
         matches!(err, AttachError::Io(_)),

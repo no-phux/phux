@@ -19,8 +19,6 @@
 
 mod common;
 
-use std::time::Duration;
-
 use phux_protocol::wire::frame::{
     Command, CommandResult, FrameKind, SpawnResult, TYPE_COMMAND_RESULT, TYPE_TERMINAL_SPAWNED,
 };
@@ -178,9 +176,9 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server did not shut down within 5s")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server task join")
             .expect("server run_async returned an error");
     });
@@ -226,7 +224,7 @@ fn kill_last_pane_reaps_session_cleanly() {
         // join confirms a clean exit (no panic in the reap/self-exit path);
         // a hang would trip the timeout.
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down within 5s after kill-last-pane")
             .expect("server task join")

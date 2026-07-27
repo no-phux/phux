@@ -40,8 +40,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 
 use crate::common::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, encode_frame, recv_typed, run_local, send_frame,
-    spawn_server, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, encode_frame, recv_typed,
+    run_local, send_frame, spawn_server, wait_for_socket,
 };
 
 /// Distinctive PING nonce for the post-error liveness probe. Any value
@@ -125,7 +125,7 @@ fn byc_6_6_attach_unknown_session_returns_error_keeps_connection_open() {
         let ping = encode_frame(&FrameKind::Ping { nonce: PING_NONCE });
         stream.write_all(&ping).await.unwrap();
         stream.flush().await.unwrap();
-        let (_type_byte, frame) = timeout(Duration::from_secs(5), recv_typed(&mut stream))
+        let (_type_byte, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut stream))
             .await
             .expect("timed out waiting for PONG frame");
         assert_eq!(

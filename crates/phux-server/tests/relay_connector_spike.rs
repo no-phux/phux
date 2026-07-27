@@ -64,7 +64,6 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use phux_dial::{CertTrust, QuicDial};
 use phux_protocol::PROTOCOL_VERSION;
@@ -856,9 +855,9 @@ fn consumers_attach_through_relay_to_dialed_out_server() {
         consumer_a.conn.close(0u32.into(), b"done");
         consumer_b.conn.close(0u32.into(), b"done");
         shutdown.send(()).ok();
-        timeout(Duration::from_secs(5), server)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -1010,9 +1009,9 @@ fn relay_admission_is_not_authorization_for_consumers() {
 
         good.conn.close(0u32.into(), b"done");
         shutdown.send(()).ok();
-        timeout(Duration::from_secs(5), server)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });

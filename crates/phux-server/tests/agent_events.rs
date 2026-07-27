@@ -139,9 +139,9 @@ fn subscribed_client_receives_title_bell_and_pane_closed_events() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -183,9 +183,9 @@ fn unattached_subscriber_receives_events() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -292,9 +292,9 @@ fn subscribed_client_receives_command_and_cwd_events() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });

@@ -790,9 +790,9 @@ fn session_create_honors_valid_wire_cwd() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -862,9 +862,9 @@ fn session_create_invalid_wire_cwd_falls_back_without_failing() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -927,9 +927,9 @@ fn session_create_unenterable_wire_cwd_falls_back_without_failing() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });

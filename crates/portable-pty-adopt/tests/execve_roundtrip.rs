@@ -31,6 +31,14 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// Ceiling for "the adopted child should have echoed by now" waits.
+///
+/// Not load-bearing: the assertion is that the needle appears at all, never
+/// how fast. A real PTY child on a saturated box can be descheduled for
+/// seconds, so this is sized to be unreachable rather than hand-picked
+/// (phux-br1f); a child that never writes still fails the run, just later.
+const OUTPUT_DEADLINE: Duration = Duration::from_secs(30);
+
 const STAGE: &str = "PPA_ROUNDTRIP_STAGE";
 const FD: &str = "PPA_ROUNDTRIP_FD";
 const PID: &str = "PPA_ROUNDTRIP_PID";
@@ -120,7 +128,7 @@ fn resume() -> ! {
 
     let alive = matches!(child.try_wait(), Ok(None));
     let reader = master.try_clone_reader().unwrap();
-    let flowing = read_until(reader, "TICK", Duration::from_secs(5));
+    let flowing = read_until(reader, "TICK", OUTPUT_DEADLINE);
 
     // Don't leak the ticking child out of the test run.
     let _ = child.kill();

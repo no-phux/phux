@@ -389,9 +389,9 @@ fn hello_attach_echo_through_relay_to_real_server() {
         // and connector tasks drop with the runtime.
         consumer.conn.close(0u32.into(), b"done");
         shutdown.send(()).ok();
-        timeout(Duration::from_secs(5), server)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });

@@ -1196,6 +1196,23 @@ mod tests {
     use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
     use tokio::task::JoinSet;
 
+    /// Ceiling for "this frame was already handed to the mailbox, so reading
+    /// it back should be immediate" waits.
+    ///
+    /// Not load-bearing. Nothing below asserts a latency — the assertions are
+    /// on frame *identity* and *order* — so the only job of the timeout is to
+    /// turn a wedged handler into a bounded failure rather than a hung
+    /// binary. Every one of these resolves in microseconds when the runtime
+    /// gets a core.
+    ///
+    /// Deliberately far above the old 1-2s (phux-br1f): these tests share a
+    /// machine with the whole suite, and a current-thread runtime that loses
+    /// its core for a couple of seconds turns "the handler emitted ATTACHED"
+    /// into "attached frame did not arrive". A suite that cries wolf gets
+    /// ignored, which is how a real regression ships. A handler that genuinely
+    /// never emits still fails, just 30s later, with the same message.
+    const MAILBOX_DEADLINE: Duration = Duration::from_secs(30);
+
     #[test]
     fn socket_path_at_the_platform_limit_is_accepted() {
         // Exactly MAX_SOCKET_PATH_LEN bytes: a leading '/' plus the fill.
@@ -1260,7 +1277,7 @@ mod tests {
             output_tx
                 .send(bytes::Bytes::from_static(b"before-detach"))
                 .unwrap();
-            let first = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
+            let first = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
                 .await
                 .expect("first output timed out")
                 .expect("writer mailbox closed");
@@ -1287,7 +1304,7 @@ mod tests {
                     .is_ok()
             );
 
-            let detached = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
+            let detached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
                 .await
                 .expect("DETACHED timed out")
                 .expect("writer mailbox closed");
@@ -1463,8 +1480,6 @@ mod tests {
         reason = "linear setup-then-act-then-assert test body; splitting would obscure the concurrency proof"
     )]
     async fn handle_attach_fans_out_snapshot_requests_concurrently() {
-        use std::time::Duration;
-
         use phux_core::ids::TerminalId as CoreTerminalId;
         use tokio::sync::{broadcast, mpsc, oneshot};
         use tokio::task::LocalSet;
@@ -1570,7 +1585,7 @@ mod tests {
                 });
 
                 // First the writer should see ATTACHED.
-                let attached = tokio::time::timeout(Duration::from_secs(2), out_rx.recv())
+                let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
                     .await
                     .expect("attached frame did not arrive")
                     .expect("out_rx closed before attached");
@@ -1588,7 +1603,7 @@ mod tests {
                 // up front.
                 let mut replies: Vec<oneshot::Sender<SnapshotBytes>> = Vec::with_capacity(N);
                 for (i, rx) in snapshot_rxs.iter_mut().enumerate() {
-                    let req = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                    let req = tokio::time::timeout(MAILBOX_DEADLINE, rx.recv())
                         .await
                         .unwrap_or_else(|_| {
                             panic!("snapshot request {i} never arrived — sequential loop?")
@@ -1612,7 +1627,7 @@ mod tests {
                 // Drain N TERMINAL_SNAPSHOT frames out of the writer channel.
                 let mut snaps_seen = 0usize;
                 for _ in 0..N {
-                    let frame = tokio::time::timeout(Duration::from_secs(2), out_rx.recv())
+                    let frame = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
                         .await
                         .expect("pane snapshot frame did not arrive")
                         .expect("out_rx closed before snapshot");
@@ -1724,7 +1739,7 @@ mod tests {
                 });
 
                 // ATTACHED first.
-                let attached = tokio::time::timeout(Duration::from_secs(2), out_rx.recv())
+                let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
                     .await
                     .expect("attached frame did not arrive")
                     .expect("out_rx closed");
@@ -1735,11 +1750,10 @@ mod tests {
 
                 // The consumer-attach request must land, carrying the wire
                 // terminal id. Reply Ok so `handle_attach` proceeds.
-                let attach_req =
-                    tokio::time::timeout(Duration::from_secs(2), consumer_attach_rx.recv())
-                        .await
-                        .expect("ConsumerAttachRequest never arrived — register not wired?")
-                        .expect("consumer_attach channel closed");
+                let attach_req = tokio::time::timeout(MAILBOX_DEADLINE, consumer_attach_rx.recv())
+                    .await
+                    .expect("ConsumerAttachRequest never arrived — register not wired?")
+                    .expect("consumer_attach channel closed");
                 assert_eq!(
                     attach_req.client_id,
                     phux_protocol::ids::ClientId::new(
@@ -1763,7 +1777,7 @@ mod tests {
                     .expect("send attach reply");
 
                 // Service the snapshot request so the attach task completes.
-                let snap_req = tokio::time::timeout(Duration::from_secs(2), snapshot_rx.recv())
+                let snap_req = tokio::time::timeout(MAILBOX_DEADLINE, snapshot_rx.recv())
                     .await
                     .expect("snapshot request did not arrive")
                     .expect("snapshot channel closed");
@@ -1782,11 +1796,10 @@ mod tests {
                 // Now tear the client down. The helper must send a
                 // ConsumerDetachRequest for the subscribed pane.
                 detach_and_release_consumer_state(&state, client_id);
-                let detach_req =
-                    tokio::time::timeout(Duration::from_secs(2), consumer_detach_rx.recv())
-                        .await
-                        .expect("ConsumerDetachRequest never arrived — detach not wired?")
-                        .expect("consumer_detach channel closed");
+                let detach_req = tokio::time::timeout(MAILBOX_DEADLINE, consumer_detach_rx.recv())
+                    .await
+                    .expect("ConsumerDetachRequest never arrived — detach not wired?")
+                    .expect("consumer_detach channel closed");
                 assert_eq!(
                     detach_req.client_id,
                     phux_protocol::ids::ClientId::new(
@@ -1849,7 +1862,7 @@ mod tests {
             let token = CancellationToken::new();
             spawn_terminal_exit_watcher(state.clone(), pane, Some(exit_rx), token);
             exit_tx.send(Some(3)).expect("exit notify");
-            let event = tokio::time::timeout(Duration::from_secs(2), hook_rx.recv())
+            let event = tokio::time::timeout(MAILBOX_DEADLINE, hook_rx.recv())
                 .await
                 .expect("pane-exit hook timed out")
                 .expect("hook channel closed");

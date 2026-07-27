@@ -285,9 +285,9 @@ fn spawn_terminal_in_default_group_round_trips_input() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -369,9 +369,9 @@ fn explicit_owner_terminal_selects_exact_session_window() {
 
         drop((first, second, headless));
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -466,9 +466,9 @@ fn spawn_terminal_lands_in_attached_session_not_a_new_session() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -524,9 +524,9 @@ fn spawn_terminal_env_term_overrides_default() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -580,9 +580,9 @@ fn spawn_terminal_default_term_is_xterm_256color() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -633,9 +633,9 @@ fn spawn_terminal_term_field_overrides_default() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -685,9 +685,9 @@ fn spawn_terminal_env_term_beats_term_field() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -730,9 +730,9 @@ fn spawn_terminal_unknown_group_returns_group_not_found() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -785,9 +785,9 @@ fn spawn_terminal_emits_terminal_closed_on_pty_exit() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -909,9 +909,9 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
         drop(stream_a);
         drop(stream_b);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -1036,9 +1036,9 @@ fn spawn_terminal_injects_matching_terminal_id_env() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -1104,9 +1104,9 @@ fn attach_create_seed_pane_injects_matching_terminal_id_env() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -1160,9 +1160,9 @@ fn spawn_terminal_injects_server_socket_env() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -1220,9 +1220,9 @@ fn attach_create_seed_pane_injects_server_socket_env() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -1316,9 +1316,9 @@ fn spawn_terminal_inherits_focused_pane_live_cwd() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -1394,9 +1394,9 @@ fn create_if_missing_seeds_pane_in_wire_cwd() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -1485,9 +1485,9 @@ fn spawn_terminal_session_root_inherits_seed_pane_dir() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -1571,9 +1571,9 @@ fn spawn_terminal_last_cwd_per_window_inherits_active_pane_dir() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });

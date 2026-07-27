@@ -10,6 +10,16 @@
 
 use std::time::Duration;
 
+/// Ceiling for the attach handshake drain below.
+///
+/// Not load-bearing: the assertions are that ATTACHED and TERMINAL_SNAPSHOT
+/// both arrive and that the snapshot carries a real grid — never how fast.
+/// This file has no `mod common;`, so it cannot borrow the shared
+/// `WIRE_RECV_TIMEOUT`; the value matches it deliberately. The 5s it replaces
+/// was generous on an idle laptop and a measurement of the scheduler on a
+/// saturated one (phux-br1f). A server that never attaches still fails.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(15);
+
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
 use phux_protocol::PROTOCOL_VERSION;
@@ -110,7 +120,7 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
         // Collect frames until both ATTACHED and a TERMINAL_SNAPSHOT arrive.
         let mut got_attached = false;
         let mut got_snapshot = false;
-        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        let deadline = tokio::time::sleep(HANDSHAKE_DEADLINE);
         tokio::pin!(deadline);
         loop {
             tokio::select! {

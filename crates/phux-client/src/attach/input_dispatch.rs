@@ -3037,6 +3037,16 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// Ceiling for draining a scripted peer connection whose writer has
+    /// already been dropped.
+    ///
+    /// Not load-bearing: the drain ends on the peer's EOF, and the
+    /// assertions are on the frames collected — never on how fast they
+    /// arrived. The timeout only stops a peer that never hangs up from
+    /// wedging the binary. The 5s it replaces was generous on an idle laptop
+    /// and a measurement of the scheduler on a saturated one (phux-br1f).
+    const PEER_DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
     fn tid(id: u32) -> TerminalId {
         TerminalId::local(id)
     }
@@ -5875,7 +5885,7 @@ mod tests {
         drop(conn);
         let mut received = Vec::new();
         loop {
-            let next = tokio::time::timeout(std::time::Duration::from_secs(5), peer.recv())
+            let next = tokio::time::timeout(PEER_DRAIN_DEADLINE, peer.recv())
                 .await
                 .expect("timed out draining the peer connection");
             match next {
@@ -6198,7 +6208,7 @@ mod tests {
         drop(conn);
         let mut received = Vec::new();
         loop {
-            let next = tokio::time::timeout(std::time::Duration::from_secs(5), peer.recv())
+            let next = tokio::time::timeout(PEER_DRAIN_DEADLINE, peer.recv())
                 .await
                 .expect("timed out draining the peer connection");
             match next {

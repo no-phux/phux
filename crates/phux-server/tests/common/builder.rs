@@ -170,9 +170,9 @@ impl E2eBuilder {
         } = harness;
         body(clients).await;
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(super::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server did not shut down within 5s")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server task join")
             .expect("server run_async returned an error");
         assert!(
@@ -271,9 +271,9 @@ impl Harness {
         // connection closes before we send the shutdown signal.
         drop(self.clients);
         self.shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), self.server_handle)
+        timeout(super::SERVER_JOIN_DEADLINE, self.server_handle)
             .await
-            .expect("server did not shut down within 5s")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server task join")
             .expect("server run_async returned an error");
         assert!(

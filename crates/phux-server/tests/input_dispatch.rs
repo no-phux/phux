@@ -11,8 +11,6 @@
 
 mod common;
 
-use std::time::Duration;
-
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
@@ -169,9 +167,9 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
         // Clean teardown.
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });

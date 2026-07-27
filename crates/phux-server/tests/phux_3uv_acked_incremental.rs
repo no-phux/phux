@@ -201,6 +201,6 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        let _ = timeout(Duration::from_secs(5), server_handle).await;
+        let _ = timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle).await;
     });
 }

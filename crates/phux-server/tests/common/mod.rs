@@ -68,6 +68,20 @@ pub const WIRE_RECV_TIMEOUT: Duration = Duration::from_secs(15);
 /// elapses on an actual fault (a server that genuinely never bound).
 pub const SOCKET_CONNECT_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Deadline for joining a `ServerRuntime` that has already been told to shut
+/// down.
+///
+/// Same philosophy as [`WIRE_RECV_TIMEOUT`], and for the same reason
+/// (phux-br1f). This is the single most-repeated deadline in the suite — one
+/// per test, at teardown, after `shutdown_tx.send(())` — and it asserts
+/// nothing but "the server stops". It used to be a hand-written
+/// `Duration::from_secs(5)` at every site: fine on an idle laptop, and on a
+/// saturated one a measurement of the scheduler rather than of the server.
+/// The happy path joins in milliseconds, so this ceiling only elapses on a
+/// runtime that genuinely will not stop — which still fails the run, 30s
+/// later, with the same message.
+pub const SERVER_JOIN_DEADLINE: Duration = Duration::from_secs(30);
+
 /// Spawn a [`ServerRuntime`] on the current `LocalSet`, optionally pre-
 /// seeding a session by name. Returns the shutdown sender and the join
 /// handle so each test can drive a clean shutdown.

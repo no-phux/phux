@@ -24,6 +24,15 @@ const PING_NONCE: u64 = 0xC011_EC70;
 const TUNNEL_TOKEN: [u8; 32] = [0x11; 32];
 const CONSUMER_TOKEN: [u8; 32] = [0x22; 32];
 
+/// Ceiling for reading one framed reply off the connector's QUIC stream.
+///
+/// Not load-bearing: every assertion in this file is on the DECODED frame,
+/// never on how quickly it arrived. The 2s it replaces was generous on an
+/// idle laptop and a measurement of the scheduler on a saturated one
+/// (phux-br1f). A stream that never delivers still fails, just later, and the
+/// error string still names which half (header vs body) timed out.
+const FRAME_READ_DEADLINE: Duration = Duration::from_secs(30);
+
 fn encode(frame: &FrameKind) -> BytesMut {
     let mut bytes = BytesMut::new();
     frame.encode(&mut bytes);
@@ -32,12 +41,12 @@ fn encode(frame: &FrameKind) -> BytesMut {
 
 async fn read_frame(recv: &mut quinn::RecvStream) -> Result<FrameKind, String> {
     let mut header = [0_u8; 4];
-    timeout(Duration::from_secs(2), recv.read_exact(&mut header))
+    timeout(FRAME_READ_DEADLINE, recv.read_exact(&mut header))
         .await
         .map_err(|_| "frame header timed out".to_owned())?
         .map_err(|err| err.to_string())?;
     let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
-    timeout(Duration::from_secs(2), recv.read_exact(&mut body))
+    timeout(FRAME_READ_DEADLINE, recv.read_exact(&mut body))
         .await
         .map_err(|_| "frame body timed out".to_owned())?
         .map_err(|err| err.to_string())?;

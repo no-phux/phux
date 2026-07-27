@@ -3278,6 +3278,41 @@ impl TerminalActor {
 mod tests {
     use super::*;
 
+    /// Ceiling for "this task has already been told to stop, so joining it
+    /// should return immediately" waits.
+    ///
+    /// The number is deliberately NOT load-bearing. Nothing here measures how
+    /// fast an actor shuts down — the assertion is that it shuts down at all,
+    /// and every one of these joins resolves in single-digit milliseconds on
+    /// an idle box. What the timeout buys is a bounded failure for a genuine
+    /// hang instead of a wedged test binary.
+    ///
+    /// It used to be 500ms, which made it a latent flake: these tests share a
+    /// machine with the rest of the suite, and a current-thread runtime that
+    /// loses its core for half a second turns "the actor exited" into "the
+    /// actor did not exit within 500ms". Two of them (phux-br1f:
+    /// `rapid_resizes_coalesce_into_one_resync_snapshot` and
+    /// `parent_token_cancel_cascades_to_pane_actor`) failed exactly that way
+    /// on a saturated laptop and passed in ~0.1s when re-run alone. A
+    /// suite that cries wolf gets ignored, which is how a real regression
+    /// ships.
+    ///
+    /// Raising it does not weaken anything: a real hang still fails, just 30s
+    /// later, and the panic message names the actor that would not exit.
+    const ACTOR_EXIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// How long one `recv` in the drain loops below waits before the loop
+    /// re-checks its predicate (and, where relevant, re-pokes the PTY).
+    ///
+    /// A granularity knob, not a bound: the loops that use it run until
+    /// `ACTOR_EXIT_DEADLINE`. They used to run for a fixed ITERATION count
+    /// instead, which is a wall-clock deadline wearing a disguise — `0..32`
+    /// ticks of 100ms is a 3.2s budget that a starved runtime blows through
+    /// without the actor being at fault, and it also caps how many frames the
+    /// loop may consume, so a chatty actor could exhaust it before the frame
+    /// under test even arrived.
+    const DRAIN_POLL_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+
     #[test]
     fn seeded_default_colors_are_installed_before_actor_run() {
         use phux_protocol::caps::{TerminalColor, TerminalDefaultColors};
@@ -3948,14 +3983,16 @@ mod tests {
 
                 tokio::task::spawn_local(actor.run());
 
-                // The keystroke must be serviced within a bounded budget:
-                // it interleaves, not waits for the whole burst. The
-                // 500ms timeout is a backstop; the byte-ordering check
-                // below is the real gate.
-                let got =
-                    tokio::time::timeout(std::time::Duration::from_millis(500), writer_rx.recv())
-                        .await
-                        .expect("input must be serviced mid-burst, not after it");
+                // The keystroke must be serviced mid-burst: it interleaves
+                // rather than waiting for the whole burst to drain. The
+                // timeout is only a backstop against a wedged actor — the
+                // byte-ordering check below is what actually proves
+                // "mid-burst", so the duration carries no meaning and is
+                // sized to be unreachable under load (see
+                // `ACTOR_EXIT_DEADLINE`).
+                let got = tokio::time::timeout(ACTOR_EXIT_DEADLINE, writer_rx.recv())
+                    .await
+                    .expect("input must be serviced mid-burst, not after it");
                 assert_eq!(
                     got.map(|request| request.bytes),
                     Some(b"x".to_vec()),
@@ -4049,7 +4086,7 @@ mod tests {
                 );
 
                 token.cancel();
-                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), join).await;
+                let _ = tokio::time::timeout(ACTOR_EXIT_DEADLINE, join).await;
             })
             .await;
     }
@@ -4090,9 +4127,9 @@ mod tests {
                 let join = tokio::task::spawn_local(bundle.actor.run());
 
                 token.cancel();
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms")
+                    .expect("actor did not exit after cancel")
                     .expect("actor task panicked");
 
                 let (reply_tx, reply_rx) = oneshot::channel();
@@ -4123,9 +4160,9 @@ mod tests {
 
                 parent.cancel();
 
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms of parent cancel")
+                    .expect("actor did not exit after its parent token was cancelled")
                     .expect("actor task panicked");
             })
             .await;
@@ -4275,9 +4312,9 @@ mod tests {
                 rx_d.await.expect("detach reply");
 
                 token.cancel();
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms")
+                    .expect("actor did not exit after cancel")
                     .expect("actor task panicked");
             })
             .await;
@@ -5275,9 +5312,9 @@ mod tests {
                 }
 
                 token.cancel();
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms")
+                    .expect("actor did not exit after cancel")
                     .expect("actor task panicked");
             })
             .await;
@@ -5353,9 +5390,9 @@ mod tests {
                 wait_for((90, 30, 810, 540)).await;
 
                 token.cancel();
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms")
+                    .expect("actor did not exit after cancel")
                     .expect("actor task panicked");
             })
             .await;
@@ -5430,9 +5467,9 @@ mod tests {
                 wait_for((100, 40, 100 * cell_w, 40 * cell_h)).await;
 
                 token.cancel();
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms")
+                    .expect("actor did not exit after cancel")
                     .expect("actor task panicked");
             })
             .await;
@@ -5488,21 +5525,25 @@ mod tests {
                 };
                 let mut acc: Vec<u8> = Vec::new();
                 let mut found = false;
-                for round in 0..64 {
-                    if round % 16 == 0 {
+                let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
+                let mut round = 0_usize;
+                while tokio::time::Instant::now() < deadline {
+                    // Re-poke the shell periodically: the first `go` can land
+                    // before the child has finished starting, and then nothing
+                    // ever queries the terminal.
+                    if round.is_multiple_of(16) {
                         pty_in
                             .try_send(EncodedInputRequest::legacy(b"go\n".to_vec()))
                             .expect("pty write");
                     }
-                    match tokio::time::timeout(std::time::Duration::from_millis(100), out.recv())
-                        .await
-                    {
+                    round += 1;
+                    match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
                         Ok(Ok(PaneOutput::Live(bytes))) => acc.extend_from_slice(&bytes),
                         Ok(Ok(PaneOutput::Resync { bytes, .. })) => {
                             acc.extend_from_slice(&bytes);
                         }
                         Ok(Err(_)) => break, // channel closed
-                        Err(_) => {}         // timeout tick; retry
+                        Err(_) => {}         // poll tick; retry
                     }
                     if seen(&acc, b"4;720;900t") && seen(&acc, b"8;40;100t") {
                         found = true;
@@ -5519,9 +5560,9 @@ mod tests {
                 // joins it, so the test's sender clone must drop first.
                 drop(pty_in);
                 token.cancel();
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms")
+                    .expect("actor did not exit after cancel")
                     .expect("actor task panicked");
             })
             .await;
@@ -5568,10 +5609,9 @@ mod tests {
                 // resize to 40x10.
                 let mut acc: Vec<u8> = Vec::new();
                 let mut resync_dims: Option<(u16, u16)> = None;
-                for _ in 0..32 {
-                    match tokio::time::timeout(std::time::Duration::from_millis(100), out.recv())
-                        .await
-                    {
+                let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
+                while tokio::time::Instant::now() < deadline {
+                    match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
                         Ok(Ok(PaneOutput::Resync { cols, rows, bytes })) => {
                             resync_dims = Some((cols, rows));
                             acc.extend_from_slice(&bytes);
@@ -5583,7 +5623,7 @@ mod tests {
                         }
                         Ok(Ok(PaneOutput::Live(bytes))) => acc.extend_from_slice(&bytes),
                         Ok(Err(_)) => break, // channel closed
-                        Err(_) => tokio::task::yield_now().await, // timeout tick
+                        Err(_) => tokio::task::yield_now().await, // poll tick
                     }
                 }
                 assert_eq!(
@@ -5604,9 +5644,9 @@ mod tests {
                 );
 
                 token.cancel();
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms")
+                    .expect("actor did not exit after cancel")
                     .expect("actor task panicked");
             })
             .await;
@@ -5646,10 +5686,9 @@ mod tests {
 
                 let mut acc: Vec<u8> = Vec::new();
                 let mut resync_dims: Option<(u16, u16)> = None;
-                for _ in 0..32 {
-                    match tokio::time::timeout(std::time::Duration::from_millis(100), out.recv())
-                        .await
-                    {
+                let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
+                while tokio::time::Instant::now() < deadline {
+                    match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
                         Ok(Ok(PaneOutput::Resync { cols, rows, bytes })) => {
                             resync_dims = Some((cols, rows));
                             acc.extend_from_slice(&bytes);
@@ -5682,9 +5721,9 @@ mod tests {
                 );
 
                 token.cancel();
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms")
+                    .expect("actor did not exit after cancel")
                     .expect("actor task panicked");
             })
             .await;
@@ -5753,9 +5792,9 @@ mod tests {
                 );
 
                 token.cancel();
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms")
+                    .expect("actor did not exit after cancel")
                     .expect("actor task panicked");
             })
             .await;
@@ -5830,9 +5869,9 @@ mod tests {
                 }
 
                 token.cancel();
-                tokio::time::timeout(std::time::Duration::from_millis(500), join)
+                tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                     .await
-                    .expect("actor did not exit within 500ms")
+                    .expect("actor did not exit after cancel")
                     .expect("actor task panicked under degenerate resize storm");
             })
             .await;

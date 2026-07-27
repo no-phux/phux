@@ -37,8 +37,6 @@
 
 mod common;
 
-use std::time::Duration;
-
 use phux_protocol::wire::frame::{
     AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
     ViewportInfo,
@@ -159,9 +157,9 @@ fn attach_resizes_seed_pty_to_client_viewport() {
         // shutdown_tx + JoinHandle cancellation cascade is what kills it.
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });

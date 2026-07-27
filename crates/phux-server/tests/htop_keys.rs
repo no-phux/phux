@@ -200,9 +200,9 @@ fn plain_q_press_round_trips_as_legacy_ascii_byte() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -287,7 +287,7 @@ fn ctrl_c_round_trips_as_legacy_etx_byte() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        let _ = timeout(Duration::from_secs(5), server_handle).await;
+        let _ = timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle).await;
     });
 }
 

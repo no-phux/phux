@@ -913,6 +913,32 @@ mod tests {
     use super::*;
     use crate::terminal_actor::TerminalActor;
 
+    /// Ceiling for "the lane was handed this work, so it should already be on
+    /// the other side" waits.
+    ///
+    /// Not load-bearing, and deliberately far larger than anything these
+    /// tests measure: every one of them resolves in single-digit
+    /// milliseconds, and none asserts a latency. The bound exists so a lane
+    /// that genuinely wedges fails the run instead of hanging the binary.
+    ///
+    /// Sized this way on purpose (phux-br1f). The previous 1-2s bounds were
+    /// generous on an idle laptop and not generous on a saturated one, where
+    /// the current-thread runtime these tests share can lose its core for
+    /// seconds at a stretch — and a suite that cries wolf gets ignored, which
+    /// is how a real regression ships.
+    ///
+    /// The one bound in this module that is NOT this constant is the fast
+    /// path in `apply_input_full_writer_queue_is_bounded_and_returns_delivery_unknown`,
+    /// where the deadline IS the assertion; see the comment there.
+    const LANE_DELIVERY_DEADLINE: Duration = Duration::from_secs(30);
+
+    /// Ceiling for "and nothing else arrives" checks.
+    ///
+    /// The opposite polarity, so it must stay short: expiry is the PASS, and
+    /// load can only make it pass harder. Enlarging it would just slow the
+    /// suite down without proving anything more.
+    const NOTHING_FURTHER_WINDOW: Duration = Duration::from_millis(100);
+
     /// A trusted paste of `bytes`. With DEC 2004 bracketed-paste off (a fresh
     /// `Terminal`'s default) the pane's paste encoder emits exactly `bytes` on
     /// the PTY writer channel, so the routed input is byte-identifiable.
@@ -1014,7 +1040,7 @@ mod tests {
                 }
 
                 for expected in [&b"a"[..], b"b", b"c"] {
-                    let got = tokio::time::timeout(Duration::from_secs(2), fx.writer_rx.recv())
+                    let got = tokio::time::timeout(LANE_DELIVERY_DEADLINE, fx.writer_rx.recv())
                         .await
                         .expect("lane must deliver routed input to the PTY writer")
                         .expect("writer channel open");
@@ -1078,7 +1104,7 @@ mod tests {
                     "INPUT_PASTE",
                 ));
 
-                let got = tokio::time::timeout(Duration::from_secs(2), fx.writer_rx.recv())
+                let got = tokio::time::timeout(LANE_DELIVERY_DEADLINE, fx.writer_rx.recv())
                     .await
                     .expect("B's leased input must reach the PTY writer")
                     .expect("writer channel open");
@@ -1087,8 +1113,7 @@ mod tests {
                     "the lease holder's input is delivered; the blocked client's is dropped",
                 );
                 // A's input must never arrive: nothing else is queued.
-                let extra =
-                    tokio::time::timeout(Duration::from_millis(200), fx.writer_rx.recv()).await;
+                let extra = tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv()).await;
                 assert!(
                     extra.is_err(),
                     "blocked client's input must not reach the PTY writer",
@@ -1129,7 +1154,12 @@ mod tests {
                     result
                 });
 
-                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                // Blocking spin, so this is the one place the deadline costs
+                // real thread time on the failure path — but the fact under
+                // test is "the lane routes at all while the runtime thread is
+                // occupied", never how fast, so the bound is the shared
+                // generous one.
+                let deadline = std::time::Instant::now() + LANE_DELIVERY_DEADLINE;
                 let routed = loop {
                     match result.try_recv() {
                         Ok(result) => break result,
@@ -1162,7 +1192,7 @@ mod tests {
                     paste(b"lane"),
                     "INPUT_PASTE",
                 ));
-                let got = tokio::time::timeout(Duration::from_secs(2), fx.writer_rx.recv())
+                let got = tokio::time::timeout(LANE_DELIVERY_DEADLINE, fx.writer_rx.recv())
                     .await
                     .expect("lane delivery")
                     .expect("writer open");
@@ -1257,7 +1287,7 @@ mod tests {
 
                 assert_eq!(route_result.await.expect("lane reply"), CommandResult::Ok);
                 for expected in [&b"a"[..], b"b", b"c"] {
-                    let got = tokio::time::timeout(Duration::from_secs(2), fx.writer_rx.recv())
+                    let got = tokio::time::timeout(LANE_DELIVERY_DEADLINE, fx.writer_rx.recv())
                         .await
                         .expect("mixed input must reach PTY")
                         .expect("writer channel open");
@@ -1290,7 +1320,7 @@ mod tests {
                         .apply_input(fx.client_a, id, first_wire, first_events)
                         .await
                 });
-                let request = tokio::time::timeout(Duration::from_secs(2), fx.writer_rx.recv())
+                let request = tokio::time::timeout(LANE_DELIVERY_DEADLINE, fx.writer_rx.recv())
                     .await
                     .expect("batch handed to writer")
                     .expect("writer open");
@@ -1309,7 +1339,7 @@ mod tests {
                     CommandResult::Ok
                 );
                 assert!(
-                    tokio::time::timeout(Duration::from_millis(100), fx.writer_rx.recv())
+                    tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv())
                         .await
                         .is_err(),
                     "same operation must not write twice"
@@ -1399,7 +1429,7 @@ mod tests {
                     }
                 ));
                 assert!(
-                    tokio::time::timeout(Duration::from_millis(100), fx.writer_rx.recv())
+                    tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv())
                         .await
                         .is_err(),
                     "every refusal must happen before a write"
@@ -1460,7 +1490,7 @@ mod tests {
                         .try_send(EncodedInputRequest::legacy(vec![b'x']))
                         .expect("actor input mailbox open");
                 }
-                tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::time::timeout(LANE_DELIVERY_DEADLINE, async {
                     while fx.writer_rx.len() < crate::terminal_actor::DEFAULT_INPUT_MAILBOX {
                         tokio::task::yield_now().await;
                     }
@@ -1470,9 +1500,20 @@ mod tests {
 
                 let lane = spawn_input_lane(fx.state.clone()).expect("spawn lane");
                 let handle = lane.handle();
+                // The ONLY deadline in this module that is itself the
+                // assertion, so it cannot join `LANE_DELIVERY_DEADLINE`: a
+                // full writer queue must short-circuit to
+                // `InputDeliveryUnknown` rather than wait out the product's
+                // `ACKNOWLEDGED_COMPLETION_TIMEOUT`, and both paths end in
+                // the same `CommandResult`. Strictly-under is the whole
+                // claim, so the bound is derived from the product constant
+                // instead of hand-picked — half of it is 5x the 500ms this
+                // used to be (headroom against a loaded runner) while still
+                // failing if the slow path were ever taken.
+                let fast_path_bound = ACKNOWLEDGED_COMPLETION_TIMEOUT / 2;
                 for (id, payload) in [(18, b"first".as_slice()), (19, b"second".as_slice())] {
                     let result = tokio::time::timeout(
-                        Duration::from_millis(500),
+                        fast_path_bound,
                         handle.apply_input(
                             fx.client_a,
                             operation_id(id),
@@ -1534,7 +1575,7 @@ mod tests {
                     .await;
                 assert_eq!(retry, first_result);
                 assert!(
-                    tokio::time::timeout(Duration::from_millis(100), fx.writer_rx.recv())
+                    tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv())
                         .await
                         .is_err(),
                     "unknown result must be deduplicated without another write"
@@ -1620,7 +1661,7 @@ mod tests {
                 drop(fx.writer_rx);
                 let lane = spawn_input_lane(fx.state.clone()).expect("spawn lane");
                 let result = tokio::time::timeout(
-                    Duration::from_secs(2),
+                    LANE_DELIVERY_DEADLINE,
                     lane.handle().apply_input(
                         fx.client_a,
                         operation_id(8),
@@ -1666,7 +1707,7 @@ mod tests {
                 });
                 let request = fx.writer_rx.recv().await.expect("writer request");
                 let late_completion = request.completion.expect("completion");
-                let result = tokio::time::timeout(Duration::from_secs(1), first)
+                let result = tokio::time::timeout(LANE_DELIVERY_DEADLINE, first)
                     .await
                     .expect("bounded completion wait")
                     .expect("apply task");
@@ -1685,7 +1726,7 @@ mod tests {
                     result
                 );
                 assert!(
-                    tokio::time::timeout(Duration::from_millis(100), fx.writer_rx.recv())
+                    tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv())
                         .await
                         .is_err()
                 );
@@ -1721,7 +1762,7 @@ mod tests {
                     CommandResult::Ok
                 );
                 assert!(
-                    tokio::time::timeout(Duration::from_millis(100), fx.writer_rx.recv())
+                    tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv())
                         .await
                         .is_err(),
                     "retry after lost result must use the cached success"
@@ -1773,7 +1814,7 @@ mod tests {
                     }
                 ));
                 assert!(
-                    tokio::time::timeout(Duration::from_millis(100), fx.writer_rx.recv())
+                    tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv())
                         .await
                         .is_err()
                 );
@@ -1805,7 +1846,7 @@ mod tests {
                 let first_request = fx.writer_rx.recv().await.expect("first writer request");
 
                 let second = tokio::time::timeout(
-                    Duration::from_millis(50),
+                    LANE_DELIVERY_DEADLINE,
                     handle.apply_input(
                         fx.client_a,
                         operation_id(15),

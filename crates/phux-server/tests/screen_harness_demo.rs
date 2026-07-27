@@ -22,8 +22,6 @@
 
 mod common;
 
-use std::time::Duration;
-
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
@@ -158,7 +156,7 @@ fn screen_helper_observes_pty_echo_through_wire() {
         // Teardown.
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server didn't shut down")
             .expect("server join")

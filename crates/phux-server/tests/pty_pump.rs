@@ -18,6 +18,8 @@
 //!
 //! All tests use bounded `tokio::time::timeout` calls so a hung child
 //! / hung PTY surfaces as a test failure rather than a wedged CI job.
+//! Every one of those bounds is `PUMP_DEADLINE` — see its comment for
+//! why a single generous number beats a per-site guess.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -33,6 +35,17 @@ use phux_server::terminal_actor::{PaneOutput, ResizeRequest, SnapshotRequest, Te
 use portable_pty::CommandBuilder;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+
+/// The one bound every wait in this file uses.
+///
+/// Nothing here measures latency: the assertions are on the BYTES that come
+/// back and on the child being reaped. The timeout exists so a hung PTY child
+/// fails the run instead of wedging the binary, so its value is not
+/// load-bearing and is sized to be unreachable under load (phux-br1f). The
+/// per-site 1s/2s/3s guesses it replaces were generous on an idle laptop and
+/// a measurement of the scheduler on a saturated one; a hung child still
+/// fails, just later, with the same message.
+const PUMP_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Helper: read from the broadcast receiver until at least `needle`
 /// appears in the accumulated bytes, or the deadline expires. Returns
@@ -97,7 +110,7 @@ fn pty_output_reaches_broadcast_and_terminal() {
         // load when other tests are spawning PTY children too.
         let mut sub = handle.output.subscribe();
         let join = tokio::task::spawn_local(bundle.actor.run());
-        let acc = collect_until(&mut sub, b"world", Duration::from_secs(2)).await;
+        let acc = collect_until(&mut sub, b"world", PUMP_DEADLINE).await;
         let body = String::from_utf8_lossy(&acc);
         assert!(body.contains("hello"), "missing hello in {body:?}");
         assert!(body.contains("world"), "missing world in {body:?}");
@@ -113,7 +126,7 @@ fn pty_output_reaches_broadcast_and_terminal() {
             })
             .await
             .expect("snapshot send");
-        let snap = timeout(Duration::from_secs(1), rx)
+        let snap = timeout(PUMP_DEADLINE, rx)
             .await
             .expect("snapshot timeout")
             .expect("snapshot reply");
@@ -126,7 +139,7 @@ fn pty_output_reaches_broadcast_and_terminal() {
         // The actor stays alive after PTY EOF so late snapshots still
         // work; we shut it down explicitly here.
         token.cancel();
-        timeout(Duration::from_secs(3), join)
+        timeout(PUMP_DEADLINE, join)
             .await
             .expect("actor did not exit within timeout")
             .expect("actor task panicked");
@@ -188,7 +201,7 @@ fn input_keystroke_reaches_pty_and_echoes_back() {
         // Cat will echo `a\r\n` back (the PTY's onlcr maps \n to \r\n,
         // and the tty driver itself echoes the input back too). Either
         // way, `a` must appear.
-        let acc = collect_until(&mut sub, b"a", Duration::from_secs(3)).await;
+        let acc = collect_until(&mut sub, b"a", PUMP_DEADLINE).await;
         assert!(
             acc.contains(&b'a'),
             "expected `a` to round-trip through cat: {acc:?}",
@@ -196,7 +209,7 @@ fn input_keystroke_reaches_pty_and_echoes_back() {
 
         // Tear down: shutdown signal must kill cat and reap it.
         token.cancel();
-        timeout(Duration::from_secs(3), join)
+        timeout(PUMP_DEADLINE, join)
             .await
             .expect("actor did not exit within timeout")
             .expect("actor task panicked");
@@ -232,7 +245,7 @@ fn shutdown_signal_terminates_long_running_child() {
         token.cancel();
         // The reap (Child::wait) plus thread joins are the slowest
         // part; 3 seconds is plenty.
-        timeout(Duration::from_secs(3), join)
+        timeout(PUMP_DEADLINE, join)
             .await
             .expect("actor did not exit within timeout (zombie?)")
             .expect("actor task panicked");
@@ -257,7 +270,7 @@ fn snapshot_after_pty_output_round_trips_through_fresh_terminal() {
         // Subscribe before spawn — see comment in `pty_output_...`.
         let mut sub = handle.output.subscribe();
         let join = tokio::task::spawn_local(bundle.actor.run());
-        let _ = collect_until(&mut sub, b"phux-byc.5", Duration::from_secs(2)).await;
+        let _ = collect_until(&mut sub, b"phux-byc.5", PUMP_DEADLINE).await;
 
         let (tx, rx) = oneshot::channel();
         handle
@@ -268,7 +281,7 @@ fn snapshot_after_pty_output_round_trips_through_fresh_terminal() {
             })
             .await
             .expect("snapshot send");
-        let snap = timeout(Duration::from_secs(1), rx)
+        let snap = timeout(PUMP_DEADLINE, rx)
             .await
             .expect("snapshot timeout")
             .expect("snapshot reply");
@@ -287,7 +300,7 @@ fn snapshot_after_pty_output_round_trips_through_fresh_terminal() {
         replay.vt_write(&snap.bytes);
 
         token.cancel();
-        timeout(Duration::from_secs(3), join)
+        timeout(PUMP_DEADLINE, join)
             .await
             .expect("actor did not exit within timeout")
             .expect("actor task panicked");
@@ -317,8 +330,8 @@ fn broadcast_fanout_delivers_same_bytes_to_two_subscribers() {
         let mut b = handle.output.subscribe();
         let join = tokio::task::spawn_local(bundle.actor.run());
 
-        let acc_a = collect_until(&mut a, b"fanout-test", Duration::from_secs(2)).await;
-        let acc_b = collect_until(&mut b, b"fanout-test", Duration::from_secs(2)).await;
+        let acc_a = collect_until(&mut a, b"fanout-test", PUMP_DEADLINE).await;
+        let acc_b = collect_until(&mut b, b"fanout-test", PUMP_DEADLINE).await;
 
         assert!(
             String::from_utf8_lossy(&acc_a).contains("fanout-test"),
@@ -332,7 +345,7 @@ fn broadcast_fanout_delivers_same_bytes_to_two_subscribers() {
         );
 
         token.cancel();
-        timeout(Duration::from_secs(3), join)
+        timeout(PUMP_DEADLINE, join)
             .await
             .expect("actor did not exit within timeout")
             .expect("actor task panicked");
@@ -375,7 +388,7 @@ fn resize_path_does_not_panic_against_pty() {
         }
 
         token.cancel();
-        timeout(Duration::from_secs(3), join)
+        timeout(PUMP_DEADLINE, join)
             .await
             .expect("actor did not exit within timeout")
             .expect("actor task panicked");

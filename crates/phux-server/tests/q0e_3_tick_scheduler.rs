@@ -52,6 +52,15 @@ use tokio::task::LocalSet;
 
 /// Wire-terminal id stamped on every `TerminalOutput` frame in this
 /// test suite. Arbitrary; chosen to be non-trivial.
+/// Ceiling for joining an actor that has already been cancelled.
+///
+/// Not load-bearing: the assertion is that the actor exits, never how fast,
+/// and it exits in single-digit milliseconds when the runtime gets a core.
+/// The 1s this replaces was generous on an idle laptop and a measurement of
+/// the scheduler on a saturated one (phux-br1f). A genuinely hung actor still
+/// fails the run, 30s later, with the same message.
+const ACTOR_EXIT_DEADLINE: Duration = Duration::from_secs(30);
+
 const WIRE_TID: u32 = 7;
 
 /// Drain whatever is currently sitting on `rx` without blocking.
@@ -122,9 +131,9 @@ async fn no_consumers_means_no_emissions() {
             advance_ticks(10).await;
 
             token.cancel();
-            tokio::time::timeout(Duration::from_secs(1), join)
+            tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                 .await
-                .expect("actor did not exit within 1s")
+                .expect("actor did not exit after cancel")
                 .expect("actor task panicked");
         })
         .await;
@@ -182,9 +191,9 @@ async fn single_consumer_tick_keeps_actor_healthy() {
             }
 
             token.cancel();
-            tokio::time::timeout(Duration::from_secs(1), join)
+            tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                 .await
-                .expect("actor did not exit within 1s")
+                .expect("actor did not exit after cancel")
                 .expect("actor task panicked");
         })
         .await;
@@ -253,9 +262,9 @@ async fn multiple_consumers_get_independent_per_consumer_seq() {
             }
 
             token.cancel();
-            tokio::time::timeout(Duration::from_secs(1), join)
+            tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                 .await
-                .expect("actor did not exit within 1s")
+                .expect("actor did not exit after cancel")
                 .expect("actor task panicked");
         })
         .await;
@@ -319,9 +328,9 @@ async fn detached_consumer_receives_no_emission() {
             );
 
             token.cancel();
-            tokio::time::timeout(Duration::from_secs(1), join)
+            tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                 .await
-                .expect("actor did not exit within 1s")
+                .expect("actor did not exit after cancel")
                 .expect("actor task panicked");
         })
         .await;

@@ -29,8 +29,6 @@
 
 mod common;
 
-use std::time::Duration;
-
 use phux_protocol::TerminalId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
@@ -166,7 +164,7 @@ fn byc_6_5_keystroke_merge_arrival_order_preserved() {
         drop(client_a);
         drop(client_b);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server didn't shut down")
             .expect("server join")

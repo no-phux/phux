@@ -16,6 +16,14 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::mpsc;
 use std::time::Duration;
 
+/// Ceiling for "the adopted child should have echoed by now" waits.
+///
+/// Not load-bearing: the assertion is that the needle appears at all, never
+/// how fast. A real PTY child on a saturated box can be descheduled for
+/// seconds, so this is sized to be unreachable rather than hand-picked
+/// (phux-br1f); a child that never writes still fails the run, just later.
+const OUTPUT_DEADLINE: Duration = Duration::from_secs(30);
+
 fn read_until<R: std::io::Read + Send + 'static>(
     mut reader: R,
     needle: &str,
@@ -103,7 +111,7 @@ fn adopts_master_and_child_from_fd_and_pid() {
         writer.flush().unwrap();
     }
     assert!(
-        read_until(reader, "got:hello", Duration::from_secs(5)),
+        read_until(reader, "got:hello", OUTPUT_DEADLINE),
         "expected the child's echo through the adopted master"
     );
 

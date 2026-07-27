@@ -82,7 +82,6 @@
 mod common;
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use phux_protocol::ids::TerminalId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
@@ -478,7 +477,7 @@ where
 
         drop(probe);
         shutdown_tx.send(()).ok();
-        let _ = timeout(Duration::from_secs(5), server_handle).await;
+        let _ = timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle).await;
     });
 }
 

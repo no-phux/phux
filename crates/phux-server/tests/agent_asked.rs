@@ -44,7 +44,7 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use crate::common::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
 
@@ -166,7 +166,7 @@ fn subscribed_client_receives_asked_event_from_ask_title() {
         send_frame(&mut stream, &FrameKind::SubscribeEvents { terminal: None }).await;
 
         // ---- collect until the Asked event arrives ----
-        let asked = collect_until_asked(&mut stream, Duration::from_secs(5)).await;
+        let asked = collect_until_asked(&mut stream, WIRE_RECV_TIMEOUT).await;
 
         let Some(AgentEvent::Asked {
             id,
@@ -194,9 +194,9 @@ fn subscribed_client_receives_asked_event_from_ask_title() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -237,8 +237,7 @@ fn report_asked_command_emits_asked_event() {
             },
         )
         .await;
-        let (result, asked) =
-            collect_result_and_asked(&mut stream, 7, Duration::from_secs(5)).await;
+        let (result, asked) = collect_result_and_asked(&mut stream, 7, WIRE_RECV_TIMEOUT).await;
         assert_eq!(result, Some(CommandResult::Ok));
         let Some(AgentEvent::Asked {
             id,
@@ -256,9 +255,9 @@ fn report_asked_command_emits_asked_event() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });
@@ -306,9 +305,9 @@ fn report_asked_rejects_empty_question() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(Duration::from_secs(5), server_handle)
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
             .await
-            .expect("server didn't shut down in time")
+            .expect("server did not shut down after the shutdown signal")
             .expect("server join")
             .expect("server run_async ok");
     });

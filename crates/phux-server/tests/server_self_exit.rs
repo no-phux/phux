@@ -67,7 +67,7 @@ fn server_self_exits_after_serving_a_client() {
         );
 
         // The pane exits ~0.3s in; the reap then self-exits the server.
-        let run = timeout(Duration::from_secs(5), handle)
+        let run = timeout(crate::common::SERVER_JOIN_DEADLINE, handle)
             .await
             .expect("server did not self-exit within 5s after its only pane died")
             .expect("server task join");
