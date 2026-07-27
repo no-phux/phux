@@ -9,6 +9,27 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.5.0](https://github.com/phall1/phux/compare/v0.4.0...v0.5.0) (2026-07-27)
+
+
+### Features
+
+* **cli:** add `phux resize` so a headless caller can set a pane size ([4f57b29](https://github.com/phall1/phux/commit/4f57b29e1641dc4d54790124fed50ff6a164e2ff))
+* **cli:** support managed headless sessions ([c5eaab3](https://github.com/phall1/phux/commit/c5eaab3cea34e662cee59cef3b1b40c07572ccfb))
+* **cli:** tell the user when a fleet answer is only partial ([8f7284d](https://github.com/phall1/phux/commit/8f7284de9857538d460808457681517758adebfd))
+
+
+### Bug Fixes
+
+* **client:** honour correlated ERROR on every request/response pair ([2b32bb3](https://github.com/phall1/phux/commit/2b32bb3387df728f4ff3651ca8b16e94ea19e540))
+* **client:** stop COMMAND callers from swallowing interleaved frames ([0ed15eb](https://github.com/phall1/phux/commit/0ed15eb7d9e0f11fef58b8e4c9054ab9a734f715))
+* **cli:** survive a closed stdout, and delete the contract that let us not ([21e88df](https://github.com/phall1/phux/commit/21e88df7006f037d05162de67d3781623c5d54d5))
+
+
+### Documentation
+
+* **spec:** make the extension rule normative and CI-check implementation status ([f811212](https://github.com/phall1/phux/commit/f8112127da07b1529c301c16b1674d278b074b21))
+
 ## [0.4.0](https://github.com/phall1/phux/compare/v0.3.1...v0.4.0) (2026-07-27)
 
 
