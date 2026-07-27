@@ -102,7 +102,13 @@ fn banner_line(listen: SocketAddr, routes: usize, fingerprint: &str) -> String {
 /// current-thread runtime until Ctrl-C — the same wiring shape as
 /// `phux server`.
 fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
-    // Hand-started long-running foreground process, like `phux server`.
+    // Hand-started long-running foreground process, like `phux server` —
+    // and like it, it arms the durable panic hook itself. `telemetry::init`
+    // stopped doing that for every process, because a one-shot verb's panic
+    // logged as `server panic` is a triage hazard (phux-h5hj.8); a relay
+    // that dies under a service manager still needs the record.
+    phux_server::telemetry::install_server_panic_hook();
+
     crate::print_banner();
 
     let mut config = phux_relay::RelayConfig::new(listen);
@@ -198,22 +204,22 @@ fn run_relay_pair(route: &str) -> ExitCode {
         }
     };
 
-    println!("Tunnel token for route \"{route}\" (a secret — give it to the phux server once):");
-    println!("  {token}");
-    println!();
+    outln!("Tunnel token for route \"{route}\" (a secret — give it to the phux server once):");
+    outln!("  {token}");
+    outln!();
 
     match phux_relay::cert_fingerprint(&cert) {
         Ok(fingerprint) => {
-            println!("Relay certificate SHA-256 (pin it on the dialing side to defeat MITM):");
-            println!("  {fingerprint}");
-            println!();
+            outln!("Relay certificate SHA-256 (pin it on the dialing side to defeat MITM):");
+            outln!("  {fingerprint}");
+            outln!();
         }
         Err(err) => {
             eprintln!("phux relay pair: warning: could not read certificate fingerprint: {err}");
         }
     }
 
-    println!("Token written to {}", tokens.display());
+    outln!("Token written to {}", tokens.display());
     ExitCode::SUCCESS
 }
 

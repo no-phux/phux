@@ -314,8 +314,8 @@ pub(crate) fn run_add(
     };
     match add_or_update(&new) {
         Ok(()) => {
-            println!("Registered remote {:?} -> {}", new.name, new.endpoint);
-            println!("Attach with `phux attach {}`.", new.name);
+            outln!("Registered remote {:?} -> {}", new.name, new.endpoint);
+            outln!("Attach with `phux attach {}`.", new.name);
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -349,7 +349,7 @@ pub(crate) fn run_list(json: bool) -> ExitCode {
             })
             .collect();
         match serde_json::to_string_pretty(&serde_json::json!({ "remotes": rows })) {
-            Ok(text) => println!("{text}"),
+            Ok(text) => outln!("{text}"),
             Err(err) => {
                 eprintln!("phux remote: could not encode JSON: {err}");
                 return ExitCode::FAILURE;
@@ -359,8 +359,8 @@ pub(crate) fn run_list(json: bool) -> ExitCode {
     }
 
     if entries.is_empty() {
-        println!("No remotes registered.");
-        println!("Add one with `phux enroll HOST`, or `phux remote add NAME ENDPOINT`.");
+        outln!("No remotes registered.");
+        outln!("Add one with `phux enroll HOST`, or `phux remote add NAME ENDPOINT`.");
         return ExitCode::SUCCESS;
     }
     for entry in &entries {
@@ -369,7 +369,7 @@ pub(crate) fn run_list(json: bool) -> ExitCode {
         } else {
             "no pin"
         };
-        println!("{:<16} {:<40} {pinned}", entry.name, entry.endpoint);
+        outln!("{:<16} {:<40} {pinned}", entry.name, entry.endpoint);
     }
     ExitCode::SUCCESS
 }
@@ -389,9 +389,9 @@ pub(crate) fn run_remove(name: &str) -> ExitCode {
     };
     match remove_at(entry.index) {
         Ok(()) => {
-            println!("Removed remote {name:?}.");
+            outln!("Removed remote {name:?}.");
             if let Some(path) = &entry.token_file {
-                println!("Its token file is still at {}.", path.display());
+                outln!("Its token file is still at {}.", path.display());
             }
             ExitCode::SUCCESS
         }

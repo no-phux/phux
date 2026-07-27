@@ -133,7 +133,7 @@ fn run_list(config_path: &std::path::Path, json: bool) -> ExitCode {
         let payload = serde_json::json!({ "schema_version": 1, "integrations": items });
         return match serde_json::to_string_pretty(&payload) {
             Ok(rendered) => {
-                println!("{rendered}");
+                outln!("{rendered}");
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -151,7 +151,7 @@ fn run_list(config_path: &std::path::Path, json: bool) -> ExitCode {
     }
     for item in &integrations {
         let name = item.display_name.as_deref().unwrap_or(&item.integration_id);
-        println!("{}\t{}\t{}", item.integration_id, name, item.plugin_id);
+        outln!("{}\t{}\t{}", item.integration_id, name, item.plugin_id);
     }
     ExitCode::SUCCESS
 }
@@ -168,7 +168,7 @@ fn print_resolved(resolved: &ResolvedLaunch, json: bool) -> ExitCode {
         });
         return match serde_json::to_string_pretty(&payload) {
             Ok(rendered) => {
-                println!("{rendered}");
+                outln!("{rendered}");
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -177,9 +177,9 @@ fn print_resolved(resolved: &ResolvedLaunch, json: bool) -> ExitCode {
             }
         };
     }
-    println!("{} ({})", resolved.integration_id, resolved.plugin_id);
-    println!("  cwd: {}", resolved.cwd.display());
-    println!("  argv: {}", resolved.argv.join(" "));
+    outln!("{} ({})", resolved.integration_id, resolved.plugin_id);
+    outln!("  cwd: {}", resolved.cwd.display());
+    outln!("  argv: {}", resolved.argv.join(" "));
     ExitCode::SUCCESS
 }
 
@@ -202,7 +202,7 @@ fn print_launched(
         });
         return match serde_json::to_string_pretty(&payload) {
             Ok(rendered) => {
-                println!("{rendered}");
+                outln!("{rendered}");
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -211,9 +211,10 @@ fn print_launched(
             }
         };
     }
-    println!(
+    outln!(
         "launched {} in terminal {id} ({})",
-        resolved.integration_id, resolved.plugin_id
+        resolved.integration_id,
+        resolved.plugin_id
     );
     ExitCode::SUCCESS
 }

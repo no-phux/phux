@@ -171,7 +171,7 @@ fn install(
     let rev_note = resolved_rev
         .as_deref()
         .map_or_else(String::new, |rev| format!(" at {rev}"));
-    println!(
+    outln!(
         "installed {} {}{rev_note} -> {} ({state})",
         entry.manifest.id,
         entry.manifest.version,
@@ -238,7 +238,7 @@ fn update(
         return Ok(print_json(&doc));
     }
     if reports.is_empty() {
-        println!("no managed plugins installed");
+        outln!("no managed plugins installed");
         return Ok(ExitCode::SUCCESS);
     }
     for report in reports {
@@ -246,7 +246,7 @@ fn update(
             .rev
             .as_deref()
             .map_or_else(String::new, |rev| format!(" at {rev}"));
-        println!("updated {} {}{rev_note}", report.id, report.version);
+        outln!("updated {} {}{rev_note}", report.id, report.version);
     }
     Ok(ExitCode::SUCCESS)
 }

@@ -260,9 +260,16 @@ fn client_state_dir() -> PathBuf {
 /// When `PHUX_LOG` is set it *also* tees the same-format stream to that
 /// file via a non-blocking writer; the returned [`WorkerGuard`] (when
 /// present) must be held for the process lifetime so the file writer keeps
-/// flushing. Also installs a durable panic hook (see
-/// [`install_server_panic_hook`]) so a daemonized server's crash lands in
-/// the log.
+/// flushing.
+///
+/// Installs **no panic hook**. This is the subscriber for every
+/// non-TUI process — a foreground server, yes, but also every one-shot CLI
+/// verb — and [`install_server_panic_hook`] labels its event `server panic`.
+/// A CLI that died writing to a closed pipe used to log exactly that,
+/// pointing triage at a server that was fine (phux-h5hj.8, phux-ngq2). The
+/// hook belongs to the long-running daemons, so they arm it themselves:
+/// `phux server` and `phux relay run` both call
+/// [`install_server_panic_hook`] on entry.
 ///
 /// Returns `Err` if a subscriber was already installed (e.g. by a test
 /// harness or a buggy second call); callers in `main` can treat this as
@@ -309,8 +316,6 @@ pub fn init() -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + 
     {
         registry.try_init()?;
     }
-
-    install_server_panic_hook();
 
     Ok(guard)
 }
@@ -382,9 +387,16 @@ static SERVER_PANIC_HOOK_INSTALLED: std::sync::atomic::AtomicBool =
 /// backtrace through `tracing` (so a daemonized server's crash is durable
 /// in the log file), then chains the previous hook.
 ///
-/// Idempotent — repeated calls after the first are no-ops. Called by
-/// [`init`]; exposed so a future server entry point that bypasses `init`
-/// can still arm durable crash capture.
+/// Idempotent — repeated calls after the first are no-ops.
+///
+/// Call this from a **long-running daemon's** entry point only, after
+/// [`init`] — `phux server` and `phux relay run` do. It is deliberately NOT
+/// armed by [`init`]: that would also arm it for every one-shot CLI verb,
+/// whose panics would then be reported as `server panic` from a process
+/// that is not a server (phux-h5hj.8). A CLI verb's panic still reaches the
+/// user through the default hook on stderr; nothing in a one-shot verb
+/// needs a durable crash record, because the operator is standing right
+/// there reading it.
 ///
 /// The backtrace honors `RUST_BACKTRACE` like the default hook: an
 /// unforced [`std::backtrace::Backtrace::capture`] is `Disabled` (and

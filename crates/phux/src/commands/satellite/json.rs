@@ -32,7 +32,7 @@ fn satellite_json(entry: &SatelliteEntry) -> serde_json::Value {
 fn print_doc(doc: &serde_json::Value) -> ExitCode {
     match serde_json::to_string_pretty(doc) {
         Ok(rendered) => {
-            println!("{rendered}");
+            outln!("{rendered}");
             ExitCode::SUCCESS
         }
         Err(err) => {

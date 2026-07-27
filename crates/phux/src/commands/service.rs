@@ -411,10 +411,10 @@ pub(crate) fn run_install(
     // The unit is the reviewable artifact, so being able to read it before
     // it lands is worth a flag.
     if print {
-        print!("{}", render_unit(manager, &plan));
+        out!("{}", render_unit(manager, &plan));
         if plan.restore.is_some() {
-            println!();
-            print!("{}", render_wrapper_script(&plan));
+            outln!();
+            out!("{}", render_wrapper_script(&plan));
         }
         return ExitCode::SUCCESS;
     }
@@ -550,31 +550,31 @@ fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
 /// Report what an install did, including the caveats an operator only
 /// discovers later otherwise.
 fn report_install(manager: Manager, plan: &ServicePlan) {
-    println!("phux service installed.");
-    println!("  unit    {}", manager.unit_path().display());
-    println!("  binary  {}", plan.binary.display());
+    outln!("phux service installed.");
+    outln!("  unit    {}", manager.unit_path().display());
+    outln!("  binary  {}", plan.binary.display());
     if let Some(quic) = &plan.quic {
-        println!("  quic    {quic}");
+        outln!("  quic    {quic}");
     }
     if let Some(listen) = &plan.listen {
-        println!("  ws      {listen}");
+        outln!("  ws      {listen}");
     }
     if plan.quic.is_none() && plan.listen.is_none() {
-        println!("  listen  local socket only (pass --quic or --listen for remote attach)");
+        outln!("  listen  local socket only (pass --quic or --listen for remote attach)");
     }
-    println!("  logs    {}", plan.log.display());
+    outln!("  logs    {}", plan.log.display());
     if let Some(archive) = &plan.restore {
-        println!("  restore {}", archive.display());
-        println!();
-        println!(
+        outln!("  restore {}", archive.display());
+        outln!();
+        outln!(
             "Restore brings back session names, layout, and cwd — not running\n\
              processes. Restored panes are fresh shells in the right directories."
         );
     }
 
     if manager == Manager::Launchd {
-        println!();
-        println!(
+        outln!();
+        outln!(
             "A LaunchAgent runs while this user has a session. On a headless\n\
              host, enable automatic login (System Settings > Users & Groups >\n\
              Automatic login) so the server comes back after a reboot without\n\
@@ -587,12 +587,12 @@ fn report_install(manager: Manager, plan: &ServicePlan) {
     if let Ok(count) = count_client_logs()
         && count > 50
     {
-        println!();
-        println!(
+        outln!();
+        outln!(
             "{count} stale client logs in {}.",
             plan.log.parent().unwrap_or(&plan.log).display()
         );
-        println!("Clear them with `phux service prune-logs`.");
+        outln!("Clear them with `phux service prune-logs`.");
     }
 }
 
@@ -625,9 +625,9 @@ pub(crate) fn run_uninstall() -> ExitCode {
 
     let unit_path = manager.unit_path();
     match std::fs::remove_file(&unit_path) {
-        Ok(()) => println!("Removed {}", unit_path.display()),
+        Ok(()) => outln!("Removed {}", unit_path.display()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            println!("No unit at {}", unit_path.display());
+            outln!("No unit at {}", unit_path.display());
         }
         Err(err) => {
             eprintln!(
@@ -640,7 +640,7 @@ pub(crate) fn run_uninstall() -> ExitCode {
 
     let wrapper = phux_server::telemetry::state_dir().join("service-wrapper.sh");
     if wrapper.exists() && std::fs::remove_file(&wrapper).is_ok() {
-        println!("Removed {}", wrapper.display());
+        outln!("Removed {}", wrapper.display());
     }
 
     if manager == Manager::Systemd {
@@ -650,9 +650,9 @@ pub(crate) fn run_uninstall() -> ExitCode {
         );
     }
 
-    println!();
-    println!("Sessions on the running server ended with it. The workspace archive,");
-    println!("token store, and certificate were left in place.");
+    outln!();
+    outln!("Sessions on the running server ended with it. The workspace archive,");
+    outln!("token store, and certificate were left in place.");
     ExitCode::SUCCESS
 }
 
@@ -666,11 +666,11 @@ pub(crate) fn run_status() -> ExitCode {
 
     let unit_path = manager.unit_path();
     if !unit_path.exists() {
-        println!("not installed (no unit at {})", unit_path.display());
-        println!("Install one with `phux service install`.");
+        outln!("not installed (no unit at {})", unit_path.display());
+        outln!("Install one with `phux service install`.");
         return ExitCode::FAILURE;
     }
-    println!("unit  {}", unit_path.display());
+    outln!("unit  {}", unit_path.display());
 
     // Delegate liveness to the init system rather than guessing from a pid
     // file phux does not write.
@@ -686,7 +686,7 @@ pub(crate) fn run_status() -> ExitCode {
     match status {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(_) => {
-            println!("installed, but the init system is not running it.");
+            outln!("installed, but the init system is not running it.");
             ExitCode::FAILURE
         }
         Err(err) => {
@@ -741,12 +741,12 @@ pub(crate) fn run_prune_logs(dry_run: bool) -> ExitCode {
     };
 
     if entries.is_empty() {
-        println!("No client logs in {}.", dir.display());
+        outln!("No client logs in {}.", dir.display());
         return ExitCode::SUCCESS;
     }
 
     if dry_run {
-        println!(
+        outln!(
             "{} client logs in {} (not removed).",
             entries.len(),
             dir.display()
@@ -763,7 +763,7 @@ pub(crate) fn run_prune_logs(dry_run: bool) -> ExitCode {
             failed += 1;
         }
     }
-    println!("Removed {removed} client logs from {}.", dir.display());
+    outln!("Removed {removed} client logs from {}.", dir.display());
     if failed > 0 {
         eprintln!("phux service: {failed} could not be removed.");
         return ExitCode::FAILURE;

@@ -434,7 +434,7 @@ fn local_id(terminal: &TerminalId) -> u32 {
 fn print_success(json: bool, plan: &Plan) -> ExitCode {
     if json {
         match serde_json::to_string_pretty(&plan.output) {
-            Ok(rendered) => println!("{rendered}"),
+            Ok(rendered) => outln!("{rendered}"),
             Err(err) => {
                 return print_error(
                     true,
@@ -444,7 +444,7 @@ fn print_success(json: bool, plan: &Plan) -> ExitCode {
             }
         }
     } else {
-        println!("{}", plan.human);
+        outln!("{}", plan.human);
     }
     ExitCode::SUCCESS
 }

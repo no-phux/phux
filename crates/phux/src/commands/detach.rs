@@ -52,9 +52,9 @@ pub(crate) fn run_detach(session: Option<String>, socket: Option<PathBuf>) -> Ex
                     |n| {
                         match session.as_deref() {
                             Some(name) => {
-                                println!("phux: detached {n} client(s) from session {name:?}");
+                                outln!("phux: detached {n} client(s) from session {name:?}");
                             }
-                            None => println!("phux: detached {n} client(s)"),
+                            None => outln!("phux: detached {n} client(s)"),
                         }
                         ExitCode::SUCCESS
                     },

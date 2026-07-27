@@ -165,7 +165,7 @@ fn print_list_json(entries: &[BoundWorktree]) -> ExitCode {
     let doc = serde_json::json!({ "schema_version": 1, "worktrees": rows });
     match serde_json::to_string_pretty(&doc) {
         Ok(rendered) => {
-            println!("{rendered}");
+            outln!("{rendered}");
             ExitCode::SUCCESS
         }
         Err(err) => fail(&format!("could not render worktree JSON: {err}")),
@@ -181,7 +181,7 @@ fn print_list_human(entries: &[BoundWorktree]) {
             Some(false) => "-",
             None => "?",
         };
-        println!(
+        outln!(
             "{marker} {:<24} {branch:<24} {} [{bound}]",
             entry.session,
             entry.info.path.display()
@@ -274,7 +274,7 @@ fn run_new(req: NewRequest<'_>) -> ExitCode {
     if let Err(err) = git_bytes(&root, &args) {
         return fail(&err);
     }
-    println!("worktree {} {branch}", dest.display());
+    outln!("worktree {} {branch}", dest.display());
 
     bind_session(&name, &dest, socket, command, attach)
 }
@@ -333,7 +333,7 @@ fn bind_session(
         Some(cwd.to_string_lossy().into_owned()),
     )) {
         Ok(_) => {
-            println!("{name}");
+            outln!("{name}");
             ExitCode::SUCCESS
         }
         Err(code) => code,
@@ -391,7 +391,7 @@ fn run_open(target: &str, repo: &Path, socket: Option<PathBuf>, attach: bool) ->
         if attach {
             return super::attach::run_attach(Some(name), socket);
         }
-        println!("{name}");
+        outln!("{name}");
         return ExitCode::SUCCESS;
     }
 
@@ -449,7 +449,7 @@ fn run_remove(target: &str, force: bool, repo: &Path, socket: Option<&Path>) -> 
                 "session '{name}' did not shut down within {WAIT_FOR_KILL_MS}ms — worktree left in place; retry, or pass --force once its processes exit"
             ));
         }
-        println!("killed session {name}");
+        outln!("killed session {name}");
     }
 
     let path_str = entry.path.to_string_lossy().into_owned();
@@ -461,7 +461,7 @@ fn run_remove(target: &str, force: bool, repo: &Path, socket: Option<&Path>) -> 
 
     match git_bytes(&root, &args) {
         Ok(_) => {
-            println!("removed worktree {}", entry.path.display());
+            outln!("removed worktree {}", entry.path.display());
             ExitCode::SUCCESS
         }
         Err(err) => fail(&err),

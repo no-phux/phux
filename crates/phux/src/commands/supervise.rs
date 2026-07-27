@@ -59,9 +59,9 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: bool) -> ExitCode {
         match request_command(&socket_path, command).await {
             Ok(CommandResult::Ok) => {
                 if take {
-                    println!("phux: took the wheel of {target}");
+                    outln!("phux: took the wheel of {target}");
                 } else {
-                    println!("phux: released the wheel of {target}");
+                    outln!("phux: released the wheel of {target}");
                 }
                 ExitCode::SUCCESS
             }
@@ -106,7 +106,7 @@ pub(crate) fn run_signal(target: &str, signal: SignalArg, socket: Option<PathBuf
         .await
         {
             Ok(CommandResult::Ok) => {
-                println!("phux: signalled {target} ({signal:?})");
+                outln!("phux: signalled {target} ({signal:?})");
                 ExitCode::SUCCESS
             }
             Ok(CommandResult::Error { message, .. }) => {

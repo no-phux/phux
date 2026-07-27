@@ -45,7 +45,7 @@ fn run_list(json: bool) -> ExitCode {
         Ok(entries) => {
             for entry in entries {
                 let state = if entry.enabled { "enabled" } else { "disabled" };
-                println!("{} {} ({state})", entry.manifest.id, entry.manifest.version);
+                outln!("{} {} ({state})", entry.manifest.id, entry.manifest.version);
             }
             ExitCode::SUCCESS
         }
@@ -68,7 +68,7 @@ fn run_link(manifest_arg: &Path, enabled: bool, json: bool) -> ExitCode {
         print_plugin_json("plugin", &entry)
     } else {
         let state = if enabled { "enabled" } else { "disabled" };
-        println!("linked {} ({state})", entry.manifest.id);
+        outln!("linked {} ({state})", entry.manifest.id);
         ExitCode::SUCCESS
     }
 }
@@ -126,7 +126,7 @@ fn run_unlink(id: &str, json: bool) -> ExitCode {
     if json {
         print_plugin_json("removed", &entry)
     } else {
-        println!("unlinked {}", entry.manifest.id);
+        outln!("unlinked {}", entry.manifest.id);
         ExitCode::SUCCESS
     }
 }
@@ -155,7 +155,7 @@ fn run_set_enabled(id: &str, enabled: bool, json: bool) -> ExitCode {
         print_plugin_json("plugin", &entry)
     } else {
         let state = if enabled { "enabled" } else { "disabled" };
-        println!("{} {state}", entry.manifest.id);
+        outln!("{} {state}", entry.manifest.id);
         ExitCode::SUCCESS
     }
 }
@@ -180,7 +180,7 @@ fn validate_manifest(path: &Path, json: bool) -> ExitCode {
             print_validation_json(&[entry])
         }
         Ok(manifest) => {
-            println!("valid {}", manifest.id);
+            outln!("valid {}", manifest.id);
             ExitCode::SUCCESS
         }
         Err(err) => fail(&format!("could not load {}: {err}", path.display())),
@@ -192,7 +192,7 @@ fn validate_registry(json: bool) -> ExitCode {
         Ok(entries) if json => print_validation_json(&entries),
         Ok(entries) => {
             for entry in entries {
-                println!("valid {}", entry.manifest.id);
+                outln!("valid {}", entry.manifest.id);
             }
             ExitCode::SUCCESS
         }

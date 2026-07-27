@@ -26,7 +26,7 @@ use live_feed::{
 pub(crate) fn run_config(action: &ConfigAction) -> ExitCode {
     match action {
         ConfigAction::Path => {
-            println!("{}", config_loader::config_path().display());
+            outln!("{}", config_loader::config_path().display());
             ExitCode::SUCCESS
         }
         ConfigAction::Check { path, json } => run_config_check(path.as_deref(), *json),
@@ -96,19 +96,19 @@ fn run_config_check(path: Option<&Path>, json: bool) -> ExitCode {
 /// Human rendering: one line per finding, path first so the column scans.
 fn print_check_human(path: &Path, report: &phux_config::CheckReport, missing: bool) -> ExitCode {
     if missing {
-        println!(
+        outln!(
             "{}: no config file (shipped defaults apply)",
             path.display()
         );
         return ExitCode::SUCCESS;
     }
     if report.is_ok() {
-        println!("{}: ok", path.display());
+        outln!("{}: ok", path.display());
         return ExitCode::SUCCESS;
     }
 
     for finding in &report.findings {
-        println!(
+        outln!(
             "{}: {}: {}",
             finding.path,
             finding.fault.label(),
@@ -118,16 +118,16 @@ fn print_check_human(path: &Path, report: &phux_config::CheckReport, missing: bo
         // repeating their own path on every finding is noise.
         let origin = finding.origin();
         if origin != path.display().to_string() {
-            println!("  from {origin}");
+            outln!("  from {origin}");
         }
     }
 
     let n = report.findings.len();
     let plural = if n == 1 { "problem" } else { "problems" };
     if report.truncated {
-        println!("{n} {plural} (list truncated; fix these and re-run)");
+        outln!("{n} {plural} (list truncated; fix these and re-run)");
     } else {
-        println!("{n} {plural}");
+        outln!("{n} {plural}");
     }
     ExitCode::FAILURE
 }
@@ -156,7 +156,7 @@ fn print_check_json(path: &Path, report: &phux_config::CheckReport, missing: boo
     });
     match serde_json::to_string_pretty(&doc) {
         Ok(rendered) => {
-            println!("{rendered}");
+            outln!("{rendered}");
             if report.is_ok() {
                 ExitCode::SUCCESS
             } else {
@@ -180,7 +180,7 @@ fn print_check_json(path: &Path, report: &phux_config::CheckReport, missing: boo
 /// arrays, which layer contributed each element.
 fn run_config_show(default: bool, layers: bool, json: bool) -> ExitCode {
     if default {
-        print!("{}", phux_config::DEFAULT_CONFIG_TOML);
+        out!("{}", phux_config::DEFAULT_CONFIG_TOML);
         return ExitCode::SUCCESS;
     }
     let path = config_loader::config_path();
@@ -214,7 +214,7 @@ fn run_config_show(default: bool, layers: bool, json: bool) -> ExitCode {
     };
     match toml::to_string(&merged) {
         Ok(rendered) => {
-            print!("{rendered}");
+            out!("{rendered}");
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -228,17 +228,17 @@ fn run_config_show(default: bool, layers: bool, json: bool) -> ExitCode {
 /// effective leaf key (arrays expand to one row per element) tagged
 /// with the 1-based index and short name of the owning layer.
 fn print_layers_human(provenance: &phux_config::ConfigProvenance) -> ExitCode {
-    println!("layers (merge order; later layers win):");
+    outln!("layers (merge order; later layers win):");
     for (i, layer) in provenance.layers.iter().enumerate() {
         let label = match layer {
             phux_config::LayerSource::Defaults => "defaults (embedded)".to_owned(),
             phux_config::LayerSource::Extended(p) => p.display().to_string(),
             phux_config::LayerSource::User(p) => format!("{} (user)", p.display()),
         };
-        println!("  [{}] {label}", i + 1);
+        outln!("  [{}] {label}", i + 1);
     }
-    println!();
-    println!("keys:");
+    outln!();
+    outln!("keys:");
     let mut rows: Vec<(String, usize)> = Vec::new();
     for (key, origin) in &provenance.keys {
         match origin.elements.as_deref() {
@@ -256,7 +256,7 @@ fn print_layers_human(provenance: &phux_config::ConfigProvenance) -> ExitCode {
             .layers
             .get(layer)
             .map_or_else(|| "?".to_owned(), layer_short_label);
-        println!("  {key:<width$}  <- [{}] {label}", layer + 1);
+        outln!("  {key:<width$}  <- [{}] {label}", layer + 1);
     }
     ExitCode::SUCCESS
 }
@@ -307,7 +307,7 @@ fn run_config_init(force: bool, distro: Option<&str>) -> ExitCode {
     };
     match phux_config::scaffold::write_scaffold(&path, &contents, force) {
         Ok(phux_config::scaffold::ScaffoldOutcome::Wrote(p)) => {
-            println!("wrote {}", p.display());
+            outln!("wrote {}", p.display());
             ExitCode::SUCCESS
         }
         Ok(phux_config::scaffold::ScaffoldOutcome::Skipped(p)) => {
@@ -395,7 +395,7 @@ fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
                 Err(err) => return super::report_no_server(&err, &socket_path, "config reload"),
             }
         }
-        println!("config OK; reload signalled to attached clients");
+        outln!("config OK; reload signalled to attached clients");
         ExitCode::SUCCESS
     })
 }
@@ -446,7 +446,7 @@ fn run_config_plugins(json: bool) -> ExitCode {
             "disabled"
         };
         let manifest = plugin.manifest;
-        println!("{} {} ({state})", manifest.id, manifest.version);
+        outln!("{} {} ({state})", manifest.id, manifest.version);
     }
     ExitCode::SUCCESS
 }
@@ -474,7 +474,7 @@ fn run_config_agents(json: bool, socket: Option<PathBuf>) -> ExitCode {
         } else {
             "disabled"
         };
-        println!(
+        outln!(
             "{}:{} {} {} {} ({plugin_state}, {})",
             row.plugin_id,
             row.id,
@@ -549,7 +549,7 @@ fn print_action_output(output: &phux_plugin::PluginActionOutput, json: bool) -> 
     if json {
         return match serde_json::to_string_pretty(output) {
             Ok(rendered) => {
-                println!("{rendered}");
+                outln!("{rendered}");
                 action_exit_code(output)
             }
             Err(err) => {
@@ -558,7 +558,7 @@ fn print_action_output(output: &phux_plugin::PluginActionOutput, json: bool) -> 
             }
         };
     }
-    print!("{}", output.stdout);
+    out!("{}", output.stdout);
     eprint!("{}", output.stderr);
     action_exit_code(output)
 }

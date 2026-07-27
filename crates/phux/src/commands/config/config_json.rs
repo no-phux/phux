@@ -109,7 +109,7 @@ fn plugin_json(plugin: &LoadedPlugin) -> serde_json::Value {
 fn print_json(value: &serde_json::Value, label: &str) -> ExitCode {
     match serde_json::to_string_pretty(value) {
         Ok(rendered) => {
-            println!("{rendered}");
+            outln!("{rendered}");
             ExitCode::SUCCESS
         }
         Err(err) => {

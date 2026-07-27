@@ -62,7 +62,7 @@ pub(crate) fn run_run(
             Ok(RunOutcome::Completed(result)) => {
                 if json {
                     match serde_json::to_string_pretty(&result) {
-                        Ok(s) => println!("{s}"),
+                        Ok(s) => outln!("{s}"),
                         Err(err) => {
                             eprintln!("phux: failed to serialize run result: {err}");
                             return ExitCode::FAILURE;
@@ -103,16 +103,17 @@ pub(crate) fn run_run(
 /// Human-readable rendering of a `run` result.
 pub(crate) fn print_run_result(result: &phux_client::run::RunResult) {
     if !result.output.is_empty() {
-        println!("{}", result.output);
+        outln!("{}", result.output);
     }
     let trunc = if result.truncated {
         " (output truncated; needs scrollback)"
     } else {
         ""
     };
-    println!(
+    outln!(
         "exit={} ({}ms){trunc}",
-        result.exit_code, result.duration_ms
+        result.exit_code,
+        result.duration_ms
     );
 }
 

@@ -187,7 +187,7 @@ pub(crate) fn run_new_json(
             let payload = serde_json::json!({ "session": name, "terminal_id": terminal_id });
             match serde_json::to_string_pretty(&payload) {
                 Ok(s) => {
-                    println!("{s}");
+                    outln!("{s}");
                     ExitCode::SUCCESS
                 }
                 Err(err) => {

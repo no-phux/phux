@@ -35,7 +35,7 @@ pub(super) fn run_save(socket: Option<PathBuf>, output: Option<&PathBuf>) -> Exi
             Err(err) => fail(&format!("could not write {}: {err}", path.display())),
         }
     } else {
-        println!("{rendered}");
+        outln!("{rendered}");
         ExitCode::SUCCESS
     }
 }
@@ -81,7 +81,7 @@ pub(super) fn run_restore(archive_path: &Path, socket: Option<PathBuf>) -> ExitC
     };
     match serde_json::to_string_pretty(&summary) {
         Ok(rendered) => {
-            println!("{rendered}");
+            outln!("{rendered}");
             ExitCode::SUCCESS
         }
         Err(err) => fail(&format!("could not render restore summary: {err}")),

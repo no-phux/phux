@@ -68,7 +68,7 @@ pub(crate) fn run_rename(session: &str, new_name: &str, socket: Option<PathBuf>)
             return report_no_server(&err, &socket_path, "rename");
         }
 
-        println!("renamed {session:?} to {new_name:?}");
+        outln!("renamed {session:?} to {new_name:?}");
         ExitCode::SUCCESS
     })
 }

@@ -46,11 +46,11 @@ pub(crate) fn print_sessions(snapshot: &SessionSnapshot) {
         } else {
             ""
         };
-        println!("{}: {} {windows}{attached}", s.name, s.window_count);
+        outln!("{}: {} {windows}{attached}", s.name, s.window_count);
     }
     for pane in &snapshot.panes {
         if pane.id.host().is_some() {
-            println!(
+            outln!(
                 "{}: satellite terminal",
                 crate::selector::format_terminal_id(&pane.id)
             );
@@ -81,7 +81,7 @@ pub(crate) fn print_sessions_json(snapshot: &SessionSnapshot) -> ExitCode {
     let list = SessionListJson::new(entries).with_terminals(terminals);
     match serde_json::to_string_pretty(&list) {
         Ok(s) => {
-            println!("{s}");
+            outln!("{s}");
             ExitCode::SUCCESS
         }
         Err(err) => {

@@ -9,6 +9,8 @@
 //!   * A `--json` path puts ONLY JSON on stdout (or nothing, on error),
 //!     never the banner; errors go to stderr with a nonzero exit.
 //!   * `--version` reports on stdout, banner-free.
+//!   * A verb whose reader hangs up (`| head`, quitting `less`) exits 0 in
+//!     silence instead of panicking — see `run_with_closed_stdout`.
 //!
 //! Every verb that contacts a server is pointed at a socket path that
 //! does not exist, so the server is never auto-spawned: `ls` does not
@@ -17,7 +19,7 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use tempfile::TempDir;
 
@@ -315,4 +317,119 @@ fn rec_json_no_server_is_silent_stdout_and_banner_free() {
         !out.exists(),
         "a capture that never started must not leave an empty cast behind"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Broken pipe (phux-h5hj.8, phux-ngq2)
+//
+// `phux snapshot work | head -8` used to die with a ~50-frame backtrace and
+// an ERROR line reading `server panic`, because `println!` panics when its
+// write fails and the panic hook of the day was the SERVER's. Piping a verb
+// into `head` or `less` is an ordinary thing for a human to do; it has to
+// exit 0 in silence.
+// ---------------------------------------------------------------------------
+
+/// Run `phux <args...>` with **the read end of its stdout pipe already
+/// closed**, and return `(exit_status_code, stderr)`.
+///
+/// This closes a real pipe on a real spawned binary. Simulating it — calling
+/// the print helper with a fake writer that returns `BrokenPipe` — would
+/// prove nothing about the two things that actually broke: the panic hook a
+/// dying process runs, and the exit status the shell sees.
+///
+/// `code` is `None` when the child died from a signal, which is a failure
+/// mode this contract must exclude too: Rust masks `SIGPIPE` at startup, and
+/// a `phux` that started letting it through would die with 141 instead of
+/// reporting 0.
+fn run_with_closed_stdout(args: &[&str]) -> (Option<i32>, String) {
+    let mut child = Command::new(PHUX)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn phux binary");
+
+    // Drop OUR end of the pipe — the only reader — before the child gets
+    // through clap parsing and reaches its first write. With no reader left,
+    // the write fails with EPIPE immediately, whatever its size; we do not
+    // depend on filling a 64 KiB pipe buffer to provoke it.
+    drop(child.stdout.take().expect("child stdout is piped"));
+
+    let out = child.wait_with_output().expect("wait for phux");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Assert the whole contract for one verb: exit 0, no panic, and no line
+/// blaming a server that is not even running.
+fn assert_survives_closed_stdout(args: &[&str]) {
+    let (code, stderr) = run_with_closed_stdout(args);
+    assert_eq!(
+        code,
+        Some(0),
+        "`phux {}` with a closed stdout must exit 0 (None = died from a signal); stderr={stderr}",
+        args.join(" ")
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "`phux {}` panicked on a closed stdout; stderr={stderr}",
+        args.join(" ")
+    );
+    assert!(
+        !stderr.contains("server panic"),
+        "`phux {}` blamed the server for its own death; stderr={stderr}",
+        args.join(" ")
+    );
+    assert!(
+        stderr.is_empty(),
+        "`phux {}` must hang up in silence; stderr={stderr}",
+        args.join(" ")
+    );
+}
+
+/// `phux completion bash` is the load-bearing case: the script is ~160 KB,
+/// so it cannot fit in a pipe buffer and the write is guaranteed to reach a
+/// reader that has gone — no scheduling luck involved. It is also the verb
+/// whose stdout belongs to `clap_complete`, which `.expect()`s its writes;
+/// the fix had to render into a buffer rather than hand it `io::stdout()`.
+#[test]
+fn completion_survives_a_closed_stdout() {
+    assert_survives_closed_stdout(&["completion", "bash"]);
+}
+
+/// The `print!`-shaped path (no trailing newline): `config show --default`
+/// streams the packaged config as one fragment, so it exercises `out!`
+/// rather than `outln!`.
+#[test]
+fn config_show_default_survives_a_closed_stdout() {
+    assert_survives_closed_stdout(&["config", "show", "--default"]);
+}
+
+/// A `--json` path. An agent piping `phux config plugins --json` into `jq
+/// -e '.plugins[0]'` gets a reader that exits early on the first match; the
+/// verb must not turn that into a crash.
+#[test]
+fn config_plugins_json_survives_a_closed_stdout() {
+    assert_survives_closed_stdout(&["config", "plugins", "--json"]);
+}
+
+/// A verb that talks to the socket first and reports afterwards. Pointed at
+/// a dead socket so no server is spawned — `doctor` reports the absence
+/// rather than failing, so it still reaches its writes.
+#[test]
+fn doctor_survives_a_closed_stdout() {
+    let sock = dead_socket();
+    assert_survives_closed_stdout(&["doctor", "--socket", &sock]);
+}
+
+/// `--version` and `--help` are written by clap, not by us. They are in the
+/// same contract — a user pipes `phux --help | head` more often than
+/// anything else here — so pin them rather than assume clap keeps handling
+/// it.
+#[test]
+fn clap_output_survives_a_closed_stdout() {
+    assert_survives_closed_stdout(&["--version"]);
+    assert_survives_closed_stdout(&["--help"]);
 }

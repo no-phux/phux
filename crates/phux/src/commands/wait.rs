@@ -63,7 +63,7 @@ pub(crate) fn run_wait(
             }
         };
         if json && let Ok(s) = serde_json::to_string_pretty(&result.screen) {
-            println!("{s}");
+            outln!("{s}");
         }
         match result.outcome {
             WaitOutcome::Met => ExitCode::SUCCESS,

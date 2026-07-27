@@ -169,7 +169,7 @@ pub(crate) fn run_enroll(
         return finish(&name, &format!("ssh://{ssh_host}"), None, None, session);
     }
 
-    println!("Enrolling {ssh_host}...");
+    outln!("Enrolling {ssh_host}...");
 
     if let Err(err) = remote_phux_version(ssh_host) {
         eprintln!("phux enroll: {err}");
@@ -186,7 +186,7 @@ pub(crate) fn run_enroll(
             ssh_host,
             &["phux", "service", "install", "--quic", &quic_bind],
         ) {
-            Ok(_) => println!("  service installed on {ssh_host} (quic {quic_bind})"),
+            Ok(_) => outln!("  service installed on {ssh_host} (quic {quic_bind})"),
             Err(err) => {
                 // Not fatal: an operator may supervise the server another
                 // way, and pairing is still worth doing.
@@ -258,19 +258,19 @@ fn finish(
         return ExitCode::FAILURE;
     }
 
-    println!();
-    println!("Enrolled {name} -> {endpoint}");
+    outln!();
+    outln!("Enrolled {name} -> {endpoint}");
     if endpoint.starts_with("ssh://") {
-        println!(
+        outln!(
             "  No listener to dial, so this rides ssh. Sessions still live on the\n  \
              server and survive the connection dropping. Add `--quic` on the\n  \
              remote's service and re-run enroll to upgrade the transport."
         );
     } else {
-        println!("  certificate pinned, token stored 0600");
+        outln!("  certificate pinned, token stored 0600");
     }
-    println!();
-    println!("  phux attach {name}");
+    outln!();
+    outln!("  phux attach {name}");
     ExitCode::SUCCESS
 }
 

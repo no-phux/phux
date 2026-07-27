@@ -63,6 +63,14 @@ pub(crate) fn run_server(
     seed_command: Option<&str>,
     resume: Option<std::os::fd::RawFd>,
 ) -> ExitCode {
+    // Arm durable crash capture. This is a long-running, often daemonized
+    // process whose panic has to survive in `PHUX_LOG` — nobody is watching
+    // its stderr. `telemetry::init` deliberately does not install this for
+    // us: it runs for every one-shot verb too, and a CLI panic logged as
+    // `server panic` sends triage after a server that never faltered
+    // (phux-h5hj.8).
+    phux_server::telemetry::install_server_panic_hook();
+
     let socket_path = socket.unwrap_or_else(default_socket_path);
     // phux-iwuc: fail before the banner and the runtime bring-up when the
     // path cannot fit in a sockaddr_un — the bind inside `run_async` would

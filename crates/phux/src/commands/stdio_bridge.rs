@@ -79,6 +79,16 @@ async fn bridge(stream: tokio::net::UnixStream) -> ExitCode {
     let _ = tokio::io::AsyncWriteExt::flush(&mut stdout).await;
     match result {
         Ok(_) => ExitCode::SUCCESS,
+        // A closed stdout is how this bridge normally ends: the ssh client
+        // on the other side hung up, which is the same event as stdin
+        // reaching EOF one line above — and that arm exits 0. Reporting it
+        // as a failure made every clean `ssh host phux stdio-bridge`
+        // teardown look like a transport fault in the caller's logs. Every
+        // other I/O error is still real. (This path never panicked: tokio's
+        // `copy` returns the error rather than unwrapping it, unlike the
+        // `println!` that motivated `crate::output` — same contract, a
+        // different way of honoring it.)
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("phux stdio-bridge: {err}");
             ExitCode::FAILURE

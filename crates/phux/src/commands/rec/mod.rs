@@ -427,11 +427,11 @@ fn report(outcome: &RecOutcome, json: bool) {
             "rows": outcome.rows,
             "truncated": outcome.truncated,
         });
-        println!("{object}");
+        outln!("{object}");
         return;
     }
 
-    println!(
+    outln!(
         "phux: wrote {} ({}, {} frames, {})",
         outcome.path.display(),
         human_bytes(outcome.bytes),

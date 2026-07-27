@@ -66,7 +66,7 @@ pub(super) fn run_agent_set(
             // write landed; we print that confirmed value.
             let confirmed = get_record(conn, &pane, 101).await?;
             match confirmed {
-                Some(rec) => println!("{}", render_record(&pane, Some(&rec))),
+                Some(rec) => outln!("{}", render_record(&pane, Some(&rec))),
                 None => eprintln!("phux: agent record did not persist"),
             }
             Ok(())
@@ -88,7 +88,7 @@ pub(super) fn run_agent_clear(target: Option<&str>, socket: Option<PathBuf>) -> 
             // Same load-bearing confirmation round-trip as `set`.
             let confirmed = get_record(conn, &pane, 101).await?;
             match confirmed {
-                None => println!("{}", render_record(&pane, None)),
+                None => outln!("{}", render_record(&pane, None)),
                 Some(_) => eprintln!("phux: agent record was not cleared"),
             }
             Ok(())

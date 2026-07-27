@@ -4,9 +4,7 @@ use std::process::ExitCode;
 use clap::{Args, Subcommand, ValueEnum};
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
-use phux_protocol::wire::frame::{
-    Command as WireCommand, CommandResult, FrameKind, TerminalSignal,
-};
+use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, TerminalSignal};
 
 /// CLI signal names for `phux signal TARGET SIGNAL` (ADR-0033), mapped to the
 /// wire [`TerminalSignal`].
@@ -122,6 +120,7 @@ pub(crate) mod rec;
 pub(crate) mod relay;
 pub(crate) mod remote;
 pub(crate) mod rename;
+pub(crate) mod resize;
 pub(crate) mod run;
 pub(crate) mod satellite;
 pub(crate) mod send_keys;
@@ -543,6 +542,46 @@ pub(crate) enum Command {
         /// Emit a schema-versioned JSON result or error.
         #[arg(long)]
         json: bool,
+        /// Override the UDS path.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
+
+    /// Set a pane's grid size, with no TTY.
+    ///
+    /// The headless counterpart to resizing your terminal window: names one
+    /// pane and gives it an exact cell geometry. Nothing attaches and
+    /// nothing subscribes, so the pane is never dragged toward the 80x24
+    /// size a program with no terminal would otherwise report.
+    ///
+    /// The new size takes effect immediately, even with someone attached.
+    /// It is not permanent against an attached view: under the default
+    /// `window-size = "smallest"` policy the next attach, detach, or window
+    /// resize recomputes the pane's geometry from the attached views and
+    /// overrides it. Set `window-size = "manual"` when an explicit size
+    /// must hold. Either way this verb reads the server's real size back
+    /// before exiting, and exits nonzero if it is not the one you asked
+    /// for, so a script can never mistake a delivered request for an
+    /// applied one.
+    ///
+    ///   phux resize demo 120x40
+    ///   phux resize @7 200x50 --json
+    #[command(about = "Set a pane's grid size, with no TTY")]
+    Resize {
+        /// Target selector: session, session:window, session:window.pane,
+        /// @id, or `.` (focused). `=` is unsupported by headless commands.
+        target: String,
+
+        /// New grid size, e.g. 120x40. Both axes are whole numbers of
+        /// cells and at least 1.
+        #[arg(value_name = "COLSxROWS", value_parser = resize::parse_geometry)]
+        geometry: resize::Geometry,
+
+        /// Emit a schema-versioned JSON result naming the requested and the
+        /// applied geometry.
+        #[arg(long)]
+        json: bool,
+
         /// Override the UDS path.
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
@@ -1781,26 +1820,32 @@ pub(crate) fn cli_runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
 }
 
 /// Send one command over `conn` and return the matching `COMMAND_RESULT`,
-/// skipping any unrelated frames the server interleaves (SPEC §5).
+/// reporting anything the server interleaved ahead of it (SPEC §5).
+///
+/// The CLI is a request/response consumer: it opens a connection, runs a
+/// verb, and exits without attaching or subscribing, so the only frames that
+/// can precede an ack here are the ones a handler emits itself. In practice
+/// that is the hub's federation degradation notice — one uncorrelated `ERROR`
+/// per unreachable satellite, pushed ahead of the merged `GET_STATE` snapshot
+/// by `handle_get_state_federated` precisely so the caller can say the view is
+/// partial. The loop this replaced discarded them, which turned every
+/// federated CLI verb into a confident report of an incomplete fleet.
+///
+/// Unlike the library paths, this one owns stderr, so it prints rather than
+/// logging into a `tracing` subscriber a CLI user has not installed. Any
+/// *other* interleaved frame is dropped: on a connection that never attached
+/// or subscribed there is no consumer for a `TERMINAL_OUTPUT` or an `EVENT`,
+/// and no verb here can act on one.
 pub(crate) async fn command_on(
     conn: &mut Connection,
     request_id: u32,
     command: WireCommand,
 ) -> Result<CommandResult, AttachError> {
-    conn.send(&FrameKind::Command {
-        request_id,
-        command,
-    })
-    .await?;
-    loop {
-        match conn.recv().await? {
-            FrameKind::CommandResult {
-                request_id: got,
-                result,
-            } if got == request_id => return Ok(result),
-            _ => {}
-        }
+    let (result, interleaved) = conn.request(request_id, command).await?.into_parts();
+    for message in phux_client::state::degradation_notices(&interleaved) {
+        eprintln!("phux: warning: partial results — {message}");
     }
+    Ok(result)
 }
 
 /// One-shot: open a fresh connection, send `command`, return its result.

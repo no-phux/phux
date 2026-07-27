@@ -178,7 +178,7 @@ fn print_json(report: &WorkspaceReport) -> ExitCode {
     });
     match serde_json::to_string_pretty(&doc) {
         Ok(rendered) => {
-            println!("{rendered}");
+            outln!("{rendered}");
             ExitCode::SUCCESS
         }
         Err(err) => fail(&format!("could not render workspace JSON: {err}")),
@@ -197,12 +197,12 @@ fn worktree_json(entry: &WorktreeInfo) -> serde_json::Value {
 
 fn print_human(report: &WorkspaceReport) -> ExitCode {
     let branch = report.repo.branch.as_deref().unwrap_or("(detached)");
-    println!("workspace {} {branch}", report.repo.path.display());
+    outln!("workspace {} {branch}", report.repo.path.display());
     for worktree in &report.worktrees {
         let marker = if worktree.current { "*" } else { " " };
         let state = worktree.branch.as_deref().unwrap_or("(detached)");
         let head = worktree.head.as_deref().unwrap_or("-");
-        println!("{marker} {} {state} {head}", worktree.path.display());
+        outln!("{marker} {} {state} {head}", worktree.path.display());
     }
     ExitCode::SUCCESS
 }

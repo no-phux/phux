@@ -53,7 +53,7 @@ fn plugin_json(entry: &RegistryEntry) -> serde_json::Value {
 pub(super) fn print_json(value: &serde_json::Value) -> ExitCode {
     match serde_json::to_string_pretty(value) {
         Ok(rendered) => {
-            println!("{rendered}");
+            outln!("{rendered}");
             ExitCode::SUCCESS
         }
         Err(err) => fail(&format!("could not render plugin JSON: {err}")),

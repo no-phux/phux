@@ -277,7 +277,7 @@ fn print_agent_states(states: &[AgentStateReport], json: bool, view: AgentView) 
         });
         return match serde_json::to_string_pretty(&value) {
             Ok(rendered) => {
-                println!("{rendered}");
+                outln!("{rendered}");
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -287,15 +287,22 @@ fn print_agent_states(states: &[AgentStateReport], json: bool, view: AgentView) 
         };
     }
     for state in states {
-        println!(
+        outln!(
             "{}\t{}\t{}\t{:.2}\t{}",
-            state.terminal, state.agent.id, state.state, state.confidence, state.explanation
+            state.terminal,
+            state.agent.id,
+            state.state,
+            state.confidence,
+            state.explanation
         );
         if view == AgentView::Explain {
             for source in &state.sources {
-                println!(
+                outln!(
                     "  - {} {:.2}: {} ({})",
-                    source.kind, source.confidence, source.signal, source.observed
+                    source.kind,
+                    source.confidence,
+                    source.signal,
+                    source.observed
                 );
             }
         }

@@ -16,10 +16,11 @@
     clippy::print_stderr,
     reason = "binary entry point; stderr is the report"
 )]
-#![allow(
-    clippy::print_stdout,
-    reason = "binary entry point; `phux ls` writes its listing to stdout"
-)]
+// NOTE: there is deliberately NO crate-level `clippy::print_stdout` allow.
+// Every stdout write goes through the `output` module's `outln!` / `out!`,
+// which survive a closed reader; a bare `println!` would panic the verb the
+// first time someone piped it into `head` (phux-h5hj.8). Leaving the lint
+// armed is what keeps that from being a rule someone has to remember.
 #![allow(
     clippy::redundant_pub_crate,
     reason = "bin-internal submodules expose items to the crate root via pub(crate); plain `pub` would trip unreachable_pub in a binary with no external API"
@@ -39,6 +40,12 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use commands::Command;
+
+// Declared FIRST and with `#[macro_use]`: `macro_rules!` are visible only to
+// the code that follows their definition, so `outln!` has to be in scope
+// before `mod commands` — where nearly every use of it lives — is parsed.
+#[macro_use]
+mod output;
 
 mod commands;
 mod selector;
@@ -82,6 +89,7 @@ mod help_inventory;
           move-pane  Move an existing pane within a session layout\n  \
           swap-pane  Swap two existing pane leaves\n  \
           rename     Rename a session\n  \
+          resize     Set a pane's grid size, with no TTY\n  \
           send-keys  Send keys to a pane\n  \
           paste      Paste text into a pane (bracketed when the pane asks)\n  \
           run        Run a command in a pane and capture its exit code\n  \
@@ -370,6 +378,12 @@ fn main() -> ExitCode {
             json,
             socket,
         }) => commands::spatial::run_swap_pane(&first, &second, json, socket),
+        Some(Command::Resize {
+            target,
+            geometry,
+            json,
+            socket,
+        }) => commands::resize::run_resize(&target, geometry, json, socket),
         Some(Command::Take { target, socket }) => commands::supervise::run_take(&target, socket),
         Some(Command::Give { target, socket }) => commands::supervise::run_give(&target, socket),
         Some(Command::Signal {

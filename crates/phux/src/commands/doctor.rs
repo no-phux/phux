@@ -249,28 +249,28 @@ fn check_plugins() -> Check {
 
 fn report_human(checks: &[Check]) -> ExitCode {
     for check in checks {
-        println!(
+        outln!(
             "{} {:<12} {}",
             check.status.marker(),
             check.name,
             check.detail
         );
         if let Some(hint) = &check.hint {
-            println!("     {:<12} -> {hint}", "");
+            outln!("     {:<12} -> {hint}", "");
         }
     }
 
     let failed = checks.iter().filter(|c| c.status == Status::Fail).count();
     let warned = checks.iter().filter(|c| c.status == Status::Warn).count();
-    println!();
+    outln!();
     if failed > 0 {
-        println!("{failed} failed, {warned} warning(s)");
+        outln!("{failed} failed, {warned} warning(s)");
         return ExitCode::FAILURE;
     }
     if warned > 0 {
-        println!("no failures, {warned} warning(s)");
+        outln!("no failures, {warned} warning(s)");
     } else {
-        println!("all checks passed");
+        outln!("all checks passed");
     }
     ExitCode::SUCCESS
 }
@@ -296,7 +296,7 @@ fn report_json(checks: &[Check]) -> ExitCode {
     });
     match serde_json::to_string_pretty(&doc) {
         Ok(rendered) => {
-            println!("{rendered}");
+            outln!("{rendered}");
             if failed == 0 {
                 ExitCode::SUCCESS
             } else {

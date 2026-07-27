@@ -60,7 +60,7 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
             TagAction::Ls { .. } => {
                 for id in &targets {
                     let tags = index.get(id).cloned().unwrap_or_default();
-                    println!("{}", render_tags(id, &tags));
+                    outln!("{}", render_tags(id, &tags));
                 }
                 ExitCode::SUCCESS
             }
@@ -164,7 +164,7 @@ async fn edit_tags<F: Fn(&mut Vec<String>)>(
                 Err(err) => return report_no_server(&err, socket_path, "tag"),
             }
         };
-        println!("{}", render_tags(id, &confirmed));
+        outln!("{}", render_tags(id, &confirmed));
     }
     ExitCode::SUCCESS
 }

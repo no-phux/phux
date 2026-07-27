@@ -73,7 +73,7 @@ pub(crate) fn print_watch_event(ev: &WatchEvent, json: bool) {
 
     if json {
         match watch_event_json(ev, kind, terminal.as_deref()) {
-            Ok(s) => println!("{s}"),
+            Ok(s) => outln!("{s}"),
             Err(err) => eprintln!("phux: failed to serialize event: {err}"),
         }
     } else {
@@ -90,7 +90,7 @@ pub(crate) fn print_watch_event(ev: &WatchEvent, json: bool) {
             AgentEvent::Unknown { tag, .. } => format!(" tag={tag}"),
             _ => String::new(),
         };
-        println!("{scope}\t{kind}{detail}");
+        outln!("{scope}\t{kind}{detail}");
     }
 }
 

@@ -7,7 +7,6 @@
 //! This never contacts a server. It is a pure function of the compiled
 //! binary, which is what makes it safe to run from a shell rc file.
 
-use std::io;
 use std::process::ExitCode;
 
 use clap::CommandFactory;
@@ -28,10 +27,20 @@ const BIN_NAME: &str = "phux";
 /// when a user pipes into `head`) is not an error worth reporting, but any
 /// other write failure is: a truncated completion script sourced by a shell
 /// is worse than none, so the caller should see it fail.
+///
+/// That contract used to be prose only, and prose lost: `clap_complete`
+/// writes into the sink with `.expect("failed to write completion file")`,
+/// so handing it `io::stdout()` directly turned `phux completion bash |
+/// head` into a panic — and the script is ~160 KB, well past a pipe buffer,
+/// so the write is guaranteed to reach a reader that has already gone
+/// (phux-h5hj.8). Rendering into a buffer first puts the write back under
+/// `output::bytes`, which owns the decision. The extra allocation is one
+/// script, once, in a verb that runs at shell-rc time.
 pub(crate) fn run_completion(shell: Shell) -> ExitCode {
     let mut cmd = Cli::command();
-    let mut stdout = io::stdout();
-    clap_complete::generate(shell, &mut cmd, BIN_NAME, &mut stdout);
+    let mut script: Vec<u8> = Vec::new();
+    clap_complete::generate(shell, &mut cmd, BIN_NAME, &mut script);
+    crate::output::bytes(&script);
     ExitCode::SUCCESS
 }
 

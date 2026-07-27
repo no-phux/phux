@@ -84,7 +84,7 @@ pub(crate) fn run_snapshot(
         if json {
             match serde_json::to_string_pretty(&screen) {
                 Ok(s) => {
-                    println!("{s}");
+                    outln!("{s}");
                     ExitCode::SUCCESS
                 }
                 Err(err) => {
@@ -123,7 +123,7 @@ fn run_rendered(
         if json {
             match serde_json::to_string_pretty(&frame) {
                 Ok(s) => {
-                    println!("{s}");
+                    outln!("{s}");
                     ExitCode::SUCCESS
                 }
                 Err(err) => {
@@ -146,7 +146,7 @@ fn run_rendered(
 /// padding needed. The composited cursor is reported below the box.
 pub(crate) fn print_rendered_box(frame: &RenderedFrame) {
     let bar = "─".repeat(usize::from(frame.cols));
-    println!("┌{bar}┐");
+    outln!("┌{bar}┐");
     for row in 0..frame.rows {
         let mut line = String::new();
         for col in 0..frame.cols {
@@ -154,9 +154,9 @@ pub(crate) fn print_rendered_box(frame: &RenderedFrame) {
                 line.push_str(&cell.grapheme);
             }
         }
-        println!("│{line}│");
+        outln!("│{line}│");
     }
-    println!("└{bar}┘");
+    outln!("└{bar}┘");
     let cursor = frame.cursor.as_ref().map_or_else(
         || "none".to_owned(),
         |c| {
@@ -164,7 +164,7 @@ pub(crate) fn print_rendered_box(frame: &RenderedFrame) {
             format!("{},{} {vis}", c.x, c.y)
         },
     );
-    println!("{}x{} cursor={cursor}", frame.cols, frame.rows);
+    outln!("{}x{} cursor={cursor}", frame.cols, frame.rows);
 }
 
 /// Human-readable boxed rendering of a captured screen (no tmux, no TTY).
@@ -179,25 +179,27 @@ pub(crate) fn print_screen_box(screen: &ScreenState) {
         " ".repeat(pad)
     };
     if screen.scrollback.is_empty() {
-        println!("┌{bar}┐");
+        outln!("┌{bar}┐");
     } else {
         let rule = "╌".repeat(usize::from(screen.cols));
-        println!("┌{rule}┐");
+        outln!("┌{rule}┐");
         for line in &screen.scrollback {
-            println!("┊{line}{}┊", pad_line(line));
+            outln!("┊{line}{}┊", pad_line(line));
         }
-        println!("├{bar}┤");
+        outln!("├{bar}┤");
     }
     for line in &screen.lines {
-        println!("│{line}{}│", pad_line(line));
+        outln!("│{line}{}│", pad_line(line));
     }
-    println!("└{bar}┘");
+    outln!("└{bar}┘");
     let cursor = screen
         .cursor
         .as_ref()
         .map_or_else(|| "none".to_owned(), |c| format!("{},{}", c.x, c.y));
-    println!(
+    outln!(
         "pane={} {}x{} cursor={cursor}",
-        screen.pane, screen.cols, screen.rows
+        screen.pane,
+        screen.cols,
+        screen.rows
     );
 }

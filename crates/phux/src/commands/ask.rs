@@ -56,14 +56,14 @@ pub(crate) fn run_ask(
 fn print_success(pane: &TerminalId, payload: &AskedPayload, json: bool) -> ExitCode {
     if json {
         match serde_json::to_string_pretty(&success_json(pane, payload)) {
-            Ok(line) => println!("{line}"),
+            Ok(line) => outln!("{line}"),
             Err(err) => {
                 eprintln!("phux: failed to serialize ask: {err}");
                 return ExitCode::FAILURE;
             }
         }
     } else {
-        println!("{}", success_text(pane, payload));
+        outln!("{}", success_text(pane, payload));
     }
     ExitCode::SUCCESS
 }

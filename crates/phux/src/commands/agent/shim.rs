@@ -17,9 +17,9 @@ pub(super) fn run_install_claude(shell: Option<&str>, real: Option<&Path>) -> Ex
     let shell = shell.map_or_else(detected_shell, str::to_owned);
     match install_claude(&shell, real) {
         Ok(report) => {
-            println!("installed claude-in-phux shim at {}", report.shim.display());
-            println!("activated it in {}", report.rc.display());
-            println!("open a new shell, then plain `claude` launches inside phux");
+            outln!("installed claude-in-phux shim at {}", report.shim.display());
+            outln!("activated it in {}", report.rc.display());
+            outln!("open a new shell, then plain `claude` launches inside phux");
             ExitCode::SUCCESS
         }
         Err(err) => fail(&err),
@@ -29,14 +29,14 @@ pub(super) fn run_install_claude(shell: Option<&str>, real: Option<&Path>) -> Ex
 pub(super) fn run_uninstall_claude() -> ExitCode {
     match uninstall_claude() {
         Ok(Some(rc)) => {
-            println!(
+            outln!(
                 "removed claude-in-phux shim and activation from {}",
                 rc.display()
             );
             ExitCode::SUCCESS
         }
         Ok(None) => {
-            println!("claude-in-phux shim is not installed");
+            outln!("claude-in-phux shim is not installed");
             ExitCode::SUCCESS
         }
         Err(err) => fail(&err),

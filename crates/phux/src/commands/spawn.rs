@@ -287,7 +287,7 @@ fn print_spawned(terminal_id: &TerminalId, json: bool) -> ExitCode {
         let payload = serde_json::json!({ "terminal_id": id, "satellite": host });
         match serde_json::to_string_pretty(&payload) {
             Ok(s) => {
-                println!("{s}");
+                outln!("{s}");
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -297,8 +297,8 @@ fn print_spawned(terminal_id: &TerminalId, json: bool) -> ExitCode {
         }
     } else {
         match host {
-            Some(host) => println!("spawned terminal {id} on satellite {host}"),
-            None => println!("spawned terminal {id}"),
+            Some(host) => outln!("spawned terminal {id} on satellite {host}"),
+            None => outln!("spawned terminal {id}"),
         }
         ExitCode::SUCCESS
     }

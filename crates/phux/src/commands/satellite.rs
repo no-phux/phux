@@ -73,7 +73,7 @@ fn run_enroll(
     }
 
     if !json {
-        println!("Enrolling satellite {ssh_host}...");
+        outln!("Enrolling satellite {ssh_host}...");
     }
 
     if let Err(err) = crate::commands::enroll::remote_phux_version(ssh_host) {
@@ -92,7 +92,7 @@ fn run_enroll(
             &["phux", "service", "install", "--quic", &quic_bind],
         ) {
             Ok(_) if !json => {
-                println!("  service installed on {ssh_host} (quic {quic_bind})");
+                outln!("  service installed on {ssh_host} (quic {quic_bind})");
             }
             Ok(_) => {}
             Err(err) => {
@@ -137,7 +137,7 @@ fn run_enroll(
 fn finish_enroll(new: Result<NewSatellite, String>, json: bool) -> ExitCode {
     let result = run_add(new, json);
     if result == ExitCode::SUCCESS && !json {
-        println!("  Hub route ready. Ensure this host runs `phux service install --hub`.");
+        outln!("  Hub route ready. Ensure this host runs `phux service install --hub`.");
     }
     result
 }
@@ -156,7 +156,7 @@ fn run_list(json: bool) -> ExitCode {
         Ok(entries) if json => print_satellites_json(&entries),
         Ok(entries) => {
             for entry in entries {
-                println!("{}", describe(&entry));
+                outln!("{}", describe(&entry));
             }
             ExitCode::SUCCESS
         }
@@ -172,7 +172,7 @@ fn run_add(new: Result<NewSatellite, String>, json: bool) -> ExitCode {
     match add_or_update(&satellite) {
         Ok(entry) if json => print_satellite_json("satellite", &entry),
         Ok(entry) => {
-            println!("satellite {}", describe(&entry));
+            outln!("satellite {}", describe(&entry));
             ExitCode::SUCCESS
         }
         Err(err) => fail(&err),
@@ -204,7 +204,7 @@ fn run_remove(name: &str, json: bool) -> ExitCode {
     match remove_entry(entry.index) {
         Ok(()) if json => print_satellite_json("removed", &entry),
         Ok(()) => {
-            println!("removed {}", entry.name);
+            outln!("removed {}", entry.name);
             ExitCode::SUCCESS
         }
         Err(err) => fail(&err),

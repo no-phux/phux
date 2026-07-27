@@ -159,17 +159,17 @@ pub(crate) fn run_pair(
     // every diagnostic still goes to stderr. `phux enroll` consumes this
     // over ssh, which is what keeps a 64-hex token out of human hands.
     if !json {
-        println!("Pairing token (a secret — give it to the device once):");
-        println!("  {token}");
-        println!();
+        outln!("Pairing token (a secret — give it to the device once):");
+        outln!("  {token}");
+        outln!();
     }
 
     let fingerprint = match phux_server::transport::tls::cert_fingerprint(&cert) {
         Ok(fingerprint) => {
             if !json {
-                println!("Server certificate SHA-256 (verify on the device to defeat MITM):");
-                println!("  {fingerprint}");
-                println!();
+                outln!("Server certificate SHA-256 (verify on the device to defeat MITM):");
+                outln!("  {fingerprint}");
+                outln!();
             }
             Some(fingerprint)
         }
@@ -184,11 +184,11 @@ pub(crate) fn run_pair(
     // never affect the exit code.
     let overlay = super::overlay::detect();
     if !json && !overlay.is_empty() {
-        println!("Overlay network addresses (dial one of these from the device):");
+        outln!("Overlay network addresses (dial one of these from the device):");
         for addr in &overlay {
-            println!("  {addr}");
+            outln!("  {addr}");
         }
-        println!();
+        outln!();
     }
 
     // The one-tap link (and its QR form) carries the token — it is as much
@@ -209,16 +209,16 @@ pub(crate) fn run_pair(
     }
 
     if let Some(link) = &link {
-        println!("One-tap connect link (open on the device — carries the token):");
-        println!("  {link}");
-        println!();
+        outln!("One-tap connect link (open on the device — carries the token):");
+        outln!("  {link}");
+        outln!();
         if qr {
             match render_qr(link) {
                 Ok(art) => {
-                    println!("Scan to pair:");
-                    println!();
-                    print!("{art}");
-                    println!();
+                    outln!("Scan to pair:");
+                    outln!();
+                    out!("{art}");
+                    outln!();
                 }
                 Err(err) => eprintln!("phux pair: warning: {err}"),
             }
@@ -230,7 +230,7 @@ pub(crate) fn run_pair(
         );
     }
 
-    println!("Token written to {}", tokens.display());
+    outln!("Token written to {}", tokens.display());
     ExitCode::SUCCESS
 }
 
@@ -263,7 +263,7 @@ fn print_pair_json(
     });
     match serde_json::to_string_pretty(&document) {
         Ok(text) => {
-            println!("{text}");
+            outln!("{text}");
             ExitCode::SUCCESS
         }
         Err(err) => {
