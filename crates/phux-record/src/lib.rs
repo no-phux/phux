@@ -15,6 +15,9 @@
 //!                        │
 //!                        ├──────▶ [`timeline`] idle clamping on a ms timebase
 //!                        │
+//!                        ├──────▶ [`playback`] ms timebase -> wall-clock
+//!                        │                     deadlines (ADR-0064)
+//!                        │
 //!                        └──────▶ [`replay`]   bytes  -> RenderedFrame
 //!                                    │
 //!                                    ├───────▶ [`raster`] frame -> RGB surface
@@ -45,6 +48,7 @@
 
 pub mod cast;
 pub mod error;
+pub mod playback;
 pub mod timeline;
 
 #[cfg(feature = "render")]
@@ -60,6 +64,7 @@ pub mod replay;
 
 pub use cast::{CastEvent, CastHeader, CastTheme, CastVersion, CastWriter, EventCode, read_cast};
 pub use error::RecordError;
+pub use playback::{Speed, due_at, pass_duration};
 pub use timeline::clamp_idle;
 
 #[cfg(feature = "render")]

@@ -7,10 +7,10 @@ last-reviewed: 2026-07-27
 # Recording a session
 
 **TL;DR.** How to record a phux pane or a whole attached session and export it
-as an asciinema cast, an animated GIF, or an APNG. Two surfaces share one set
-of rules: a headless observer that never touches the pane it watches, and a tee
-on the interactive client's own composited output. No external tools are
-involved at any point.
+as an asciinema cast, an animated GIF, or an APNG, and how to play a cast back
+as a live pane. Two capture surfaces share one set of rules: a headless
+observer that never touches the pane it watches, and a tee on the interactive
+client's own composited output. No external tools are involved.
 
 ![A phux recording, recorded with phux](../assets/recording-demo.gif)
 
@@ -154,7 +154,69 @@ events)`) goes to stderr and only on the headless surface, and is suppressed
 under `--json`; the interactive surface says nothing at all while the session
 is up, because it owns the alt screen.
 
-## 6. Where this fits
+## 6. Playing a recording back
+
+`phux play FILE.cast [TARGET]` creates a **pane whose PTY is fed from the
+recording**, and prints its Terminal id. It does not paint the cast onto the
+terminal you are typing in — for that, `asciinema play FILE.cast` is the right
+tool and needs no phux server at all.
+
+```sh
+phux play demo.cast                        # a pane beside the focused one
+phux play demo.cast work:1.0 --speed 2     # twice as fast, beside that pane
+phux play demo.cast --loop --idle-limit 0.5
+phux play demo.cast --json                 # {"terminal_id": 7, ...}
+```
+
+The point is what the result *is*: an ordinary pane. Attach to it, read its
+grid with `phux snapshot @7`, resize it with `phux resize @7 100x30`, watch it
+from an agent over the same observer subscription `phux rec` uses, share it
+with a second client, re-record it, or end it with `phux kill @7`. Everything
+already aimed at panes works, because it is not a special object.
+
+**TARGET says where the pane goes, never what gets overwritten.** The playback
+pane is created *beside* TARGET, splitting its window exactly as
+`phux spawn --target` does; TARGET itself is untouched. The default is `.`,
+the focused pane, so a playback appears next to whatever you are looking at.
+There is no flag that plays into a pane that already has a shell in it — a
+pane's process is its identity, and the only way to give one to a recording
+would be to kill the shell first, which is `phux kill` spelled confusingly.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--speed N` | `1` | Divides wall-clock time: `2` is twice as fast, `0.5` half. Between 0.01 and 100. No events are dropped, merged, or resampled at any speed. |
+| `--idle-limit SECS` | *(the recording's own)* | Collapse pauses longer than `SECS`. Defaults to the `idle_time_limit` the cast declares, so playback agrees with the recorder that wrote it; `0` plays the raw timeline. |
+| `--loop [N]` | *(one pass)* | Bare `--loop` repeats until the pane is killed; `--loop N` plays it N times. Between passes the screen is soft-reset and cleared, never fully reset — a full reset would drop the grid size and make pass two wrap differently from pass one. |
+| `--no-fit` | *(off)* | Leave the pane's grid alone. See below. |
+| `--close` | *(off)* | Close the pane when playback ends instead of holding the final frame. |
+| `--split`, `--ratio` | `horizontal`, `0.5` | Placement of the new pane, as on `phux spawn`. |
+
+**The pane is fitted to the recording.** Before the first byte, the pane is
+resized to the cast header's grid, and each `r` event in the recording is
+applied the same way. A cast is bytes that were correct at one geometry:
+played into a narrower pane, wrapped lines wrap in the wrong places and
+absolute cursor addresses land somewhere else, and the result is not
+approximate but unreadable. When the resize does not hold — an attached
+client's viewport owns a pane's size under every `defaults.window-size` policy
+but `manual`, see [`tui.md`](./tui.md) §4.2 — playback says so in one line and
+plays anyway. `--no-fit` suppresses the header fit and the recorded resizes
+alike.
+
+**When the recording ends, the pane holds its final frame** until you kill it.
+That is deliberate: the painted screen is the artifact, and a pane that erased
+itself on the last byte would make `phux snapshot` a race. `--close` ends the
+pane instead, and Ctrl-C in an attached playback pane stops it.
+
+Only `o` (output) and `r` (resize) events drive a pane. Recorded input (`i`),
+markers (`m`), and the recorded exit status (`x`) are read and ignored —
+replaying input would type a recording's keystrokes into a live PTY, which is
+not what anyone means by "play".
+
+There is no pause, no seek, and no scrubbing. Adding them would make this the
+shell-level player [ADR-0064](../../ADR/0064-playback-as-a-pane.md)
+deliberately does not build.
+
+## 7. Where this fits
 
 Recording adds nothing to the wire. It rides the `ATTACH_TERMINAL` observer
 subscription that [`../spec/L1.md`](../spec/L1.md) §5.1 already specifies —
@@ -162,3 +224,10 @@ snapshot, then deltas, no session attach, no resize — and the GIF and APNG
 encoders are in-process, so `phux rec` works on a machine with no `agg`, no
 `vhs`, and no `ffmpeg`. The reasoning, and the design spaces it closes, are in
 [ADR-0060](../../ADR/0060-self-contained-session-recording.md).
+
+Playback adds nothing to the wire either. `SPAWN_TERMINAL` already carries a
+command, the server already tells a spawned pane its own id and socket, and
+`TERMINAL_RESIZE` already exists — so the pane's "process" is simply the phux
+binary re-invoked in a mode that writes a cast to its own stdout.
+[ADR-0064](../../ADR/0064-playback-as-a-pane.md) has the reasoning, including
+why the shell-level player stays unbuilt.

@@ -80,6 +80,7 @@ mod help_inventory;
           snapshot   Capture a pane's screen as JSON or a boxed view\n  \
           watch      Stream a pane's live events (bell, title, output, lifecycle)\n  \
           rec        Record a pane to an asciinema cast, a GIF, or an APNG\n  \
+          play       Play a recording back as a live pane\n  \
           agent      List, show, explain, set, or clear per-pane agent state\n\n\
         DRIVE\n  \
           new        Create a session\n  \
@@ -293,6 +294,7 @@ fn main() -> ExitCode {
             webtransport,
             connect,
             hub,
+            exit_after_idle,
             daemonize,
             seed_command,
             resume,
@@ -304,6 +306,7 @@ fn main() -> ExitCode {
             webtransport,
             connect,
             hub,
+            exit_after_idle,
             daemonize,
             seed_command.as_deref(),
             resume,
@@ -467,6 +470,40 @@ fn main() -> ExitCode {
             cast_version,
             json,
             socket,
+        }),
+        Some(Command::Play {
+            file,
+            target,
+            speed,
+            idle_limit,
+            loops,
+            split,
+            ratio,
+            no_fit,
+            close,
+            json,
+            socket,
+            pty_writer,
+        }) => commands::play::run_play(&commands::play::PlayArgs {
+            file: &file,
+            target: target.as_deref(),
+            speed,
+            idle_limit,
+            // The CLI spells "repeat forever" as `--loop` with no value,
+            // which clap fills in as 0; `passes` carries that as `None` so
+            // the player's loop condition is a plain "count remaining".
+            passes: match loops {
+                None => Some(1),
+                Some(0) => None,
+                Some(n) => Some(n),
+            },
+            split,
+            ratio,
+            no_fit,
+            close,
+            json,
+            socket,
+            pty_writer,
         }),
         Some(Command::Ask {
             target,

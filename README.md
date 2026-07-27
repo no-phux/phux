@@ -44,8 +44,10 @@ hold the same live terminal instead of reading screenshots or copied text.
 Because a terminal is an object rather than a screenshot, phux can hand you a
 recording of one: `phux --rec demo.gif` while you work, or `phux rec <pane>
 -o demo.cast` against a pane someone else is using -- a pure observer that
-never attaches and never resizes what it is watching. See
-[Recording](docs/consumers/recording.md).
+never attaches and never resizes what it is watching. And because a terminal
+is an object, `phux play demo.cast` gives the recording back as one: a pane
+whose PTY is fed from the cast, which you can attach to, snapshot, resize, or
+point an agent at. See [Recording](docs/consumers/recording.md).
 
 If you are new here, install phux, run it, detach, reattach, and drive the same
 pane from a script without hunting through the docs.

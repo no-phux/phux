@@ -131,6 +131,7 @@ pub(crate) mod overlay;
 pub(crate) mod pair;
 pub(crate) mod partial;
 pub(crate) mod paste;
+pub(crate) mod play;
 pub(crate) mod plugin;
 pub(crate) mod rec;
 pub(crate) mod relay;
@@ -286,6 +287,18 @@ pub(crate) enum Command {
         /// startup. Without this flag the registry is ignored.
         #[arg(long)]
         hub: bool,
+
+        /// Exit once no client has been connected for SECS, even if panes
+        /// are still running. For ephemeral servers: a test harness or CI
+        /// job that bootstraps a private server per run and cannot
+        /// guarantee its own cleanup step will execute. The clock starts at
+        /// startup, so a server nobody ever connects to also exits.
+        ///
+        /// Without this flag the server keeps the multiplexer contract and
+        /// lives until its last pane is gone.
+        #[arg(long = "exit-after-idle", value_name = "SECS",
+              value_parser = clap::value_parser!(u64).range(1..=86_400))]
+        exit_after_idle: Option<u64>,
 
         /// Detach from the controlling terminal via `setsid(2)` before
         /// binding. Set by the auto-spawn path so the server outlives
@@ -981,6 +994,93 @@ pub(crate) enum Command {
         /// Override the UDS path.
         #[arg(long)]
         socket: Option<std::path::PathBuf>,
+    },
+
+    /// Play a recording back as a live pane.
+    // Spelled out in `long_about` for the same reason `rec` is: clap reflows
+    // doc-comment paragraphs into one run-on line and the examples need real
+    // newlines.
+    #[command(
+        about = "Play a recording back as a live pane",
+        long_about = "Play a recording back as a live pane.\n\n\
+            Creates a new Terminal whose PTY is fed from FILE, then prints its id. The \
+            result is an ordinary pane: attach it, `phux snapshot` it, `phux resize` it, \
+            watch it from an agent, or `phux kill` it. It is not a viewer for your own \
+            shell — for that, `asciinema play FILE` is the right tool and needs no server.\n\n\
+            TARGET says WHERE the pane goes: the playback pane is created beside it, \
+            splitting its window. TARGET is never written to, and no flag makes playback \
+            take over a pane that already has a shell in it. The default is `.`, the \
+            focused pane.\n\n\
+            The pane is resized to the recording's own grid first, and to each resize the \
+            recording contains, so lines wrap where they wrapped when it was captured; \
+            --no-fit leaves the grid alone. When the recording ends the pane holds its \
+            final frame until you kill it, so nothing races the last byte; --close ends \
+            the pane instead.\n\n\
+            Examples:\n  \
+            phux play demo.cast\n  \
+            phux play demo.cast work:1.0 --speed 2\n  \
+            phux play demo.cast --loop --idle-limit 0.5 --json"
+    )]
+    Play {
+        /// The .cast file to play.
+        #[arg(value_name = "FILE")]
+        file: std::path::PathBuf,
+
+        /// Selector for the pane the playback pane is created beside.
+        /// Defaults to `.` (the focused pane). Never written to.
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+
+        /// Playback rate. 1 is real time, 2 is twice as fast, 0.5 half
+        /// speed. Between 0.01 and 100; no events are ever dropped.
+        #[arg(long, value_name = "N", default_value = "1",
+              value_parser = play::parse_speed)]
+        speed: phux_record::playback::Speed,
+
+        /// Collapse any pause longer than SECS down to SECS. Defaults to
+        /// the idle limit the recording itself declares; 0 plays the raw
+        /// timeline.
+        #[arg(long = "idle-limit", value_name = "SECS")]
+        idle_limit: Option<f64>,
+
+        /// Repeat the recording. Bare `--loop` repeats until the pane is
+        /// killed; `--loop N` plays it N times.
+        #[arg(long = "loop", value_name = "N", num_args = 0..=1,
+              default_missing_value = "0")]
+        loops: Option<u32>,
+
+        /// Split axis for the new pane.
+        #[arg(long, value_enum, default_value = "horizontal")]
+        split: SpawnSplit,
+
+        /// Fraction of the split retained by TARGET.
+        #[arg(long, default_value_t = 0.5, value_parser = parse_spawn_ratio)]
+        ratio: f32,
+
+        /// Leave the pane's grid alone instead of fitting it to the
+        /// recording's. Output wider than the pane will wrap.
+        #[arg(long = "no-fit")]
+        no_fit: bool,
+
+        /// Close the pane when playback ends, instead of holding the final
+        /// frame until it is killed.
+        #[arg(long)]
+        close: bool,
+
+        /// Emit one JSON object naming the pane and the recording.
+        #[arg(long)]
+        json: bool,
+
+        /// Override the UDS path.
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+
+        /// Internal: this process IS the pane, so write the recording to
+        /// stdout rather than spawning one. Hidden because it is an
+        /// implementation detail of the pane this verb creates, not a
+        /// promise that phux ships a shell-level cast viewer.
+        #[arg(long = "pty-writer", hide = true)]
+        pty_writer: bool,
     },
 
     /// Report that an agent in a pane is waiting on a human answer.

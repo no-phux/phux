@@ -107,7 +107,7 @@ phux attach --ws ws://127.0.0.1:8787
 phux attach --ws wss://HOST:PORT --cert-fingerprint FP --token HEX
                               # attach over TLS WebSocket when UDP/QUIC is blocked
 phux server [--session N] [--listen HOST:PORT] [--quic HOST:PORT]
-            [--connect HOST:PORT] [--hub]
+            [--connect HOST:PORT] [--hub] [--exit-after-idle SECS]
                               # run server in foreground
                               # --listen also accepts WebSocket clients (= PHUX_WS_ADDR)
                               # --quic also accepts QUIC clients (= PHUX_QUIC_ADDR)
@@ -118,6 +118,11 @@ phux server [--session N] [--listen HOST:PORT] [--quic HOST:PORT]
                               # satellite (quic/wss per ADR-0038; ssh:// over
                               # `ssh HOST phux stdio-bridge`), and relays
                               # satellite-tagged frames over the links (§4.2)
+                              # --exit-after-idle bounds an EPHEMERAL server:
+                              # it exits once no client has been connected for
+                              # SECS, live panes and all. Off by default —
+                              # without it the server lives until its last
+                              # pane is gone (ADR-0063)
 phux new [-s NAME] [-c CWD] [--] [COMMAND...]
                               # create a session
 phux spawn [--satellite NAME | --target TARGET [--split DIR] [--ratio R]] [-c CWD] [--json] [--] [COMMAND...]
@@ -151,6 +156,9 @@ phux rec [TARGET] -o PATH     # record a pane to a cast, GIF, or APNG (§10);
                               # a pure observer — never attaches or resizes
 phux --rec PATH               # on `phux` / `phux attach` only: tee the
                               # attached session's composited output to PATH
+phux play FILE.cast [TARGET]  # create a pane whose PTY is fed from a
+                              # recording (§10). TARGET says WHERE the new
+                              # pane goes; it is never written to
 phux ask TARGET QUESTION      # report an agent ask event for a pane
 phux agent install-claude     # make plain interactive `claude` enter phux
 phux agent uninstall-claude   # remove its shim, hooks, and shell activation
@@ -2158,14 +2166,30 @@ three fidelity limits worth knowing before you record something long.
 [ADR-0060](../../ADR/0060-self-contained-session-recording.md) owns the
 reasoning.
 
+**Playing one back.** `phux play FILE.cast [TARGET]` creates a **pane whose
+PTY is fed from the recording** and prints its Terminal id. It is not a viewer
+for your own shell — `asciinema play` is that, and it needs no server. What
+this produces is an ordinary pane: attach it, `phux snapshot` it,
+`phux resize` it, watch it from an agent, share it with a second client,
+`phux kill` it. TARGET says *where* the pane goes (it is created beside it,
+splitting that window, default `.`); TARGET is never written to, and no flag
+plays into a pane that already has a shell in it.
+
+The pane is resized to the recording's own grid and to each resize the
+recording contains, so lines wrap where they wrapped when it was captured;
+`--no-fit` opts out. `--speed`, `--idle-limit`, and `--loop` shape the
+timeline, and when the recording ends the pane holds its final frame until it
+is killed (`--close` ends it instead). Full surface in
+[`recording.md`](./recording.md) §6; the reasoning, including why the
+shell-level player stays unbuilt, is in
+[ADR-0064](../../ADR/0064-playback-as-a-pane.md).
+
 **Superseding the earlier design.** This section previously specified
 `phux capture --record TARGET --out FILE.cast` plus a server-side
-`PANE_OUTPUT` tee, and `phux play FILE.cast` for replay. Neither verb was ever
-built and neither is coming: recording is consumer-side, the verb is `rec`,
-and `capture` is retired rather than aliased. Playback stays out of scope —
-`asciinema play` already exists and a `.cast` is the interoperable artifact
-precisely so phux does not have to ship a player. It is tracked as deferred
-work rather than refused outright.
+`PANE_OUTPUT` tee. Neither was ever built and neither is coming: recording is
+consumer-side, the verb is `rec`, and `capture` is retired rather than
+aliased. The `phux play` that section sketched now exists, but as the pane
+above rather than as the shell-level replayer it described.
 
 [asciinema]: https://asciinema.org/
 

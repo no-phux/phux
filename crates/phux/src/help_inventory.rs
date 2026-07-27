@@ -114,6 +114,7 @@ phux move-pane
 phux new
 phux pair
 phux paste
+phux play
 phux plugin
 phux plugin disable
 phux plugin enable

@@ -1,0 +1,6 @@
+{"version": 2, "width": 100, "height": 30, "timestamp": 1785129006, "title": "phux play e2e fixture"}
+[0.000, "o", "\u001b[2J\u001b[HPHUX-PLAYBACK-MARKER-ONE\r\n"]
+[3.000, "r", "64x18"]
+[3.100, "o", "PHUX-PLAYBACK-MARKER-TWO\r\n"]
+[3.150, "o", "LFCOL"]
+[3.200, "o", "\nX"]

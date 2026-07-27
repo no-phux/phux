@@ -177,6 +177,18 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   (§4.14). Ctrl-C stops the capture and still writes the artifact, so an
   open-ended `phux rec -o demo.gif` under a subprocess deadline is the scripted
   shape. Full surface in [`recording.md`](./recording.md).
+- **`phux play FILE [TARGET] [--speed N] [--idle-limit SECS] [--loop [N]]
+  [--no-fit] [--close] [--split AXIS] [--ratio F] [--json] [--socket P]`** —
+  create a pane whose PTY is fed from a recording, and print its Terminal id.
+  The pane is an ordinary one: `snapshot` it, `resize` it, `rec` it, `watch`
+  it, `kill` it. TARGET names the pane the new one is placed *beside* (default
+  `.`) and is never written to — there is no way to play into a pane that
+  already has a shell. The verb returns as soon as the pane exists; it does
+  not block for the length of the recording, so an agent that wants the final
+  screen should poll `phux snapshot` rather than wait on this process. The
+  pane holds its final frame until killed unless `--close` is given, which is
+  what makes that poll safe. `--json` emits the result object (§4.16). Full
+  surface in [`recording.md`](./recording.md) §6.
 - **`phux ask TARGET [--id ID] [--suggest TEXT...] [--elapsed-seconds SECS]
   [--json] [--socket P] QUESTION`** — report that an agent in a pane is blocked
   on a human-answerable question. This is the opt-in hook ingress from
@@ -903,6 +915,44 @@ the command did not run; here it means the command ran and the server holds a
 different size, and that size is exactly what the caller needs in order to
 react. Transport failures — no server, unresolvable target — do leave stdout
 empty, as everywhere else.
+
+### 4.16 `phux play --json`
+
+One object on stdout naming the pane that was created and the recording it is
+playing:
+
+```json
+{
+  "terminal_id": 7,
+  "path": "/home/me/demo.cast",
+  "cols": 80,
+  "rows": 24,
+  "events": 63,
+  "speed": 1.0,
+  "idle_limit": 2.0,
+  "duration_ms": 17198,
+  "passes": 1
+}
+```
+
+`terminal_id` is the payload: everything you do next — `snapshot @7`,
+`resize @7`, `rec @7`, `kill @7` — is addressed by it. `path` is absolute,
+because the pane's process resolves it from the daemon's working directory and
+not yours. `cols`/`rows` are the *recording's* grid, which is also the size
+the pane is fitted to unless `--no-fit` was given or something else owns the
+pane's size. `duration_ms` is how long the playback will take at the requested
+speed, after the idle clamp — the wait you are actually in for, not the
+recording's raw length. `idle_limit` is the clamp that was applied (`null`
+when none was). `passes` is the number of times the recording will play, and
+`null` means it repeats until the pane is killed.
+
+**Divergence from §4:** like §4.14 this object carries no `schema_version` —
+it is a result line, not a projection of engine state. Read the keys.
+
+Exit codes: `0` once the pane exists; `1` on failure (no server, unreadable or
+malformed cast, unresolvable TARGET, a refused spawn). A failure creates no
+pane: the cast is parsed in the caller's own process, before anything is
+spawned.
 
 ## 5. The read-act-wait loop and exit-code mirroring
 

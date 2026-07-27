@@ -50,11 +50,14 @@ toml_edit.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-# `process` feature only: `setsid(2)` to detach an auto-spawned server
-# from the launching client's controlling terminal so it survives the
-# terminal closing. Same crate already used by phux-client (termios);
-# no new third-party dependency enters the workspace.
-rustix = { version = "0.38", default-features = false, features = ["std", "process"] }
+# `process`: `setsid(2)` to detach an auto-spawned server from the launching
+# client's controlling terminal so it survives the terminal closing.
+# `termios`: `phux play`'s in-pane writer clears OPOST and ECHO on its own
+# PTY, so the line discipline cannot rewrite the recorded bytes (ONLCR turns
+# a bare LF into CR LF) or echo a stray keystroke into the middle of a frame.
+# Same crate and the same two features phux-client already uses; no new
+# third-party dependency enters the workspace.
+rustix = { version = "0.38", default-features = false, features = ["std", "process", "termios"] }
 
 [dev-dependencies]
 # The one scripted server (`phux_client::testkit`), where the reference

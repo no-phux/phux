@@ -54,6 +54,23 @@ pub(crate) fn bytes(buf: &[u8]) {
     settle(out.write_all(buf));
 }
 
+/// Write raw bytes to stdout and push them out *now*.
+///
+/// For `phux play`, whose stdout is a pane's PTY and whose payload is a
+/// terminal byte stream, not lines. Rust's stdout is a `LineWriter`, so a
+/// chunk ending in `$ ` — a shell prompt, the single most common way for a
+/// recording to end — would sit in the buffer until some later chunk
+/// happened to carry a newline. The pane would then paint a stale frame and
+/// the playback's whole point, that the timing is the recording's timing,
+/// would be a lie for every partial line in the file.
+pub(crate) fn bytes_now(buf: &[u8]) {
+    // One lock for the write and the flush: a second `stdout().lock()` would
+    // be a second chance for another writer to interleave between a chunk
+    // and the flush that reveals it.
+    let mut out = io::stdout().lock();
+    settle(out.write_all(buf).and_then(|()| out.flush()));
+}
+
 /// Turn the result of a stdout write into the right process outcome.
 fn settle(result: io::Result<()>) {
     let Err(err) = result else { return };

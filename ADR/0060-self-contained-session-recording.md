@@ -134,7 +134,12 @@ but not v2, so v2 is strictly the more portable default and v3 is a flag.
   records sixel or photographic content.
 - **Shipping a player (`phux play`).** Rejected as out of scope: `asciinema
   play` already exists, and a `.cast` is the interoperable artifact precisely
-  so we do not have to. Tracked as deferred work.
+  so we do not have to. Tracked as deferred work. **Revisited by
+  [ADR-0064](./0064-playback-as-a-pane.md)**, which splits the rejection in
+  two: a shell-level viewer stays unbuilt for exactly this reason, while
+  playback *as a pane* — a Terminal whose PTY is fed from the cast, and which
+  every existing verb can drive — ships, because `asciinema play` cannot
+  produce that object.
 
 ## Related
 
