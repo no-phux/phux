@@ -202,19 +202,43 @@ fn check_server(socket_path: &std::path::Path) -> Check {
     };
 
     match rt.block_on(phux_client::state::get_state(socket_path)) {
-        Ok(snapshot) => {
-            let sessions = snapshot.sessions.len();
-            let panes = snapshot.panes.len();
-            Check::pass(
-                "server",
-                format!(
-                    "reachable at {} ({sessions} session(s), {panes} pane(s)); client protocol {}.{}.{}",
-                    socket_path.display(),
-                    phux_protocol::PROTOCOL_VERSION.major,
-                    phux_protocol::PROTOCOL_VERSION.minor,
-                    phux_protocol::PROTOCOL_VERSION.patch,
-                ),
-            )
+        Ok(view) => {
+            let sessions = view.snapshot().sessions.len();
+            let panes = view.snapshot().panes.len();
+            let protocol = format!(
+                "client protocol {}.{}.{}",
+                phux_protocol::PROTOCOL_VERSION.major,
+                phux_protocol::PROTOCOL_VERSION.minor,
+                phux_protocol::PROTOCOL_VERSION.patch,
+            );
+            // A hub that answered but could not reach a satellite is exactly
+            // what `doctor` exists to surface: the server is up, so this is
+            // not a FAIL (which would set the exit code and read as "phux is
+            // broken"), but reporting PASS would hide the one fact an
+            // operator running `phux doctor` on a federated setup is looking
+            // for. WARN is the shape that says "working, and here is what is
+            // not".
+            if view.is_complete() {
+                Check::pass(
+                    "server",
+                    format!(
+                        "reachable at {} ({sessions} session(s), {panes} pane(s)); {protocol}",
+                        socket_path.display(),
+                    ),
+                )
+            } else {
+                Check::warn(
+                    "server",
+                    format!(
+                        "reachable at {} ({sessions} session(s), {panes} pane(s)); {protocol}; \
+                         but this hub could not reach every satellite: {}",
+                        socket_path.display(),
+                        view.degradation().notices().join("; "),
+                    ),
+                    "the pane inventory above is incomplete — check the satellite links \
+                     with `phux satellite ls`",
+                )
+            }
         }
         // A socket file with nothing behind it is the classic stale-socket
         // case, and it is a real failure: every CLI verb will hang or refuse

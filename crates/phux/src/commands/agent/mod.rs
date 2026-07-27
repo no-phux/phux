@@ -7,10 +7,11 @@ mod shim;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use phux_client::state::Degradation;
 use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo, WindowInfo};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_targets};
+use crate::commands::{cli_runtime, parse_selector, partial, report_no_server, resolve_targets};
 
 use self::config::configured_agents;
 use self::detect::infer_agent_state;
@@ -139,12 +140,16 @@ fn run_agent_list(json: bool, socket: Option<PathBuf>) -> ExitCode {
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let snapshot = match fetch_snapshot(&socket_path, "agent list").await {
-            Ok(snapshot) => snapshot,
+        let (snapshot, degradation) = match fetch_snapshot(&socket_path, "agent list").await {
+            Ok(pair) => pair,
             Err(code) => return code,
         };
         let plugins = configured_agents();
         let states = classify_snapshot(&socket_path, &snapshot, &plugins).await;
+        // An enumeration, like `phux ls`: every row printed is true, the list
+        // is just short. Warn and succeed rather than fail the whole roster
+        // over one unreachable satellite.
+        partial::warn_partial_view("agent list", &degradation);
         print_agent_states(&states, json, AgentView::Show)
     })
 }
@@ -177,16 +182,18 @@ fn run_agent_one(action: &AgentAction) -> ExitCode {
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let snapshot = match fetch_snapshot(&socket_path, "agent").await {
-            Ok(snapshot) => snapshot,
+        let (snapshot, degradation) = match fetch_snapshot(&socket_path, "agent").await {
+            Ok(pair) => pair,
             Err(code) => return code,
         };
         let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
+        // `show` / `explain` address one Terminal, and `panes` is the list a
+        // hub merges — so both misses below are the ambiguous kind whenever
+        // the fleet view is partial.
         let Some(target_id) =
             crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
         else {
-            eprintln!("phux: no such target");
-            return ExitCode::FAILURE;
+            return partial::report_target_miss(target, &degradation);
         };
         let plugins = configured_agents();
         let states = classify_snapshot(&socket_path, &snapshot, &plugins).await;
@@ -194,16 +201,26 @@ fn run_agent_one(action: &AgentAction) -> ExitCode {
             .into_iter()
             .find(|state| state.terminal == format_terminal(&target_id))
         else {
-            eprintln!("phux: no such target");
-            return ExitCode::FAILURE;
+            return partial::report_target_miss(target, &degradation);
         };
+        partial::warn_partial_view("agent", &degradation);
         print_agent_states(&[state], json, view)
     })
 }
 
-async fn fetch_snapshot(socket_path: &Path, verb: &str) -> Result<SessionSnapshot, ExitCode> {
+/// One `GET_STATE`, plus what it could not see.
+///
+/// Returned as a pair rather than a bare snapshot because the two `agent`
+/// readers disagree about what to do with the second half: `list` enumerates
+/// (warn, exit 0), `show`/`explain` resolve a Terminal (a miss under
+/// degradation is unresolved, not absent).
+async fn fetch_snapshot(
+    socket_path: &Path,
+    verb: &str,
+) -> Result<(SessionSnapshot, Degradation), ExitCode> {
     phux_client::state::get_state(socket_path)
         .await
+        .map(phux_client::state::StateView::into_parts)
         .map_err(|err| report_no_server(&err, socket_path, verb))
 }
 

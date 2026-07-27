@@ -57,6 +57,15 @@ tracing-subscriber.workspace = true
 rustix = { version = "0.38", default-features = false, features = ["std", "process"] }
 
 [dev-dependencies]
+# The one scripted server (`phux_client::testkit`), where the reference
+# server's frame ORDER is written down once with a handler citation per
+# entry. The verb tests for partial-fleet reporting need a server that pushes
+# a hub's uncorrelated degradation ERRORs *ahead of* the GET_STATE ack — the
+# ordering a hand-rolled fake in this crate would have to re-guess, which is
+# the class of lie the harness exists to prevent. Opting in from
+# `[dev-dependencies]` keeps it out of the shipped binary; it is a workspace
+# crate behind a feature flag, so no third-party row enters the lockfile.
+phux-client = { workspace = true, features = ["testkit"] }
 # Command-level wire mocks encode framed replies with the protocol's native
 # BytesMut API; bytes is already a workspace/runtime dependency.
 bytes.workspace = true

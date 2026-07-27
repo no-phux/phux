@@ -379,23 +379,39 @@ Each struct carries its own `schema_version`, tracked independently.
 
 ### 4.1 `SessionListJson` — `phux ls --json`
 
-Defined in `crates/phux-core/src/session_list.rs` (`LS_SCHEMA_VERSION = 2`).
-Version 2 adds the aggregate `terminals` inventory. Shape, name-sorted:
+Defined in `crates/phux-core/src/session_list.rs` (`LS_SCHEMA_VERSION = 3`).
+Version 2 added the aggregate `terminals` inventory; version 3 adds
+`unreachable`. Shape, name-sorted:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "sessions": [
     { "name": "work", "windows": 3, "attached": true }
   ],
-  "terminals": ["@3", "devbox/@7"]
+  "terminals": ["@3", "devbox/@7"],
+  "unreachable": []
 }
 ```
 
 `windows` is the window count; `attached` is a bool — whether any client is
 attached. `terminals` is the complete addressable inventory in snapshot order,
 using the canonical direct selector syntax. Satellite entries intentionally do
-not imply a hub-local session/window join. **Cross-surface gotcha:** the MCP
+not imply a hub-local session/window join.
+
+**`unreachable` is how you know the listing is complete.** A federation hub
+that cannot reach a satellite still answers — it merges what it has and never
+fails the list (§ [`tui.md`](./tui.md) federation) — so without this field a
+partial inventory is byte-identical to a whole one. Each entry is one hub
+diagnostic naming a satellite that contributed nothing
+(`"satellite build-box is unreachable: link is down"`). The **presence** of
+entries is the contract; the prose is a diagnostic, so branch on
+`unreachable == []`, never on substrings. The key is emitted **even when
+empty**, deliberately: an absent key is what a pre-v3 `phux` produces, and a
+consumer cannot tell that apart from a degraded answer. Treat `sessions` and
+`terminals` as a lower bound whenever it is non-empty.
+
+**Cross-surface gotcha:** the MCP
 `phux_ls` tool ([`mcp.md`](./mcp.md)
 §3.1) surfaces the raw wire fields `window_count` / `attached_client_count`;
 the CLI's `--json` projects them to `windows` / `attached`. The two surfaces do
@@ -945,7 +961,7 @@ Exit codes are not uniform across verbs:
 | `send-keys` | `0` ok; `1` failure (no server / refused / miss). |
 | `paste` | `0` ok (including a paste the pane's untrusted policy silently dropped); `1` failure (no server / refused / miss / unreadable stdin). |
 | `ask` | `0` accepted; `1` no server, unknown pane, or invalid ask payload. |
-| `agent` | `0` ok; `1` no server, unknown pane, or JSON render failure. |
+| `agent` | `0` ok; `1` no server, unknown pane, or JSON render failure; `3` the miss is not trustworthy — see below (`show`/`explain`/`set`/`clear`; `list` enumerates and stays `0`). |
 | `run` | the child's own code clamped to `0..=255` (negative or `>255` saturate to `255`); `125` when phux gave up waiting for the sentinel (`--timeout`); `1` for no server / refused target / other. |
 | `wait` | `0` condition met; `124` on `--timeout`; `1` no server / parse / read error. |
 | `new` | `0` ok; `1` duplicate `-s` name / failure. |
@@ -958,7 +974,37 @@ Exit codes are not uniform across verbs:
 | `workspace` | `0` ok; `1` missing git repo, invalid git output, no server for save/restore, invalid archive, or JSON render failure. |
 | `satellite` | `0` ok; `1` invalid name/endpoint, duplicate configured name, invalid config, refused registry write, or unknown satellite name. |
 | `insert-pane` / `move-pane` / `swap-pane` | `0` ok; `1` transport failure; `2` selector, ratio, session, or layout refusal. |
-| `kill` | `0` ok; `1` selector miss / no server / parse; `2` server-side refusal. |
+| `kill` | `0` ok; `1` selector miss / no server / parse; `2` server-side refusal; `3` the miss is not trustworthy — see below. |
+| `tag` | `0` ok; `1` selector miss / no server / invalid target; `3` the miss is not trustworthy — see below. |
+
+**Exit `3` — "I could not answer, because I could not see all of the fleet."**
+A federation hub that cannot reach a satellite still answers `GET_STATE`, with
+that satellite's panes simply missing from the merge. Every `TARGET` selector
+is a *search* over those panes, so a search that finds nothing has two causes
+that must not share a sentence or a status: the target does not exist (`1`,
+`no such target: X`), or the server could not look where it lives (`3`, a
+message naming the unreachable satellite and containing neither the words
+"no such target" nor any claim of absence). Retrying is the right response to
+`3` and the wrong response to `1` — that is why they are different numbers.
+`kill`, `tag`, and `agent show`/`explain`/`set`/`clear` return it.
+
+**Every** target-resolving verb prints the distinguished message, but not all
+of them can spend a status on it. `snapshot`, `send-keys`, `paste`, `run`,
+`wait`, `watch`, `resize`, `signal`, `rec`, and `ask` share one resolver, and
+two of them have already spoken for the number: `run` mirrors the child's own
+exit code (a command may legitimately exit `3`) and `wait` owns `124`. Those
+verbs keep `1` and say it in words. Branch on the status where the table below
+offers `3`; otherwise read stderr, which never claims absence it cannot
+verify.
+
+Verbs that resolve a **session name** never return `3`: a satellite's
+`sessions` and `windows` lists are discarded during the merge (their ids would
+collide with the hub's), so the session name space is complete even when the
+fleet is not. `rename` therefore keeps its confident `2` for an unknown
+session, and warns on stderr about the outage without changing its answer.
+Verbs that *enumerate* (`ls`, `agent list`) warn on stderr and exit `0`; under
+`--json`, `ls` reports it structurally in `unreachable` (§4.1) because a
+`--json` consumer does not read stderr.
 
 **Why `run` uses 125, not 124.** `run` mirrors the child's own code into
 `0..=255`, and `124` is a code real commands produce — notably GNU `timeout`.

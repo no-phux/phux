@@ -1,8 +1,7 @@
 use phux_client::ask::AskedPayload;
 use phux_client::selector::{self, Selector};
-use phux_client::state;
+use phux_client::state::{self, StateView};
 use phux_protocol::ids::TerminalId;
-use phux_protocol::wire::info::SessionSnapshot;
 use serde_json::{Value, json};
 
 use crate::socket;
@@ -13,8 +12,8 @@ pub(crate) async fn call(args: &Value) -> Result<Value, ToolError> {
     let target = required_str(args, "target")?;
     let selector = selector::parse(target)
         .map_err(|err| ToolError::new(format!("invalid target '{target}': {err}")))?;
-    let snapshot = state::get_state(&socket).await?;
-    let pane = resolve_one(&socket, &selector, &snapshot).await?;
+    let view = state::get_state(&socket).await?;
+    let pane = resolve_one(&socket, &selector, &view).await?;
     let payload = AskedPayload {
         id: required_str(args, "id")?.to_owned(),
         question: required_str(args, "question")?.to_owned(),
@@ -56,14 +55,28 @@ fn success_value(pane: &TerminalId, payload: &AskedPayload) -> Value {
     })
 }
 
+/// Resolve `selector` to one pane, distinguishing "no such target" from "I
+/// could not see all of the fleet" — the same split `tools::resolve_one`
+/// makes, and for the same reason: a hub that could not reach a satellite
+/// still answers `GET_STATE`, minus that satellite's panes.
 async fn resolve_one(
     socket: &std::path::Path,
     selector: &Selector,
-    snapshot: &SessionSnapshot,
+    view: &StateView,
 ) -> Result<TerminalId, ToolError> {
+    let snapshot = view.snapshot();
     let candidates = state::resolve_targets(socket, selector, snapshot).await;
-    selector::pick_target_pane(&candidates, &snapshot.focused_pane)
-        .ok_or_else(|| ToolError::new("no such target"))
+    selector::pick_target_pane(&candidates, &snapshot.focused_pane).ok_or_else(|| {
+        if view.is_complete() {
+            ToolError::new("no such target")
+        } else {
+            ToolError::new(format!(
+                "could not resolve the target: this server's view of the fleet is \
+                 incomplete ({}), so a miss here does not mean the target is gone",
+                view.degradation().notices().join("; ")
+            ))
+        }
+    })
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {

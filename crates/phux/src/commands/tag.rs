@@ -15,7 +15,7 @@ use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{FrameKind, Scope, TERMINAL_TAGS_KEY};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{TagAction, cli_runtime, report_no_server};
+use crate::commands::{TagAction, cli_runtime, partial, report_no_server};
 
 /// Dispatch `phux tag <action>`.
 pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) -> ExitCode {
@@ -42,8 +42,8 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
             Ok(conn) => conn,
             Err(err) => return report_no_server(&err, &socket_path, "tag"),
         };
-        let snapshot = match phux_client::state::get_state_on(&mut conn).await {
-            Ok(snapshot) => snapshot,
+        let (snapshot, degradation) = match phux_client::state::get_state_on(&mut conn).await {
+            Ok(view) => view.into_parts(),
             Err(err) => return report_no_server(&err, &socket_path, "tag"),
         };
 
@@ -52,9 +52,16 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
         let index = phux_client::state::fetch_tag_index(&mut conn, &snapshot).await;
         let targets = selector::resolve_with_tags(&selector, &snapshot, &index);
         if targets.is_empty() {
-            eprintln!("phux: no such target: {target}");
-            return ExitCode::FAILURE;
+            // Every `phux tag` target is Terminal-scoped, and `panes` is the
+            // list a hub aggregates. So an empty match against a degraded
+            // snapshot is unresolved, not absent — and `tag ls` reporting
+            // "no such target" for a pane sitting on a temporarily
+            // unreachable satellite is the exact confusion this splits apart.
+            return partial::report_target_miss(Some(target), &degradation);
         }
+        // A `#tag` set resolved against a partial fleet is a subset of the
+        // real one; the writes below will land on that subset only.
+        partial::warn_partial_view("tag", &degradation);
 
         match action {
             TagAction::Ls { .. } => {
@@ -141,27 +148,36 @@ async fn edit_tags<F: Fn(&mut Vec<String>)>(
             return report_no_server(&err, socket_path, "tag");
         }
         req += 1;
-        let get_id = req;
-        if let Err(err) = conn
-            .send(&FrameKind::GetMetadata {
-                request_id: get_id,
-                scope: Scope::Terminal(id.clone()),
-                key: TERMINAL_TAGS_KEY.to_owned(),
-            })
+        // The confirming read (proves the prior SET landed). Routed through
+        // `request_metadata` rather than a hand-rolled wait: the loop that
+        // used to live here matched METADATA_VALUE and dropped everything
+        // else, so a server that refused the read with a correlated ERROR
+        // (`proto.md` §9) left `phux tag add` hung with no output and no exit.
+        let reply = match conn
+            .request_metadata(
+                req,
+                Scope::Terminal(id.clone()),
+                TERMINAL_TAGS_KEY.to_owned(),
+            )
             .await
         {
-            return report_no_server(&err, socket_path, "tag");
+            Ok(reply) => reply,
+            Err(err) => return report_no_server(&err, socket_path, "tag"),
+        };
+        let (answer, interleaved) = reply.into_parts();
+        for message in phux_client::state::degradation_notices(&interleaved) {
+            eprintln!("phux: warning: partial results — {message}");
         }
-        // Drain to the matching reply (proves the prior SET landed).
-        let confirmed = loop {
-            match conn.recv().await {
-                Ok(FrameKind::MetadataValue { request_id, value }) if request_id == get_id => {
-                    break value
-                        .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
-                        .unwrap_or_default();
-                }
-                Ok(_) => {}
-                Err(err) => return report_no_server(&err, socket_path, "tag"),
+        let confirmed = match answer {
+            Ok(value) => value
+                .and_then(|b| serde_json::from_slice::<Vec<String>>(&b).ok())
+                .unwrap_or_default(),
+            Err(refusal) => {
+                eprintln!(
+                    "phux: tag write to {} could not be confirmed: server refused the read: {refusal}",
+                    selector::format_terminal_id(id),
+                );
+                return ExitCode::FAILURE;
             }
         };
         outln!("{}", render_tags(id, &confirmed));

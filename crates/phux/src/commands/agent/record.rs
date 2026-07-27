@@ -14,13 +14,13 @@ use std::process::ExitCode;
 use phux_client::agent_meta::{
     AgentAttention, AgentMetaState, AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record,
 };
-use phux_client::attach::connection::Connection;
+use phux_client::attach::connection::{Answer, Connection};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, report_no_server, resolve_targets};
+use crate::commands::{cli_runtime, partial, report_no_server, resolve_targets};
 
 /// `phux agent set [TARGET] --name ... [--kind] [--state] [--attention]
 /// [--session]` — declare the target pane's agent identity by writing the
@@ -64,10 +64,14 @@ pub(super) fn run_agent_set(
             // process could exit before the server reads the SET. Frames
             // are ordered on the one connection, so the reply proves the
             // write landed; we print that confirmed value.
-            let confirmed = get_record(conn, &pane, 101).await?;
-            match confirmed {
-                Some(rec) => outln!("{}", render_record(&pane, Some(&rec))),
-                None => eprintln!("phux: agent record did not persist"),
+            match get_record(conn, &pane, 101).await? {
+                Ok(Some(rec)) => outln!("{}", render_record(&pane, Some(&rec))),
+                Ok(None) => eprintln!("phux: agent record did not persist"),
+                // Not the same statement: the server declined to read the key
+                // back, so whether the write landed is unknown.
+                Err(refusal) => {
+                    eprintln!("phux: agent record could not be confirmed: {refusal}");
+                }
             }
             Ok(())
         })
@@ -86,10 +90,12 @@ pub(super) fn run_agent_clear(target: Option<&str>, socket: Option<PathBuf>) -> 
             })
             .await?;
             // Same load-bearing confirmation round-trip as `set`.
-            let confirmed = get_record(conn, &pane, 101).await?;
-            match confirmed {
-                None => outln!("{}", render_record(&pane, None)),
-                Some(_) => eprintln!("phux: agent record was not cleared"),
+            match get_record(conn, &pane, 101).await? {
+                Ok(None) => outln!("{}", render_record(&pane, None)),
+                Ok(Some(_)) => eprintln!("phux: agent record was not cleared"),
+                Err(refusal) => {
+                    eprintln!("phux: agent clear could not be confirmed: {refusal}");
+                }
             }
             Ok(())
         })
@@ -126,16 +132,22 @@ where
             Ok(conn) => conn,
             Err(err) => return report_no_server(&err, &socket_path, verb),
         };
-        let snapshot = match phux_client::state::get_state_on(&mut conn).await {
-            Ok(snapshot) => snapshot,
+        let (snapshot, degradation) = match phux_client::state::get_state_on(&mut conn).await {
+            Ok(view) => view.into_parts(),
             Err(err) => return report_no_server(&err, &socket_path, verb),
         };
         let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
         let Some(pane) = crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
         else {
-            eprintln!("phux: no such target");
-            return ExitCode::FAILURE;
+            // `agent set` / `clear` address a Terminal, and `panes` is the
+            // list a federation hub merges. A miss against a hub that could
+            // not reach a satellite is unresolved, not absent — writing the
+            // record onto the "no such target" branch would tell the operator
+            // of a fleet-wide agent script that a live pane had vanished.
+            return partial::report_target_miss(target, &degradation);
         };
+        // Resolved, but from a narrower world than the user assumed.
+        partial::warn_partial_view(verb, &degradation);
         match body(&mut conn, pane).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => report_no_server(&err, &socket_path, verb),
@@ -144,28 +156,30 @@ where
 }
 
 /// One `GET_METADATA` round-trip for `pane`'s agent record on `conn`.
+///
+/// Returns an [`Answer`] rather than a bare `Option` so a refusal cannot be
+/// mistaken for "this pane has no record". The wait that used to be here
+/// matched `METADATA_VALUE` and dropped everything else, so a server that
+/// refused with a correlated ERROR (`proto.md` §9) hung `phux agent set`
+/// *after* its write — the confirmation never arrived and the verb never
+/// returned.
 async fn get_record(
     conn: &mut Connection,
     pane: &TerminalId,
     request_id: u32,
-) -> Result<Option<AgentRecord>, phux_client::attach::AttachError> {
-    conn.send(&FrameKind::GetMetadata {
-        request_id,
-        scope: Scope::Terminal(pane.clone()),
-        key: TERMINAL_AGENT_KEY.to_owned(),
-    })
-    .await?;
-    loop {
-        match conn.recv().await? {
-            FrameKind::MetadataValue {
-                request_id: got,
-                value,
-            } if got == request_id => {
-                return Ok(value.as_deref().and_then(parse_agent_record));
-            }
-            _ => {}
-        }
+) -> Result<Answer<Option<AgentRecord>>, phux_client::attach::AttachError> {
+    let (answer, interleaved) = conn
+        .request_metadata(
+            request_id,
+            Scope::Terminal(pane.clone()),
+            TERMINAL_AGENT_KEY.to_owned(),
+        )
+        .await?
+        .into_parts();
+    for message in phux_client::state::degradation_notices(&interleaved) {
+        eprintln!("phux: warning: partial results — {message}");
     }
+    Ok(answer.map(|value| value.as_deref().and_then(parse_agent_record)))
 }
 
 /// `SELECTOR<TAB>record-json` (or `SELECTOR<TAB>-` for a cleared record) —
@@ -186,55 +200,49 @@ fn render_record(pane: &TerminalId, record: Option<&AgentRecord>) -> String {
 /// Fetch the `phux.agent/v1` index — `TerminalId` → decoded record — for
 /// every pane in `snapshot`, over one fresh connection to `socket_path`.
 ///
-/// One `GET_METADATA` per pane, pipelined (send all, then collect replies
-/// by `request_id`), the same shape as `phux tag`'s `fetch_tag_index`. A
-/// pane with no record, or bytes that fail the §3.7 validation, is simply
-/// absent from the index. Best-effort: transport failure returns what was
-/// collected so the caller degrades to heuristics instead of erroring.
+/// One `GET_METADATA` round trip per pane, the same shape as `phux tag`'s
+/// `fetch_tag_index` — and, like it, sequential rather than pipelined since
+/// phux-h5hj.12: the pipelined version hand-rolled its own correlation and
+/// counted down only on `METADATA_VALUE`, so one correlated `ERROR`
+/// (`proto.md` §9) hung `phux agent ls` forever. The cost of the trade is one
+/// local round trip per pane on a CLI verb that has already paid milliseconds
+/// for process start.
+///
+/// A pane with no record, or bytes that fail the §3.7 validation, is simply
+/// absent from the index — as is one the server refuses to read, since this
+/// index has no channel to report a refusal on. Best-effort: transport
+/// failure returns what was collected so the caller degrades to heuristics
+/// instead of erroring.
 pub(crate) async fn fetch_agent_index(
     socket_path: &std::path::Path,
     snapshot: &SessionSnapshot,
 ) -> std::collections::HashMap<TerminalId, AgentRecord> {
     let mut index = std::collections::HashMap::new();
-    let ids: Vec<TerminalId> = snapshot.panes.iter().map(|p| p.id.clone()).collect();
-    if ids.is_empty() {
+    if snapshot.panes.is_empty() {
         return index;
     }
     let Ok(mut conn) = Connection::connect(socket_path).await else {
         return index;
     };
-    for (i, id) in ids.iter().enumerate() {
-        let request_id = u32::try_from(i).unwrap_or(u32::MAX).saturating_add(1);
-        if conn
-            .send(&FrameKind::GetMetadata {
+    for (offset, pane) in snapshot.panes.iter().enumerate() {
+        let request_id = u32::try_from(offset).unwrap_or(u32::MAX).saturating_add(1);
+        let Ok(reply) = conn
+            .request_metadata(
                 request_id,
-                scope: Scope::Terminal(id.clone()),
-                key: TERMINAL_AGENT_KEY.to_owned(),
-            })
+                Scope::Terminal(pane.id.clone()),
+                TERMINAL_AGENT_KEY.to_owned(),
+            )
             .await
-            .is_err()
-        {
+        else {
             return index;
+        };
+        let (answer, interleaved) = reply.into_parts();
+        for message in phux_client::state::degradation_notices(&interleaved) {
+            eprintln!("phux: warning: partial results — {message}");
         }
-    }
-    let mut remaining = ids.len();
-    while remaining > 0 {
-        match conn.recv().await {
-            Ok(FrameKind::MetadataValue { request_id, value }) => {
-                let Some(pos) = usize::try_from(request_id)
-                    .ok()
-                    .and_then(|r| r.checked_sub(1))
-                else {
-                    continue;
-                };
-                let Some(id) = ids.get(pos) else { continue };
-                remaining -= 1;
-                if let Some(record) = value.as_deref().and_then(parse_agent_record) {
-                    index.insert(id.clone(), record);
-                }
-            }
-            Ok(_) => {}
-            Err(_) => break,
+        if let Ok(Some(record)) = answer.map(|value| value.as_deref().and_then(parse_agent_record))
+        {
+            index.insert(pane.id.clone(), record);
         }
     }
     index

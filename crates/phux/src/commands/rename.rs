@@ -5,7 +5,7 @@ use phux_client::attach::connection::Connection;
 use phux_protocol::wire::frame::{FrameKind, SESSION_NAME_KEY, Scope};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, report_no_server};
+use crate::commands::{cli_runtime, partial, report_no_server};
 
 /// `phux rename SESSION NEW_NAME` — reassign a session's name.
 ///
@@ -37,10 +37,21 @@ pub(crate) fn run_rename(session: &str, new_name: &str, socket: Option<PathBuf>)
         // Validate against a fresh snapshot: the target must exist and the
         // new name must be free (the server enforces this too, but it has no
         // reply channel for SET_METADATA, so we surface the diagnostic here).
-        let snapshot = match phux_client::state::get_state_on(&mut conn).await {
-            Ok(snapshot) => snapshot,
+        //
+        // Both checks read `sessions`, and a rename is the one target-shaped
+        // verb a partial fleet cannot mislead: `handle_get_state_federated`
+        // discards every satellite's `sessions` and `windows` list outright
+        // (their `u32` ids would collide with the hub's), so the session name
+        // space is hub-local whether or not a satellite answered. An
+        // unreachable satellite can neither hide the session being renamed
+        // nor conceal a collision with the new name. Hence a warning and a
+        // full exit 0 here, where `kill`/`tag` refuse — the difference is in
+        // what each verb searches, not in how careful it is.
+        let (snapshot, degradation) = match phux_client::state::get_state_on(&mut conn).await {
+            Ok(view) => view.into_parts(),
             Err(err) => return report_no_server(&err, &socket_path, "rename"),
         };
+        partial::warn_partial_view("rename", &degradation);
 
         let names: Vec<&str> = snapshot.sessions.iter().map(|s| s.name.as_str()).collect();
         if !names.contains(&session) {

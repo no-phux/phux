@@ -112,16 +112,30 @@ pub async fn resize_to(
     // Ordered behind the frame above on this connection; see the module
     // docs for why the registry read is the sound one and the actor's
     // screen projection is not.
-    let snapshot = get_state_on(&mut conn).await?;
+    let (snapshot, degradation) = get_state_on(&mut conn).await?.into_parts();
     let applied = snapshot
         .panes
         .iter()
         .find(|info| info.id == *pane)
         .map(|info: &TerminalInfo| (info.cols, info.rows))
         .ok_or_else(|| {
-            AttachError::Refused(format!(
-                "pane {pane:?} is not in the server's state after the resize"
-            ))
+            // The read-back searches `panes`, which is exactly the list a
+            // hub's federation merge leaves incomplete. Absent-and-complete
+            // means the Terminal is gone; absent-and-degraded means we could
+            // not look where it lives, and saying the first when we mean the
+            // second would report a healthy satellite pane as dead.
+            if degradation.is_complete() {
+                AttachError::Refused(format!(
+                    "pane {pane:?} is not in the server's state after the resize"
+                ))
+            } else {
+                AttachError::Refused(format!(
+                    "pane {pane:?} was not visible after the resize, and this \
+                     server's view of the fleet is incomplete ({}); the resize \
+                     may have applied",
+                    degradation.notices().join("; ")
+                ))
+            }
         })?;
     Ok(ResizeOutcome {
         requested: (cols.get(), rows.get()),

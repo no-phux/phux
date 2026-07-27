@@ -12,7 +12,7 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{
     DEFAULT_SESSION_NAME, attach::client_cwd, attach::resolved_default_session_name,
-    attach::run_attach_once, cli_runtime, print_attach_error, report_no_server,
+    attach::run_attach_once, cli_runtime, partial, print_attach_error, report_no_server,
     server::maybe_auto_spawn_server,
 };
 
@@ -67,14 +67,25 @@ pub(crate) fn run_new(
     // "new" (reject a duplicate -s, auto-name an omitted one). No server
     // yet → no existing names; the auto-spawn below seeds the chosen name.
     let existing = if socket_path.exists() {
-        match rt.block_on(phux_client::state::get_state(&socket_path)) {
-            Ok(snapshot) => snapshot
-                .sessions
-                .iter()
-                .map(|session| session.name.clone())
-                .collect(),
-            Err(_) => Vec::new(),
-        }
+        rt.block_on(phux_client::state::get_state(&socket_path))
+            .map_or_else(
+                // A server that did not answer contributes no names.
+                |_| Vec::new(),
+                // Session names are hub-local: `handle_get_state_federated`
+                // discards every satellite's `sessions` list because its
+                // `u32` ids would collide with the hub's. So an unreachable
+                // satellite cannot hide the name we are about to reject or
+                // auto-suffix, and this duplicate check is exactly as sound
+                // on a degraded hub as on a healthy one. Warned, not refused.
+                |view| {
+                    partial::warn_partial_view("new", view.degradation());
+                    view.snapshot()
+                        .sessions
+                        .iter()
+                        .map(|session| session.name.clone())
+                        .collect()
+                },
+            )
     } else {
         Vec::new()
     };
@@ -227,9 +238,16 @@ pub(crate) async fn create_session_via_metadata(
 
     // Reject a duplicate name before writing (the server also refuses it, but
     // silently — SET_METADATA has no reply frame).
-    let pre = phux_client::state::get_state_on(&mut conn)
+    //
+    // Same reasoning as the human path above: only `panes` aggregate across a
+    // federation, so a partial fleet cannot hide a session name. The notice
+    // still goes to stderr — `phux new --json` puts its *result* on stdout,
+    // and a warning has no place in that document.
+    let (pre, degradation) = phux_client::state::get_state_on(&mut conn)
         .await
-        .map_err(|err| report_no_server(&err, socket_path, "new"))?;
+        .map_err(|err| report_no_server(&err, socket_path, "new"))?
+        .into_parts();
+    partial::warn_partial_view("new", &degradation);
     if pre.sessions.iter().any(|s| s.name == name) {
         eprintln!("phux: session '{name}' already exists");
         return Err(ExitCode::FAILURE);
@@ -245,24 +263,26 @@ pub(crate) async fn create_session_via_metadata(
     })
     .await
     .map_err(|err| report_no_server(&err, socket_path, "new"))?;
-    conn.send(&FrameKind::GetMetadata {
-        request_id: 2,
-        scope: Scope::Global,
-        key: SESSION_CREATE_RESULT_KEY.to_owned(),
-    })
-    .await
-    .map_err(|err| report_no_server(&err, socket_path, "new"))?;
-
-    let result_value = loop {
-        match conn.recv().await {
-            Ok(FrameKind::MetadataValue {
-                request_id: 2,
-                value,
-            }) => break value,
-            Ok(_) => {}
-            Err(err) => return Err(report_no_server(&err, socket_path, "new")),
-        }
-    };
+    // The read-back rides `request_metadata`, not a hand-rolled wait. The
+    // loop that used to be here matched METADATA_VALUE on request id 2 and
+    // dropped everything else, so a server that refused the read with a
+    // correlated ERROR (`proto.md` §9) left `phux new` hanging with the
+    // session possibly already created — the worst shape of this bug, because
+    // the user's Ctrl-C then looks like the create failed.
+    let (answer, interleaved) = conn
+        .request_metadata(2, Scope::Global, SESSION_CREATE_RESULT_KEY.to_owned())
+        .await
+        .map_err(|err| report_no_server(&err, socket_path, "new"))?
+        .into_parts();
+    for message in phux_client::state::degradation_notices(&interleaved) {
+        eprintln!("phux: warning: partial results — {message}");
+    }
+    let result_value = answer.map_err(|refusal| {
+        // Distinct from "no value": the server declined to answer at all, so
+        // saying "did not register" below would be a guess stated as a fact.
+        eprintln!("phux: create-session failed: server refused the read-back: {refusal}");
+        ExitCode::FAILURE
+    })?;
     let not_registered = || {
         eprintln!("phux: create-session failed: server did not register session '{name}'");
         ExitCode::FAILURE

@@ -114,6 +114,7 @@ pub(crate) mod ls;
 pub(crate) mod new;
 pub(crate) mod overlay;
 pub(crate) mod pair;
+pub(crate) mod partial;
 pub(crate) mod paste;
 pub(crate) mod plugin;
 pub(crate) mod rec;
@@ -1894,19 +1895,35 @@ pub(crate) fn parse_selector(session: Option<&str>) -> Result<crate::selector::S
 /// snapshot. Prefers the focused pane when the selector spans several
 /// (e.g. a whole session); otherwise the first in snapshot order. Prints
 /// diagnostics and returns the failure exit code on no-server / miss.
+///
+/// This is the shared front door for every verb that addresses one pane
+/// (`snapshot`, `send-keys`, `paste`, `run`, `wait`, `watch`, `resize`,
+/// `signal`, `rec`, `ask`), so it is also where the partial-fleet distinction
+/// is drawn for all of them: a miss against a hub that could not reach a
+/// satellite is reported as unresolvable, never as absent.
+///
+/// It uses [`partial::report_target_miss_keeping_status`] rather than the
+/// distinct exit status `kill`/`tag`/`agent` return, because two of the verbs
+/// behind this door have already spent their status space — `run` mirrors the
+/// child's own exit code and `wait` owns `124`. A shared resolver cannot hand
+/// out a code that means one thing for `kill` and collides for `run`, so the
+/// distinction stays in the sentence, which is where the user reads it.
 pub(crate) async fn resolve_target(
     socket_path: &Path,
     selector: &crate::selector::Selector,
     verb: &str,
 ) -> Result<phux_protocol::ids::TerminalId, ExitCode> {
-    let snapshot = phux_client::state::get_state(socket_path)
+    let (snapshot, degradation) = phux_client::state::get_state(socket_path)
         .await
-        .map_err(|err| report_no_server(&err, socket_path, verb))?;
+        .map_err(|err| report_no_server(&err, socket_path, verb))?
+        .into_parts();
     let candidates = resolve_targets(socket_path, selector, &snapshot).await;
-    crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane).ok_or_else(|| {
-        eprintln!("phux: no such target");
-        ExitCode::FAILURE
-    })
+    let picked = crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
+        .ok_or_else(|| partial::report_target_miss_keeping_status(None, &degradation))?;
+    // A hit is still worth a word: the pane we picked is the best of what a
+    // partial fleet offered, and the user is about to act on it.
+    partial::warn_partial_view(verb, &degradation);
+    Ok(picked)
 }
 
 /// Resolve `selector` to its `TerminalId`s, fetching L3 tag metadata first

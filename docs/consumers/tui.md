@@ -944,7 +944,10 @@ established links (SPEC L1 §9.1): per-terminal commands, input, and
 subscribed streams relay both directions with ids re-tagged at the hub;
 `phux ls` / `GET_STATE` on the hub aggregates every satellite's terminals
 next to the local ones (an unreachable satellite degrades to an
-un-correlated typed error, never a failed list); and
+un-correlated typed error, never a failed list — the CLI surfaces that as
+a stderr warning and, under `--json`, as the `unreachable` list; a verb
+that *resolves a target* refuses with exit `3` rather than claiming the
+pane is gone, see [`agents.md`](./agents.md) §5.2); and
 `phux spawn --satellite NAME` creates a terminal *on* the satellite,
 returning a satellite-tagged id that routes through the hub immediately.
 Without `--hub` the server ignores the registry entirely and refuses

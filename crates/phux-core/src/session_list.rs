@@ -6,7 +6,10 @@
 //! a caller needs to enumerate sessions: name, window count, and whether any
 //! client is attached. The top-level `terminals` inventory carries canonical
 //! direct selectors (`@N` / `host/@N`), including satellite Terminals that
-//! deliberately have no hub-local session/window join. Richer per-session
+//! deliberately have no hub-local session/window join. The top-level
+//! `unreachable` list is the machine channel for *incompleteness*: a
+//! federation hub that could not reach a satellite still answers, so without
+//! it a partial listing is byte-identical to a complete one. Richer per-session
 //! detail (creation time, ids, window layout) is a future additive field,
 //! not a new struct — mirroring how
 //! [`crate::screen::ScreenState`] reserves `--cells`/`--scrollback` growth.
@@ -24,7 +27,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Tracked independently of [`crate::screen::SCHEMA_VERSION`] because the two
 /// contracts (`phux snapshot --json` vs `phux ls --json`) evolve separately.
-pub const LS_SCHEMA_VERSION: u32 = 2;
+pub const LS_SCHEMA_VERSION: u32 = 3;
 
 /// One session's entry in the [`SessionListJson`] output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +54,21 @@ pub struct SessionListJson {
     /// Every addressable Terminal in snapshot order, as a canonical selector.
     #[serde(default)]
     pub terminals: Vec<String>,
+    /// Parts of the fleet this listing could not see — one diagnostic per
+    /// satellite a federation hub failed to reach while merging its answer.
+    ///
+    /// Empty means the listing is complete, and it is emitted **even when
+    /// empty**: that is the whole point of the field. A consumer asking "does
+    /// `sessions` contain everything?" gets a positive answer from
+    /// `unreachable == []` rather than having to infer completeness from a
+    /// key's absence — which is indistinguishable from talking to an older
+    /// `phux` that never had the key. The human `phux ls` says the same thing
+    /// on stderr; this is the machine channel for it.
+    ///
+    /// The strings are the hub's prose (they name the satellite); branch on
+    /// emptiness, not on their text.
+    #[serde(default)]
+    pub unreachable: Vec<String>,
 }
 
 impl SessionListJson {
@@ -65,6 +83,7 @@ impl SessionListJson {
             schema_version: LS_SCHEMA_VERSION,
             sessions,
             terminals: Vec::new(),
+            unreachable: Vec::new(),
         }
     }
 
@@ -72,6 +91,14 @@ impl SessionListJson {
     #[must_use]
     pub fn with_terminals(mut self, terminals: Vec<String>) -> Self {
         self.terminals = terminals;
+        self
+    }
+
+    /// Record the satellites this listing could not see — see
+    /// [`Self::unreachable`].
+    #[must_use]
+    pub fn with_unreachable(mut self, unreachable: Vec<String>) -> Self {
+        self.unreachable = unreachable;
         self
     }
 }
@@ -101,6 +128,7 @@ mod tests {
         assert_eq!(list.sessions[0].name, "alpha");
         assert_eq!(list.sessions[1].name, "beta");
         assert!(list.terminals.is_empty());
+        assert!(list.unreachable.is_empty());
     }
 
     #[test]
@@ -113,11 +141,15 @@ mod tests {
         .with_terminals(vec!["@7".to_owned(), "devbox/@42".to_owned()]);
 
         let json = serde_json::to_value(&list).expect("serialize");
-        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["schema_version"], 3);
         assert_eq!(json["sessions"][0]["name"], "work");
         assert_eq!(json["sessions"][0]["windows"], 3);
         assert_eq!(json["sessions"][0]["attached"], true);
         assert_eq!(json["terminals"], serde_json::json!(["@7", "devbox/@42"]));
+        // Present and empty, not absent: a consumer must be able to read
+        // "this listing is complete" positively. An absent key is what an
+        // older phux emits, and cannot be told apart from a degraded one.
+        assert_eq!(json["unreachable"], serde_json::json!([]));
 
         let old_shape: SessionListJson = serde_json::from_value(serde_json::json!({
             "schema_version": 1,
@@ -125,5 +157,27 @@ mod tests {
         }))
         .expect("v1 payloads remain deserializable for compatibility");
         assert!(old_shape.terminals.is_empty());
+        assert!(old_shape.unreachable.is_empty());
+    }
+
+    #[test]
+    fn a_degraded_listing_names_what_it_could_not_see() {
+        let list = SessionListJson::new(vec![SessionJson {
+            name: "work".to_owned(),
+            windows: 1,
+            attached: false,
+        }])
+        .with_unreachable(vec![
+            "satellite build-box is unreachable: link is down".to_owned(),
+        ]);
+
+        let json = serde_json::to_value(&list).expect("serialize");
+        assert_eq!(
+            json["unreachable"],
+            serde_json::json!(["satellite build-box is unreachable: link is down"])
+        );
+        // The sessions still come back: an unreachable satellite degrades the
+        // listing, it does not fail it (`handle_get_state_federated`).
+        assert_eq!(json["sessions"][0]["name"], "work");
     }
 }

@@ -406,6 +406,16 @@ mod tests {
 
     use super::*;
 
+    /// Ceiling for "the child/server should already have done this" waits.
+    ///
+    /// Not load-bearing. Every assertion below is on the JSON-RPC reply or on
+    /// whether a pid is still alive — never on latency — so the timeout only
+    /// turns a wedged dispatcher into a bounded failure. The 1-2s bounds it
+    /// replaces were generous on an idle laptop and a measurement of the
+    /// scheduler on a saturated one (phux-br1f); a real hang still fails,
+    /// just later, with the same message.
+    const NO_HANG_DEADLINE: Duration = Duration::from_secs(30);
+
     fn sleeping_cli() -> (TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let pid_file = temp.path().join("pid");
@@ -440,7 +450,7 @@ mod tests {
     }
 
     async fn wait_for_pid(path: &Path) -> u32 {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(NO_HANG_DEADLINE, async {
             loop {
                 if let Ok(contents) = fs::read_to_string(path)
                     && let Ok(pid) = contents.trim().parse()
@@ -464,7 +474,7 @@ mod tests {
     }
 
     async fn wait_for_exit(pid: u32) {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(NO_HANG_DEADLINE, async {
             while process_exists(pid) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -574,7 +584,7 @@ mod tests {
                     .unwrap();
 
                 let mut replies = BufReader::new(output).lines();
-                let fast = tokio::time::timeout(Duration::from_secs(1), replies.next_line())
+                let fast = tokio::time::timeout(NO_HANG_DEADLINE, replies.next_line())
                     .await
                     .unwrap()
                     .unwrap()
@@ -592,7 +602,7 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                let cancelled = tokio::time::timeout(Duration::from_secs(1), replies.next_line())
+                let cancelled = tokio::time::timeout(NO_HANG_DEADLINE, replies.next_line())
                     .await
                     .unwrap()
                     .unwrap()
@@ -631,7 +641,7 @@ mod tests {
                 assert!(process_exists(pid));
 
                 drop(input);
-                tokio::time::timeout(Duration::from_secs(1), server)
+                tokio::time::timeout(NO_HANG_DEADLINE, server)
                     .await
                     .unwrap()
                     .unwrap()

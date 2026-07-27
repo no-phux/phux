@@ -19,11 +19,10 @@ use std::time::Duration;
 
 use phux_client::attach::AttachError;
 use phux_client::selector::{self, Selector};
-use phux_client::state;
+use phux_client::state::{self, StateView};
 use phux_client::wait::{Condition, DEFAULT_IDLE_DWELL, DEFAULT_POLL_INTERVAL, WaitOutcome};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::input::paste::PasteTrust;
-use phux_protocol::wire::info::SessionSnapshot;
 use serde_json::{Value, json};
 
 use crate::socket;
@@ -250,8 +249,8 @@ async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
     let selector = parse_target(args)?;
     let scrollback = u32_arg(args, "scrollback");
     let cells = bool_arg(args, "cells").unwrap_or(false);
-    let snapshot = state::get_state(&socket).await?;
-    let terminal_id = resolve_one(&socket, &selector, &snapshot).await?;
+    let view = state::get_state(&socket).await?;
+    let terminal_id = resolve_one(&socket, &selector, &view).await?;
     let screen =
         phux_client::snapshot::get_screen_scrollback(&socket, terminal_id, scrollback, cells)
             .await?;
@@ -269,8 +268,8 @@ async fn phux_send_keys(args: &Value) -> Result<Value, ToolError> {
             "`keys` must be a non-empty array of strings",
         ));
     }
-    let snapshot = state::get_state(&socket).await?;
-    let pane = resolve_one(&socket, &selector, &snapshot).await?;
+    let view = state::get_state(&socket).await?;
+    let pane = resolve_one(&socket, &selector, &view).await?;
     // `send_to` returns `()`; echo the pane we resolved ourselves.
     phux_client::send_keys::send_to(&socket, pane.clone(), &keys).await?;
     Ok(json!({ "sent": true, "pane": pane_value(&pane) }))
@@ -297,8 +296,8 @@ async fn phux_paste(args: &Value) -> Result<Value, ToolError> {
     } else {
         PasteTrust::Trusted
     };
-    let snapshot = state::get_state(&socket).await?;
-    let pane = resolve_one(&socket, &selector, &snapshot).await?;
+    let view = state::get_state(&socket).await?;
+    let pane = resolve_one(&socket, &selector, &view).await?;
     phux_client::send_keys::paste_to(&socket, pane.clone(), text.into_bytes(), trust).await?;
     Ok(json!({ "sent": true, "pane": pane_value(&pane), "untrusted": untrusted }))
 }
@@ -347,8 +346,8 @@ async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
     );
     let timeout = num_arg(args, "timeout_secs").map(Duration::from_secs);
 
-    let snapshot = state::get_state(&socket).await?;
-    let terminal_id = resolve_one(&socket, &selector, &snapshot).await?;
+    let view = state::get_state(&socket).await?;
+    let terminal_id = resolve_one(&socket, &selector, &view).await?;
     let result = phux_client::wait::poll_until(
         &socket,
         terminal_id,
@@ -427,8 +426,8 @@ async fn phux_watch(args: &Value) -> Result<Value, ToolError> {
         Some(raw) => {
             let selector = selector::parse(raw)
                 .map_err(|err| ToolError::new(format!("invalid target '{raw}': {err}")))?;
-            let snapshot = state::get_state(&socket).await?;
-            Some(resolve_one(&socket, &selector, &snapshot).await?)
+            let view = state::get_state(&socket).await?;
+            Some(resolve_one(&socket, &selector, &view).await?)
         }
     };
     let max_events = num_arg(args, "max_events").and_then(|n| usize::try_from(n).ok());
@@ -543,21 +542,40 @@ fn required_target(args: &Value) -> Result<Selector, ToolError> {
     selector::parse(raw).map_err(|err| ToolError::new(format!("invalid target '{raw}': {err}")))
 }
 
-/// Resolve `selector` against `snapshot` to a single pane, exactly as the
+/// Resolve `selector` against `view` to a single pane, exactly as the
 /// CLI does (ADR-0021): resolve to the candidate terminals, then narrow via
 /// [`selector::pick_target_pane`] (prefer the focused pane, else the first).
 ///
+/// Takes the whole [`StateView`] rather than its snapshot because the miss
+/// message depends on the other half. A federation hub that could not reach a
+/// satellite still answers `GET_STATE`, with that satellite's panes simply
+/// absent from the merge — so "no such target" against a degraded view is a
+/// guess, and one an agent will act on. Every MCP tool below funnels its
+/// resolution through here, which is why this is the only place that has to
+/// know the difference.
+///
 /// # Errors
 ///
-/// Returns [`ToolError`] when the selector matches no pane.
+/// Returns [`ToolError`] when the selector matches no pane, saying which of
+/// the two reasons it was.
 async fn resolve_one(
     socket: &std::path::Path,
     selector: &Selector,
-    snapshot: &SessionSnapshot,
+    view: &StateView,
 ) -> Result<TerminalId, ToolError> {
+    let snapshot = view.snapshot();
     let candidates = state::resolve_targets(socket, selector, snapshot).await;
-    selector::pick_target_pane(&candidates, &snapshot.focused_pane)
-        .ok_or_else(|| ToolError::new("no such target"))
+    selector::pick_target_pane(&candidates, &snapshot.focused_pane).ok_or_else(|| {
+        if view.is_complete() {
+            ToolError::new("no such target")
+        } else {
+            ToolError::new(format!(
+                "could not resolve the target: this server's view of the fleet is \
+                 incomplete ({}), so a miss here does not mean the target is gone",
+                view.degradation().notices().join("; ")
+            ))
+        }
+    })
 }
 
 /// A JSON rendering of a `TerminalId` using the canonical direct selector.
@@ -614,11 +632,30 @@ fn string_array(args: &Value, key: &str) -> Result<Vec<String>, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phux_client::state::Degradation;
     use phux_client::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::ids::{SessionId, WindowId};
-    use phux_protocol::wire::frame::{FrameKind, Scope, TERMINAL_TAGS_KEY};
-    use phux_protocol::wire::info::{SessionInfo, TerminalInfo, WindowInfo};
+    use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope, TERMINAL_TAGS_KEY};
+    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
     use tokio::net::UnixListener;
+
+    /// The fixture as a server that reached everything it knows about.
+    fn whole_fleet() -> StateView {
+        StateView::new(fixture(), Degradation::default())
+    }
+
+    /// The fixture as a hub that could not reach one satellite: the panes it
+    /// would have contributed are simply not in the merge.
+    fn partial_fleet() -> StateView {
+        StateView::new(
+            fixture(),
+            Degradation::from_interleaved(&[FrameKind::Error {
+                request_id: None,
+                code: ErrorCode::SatelliteUnreachable,
+                message: "satellite build-box is unreachable: link is down".to_owned(),
+            }]),
+        )
+    }
 
     #[test]
     fn catalog_lists_all_tools_with_object_schemas() {
@@ -926,12 +963,12 @@ mod tests {
     /// errors on a miss.
     #[tokio::test]
     async fn resolve_one_maps_every_selector_form() {
-        let snap = fixture();
+        let whole = whole_fleet();
         let socket = std::path::Path::new("unused-for-non-tag-selectors");
 
         // Bare session → focused-or-first pane of the session.
         assert_eq!(
-            resolve_one(socket, &selector::parse("work").unwrap(), &snap)
+            resolve_one(socket, &selector::parse("work").unwrap(), &whole)
                 .await
                 .unwrap(),
             TerminalId::local(100),
@@ -945,7 +982,7 @@ mod tests {
             ("devbox/@7", TerminalId::satellite("devbox", 7)),
         ] {
             assert_eq!(
-                resolve_one(socket, &selector::parse(raw).unwrap(), &snap)
+                resolve_one(socket, &selector::parse(raw).unwrap(), &whole)
                     .await
                     .unwrap(),
                 expected,
@@ -954,21 +991,50 @@ mod tests {
         // `.` targets the focused session's focused pane; headless `=` is
         // rejected during parsing because MCP has no attached-client MRU.
         assert_eq!(
-            resolve_one(socket, &Selector::Current, &snap)
+            resolve_one(socket, &Selector::Current, &whole)
                 .await
                 .unwrap(),
             TerminalId::local(100),
         );
         // Misses error.
         assert!(
-            resolve_one(socket, &selector::parse("ghost").unwrap(), &snap)
+            resolve_one(socket, &selector::parse("ghost").unwrap(), &whole)
                 .await
                 .is_err()
         );
         assert!(
-            resolve_one(socket, &selector::parse("@999").unwrap(), &snap)
+            resolve_one(socket, &selector::parse("@999").unwrap(), &whole)
                 .await
                 .is_err()
+        );
+    }
+
+    /// A miss against a hub that could not reach a satellite must not be
+    /// reported as "no such target": an agent reading that will conclude the
+    /// pane is gone and act on it (recreate it, fail the run), when the pane
+    /// is alive on a link that is merely down.
+    #[tokio::test]
+    async fn a_miss_against_a_partial_fleet_does_not_claim_the_target_is_absent() {
+        let socket = std::path::Path::new("unused-for-non-tag-selectors");
+        let selector = selector::parse("@999").unwrap();
+
+        let complete = resolve_one(socket, &selector, &whole_fleet())
+            .await
+            .expect_err("@999 is in neither fixture");
+        assert_eq!(complete.0, "no such target");
+
+        let degraded = resolve_one(socket, &selector, &partial_fleet())
+            .await
+            .expect_err("@999 is in neither fixture");
+        assert!(
+            !degraded.0.contains("no such target"),
+            "a partial view cannot assert absence, got {:?}",
+            degraded.0
+        );
+        assert!(
+            degraded.0.contains("satellite build-box is unreachable"),
+            "the message must name what could not be seen, got {:?}",
+            degraded.0
         );
     }
 
@@ -991,7 +1057,7 @@ mod tests {
         });
         let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
 
-        let pane = resolve_one(&socket, &selector::parse("#build").unwrap(), &fixture())
+        let pane = resolve_one(&socket, &selector::parse("#build").unwrap(), &whole_fleet())
             .await
             .unwrap();
         assert_eq!(pane, TerminalId::local(100));

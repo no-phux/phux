@@ -43,9 +43,17 @@ pub(super) struct LiveAgentFeed {
 /// surfaces transport errors: a partially readable server degrades to
 /// whatever was collected.
 pub(super) async fn fetch_live_feed(socket_path: &Path) -> Option<LiveAgentFeed> {
-    let Ok(snapshot) = phux_client::state::get_state(socket_path).await else {
+    // `into_snapshot_ignoring_degradation`: this feed *overlays* live evidence
+    // onto the config-declared agent list and never claims a pane is absent —
+    // a satellite the hub could not reach simply contributes no records, which
+    // is the same outcome this function already documents for "no server" and
+    // for a pane with no `phux.agent/v1` value. Nothing downstream turns a
+    // missing record into a negative assertion, so there is no false statement
+    // to prevent here. (The audit-trail `warn!` inside still fires.)
+    let Ok(view) = phux_client::state::get_state(socket_path).await else {
         return None;
     };
+    let snapshot = view.into_snapshot_ignoring_degradation();
     let records = fetch_agent_index(socket_path, &snapshot).await;
     let asked = snapshot
         .panes

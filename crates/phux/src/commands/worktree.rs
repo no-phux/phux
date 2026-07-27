@@ -598,9 +598,14 @@ fn wait_for_session_gone(name: &str, socket: Option<&Path>) -> bool {
 fn live_session_names(socket: Option<&Path>) -> Option<Vec<String>> {
     let socket_path = socket.map_or_else(default_socket_path, Path::to_path_buf);
     let rt = cli_runtime().ok()?;
+    // `into_snapshot_ignoring_degradation`: `sessions` never aggregates across
+    // a federation (`handle_get_state_federated` drops each satellite's list
+    // — the `u32` ids would collide with the hub's), so an unreachable
+    // satellite cannot change the set of names this returns.
     let snapshot = rt
         .block_on(phux_client::state::get_state(&socket_path))
-        .ok()?;
+        .ok()?
+        .into_snapshot_ignoring_degradation();
     Some(
         snapshot
             .sessions

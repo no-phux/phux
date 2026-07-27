@@ -1,16 +1,25 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use phux_client::state::Degradation;
 use phux_core::session_list::{SessionJson, SessionListJson};
 
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, report_no_server};
+use crate::commands::{cli_runtime, partial, report_no_server};
 
 /// `phux ls` — list sessions via `GET_STATE`. Does not auto-start a
 /// server. With `json`, emits the stable [`SessionListJson`] contract
 /// (ADR-0022); otherwise the human text from [`print_sessions`].
+///
+/// **A partial listing still succeeds.** A federation hub that could not
+/// reach a satellite answers with everything else (ADR-0007; see
+/// [`partial`]), and an enumeration is true about every row it contains, so
+/// the exit status stays 0 and the incompleteness is reported alongside: on
+/// stderr for a human, in the payload's `unreachable` list for `--json`.
+/// Making a dead satellite fail the listing would take the panes on this
+/// laptop down with it.
 pub(crate) fn run_ls(json: bool, socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let rt = match cli_runtime() {
@@ -18,11 +27,14 @@ pub(crate) fn run_ls(json: bool, socket: Option<PathBuf>) -> ExitCode {
         Err(code) => return code,
     };
     match rt.block_on(phux_client::state::get_state(&socket_path)) {
-        Ok(snapshot) => {
+        Ok(view) => {
+            let (snapshot, degradation) = view.into_parts();
             if json {
-                print_sessions_json(&snapshot)
+                // Not stderr: a `--json` consumer's channel is the document.
+                print_sessions_json(&snapshot, &degradation)
             } else {
                 print_sessions(&snapshot);
+                partial::warn_partial_view("ls", &degradation);
                 ExitCode::SUCCESS
             }
         }
@@ -61,8 +73,14 @@ pub(crate) fn print_sessions(snapshot: &SessionSnapshot) {
 /// Emit the session list as the stable [`SessionListJson`] contract.
 ///
 /// Sessions are name-sorted to match [`print_sessions`], keeping the two
-/// views consistent and the JSON stable across runs.
-pub(crate) fn print_sessions_json(snapshot: &SessionSnapshot) -> ExitCode {
+/// views consistent and the JSON stable across runs. `degradation` becomes
+/// the document's `unreachable` list — always present, empty when the
+/// listing is complete, so a consumer can read completeness positively
+/// instead of inferring it from a missing key.
+pub(crate) fn print_sessions_json(
+    snapshot: &SessionSnapshot,
+    degradation: &Degradation,
+) -> ExitCode {
     let mut sessions: Vec<_> = snapshot.sessions.iter().collect();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
     let entries = sessions
@@ -78,7 +96,9 @@ pub(crate) fn print_sessions_json(snapshot: &SessionSnapshot) -> ExitCode {
         .iter()
         .map(|pane| crate::selector::format_terminal_id(&pane.id))
         .collect();
-    let list = SessionListJson::new(entries).with_terminals(terminals);
+    let list = SessionListJson::new(entries)
+        .with_terminals(terminals)
+        .with_unreachable(degradation.notices().to_vec());
     match serde_json::to_string_pretty(&list) {
         Ok(s) => {
             outln!("{s}");
