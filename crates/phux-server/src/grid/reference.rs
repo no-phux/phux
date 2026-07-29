@@ -1,6 +1,6 @@
 use libghostty_vt::{Terminal as GhosttyTerminal, render::Snapshot, terminal::Mode};
 
-use super::synthesizer::SynthesisError;
+use super::synthesizer::{MOUSE_MODES, SynthesisError};
 
 /// Per-consumer reference state for the ADR-0018 lazy state-sync diff,
 /// owned by each attached consumer (phux-ia4).
@@ -74,6 +74,15 @@ pub(crate) struct ReferenceCursorMode {
     /// per-tick reference diff (it would be missed if only 47 were
     /// tracked, since the two are independent bits).
     pub(crate) alt_screen_save: bool,
+    /// The mouse-reporting mode bits the epilogue re-emits: tracking level
+    /// (9 / 1000 / 1002 / 1003), report encoding (1005 / 1006 / 1015 /
+    /// 1016), and wheel policy (1007), in that order.
+    ///
+    /// Tracked so a program that flips mouse reporting *without* touching a
+    /// row or the cursor (`:set mouse=` in vim, a TUI enabling the mouse for
+    /// a modal) still forces an epilogue re-emit. Without it the consumer's
+    /// mirror keeps the stale tracking state and mis-routes the wheel.
+    pub(crate) mouse_modes: [bool; 9],
 }
 
 impl ReferenceCursorMode {
@@ -98,6 +107,7 @@ impl ReferenceCursorMode {
             alt_screen_legacy: terminal.mode(Mode::ALT_SCREEN_LEGACY).unwrap_or(false),
             alt_screen: terminal.mode(Mode::ALT_SCREEN).unwrap_or(false),
             alt_screen_save: terminal.mode(Mode::ALT_SCREEN_SAVE).unwrap_or(false),
+            mouse_modes: MOUSE_MODES.map(|(m, _)| terminal.mode(m).unwrap_or(false)),
         })
     }
 

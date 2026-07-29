@@ -1371,8 +1371,61 @@ fn emit_epilogue(
     // a `?1049h` after it would clear what we just painted.
     emit_mode(out, terminal, Mode::BRACKETED_PASTE, b"2004")?;
     emit_mode(out, terminal, Mode::FOCUS_EVENT, b"1004")?;
+    emit_mouse_modes(out, terminal)?;
     Ok(())
 }
+
+/// Emit the mouse-reporting DEC modes: tracking level (9 / 1000 / 1002 /
+/// 1003), report encoding (1005 / 1006 / 1015 / 1016), and the wheel policy
+/// bit (1007, xterm "alternate scroll").
+///
+/// These are screen-independent, so they ride the epilogue next to bracketed
+/// paste and focus-event reporting.
+///
+/// Load-bearing, not cosmetic (phux-mlo5). The client keeps
+/// its own libghostty mirror and gates wheel handling on it: a pane whose
+/// program asked for the mouse gets the wheel forwarded as `INPUT_MOUSE`,
+/// and a pane that did not gets the local scrollback viewport scroll — or,
+/// on the alt screen with 1007 set, wheel-to-arrow-key translation. A
+/// snapshot that omits these bits leaves the mirror believing NO program
+/// ever wanted the mouse, so every attach and every resync silently
+/// downgraded scrolling in mouse-tracking TUIs (opencode, Claude Code,
+/// htop, vim) to arrow keys — which those apps route to their editor/list
+/// cursor rather than scrolling. The mode bytes are diffed flat against the
+/// mirror, so they re-emit unconditionally on every non-empty tick like the
+/// rest of the epilogue's mode bits.
+fn emit_mouse_modes(
+    out: &mut Vec<u8>,
+    terminal: &GhosttyTerminal<'_, '_>,
+) -> Result<(), SynthesisError> {
+    for (mode, code) in MOUSE_MODES {
+        emit_mode(out, terminal, mode, code)?;
+    }
+    Ok(())
+}
+
+/// The mouse-reporting DEC modes the epilogue replays, paired with their
+/// numeric codes.
+///
+/// [`ReferenceCursorMode`] captures this same list (by index) so the diff
+/// path re-emits the epilogue when any of them flips. Keep the two in step:
+/// the array length is the reference field's width.
+pub(crate) const MOUSE_MODES: [(Mode, &[u8]); 9] = [
+    // Tracking level: which events the program asked to receive.
+    (Mode::X10_MOUSE, b"9"),
+    (Mode::NORMAL_MOUSE, b"1000"),
+    (Mode::BUTTON_MOUSE, b"1002"),
+    (Mode::ANY_MOUSE, b"1003"),
+    // Report encoding: how those events are framed on the way back in.
+    (Mode::UTF8_MOUSE, b"1005"),
+    (Mode::SGR_MOUSE, b"1006"),
+    (Mode::URXVT_MOUSE, b"1015"),
+    (Mode::SGR_PIXELS_MOUSE, b"1016"),
+    // Wheel policy. libghostty defaults 1007 ON, so the interesting case is
+    // an app that opted OUT (`?1007l`) and must not receive synthesized
+    // arrow keys after a reattach.
+    (Mode::ALT_SCROLL, b"1007"),
+];
 
 /// Emit the alt-screen DEC mode toggles (47 / 1047 / 1049) that select
 /// which screen buffer subsequent content paints into.
@@ -2248,6 +2301,91 @@ mod tests {
         );
     }
 
+    /// The mouse-tracking DEC modes must survive the snapshot boundary.
+    ///
+    /// Regression for phux-mlo5 ("can't scroll in a TUI after attaching"): the
+    /// epilogue replayed bracketed paste, focus events, and the alt-screen
+    /// bits but never the mouse modes. The client keeps its own libghostty
+    /// mirror and gates the wheel on it — a mirror seeded from a snapshot
+    /// that omits `?1000h`/`?1002h`/`?1003h` believes no program wants the
+    /// mouse, so it swallowed the wheel into wheel-to-arrow translation
+    /// instead of forwarding `INPUT_MOUSE`. Asserted through a REPLAY into
+    /// a fresh terminal, because it is the mirror's resulting mode state —
+    /// not the byte spelling — that the client actually reads.
+    #[test]
+    fn snapshot_reestablishes_mouse_tracking_modes() {
+        // The DECSET set opencode / Claude Code were probed to use.
+        let mut t = fresh(20, 4);
+        t.vt_write(b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+        t.vt_write(b"tui body");
+
+        let snap = synthesize(&t).expect("synth");
+        let mut mirror = fresh(snap.cols, snap.rows);
+        mirror.vt_write(&snap.bytes);
+
+        for (mode, code) in [
+            (Mode::NORMAL_MOUSE, "1000"),
+            (Mode::BUTTON_MOUSE, "1002"),
+            (Mode::ANY_MOUSE, "1003"),
+            (Mode::SGR_MOUSE, "1006"),
+        ] {
+            assert!(
+                mirror.mode(mode).expect("mirror mode"),
+                "mirror must have ?{code}h after replaying the snapshot",
+            );
+        }
+    }
+
+    /// The inverse: a pane whose program never asked for the mouse must
+    /// leave the mirror with tracking OFF, so the wheel keeps driving the
+    /// local scrollback viewport. An unconditional `?1000h` in the epilogue
+    /// would break scrollback in every plain shell pane.
+    #[test]
+    fn snapshot_leaves_mouse_tracking_off_for_a_plain_pane() {
+        let mut t = fresh(20, 4);
+        t.vt_write(b"plain shell");
+
+        let snap = synthesize(&t).expect("synth");
+        let mut mirror = fresh(snap.cols, snap.rows);
+        mirror.vt_write(&snap.bytes);
+
+        for (mode, code) in [
+            (Mode::X10_MOUSE, "9"),
+            (Mode::NORMAL_MOUSE, "1000"),
+            (Mode::BUTTON_MOUSE, "1002"),
+            (Mode::ANY_MOUSE, "1003"),
+        ] {
+            assert!(
+                !mirror.mode(mode).expect("mirror mode"),
+                "?{code} must stay off for a pane that never enabled the mouse",
+            );
+        }
+    }
+
+    /// DEC 1007 (xterm alternate scroll) is the bit that decides whether an
+    /// alt-screen pane WITHOUT mouse tracking gets wheel-to-arrow-key
+    /// translation. libghostty defaults it on, so the load-bearing case is
+    /// an app that opted OUT: `?1007l` must survive the snapshot, or a
+    /// reattach silently resurrects arrow keys the app asked not to get.
+    #[test]
+    fn snapshot_preserves_an_alt_scroll_opt_out() {
+        let mut t = fresh(20, 4);
+        t.vt_write(b"\x1b[?1049h\x1b[?1007l");
+        assert!(
+            !t.mode(Mode::ALT_SCROLL).expect("mode 1007"),
+            "?1007l should clear ALT_SCROLL",
+        );
+
+        let snap = synthesize(&t).expect("synth");
+        let mut mirror = fresh(snap.cols, snap.rows);
+        mirror.vt_write(&snap.bytes);
+
+        assert!(
+            !mirror.mode(Mode::ALT_SCROLL).expect("mirror mode 1007"),
+            "the mirror must inherit the ?1007l opt-out",
+        );
+    }
+
     /// phux-99n: the legacy 47 alt-screen mode still round-trips. A
     /// program that uses bare `?47h` (rare, but valid) must have the
     /// snapshot re-emit `?47h`, not silently drop it.
@@ -2320,6 +2458,36 @@ mod tests {
         assert!(
             bytes.contains("?1049l"),
             "the diff epilogue must re-emit ?1049l on leaving the alt screen; bytes={bytes:?}",
+        );
+    }
+
+    /// A program can enable mouse tracking without touching a single row
+    /// or moving the cursor (`:set mouse=a` in vim, a TUI arming the mouse
+    /// for a modal). `ReferenceCursorMode` therefore tracks the mouse mode
+    /// bits: without them the diff is empty, the consumer's mirror keeps
+    /// the stale "nobody wants the mouse" state, and the wheel stays
+    /// mis-routed until something else happens to dirty a row.
+    #[test]
+    fn reference_diff_trips_on_a_bare_mouse_mode_toggle() {
+        let mut t = fresh(20, 4);
+        t.vt_write(b"steady body");
+
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
+        let mut reference = ConsumerReference::new();
+        synth
+            .prime_reference(&t, &mut reference)
+            .expect("prime_reference");
+
+        // Mode-only change: no glyphs, no cursor movement.
+        t.vt_write(b"\x1b[?1000h\x1b[?1006h");
+
+        let diff = synth
+            .synthesize_against_reference(&t, &mut reference)
+            .expect("diff");
+        let bytes = String::from_utf8_lossy(&diff.bytes);
+        assert!(
+            bytes.contains("?1000h") && bytes.contains("?1006h"),
+            "a bare mouse-mode toggle must re-emit the epilogue; bytes={bytes:?}",
         );
     }
 
