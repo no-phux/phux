@@ -79,6 +79,49 @@ impl CliAdapter {
         })
     }
 
+    /// Like [`Self::run_json`], but a nonzero child exit is treated as data
+    /// rather than an adapter failure.
+    ///
+    /// `phux run --json` prints the whole `RunResult` and *then* mirrors the
+    /// command's exit code (`crates/phux/src/commands/run.rs`), so for that
+    /// one verb a nonzero status is the reported result, not a failure to
+    /// report one. Every other verb's nonzero exit is a genuine failure,
+    /// which is why this is opt-in rather than the default in [`Self::run`].
+    /// [`Self::run_allowing`] cannot cover it either: the mirrored codes are
+    /// the *command's*, so no allow-list can name them up front.
+    ///
+    /// A nonzero exit carrying no parseable document still surfaces the
+    /// stderr prose, so a real failure (no server, refused target, `run`'s
+    /// own timeout) reads exactly as it does through [`Self::run`].
+    pub(crate) async fn run_json_mirrored_exit<I, S>(
+        &self,
+        args: I,
+        timeout: Duration,
+    ) -> Result<Value, ToolError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let (mut child, stdout, stderr) = self.spawn_capturing(args)?;
+        let (status, stdout, stderr) = drain_within(&mut child, stdout, stderr, timeout).await?;
+        let output = CliOutput {
+            stdout: decode_bounded(&stdout, "stdout", STDOUT_LIMIT)?,
+            stderr: decode_bounded(&stderr, "stderr", STDERR_LIMIT)?,
+        };
+        serde_json::from_str(&output.stdout).map_err(|err| {
+            // A document parsed: the exit code is data. Nothing parsed: fall
+            // back to the failure `run` would have reported.
+            check_exit(status, &output.stderr, &[])
+                .err()
+                .unwrap_or_else(|| {
+                    ToolError::new(format!(
+                        "phux returned malformed JSON: {err}; stdout={:?}",
+                        output.stdout
+                    ))
+                })
+        })
+    }
+
     pub(crate) async fn run<I, S>(&self, args: I, timeout: Duration) -> Result<CliOutput, ToolError>
     where
         I: IntoIterator<Item = S>,
@@ -389,6 +432,49 @@ mod tests {
                 .is_err(),
             "an un-allowed non-zero exit is still a failure",
         );
+    }
+
+    /// `phux run` prints its `RunResult` and *then* mirrors the command's
+    /// exit code, so a failing command is a successful tool call carrying a
+    /// nonzero `exit_code`. The adapter must keep that document instead of
+    /// replacing it with stderr. Regression for phux-8gv.
+    #[tokio::test]
+    async fn mirrored_exit_keeps_the_document_a_failing_command_printed() {
+        // `sh` only to synthesize "print a document, then exit nonzero" in a
+        // single process. The adapter still execs argv directly; nothing in
+        // the production path gains a shell.
+        let adapter = CliAdapter::new("sh");
+        let argv = [
+            "-c",
+            r#"printf '{"schema_version":1,"exit_code":3}'; exit 3"#,
+        ];
+
+        let value = adapter
+            .run_json_mirrored_exit(argv, DEFAULT_CALL_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(value, json!({ "schema_version": 1, "exit_code": 3 }));
+
+        // The default path is unchanged: a nonzero exit is still fatal there,
+        // which is what every other verb relies on.
+        assert!(adapter.run(argv, DEFAULT_CALL_TIMEOUT).await.is_err());
+    }
+
+    /// A nonzero exit with nothing parseable on stdout is a genuine failure
+    /// (no server, refused target, `run`'s own timeout). It must keep
+    /// reporting the stderr prose rather than degrading into a confusing
+    /// "malformed JSON" complaint.
+    #[tokio::test]
+    async fn mirrored_exit_still_reports_stderr_when_there_is_no_document() {
+        let adapter = CliAdapter::new("sh");
+        let err = adapter
+            .run_json_mirrored_exit(
+                ["-c", "echo 'phux: no server at /tmp/x' >&2; exit 1"],
+                DEFAULT_CALL_TIMEOUT,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, "phux: no server at /tmp/x");
     }
 
     #[test]

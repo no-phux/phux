@@ -419,8 +419,11 @@ async fn phux_run(args: &Value) -> Result<Value, ToolError> {
     ];
     crate::cli_adapter::push_socket(&mut argv, args)?;
     argv.extend([target, command]);
+    // `phux run` mirrors the command's exit code, so a failing command is a
+    // successful tool call reporting a nonzero `exit_code` — the case an agent
+    // most needs the document for. Anything else would hand back only stderr.
     crate::cli_adapter::CliAdapter::discover()
-        .run_json(argv, Duration::from_secs(timeout_secs.saturating_add(5)))
+        .run_json_mirrored_exit(argv, Duration::from_secs(timeout_secs.saturating_add(5)))
         .await
 }
 
