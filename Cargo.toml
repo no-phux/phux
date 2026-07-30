@@ -211,7 +211,24 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 [profile.release]
 lto = "fat"
 codegen-units = 1
-strip = "symbols"
+# Keep the symbol table in the shipped binary (phux-rah). `strip = "symbols"`
+# discarded it, so every backtrace the panic hook logs
+# (`crates/phux-server/src/telemetry.rs`) resolved to bare addresses — while
+# `docs/operations.md` advertised that hook as capturing task/actor panics.
+# `panic = "abort"` means that crash record is all an operator ever gets, so it
+# has to be readable.
+#
+# `debuginfo` rather than `none`. Both measured from real release builds of
+# `-p phux` on this workspace:
+#   strip = "debuginfo"                          17M, 19761 symbols
+#   strip = "none", debug = "line-tables-only"   80M, 28391 symbols
+# Naming every frame is what makes a trace readable; adding file:line to those
+# frames costs another 63M, which is not worth it in a shipped artifact. The
+# panic hook already logs `info.location()`, so the panic *site* is never in
+# doubt — what the backtrace contributes is the call chain leading to it, and
+# named frames are enough to read one. Reach for `[profile.profiling]`
+# (`debug = 1`, `strip = "none"`) when line-accurate frames are actually needed.
+strip = "debuginfo"
 panic = "abort"
 opt-level = 3
 

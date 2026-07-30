@@ -614,8 +614,57 @@ pub fn install_server_panic_hook() {
             panic.backtrace = %backtrace,
             "server panic",
         );
+        // The event above went into the non-blocking appender's queue, and
+        // under `panic = "abort"` nothing will ever drain it (phux-rah). Write
+        // the same facts synchronously before we leave the hook.
+        append_panic_record_synchronously(&location, &info.to_string(), &backtrace);
         previous(info);
     }));
+}
+
+/// Append a panic record straight to the `PHUX_LOG` sink, bypassing the
+/// non-blocking appender.
+///
+/// The server's file layer is a `tracing_appender::non_blocking` writer whose
+/// [`WorkerGuard`] flushes on Drop. The release profile is `panic = "abort"`
+/// (`Cargo.toml`), so there is no unwind, that Drop never runs, and the record
+/// the panic hook just queued dies in the worker's buffer: the crash that most
+/// needs a log entry is the one that produces none. This is the same reasoning
+/// that makes [`init_client`] use a synchronous writer, applied to the one code
+/// path that must not depend on a background thread outliving it.
+///
+/// Only writes when `PHUX_LOG` is set, since that is the only case where the
+/// queued record had a file to land in. Under unwind (a dev build) the async
+/// record may also be flushed, so the panic can appear twice; a duplicate is
+/// strictly better than silence.
+///
+/// Every failure is swallowed deliberately — a panic raised inside the panic
+/// hook aborts the process immediately, with no record at all.
+fn append_panic_record_synchronously(
+    location: &str,
+    message: &str,
+    backtrace: &std::backtrace::Backtrace,
+) {
+    let Some(path) = std::env::var_os(ENV_LOG_PATH).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // 0o600, matching `harden_log_sink` (ADR-0028): this file carries the
+        // same sensitive operational detail as the rest of the log.
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(PathBuf::from(path)) {
+        use std::io::Write as _;
+        let _ = writeln!(
+            file,
+            "server panic (synchronous crash record) location={location} message={message} backtrace={backtrace}"
+        );
+        let _ = file.flush();
+    }
 }
 
 #[cfg(test)]
@@ -701,6 +750,59 @@ mod tests {
         );
         assert!(name.contains(&std::process::id().to_string()), "got {name}");
         assert!(path.to_string_lossy().contains("phux"), "got {path:?}");
+    }
+
+    /// The panic hook's synchronous crash record lands on disk with no
+    /// appender, no guard, and no flush-on-Drop — the whole point being that
+    /// `panic = "abort"` never runs Drop (phux-rah). Also pins the `0o600`
+    /// mode required by ADR-0028, since this path opens the sink itself
+    /// rather than going through `harden_log_sink`.
+    #[test]
+    fn panic_record_is_written_synchronously_at_owner_only_mode() {
+        // SAFETY-NOTE: env mutation is process-global; this test restores the
+        // var and the module's tests run serially.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("panic-sync.log");
+        let prev = std::env::var_os(ENV_LOG_PATH);
+        unsafe { std::env::set_var(ENV_LOG_PATH, &path) };
+
+        append_panic_record_synchronously(
+            "src/thing.rs:42:7",
+            "panicked at 'kaboom'",
+            &std::backtrace::Backtrace::disabled(),
+        );
+
+        match prev {
+            Some(value) => unsafe { std::env::set_var(ENV_LOG_PATH, value) },
+            None => unsafe { std::env::remove_var(ENV_LOG_PATH) },
+        }
+
+        let contents = std::fs::read_to_string(&path).expect("crash record must exist");
+        assert!(contents.contains("src/thing.rs:42:7"), "got: {contents}");
+        assert!(contents.contains("kaboom"), "got: {contents}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "got {:o}", mode & 0o777);
+        }
+    }
+
+    /// With `PHUX_LOG` unset there is no file sink, so there is no queued
+    /// record to rescue and the hook must not invent a file.
+    #[test]
+    fn panic_record_is_skipped_when_no_log_sink_is_configured() {
+        let prev = std::env::var_os(ENV_LOG_PATH);
+        // SAFETY-NOTE: see the sibling test.
+        unsafe { std::env::remove_var(ENV_LOG_PATH) };
+        append_panic_record_synchronously("x", "y", &std::backtrace::Backtrace::disabled());
+        if let Some(value) = prev {
+            unsafe { std::env::set_var(ENV_LOG_PATH, value) };
+        }
     }
 
     /// The file writer creates the parent directory and the sink file,
