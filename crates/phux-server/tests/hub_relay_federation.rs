@@ -60,6 +60,8 @@ use std::time::{Duration, Instant};
 use common::{encode_frame, recv_typed, send_frame, wait_for_socket};
 use futures_util::{SinkExt, StreamExt};
 use phux_config::SatelliteConfigEntry;
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::ids::{GroupId, SatelliteHost, TerminalId};
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError, SpawnResult,
@@ -196,6 +198,18 @@ async fn discover_satellite_pane(ws_port: u16) -> u32 {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
+    ws.send(Message::Binary(
+        encode_frame(&FrameKind::Hello {
+            client_name: "hub-relay-federation-test".to_owned(),
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            client_caps: ClientCapabilities::default(),
+        })
+        .to_vec(),
+    ))
+    .await
+    .unwrap();
     let get_state = FrameKind::Command {
         request_id: 900,
         command: Command::GetState {

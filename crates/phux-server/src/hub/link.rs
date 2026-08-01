@@ -77,7 +77,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use phux_dial::{CertTrust, QuicDial, WsDial, WsTarget};
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::ids::SatelliteHost;
+use phux_protocol::wire::frame::FrameKind;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -874,6 +877,43 @@ async fn send_bounded<C: LinkConn>(conn: &mut C, frame: &[u8]) -> Result<(), Str
         })
 }
 
+/// Complete the mandatory network-transport version handshake before the
+/// relay session can send commands.
+async fn negotiate_link<C: LinkConn>(conn: &mut C) -> Result<(), String> {
+    let mut encoded = bytes::BytesMut::new();
+    FrameKind::Hello {
+        client_name: "phux-hub".to_owned(),
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        client_caps: ClientCapabilities::default(),
+    }
+    .encode(&mut encoded);
+    send_bounded(conn, &encoded).await?;
+
+    let response = tokio::time::timeout(LINK_SEND_TIMEOUT, conn.recv_frame())
+        .await
+        .map_err(|_elapsed| {
+            format!(
+                "satellite did not answer HELLO within {}s",
+                LINK_SEND_TIMEOUT.as_secs()
+            )
+        })??
+        .ok_or_else(|| "satellite closed before HELLO_OK".to_owned())?;
+    let (frame, rest) = FrameKind::decode(&response)
+        .map_err(|error| format!("decode satellite HELLO response: {error:?}"))?;
+    if !rest.is_empty() {
+        return Err("satellite HELLO response contained trailing bytes".to_owned());
+    }
+    match frame {
+        FrameKind::HelloOk { .. } => Ok(()),
+        FrameKind::Error { code, message, .. } => {
+            Err(format!("satellite rejected HELLO: {code:?}: {message}"))
+        }
+        other => Err(format!("expected HELLO_OK from satellite, got {other:?}")),
+    }
+}
+
 /// Spawn one [`run_link`] supervisor per hub-table entry onto the current
 /// `LocalSet`, all children of `cancel`, registering each satellite's
 /// [`super::relay::RelayHandle`] in `relays`.
@@ -986,7 +1026,7 @@ impl LinkTransport for NetLinkTransport {
     type Conn = NetLinkConn;
 
     async fn connect(&self, spec: &DialSpec, token: Option<String>) -> Result<NetLinkConn, String> {
-        match spec {
+        let result: Result<NetLinkConn, String> = match spec {
             DialSpec::Quic {
                 host, port, trust, ..
             } => {
@@ -1074,7 +1114,16 @@ impl LinkTransport for NetLinkTransport {
                     buf: bytes::BytesMut::with_capacity(8192),
                 })
             }
+        };
+        let mut conn = result?;
+
+        // Network listeners require version negotiation before any stateful
+        // frame. SSH terminates on the satellite's local UDS compatibility
+        // path, while QUIC and WebSocket must negotiate before the link is up.
+        if !matches!(spec, DialSpec::Ssh { .. }) {
+            negotiate_link(&mut conn).await?;
         }
+        Ok(conn)
     }
 }
 
@@ -2154,9 +2203,35 @@ mod tests {
                 let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
                 let server = tokio::task::spawn_local(async move {
                     let (tcp, _) = listener.accept().await.expect("accept");
-                    let ws = tokio_tungstenite::accept_async(tcp)
+                    let mut ws = tokio_tungstenite::accept_async(tcp)
                         .await
                         .expect("ws handshake");
+                    let hello = futures_util::StreamExt::next(&mut ws)
+                        .await
+                        .expect("HELLO message")
+                        .expect("HELLO read");
+                    let tokio_tungstenite::tungstenite::Message::Binary(hello) = hello else {
+                        panic!("expected binary HELLO");
+                    };
+                    assert!(matches!(
+                        FrameKind::decode(&hello).expect("decode HELLO").0,
+                        FrameKind::Hello { .. }
+                    ));
+                    let mut hello_ok = bytes::BytesMut::new();
+                    FrameKind::HelloOk {
+                        protocol_major: PROTOCOL_VERSION.major,
+                        protocol_minor: PROTOCOL_VERSION.minor,
+                        protocol_patch: PROTOCOL_VERSION.patch,
+                        server_caps: phux_protocol::caps::ServerCapabilities::default(),
+                        server_id: vec![0; 16],
+                    }
+                    .encode(&mut hello_ok);
+                    futures_util::SinkExt::send(
+                        &mut ws,
+                        tokio_tungstenite::tungstenite::Message::Binary(hello_ok.to_vec()),
+                    )
+                    .await
+                    .expect("send HELLO_OK");
                     // Hold the connection until the test asks us to drop it,
                     // then close listener + connection so the redial fails.
                     let _ = drop_rx.await;
