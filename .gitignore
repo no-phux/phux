@@ -26,3 +26,6 @@ dhat-heap.json
 
 # `just scaffold-config` writes a throwaway config here for local testing.
 .phux-xdg/
+
+# Agent subagent transcripts and artifacts — large, machine-generated, per-run.
+.pi-subagents/
