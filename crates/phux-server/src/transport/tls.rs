@@ -43,6 +43,18 @@ pub enum TlsError {
     /// Generating the self-signed certificate failed.
     #[error("certificate generation: {0}")]
     Rcgen(#[from] rcgen::Error),
+    /// Exactly one of the persisted cert/key pair exists. Regenerating
+    /// would silently rotate the fingerprint pinned on every paired
+    /// device, so the operator must delete the survivor explicitly.
+    #[error(
+        "partial TLS pair: {present} exists but {missing} is missing — delete {present} to regenerate (this rotates the pinned fingerprint and breaks existing pins)"
+    )]
+    PartialTlsPair {
+        /// Path of the file that still exists.
+        present: String,
+        /// Path of the file that is missing.
+        missing: String,
+    },
 }
 
 /// Default persisted path for the auto-generated remote-consumer certificate:
@@ -71,8 +83,24 @@ pub fn default_key_path() -> PathBuf {
 /// fingerprint-pinning consumer does not rely on hostname matching, but valid
 /// SANs keep a conventionally-validating client working on loopback.
 pub fn ensure_self_signed(cert_path: &Path, key_path: &Path) -> Result<(), TlsError> {
-    if cert_path.exists() && key_path.exists() {
-        return Ok(());
+    match (cert_path.exists(), key_path.exists()) {
+        (true, true) => return Ok(()),
+        (false, false) => {}
+        // One survivor: regenerating would silently rotate the fingerprint
+        // pinned on every paired device. Refuse and make the operator
+        // delete the survivor deliberately.
+        (true, false) => {
+            return Err(TlsError::PartialTlsPair {
+                present: cert_path.display().to_string(),
+                missing: key_path.display().to_string(),
+            });
+        }
+        (false, true) => {
+            return Err(TlsError::PartialTlsPair {
+                present: key_path.display().to_string(),
+                missing: cert_path.display().to_string(),
+            });
+        }
     }
     let sans = vec![
         "localhost".to_owned(),
@@ -214,6 +242,32 @@ fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn ensure_self_signed_refuses_a_partial_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("remote-cert.pem");
+        let key = dir.path().join("remote-key.pem");
+        ensure_self_signed(&cert, &key).unwrap();
+        let fp = cert_fingerprint(&cert).unwrap();
+
+        // Key lost, cert survives: must refuse, not silently rotate the
+        // fingerprint every paired device pins.
+        fs::remove_file(&key).unwrap();
+        let err = ensure_self_signed(&cert, &key).unwrap_err();
+        assert!(matches!(err, TlsError::PartialTlsPair { .. }), "{err}");
+        assert_eq!(
+            cert_fingerprint(&cert).unwrap(),
+            fp,
+            "cert must be untouched"
+        );
+
+        // Cert lost, key survives: same refusal.
+        fs::remove_file(&cert).unwrap();
+        fs::write(&key, "not-a-real-key").unwrap();
+        let err = ensure_self_signed(&cert, &key).unwrap_err();
+        assert!(matches!(err, TlsError::PartialTlsPair { .. }), "{err}");
+    }
 
     #[test]
     fn ensure_self_signed_provisions_then_is_idempotent_and_builds() {

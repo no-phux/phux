@@ -91,6 +91,19 @@ pub enum RelayError {
     #[error("no certificates in {0}")]
     NoCerts(String),
 
+    /// Exactly one of the persisted cert/key pair exists. Regenerating
+    /// would silently rotate the fingerprint every connector and consumer
+    /// pins, so the operator must delete the survivor explicitly.
+    #[error(
+        "partial TLS pair: {present} exists but {missing} is missing — delete {present} to regenerate (this rotates the pinned fingerprint and breaks existing pins)"
+    )]
+    PartialTlsPair {
+        /// Path of the file that still exists.
+        present: String,
+        /// Path of the file that is missing.
+        missing: String,
+    },
+
     /// The OS random source failed while minting a token.
     #[error("os random source unavailable: {0}")]
     Random(#[from] getrandom::Error),

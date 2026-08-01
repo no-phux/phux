@@ -166,7 +166,15 @@ pub(crate) fn run_enroll(
     // registry entry. Useful when the operator does not want a listener at
     // all, and as an escape hatch when pairing misbehaves.
     if ssh_only {
-        return finish(&name, &format!("ssh://{ssh_host}"), None, None, session);
+        let endpoint = format!("ssh://{ssh_host}");
+        let new = match NewRemote::new(&name, &endpoint, None, None, session) {
+            Ok(new) => new,
+            Err(err) => {
+                eprintln!("phux enroll: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+        return finish(&new, &name, &endpoint);
     }
 
     outln!("Enrolling {ssh_host}...");
@@ -221,39 +229,42 @@ pub(crate) fn run_enroll(
     let token_file = if endpoint.starts_with("ssh://") {
         None
     } else {
-        let path = token_path(&phux_server::telemetry::state_dir(), &name);
-        if let Err(err) = write_token(&path, &report.token) {
-            eprintln!("phux enroll: {err}");
-            return ExitCode::FAILURE;
-        }
-        Some(path)
+        Some(token_path(&phux_server::telemetry::state_dir(), &name))
     };
 
-    finish(
+    // Validate the whole registry entry BEFORE the token hits disk: a
+    // rejected name (`../x` would escape <state>/remotes via token_path's
+    // join) or a quic endpoint missing its fingerprint must not leave an
+    // orphaned bearer token behind. `validate_token_file` accepts a
+    // not-yet-written path by design.
+    let new = match NewRemote::new(
         &name,
         &endpoint,
         token_file.as_deref(),
         report.cert_fingerprint.as_deref(),
         session,
-    )
-}
-
-/// Register the entry and report what an operator can now type.
-fn finish(
-    name: &str,
-    endpoint: &str,
-    token_file: Option<&Path>,
-    cert_fingerprint: Option<&str>,
-    session: Option<&str>,
-) -> ExitCode {
-    let new = match NewRemote::new(name, endpoint, token_file, cert_fingerprint, session) {
+    ) {
         Ok(new) => new,
         Err(err) => {
             eprintln!("phux enroll: {err}");
             return ExitCode::FAILURE;
         }
     };
-    if let Err(err) = remote::add_or_update(&new) {
+
+    if let Some(path) = &token_file
+        && let Err(err) = write_token(path, &report.token)
+    {
+        eprintln!("phux enroll: {err}");
+        return ExitCode::FAILURE;
+    }
+
+    finish(&new, &name, &endpoint)
+}
+
+/// Register the (already validated) entry and report what an operator can
+/// now type.
+fn finish(new: &NewRemote, name: &str, endpoint: &str) -> ExitCode {
+    if let Err(err) = remote::add_or_update(new) {
         eprintln!("phux enroll: {err}");
         return ExitCode::FAILURE;
     }

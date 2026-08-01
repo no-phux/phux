@@ -782,6 +782,23 @@ where
     // forward-compat) still attaches with sensible bytes-on-wire behavior.
     let mut negotiated_client_caps = ClientCapabilities::default();
 
+    // SPEC §6.1: every connection opens with HELLO. On the local UDS
+    // transport (and same-process loopback) a missing HELLO stays
+    // tolerated — the same-uid trust boundary holds and the CLI's
+    // control commands rely on it. On network-reachable transports an
+    // unversioned peer must not reach ATTACH/COMMAND at all: skipping
+    // HELLO would otherwise bypass version negotiation entirely.
+    let requires_hello = state
+        .with(|s| s.peer_identity(client_id).map(|peer| peer.transport))
+        .is_some_and(|transport| {
+            !matches!(
+                transport,
+                phux_protocol::policy::TransportType::UnixSocket
+                    | phux_protocol::policy::TransportType::Localhost
+            )
+        });
+    let mut hello_seen = false;
+
     loop {
         // Pull the next complete frame from the transport — length-prefixed on
         // UDS, one binary message on WebSocket (see `transport.rs`). EOF ends
@@ -813,6 +830,31 @@ where
                 return Ok(());
             }
         };
+
+        // PING is exempt: a stateless, version-insensitive liveness probe
+        // (the connector's consumer health check is exactly that), and the
+        // spec's close-before-processing clause targets "ATTACH or other
+        // stateful frames".
+        if requires_hello
+            && !hello_seen
+            && !matches!(frame, FrameKind::Hello { .. } | FrameKind::Ping { .. })
+        {
+            warn!(
+                ?client_id,
+                "frame before HELLO on network transport; closing"
+            );
+            let _ = out_tx
+                .send(Outbound::Frame(FrameKind::Error {
+                    request_id: None,
+                    code: ErrorCode::VersionIncompatible,
+                    message: "HELLO required before any other frame on this transport".to_owned(),
+                }))
+                .await;
+            // Same flush-then-close dance as the version-mismatch arm.
+            drop(out_tx);
+            let _ = sibling_tasks.join_next().await;
+            return Ok(());
+        }
 
         match frame {
             FrameKind::Hello {
@@ -929,6 +971,7 @@ where
                 if out_tx.send(Outbound::Frame(hello_ok)).await.is_err() {
                     trace!(?client_id, "HELLO_OK send dropped: writer gone");
                 }
+                hello_seen = true;
             }
             FrameKind::Ping { nonce } => {
                 // SPEC §7.4: echo nonce in PONG.

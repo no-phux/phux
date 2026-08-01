@@ -55,8 +55,24 @@ pub fn default_relay_key_path() -> PathBuf {
 /// (`0o600`). SANs cover loopback names — irrelevant to fingerprint
 /// pinning, but they keep a conventionally-validating client working.
 pub fn ensure_self_signed(cert_path: &Path, key_path: &Path) -> Result<(), RelayError> {
-    if cert_path.exists() && key_path.exists() {
-        return Ok(());
+    match (cert_path.exists(), key_path.exists()) {
+        (true, true) => return Ok(()),
+        (false, false) => {}
+        // One survivor: regenerating would silently rotate the pinned
+        // fingerprint out from under every enrolled connector/consumer.
+        // Refuse and make the operator delete the survivor deliberately.
+        (true, false) => {
+            return Err(RelayError::PartialTlsPair {
+                present: cert_path.display().to_string(),
+                missing: key_path.display().to_string(),
+            });
+        }
+        (false, true) => {
+            return Err(RelayError::PartialTlsPair {
+                present: key_path.display().to_string(),
+                missing: cert_path.display().to_string(),
+            });
+        }
     }
     let sans = vec![
         "localhost".to_owned(),
@@ -211,6 +227,26 @@ fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, RelayError> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn ensure_self_signed_refuses_a_partial_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("relay-cert.pem");
+        let key = dir.path().join("relay-key.pem");
+        ensure_self_signed(&cert, &key).unwrap();
+        let fp = cert_fingerprint(&cert).unwrap();
+
+        // Key lost, cert survives: must refuse, not silently rotate the
+        // fingerprint every connector and consumer pins.
+        fs::remove_file(&key).unwrap();
+        let err = ensure_self_signed(&cert, &key).unwrap_err();
+        assert!(matches!(err, RelayError::PartialTlsPair { .. }), "{err}");
+        assert_eq!(
+            cert_fingerprint(&cert).unwrap(),
+            fp,
+            "cert must be untouched"
+        );
+    }
 
     fn routes(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|&n| n.to_owned()).collect()

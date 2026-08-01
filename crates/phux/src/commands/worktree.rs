@@ -417,6 +417,18 @@ fn run_remove(target: &str, force: bool, repo: &Path, socket: Option<&Path>) -> 
         );
     }
 
+    // git refuses these later no matter what — refuse them FIRST, before the
+    // session kill below, so a doomed removal never destroys the session.
+    if entry.is_main {
+        return fail("refusing to remove the main working tree — git will not remove it either");
+    }
+    if entry.locked {
+        return fail(&format!(
+            "{} is locked — run `git worktree unlock` first (the session was left running)",
+            entry.path.display()
+        ));
+    }
+
     // Check cleanliness BEFORE killing anything. git makes the same refusal
     // later, but by then the session is already gone — and a command that
     // refuses to do its job must not have destroyed something on the way to

@@ -298,6 +298,13 @@ inner=false
 if [ "${{1:-}}" = "--phux-inner" ]; then
   inner=true
   shift
+  # First arg after the flag is the launch sentinel: stamping it tells the
+  # outer wrapper the phux session really started, so a later nonzero exit
+  # must not be treated as a launch failure.
+  if [ "$#" -ge 1 ]; then
+    printf started > "$1" 2>/dev/null || true
+    shift
+  fi
 fi
 
 passthrough=false
@@ -326,8 +333,24 @@ if [ "$inner" = true ] || [ -n "${{PHUX_TERMINAL_ID:-}}" ]; then
 fi
 
 cwd=$(pwd -P)
-"$phux" new -c "$cwd" -- "$shim" --phux-inner "$@" && exit 0
+# The sentinel distinguishes "phux never launched the session" (safe to run
+# Claude directly) from "the session started and later died" — where a
+# silent relaunch would re-run the original argv (-c/--resume) in a fresh
+# unhooked Claude without the user noticing. /dev/null fallback: stamping
+# it is a no-op, so a broken mktemp degrades to the old always-fallback.
+marker=$(mktemp 2>/dev/null) || marker=/dev/null
+"$phux" new -c "$cwd" -- "$shim" --phux-inner "$marker" "$@" && {{
+  [ "$marker" = /dev/null ] || rm -f "$marker"
+  exit 0
+}}
 status=$?
+started=false
+[ -s "$marker" ] && started=true
+[ "$marker" = /dev/null ] || rm -f "$marker"
+if [ "$started" = true ]; then
+  printf 'claude-in-phux: phux session ended abnormally (exit %s); not relaunching Claude\n' "$status" >&2
+  exit "$status"
+fi
 printf 'claude-in-phux: phux launch failed (exit %s); running Claude directly\n' "$status" >&2
 exec "$real" "$@"
 "#,

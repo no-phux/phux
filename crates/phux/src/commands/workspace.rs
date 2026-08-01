@@ -22,12 +22,19 @@ struct RepoInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent facts read off `git worktree list --porcelain`, not a state machine"
+)]
 pub(crate) struct WorktreeInfo {
     pub(crate) path: PathBuf,
     pub(crate) head: Option<String>,
     pub(crate) branch: Option<String>,
     pub(crate) detached: bool,
     pub(crate) current: bool,
+    /// The primary checkout — always listed first by `git worktree list`.
+    pub(crate) is_main: bool,
+    pub(crate) locked: bool,
 }
 
 #[derive(Default)]
@@ -36,6 +43,7 @@ struct WorktreeBuilder {
     head: Option<String>,
     branch: Option<String>,
     detached: bool,
+    locked: bool,
 }
 
 pub(crate) fn run_workspace(action: &WorkspaceAction) -> ExitCode {
@@ -104,6 +112,8 @@ pub(crate) fn parse_worktrees(
             builder.branch = Some(short_branch(branch));
         } else if text == "detached" {
             builder.detached = true;
+        } else if text == "locked" || text.starts_with("locked ") {
+            builder.locked = true;
         }
     }
     flush_worktree(&mut entries, &mut builder, current_root);
@@ -129,8 +139,11 @@ fn flush_worktree(
         branch: builder.branch.take(),
         detached: builder.detached,
         current,
+        is_main: entries.is_empty(),
+        locked: builder.locked,
     });
     builder.detached = false;
+    builder.locked = false;
 }
 
 fn short_branch(branch: &str) -> String {
@@ -218,12 +231,16 @@ mod tests {
 
     #[test]
     fn parses_porcelain_worktree_records() {
-        let input = b"worktree /repo\0HEAD abc\0branch refs/heads/main\0\0worktree /repo-detached\0HEAD def\0detached\0\0";
+        let input = b"worktree /repo\0HEAD abc\0branch refs/heads/main\0\0worktree /repo-detached\0HEAD def\0detached\0locked reason\0\0";
         let worktrees = parse_worktrees(input, Path::new("/repo")).expect("parse worktrees");
         assert_eq!(worktrees.len(), 2);
         assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
         assert!(worktrees[0].current);
+        assert!(worktrees[0].is_main);
+        assert!(!worktrees[0].locked);
         assert!(worktrees[1].detached);
+        assert!(!worktrees[1].is_main);
+        assert!(worktrees[1].locked);
         assert_eq!(worktrees[1].branch, None);
     }
 }
