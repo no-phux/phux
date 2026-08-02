@@ -1052,6 +1052,10 @@ impl HeadlessCompletion {
         self.pending_history
             .insert((terminal_id.clone(), stream_id, bootstrap_id));
     }
+    fn restart_attach(&mut self) {
+        self.attach_ready = false;
+        self.pending_history.clear();
+    }
 
     fn is_complete(&self, agent_metadata_complete: bool) -> bool {
         self.attach_ready
@@ -1107,7 +1111,7 @@ pub async fn run_headless_rendered(
     let mut engine_kernel =
         SessionKernel::new(GhosttyAdapter::new(negotiated.limits), negotiated.profile);
     let mut kernel_effects = KernelEffectBuffer::new();
-    let attach_id = send_attach(&mut conn, target).await?;
+    let mut attach_id = send_attach(&mut conn, target).await?;
     let attached = wait_for_attached(&mut conn, attach_id).await?;
 
     let viewport_dims = (cols.max(1), rows.max(1));
@@ -1250,6 +1254,17 @@ pub async fn run_headless_rendered(
                 false,
                 true,
             )?;
+            if outcome.resync_required {
+                if session_name.is_empty() {
+                    return Err(AttachError::Protocol(
+                        "engine requested rebootstrap before ATTACHED named the session".to_owned(),
+                    ));
+                }
+                attach_id =
+                    send_attach(&mut conn, AttachTarget::ByName(session_name.clone())).await?;
+                completion.restart_attach();
+                continue;
+            }
             if let Some((terminal_id, stream_id, bootstrap_id, cursor)) =
                 outcome.history_request
             {
@@ -2816,6 +2831,22 @@ async fn main_loop<W: super::RenderSink>(
                             return Ok(LoopExit::Detached(
                                 outcome.exit_reason.unwrap_or(AttachEnd::Detached),
                             ));
+                        }
+                        if outcome.resync_required {
+                            if session_name.is_empty() {
+                                return Err(AttachError::Protocol(
+                                    "engine requested rebootstrap before ATTACHED named the session"
+                                        .to_owned(),
+                                ));
+                            }
+                            let attach_id =
+                                send_attach(conn, AttachTarget::ByName(session_name.clone())).await?;
+                            tracing::warn!(
+                                attach_id,
+                                session = %session_name,
+                                "engine generation rejected; requested replacement bootstrap"
+                            );
+                            continue;
                         }
                         // A peer headless placement can add a layout leaf
                         // without this attached client being subscribed to the

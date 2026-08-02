@@ -86,6 +86,11 @@ pub enum KernelInput<'a> {
         bootstrap_id: BootstrapId,
         /// Borrowed opaque selected-codec history bytes.
         payload: &'a [u8],
+        /// Whether the server supplied a cursor for another page.
+        ///
+        /// This is framing metadata only; opaque cursor bytes never enter the
+        /// engine boundary.
+        has_more: bool,
     },
     /// Apply one borrowed live output fragment.
     TerminalOutput {
@@ -497,6 +502,16 @@ pub enum KernelError<E: std::error::Error + 'static> {
         /// Retired generation.
         bootstrap_id: BootstrapId,
     },
+    /// Native history framing disagreed with the authenticated engine FINISH.
+    #[error(
+        "native history completion mismatch: engine reported {progress:?}, next cursor present: {has_more}"
+    )]
+    HistoryCompletionMismatch {
+        /// Progress returned by the native engine adapter.
+        progress: BootstrapProgress,
+        /// Whether the wire page advertised a next cursor.
+        has_more: bool,
+    },
     /// The same generation began more than once.
     #[error("generation ({stream_id}, {bootstrap_id}) already exists for {terminal_id}")]
     DuplicateGeneration {
@@ -826,7 +841,15 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 stream_id,
                 bootstrap_id,
                 payload,
-            } => self.history_page(terminal_id, stream_id, bootstrap_id, payload, effects),
+                has_more,
+            } => self.history_page(
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                payload,
+                has_more,
+                effects,
+            ),
             KernelInput::TerminalOutput {
                 terminal_id,
                 stream_id,
@@ -1380,6 +1403,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         payload: &[u8],
+        has_more: bool,
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         self.ensure_open(terminal_id)?;
@@ -1401,10 +1425,40 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .ok_or_else(|| mismatch_error(terminal_id, generation))?;
 
         self.engine_effects.clear();
-        if let Err(error) =
-            self.adapter
-                .apply_history_page(&mut replica.engine, payload, &mut self.engine_effects)
-        {
+        let progress = match self.adapter.apply_history_page(
+            &mut replica.engine,
+            payload,
+            &mut self.engine_effects,
+        ) {
+            Ok(progress) => progress,
+            Err(error) => {
+                let last_valid_seq = replica.last_seq;
+                self.engine_effects.clear();
+                state.retired.insert(
+                    generation,
+                    TombstoneRecord {
+                        reason: TombstoneReason::CodecFailure,
+                        last_valid_seq,
+                    },
+                );
+                self.mark_attach_unresolved(terminal_id, false);
+                effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    reason: TombstoneReason::CodecFailure,
+                }));
+                return Err(KernelError::Engine(error));
+            }
+        };
+
+        let native = matches!(
+            replica.key.profile,
+            BootstrapStreamProfile::NativeState { .. }
+        );
+        let completion_mismatch =
+            native && (matches!(progress, BootstrapProgress::Finished) != !has_more);
+        if completion_mismatch {
             let last_valid_seq = replica.last_seq;
             self.engine_effects.clear();
             state.retired.insert(
@@ -1421,7 +1475,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 bootstrap_id,
                 reason: TombstoneReason::CodecFailure,
             }));
-            return Err(KernelError::Engine(error));
+            return Err(KernelError::HistoryCompletionMismatch { progress, has_more });
         }
 
         let replica_key = replica.key.clone();

@@ -244,7 +244,11 @@ impl EngineAdapter for RecordingNativeAdapter {
         replica
             .records
             .push(NativeRecord::History(payload.to_vec()));
-        Ok(BootstrapProgress::Ready)
+        Ok(if payload == b"finish" {
+            BootstrapProgress::Finished
+        } else {
+            BootstrapProgress::Ready
+        })
     }
 
     fn apply_output(
@@ -747,6 +751,7 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
                 stream_id,
                 bootstrap_id,
                 payload: b"history-one",
+                has_more: true,
             },
             &mut effects,
         )
@@ -772,6 +777,7 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
                 stream_id,
                 bootstrap_id,
                 payload: b"history-two",
+                has_more: true,
             },
             &mut effects,
         )
@@ -792,6 +798,7 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
             stream_id,
             bootstrap_id: bootstrap(999),
             payload: b"wrong-generation",
+            has_more: true,
         },
         &mut effects,
     );
@@ -827,6 +834,7 @@ fn history_engine_failure_freezes_the_last_published_view() {
             stream_id,
             bootstrap_id,
             payload: b"history-error",
+            has_more: true,
         },
         &mut effects,
     );
@@ -1144,6 +1152,7 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
             stream_id,
             bootstrap_id,
             payload: b"\xfefuture-history-before-ready",
+            has_more: true,
         },
         &mut effects,
     );
@@ -1262,6 +1271,7 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
                 stream_id,
                 bootstrap_id,
                 payload: history,
+                has_more: true,
             },
             &mut effects,
         )
@@ -1292,6 +1302,113 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
             NativeRecord::Live(live_b.to_vec()),
         ]
     );
+}
+fn published_recording_native(
+    terminal_id: &TerminalId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+) -> SessionKernel<RecordingNativeAdapter> {
+    let mut kernel = SessionKernel::new(
+        RecordingNativeAdapter,
+        BootstrapProfile::NativeState {
+            codec: EngineCodec::LibghosttyCheckpointV2,
+            features: EngineFeatureSet::required_native(),
+        },
+    );
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::BootstrapBegin {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::NativeState {
+                    codec: EngineCodec::LibghosttyCheckpointV2,
+                },
+                geometry: geometry(),
+                base_seq: 10,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    for (chunk_seq, payload) in [
+        (0, b"checkpoint-a".as_slice()),
+        (1, b"checkpoint-b".as_slice()),
+    ] {
+        kernel
+            .update(
+                KernelInput::BootstrapChunk {
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq,
+                    payload,
+                },
+                &mut effects,
+            )
+            .unwrap();
+    }
+    kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    kernel
+}
+
+#[test]
+fn native_history_requires_finish_exactly_on_the_final_cursor_page() {
+    for (payload, has_more, expected_progress) in [
+        (
+            b"history-without-finish".as_slice(),
+            false,
+            BootstrapProgress::Ready,
+        ),
+        (b"finish".as_slice(), true, BootstrapProgress::Finished),
+    ] {
+        let terminal_id = terminal(83);
+        let stream_id = stream(84);
+        let bootstrap_id = bootstrap(85);
+        let mut kernel = published_recording_native(&terminal_id, stream_id, bootstrap_id);
+        let mut effects = EffectBuffer::new();
+        let result = kernel.update(
+            KernelInput::HistoryPage {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                payload,
+                has_more,
+            },
+            &mut effects,
+        );
+        assert!(matches!(
+            result,
+            Err(KernelError::HistoryCompletionMismatch {
+                progress,
+                has_more: actual_has_more,
+            }) if progress == expected_progress && actual_has_more == has_more
+        ));
+        assert!(
+            kernel.published(&terminal_id).is_some(),
+            "mismatch freezes rather than discards the last renderable replica"
+        );
+        assert_eq!(
+            kernel
+                .tombstone(&terminal_id, stream_id, bootstrap_id)
+                .unwrap()
+                .reason,
+            TombstoneReason::CodecFailure
+        );
+        assert!(effects.as_slice().iter().any(|effect| matches!(
+            effect,
+            KernelEffect::Status(KernelStatus::ResyncRequired { .. })
+        )));
+    }
 }
 
 #[test]

@@ -154,6 +154,11 @@ pub(super) struct FrameOutcome {
     pub(super) reflow_panes: bool,
     /// Exact cumulative StateSync acknowledgement emitted by the session kernel.
     pub(super) ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
+    /// The engine rejected a generation after emitting a typed resync status.
+    ///
+    /// The driver issues a fresh in-connection ATTACH while this outcome leaves
+    /// the frozen published replica visible.
+    pub(super) resync_required: bool,
     /// Pull the next opaque native history page after READY or a prior page.
     pub(super) history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes)>,
     /// phux-4li.20: `Some((sessions, focused))` ⇒ ATTACHED just landed
@@ -288,6 +293,8 @@ fn pane_label(id: &TerminalId) -> String {
 struct KernelRoute {
     ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
     damaged: HashSet<TerminalId>,
+    resync_required: bool,
+    ignored: bool,
     failed: Option<String>,
 }
 impl KernelRoute {
@@ -311,7 +318,6 @@ fn route_engine_frame(
             terminals = snapshot
                 .panes
                 .iter()
-                .filter(|pane| pane.window_id == snapshot.focused_window)
                 .map(|pane| pane.id.clone())
                 .collect::<Vec<_>>();
             Some(KernelInput::AttachStarted {
@@ -368,6 +374,7 @@ fn route_engine_frame(
             terminal_id,
             stream_id,
             bootstrap_id,
+            next_cursor,
             payload,
             ..
         } => Some(KernelInput::HistoryPage {
@@ -375,6 +382,7 @@ fn route_engine_frame(
             stream_id: *stream_id,
             bootstrap_id: *bootstrap_id,
             payload,
+            has_more: next_cursor.is_some(),
         }),
         FrameKind::TerminalOutput {
             terminal_id,
@@ -411,9 +419,30 @@ fn route_engine_frame(
         return KernelRoute::default();
     };
 
+    effects.clear();
     let result = kernel.update(input, effects);
+    let resync_required = result.is_err()
+        && effects.as_slice().iter().any(|effect| {
+            matches!(
+                effect,
+                KernelEffect::Status(
+                    phux_client_core::session::KernelStatus::ResyncRequired { .. }
+                )
+            )
+        });
+    let ignored = matches!(
+        &result,
+        Err(phux_client_core::session::KernelError::RetiredGeneration { .. })
+    );
+    let failed = match result {
+        Ok(()) => None,
+        Err(_) if resync_required || ignored => None,
+        Err(error) => Some(error.to_string()),
+    };
     let mut route = KernelRoute {
-        failed: result.err().map(|error| error.to_string()),
+        resync_required,
+        ignored,
+        failed,
         ..KernelRoute::default()
     };
     for effect in effects.as_slice() {
@@ -508,6 +537,15 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             "session kernel rejected {}: {error}",
             frame_kind_label(&frame),
         )));
+    }
+    if kernel_route.resync_required {
+        return Ok(FrameOutcome {
+            resync_required: true,
+            ..FrameOutcome::default()
+        });
+    }
+    if kernel_route.ignored {
+        return Ok(FrameOutcome::default());
     }
     // Per-inbound-frame dispatch span (debug; off under the default
     // `phux=info` filter). Content-frame CLOSE duration is client apply+paint
@@ -647,9 +685,10 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 .ok_or_else(|| AttachError::Protocol("READY without pane slot".to_owned()))?;
             let title_changed = slot.title_changed(terminal);
             slot.update_sync_output(terminal, tokio::time::Instant::now());
+            let damaged = kernel_route.damaged(&terminal_id);
             Ok(FrameOutcome {
-                layout_replaced: kernel_route.damaged(&terminal_id),
-                chrome_dirty: title_changed,
+                layout_replaced: damaged,
+                chrome_dirty: damaged && title_changed,
                 history_request: history_cursor
                     .map(|cursor| (terminal_id, stream_id, bootstrap_id, cursor)),
                 ..FrameOutcome::default()
@@ -1765,6 +1804,71 @@ mod tests {
         );
         assert!(live.damaged(&terminal_id));
     }
+    #[test]
+    fn off_window_ready_waits_for_every_snapshot_pane_and_attach_ready() {
+        let focused = tid(94);
+        let off_window = tid(95);
+        let focused_window = WindowId::new(70);
+        let other_window = WindowId::new(71);
+        let snapshot = SessionSnapshot::new(SessionId::new(72), focused_window, focused.clone())
+            .with_panes(vec![
+                TerminalInfo::new(focused.clone(), focused_window, 80, 24),
+                TerminalInfo::new(off_window.clone(), other_window, 80, 24),
+            ]);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        let attached = route_engine_frame(
+            &FrameKind::Attached {
+                attach_id: 9,
+                snapshot,
+                initial_client_id: ClientId::new(1),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(attached.damaged.is_empty());
+
+        for terminal_id in [&off_window, &focused] {
+            assert!(
+                route_engine_frame(&begin_frame(terminal_id), &mut kernel, &mut effects)
+                    .damaged
+                    .is_empty()
+            );
+            assert!(
+                route_engine_frame(
+                    &FrameKind::BootstrapChunk {
+                        terminal_id: terminal_id.clone(),
+                        stream_id: stream(),
+                        bootstrap_id: bootstrap(),
+                        chunk_seq: 0,
+                        payload: bytes::Bytes::from_static(b"seed"),
+                    },
+                    &mut kernel,
+                    &mut effects,
+                )
+                .damaged
+                .is_empty()
+            );
+            assert!(
+                route_engine_frame(&ready_frame(terminal_id), &mut kernel, &mut effects)
+                    .damaged
+                    .is_empty(),
+                "neither off-window nor focused READY may escape the aggregate barrier"
+            );
+        }
+        let released = route_engine_frame(
+            &FrameKind::AttachReady { attach_id: 9 },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(released.damaged(&focused));
+        assert!(released.damaged(&off_window));
+    }
 
     #[test]
     fn bootstrap_ready_surfaces_publication_damage_without_attach_barrier() {
@@ -1934,6 +2038,151 @@ mod tests {
         );
         assert!(released.layout_replaced);
         assert_eq!(panes[&ready_terminal].last_title, "vim");
+    }
+    #[test]
+    fn malformed_history_requests_resync_and_replacement_publishes_atomically() {
+        let terminal_id = tid(96);
+        let replacement = phux_protocol::BootstrapId::new(2).expect("replacement");
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        let mut panes = HashMap::new();
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            begin_frame(&terminal_id),
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"\x1b]2;old\x07"),
+            },
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            ready_frame(&terminal_id),
+        );
+
+        let rejected = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::HistoryPage {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                cursor: bytes::Bytes::from_static(b"cursor"),
+                next_cursor: None,
+                payload: bytes::Bytes::from_static(b"malformed-history"),
+            },
+        );
+        assert!(rejected.resync_required);
+        assert_eq!(
+            kernel
+                .published_engine(&terminal_id)
+                .unwrap()
+                .terminal()
+                .unwrap()
+                .title()
+                .unwrap(),
+            "old"
+        );
+        let stale = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::HistoryPage {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                cursor: bytes::Bytes::from_static(b"stale"),
+                next_cursor: None,
+                payload: bytes::Bytes::from_static(b"queued-stale-page"),
+            },
+        );
+        assert!(!stale.resync_required);
+
+        kernel
+            .update(
+                phux_client_core::session::KernelInput::AttachStarted {
+                    attach_id: 10,
+                    terminals: std::slice::from_ref(&terminal_id),
+                },
+                &mut effects,
+            )
+            .expect("replacement attach");
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: replacement,
+                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            },
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: replacement,
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"\x1b]2;new\x07"),
+            },
+        );
+        assert_eq!(
+            kernel
+                .published_engine(&terminal_id)
+                .unwrap()
+                .terminal()
+                .unwrap()
+                .title()
+                .unwrap(),
+            "old",
+            "replacement remains staged until READY"
+        );
+        let replacement_ready = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapReady {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: replacement,
+                history_cursor: None,
+            },
+        );
+        assert!(!replacement_ready.layout_replaced);
+        assert!(!replacement_ready.chrome_dirty);
+        assert_eq!(panes[&terminal_id].last_title, "new");
+        let released = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::AttachReady { attach_id: 10 },
+        );
+        assert!(released.layout_replaced);
+        assert_eq!(panes[&terminal_id].last_title, "new");
     }
 
     #[allow(clippy::too_many_arguments)]

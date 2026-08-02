@@ -15,6 +15,7 @@ use phux_client_core::session::{
     EffectBuffer, InputEligibility, KernelAction, KernelEffect, KernelInput, KernelSend,
     SessionKernel,
 };
+use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, ImageProtocolSet,
@@ -23,7 +24,6 @@ use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
-use phux_protocol::PROTOCOL_VERSION;
 use phux_vt_web::{Grid, Terminal, Vt};
 
 const ATTACH_ID: u32 = 1;
@@ -52,22 +52,18 @@ fn validate_hello_ok(
     selected_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
 ) -> Result<(), &'static str> {
-    if (
-        protocol_major,
-        protocol_minor,
-        protocol_patch,
-    ) != (
-        PROTOCOL_VERSION.major,
-        PROTOCOL_VERSION.minor,
-        PROTOCOL_VERSION.patch,
-    ) {
+    if (protocol_major, protocol_minor, protocol_patch)
+        != (
+            PROTOCOL_VERSION.major,
+            PROTOCOL_VERSION.minor,
+            PROTOCOL_VERSION.patch,
+        )
+    {
         return Err("HELLO_OK selected a different protocol version");
     }
     let profile_kind = match selected_profile {
         BootstrapProfile::SynthesizedVtRaw => BootstrapProfileKind::SynthesizedVtRaw,
-        BootstrapProfile::SynthesizedVtStateSync => {
-            BootstrapProfileKind::SynthesizedVtStateSync
-        }
+        BootstrapProfile::SynthesizedVtStateSync => BootstrapProfileKind::SynthesizedVtStateSync,
         BootstrapProfile::NativeState { .. } => {
             return Err("HELLO_OK selected an unadvertised native profile");
         }
@@ -244,7 +240,6 @@ impl Session {
         self.history_cursors.clear();
     }
 
-
     /// Frame sent when the transport opens. Stateful frames wait for `HELLO_OK`.
     #[must_use]
     pub fn handshake(&self) -> Vec<Vec<u8>> {
@@ -314,11 +309,8 @@ impl Session {
                 if attach_id != ATTACH_ID {
                     return self.protocol_failure("ATTACHED used the wrong attach identifier");
                 }
-                let terminal_ids: Vec<_> = snapshot
-                    .panes
-                    .iter()
-                    .map(|pane| pane.id.clone())
-                    .collect();
+                let terminal_ids: Vec<_> =
+                    snapshot.panes.iter().map(|pane| pane.id.clone()).collect();
                 let focused_terminal = snapshot.focused_pane;
                 let (outcome, applied) = self.apply_kernel(KernelInput::AttachStarted {
                     attach_id,
@@ -455,10 +447,9 @@ impl Session {
                 let was_focused = self.focused_terminal.as_ref() == Some(&terminal_id);
                 self.history_cursors
                     .retain(|key, _| key.terminal_id != terminal_id);
-                let (outcome, applied) =
-                    self.apply_kernel(KernelInput::TerminalClosed {
-                        terminal_id: &terminal_id,
-                    });
+                let (outcome, applied) = self.apply_kernel(KernelInput::TerminalClosed {
+                    terminal_id: &terminal_id,
+                });
                 if applied && was_focused {
                     self.focused_terminal = self.first_published_terminal();
                 }
@@ -536,11 +527,13 @@ impl Session {
             return self.protocol_failure("history page cursor did not match the requested cursor");
         }
 
+        let has_more = next_cursor.is_some();
         let (mut outcome, applied) = self.apply_kernel(KernelInput::HistoryPage {
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id,
             payload: &payload,
+            has_more,
         });
         if !applied {
             self.history_cursors.remove(&key);
@@ -549,12 +542,9 @@ impl Session {
 
         if let Some(next) = next_cursor {
             self.history_cursors.insert(key, next.clone());
-            outcome.send.push(self.history_request(
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                next,
-            ));
+            outcome
+                .send
+                .push(self.history_request(terminal_id, stream_id, bootstrap_id, next));
         } else {
             self.history_cursors.remove(&key);
         }
@@ -594,9 +584,9 @@ impl Session {
         for effect in self.effects.as_slice() {
             match effect {
                 KernelEffect::Send(KernelSend::Input { terminal_id, event }) => {
-                    outcome.send.push(encode(
-                        &(*event).clone().into_frame(terminal_id.clone()),
-                    ));
+                    outcome
+                        .send
+                        .push(encode(&(*event).clone().into_frame(terminal_id.clone())));
                 }
                 KernelEffect::Send(KernelSend::FrameAck {
                     terminal_id,
@@ -611,8 +601,7 @@ impl Session {
                 })),
                 KernelEffect::Send(KernelSend::PtyWrite { .. }) => {}
                 KernelEffect::Damage(damage) => {
-                    if focused == Some(&damage.terminal_id) || focused.is_none()
-                    {
+                    if focused == Some(&damage.terminal_id) || focused.is_none() {
                         outcome.render = true;
                     }
                 }
@@ -661,7 +650,10 @@ impl Session {
 
     fn published_geometry(&self) -> Option<CanonicalGeometry> {
         let terminal_id = self.first_published_terminal()?;
-        self.kernel.as_ref()?.published(&terminal_id).map(|replica| replica.geometry())
+        self.kernel
+            .as_ref()?
+            .published(&terminal_id)
+            .map(|replica| replica.geometry())
     }
 }
 
