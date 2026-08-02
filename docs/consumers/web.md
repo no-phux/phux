@@ -131,7 +131,7 @@ cd clients/phux-web && wasm-pack build --target web --release --out-dir pkg
 | Tool | Version | Provided by | For |
 |---|---|---|---|
 | Rust | 1.90.0 | `rust-toolchain.toml` (targets `wasm32-unknown-unknown`) | both crates |
-| Zig | 0.15.x | nix devshell (`zig_0_15`) | building `ghostty-vt.wasm` from ghostty |
+| Zig | 0.16.x | nix devshell (`zig_0_16`) | building `ghostty-vt.wasm` from ghostty |
 | `wasm-pack` | 0.15 | nix devshell | packaging the client |
 | `wasm-bindgen` / `wasm-bindgen-cli` | `=0.2.121` | crate pin + nix devshell | bindings — the crate pin must equal the CLI version |
 | `binaryen` (`wasm-opt`) | nixpkgs | nix devshell | release size optimization |

@@ -19,7 +19,7 @@ phux-project-specific guidance: build, test, architecture, and conventions.
 
 ## Build & Test
 
-The dev shell is Nix-pinned (`flake.nix`): Rust 1.90, `zig_0_15` for
+The dev shell is Nix-pinned (`flake.nix`): Rust 1.90, `zig_0_16` for
 libghostty-vt's build, plus `nextest`, `deny`, `watch`, `insta`,
 `mutants`, `just`.
 

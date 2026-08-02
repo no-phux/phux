@@ -40,7 +40,7 @@
           packages = [
             toolchain
             # libghostty-vt-sys builds the C library via Zig at build time.
-            pkgs.zig_0_15
+            pkgs.zig_0_16
             pkgs.pkg-config
             # Developer ergonomics.
             pkgs.just
