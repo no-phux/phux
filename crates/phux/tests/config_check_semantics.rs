@@ -40,7 +40,11 @@ fn run_check(tmp: &TempDir, config: &str, json: bool) -> (i32, String) {
 #[test]
 fn typoed_action_exits_one_with_a_suggestion() {
     let tmp = TempDir::new().expect("tempdir");
-    let (code, stdout) = run_check(&tmp, "[keybindings.prefix-table]\nq = \"kill-pain\"\n", false);
+    let (code, stdout) = run_check(
+        &tmp,
+        "[keybindings.prefix-table]\nq = \"kill-pain\"\n",
+        false,
+    );
     assert_eq!(code, 1, "findings must exit 1; stdout:\n{stdout}");
     assert!(
         stdout.contains("keybindings.prefix-table.q"),
