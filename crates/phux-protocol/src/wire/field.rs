@@ -269,6 +269,26 @@ pub mod terminal_spawned {
     pub const RESULT: u32 = 2;
 }
 
+/// `MOVE_TERMINAL` body fields (`docs/spec/L1.md` §10.1; ADR-0056).
+pub mod move_terminal {
+    /// Correlating `request_id` (`u32`).
+    pub const REQUEST_ID: u32 = 1;
+    /// The Terminal to re-parent (positional tagged union).
+    pub const TERMINAL: u32 = 2;
+    /// Existing Terminal whose owning window becomes the destination
+    /// (positional tagged union). Ownership address only, as in
+    /// `SPAWN_TERMINAL.owner_terminal`.
+    pub const OWNER_TERMINAL: u32 = 3;
+}
+
+/// `TERMINAL_MOVED` body fields (`docs/spec/L1.md` §10.1; ADR-0056).
+pub mod terminal_moved {
+    /// Correlating `request_id` (`u32`).
+    pub const REQUEST_ID: u32 = 1;
+    /// `MoveResult` tagged union (positional).
+    pub const RESULT: u32 = 2;
+}
+
 /// `TERMINAL_CLOSED` body fields (`docs/spec/L1.md` §10.1).
 pub mod terminal_closed {
     /// Closed `TerminalId` (positional tagged union).

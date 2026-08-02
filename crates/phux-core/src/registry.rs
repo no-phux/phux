@@ -143,6 +143,61 @@ impl Registry {
         Ok(terminal_id)
     }
 
+    /// Re-parent a live terminal into another window (ADR-0056), possibly
+    /// in a different session.
+    ///
+    /// Ownership only: the terminal keeps its id, dims, cwd, and title.
+    /// The source window's `panes`, layout, and `active` drop the leaf
+    /// exactly as [`Self::remove_terminal`] would; the destination window
+    /// gains it exactly as [`Self::new_terminal`] would (seed when empty,
+    /// else split the active pane horizontally at `0.5` — geometry is the
+    /// caller's L3 concern, this placement is just a valid tree). Moving a
+    /// terminal to the window it already occupies is an idempotent no-op.
+    /// An emptied source window persists; the caller reaps it by its
+    /// existing rules.
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::UnknownTerminal`] / [`RegistryError::UnknownWindow`]
+    /// when either end does not exist; nothing is mutated on error.
+    pub fn move_terminal(&mut self, id: TerminalId, window: WindowId) -> Result<(), RegistryError> {
+        if !self.windows.contains_key(window) {
+            return Err(RegistryError::UnknownWindow(window));
+        }
+        let source = self
+            .terminals
+            .get(id)
+            .map(|t| t.window)
+            .ok_or(RegistryError::UnknownTerminal(id))?;
+        if source == window {
+            return Ok(());
+        }
+        if let Some(w) = self.windows.get_mut(source) {
+            w.panes.retain(|p| *p != id);
+            let _ = w.kill_pane(id);
+            if w.active == Some(id) {
+                w.active = w.panes.first().copied();
+            }
+        }
+        if let Some(t) = self.terminals.get_mut(id) {
+            t.window = window;
+        }
+        if let Some(w) = self.windows.get_mut(window) {
+            let target = w.active;
+            w.panes.push(id);
+            match target {
+                None => {
+                    let _ = w.seed_layout(id);
+                    w.active = Some(id);
+                }
+                Some(t) => {
+                    let _ = w.split(t, id, SplitDir::Horizontal, 0.5);
+                }
+            }
+        }
+        Ok(())
+    }
+
     // ---- removal ----------------------------------------------------------
 
     /// Remove a terminal and unlink it from its parent window.

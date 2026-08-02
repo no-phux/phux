@@ -346,3 +346,89 @@ fn sessions_iter_supports_find_by_name() {
     let missing = reg.sessions().find(|(_, s)| s.name == "ghost");
     assert!(missing.is_none());
 }
+
+#[test]
+fn move_terminal_reparents_across_sessions() {
+    // ADR-0056: the id is stable, the source window drops the leaf, the
+    // destination window gains it — across a session boundary.
+    let mut reg = Registry::new();
+    let s1 = reg.new_session("a".to_string());
+    let w1 = reg.new_window(s1).expect("session exists");
+    let p1 = reg.new_terminal(w1).expect("window exists");
+    let p2 = reg.new_terminal(w1).expect("window exists");
+    let s2 = reg.new_session("b".to_string());
+    let w2 = reg.new_window(s2).expect("session exists");
+    let p3 = reg.new_terminal(w2).expect("window exists");
+
+    reg.move_terminal(p1, w2).expect("move succeeds");
+
+    assert_eq!(reg.terminal(p1).expect("pane survives").window, w2);
+    let source = reg.window(w1).expect("window exists");
+    assert_eq!(source.panes, vec![p2]);
+    assert_eq!(source.layout, Some(LayoutNode::Leaf(p2)));
+    assert_eq!(source.active, Some(p2));
+    let dest = reg.window(w2).expect("window exists");
+    assert_eq!(dest.panes, vec![p3, p1]);
+    assert!(dest.panes.contains(&p1));
+}
+
+#[test]
+fn move_terminal_out_of_solo_window_leaves_empty_window() {
+    // The emptied window persists (layout None, no active); the caller's
+    // reap rules decide its fate, not the registry.
+    let mut reg = Registry::new();
+    let s1 = reg.new_session("a".to_string());
+    let w1 = reg.new_window(s1).expect("session exists");
+    let p = reg.new_terminal(w1).expect("window exists");
+    let s2 = reg.new_session("b".to_string());
+    let w2 = reg.new_window(s2).expect("session exists");
+
+    reg.move_terminal(p, w2).expect("move succeeds");
+
+    let source = reg.window(w1).expect("window persists");
+    assert!(source.panes.is_empty());
+    assert_eq!(source.layout, None);
+    assert_eq!(source.active, None);
+    // Destination was empty: the moved pane seeds it.
+    let dest = reg.window(w2).expect("window exists");
+    assert_eq!(dest.layout, Some(LayoutNode::Leaf(p)));
+    assert_eq!(dest.active, Some(p));
+}
+
+#[test]
+fn move_terminal_to_current_window_is_a_no_op() {
+    let mut reg = Registry::new();
+    let s = reg.new_session("a".to_string());
+    let w = reg.new_window(s).expect("session exists");
+    let p1 = reg.new_terminal(w).expect("window exists");
+    let p2 = reg.new_terminal(w).expect("window exists");
+    let before = reg.window(w).expect("window exists").clone();
+
+    reg.move_terminal(p1, w).expect("no-op move succeeds");
+
+    let after = reg.window(w).expect("window exists");
+    assert_eq!(after.panes, before.panes);
+    assert_eq!(after.layout, before.layout);
+    let _ = p2;
+}
+
+#[test]
+fn move_terminal_rejects_unknown_ends_without_mutating() {
+    let mut reg = Registry::new();
+    let s = reg.new_session("a".to_string());
+    let w = reg.new_window(s).expect("session exists");
+    let p = reg.new_terminal(w).expect("window exists");
+
+    match reg.move_terminal(p, WindowId::default()) {
+        Err(RegistryError::UnknownWindow(_)) => {}
+        other => panic!("expected UnknownWindow, got {other:?}"),
+    }
+    let mut reg2 = Registry::new();
+    let s2 = reg2.new_session("b".to_string());
+    let w2 = reg2.new_window(s2).expect("session exists");
+    match reg2.move_terminal(TerminalId::default(), w2) {
+        Err(RegistryError::UnknownTerminal(_)) => {}
+        other => panic!("expected UnknownTerminal, got {other:?}"),
+    }
+    assert_eq!(reg.terminal(p).expect("untouched").window, w);
+}

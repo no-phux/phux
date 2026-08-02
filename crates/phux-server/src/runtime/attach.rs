@@ -6,8 +6,8 @@ use phux_core::TerminalId;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, SpawnError,
-    SpawnResult,
+    AgentEvent, AttachTarget, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, MoveError,
+    MoveResult, SpawnError, SpawnResult,
 };
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -525,6 +525,81 @@ async fn relay_spawn_to_satellite(
         return SpawnResult::Err(SpawnError::UnsupportedSatelliteRoute);
     };
     relay.spawn(group, command, cwd, env, term).await
+}
+
+/// Handle `MOVE_TERMINAL` (ADR-0056, L1 §10.1).
+///
+/// Re-parents `terminal` into the window that currently owns
+/// `owner_terminal`, atomically under the state lock: resolve both
+/// Terminals, move the registry entry, and reap the source window if the
+/// move emptied it — either the whole re-parent lands or none of it does.
+/// The pane's process, PTY, scrollback, metadata, and agent record are
+/// untouched; its `TerminalId` is stable across the move, so subscriptions
+/// and outstanding waits survive. Layout is deliberately NOT written here:
+/// geometry is the caller's L3 concern (the ADR-0019 seam), exactly as
+/// with spawn placement.
+///
+/// Local-only: a satellite-tagged id on either end is the typed
+/// [`MoveError::UnsupportedSatelliteRoute`], matching spawn's refusal.
+pub(crate) async fn handle_move_terminal(
+    state: &SharedState,
+    client_id: ClientId,
+    request_id: u32,
+    terminal: phux_protocol::ids::TerminalId,
+    owner_terminal: phux_protocol::ids::TerminalId,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+) {
+    debug!(
+        ?client_id,
+        request_id,
+        terminal = ?terminal,
+        owner_terminal = ?owner_terminal,
+        "MOVE_TERMINAL",
+    );
+
+    let result = if !matches!(terminal, phux_protocol::ids::TerminalId::Local { .. })
+        || !matches!(owner_terminal, phux_protocol::ids::TerminalId::Local { .. })
+    {
+        MoveResult::Err(MoveError::UnsupportedSatelliteRoute)
+    } else {
+        state.with_mut(|s| {
+            let Some(moved) = s.terminal_from_wire(&terminal) else {
+                return MoveResult::Err(MoveError::MoveFailed(
+                    "terminal was not found on this server".to_owned(),
+                ));
+            };
+            let Some(owner) = s.terminal_from_wire(&owner_terminal) else {
+                return MoveResult::Err(MoveError::MoveFailed(
+                    "owner terminal was not found on this server".to_owned(),
+                ));
+            };
+            let Some(dest_window) = s.registry.terminal(owner).map(|t| t.window) else {
+                return MoveResult::Err(MoveError::MoveFailed(
+                    "owner terminal has no window on this server".to_owned(),
+                ));
+            };
+            let source_window = s.registry.terminal(moved).map(|t| t.window);
+            match s.registry.move_terminal(moved, dest_window) {
+                Ok(()) => {
+                    // A move that emptied its source window leaves it for
+                    // the same cascade pane death uses (ADR-0056: "the
+                    // server already reaps by its existing rules").
+                    if let Some(source_window) = source_window {
+                        s.reap_window_if_empty(source_window);
+                    }
+                    MoveResult::Ok(terminal)
+                }
+                Err(err) => MoveResult::Err(MoveError::MoveFailed(err.to_string())),
+            }
+        })
+    };
+
+    let _ = out_tx
+        .send(Outbound::Frame(FrameKind::TerminalMoved {
+            request_id,
+            result,
+        }))
+        .await;
 }
 
 /// Handle `SPAWN_TERMINAL` (phux-4li.11, SPEC §7.2 / §10.1).

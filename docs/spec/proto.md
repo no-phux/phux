@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-07-25
+last-reviewed: 2026-08-02
 ---
 
 # proto — connection lifecycle, framing, and protocol meta
@@ -315,6 +315,7 @@ ServerCapabilities {
 ServerFeature = bitset (u32) {
     ACKNOWLEDGED_INPUT = 0x00000010, // APPLY_INPUT (L1.md §6.2.1; ADR-0053)
     FILE_UPLOAD       = 0x00000020, // PUT_FILE (L1.md §6.2.2; ADR-0059)
+    MOVE_TERMINAL     = 0x00000040, // MOVE_TERMINAL (L1.md §3.1; ADR-0056)
 }
 ```
 
@@ -322,8 +323,9 @@ ServerFeature = bitset (u32) {
 `features` is an optional trailing `u32` big-endian bitset. A one-byte legacy
 value therefore decodes with an empty feature set. Decoders MUST ignore unknown
 feature bits. A client MUST use `APPLY_INPUT` only when
-`ACKNOWLEDGED_INPUT` is advertised and MUST use `PUT_FILE` only when
-`FILE_UPLOAD` is advertised.
+`ACKNOWLEDGED_INPUT` is advertised, MUST use `PUT_FILE` only when
+`FILE_UPLOAD` is advertised, and MUST use `MOVE_TERMINAL` only when
+`MOVE_TERMINAL` is advertised.
 
 The HELLO body is field-tagged TLV per
 [appendix-encoding.md](./appendix-encoding.md): `client_name`, the version

@@ -358,6 +358,27 @@ pub const TYPE_CLOSE_PORT_FORWARD: u8 = 0x29;
 /// Discriminant for `PORT_FORWARD_STATUS` (server to client).
 pub const TYPE_PORT_FORWARD_STATUS: u8 = 0xA6;
 
+/// Discriminant for `MOVE_TERMINAL` (client to server, `docs/spec/L1.md`
+/// §1 / §10.1; ADR-0056).
+///
+/// Re-parents a live Terminal into the window that currently owns
+/// `owner_terminal` — possibly in a different session — without touching
+/// its process, PTY, scrollback, or metadata. Ownership addressing only,
+/// exactly as `SPAWN_TERMINAL.owner_terminal`: no split direction, ratio,
+/// or focus. The reply rides on [`TYPE_TERMINAL_MOVED`] correlated by
+/// `request_id`. Gated on the `MOVE_TERMINAL` server feature bit
+/// (`crate::caps::MOVE_TERMINAL`); allocated at `0x2A`, past the process
+/// (`0x24..=0x27`) and port-forward (`0x28..=0x29`) spec reservations.
+pub const TYPE_MOVE_TERMINAL: u8 = 0x2A;
+/// Discriminant for `TERMINAL_MOVED` (server to client, `docs/spec/L1.md`
+/// §1 / §10.1; ADR-0056).
+///
+/// Reply frame for `MOVE_TERMINAL`; correlated by `request_id`. Carries a
+/// `Result<TerminalId, MoveError>` tagged union — see [`MoveResult`].
+/// Allocated at `0xA8`, past the process (`0xA3..=0xA5`) and port-forward
+/// (`0xA6..=0xA7`) spec reservations.
+pub const TYPE_TERMINAL_MOVED: u8 = 0xA8;
+
 /// Discriminant for `TERMINAL_CLOSED` (server to client, `docs/spec/L1.md` §1 / §10.1).
 ///
 /// Push notification when a Terminal's PTY exits, naturally or via
@@ -390,6 +411,17 @@ pub(crate) const SPAWN_ERROR_TAG_SPAWN_FAILED: u8 = 1;
 pub(crate) const SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE: u8 = 2;
 /// Wire tag for [`SpawnError::SatelliteUnreachable`] (phux-v45.6).
 pub(crate) const SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE: u8 = 3;
+
+// Wire tags for the `MoveResult` / `MoveError` tagged unions (ADR-0056),
+// following the `SpawnResult` convention above (`Ok = 0x00`, `Err = 0x01`).
+/// Wire tag for [`MoveResult::Ok`].
+pub(crate) const MOVE_RESULT_OK: u8 = 0;
+/// Wire tag for [`MoveResult::Err`].
+pub(crate) const MOVE_RESULT_ERR: u8 = 1;
+/// Wire tag for [`MoveError::MoveFailed`].
+pub(crate) const MOVE_ERROR_TAG_MOVE_FAILED: u8 = 0;
+/// Wire tag for [`MoveError::UnsupportedSatelliteRoute`].
+pub(crate) const MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE: u8 = 1;
 
 // Wire tags for the `Scope` tagged union (SPEC §7.4 / §11.L3).
 /// Wire tag for [`Scope::Terminal`].
@@ -913,6 +945,42 @@ pub enum SpawnResult {
     Ok(TerminalId),
     /// Structured failure; see [`SpawnError`].
     Err(SpawnError),
+}
+
+/// Error variants for [`FrameKind::TerminalMoved`] (ADR-0056).
+///
+/// `#[non_exhaustive]` on the same contract as [`SpawnError`]: additive
+/// variants are protocol-minor changes, and an unknown wire tag surfaces
+/// as [`DecodeError::UnknownEnumValue`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MoveError {
+    /// The re-parent was refused or failed: either Terminal does not
+    /// exist, the destination window is gone, or the registry rejected
+    /// the move. The carried string is a human-readable diagnostic,
+    /// unconstrained beyond UTF-8 (the [`SpawnError::SpawnFailed`]
+    /// shape).
+    MoveFailed(String),
+    /// The move named a satellite-tagged Terminal on either end. A move
+    /// is local-only (ADR-0056): federation routing for it does not
+    /// exist, matching the spawn-reply mirror
+    /// [`SpawnError::UnsupportedSatelliteRoute`].
+    UnsupportedSatelliteRoute,
+}
+
+/// Tagged union carried by [`FrameKind::TerminalMoved`] (ADR-0056).
+///
+/// Either the moved Terminal's (unchanged) [`TerminalId`] — echoed back
+/// so a caller can correlate without holding request state — or a
+/// structured [`MoveError`]. A move never changes identity: the id is
+/// stable across it, so subscriptions and outstanding waits survive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MoveResult {
+    /// The moved Terminal's identifier (stable across the move).
+    Ok(TerminalId),
+    /// Structured failure; see [`MoveError`].
+    Err(MoveError),
 }
 
 // -----------------------------------------------------------------------------
@@ -2115,6 +2183,42 @@ pub enum FrameKind {
         result: SpawnResult,
     },
 
+    /// `MOVE_TERMINAL` — re-parent a live Terminal into the window owning
+    /// `owner_terminal` (`docs/spec/L1.md` §1 / §10.1; ADR-0056).
+    ///
+    /// Async: the server replies with [`FrameKind::TerminalMoved`]
+    /// correlated by `request_id`. `owner_terminal` is an ownership
+    /// address exactly as in `SPAWN_TERMINAL`: the destination window may
+    /// belong to a different session, and the frame conveys no split
+    /// direction, ratio, or focus — layout stays a client-written L3
+    /// concern. The pane's process, PTY, scrollback, metadata, and agent
+    /// record are untouched, and its `TerminalId` is stable across the
+    /// move. Local-only: a satellite-tagged Terminal on either end is
+    /// refused with [`MoveError::UnsupportedSatelliteRoute`]. Senders
+    /// MUST first see the `MOVE_TERMINAL` feature bit in
+    /// `HELLO_OK.server_caps` (`crate::caps::MOVE_TERMINAL`).
+    MoveTerminal {
+        /// Correlates this request with the eventual `TerminalMoved`.
+        request_id: u32,
+        /// The Terminal to re-parent.
+        terminal: TerminalId,
+        /// Existing Terminal whose owning window becomes the destination.
+        owner_terminal: TerminalId,
+    },
+
+    /// `TERMINAL_MOVED` — server reply to a prior `MoveTerminal`
+    /// (`docs/spec/L1.md` §1 / §10.1; ADR-0056).
+    ///
+    /// Correlated by `request_id`. `result` carries the moved Terminal's
+    /// unchanged [`TerminalId`] or a structured [`MoveError`] — typed
+    /// end-to-end for the same reason as [`FrameKind::TerminalSpawned`].
+    TerminalMoved {
+        /// Correlates this reply with a prior `MoveTerminal.request_id`.
+        request_id: u32,
+        /// Either the moved Terminal, or a structured error.
+        result: MoveResult,
+    },
+
     /// `TERMINAL_CLOSED` — server notifies clients that a Terminal exited
     /// (`docs/spec/L1.md` §1 / §10.1).
     ///
@@ -2251,6 +2355,8 @@ impl FrameKind {
             Self::MetadataValue { .. } => TYPE_METADATA_VALUE,
             Self::MetadataKeys { .. } => TYPE_METADATA_KEYS,
             Self::SpawnTerminal { .. } => TYPE_SPAWN_TERMINAL,
+            Self::MoveTerminal { .. } => TYPE_MOVE_TERMINAL,
+            Self::TerminalMoved { .. } => TYPE_TERMINAL_MOVED,
             Self::TerminalSpawned { .. } => TYPE_TERMINAL_SPAWNED,
             Self::TerminalClosed { .. } => TYPE_TERMINAL_CLOSED,
             Self::TerminalResize { .. } => TYPE_TERMINAL_RESIZE,
@@ -2596,6 +2702,29 @@ impl FrameKind {
                 });
                 enc.write_field_with(field::terminal_spawned::RESULT, |e| {
                     encode_spawn_result(result, e);
+                });
+            }
+            Self::MoveTerminal {
+                request_id,
+                terminal,
+                owner_terminal,
+            } => {
+                enc.write_field_with(field::move_terminal::REQUEST_ID, |e| {
+                    e.write_u32_be(*request_id);
+                });
+                enc.write_field_with(field::move_terminal::TERMINAL, |e| {
+                    encode_terminal_id(terminal, e);
+                });
+                enc.write_field_with(field::move_terminal::OWNER_TERMINAL, |e| {
+                    encode_terminal_id(owner_terminal, e);
+                });
+            }
+            Self::TerminalMoved { request_id, result } => {
+                enc.write_field_with(field::terminal_moved::REQUEST_ID, |e| {
+                    e.write_u32_be(*request_id);
+                });
+                enc.write_field_with(field::terminal_moved::RESULT, |e| {
+                    encode_move_result(result, e);
                 });
             }
             Self::TerminalClosed {
@@ -3247,6 +3376,53 @@ fn decode_spawn_error(dec: &mut Decoder<'_>) -> Result<SpawnError, DecodeError> 
         }
         other => Err(DecodeError::UnknownEnumValue {
             field: "SpawnError",
+            value: u32::from(other),
+        }),
+    }
+}
+
+pub(super) fn encode_move_result(result: &MoveResult, enc: &mut Encoder<'_>) {
+    match result {
+        MoveResult::Ok(terminal_id) => {
+            enc.write_u8(MOVE_RESULT_OK);
+            encode_terminal_id(terminal_id, enc);
+        }
+        MoveResult::Err(err) => {
+            enc.write_u8(MOVE_RESULT_ERR);
+            match err {
+                MoveError::MoveFailed(msg) => {
+                    enc.write_u8(MOVE_ERROR_TAG_MOVE_FAILED);
+                    enc.write_str(msg);
+                }
+                MoveError::UnsupportedSatelliteRoute => {
+                    enc.write_u8(MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE);
+                }
+            }
+        }
+    }
+}
+
+pub(super) fn decode_move_result(dec: &mut Decoder<'_>) -> Result<MoveResult, DecodeError> {
+    let tag = dec.read_u8()?;
+    match tag {
+        MOVE_RESULT_OK => Ok(MoveResult::Ok(decode_terminal_id(dec)?)),
+        MOVE_RESULT_ERR => {
+            let err_tag = dec.read_u8()?;
+            match err_tag {
+                MOVE_ERROR_TAG_MOVE_FAILED => Ok(MoveResult::Err(MoveError::MoveFailed(
+                    dec.read_str()?.to_owned(),
+                ))),
+                MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE => {
+                    Ok(MoveResult::Err(MoveError::UnsupportedSatelliteRoute))
+                }
+                other => Err(DecodeError::UnknownEnumValue {
+                    field: "MoveError",
+                    value: u32::from(other),
+                }),
+            }
+        }
+        other => Err(DecodeError::UnknownEnumValue {
+            field: "MoveResult",
             value: u32::from(other),
         }),
     }

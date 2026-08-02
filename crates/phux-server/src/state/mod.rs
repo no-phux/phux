@@ -893,6 +893,42 @@ mod tests {
     }
 
     #[test]
+    fn move_that_empties_source_window_reaps_it_and_its_session() {
+        // ADR-0056: the registry re-parent plus the shared empty-window
+        // cascade — a cross-session move of a solo pane must reap the
+        // emptied source window AND its now-window-less session, exactly
+        // as pane death would, while the moved pane survives untouched.
+        let mut s = ServerState::new();
+        let (sid_a, wid_a, pid_a) = s.seed_session("a");
+        let (sid_b, wid_b, _pid_b) = s.seed_session("b");
+
+        s.registry
+            .move_terminal(pid_a, wid_b)
+            .expect("cross-session move succeeds");
+        s.reap_window_if_empty(wid_a);
+
+        assert!(
+            s.registry.session(sid_a).is_none(),
+            "emptied session reaped"
+        );
+        assert!(s.registry.session(sid_b).is_some());
+        assert_eq!(
+            s.registry.terminal(pid_a).expect("pane survives").window,
+            wid_b
+        );
+
+        // A move that leaves the source window populated reaps nothing.
+        let (sid_c, wid_c, pid_c) = s.seed_session("c");
+        let pid_c2 = s.registry.new_terminal(wid_c).unwrap();
+        s.registry
+            .move_terminal(pid_c2, wid_b)
+            .expect("move succeeds");
+        s.reap_window_if_empty(wid_c);
+        assert!(s.registry.session(sid_c).is_some(), "populated source kept");
+        assert!(s.registry.terminal(pid_c).is_some());
+    }
+
+    #[test]
     fn reap_last_pane_empties_server() {
         let mut s = ServerState::new();
         let (sid, _wid, pid) = s.seed_session("default");

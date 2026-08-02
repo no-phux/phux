@@ -30,8 +30,8 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ControlAction, ErrorCode,
     FileUploadAck, InputMode, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
-    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, Scope, SpawnError, SpawnResult, StateScope,
-    TerminalLifecycle, TerminalSignal, ViewportInfo,
+    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, MoveError, MoveResult, Scope, SpawnError,
+    SpawnResult, StateScope, TerminalLifecycle, TerminalSignal, ViewportInfo,
 };
 use phux_protocol::wire::info::{
     LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
@@ -1224,6 +1224,14 @@ fn arb_spawn_result() -> impl Strategy<Value = SpawnResult> {
     ]
 }
 
+fn arb_move_result() -> impl Strategy<Value = MoveResult> {
+    prop_oneof![
+        arb_terminal_id().prop_map(MoveResult::Ok),
+        ".{0,64}".prop_map(|msg| MoveResult::Err(MoveError::MoveFailed(msg))),
+        Just(MoveResult::Err(MoveError::UnsupportedSatelliteRoute)),
+    ]
+}
+
 proptest! {
     /// The `Some(vec![])` shapes matter here: `command = Some(vec![])` is
     /// distinct from `command = None`, and `env = Some(vec![])` ("start with
@@ -1261,6 +1269,25 @@ proptest! {
         result in arb_spawn_result(),
     ) {
         assert_round_trip(&FrameKind::TerminalSpawned { request_id, result });
+    }
+
+    /// MOVE_TERMINAL / TERMINAL_MOVED (ADR-0056): both TerminalId fields
+    /// are required, and the reply's tagged union mirrors SpawnResult.
+    #[test]
+    fn roundtrip_move_terminal(
+        request_id in any::<u32>(),
+        terminal in arb_terminal_id(),
+        owner_terminal in arb_terminal_id(),
+    ) {
+        assert_round_trip(&FrameKind::MoveTerminal { request_id, terminal, owner_terminal });
+    }
+
+    #[test]
+    fn roundtrip_terminal_moved(
+        request_id in any::<u32>(),
+        result in arb_move_result(),
+    ) {
+        assert_round_trip(&FrameKind::TerminalMoved { request_id, result });
     }
 
     /// `exit_status = None` is the wire encoding for "killed by signal /

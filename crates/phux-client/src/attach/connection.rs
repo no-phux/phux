@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use bytes::{Buf, BytesMut};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, ErrorCode, FrameKind, MAX_FRAME_LEN, Scope, SpawnResult,
+    Command, CommandResult, ErrorCode, FrameKind, MAX_FRAME_LEN, MoveResult, Scope, SpawnResult,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -497,6 +497,44 @@ impl Connection {
         let result = self
             .await_answer(request_id, &mut interleaved, |frame| match frame {
                 FrameKind::TerminalSpawned { request_id, result } => {
+                    Some((*request_id, result.clone()))
+                }
+                _ => None,
+            })
+            .await?;
+        Ok(Reply {
+            result,
+            interleaved,
+        })
+    }
+
+    /// Send one `MOVE_TERMINAL` and wait for its `TERMINAL_MOVED`, keeping
+    /// every frame the peer interleaved ahead of it (ADR-0056).
+    ///
+    /// The correlation id is read out of `frame` rather than passed
+    /// alongside it, so the id waited on and the id sent cannot disagree —
+    /// the same contract as [`Self::request_spawn`].
+    ///
+    /// # Errors
+    ///
+    /// [`AttachError::Protocol`] when `frame` is not a `MOVE_TERMINAL`;
+    /// otherwise transport and decode failures from [`Self::send`] /
+    /// [`Self::recv`].
+    pub async fn request_move(
+        &mut self,
+        frame: &FrameKind,
+    ) -> Result<Reply<Answer<MoveResult>>, AttachError> {
+        let FrameKind::MoveTerminal { request_id, .. } = frame else {
+            return Err(AttachError::Protocol(format!(
+                "request_move needs a MOVE_TERMINAL frame, got {frame:?}",
+            )));
+        };
+        let request_id = *request_id;
+        self.send(frame).await?;
+        let mut interleaved = Vec::new();
+        let result = self
+            .await_answer(request_id, &mut interleaved, |frame| match frame {
+                FrameKind::TerminalMoved { request_id, result } => {
                     Some((*request_id, result.clone()))
                 }
                 _ => None,

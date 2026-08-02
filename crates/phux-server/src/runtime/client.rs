@@ -20,8 +20,8 @@ use tracing::{debug, error, info, trace, warn};
 use super::input_lane::{InputLaneHandle, RoutedInput};
 use super::{
     STALE_PROBE_TIMEOUT, ServerError, SpawnRequest, handle_attach, handle_command,
-    handle_frame_ack, handle_spawn_terminal, handle_terminal_input, handle_terminal_resize,
-    handle_viewport_resize,
+    handle_frame_ack, handle_move_terminal, handle_spawn_terminal, handle_terminal_input,
+    handle_terminal_resize, handle_viewport_resize,
 };
 use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState, TerminalInput};
 use crate::terminal_actor::ConsumerDetachRequest;
@@ -965,6 +965,7 @@ where
                         .with_features(ServerFeatureSet::with(&[
                             ServerFeature::AcknowledgedInput,
                             ServerFeature::FileUpload,
+                            ServerFeature::MoveTerminal,
                         ])),
                     server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
                 };
@@ -1145,6 +1146,21 @@ where
                     },
                     &out_tx,
                     &root_token,
+                )
+                .await;
+            }
+            FrameKind::MoveTerminal {
+                request_id,
+                terminal,
+                owner_terminal,
+            } => {
+                handle_move_terminal(
+                    &state,
+                    client_id,
+                    request_id,
+                    terminal,
+                    owner_terminal,
+                    &out_tx,
                 )
                 .await;
             }

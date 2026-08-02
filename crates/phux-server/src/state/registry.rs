@@ -977,7 +977,18 @@ impl ServerState {
             return self.registry.session_count() == 0;
         };
 
-        // Cascade up only while the parent has been emptied.
+        self.reap_window_if_empty(window_id);
+
+        self.registry.session_count() == 0
+    }
+
+    /// Cascade the `window → session` half of [`Self::reap_terminal`]:
+    /// remove `window` when it holds no panes, and its session when that
+    /// leaves the session with no windows. A no-op on a still-populated or
+    /// unknown window. Shared by pane reaping and `MOVE_TERMINAL`
+    /// (ADR-0056), whose re-parent can empty the source window without any
+    /// pane dying.
+    pub fn reap_window_if_empty(&mut self, window_id: WindowId) {
         let window_empty = self
             .registry
             .window(window_id)
@@ -997,8 +1008,6 @@ impl ServerState {
                 }
             }
         }
-
-        self.registry.session_count() == 0
     }
 
     /// Drop every server-side map entry keyed on a now-removed pane.

@@ -567,10 +567,12 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Move one existing pane beside another in the same session.
+    /// Move one existing pane beside another, even across sessions.
     ///
     /// SOURCE is collapsed out of its current tree position and inserted
     /// beside TARGET. Both selectors must resolve to exactly one local pane.
+    /// When TARGET lives in a different session the pane is re-parented on
+    /// the server first — its process, scrollback, and id survive the move.
     #[command(name = "move-pane")]
     MovePane {
         /// Pane to relocate.

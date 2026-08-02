@@ -12,13 +12,14 @@ use super::frame::{
     TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT,
     TYPE_FRAME_ACK, TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
     TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED,
-    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_PING, TYPE_PONG, TYPE_SET_METADATA,
-    TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_TERMINAL_CLOSED,
-    TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SNAPSHOT, TYPE_TERMINAL_SPAWNED,
-    TYPE_VIEWPORT_RESIZE, decode_agent_event, decode_attach_target, decode_command,
-    decode_command_result, decode_env, decode_focus_event, decode_key_event,
-    decode_metadata_scope_key, decode_mouse_event, decode_paste_event, decode_scope,
-    decode_spawn_result, decode_string_list, decode_terminal_id, decode_viewport_info,
+    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_TERMINAL, TYPE_PING, TYPE_PONG,
+    TYPE_SET_METADATA, TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
+    TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_MOVED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_RESIZE,
+    TYPE_TERMINAL_SNAPSHOT, TYPE_TERMINAL_SPAWNED, TYPE_VIEWPORT_RESIZE, decode_agent_event,
+    decode_attach_target, decode_command, decode_command_result, decode_env, decode_focus_event,
+    decode_key_event, decode_metadata_scope_key, decode_mouse_event, decode_move_result,
+    decode_paste_event, decode_scope, decode_spawn_result, decode_string_list, decode_terminal_id,
+    decode_viewport_info,
 };
 use super::info::{decode_client_id, decode_session_snapshot};
 use crate::ids::{GroupId, TerminalId};
@@ -949,6 +950,49 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 FrameKind::TerminalSpawned {
+                    request_id,
+                    result: result.ok_or(DecodeError::UnexpectedEof)?,
+                }
+            }
+            TYPE_MOVE_TERMINAL => {
+                let mut request_id = 0u32;
+                let mut terminal: Option<TerminalId> = None;
+                let mut owner_terminal: Option<TerminalId> = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::move_terminal::REQUEST_ID => {
+                            request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                        }
+                        field::move_terminal::TERMINAL => {
+                            terminal = Some(sub!(value, decode_terminal_id));
+                        }
+                        field::move_terminal::OWNER_TERMINAL => {
+                            owner_terminal = Some(sub!(value, decode_terminal_id));
+                        }
+                        _ => {}
+                    }
+                }
+                FrameKind::MoveTerminal {
+                    request_id,
+                    terminal: terminal.ok_or(DecodeError::UnexpectedEof)?,
+                    owner_terminal: owner_terminal.ok_or(DecodeError::UnexpectedEof)?,
+                }
+            }
+            TYPE_TERMINAL_MOVED => {
+                let mut request_id = 0u32;
+                let mut result: Option<crate::wire::frame::MoveResult> = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::terminal_moved::REQUEST_ID => {
+                            request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                        }
+                        field::terminal_moved::RESULT => {
+                            result = Some(sub!(value, decode_move_result));
+                        }
+                        _ => {}
+                    }
+                }
+                FrameKind::TerminalMoved {
                     request_id,
                     result: result.ok_or(DecodeError::UnexpectedEof)?,
                 }

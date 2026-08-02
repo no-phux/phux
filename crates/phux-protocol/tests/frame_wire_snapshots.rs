@@ -20,7 +20,8 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AttachTarget, ErrorCode, FrameKind, Scope, SpawnError, SpawnResult, ViewportInfo,
+    AttachTarget, ErrorCode, FrameKind, MoveError, MoveResult, Scope, SpawnError, SpawnResult,
+    ViewportInfo,
 };
 use phux_protocol::wire::info::{
     LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
@@ -655,6 +656,35 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
             FrameKind::TerminalSpawned {
                 request_id: 0x0000_0008,
                 result: SpawnResult::Err(SpawnError::SpawnFailed("no pty available".to_owned())),
+            },
+        ),
+        (
+            "snap_move_terminal",
+            FrameKind::MoveTerminal {
+                request_id: 0x0000_0009,
+                terminal: TerminalId::local(0x0000_002A),
+                owner_terminal: TerminalId::local(0x0000_0007),
+            },
+        ),
+        (
+            "snap_terminal_moved_ok",
+            FrameKind::TerminalMoved {
+                request_id: 0x0000_0009,
+                result: MoveResult::Ok(TerminalId::local(0x0000_002A)),
+            },
+        ),
+        (
+            "snap_terminal_moved_err_move_failed",
+            FrameKind::TerminalMoved {
+                request_id: 0x0000_000A,
+                result: MoveResult::Err(MoveError::MoveFailed("no such terminal".to_owned())),
+            },
+        ),
+        (
+            "snap_terminal_moved_err_unsupported_satellite_route",
+            FrameKind::TerminalMoved {
+                request_id: 0x0000_000B,
+                result: MoveResult::Err(MoveError::UnsupportedSatelliteRoute),
             },
         ),
         (
