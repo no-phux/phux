@@ -7,6 +7,9 @@
 //! Under ADR-0013 the structured-diff codec is gone; the strategies here
 //! cover `TerminalOutput` (raw VT bytes) and the new `TerminalSnapshot` (bytes
 //! body) in place of the deleted `PaneDiff` strategies.
+//!
+//! The TLV byte-building helpers (`docs/spec/appendix-encoding.md`) live in
+//! `tests/common/mod.rs`, shared with the other wire test files.
 
 #![allow(clippy::unwrap_used)]
 
@@ -36,46 +39,20 @@ use phux_protocol::wire::info::{
 use phux_protocol::wire::{DecodeError, decode::Decoder, frame::FrameKind};
 use proptest::prelude::*;
 
-// -----------------------------------------------------------------------------
-// TLV test helpers (`docs/spec/appendix-encoding.md`).
-//
-// Message bodies are field-tagged: each field is
-// `field_id: varint || wire_type: u8 (4 = BYTES) || varint length || value`.
-// These helpers hand-build malformed / partial frames for the
-// decoder-rejection and forward-compat tests below, the field-tagged
-// counterparts of the old positional byte-builders.
-// -----------------------------------------------------------------------------
+mod common;
+use common::{attached_with_layout, framed_tlv, tlv_field};
 
-/// Append an unsigned LEB128 varint.
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
-    loop {
-        let byte = (v & 0x7f) as u8;
-        v >>= 7;
-        if v == 0 {
-            out.push(byte);
-            break;
-        }
-        out.push(byte | 0x80);
-    }
-}
-
-/// Append one TLV field: `field_id || wire_type(4) || len || value`.
-fn tlv_field(out: &mut Vec<u8>, field_id: u32, value: &[u8]) {
-    put_varint(out, u64::from(field_id));
-    out.push(4); // wire_type BYTES
-    put_varint(out, value.len() as u64);
-    out.extend_from_slice(value);
-}
-
-/// Wrap a `type_byte` + field-tagged `body` in the outer length frame
-/// (`u32 length || type || body`), where `length` covers the type byte + body.
-fn framed_tlv(type_byte: u8, fields: &[u8]) -> Vec<u8> {
-    let mut body = vec![type_byte];
-    body.extend_from_slice(fields);
-    let mut frame = Vec::new();
-    frame.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
-    frame.extend_from_slice(&body);
-    frame
+/// The shared body of every round-trip test in this file: encoding then
+/// decoding `frame` is the identity, and the decoder consumes the whole
+/// buffer. (`FrameKind::decode` delegates to `Decoder::read_frame`, so both
+/// entry points are one path.) Inside `proptest!` closures a plain panic is
+/// caught and shrunk like a `prop_assert!` failure.
+fn assert_round_trip(frame: &FrameKind) {
+    let mut buf = BytesMut::new();
+    frame.encode(&mut buf);
+    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
+    assert_eq!(&decoded, frame);
+    assert!(tail.is_empty());
 }
 
 // -----------------------------------------------------------------------------
@@ -365,6 +342,7 @@ fn arb_error_code() -> impl Strategy<Value = ErrorCode> {
         Just(ErrorCode::ResourceExhausted),
         Just(ErrorCode::UnsafePaste),
         Just(ErrorCode::InputDeliveryUnknown),
+        Just(ErrorCode::InputLeaseHeld),
         Just(ErrorCode::InternalError),
     ]
 }
@@ -389,11 +367,7 @@ proptest! {
     /// Encoding then decoding any supported `FrameKind` is the identity.
     #[test]
     fn roundtrip_frame_kind(frame in arb_frame_kind()) {
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = Decoder::new(&buf).read_frame().unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&frame);
     }
 
     /// Decoding never panics on arbitrary byte input. The result is either
@@ -409,12 +383,7 @@ proptest! {
         seq in any::<u64>(),
         bytes in arb_vt_bytes(),
     ) {
-        let frame = FrameKind::TerminalOutput { terminal_id, seq, bytes: bytes.into() };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::TerminalOutput { terminal_id, seq, bytes: bytes.into() });
     }
 
     #[test]
@@ -425,51 +394,59 @@ proptest! {
         vt_replay_bytes in arb_vt_bytes(),
         scrollback_bytes in proptest::option::of(arb_vt_bytes()),
     ) {
-        let frame = FrameKind::TerminalSnapshot {
+        assert_round_trip(&FrameKind::TerminalSnapshot {
             terminal_id,
             cols,
             rows,
             vt_replay_bytes,
             scrollback_bytes,
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 }
 
+/// HELLO round-trips across every capability shape a client can advertise:
+/// the default caps, each `ColorSupport` variant, image/kbd/hyperlink
+/// combinations, `OutputMode::StateSync` (phux-fseo), and outer terminal
+/// default colors.
 #[test]
-fn hello_round_trip_minimal() {
-    let frame = FrameKind::Hello {
-        client_name: "phux-client".to_owned(),
-        protocol_major: 0,
-        protocol_minor: 1,
-        protocol_patch: 0,
-        client_caps: ClientCapabilities::default(),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn hello_ok_round_trip() {
-    let frame = FrameKind::HelloOk {
-        protocol_major: 0,
-        protocol_minor: 2,
-        protocol_patch: 0,
-        server_caps: ServerCapabilities::new().with_layers(LayerSet::all()),
-        server_id: vec![0xDE, 0xAD, 0xBE, 0xEF],
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
+fn hello_round_trips_across_capability_shapes() {
+    let mut shapes = vec![
+        ClientCapabilities::default(),
+        ClientCapabilities::new()
+            .with_image_protocols(ImageProtocolSet::with(&[ImageProtocol::Sixel]))
+            .with_kbd_protocols(KeyboardProtocolSet::with(&[KeyboardProtocol::Kitty]))
+            .with_hyperlinks(false),
+        ClientCapabilities::new().with_output_mode(OutputMode::StateSync),
+        ClientCapabilities::new().with_default_colors(TerminalDefaultColors {
+            foreground: TerminalColor {
+                r: 0xd0,
+                g: 0xd0,
+                b: 0xd0,
+            },
+            background: TerminalColor {
+                r: 0x12,
+                g: 0x18,
+                b: 0x1b,
+            },
+        }),
+    ];
+    for color in [
+        ColorSupport::TrueColor,
+        ColorSupport::Indexed256,
+        ColorSupport::Indexed16,
+        ColorSupport::Mono,
+    ] {
+        shapes.push(ClientCapabilities::new().with_color_support(color));
+    }
+    for client_caps in shapes {
+        assert_round_trip(&FrameKind::Hello {
+            client_name: "phux-client".to_owned(),
+            protocol_major: 0,
+            protocol_minor: 2,
+            protocol_patch: 0,
+            client_caps,
+        });
+    }
 }
 
 /// A truncated `HELLO_OK` (version only, no trailing caps / `server_id` —
@@ -498,99 +475,6 @@ fn hello_ok_round_trip_version_only_trailing_defaults() {
             server_id: Vec::new(),
         }
     );
-    assert!(tail.is_empty());
-}
-#[test]
-fn hello_round_trip_each_color_support() {
-    for color in [
-        ColorSupport::TrueColor,
-        ColorSupport::Indexed256,
-        ColorSupport::Indexed16,
-        ColorSupport::Mono,
-    ] {
-        let frame = FrameKind::Hello {
-            client_name: "phux-client".to_owned(),
-            protocol_major: 0,
-            protocol_minor: 2,
-            protocol_patch: 0,
-            client_caps: ClientCapabilities::new().with_color_support(color),
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        assert_eq!(decoded, frame);
-        assert!(tail.is_empty());
-    }
-}
-
-#[test]
-fn hello_round_trip_image_kbd_and_hyperlink_caps() {
-    let caps = ClientCapabilities::new()
-        .with_image_protocols(ImageProtocolSet::with(&[ImageProtocol::Sixel]))
-        .with_kbd_protocols(KeyboardProtocolSet::with(&[KeyboardProtocol::Kitty]))
-        .with_hyperlinks(false);
-    let frame = FrameKind::Hello {
-        client_name: "phux-client".to_owned(),
-        protocol_major: 0,
-        protocol_minor: 2,
-        protocol_patch: 0,
-        client_caps: caps,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn hello_round_trip_state_sync_output_mode() {
-    // phux-fseo: a consumer advertising OutputMode::StateSync round-trips
-    // through the trailing client-caps byte.
-    let caps = ClientCapabilities::new().with_output_mode(OutputMode::StateSync);
-    let frame = FrameKind::Hello {
-        client_name: "phux-agent".to_owned(),
-        protocol_major: 0,
-        protocol_minor: 2,
-        protocol_patch: 0,
-        client_caps: caps,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    let FrameKind::Hello { client_caps, .. } = decoded else {
-        panic!("expected Hello");
-    };
-    assert_eq!(client_caps.output_mode, OutputMode::StateSync);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn hello_round_trip_outer_terminal_default_colors() {
-    let colors = TerminalDefaultColors {
-        foreground: TerminalColor {
-            r: 0xd0,
-            g: 0xd0,
-            b: 0xd0,
-        },
-        background: TerminalColor {
-            r: 0x12,
-            g: 0x18,
-            b: 0x1b,
-        },
-    };
-    let frame = FrameKind::Hello {
-        client_name: "phux-client".to_owned(),
-        protocol_major: 0,
-        protocol_minor: 2,
-        protocol_patch: 0,
-        client_caps: ClientCapabilities::new().with_default_colors(colors),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
     assert!(tail.is_empty());
 }
 
@@ -672,61 +556,45 @@ fn hello_decoder_treats_unknown_color_support_tag_as_truecolor() {
     }
 }
 
+/// Fixed-value fixtures for the simple frames: `HELLO_OK`, PING, DETACH /
+/// DETACHED, `TERMINAL_OUTPUT`, and both `TERMINAL_SNAPSHOT` shapes.
 #[test]
-fn ping_round_trip() {
-    let frame = FrameKind::Ping {
-        nonce: 0xDEAD_BEEF_CAFE_F00D,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, _) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-}
-
-#[test]
-fn pane_output_round_trip_hello_world() {
-    let frame = FrameKind::TerminalOutput {
-        terminal_id: TerminalId::local(1),
-        seq: 0,
-        bytes: bytes::Bytes::from_static(b"hello world\r\n"),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn pane_snapshot_round_trip_minimal() {
-    let frame = FrameKind::TerminalSnapshot {
-        terminal_id: TerminalId::new(100),
-        cols: 80,
-        rows: 24,
-        vt_replay_bytes: b"\x1b[!p\x1b[2J\x1b[H".to_vec(),
-        scrollback_bytes: None,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn pane_snapshot_round_trip_with_scrollback() {
-    let frame = FrameKind::TerminalSnapshot {
-        terminal_id: TerminalId::new(100),
-        cols: 80,
-        rows: 24,
-        vt_replay_bytes: b"vt".to_vec(),
-        scrollback_bytes: Some(b"sb".to_vec()),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
+fn fixed_frames_round_trip() {
+    for frame in [
+        FrameKind::HelloOk {
+            protocol_major: 0,
+            protocol_minor: 2,
+            protocol_patch: 0,
+            server_caps: ServerCapabilities::new().with_layers(LayerSet::all()),
+            server_id: vec![0xDE, 0xAD, 0xBE, 0xEF],
+        },
+        FrameKind::Ping {
+            nonce: 0xDEAD_BEEF_CAFE_F00D,
+        },
+        FrameKind::Detach,
+        FrameKind::Detached,
+        FrameKind::TerminalOutput {
+            terminal_id: TerminalId::local(1),
+            seq: 0,
+            bytes: bytes::Bytes::from_static(b"hello world\r\n"),
+        },
+        FrameKind::TerminalSnapshot {
+            terminal_id: TerminalId::new(100),
+            cols: 80,
+            rows: 24,
+            vt_replay_bytes: b"\x1b[!p\x1b[2J\x1b[H".to_vec(),
+            scrollback_bytes: None,
+        },
+        FrameKind::TerminalSnapshot {
+            terminal_id: TerminalId::new(100),
+            cols: 80,
+            rows: 24,
+            vt_replay_bytes: b"vt".to_vec(),
+            scrollback_bytes: Some(b"sb".to_vec()),
+        },
+    ] {
+        assert_round_trip(&frame);
+    }
 }
 
 #[test]
@@ -888,114 +756,68 @@ fn tail_is_returned_after_single_frame() {
 
 proptest! {
     #[test]
-    fn roundtrip_attach_target(target in arb_attach_target()) {
-        let frame = FrameKind::Attach {
-            target,
-            viewport: ViewportInfo::new(80, 24),
-            request_scrollback: false,
-            scrollback_limit_lines: 0,
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
-    }
-
-    #[test]
     fn roundtrip_attach_full(
         target in arb_attach_target(),
         viewport in arb_viewport_info(),
         request_scrollback in any::<bool>(),
         scrollback_limit_lines in any::<u32>(),
     ) {
-        let frame = FrameKind::Attach {
+        assert_round_trip(&FrameKind::Attach {
             target,
             viewport,
             request_scrollback,
             scrollback_limit_lines,
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 
     #[test]
     fn roundtrip_input_key(terminal_id in arb_terminal_id(), event in arb_key_event()) {
-        let frame = FrameKind::InputKey { terminal_id, event };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::InputKey { terminal_id, event });
     }
 
     #[test]
     fn roundtrip_input_mouse(terminal_id in arb_terminal_id(), event in arb_mouse_event()) {
-        let frame = FrameKind::InputMouse { terminal_id, event };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::InputMouse { terminal_id, event });
     }
 
     #[test]
     fn roundtrip_input_focus(terminal_id in arb_terminal_id(), event in arb_focus_event()) {
-        let frame = FrameKind::InputFocus { terminal_id, event };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::InputFocus { terminal_id, event });
     }
 
     #[test]
     fn roundtrip_input_paste(terminal_id in arb_terminal_id(), event in arb_paste_event()) {
-        let frame = FrameKind::InputPaste { terminal_id, event };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::InputPaste { terminal_id, event });
     }
 
     #[test]
     fn roundtrip_session_info(info in arb_session_info()) {
         let snap = SessionSnapshot::new(info.id, WindowId::new(0), TerminalId::new(0))
             .with_sessions(vec![info]);
-        let frame = FrameKind::Attached { snapshot: snap, initial_client_id: ClientId::new(0) };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::Attached {
+            snapshot: snap,
+            initial_client_id: ClientId::new(0),
+        });
     }
 
     #[test]
     fn roundtrip_window_info(info in arb_window_info()) {
         let snap = SessionSnapshot::new(info.session_id, info.id, TerminalId::new(0))
             .with_windows(vec![info]);
-        let frame = FrameKind::Attached { snapshot: snap, initial_client_id: ClientId::new(0) };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::Attached {
+            snapshot: snap,
+            initial_client_id: ClientId::new(0),
+        });
     }
 
     #[test]
     fn roundtrip_pane_info(info in arb_pane_info()) {
         let snap = SessionSnapshot::new(SessionId::new(0), info.window_id, info.id.clone())
             .with_panes(vec![info]);
-        let frame = FrameKind::Attached { snapshot: snap, initial_client_id: ClientId::new(0) };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::Attached {
+            snapshot: snap,
+            initial_client_id: ClientId::new(0),
+        });
     }
 
     #[test]
@@ -1004,12 +826,10 @@ proptest! {
             .with_layout(Some(layout));
         let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::new(0))
             .with_windows(vec![win]);
-        let frame = FrameKind::Attached { snapshot: snap, initial_client_id: ClientId::new(0) };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::Attached {
+            snapshot: snap,
+            initial_client_id: ClientId::new(0),
+        });
     }
 
     #[test]
@@ -1017,25 +837,15 @@ proptest! {
         snapshot in arb_session_snapshot(),
         client_id in any::<u32>(),
     ) {
-        let frame = FrameKind::Attached {
+        assert_round_trip(&FrameKind::Attached {
             snapshot,
             initial_client_id: ClientId::new(client_id),
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 
     #[test]
     fn roundtrip_bell(terminal_id in arb_terminal_id()) {
-        let frame = FrameKind::Bell { terminal_id };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::Bell { terminal_id });
     }
 
     #[test]
@@ -1044,53 +854,18 @@ proptest! {
         code in arb_error_code(),
         message in ".{0,256}",
     ) {
-        let frame = FrameKind::Error { request_id, code, message };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::Error { request_id, code, message });
     }
 
     #[test]
     fn roundtrip_viewport_resize(viewport in arb_viewport_info()) {
-        let frame = FrameKind::ViewportResize { viewport };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::ViewportResize { viewport });
     }
 
     #[test]
     fn roundtrip_frame_ack(terminal_id in arb_terminal_id(), seq in any::<u64>()) {
-        let frame = FrameKind::FrameAck { terminal_id, seq };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::FrameAck { terminal_id, seq });
     }
-}
-
-#[test]
-fn detach_round_trip() {
-    let frame = FrameKind::Detach;
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn detached_round_trip() {
-    let frame = FrameKind::Detached;
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
 }
 
 #[test]
@@ -1130,36 +905,6 @@ fn input_focus_unknown_kind_is_rejected() {
             value: 0xAB,
         }
     );
-}
-
-#[test]
-fn error_round_trip_session_not_found() {
-    // The canonical case unblocking phux-byc.6.6: the server replies to an
-    // ATTACH targeting an unknown session with ERROR { SESSION_NOT_FOUND }.
-    let frame = FrameKind::Error {
-        request_id: None,
-        code: ErrorCode::SessionNotFound,
-        message: "no such session: 'work'".to_owned(),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn error_round_trip_with_request_id() {
-    let frame = FrameKind::Error {
-        request_id: Some(42),
-        code: ErrorCode::InvalidCommand,
-        message: "missing field: terminal_id".to_owned(),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
 }
 
 #[test]
@@ -1208,138 +953,61 @@ fn error_code_wire_values_match_spec() {
     assert_eq!(ErrorCode::InternalError.as_wire(), 65535);
 }
 
-#[test]
-fn bell_round_trip() {
-    let frame = FrameKind::Bell {
-        terminal_id: TerminalId::local(0x1234_5678),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
 // -----------------------------------------------------------------------------
 // Layout ratio validation — SPEC §13 leaves bounds implicit; phux rejects
 // NaN, infinite, and out-of-range values on decode.
 // -----------------------------------------------------------------------------
 
 fn encode_split_with_ratio(ratio: f32) -> Vec<u8> {
-    // Hand-roll an ATTACHED frame whose single WindowInfo carries a Split node
-    // with `ratio`. Under field-tagged TLV the message body is two fields —
-    // SNAPSHOT (id 1) and INITIAL_CLIENT_ID (id 2) — but the SessionSnapshot
-    // value is still positional, so the inner bytes mirror
-    // `info::encode_session_snapshot` exactly. Keep in sync when the snapshot
-    // wire shape changes.
-    let mut snap = Vec::new();
-    // sessions: empty list
-    snap.extend_from_slice(&0u32.to_be_bytes());
-    // windows: one item
-    snap.extend_from_slice(&1u32.to_be_bytes());
-    // WindowInfo
-    snap.extend_from_slice(&1u32.to_be_bytes()); // id
-    snap.extend_from_slice(&1u32.to_be_bytes()); // session_id
-    snap.extend_from_slice(&0u16.to_be_bytes()); // index
-    snap.extend_from_slice(&1u32.to_be_bytes()); // name length
-    snap.push(b'w'); // name bytes
-    snap.push(0); // active_pane: None
-    snap.push(1); // layout: Some
-    snap.push(1); // LayoutNode::Split
-    snap.push(0); // SplitDir::Horizontal
-    snap.extend_from_slice(&ratio.to_be_bytes());
-    // Left leaf: LAYOUT_TAG_LEAF=0, then TerminalId::Local { id: 1 }
-    snap.push(0);
-    snap.push(0); // TERMINAL_ID_TAG_LOCAL
-    snap.extend_from_slice(&1u32.to_be_bytes());
-    // Right leaf: LAYOUT_TAG_LEAF=0, then TerminalId::Local { id: 2 }
-    snap.push(0);
-    snap.push(0); // TERMINAL_ID_TAG_LOCAL
-    snap.extend_from_slice(&2u32.to_be_bytes());
-    // panes: empty list
-    snap.extend_from_slice(&0u32.to_be_bytes());
-    // focused_session, focused_window, focused_pane (tagged TerminalId)
-    snap.extend_from_slice(&0u32.to_be_bytes()); // focused_session
-    snap.extend_from_slice(&0u32.to_be_bytes()); // focused_window
-    snap.push(0); // TERMINAL_ID_TAG_LOCAL
-    snap.extend_from_slice(&1u32.to_be_bytes()); // focused_pane id
-
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &snap); // field::attached::SNAPSHOT
-    tlv_field(&mut fields, 2, &0u32.to_be_bytes()); // field::attached::INITIAL_CLIENT_ID
-    framed_tlv(0x81, &fields)
+    // Positional LayoutNode bytes: a Split carrying `ratio` over two local
+    // leaves; `common::attached_with_layout` wraps them in the hand-rolled
+    // ATTACHED frame (whose SessionSnapshot value stays positional under TLV).
+    let mut layout = vec![1u8]; // LayoutNode::Split
+    layout.push(0); // SplitDir::Horizontal
+    layout.extend_from_slice(&ratio.to_be_bytes());
+    for leaf_id in [1u32, 2] {
+        layout.push(0); // LAYOUT_TAG_LEAF
+        layout.push(0); // TERMINAL_ID_TAG_LOCAL
+        layout.extend_from_slice(&leaf_id.to_be_bytes());
+    }
+    attached_with_layout(&layout)
 }
 
+/// The layout-ratio bounds table: NaN, infinite, and out-of-[0, 1] ratios are
+/// rejected with `MalformedLayoutRatio`; the inclusive endpoints decode.
+/// Bit-level comparison covers NaN uniformly.
 #[test]
-fn layout_ratio_nan_is_rejected() {
-    let bytes = encode_split_with_ratio(f32::NAN);
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    match err {
-        DecodeError::MalformedLayoutRatio { ratio } => assert!(ratio.is_nan()),
-        other => panic!("expected MalformedLayoutRatio, got {other:?}"),
+fn layout_ratio_bounds_are_enforced_on_decode() {
+    for (ratio, accepted) in [
+        (f32::NAN, false),
+        (f32::INFINITY, false),
+        (1.5, false),
+        (-0.1, false),
+        (0.0, true),
+        (1.0, true),
+    ] {
+        let bytes = encode_split_with_ratio(ratio);
+        if accepted {
+            let (decoded, _tail) = FrameKind::decode(&bytes).unwrap();
+            let FrameKind::Attached { snapshot, .. } = decoded else {
+                panic!("expected Attached frame for ratio {ratio}");
+            };
+            match snapshot.windows[0].layout.as_ref().unwrap() {
+                LayoutNode::Split { ratio: got, .. } => {
+                    assert_eq!(got.to_bits(), ratio.to_bits());
+                }
+                other => panic!("expected Split, got {other:?}"),
+            }
+        } else {
+            match FrameKind::decode(&bytes).unwrap_err() {
+                DecodeError::MalformedLayoutRatio { ratio: got } => {
+                    assert_eq!(got.to_bits(), ratio.to_bits());
+                }
+                other => panic!("expected MalformedLayoutRatio, got {other:?}"),
+            }
+        }
     }
 }
-
-#[test]
-fn layout_ratio_above_one_is_rejected() {
-    let bytes = encode_split_with_ratio(1.5);
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    assert_eq!(err, DecodeError::MalformedLayoutRatio { ratio: 1.5 });
-}
-
-#[test]
-fn layout_ratio_negative_is_rejected() {
-    let bytes = encode_split_with_ratio(-0.1);
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    assert_eq!(err, DecodeError::MalformedLayoutRatio { ratio: -0.1 });
-}
-
-#[test]
-fn layout_ratio_infinite_is_rejected() {
-    let bytes = encode_split_with_ratio(f32::INFINITY);
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    assert_eq!(
-        err,
-        DecodeError::MalformedLayoutRatio {
-            ratio: f32::INFINITY
-        }
-    );
-}
-
-#[test]
-#[allow(clippy::float_cmp)]
-fn layout_ratio_zero_is_accepted() {
-    let bytes = encode_split_with_ratio(0.0);
-    let (decoded, _tail) = FrameKind::decode(&bytes).unwrap();
-    if let FrameKind::Attached { snapshot, .. } = decoded {
-        let win = &snapshot.windows[0];
-        match win.layout.as_ref().unwrap() {
-            LayoutNode::Split { ratio, .. } => assert_eq!(*ratio, 0.0),
-            other => panic!("expected Split, got {other:?}"),
-        }
-    } else {
-        panic!("expected Attached frame");
-    }
-}
-
-#[test]
-#[allow(clippy::float_cmp)]
-fn layout_ratio_one_is_accepted() {
-    let bytes = encode_split_with_ratio(1.0);
-    let (decoded, _tail) = FrameKind::decode(&bytes).unwrap();
-    if let FrameKind::Attached { snapshot, .. } = decoded {
-        let win = &snapshot.windows[0];
-        match win.layout.as_ref().unwrap() {
-            LayoutNode::Split { ratio, .. } => assert_eq!(*ratio, 1.0),
-            other => panic!("expected Split, got {other:?}"),
-        }
-    } else {
-        panic!("expected Attached frame");
-    }
-}
-
-#[allow(dead_code)]
-const _SPLIT_DIR_TYPE_CHECK: fn() -> SplitDir = || SplitDir::Horizontal;
 
 // -----------------------------------------------------------------------------
 // L3 metadata frames — SPEC §7.4 / §11.L3 (phux-4li.2).
@@ -1373,12 +1041,7 @@ proptest! {
         scope in arb_scope(),
         key in ".{0,64}",
     ) {
-        let frame = FrameKind::GetMetadata { request_id, scope, key };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::GetMetadata { request_id, scope, key });
     }
 
     #[test]
@@ -1388,12 +1051,7 @@ proptest! {
         key in ".{0,64}",
         value in arb_metadata_value(),
     ) {
-        let frame = FrameKind::SetMetadata { request_id, scope, key, value };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::SetMetadata { request_id, scope, key, value });
     }
 
     #[test]
@@ -1402,12 +1060,7 @@ proptest! {
         scope in arb_scope(),
         key in ".{0,64}",
     ) {
-        let frame = FrameKind::DeleteMetadata { request_id, scope, key };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::DeleteMetadata { request_id, scope, key });
     }
 
     #[test]
@@ -1415,12 +1068,7 @@ proptest! {
         request_id in any::<u32>(),
         scope in arb_scope(),
     ) {
-        let frame = FrameKind::ListMetadata { request_id, scope };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::ListMetadata { request_id, scope });
     }
 
     #[test]
@@ -1428,12 +1076,7 @@ proptest! {
         scope in arb_scope(),
         key in ".{0,64}",
     ) {
-        let frame = FrameKind::SubscribeMetadata { scope, key };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::SubscribeMetadata { scope, key });
     }
 
     #[test]
@@ -1442,12 +1085,7 @@ proptest! {
         key in ".{0,64}",
         value in proptest::option::of(arb_metadata_value()),
     ) {
-        let frame = FrameKind::MetadataChanged { scope, key, value };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::MetadataChanged { scope, key, value });
     }
 
     /// METADATA_VALUE — reply to GET_METADATA (phux-4li.8). Carries the
@@ -1457,12 +1095,7 @@ proptest! {
         request_id in any::<u32>(),
         value in proptest::option::of(arb_metadata_value()),
     ) {
-        let frame = FrameKind::MetadataValue { request_id, value };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::MetadataValue { request_id, value });
     }
 
     /// METADATA_KEYS — reply to LIST_METADATA (phux-4li.8). Carries the
@@ -1472,12 +1105,7 @@ proptest! {
         request_id in any::<u32>(),
         keys in proptest::collection::vec(".{0,32}", 0..8),
     ) {
-        let frame = FrameKind::MetadataKeys { request_id, keys };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::MetadataKeys { request_id, keys });
     }
 
     /// HELLO carries `client_caps.layers` as a trailing byte (phux-4li.2).
@@ -1487,7 +1115,7 @@ proptest! {
     fn roundtrip_hello_layers(
         layers in arb_layer_set(),
     ) {
-        let frame = FrameKind::Hello {
+        assert_round_trip(&FrameKind::Hello {
             client_name: "phux-client/test".to_owned(),
             protocol_major: 0,
             protocol_minor: 2,
@@ -1495,12 +1123,7 @@ proptest! {
             client_caps: ClientCapabilities::new()
                 .with_color_support(ColorSupport::TrueColor)
                 .with_layers(layers),
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 }
 
@@ -1602,6 +1225,11 @@ fn arb_spawn_result() -> impl Strategy<Value = SpawnResult> {
 }
 
 proptest! {
+    /// The `Some(vec![])` shapes matter here: `command = Some(vec![])` is
+    /// distinct from `command = None`, and `env = Some(vec![])` ("start with
+    /// empty environment") is distinct from `env = None` ("inherit server's
+    /// env") — the 0..4 collection bounds and `option::of` wrappers keep all
+    /// of those in the generated space, as are `term` = None / Some("").
     #[test]
     fn roundtrip_spawn_terminal(
         request_id in any::<u32>(),
@@ -1614,7 +1242,7 @@ proptest! {
         owner_terminal in proptest::option::of(any::<u32>()),
         agent_session in proptest::option::of(proptest::collection::vec(any::<u8>(), 0..64)),
     ) {
-        let frame = FrameKind::SpawnTerminal {
+        assert_round_trip(&FrameKind::SpawnTerminal {
             request_id,
             group: GroupId::new(group),
             command,
@@ -1624,12 +1252,7 @@ proptest! {
             satellite: satellite.map(phux_protocol::ids::SatelliteHost::new),
             owner_terminal: owner_terminal.map(TerminalId::local),
             agent_session,
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 
     #[test]
@@ -1637,39 +1260,29 @@ proptest! {
         request_id in any::<u32>(),
         result in arb_spawn_result(),
     ) {
-        let frame = FrameKind::TerminalSpawned { request_id, result };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::TerminalSpawned { request_id, result });
     }
 
+    /// `exit_status = None` is the wire encoding for "killed by signal /
+    /// unknown cause"; negative statuses ride as u32 two's-complement. Both
+    /// live inside `option::of(any::<i32>())`.
     #[test]
     fn roundtrip_terminal_closed(
         terminal_id in arb_terminal_id(),
         exit_status in proptest::option::of(any::<i32>()),
     ) {
-        let frame = FrameKind::TerminalClosed { terminal_id, exit_status };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::TerminalClosed { terminal_id, exit_status });
     }
 
+    /// Zero dims are in-range: SPEC §10.2 leaves them implementation-defined
+    /// and the codec round-trips them faithfully.
     #[test]
     fn roundtrip_terminal_resize(
         terminal_id in arb_terminal_id(),
         cols in any::<u16>(),
         rows in any::<u16>(),
     ) {
-        let frame = FrameKind::TerminalResize { terminal_id, cols, rows };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::TerminalResize { terminal_id, cols, rows });
     }
 
     #[test]
@@ -1677,15 +1290,10 @@ proptest! {
         request_id in any::<u32>(),
         terminal_id in arb_terminal_id(),
     ) {
-        let frame = FrameKind::Command {
+        assert_round_trip(&FrameKind::Command {
             request_id,
             command: Command::KillTerminal { terminal_id },
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 
     #[test]
@@ -1697,29 +1305,37 @@ proptest! {
             CommandResult::Ok,
             CommandResult::Error { code: ErrorCode::InvalidCommand, message },
         ] {
-            let frame = FrameKind::CommandResult { request_id, result };
-            let mut buf = BytesMut::new();
-            frame.encode(&mut buf);
-            let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-            prop_assert_eq!(decoded, frame);
-            prop_assert!(tail.is_empty());
+            assert_round_trip(&FrameKind::CommandResult { request_id, result });
         }
     }
 }
 
+/// The fixed-payload command verbs share one wire shape (tag + positional
+/// body); one looped table covers `GET_STATE`, UPGRADE, `RELEASE_INPUT`
+/// (ADR-0033), and `REPORT_ASKED`.
 #[test]
-fn command_get_state_round_trips() {
-    let frame = FrameKind::Command {
-        request_id: 7,
-        command: Command::GetState {
+fn command_simple_variants_round_trip() {
+    for command in [
+        Command::GetState {
             scope: StateScope::Server,
         },
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
+        Command::Upgrade,
+        Command::ReleaseInput {
+            terminal_id: TerminalId::local(7),
+        },
+        Command::ReportAsked {
+            terminal_id: TerminalId::local(7),
+            id: "q1".to_owned(),
+            question: "Deploy to prod?".to_owned(),
+            suggestions: vec!["Yes".to_owned(), "No".to_owned(), "Hold".to_owned()],
+            elapsed_seconds: Some(9),
+        },
+    ] {
+        assert_round_trip(&FrameKind::Command {
+            request_id: 7,
+            command,
+        });
+    }
 }
 
 #[test]
@@ -1727,10 +1343,7 @@ fn command_attach_detach_terminal_round_trip() {
     // phux-v45.7: the per-Terminal subscription verbs (SPEC §5.1 tags
     // 0x01/0x02) round-trip with both Local and Satellite ids — the
     // Satellite form is what a hub consumer sends for two-hop attach.
-    for terminal_id in [
-        phux_protocol::ids::TerminalId::local(7),
-        phux_protocol::ids::TerminalId::satellite("devbox", 7),
-    ] {
+    for terminal_id in [TerminalId::local(7), TerminalId::satellite("devbox", 7)] {
         for command in [
             Command::AttachTerminal {
                 terminal_id: terminal_id.clone(),
@@ -1739,65 +1352,27 @@ fn command_attach_detach_terminal_round_trip() {
                 terminal_id: terminal_id.clone(),
             },
         ] {
-            let frame = FrameKind::Command {
+            assert_round_trip(&FrameKind::Command {
                 request_id: 21,
                 command,
-            };
-            let mut buf = BytesMut::new();
-            frame.encode(&mut buf);
-            let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-            assert_eq!(decoded, frame);
-            assert!(tail.is_empty());
+            });
         }
     }
-}
-
-#[test]
-fn command_upgrade_round_trips() {
-    let frame = FrameKind::Command {
-        request_id: 9,
-        command: Command::Upgrade,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
 }
 
 #[test]
 fn command_acquire_input_round_trips() {
     // ADR-0033: both acquisition modes round-trip, with the advisory ttl.
     for mode in [InputMode::Cooperative, InputMode::Seize] {
-        let frame = FrameKind::Command {
+        assert_round_trip(&FrameKind::Command {
             request_id: 11,
             command: Command::AcquireInput {
-                terminal_id: phux_protocol::ids::TerminalId::local(7),
+                terminal_id: TerminalId::local(7),
                 mode,
                 ttl_ms: 30_000,
             },
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        assert_eq!(decoded, frame);
-        assert!(tail.is_empty());
+        });
     }
-}
-
-#[test]
-fn command_release_input_round_trips() {
-    let frame = FrameKind::Command {
-        request_id: 12,
-        command: Command::ReleaseInput {
-            terminal_id: phux_protocol::ids::TerminalId::local(7),
-        },
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
 }
 
 #[test]
@@ -1810,38 +1385,14 @@ fn command_signal_terminal_round_trips() {
         TerminalSignal::Terminate,
         TerminalSignal::Kill,
     ] {
-        let frame = FrameKind::Command {
+        assert_round_trip(&FrameKind::Command {
             request_id: 13,
             command: Command::SignalTerminal {
-                terminal_id: phux_protocol::ids::TerminalId::local(3),
+                terminal_id: TerminalId::local(3),
                 signal,
             },
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        assert_eq!(decoded, frame);
-        assert!(tail.is_empty());
+        });
     }
-}
-
-#[test]
-fn command_report_asked_round_trips() {
-    let frame = FrameKind::Command {
-        request_id: 42,
-        command: Command::ReportAsked {
-            terminal_id: TerminalId::local(7),
-            id: "q1".to_owned(),
-            question: "Deploy to prod?".to_owned(),
-            suggestions: vec!["Yes".to_owned(), "No".to_owned(), "Hold".to_owned()],
-            elapsed_seconds: Some(9),
-        },
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
 }
 
 #[test]
@@ -1854,19 +1405,14 @@ fn command_get_screen_round_trips() {
     // round-trip.
     for request_scrollback in [None, Some(0), Some(42)] {
         for cells in [false, true] {
-            let frame = FrameKind::Command {
+            assert_round_trip(&FrameKind::Command {
                 request_id: 11,
                 command: Command::GetScreen {
                     terminal_id: TerminalId::local(5),
                     request_scrollback,
                     cells,
                 },
-            };
-            let mut buf = BytesMut::new();
-            frame.encode(&mut buf);
-            let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-            assert_eq!(decoded, frame);
-            assert!(tail.is_empty());
+            });
         }
     }
 }
@@ -1989,18 +1535,13 @@ fn command_route_input_round_trips() {
         InputEvent::Focus(FocusEvent::Gained),
         InputEvent::Paste(paste),
     ] {
-        let frame = FrameKind::Command {
+        assert_round_trip(&FrameKind::Command {
             request_id: 21,
             command: Command::RouteInput {
                 terminal_id: TerminalId::local(5),
                 event,
             },
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        assert_eq!(decoded, frame);
-        assert!(tail.is_empty());
+        });
     }
 }
 
@@ -2124,11 +1665,7 @@ fn command_put_file_and_ack_round_trip_with_limits() {
             path: Some("/home/u/.local/share/phux/uploads/phux-upload-id.png".to_owned()),
         })),
     };
-    let mut ack_bytes = BytesMut::new();
-    ack.encode(&mut ack_bytes);
-    let (decoded_ack, tail) = FrameKind::decode(&ack_bytes).unwrap();
-    assert_eq!(decoded_ack, ack);
-    assert!(tail.is_empty());
+    assert_round_trip(&ack);
 
     let id_offset = encoded
         .windows(16)
@@ -2223,15 +1760,10 @@ fn command_kill_terminals_round_trips() {
             TerminalId::satellite("peer-a", 9),
         ],
     ] {
-        let frame = FrameKind::Command {
+        assert_round_trip(&FrameKind::Command {
             request_id: 31,
-            command: Command::KillTerminals { ids: ids.clone() },
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        assert_eq!(decoded, frame);
-        assert!(tail.is_empty());
+            command: Command::KillTerminals { ids },
+        });
     }
 }
 
@@ -2241,66 +1773,35 @@ fn command_detach_clients_round_trips() {
     // Exercise both the `None` (detach all) and `Some(name)` targeting so the
     // presence byte and the string encoding both round-trip.
     for session in [None, Some("work".to_owned()), Some(String::new())] {
-        let frame = FrameKind::Command {
+        assert_round_trip(&FrameKind::Command {
             request_id: 44,
-            command: Command::DetachClients {
-                session: session.clone(),
-            },
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        assert_eq!(decoded, frame);
-        assert!(tail.is_empty());
+            command: Command::DetachClients { session },
+        });
     }
 }
 
+/// `COMMAND_RESULT`'s `OkWith` payloads share one wire shape; the table
+/// covers `GET_SCREEN`'s JSON reply, `GET_STATE`'s snapshot reply (the
+/// ATTACHED snapshot shape, so a non-trivial snapshot must survive), and the
+/// `TerminalId` reply.
 #[test]
-fn command_result_ok_with_json_round_trips() {
-    // GET_SCREEN's reply shape: OK_WITH(JSON(serialized ScreenState)).
-    let frame = FrameKind::CommandResult {
-        request_id: 12,
-        result: CommandResult::OkWith(CommandValue::Json(
-            r#"{"schema_version":1,"pane":5,"cols":80,"rows":24,"cursor":null,"lines":["$ "]}"#
-                .to_owned(),
-        )),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn command_result_ok_with_state_snapshot_round_trips() {
-    // `GET_STATE`'s reply: OK_WITH(STATE(snapshot)). Reuses the ATTACHED
-    // snapshot shape, so a non-trivial snapshot must survive the round trip.
+fn command_result_ok_with_values_round_trip() {
     let info = SessionInfo::new(SessionId::new(1), "work".to_owned());
     let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::local(1))
         .with_sessions(vec![info]);
-    let frame = FrameKind::CommandResult {
-        request_id: 9,
-        result: CommandResult::OkWith(CommandValue::State(snap)),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn command_result_ok_with_terminal_id_round_trips() {
-    let frame = FrameKind::CommandResult {
-        request_id: 3,
-        result: CommandResult::OkWith(CommandValue::TerminalId(TerminalId::local(42))),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
+    for value in [
+        CommandValue::Json(
+            r#"{"schema_version":1,"pane":5,"cols":80,"rows":24,"cursor":null,"lines":["$ "]}"#
+                .to_owned(),
+        ),
+        CommandValue::State(snap),
+        CommandValue::TerminalId(TerminalId::local(42)),
+    ] {
+        assert_round_trip(&FrameKind::CommandResult {
+            request_id: 12,
+            result: CommandResult::OkWith(value),
+        });
+    }
 }
 
 #[test]
@@ -2322,126 +1823,6 @@ fn command_unknown_tag_is_rejected() {
         ),
         "expected UnknownEnumValue for Command, got {err:?}",
     );
-}
-
-#[test]
-fn spawn_terminal_empty_command_vec_round_trips() {
-    // `command = Some(vec![])` is distinct from `command = None` and the
-    // codec must round-trip both faithfully. (Servers MAY treat an empty
-    // argv as malformed at the dispatch layer; the wire is agnostic.)
-    let frame = FrameKind::SpawnTerminal {
-        request_id: 1,
-        group: GroupId::new(1),
-        command: Some(Vec::new()),
-        cwd: None,
-        env: None,
-        term: None,
-        satellite: None,
-        owner_terminal: None,
-        agent_session: None,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn spawn_terminal_empty_env_vec_round_trips() {
-    // `env = Some(vec![])` is the "start with empty environment" sentinel
-    // and is distinct from `env = None` ("inherit server's env"). The
-    // codec must preserve the distinction.
-    let frame = FrameKind::SpawnTerminal {
-        request_id: 2,
-        group: GroupId::new(1),
-        command: None,
-        cwd: None,
-        env: Some(Vec::new()),
-        term: None,
-        satellite: None,
-        owner_terminal: None,
-        agent_session: None,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn spawn_terminal_term_field_round_trips() {
-    // The first-class `term` field (phux-ign) is additive field id 6: a
-    // bare optional UTF-8 string distinct from a `TERM` env pair. `None`
-    // and `Some(..)` must both round-trip faithfully.
-    for term in [None, Some("ghostty".to_owned()), Some(String::new())] {
-        let frame = FrameKind::SpawnTerminal {
-            request_id: 3,
-            group: GroupId::new(1),
-            command: None,
-            cwd: None,
-            env: None,
-            term,
-            satellite: None,
-            owner_terminal: None,
-            agent_session: None,
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        assert_eq!(decoded, frame);
-        assert!(tail.is_empty());
-    }
-}
-
-#[test]
-fn terminal_resize_zero_dims_round_trips() {
-    // SPEC §10.2 leaves zero dims implementation-defined (the server's PTY
-    // layer SHOULD treat them as no-ops rather than kernel errors). The
-    // wire codec is agnostic and round-trips zeros faithfully.
-    let frame = FrameKind::TerminalResize {
-        terminal_id: TerminalId::local(1),
-        cols: 0,
-        rows: 0,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn terminal_closed_signal_exit_uses_none() {
-    // `exit_status = None` is the wire encoding for "killed by signal /
-    // unknown cause" — a deliberately compact subset of SPEC §10.1's
-    // `ExitStatus` tagged union. The full tagged union grows in a follow-
-    // up wire bump if the additional structure proves load-bearing.
-    let frame = FrameKind::TerminalClosed {
-        terminal_id: TerminalId::local(7),
-        exit_status: None,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn terminal_closed_exit_status_negative_round_trips() {
-    // `i32` is encoded as `u32` two's-complement on the wire; negative
-    // values round-trip faithfully.
-    let frame = FrameKind::TerminalClosed {
-        terminal_id: TerminalId::local(7),
-        exit_status: Some(-1),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
 }
 
 // -----------------------------------------------------------------------------
@@ -2502,12 +1883,7 @@ proptest! {
     /// server-scoped (`None`) subscriptions.
     #[test]
     fn roundtrip_subscribe_events(terminal in proptest::option::of(arb_terminal_id())) {
-        let frame = FrameKind::SubscribeEvents { terminal };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::SubscribeEvents { terminal });
     }
 
     /// `EVENT` round-trips across the full event taxonomy and both scope
@@ -2517,12 +1893,55 @@ proptest! {
         terminal in proptest::option::of(arb_terminal_id()),
         event in arb_agent_event(),
     ) {
-        let frame = FrameKind::Event { terminal, event };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        assert_round_trip(&FrameKind::Event { terminal, event });
+    }
+}
+
+/// Named EVENT fixtures the proptest taxonomy doesn't pin by name: `Asked`
+/// with every field populated and with the minimal shape (empty suggestions,
+/// no elapsed counter), `CwdChanged` (phux-foz.4, tag 0x0a), and `Unknown` —
+/// a relay that decodes an unknown event and re-encodes it MUST produce
+/// byte-identical output (lossless passthrough).
+#[test]
+fn event_fixture_variants_round_trip() {
+    for (terminal, event) in [
+        (
+            None,
+            AgentEvent::Asked {
+                id: "q-7f3a".to_string(),
+                question: "Which transport should the bridge use?".to_string(),
+                suggestions: vec![
+                    "WebSocket".to_string(),
+                    "gRPC".to_string(),
+                    "raw TCP".to_string(),
+                ],
+                elapsed_seconds: Some(42),
+            },
+        ),
+        (
+            None,
+            AgentEvent::Asked {
+                id: "q-0".to_string(),
+                question: "Proceed?".to_string(),
+                suggestions: Vec::new(),
+                elapsed_seconds: None,
+            },
+        ),
+        (
+            Some(TerminalId::local(7)),
+            AgentEvent::CwdChanged {
+                cwd: "/Users/phall/workspace/phux".to_string(),
+            },
+        ),
+        (
+            None,
+            AgentEvent::Unknown {
+                tag: 0x55,
+                body: vec![1, 2, 3, 4, 5],
+            },
+        ),
+    ] {
+        assert_round_trip(&FrameKind::Event { terminal, event });
     }
 }
 
@@ -2553,85 +1972,6 @@ fn event_unknown_tag_decodes_as_unknown_and_skips() {
             },
         }
     );
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn event_unknown_tag_reencodes_verbatim() {
-    // A relay that decodes an unknown event and re-encodes it MUST produce
-    // byte-identical output — `Unknown` is a lossless passthrough.
-    let frame = FrameKind::Event {
-        terminal: None,
-        event: AgentEvent::Unknown {
-            tag: 0x55,
-            body: vec![1, 2, 3, 4, 5],
-        },
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn event_asked_round_trips_full() {
-    // The new `AgentEvent::Asked` carries an agent's pending question with
-    // every field populated; it MUST round-trip on the EVENT stream.
-    let frame = FrameKind::Event {
-        terminal: None,
-        event: AgentEvent::Asked {
-            id: "q-7f3a".to_string(),
-            question: "Which transport should the bridge use?".to_string(),
-            suggestions: vec![
-                "WebSocket".to_string(),
-                "gRPC".to_string(),
-                "raw TCP".to_string(),
-            ],
-            elapsed_seconds: Some(42),
-        },
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn event_asked_round_trips_minimal() {
-    // No suggestions, no elapsed counter: the absent fields default to an
-    // empty list / `None` on decode.
-    let frame = FrameKind::Event {
-        terminal: None,
-        event: AgentEvent::Asked {
-            id: "q-0".to_string(),
-            question: "Proceed?".to_string(),
-            suggestions: Vec::new(),
-            elapsed_seconds: None,
-        },
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn event_cwd_changed_round_trips() {
-    // phux-foz.4: the `cwd_changed` event (tag 0x0a) carries the pane's new
-    // working directory and MUST round-trip on the EVENT stream.
-    let frame = FrameKind::Event {
-        terminal: Some(TerminalId::local(7)),
-        event: AgentEvent::CwdChanged {
-            cwd: "/Users/phall/workspace/phux".to_string(),
-        },
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
     assert!(tail.is_empty());
 }
 
