@@ -36,14 +36,18 @@ require_fixed README.md "Install and run"
 require_fixed README.md "brew install phall1/phux/phux"
 require_fixed README.md "nix develop -c cargo install --locked --path crates/phux"
 require_fixed README.md "nix develop -c cargo install --locked --path crates/phux-mcp"
-require_fixed README.md "v0.0.3"
+# The README must point at the releases page instead of naming a version:
+# a hardcoded version literal here guaranteed staleness (it pinned v0.0.3
+# while the repo shipped v0.7.0).
+require_fixed README.md "github.com/phall1/phux/releases"
 require_fixed README.md "Supported install channels"
-require_fixed README.md "cargo install phux is unsupported"
+require_fixed README.md 'cargo install phux` is unsupported'
 require_fixed README.md "Windows is not supported"
 require_fixed README.md "First run: persistent session + agent loop"
 require_fixed README.md "macOS arm64, Linux x86_64, and Linux arm64"
-require_fixed README.md "first portable public release"
 forbid_fixed README.md "macOS x86_64"
+# Version literals in the README rot; forbid the ones that already have.
+forbid_fixed README.md "v0.0.3"
 
 require_fixed docs/INSTALL.md "Homebrew is the recommended install on supported macOS and Linux"
 require_fixed docs/INSTALL.md "Supported install channels"
