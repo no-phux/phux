@@ -973,12 +973,12 @@ fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
     let terminal_id = terminal(11);
     let stream_id = stream(20);
     let bootstrap_id = bootstrap(31);
-    let mut kernel = kernel_with_profile(
+    let mut state_sync_kernel = kernel_with_profile(
         ReadyMode::ChunkFirst,
         BootstrapProfile::SynthesizedVtStateSync,
     );
     let mut effects = EffectBuffer::new();
-    kernel
+    state_sync_kernel
         .update(
             KernelInput::BootstrapBegin {
                 terminal_id: &terminal_id,
@@ -992,21 +992,21 @@ fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
         )
         .unwrap();
     push_ready_transcript(
-        &mut kernel,
+        &mut state_sync_kernel,
         &terminal_id,
         stream_id,
         bootstrap_id,
         &mut effects,
     );
     protocol_ready(
-        &mut kernel,
+        &mut state_sync_kernel,
         &terminal_id,
         stream_id,
         bootstrap_id,
         &mut effects,
     );
 
-    kernel
+    state_sync_kernel
         .update(
             KernelInput::TerminalOutput {
                 terminal_id: &terminal_id,
