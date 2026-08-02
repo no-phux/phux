@@ -186,22 +186,41 @@ fn golden_v2_header_is_flat_and_v3_header_nests_term() {
 #[cfg(feature = "render")]
 const CAP: u64 = 8 * 1024 * 1024;
 
+/// Render the fixture once per format and cache the artifact: the GIF
+/// test, the APNG test, and the cross-container comparison all consume
+/// the same two renders instead of re-rendering 140x40 x 4 minutes from
+/// scratch per test (the renders dominate this binary's wall time when
+/// the tests share a process, e.g. under `cargo test`).
 #[cfg(feature = "render")]
-fn render_fixture(format: OutputFormat) -> (Vec<u8>, RenderStats) {
-    let (header, events) = read_fixture();
-    let mut sink: Vec<u8> = Vec::new();
-    let opts = RenderOptions {
-        max_bytes: CAP,
-        ..RenderOptions::default()
+fn render_fixture(format: OutputFormat) -> &'static (Vec<u8>, RenderStats) {
+    use std::sync::OnceLock;
+    static GIF: OnceLock<(Vec<u8>, RenderStats)> = OnceLock::new();
+    static APNG: OnceLock<(Vec<u8>, RenderStats)> = OnceLock::new();
+    let cell = match format {
+        OutputFormat::Gif => &GIF,
+        OutputFormat::Apng => &APNG,
+        OutputFormat::Cast => panic!("these tests only render image containers"),
     };
-    let stats = render_cast(&header, &events, &mut sink, format, &opts)
-        .expect("the fixture renders end to end");
-    (sink, stats)
+    cell.get_or_init(|| {
+        let (header, events) = read_fixture();
+        let mut sink: Vec<u8> = Vec::new();
+        let opts = RenderOptions {
+            max_bytes: CAP,
+            ..RenderOptions::default()
+        };
+        let stats = render_cast(&header, &events, &mut sink, format, &opts)
+            .expect("the fixture renders end to end");
+        (sink, stats)
+    })
 }
 
+// One test covers both containers plus their agreement. Three separate
+// tests would each re-render under nextest's process-per-test model
+// (the OnceLock cache in `render_fixture` cannot cross processes), turning
+// two ~2s renders into four.
 #[cfg(feature = "render")]
 #[test]
-fn golden_cast_renders_to_a_looping_gif() {
+fn golden_cast_renders_gif_and_apng_and_frame_counts_agree() {
     let (bytes, stats) = render_fixture(OutputFormat::Gif);
 
     assert_eq!(bytes.get(..6), Some(&b"GIF89a"[..]), "missing signature");
@@ -224,11 +243,8 @@ fn golden_cast_renders_to_a_looping_gif() {
         stats.colors, 2,
         "an unstyled recording resolves to exactly foreground and background"
     );
-}
 
-#[cfg(feature = "render")]
-#[test]
-fn golden_cast_renders_to_an_animated_png() {
+    let gif_stats = stats;
     let (bytes, stats) = render_fixture(OutputFormat::Apng);
 
     assert_eq!(
@@ -252,15 +268,9 @@ fn golden_cast_renders_to_an_animated_png() {
         "suspiciously small APNG: {}",
         bytes.len()
     );
-}
 
-#[cfg(feature = "render")]
-#[test]
-fn both_containers_agree_on_the_frame_count_for_one_recording() {
     // The two backends share the sampling walk, so a divergence here means
     // something format-specific leaked into the driver.
-    let (_, gif) = render_fixture(OutputFormat::Gif);
-    let (_, apng) = render_fixture(OutputFormat::Apng);
-    assert_eq!(gif.frames, apng.frames);
-    assert_eq!(gif.duration_ms, apng.duration_ms);
+    assert_eq!(gif_stats.frames, stats.frames);
+    assert_eq!(gif_stats.duration_ms, stats.duration_ms);
 }

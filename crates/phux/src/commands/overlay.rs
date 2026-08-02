@@ -225,7 +225,10 @@ mod tests {
     }
 
     /// A wedged tailscaled must not hang `phux pair`: a stub that sleeps
-    /// far past the deadline is killed and degrades to `None`. The elapsed
+    /// far past the deadline is killed and degrades to `None`. The
+    /// deadline is injected short (the test waits it out for real, and the
+    /// 2s production default is pure dead time — the kill-at-deadline
+    /// behavior is what is under test, not the 2s figure). The elapsed
     /// bound is generous (well under the stub's sleep, well over the
     /// deadline) to keep slow CI from flaking.
     #[cfg(unix)]
@@ -240,7 +243,15 @@ mod tests {
             .expect("chmod stub");
 
         let start = std::time::Instant::now();
-        let addrs = detect_with(|| run_tailscale_ip(script.as_os_str()), || None);
+        let addrs = detect_with(
+            || {
+                run_tailscale_ip_with_deadline(
+                    script.as_os_str(),
+                    std::time::Duration::from_millis(250),
+                )
+            },
+            || None,
+        );
         let elapsed = start.elapsed();
         assert!(addrs.is_empty(), "wedged stub must report nothing");
         assert!(

@@ -10,7 +10,11 @@
 
 mod common;
 
-use phux_relay::{AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE};
+use std::time::Duration;
+
+use phux_relay::{
+    AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE, RelayConfig, RelayRuntime,
+};
 use tokio::time::timeout;
 
 use crate::common::{
@@ -84,6 +88,58 @@ async fn wrong_tunnel_token_refused_with_auth_failed() {
     assert_eq!(connector.bridged(), 1);
 }
 
+/// The stalled-preamble test's deadline, injected through the production
+/// `RelayRuntime::with_preamble_deadline` seam: the test must wait the
+/// deadline out for real, and the 5s production default is pure dead time
+/// here — the property under test is that the bound fires, not its size.
+const STALL_TEST_PREAMBLE_DEADLINE: Duration = Duration::from_millis(300);
+
+/// Like [`common::spawn_relay`] but with a shortened preamble deadline.
+/// Binds through the production `RelayRuntime::bind` on port 0, so the
+/// resolved address needs no probe-socket retry loop. The relay shuts
+/// down when the returned handle (its shutdown sender) drops.
+struct ShortPreambleRelay {
+    addr: std::net::SocketAddr,
+    fingerprint: String,
+    tokens_path: std::path::PathBuf,
+    _shutdown: tokio::sync::oneshot::Sender<()>,
+}
+
+/// Synchronous, but must run inside a tokio runtime context: `bind`
+/// attaches quinn's I/O driver to the current runtime.
+fn spawn_relay_with_preamble_deadline(
+    dir: &std::path::Path,
+    deadline: Duration,
+) -> ShortPreambleRelay {
+    let cert_path = dir.join("relay-cert.pem");
+    let key_path = dir.join("relay-key.pem");
+    let tokens_path = dir.join("relay-tokens");
+    phux_relay::ensure_self_signed(&cert_path, &key_path).expect("provision relay cert");
+    let fingerprint = phux_relay::cert_fingerprint(&cert_path).expect("relay fingerprint");
+    let config = RelayConfig {
+        listen: "127.0.0.1:0".parse().expect("loopback listen addr"),
+        cert_path,
+        key_path,
+        tokens_path: tokens_path.clone(),
+        max_conns: DEFAULT_MAX_CONNS,
+    };
+    let bound = RelayRuntime::new(config)
+        .with_preamble_deadline(deadline)
+        .bind()
+        .expect("relay binds on port 0");
+    let addr = bound.local_addr();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(bound.serve(async move {
+        let _ = rx.await;
+    }));
+    ShortPreambleRelay {
+        addr,
+        fingerprint,
+        tokens_path,
+        _shutdown: tx,
+    }
+}
+
 /// A connector that opens stream 0 and stalls mid-preamble neither wedges
 /// the accept loop (a well-behaved route round-trips concurrently) nor
 /// holds its connection: the preamble deadline refuses it with
@@ -91,7 +147,7 @@ async fn wrong_tunnel_token_refused_with_auth_failed() {
 #[tokio::test]
 async fn stalled_preamble_does_not_wedge_relay() {
     let dir = tempfile::tempdir().unwrap();
-    let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
+    let relay = spawn_relay_with_preamble_deadline(dir.path(), STALL_TEST_PREAMBLE_DEADLINE);
     let alpha_token = mint(&relay.tokens_path, "alpha");
     mint(&relay.tokens_path, "beta");
 
@@ -117,7 +173,7 @@ async fn stalled_preamble_does_not_wedge_relay() {
     common::expect_echo(&mut consumer, b"A:", b"unblocked").await;
     assert_eq!(connector.bridged(), 1);
 
-    // The staller is refused at the preamble deadline (5s), bounded.
+    // The staller is refused at the (shortened) preamble deadline, bounded.
     let err = timeout(SOCKET_CONNECT_DEADLINE, stall_conn.closed())
         .await
         .expect("staller must be refused at the deadline, not parked forever");

@@ -44,6 +44,9 @@ const MAX_TOKEN_PREAMBLE: usize = 256;
 
 /// How long a connector has to present its stream-0 auth preamble before
 /// the connection is refused — bounds a slow-loris on the tunnel leg.
+///
+/// This is the production default; tests that must wait the deadline out
+/// for real shorten it via [`RelayRuntime::with_preamble_deadline`].
 const PREAMBLE_DEADLINE: Duration = Duration::from_secs(5);
 
 /// How long an admitted consumer has to open its bidi stream (and the
@@ -98,13 +101,27 @@ impl RelayConfig {
 #[derive(Debug)]
 pub struct RelayRuntime {
     config: RelayConfig,
+    preamble_deadline: Duration,
 }
 
 impl RelayRuntime {
     /// Wrap a config, ready to run.
     #[must_use]
     pub const fn new(config: RelayConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            preamble_deadline: PREAMBLE_DEADLINE,
+        }
+    }
+
+    /// Override the tunnel auth-preamble deadline (default
+    /// `PREAMBLE_DEADLINE`, 5s). A test that pins the stalled-preamble
+    /// refusal has to wait the deadline out for real; this keeps that wait
+    /// short without loosening (or lengthening) the production bound.
+    #[must_use]
+    pub const fn with_preamble_deadline(mut self, deadline: Duration) -> Self {
+        self.preamble_deadline = deadline;
+        self
     }
 
     /// Build a current-thread tokio runtime and block on
@@ -136,6 +153,7 @@ impl RelayRuntime {
     /// and serves via [`BoundRelay::serve`].
     pub fn bind(self) -> Result<BoundRelay, RelayError> {
         let config = self.config;
+        let preamble_deadline = self.preamble_deadline;
         // Fail-fast validation load; per-connection lookups re-read.
         let store = RouteTokenStore::load(&config.tokens_path)?;
         tls::ensure_self_signed(&config.cert_path, &config.key_path)?;
@@ -161,6 +179,7 @@ impl RelayRuntime {
             routes: store.len(),
             tokens_path: config.tokens_path,
             max_conns: config.max_conns,
+            preamble_deadline,
         })
     }
 }
@@ -174,6 +193,7 @@ pub struct BoundRelay {
     routes: usize,
     tokens_path: PathBuf,
     max_conns: usize,
+    preamble_deadline: Duration,
 }
 
 impl BoundRelay {
@@ -212,6 +232,7 @@ impl BoundRelay {
                                 incoming,
                                 registry.clone(),
                                 self.tokens_path.clone(),
+                                self.preamble_deadline,
                                 permit,
                             ));
                         }
@@ -243,6 +264,7 @@ async fn handle_connection(
     incoming: quinn::Incoming,
     registry: TunnelRegistry<quinn::Connection>,
     tokens_path: PathBuf,
+    preamble_deadline: Duration,
     permit: OwnedSemaphorePermit,
 ) {
     let _permit = permit;
@@ -260,7 +282,7 @@ async fn handle_connection(
         return;
     };
     if alpn == QUIC_RELAY_ALPN {
-        admit_tunnel(conn, &tokens_path, &registry).await;
+        admit_tunnel(conn, &tokens_path, preamble_deadline, &registry).await;
     } else if alpn == QUIC_ALPN {
         bridge_consumer(conn, server_name, &registry).await;
     } else {
@@ -285,13 +307,14 @@ fn handshake_identity(conn: &quinn::Connection) -> Option<(Vec<u8>, Option<Strin
 async fn admit_tunnel(
     conn: quinn::Connection,
     tokens_path: &Path,
+    preamble_deadline: Duration,
     registry: &TunnelRegistry<quinn::Connection>,
 ) {
     let remote = conn.remote_address();
     // The preamble doubles as the stream-open signal: `accept_bi` does not
     // resolve until the connector's first bytes arrive, so one deadline
     // covers both.
-    let opened = tokio::time::timeout(PREAMBLE_DEADLINE, async {
+    let opened = tokio::time::timeout(preamble_deadline, async {
         let (send0, mut recv0) = conn.accept_bi().await.ok()?;
         let token = read_preamble(&mut recv0).await?;
         Some((send0, recv0, token))
@@ -439,6 +462,16 @@ mod tests {
         assert_eq!(config.cert_path, state.join("relay-cert.pem"));
         assert_eq!(config.key_path, state.join("relay-key.pem"));
         assert_eq!(config.tokens_path, state.join("relay-tokens"));
+    }
+
+    #[test]
+    fn preamble_deadline_defaults_to_production_and_is_overridable() {
+        let config = RelayConfig::new("127.0.0.1:4433".parse().unwrap());
+        let runtime = RelayRuntime::new(config);
+        assert_eq!(runtime.preamble_deadline, PREAMBLE_DEADLINE);
+        assert_eq!(runtime.preamble_deadline, Duration::from_secs(5));
+        let runtime = runtime.with_preamble_deadline(Duration::from_millis(300));
+        assert_eq!(runtime.preamble_deadline, Duration::from_millis(300));
     }
 
     #[tokio::test]
