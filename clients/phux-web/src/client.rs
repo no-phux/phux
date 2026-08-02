@@ -206,11 +206,13 @@ pub async fn run_webtransport(
                         }
                     }
                 }
-                if frames.poisoned() {
-                    web_sys::console::error_1(&JsValue::from_str(
-                        "phux-web: WebTransport stream desynchronized; closing",
-                    ));
-                    break;
+                if matches!(
+                    poisoned_framing_flow(&frames, |message| {
+                        close_with_protocol_error(&app, message);
+                    }),
+                    ReceiveFlow::Stop
+                ) {
+                    return;
                 }
             }
         });
@@ -348,6 +350,18 @@ async fn build_app(
 enum ReceiveFlow {
     Continue,
     Stop,
+}
+
+fn poisoned_framing_flow(
+    frames: &FrameBuffer,
+    close: impl FnOnce(&str),
+) -> ReceiveFlow {
+    if frames.poisoned() {
+        close("WebTransport stream used a zero or oversized frame length");
+        ReceiveFlow::Stop
+    } else {
+        ReceiveFlow::Continue
+    }
 }
 
 /// Drive the session with one decoded server frame: ack and repaint as the
@@ -517,5 +531,26 @@ fn code_to_physical_key(code: &str) -> PhysicalKey {
         "BracketRight" => K::BracketRight,
         "Backquote" => K::Backquote,
         _ => K::Unidentified,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FrameBuffer, ReceiveFlow, poisoned_framing_flow};
+    use phux_protocol::wire::frame::MAX_FRAME_LEN;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn poisoned_framing_stops_pump_and_invokes_close() {
+        for length in [0, MAX_FRAME_LEN + 1] {
+            let mut frames = FrameBuffer::new();
+            frames.push(&length.to_be_bytes());
+            assert!(frames.next_frame().is_none());
+
+            let mut closed = false;
+            let flow = poisoned_framing_flow(&frames, |_| closed = true);
+            assert_eq!(flow, ReceiveFlow::Stop);
+            assert!(closed, "poisoned framing must close its retained transport");
+        }
     }
 }
