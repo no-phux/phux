@@ -2844,12 +2844,17 @@ impl TerminalActor {
                     .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
                 let mut payload = reserve_native_bytes(max_bytes)?;
                 payload.resize(max_bytes, 0);
-                let event = capture.step(&mut payload)?;
-                let ready = matches!(
-                    event.kind,
-                    crate::native_state::NativeCheckpointChunkKind::Ready
-                );
-                payload.truncate(event.bytes.len());
+                let (ready, payload_len) = {
+                    let event = capture.step(&mut payload)?;
+                    (
+                        matches!(
+                            event.kind,
+                            crate::native_state::NativeCheckpointChunkKind::Ready
+                        ),
+                        event.bytes.len(),
+                    )
+                };
+                payload.truncate(payload_len);
                 frames.push(FrameKind::BootstrapChunk {
                     terminal_id: terminal_id.clone(),
                     stream_id,
@@ -3001,13 +3006,20 @@ impl TerminalActor {
                     return;
                 }
             };
-            match manager.next(owner, &cursor, limits, bound, max_rows, &mut payload) {
+            let delivery = match manager.next(owner, &cursor, limits, bound, max_rows, &mut payload)
+            {
                 Ok(crate::native_state::NativeManagedHistoryEvent::Page {
                     bytes,
                     rows,
                     next_cursor,
-                    ..
-                }) => {
+                }) => Ok((Some(next_cursor), bytes.len(), rows)),
+                Ok(crate::native_state::NativeManagedHistoryEvent::Finish { bytes }) => {
+                    Ok((None, bytes.len(), 0))
+                }
+                Err(error) => Err(error),
+            };
+            match delivery {
+                Ok((Some(next_cursor), payload_len, rows)) => {
                     if next_cursor != cursor {
                         let _ = manager.release(owner, &cursor);
                         (
@@ -3025,7 +3037,7 @@ impl TerminalActor {
                     } else if let (Some(next_page_seq), Ok(rows)) =
                         (page_seq.checked_add(1), u32::try_from(rows))
                     {
-                        payload.truncate(bytes.len());
+                        payload.truncate(payload_len);
                         (
                             Ok(FrameKind::HistoryPage {
                                 terminal_id,
@@ -3055,8 +3067,8 @@ impl TerminalActor {
                         )
                     }
                 }
-                Ok(crate::native_state::NativeManagedHistoryEvent::Finish { bytes }) => {
-                    payload.truncate(bytes.len());
+                Ok((None, payload_len, _)) => {
+                    payload.truncate(payload_len);
                     let _ = manager.release(owner, &cursor);
                     (
                         Ok(FrameKind::HistoryPage {
@@ -4224,11 +4236,11 @@ mod tests {
         actor.terminal.borrow_mut().vt_write(second);
         actor.answer_color_queries(second);
         assert_eq!(
-            pty_input.try_recv().expect("OSC 10 reply").bytes,
+            pty_input.try_recv().expect("OSC 10 reply").bytes.as_ref(),
             b"\x1b]10;rgb:d0d0/d0d0/d0d0\x1b\\"
         );
         assert_eq!(
-            pty_input.try_recv().expect("OSC 11 reply").bytes,
+            pty_input.try_recv().expect("OSC 11 reply").bytes.as_ref(),
             b"\x1b]11;rgb:1212/1818/1b1b\x1b\\"
         );
     }
@@ -5453,6 +5465,7 @@ mod tests {
         let client = ClientId(8);
         let (outbound, mut outbound_rx) = dummy_outbound();
         let (gate_tx, gate_rx) = watch::channel(false);
+        let next_seq = actor.raw_seq.checked_add(1).expect("next live sequence");
         actor
             .register_consumer_generation(
                 client,
@@ -5462,6 +5475,7 @@ mod tests {
                 phux_protocol::ids::BootstrapId::new(3).expect("bootstrap id"),
                 true,
                 gate_rx,
+                next_seq,
             )
             .expect("register");
 
