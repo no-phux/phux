@@ -1016,11 +1016,9 @@ pub async fn run_with_stdout_predict<W: super::RenderSink>(
 /// assembles the frame. There is no TTY, so the viewport `(cols, rows)` is
 /// caller-supplied.
 ///
-/// Settle policy (R3): after the ATTACHED replay and the layout `GET`,
-/// frames are drained until the stream goes idle for `SETTLE_IDLE` (the
-/// server's initial snapshot burst has landed) or an overall
-/// `SETTLE_DEADLINE` elapses — a quiescence wait on real frame arrival, not
-/// a fixed sleep.
+/// Completion policy (R3): after the ATTACHED replay and layout `GET`, frames
+/// are drained until the matching `ATTACH_READY` proves every participant
+/// published or closed. The overall deadline is an error, never blank success.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -1037,10 +1035,8 @@ pub async fn run_headless_rendered(
 ) -> Result<phux_core::screen::RenderedFrame, AttachError> {
     use std::time::SystemTime;
 
-    /// Idle gap that marks the server's initial snapshot burst complete.
-    const SETTLE_IDLE: Duration = Duration::from_millis(120);
-    /// Hard cap on the whole drain, guarding a pathological never-idle stream.
-    const SETTLE_DEADLINE: Duration = Duration::from_secs(3);
+    /// Hard cap on waiting for the matching aggregate attach barrier.
+    const ATTACH_READY_DEADLINE: Duration = Duration::from_secs(3);
 
     let client_caps = attach_client_caps(None);
     let mut conn =
@@ -1165,55 +1161,60 @@ pub async fn run_headless_rendered(
         .await?;
     }
 
-    // Drain the initial burst until the stream goes idle (or the deadline).
-    let _ = tokio::time::timeout(SETTLE_DEADLINE, async {
+    // A rendered snapshot is valid only after the server's aggregate barrier.
+    // Propagate both receive/dispatch failures and deadline expiry.
+    tokio::time::timeout(ATTACH_READY_DEADLINE, async {
         loop {
-            tokio::select! {
-                biased;
-                frame = conn.recv() => {
-                    let frame = frame?;
-                    let outcome = handle_server_frame(
-                        &mut engine_kernel,
-                        &mut kernel_effects,
-                        &mut sink,
-                        frame,
-                        &mut panes,
-                        &mut workspace,
-                        &mut focused_pane,
-                        &mut zoomed,
-                        &mut session_name,
-                        status_bar.as_mut(),
-                        sidebar,
-                        viewport_dims,
-                        &mut predict,
-                        &overlay,
-                        layout_get_request_id,
-                        &mut pending_splits,
-                        &mut pending_windows,
-                        &mut expected_closes,
-                        &mut agent_meta,
-                        false,
-                        true,
-                    )?;
-                    if let Some((terminal_id, stream_id, bootstrap_id, cursor)) =
-                        outcome.history_request
-                    {
-                        conn.send(&FrameKind::HistoryRequest {
-                            terminal_id,
-                            stream_id,
-                            bootstrap_id,
-                            cursor,
-                            max_bytes: engine_kernel.adapter().limits().max_history_page_bytes(),
-                        })
-                        .await?;
-                    }
-                }
-                () = tokio::time::sleep(SETTLE_IDLE) => break,
+            let frame = conn.recv().await?;
+            let matching_attach_ready =
+                matches!(&frame, FrameKind::AttachReady { attach_id: ready } if *ready == attach_id);
+            let outcome = handle_server_frame(
+                &mut engine_kernel,
+                &mut kernel_effects,
+                &mut sink,
+                frame,
+                &mut panes,
+                &mut workspace,
+                &mut focused_pane,
+                &mut zoomed,
+                &mut session_name,
+                status_bar.as_mut(),
+                sidebar,
+                viewport_dims,
+                &mut predict,
+                &overlay,
+                layout_get_request_id,
+                &mut pending_splits,
+                &mut pending_windows,
+                &mut expected_closes,
+                &mut agent_meta,
+                false,
+                true,
+            )?;
+            if let Some((terminal_id, stream_id, bootstrap_id, cursor)) =
+                outcome.history_request
+            {
+                conn.send(&FrameKind::HistoryRequest {
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    cursor,
+                    max_bytes: engine_kernel.adapter().limits().max_history_page_bytes(),
+                })
+                .await?;
+            }
+            if matching_attach_ready {
+                break;
             }
         }
         Ok::<(), AttachError>(())
     })
-    .await;
+    .await
+    .map_err(|_| {
+        AttachError::Protocol(format!(
+            "headless attach {attach_id} timed out before ATTACH_READY"
+        ))
+    })??;
 
     // Seed the window/tab strip exactly as the live loop does before its
     // first bar paint, so the composited bar shows the windows.

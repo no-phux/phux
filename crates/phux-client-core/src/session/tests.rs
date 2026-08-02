@@ -131,11 +131,11 @@ impl EngineAdapter for FakeAdapter {
         payload: &[u8],
         effects: &mut EngineEffectBuffer,
     ) -> Result<BootstrapProgress, Self::Error> {
-        replica.transcript.extend_from_slice(payload);
         if payload == b"history-error" {
             effects.push(EngineEffect::Damage(EngineDamage::Full));
             return Err(FakeError::MutatedThenFailed);
         }
+        replica.transcript.extend_from_slice(payload);
         if payload == b"history-effects" {
             effects.push(EngineEffect::Status(EngineStatus::Title(
                 "history-imported".to_owned(),
@@ -655,13 +655,20 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
             &mut effects,
         )
         .unwrap();
-    assert!(kernel.published(&terminal_id).is_none());
+    assert_eq!(
+        kernel.published(&terminal_id).unwrap().engine().transcript,
+        applied
+    );
     assert_eq!(
         kernel
             .tombstone(&terminal_id, stream_id, bootstrap_id)
             .unwrap()
             .last_valid_seq,
         42
+    );
+    assert_eq!(
+        kernel.input_eligibility(&terminal_id),
+        InputEligibility::Ineligible(InputBlockReason::FrozenReplica)
     );
     let stale = kernel.update(
         KernelInput::TerminalOutput {
@@ -674,6 +681,38 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         &mut effects,
     );
     assert!(matches!(stale, Err(KernelError::RetiredGeneration { .. })));
+    let replacement = bootstrap(24);
+    begin(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        replacement,
+        42,
+        &mut effects,
+    );
+    push_ready_transcript(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        replacement,
+        &mut effects,
+    );
+    assert_eq!(
+        kernel.published(&terminal_id).unwrap().key().bootstrap_id,
+        bootstrap_id,
+        "frozen view remains visible while replacement stages"
+    );
+    protocol_ready(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        replacement,
+        &mut effects,
+    );
+    assert_eq!(
+        kernel.published(&terminal_id).unwrap().key().bootstrap_id,
+        replacement
+    );
 }
 
 #[test]
@@ -758,7 +797,7 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
 }
 
 #[test]
-fn history_engine_failure_retires_the_exact_published_generation() {
+fn history_engine_failure_freezes_the_last_published_view() {
     let terminal_id = terminal(31);
     let stream_id = stream(131);
     let bootstrap_id = bootstrap(231);
@@ -786,13 +825,26 @@ fn history_engine_failure_retires_the_exact_published_generation() {
         failed,
         Err(KernelError::Engine(FakeError::MutatedThenFailed))
     ));
-    assert!(kernel.published(&terminal_id).is_none());
+    assert!(kernel.published(&terminal_id).is_some());
     assert_eq!(
         kernel
             .tombstone(&terminal_id, stream_id, bootstrap_id)
             .unwrap()
             .last_valid_seq,
         73
+    );
+    assert!(
+        !kernel
+            .published(&terminal_id)
+            .unwrap()
+            .engine()
+            .transcript
+            .ends_with(b"history-error"),
+        "history import errors are transactional"
+    );
+    assert_eq!(
+        kernel.input_eligibility(&terminal_id),
+        InputEligibility::Ineligible(InputBlockReason::FrozenReplica)
     );
     assert!(effects.as_slice().iter().any(|effect| matches!(
         effect,
@@ -802,6 +854,13 @@ fn history_engine_failure_retires_the_exact_published_generation() {
             bootstrap_id: bootstrap,
             reason: TombstoneReason::CodecFailure,
         }) if id == &terminal_id && *stream == stream_id && *bootstrap == bootstrap_id
+    )));
+    assert!(effects.as_slice().iter().all(|effect| !matches!(
+        effect,
+        KernelEffect::Damage(KernelDamage {
+            kind: KernelDamageKind::Removed,
+            ..
+        })
     )));
 }
 

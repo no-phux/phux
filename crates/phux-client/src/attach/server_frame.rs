@@ -291,6 +291,11 @@ struct KernelRoute {
     damaged: HashSet<TerminalId>,
     failed: Option<String>,
 }
+impl KernelRoute {
+    fn damaged(&self, terminal_id: &TerminalId) -> bool {
+        self.damaged.contains(terminal_id)
+    }
+}
 
 fn route_engine_frame(
     frame: &FrameKind,
@@ -612,9 +617,12 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             rows,
             ..
         } => {
-            let slot = panes
-                .entry(terminal_id)
-                .or_insert(PaneSlot::new_with_size(cols, rows)?);
+            let slot = match panes.entry(terminal_id) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(PaneSlot::new_with_size(cols, rows)?)
+                }
+            };
             slot.geometry = (cols.max(1), rows.max(1));
             Ok(FrameOutcome::default())
         }
@@ -646,6 +654,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             let title_changed = slot.title_changed(terminal);
             slot.update_sync_output(terminal, tokio::time::Instant::now());
             Ok(FrameOutcome {
+                layout_replaced: kernel_route.damaged(&terminal_id),
                 chrome_dirty: title_changed,
                 history_request: history_cursor.map(|cursor| {
                     (terminal_id, stream_id, bootstrap_id, cursor)
@@ -685,6 +694,12 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             frame_span.record("terminal_id", tracing::field::debug(&terminal_id));
             frame_span.record("seq", seq);
             frame_span.record("bytes", bytes.len());
+            if !kernel_route.damaged(&terminal_id) {
+                return Ok(FrameOutcome {
+                    ack,
+                    ..FrameOutcome::default()
+                });
+            }
             // phux-4li.4: ingest output into the matching pane's
             // libghostty Terminal even when it's not focused, so the
             // mirror stays warm for when the user focuses it. Render +
@@ -1623,6 +1638,7 @@ fn reconcile_loaded_layout(state: &mut LayoutState, local_focus: Option<&Termina
 mod tests {
     use super::{
         AgentMetaIndex, FrameOutcome, handle_server_frame as handle_server_frame_with_kernel,
+        route_engine_frame,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
@@ -1662,6 +1678,137 @@ mod tests {
 
     fn tid(id: u32) -> TerminalId {
         TerminalId::local(id)
+    }
+    fn stream() -> phux_protocol::StreamId {
+        phux_protocol::StreamId::new(1).expect("stream")
+    }
+
+    fn bootstrap() -> phux_protocol::BootstrapId {
+        phux_protocol::BootstrapId::new(1).expect("bootstrap")
+    }
+
+    fn begin_frame(terminal_id: &TerminalId) -> FrameKind {
+        FrameKind::BootstrapBegin {
+            terminal_id: terminal_id.clone(),
+            stream_id: stream(),
+            bootstrap_id: bootstrap(),
+            profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 80,
+            rows: 24,
+            base_seq: 0,
+        }
+    }
+
+    fn ready_frame(terminal_id: &TerminalId) -> FrameKind {
+        FrameKind::BootstrapReady {
+            terminal_id: terminal_id.clone(),
+            stream_id: stream(),
+            bootstrap_id: bootstrap(),
+            history_cursor: None,
+        }
+    }
+
+    #[test]
+    fn engine_damage_obeys_attach_barrier_and_ready_publication() {
+        let terminal_id = tid(90);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        kernel
+            .update(
+                phux_client_core::session::KernelInput::AttachStarted {
+                    attach_id: 7,
+                    terminals: std::slice::from_ref(&terminal_id),
+                },
+                &mut effects,
+            )
+            .expect("attach");
+        assert!(route_engine_frame(&begin_frame(&terminal_id), &mut kernel, &mut effects).damaged.is_empty());
+        assert!(
+            route_engine_frame(
+                &FrameKind::BootstrapChunk {
+                    terminal_id: terminal_id.clone(),
+                    stream_id: stream(),
+                    bootstrap_id: bootstrap(),
+                    chunk_seq: 0,
+                    payload: bytes::Bytes::from_static(b"seed"),
+                },
+                &mut kernel,
+                &mut effects,
+            )
+            .damaged
+            .is_empty()
+        );
+        assert!(
+            route_engine_frame(&ready_frame(&terminal_id), &mut kernel, &mut effects)
+                .damaged
+                .is_empty(),
+            "publication damage stays behind ATTACH_READY"
+        );
+        assert!(
+            route_engine_frame(
+                &FrameKind::TerminalOutput {
+                    terminal_id: terminal_id.clone(),
+                    stream_id: stream(),
+                    bootstrap_id: bootstrap(),
+                    seq: 1,
+                    bytes: bytes::Bytes::from_static(b"before-barrier"),
+                },
+                &mut kernel,
+                &mut effects,
+            )
+            .damaged
+            .is_empty(),
+            "pre-barrier live output must not paint directly"
+        );
+        let released = route_engine_frame(
+            &FrameKind::AttachReady { attach_id: 7 },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(released.damaged(&terminal_id));
+        let live = route_engine_frame(
+            &FrameKind::TerminalOutput {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                seq: 2,
+                bytes: bytes::Bytes::from_static(b"after-barrier"),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(live.damaged(&terminal_id));
+    }
+
+    #[test]
+    fn bootstrap_ready_surfaces_publication_damage_without_attach_barrier() {
+        let terminal_id = tid(91);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        route_engine_frame(&begin_frame(&terminal_id), &mut kernel, &mut effects);
+        route_engine_frame(
+            &FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"seed"),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        let ready = route_engine_frame(&ready_frame(&terminal_id), &mut kernel, &mut effects);
+        assert!(ready.damaged(&terminal_id));
     }
 
     #[allow(clippy::too_many_arguments)]

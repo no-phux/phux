@@ -139,9 +139,10 @@ impl EngineEffectBuffer {
 /// are discarded if staging is retired. All successful live effects are
 /// forwarded with the published replica key.
 ///
-/// An error may have partially mutated the replica. The kernel therefore
-/// retires that exact generation immediately and never calls the adapter with
-/// the same object again; adapters need not provide transactional rollback.
+/// Except where an operation documents a stronger guarantee, an error may
+/// have partially mutated the replica. The kernel retires that exact
+/// generation immediately and never calls the adapter with the same object
+/// again; adapters need not provide transactional rollback.
 ///
 /// [`SessionKernel`]: crate::session::SessionKernel
 pub trait EngineAdapter {
@@ -175,8 +176,10 @@ pub trait EngineAdapter {
     /// Apply one borrowed opaque history page after the replica is published.
     ///
     /// History delivery is generation-bound but independent of live output
-    /// sequencing. Native adapters retain their post-READY decoder across
-    /// calls; compatibility adapters reject history as unsupported.
+    /// sequencing. On error, the replica MUST remain renderable at its last
+    /// successfully imported state: the kernel freezes and retains it while
+    /// requesting a replacement. Native adapters retain their post-READY
+    /// decoder across successful calls; compatibility adapters reject history.
     fn apply_history_page(
         &mut self,
         replica: &mut Self::Replica,

@@ -143,6 +143,8 @@ pub enum InputBlockReason {
     AwaitingReplica,
     /// The aggregate attach barrier has not been released.
     AwaitingAttachReady,
+    /// The last published view is frozen pending a replacement bootstrap.
+    FrozenReplica,
     /// The terminal was permanently closed.
     Closed,
 }
@@ -758,6 +760,12 @@ impl<E: EngineAdapter> SessionKernel<E> {
         let Some(replica) = state.published.as_ref() else {
             return InputEligibility::Ineligible(InputBlockReason::AwaitingReplica);
         };
+        if state
+            .retired
+            .contains_key(&generation_of(&replica.key))
+        {
+            return InputEligibility::Ineligible(InputBlockReason::FrozenReplica);
+        }
         if self.attach_blocks(terminal_id) {
             return InputEligibility::Ineligible(InputBlockReason::AwaitingAttachReady);
         }
@@ -1406,7 +1414,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
         {
             let last_valid_seq = replica.last_seq;
             self.engine_effects.clear();
-            state.published = None;
             state.retired.insert(
                 generation,
                 TombstoneRecord {
@@ -1414,20 +1421,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
                     last_valid_seq,
                 },
             );
-            let damage_blocked = self.attach_blocks(terminal_id);
-            self.mark_attach_unresolved(terminal_id, damage_blocked);
+            self.mark_attach_unresolved(terminal_id, false);
             effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
                 terminal_id: terminal_id.clone(),
                 stream_id,
                 bootstrap_id,
                 reason: TombstoneReason::CodecFailure,
             }));
-            if !damage_blocked {
-                effects.push(KernelEffect::Damage(KernelDamage {
-                    terminal_id: terminal_id.clone(),
-                    kind: KernelDamageKind::Removed,
-                }));
-            }
             return Err(KernelError::Engine(error));
         }
 
@@ -1512,9 +1512,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         record: TombstoneRecord,
-        effects: &mut EffectBuffer,
+        _effects: &mut EffectBuffer,
     ) {
-        let damage_blocked = self.attach_blocks(terminal_id);
         let generation = GenerationId {
             stream_id,
             bootstrap_id,
@@ -1528,19 +1527,12 @@ impl<E: EngineAdapter> SessionKernel<E> {
         {
             state.staging = None;
         }
-        let removed_published = state
+        let froze_published = state
             .published
             .as_ref()
             .is_some_and(|replica| generation_of(&replica.key) == generation);
-        if removed_published {
-            state.published = None;
-            self.mark_attach_unresolved(terminal_id, damage_blocked);
-            if !damage_blocked {
-                effects.push(KernelEffect::Damage(KernelDamage {
-                    terminal_id: terminal_id.clone(),
-                    kind: KernelDamageKind::Removed,
-                }));
-            }
+        if froze_published {
+            self.mark_attach_unresolved(terminal_id, false);
         }
     }
 
