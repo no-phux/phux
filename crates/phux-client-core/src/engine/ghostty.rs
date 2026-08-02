@@ -577,25 +577,27 @@ fn push_history(
             | Ok(AfterReadyStep::HistoryPage {
                 decoder, progress, ..
             }) => {
-                check_version(progress)?;
+                let version = check_version(progress);
                 native.decoder = NativeDecoderState::AfterReady(decoder);
+                version?;
                 input = remaining(input, progress)?;
                 if input.is_empty() {
                     return Ok(BootstrapProgress::Ready);
                 }
             }
             Ok(AfterReadyStep::Finish(finished)) => {
-                check_version(finished.progress)?;
-                if finished.codec_version != CHECKPOINT_VERSION {
-                    native.decoder = NativeDecoderState::Finished(finished.terminal);
-                    return Err(GhosttyEngineError::WrongCodecVersion {
-                        expected: CHECKPOINT_VERSION,
-                        actual: finished.codec_version,
-                    });
-                }
+                let version = check_version(finished.progress);
+                let codec_version = finished.codec_version;
                 let trailing_result =
                     remaining(input, finished.progress).map(|remaining| remaining.len());
                 native.decoder = NativeDecoderState::Finished(finished.terminal);
+                version?;
+                if codec_version != CHECKPOINT_VERSION {
+                    return Err(GhosttyEngineError::WrongCodecVersion {
+                        expected: CHECKPOINT_VERSION,
+                        actual: codec_version,
+                    });
+                }
                 let trailing = trailing_result?;
                 if trailing != 0 {
                     return Err(GhosttyEngineError::TrailingAfterFinish { trailing });
@@ -1001,6 +1003,10 @@ mod tests {
             adapter.apply_history_page(&mut replica, &history, &mut effects),
             Err(GhosttyEngineError::TrailingAfterFinish { trailing: 8 })
         ));
+        assert!(
+            replica.terminal().is_some(),
+            "a rejected post-READY record must leave the last terminal renderable"
+        );
         assert!(matches!(
             adapter.apply_history_page(&mut replica, b"again", &mut effects),
             Err(GhosttyEngineError::InputAfterFinish)
