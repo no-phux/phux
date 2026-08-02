@@ -2,10 +2,11 @@
 //!
 //! Every check here already existed as its own verb: `config check`,
 //! `plugin validate`, a socket-length guard buried in the spawn path, a
-//! `GET_STATE` probe inside `ls`. Knowing to run all four, in the right
-//! order, and how to read each one, is exactly the knowledge a person
-//! debugging phux does not have — that is the whole problem. So this
-//! composes them and reports one verdict.
+//! `GET_STATE` probe inside `ls`, the log-path inventory behind
+//! `phux logs`. Knowing to run all of them, in the right order, and how
+//! to read each one, is exactly the knowledge a person debugging phux
+//! does not have — that is the whole problem. So this composes them and
+//! reports one verdict.
 //!
 //! Two rules keep it honest:
 //!
@@ -106,6 +107,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_socket_path(&socket_path),
         check_server(&socket_path),
         check_plugins(),
+        check_logs(),
     ];
 
     if json {
@@ -267,6 +269,61 @@ fn check_plugins() -> Check {
     }
 }
 
+/// Where would a crash have been logged, and could it have been?
+///
+/// Resolves every path through `phux_server::telemetry` — the same helpers
+/// the writers use — so this line can never disagree with `phux logs`. An
+/// absent log is a normal state (nothing has run yet), so this check never
+/// fails; the one thing worth a warning is a state dir that exists but
+/// cannot be written, because then the next crash leaves no evidence and
+/// nothing else would ever say so. The probe is read-only: creating the dir
+/// or a test file to find out would break doctor's nothing-mutates contract.
+fn check_logs() -> Check {
+    check_logs_at(
+        &phux_server::telemetry::state_dir(),
+        &phux_server::telemetry::server_log_path(),
+    )
+}
+
+/// [`check_logs`] against explicit paths, so tests can drive it against a
+/// temp dir instead of the real environment.
+fn check_logs_at(state_dir: &std::path::Path, server_log: &std::path::Path) -> Check {
+    let clients = crate::commands::logs::client_log_paths(state_dir)
+        .map(|paths| paths.len())
+        .unwrap_or(0);
+    let server = if server_log.exists() {
+        format!("server log {}", server_log.display())
+    } else {
+        format!("server log {} (not created yet)", server_log.display())
+    };
+    let detail = format!(
+        "{server}; {clients} client log(s); state dir {}",
+        state_dir.display()
+    );
+
+    // `readonly()` is a read-only stat: true when no write bit is set at
+    // all. The state dir lives under $HOME and is owned by the user, so
+    // this catches the realistic case (a stray chmod) without an euid-aware
+    // access(2) probe. A dir that does not exist yet is normal — the first
+    // writer creates it.
+    let unwritable = std::fs::metadata(state_dir)
+        .map(|meta| meta.permissions().readonly())
+        .unwrap_or(false);
+    if unwritable {
+        Check::warn(
+            "logs",
+            format!("{detail} — state dir is not writable"),
+            format!(
+                "the next crash would leave no log; restore write access with \
+                 `chmod u+w {}`",
+                state_dir.display()
+            ),
+        )
+    } else {
+        Check::pass("logs", detail)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // output
 // ---------------------------------------------------------------------------
@@ -398,5 +455,67 @@ mod tests {
         assert!(Check::warn("n", "d", "h").hint.is_some());
         assert!(Check::fail("n", "d", "h").hint.is_some());
         assert!(Check::pass("n", "d").hint.is_none());
+    }
+
+    /// The logs line on a machine where things have run: it names the
+    /// server log, counts the client logs, and names the state dir — the
+    /// three facts a crash investigation starts from.
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "test code")]
+    fn logs_check_names_paths_and_counts_clients() {
+        let dir = tempfile::tempdir().unwrap();
+        let server_log = dir.path().join("server.log");
+        std::fs::write(&server_log, b"started\n").unwrap();
+        std::fs::write(dir.path().join("client-100.log"), b"a\n").unwrap();
+        std::fs::write(dir.path().join("client-200.log"), b"b\n").unwrap();
+
+        let check = check_logs_at(dir.path(), &server_log);
+        assert_eq!(check.status, Status::Pass);
+        assert!(check.detail.contains(&server_log.display().to_string()));
+        assert!(check.detail.contains("2 client log(s)"));
+        assert!(check.detail.contains(&dir.path().display().to_string()));
+        assert!(!check.detail.contains("not created yet"));
+    }
+
+    /// A fresh machine — no server has ever run, the state dir may not
+    /// even exist — is a normal state, not a problem. The line still names
+    /// every path (existence-aware), and the check passes.
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "test code")]
+    fn logs_check_reports_absent_logs_as_normal() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("never-created");
+        let server_log = state.join("server.log");
+
+        let check = check_logs_at(&state, &server_log);
+        assert_eq!(check.status, Status::Pass);
+        assert!(check.detail.contains("not created yet"));
+        assert!(check.detail.contains("0 client log(s)"));
+        assert!(check.detail.contains(&server_log.display().to_string()));
+    }
+
+    /// The one thing this check warns about: a state dir that cannot be
+    /// written means the next crash leaves no evidence, silently. Warn —
+    /// not Fail, phux itself still works — with a hint naming the fix.
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "test code")]
+    fn an_unwritable_state_dir_warns_with_a_hint() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let check = check_logs_at(dir.path(), &dir.path().join("server.log"));
+
+        // Restore write access so the tempdir cleanup can do its job.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("not writable"));
+        let hint = check
+            .hint
+            .expect("a warn without a hint is half a diagnosis");
+        assert!(hint.contains(&dir.path().display().to_string()));
     }
 }

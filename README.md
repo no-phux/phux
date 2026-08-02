@@ -1,7 +1,7 @@
 <!--
 audience: humans, contributors, agents
 stability: stable
-last-reviewed: 2026-06-23
+last-reviewed: 2026-08-02
 -->
 
 <div align="center">
@@ -20,6 +20,7 @@ last-reviewed: 2026-06-23
 [Config](#settings-and-config) |
 [Headless](#headless-and-agent-control) |
 [Agent Workbench](#agent-workbench) |
+[Troubleshooting](#troubleshooting) |
 [Status](#status) |
 [Docs](#where-to-go-from-here)
 
@@ -327,6 +328,27 @@ whole human UI model.
 
 For the longer mental model, read [Concepts](./docs/CONCEPTS.md). For fit and
 tradeoffs, read [When to use phux](./docs/when-to-use.md).
+
+## Troubleshooting
+
+When something misbehaves, two commands answer most questions:
+
+```sh
+phux doctor   # checks config, socket, server, plugins, and log paths
+phux logs     # names every log file phux writes; tails any of them
+```
+
+`phux doctor` runs the checks a debugging session would otherwise have to
+discover one by one -- config validity, socket path, server reachability,
+plugin manifests, and where the logs live -- and prints one verdict per line.
+Add `--json` for a machine-readable report; the exit code is nonzero only
+when something actually failed.
+
+`phux logs` prints the log inventory: the server log (one canonical file,
+regardless of how the server was started), the per-client logs, and the state
+dir they live in -- even before any of them exist. `phux logs --server -f`
+follows the server log live; `phux logs --client` tails the newest client
+log.
 
 ## Status
 
