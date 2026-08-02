@@ -1227,6 +1227,7 @@ where
                     selection.limits,
                     &root_token,
                     &mut output_pumps,
+                    &token,
                 )
                 .await;
             }
@@ -1496,6 +1497,8 @@ where
                     selection.profile,
                     selection.limits,
                     &root_token,
+                    &token,
+                    &mut output_pumps,
                 )
                 .await;
             }
@@ -1522,6 +1525,7 @@ where
                     selection.profile,
                     selection.limits,
                     input_lane.as_ref(),
+                    &token,
                 )
                 .await;
             }

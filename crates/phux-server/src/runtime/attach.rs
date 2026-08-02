@@ -716,6 +716,8 @@ pub(crate) async fn handle_spawn_terminal(
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
+    _connection_token: &CancellationToken,
+    output_pumps: &mut JoinSet<()>,
 ) {
     let Some(profile) = bootstrap_stream_profile(bootstrap_profile) else {
         let _ = out_tx
@@ -984,14 +986,21 @@ pub(crate) async fn handle_spawn_terminal(
         let pump_out_tx = out_tx.clone();
         let pump_wire_terminal_id = wire_terminal_id.clone();
         let stream_id = stream_id_from(u64::from(request_id));
+        let pump_resize = handle.resize.clone();
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let pump_state = state.clone();
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let pump_connection_token = _connection_token.clone();
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let pump_core_terminal_id = core_terminal_id;
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_native_bootstrap = handle.native_bootstrap.clone();
         let (bootstrap_gate_tx, bootstrap_gate_rx) = oneshot::channel::<u64>();
-        tokio::task::spawn_local(async move {
+        output_pumps.spawn_local(async move {
             let Ok(mut published_cut) = bootstrap_gate_rx.await else {
                 return;
             };
-            let mut last_forwarded_seq = published_cut;
+            let mut _last_forwarded_seq = published_cut;
             let mut bootstrap_id = initial_bootstrap_id();
             let mut generation_active = true;
             loop {
@@ -1010,7 +1019,7 @@ pub(crate) async fn handle_spawn_terminal(
                         if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                             break;
                         }
-                        last_forwarded_seq = seq;
+                        _last_forwarded_seq = seq;
                     }
                     Ok(PaneOutput::Control { owner, frame }) => {
                         if owner != client_id.0 {
@@ -1055,7 +1064,7 @@ pub(crate) async fn handle_spawn_terminal(
                         cols,
                         rows,
                         bytes,
-                        reason,
+                        reason: _reason,
                         base_seq,
                     }) => {
                         // Resync is a control event, not replayable live data:
@@ -1077,7 +1086,7 @@ pub(crate) async fn handle_spawn_terminal(
                                     terminal_id: pump_wire_terminal_id.clone(),
                                     stream_id,
                                     bootstrap_id: prior_bootstrap_id,
-                                    reason: match reason {
+                                    reason: match _reason {
                                         crate::terminal_actor::ResyncReason::Resize => {
                                             phux_protocol::wire::frame::TombstoneReason::Resize
                                         }
@@ -1085,7 +1094,7 @@ pub(crate) async fn handle_spawn_terminal(
                                             phux_protocol::wire::frame::TombstoneReason::OutboundGap
                                         }
                                     },
-                                    last_valid_seq: last_forwarded_seq,
+                                    last_valid_seq: _last_forwarded_seq,
                                 }))
                                 .await
                                 .is_err()
@@ -1105,6 +1114,10 @@ pub(crate) async fn handle_spawn_terminal(
                                 .await
                                 .is_err()
                             {
+                                pump_state.with_mut(|s| {
+                                    s.reap_terminal(pump_core_terminal_id);
+                                });
+                                pump_connection_token.cancel();
                                 break;
                             }
                             let Ok(Ok(reply)) = reply_rx.await else {
@@ -1115,14 +1128,22 @@ pub(crate) async fn handle_spawn_terminal(
                                         message: "native checkpoint resync failed".to_owned(),
                                     }))
                                     .await;
+                                pump_state.with_mut(|s| {
+                                    s.reap_terminal(pump_core_terminal_id);
+                                });
+                                pump_connection_token.cancel();
                                 break;
                             };
                             let Ok(cut) = publish_native_bootstrap(&pump_out_tx, reply).await
                             else {
+                                pump_state.with_mut(|s| {
+                                    s.reap_terminal(pump_core_terminal_id);
+                                });
+                                pump_connection_token.cancel();
                                 break;
                             };
                             published_cut = cut;
-                            last_forwarded_seq = cut;
+                            _last_forwarded_seq = cut;
                             generation_active = true;
                             continue;
                         }
@@ -1145,15 +1166,22 @@ pub(crate) async fn handle_spawn_terminal(
                             break;
                         }
                         published_cut = base_seq;
-                        last_forwarded_seq = base_seq;
+                        _last_forwarded_seq = base_seq;
                         generation_active = true;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!(
                             terminal_id = ?pump_wire_terminal_id,
                             dropped = n,
-                            "SPAWN_TERMINAL output pump lagged; consider larger broadcast capacity",
+                            "SPAWN_TERMINAL output pump lagged; requesting in-band resync",
                         );
+                        let _ = pump_resize.try_send(ResizeRequest {
+                            cols: 0,
+                            rows: 0,
+                            cell_px: None,
+                            resync_clients: true,
+                            resync_only: true,
+                        });
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -1402,6 +1430,7 @@ pub(crate) async fn handle_attach(
     bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
+    _connection_token: &CancellationToken,
 ) {
     let Some(stream_profile) = bootstrap_stream_profile(negotiated_profile) else {
         send_error(
@@ -1689,6 +1718,10 @@ pub(crate) async fn handle_attach(
             let pump_resize = handle.resize.clone();
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             let pump_native_bootstrap = handle.native_bootstrap.clone();
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            let pump_state = state.clone();
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            let pump_connection_token = _connection_token.clone();
             // phux-7w1j: hold this pump's first forward until the pane's
             // snapshot has been sent (the drain loop fires `gate_tx`).
             let (gate_tx, gate_rx) = oneshot::channel::<u64>();
@@ -1697,7 +1730,7 @@ pub(crate) async fn handle_attach(
                 let Ok(mut published_cut) = gate_rx.await else {
                     return;
                 };
-                let mut last_forwarded_seq = published_cut;
+                let mut _last_forwarded_seq = published_cut;
                 let mut bootstrap_id = bootstrap_id;
                 let mut generation_active = true;
                 loop {
@@ -1716,7 +1749,7 @@ pub(crate) async fn handle_attach(
                             if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                                 break;
                             }
-                            last_forwarded_seq = seq;
+                            _last_forwarded_seq = seq;
                         }
                         Ok(PaneOutput::Control { owner, frame }) => {
                             if owner != client_id.0 {
@@ -1761,7 +1794,7 @@ pub(crate) async fn handle_attach(
                             cols,
                             rows,
                             bytes,
-                            reason,
+                            reason: _reason,
                             base_seq,
                         }) => {
                             // Resync is control, so an unchanged cut still
@@ -1782,7 +1815,7 @@ pub(crate) async fn handle_attach(
                                         terminal_id: pump_wire_terminal_id.clone(),
                                         stream_id,
                                         bootstrap_id: prior_bootstrap_id,
-                                        reason: match reason {
+                                        reason: match _reason {
                                             crate::terminal_actor::ResyncReason::Resize => {
                                                 phux_protocol::wire::frame::TombstoneReason::Resize
                                             }
@@ -1790,11 +1823,16 @@ pub(crate) async fn handle_attach(
                                                 phux_protocol::wire::frame::TombstoneReason::OutboundGap
                                             }
                                         },
-                                        last_valid_seq: last_forwarded_seq,
+                                        last_valid_seq: _last_forwarded_seq,
                                     }))
                                     .await
                                     .is_err()
                                 {
+                                    crate::runtime::client::detach_and_release_consumer_state(
+                                        &pump_state,
+                                        client_id,
+                                    );
+                                    pump_connection_token.cancel();
                                     break;
                                 }
                                 let (reply_tx, reply_rx) = oneshot::channel();
@@ -1810,6 +1848,11 @@ pub(crate) async fn handle_attach(
                                     .await
                                     .is_err()
                                 {
+                                    crate::runtime::client::detach_and_release_consumer_state(
+                                        &pump_state,
+                                        client_id,
+                                    );
+                                    pump_connection_token.cancel();
                                     break;
                                 }
                                 let Ok(Ok(reply)) = reply_rx.await else {
@@ -1820,15 +1863,25 @@ pub(crate) async fn handle_attach(
                                             message: "native checkpoint resync failed".to_owned(),
                                         }))
                                         .await;
+                                    crate::runtime::client::detach_and_release_consumer_state(
+                                        &pump_state,
+                                        client_id,
+                                    );
+                                    pump_connection_token.cancel();
                                     break;
                                 };
                                 let Ok(cut) =
                                     publish_native_bootstrap(&pump_out_tx, reply).await
                                 else {
+                                    crate::runtime::client::detach_and_release_consumer_state(
+                                        &pump_state,
+                                        client_id,
+                                    );
+                                    pump_connection_token.cancel();
                                     break;
                                 };
                                 published_cut = cut;
-                                last_forwarded_seq = cut;
+                                _last_forwarded_seq = cut;
                                 generation_active = true;
                                 continue;
                             }
@@ -1851,7 +1904,7 @@ pub(crate) async fn handle_attach(
                                 break;
                             }
                             published_cut = base_seq;
-                            last_forwarded_seq = base_seq;
+                            _last_forwarded_seq = base_seq;
                             generation_active = true;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

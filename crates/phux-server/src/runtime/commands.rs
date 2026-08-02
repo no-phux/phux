@@ -603,6 +603,7 @@ pub(crate) async fn handle_command(
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
     input_lane: Option<&InputLaneHandle>,
+    connection_token: &CancellationToken,
 ) {
     // UPGRADE is handled out-of-band: `handle_upgrade` acks the client itself
     // and then re-execs the process, so it never returns a `CommandResult` for
@@ -684,6 +685,7 @@ pub(crate) async fn handle_command(
                 client_caps,
                 bootstrap_profile,
                 bootstrap_limits,
+                connection_token,
             )
             .await
         }
@@ -860,6 +862,7 @@ async fn handle_attach_terminal(
     client_caps: ClientCapabilities,
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
+    _connection_token: &CancellationToken,
 ) -> CommandResult {
     use crate::terminal_actor::{
         ConsumerAttachRequest, ConsumerDetachRequest, PaneOutput, SnapshotRequest,
@@ -1006,6 +1009,10 @@ async fn handle_attach_terminal(
         let pump_resize = handle.resize.clone();
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_native_bootstrap = handle.native_bootstrap.clone();
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let pump_state = state.clone();
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let pump_connection_token = _connection_token.clone();
         let (gate_tx, gate_rx) = oneshot::channel::<u64>();
         snapshot_gate = Some(gate_tx);
         let pump_generation_last_seq = std::sync::Arc::clone(&generation_last_seq);
@@ -1022,7 +1029,7 @@ async fn handle_attach_terminal(
                 }
             };
             pump_generation_last_seq.store(published_cut, std::sync::atomic::Ordering::Release);
-            let mut last_forwarded_seq = published_cut;
+            let mut _last_forwarded_seq = published_cut;
             let mut bootstrap_id = bootstrap_id;
             let mut generation_active = true;
             loop {
@@ -1045,7 +1052,7 @@ async fn handle_attach_terminal(
                         if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                             break;
                         }
-                        last_forwarded_seq = seq;
+                        _last_forwarded_seq = seq;
                         pump_generation_last_seq.store(seq, std::sync::atomic::Ordering::Release);
                     }
                     Ok(PaneOutput::Control { owner, frame }) => {
@@ -1091,7 +1098,7 @@ async fn handle_attach_terminal(
                         cols,
                         rows,
                         bytes,
-                        reason,
+                        reason: _reason,
                         base_seq,
                     }) => {
                         // Resync is control, so an unchanged cut still
@@ -1112,7 +1119,7 @@ async fn handle_attach_terminal(
                                     terminal_id: pump_wire_terminal_id.clone(),
                                     stream_id,
                                     bootstrap_id: prior_bootstrap_id,
-                                    reason: match reason {
+                                    reason: match _reason {
                                         crate::terminal_actor::ResyncReason::Resize => {
                                             phux_protocol::wire::frame::TombstoneReason::Resize
                                         }
@@ -1120,11 +1127,16 @@ async fn handle_attach_terminal(
                                             phux_protocol::wire::frame::TombstoneReason::OutboundGap
                                         }
                                     },
-                                    last_valid_seq: last_forwarded_seq,
+                                    last_valid_seq: _last_forwarded_seq,
                                 }))
                                 .await
                                 .is_err()
                             {
+                                crate::runtime::client::detach_and_release_consumer_state(
+                                    &pump_state,
+                                    client_id,
+                                );
+                                pump_connection_token.cancel();
                                 break;
                             }
                             let (reply_tx, reply_rx) = oneshot::channel();
@@ -1140,6 +1152,11 @@ async fn handle_attach_terminal(
                                 .await
                                 .is_err()
                             {
+                                crate::runtime::client::detach_and_release_consumer_state(
+                                    &pump_state,
+                                    client_id,
+                                );
+                                pump_connection_token.cancel();
                                 break;
                             }
                             let Ok(Ok(reply)) = reply_rx.await else {
@@ -1150,6 +1167,11 @@ async fn handle_attach_terminal(
                                         message: "native checkpoint resync failed".to_owned(),
                                     }))
                                     .await;
+                                crate::runtime::client::detach_and_release_consumer_state(
+                                    &pump_state,
+                                    client_id,
+                                );
+                                pump_connection_token.cancel();
                                 break;
                             };
                             let Ok(cut) = crate::runtime::attach::publish_native_bootstrap(
@@ -1158,10 +1180,15 @@ async fn handle_attach_terminal(
                             )
                             .await
                             else {
+                                crate::runtime::client::detach_and_release_consumer_state(
+                                    &pump_state,
+                                    client_id,
+                                );
+                                pump_connection_token.cancel();
                                 break;
                             };
                             published_cut = cut;
-                            last_forwarded_seq = cut;
+                            _last_forwarded_seq = cut;
                             pump_generation_last_seq
                                 .store(cut, std::sync::atomic::Ordering::Release);
                             generation_active = true;
@@ -1187,7 +1214,7 @@ async fn handle_attach_terminal(
                             break;
                         }
                         published_cut = base_seq;
-                        last_forwarded_seq = base_seq;
+                        _last_forwarded_seq = base_seq;
                         pump_generation_last_seq
                             .store(base_seq, std::sync::atomic::Ordering::Release);
                         generation_active = true;

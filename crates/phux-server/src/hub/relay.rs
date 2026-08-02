@@ -59,8 +59,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::BytesMut;
-use phux_protocol::caps::BootstrapLimits;
-use phux_protocol::ids::{GroupId, SatelliteHost, TerminalId};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, BootstrapStreamProfile};
+use phux_protocol::ids::{BootstrapId, GroupId, SatelliteHost, StreamId, TerminalId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, SpawnError, SpawnResult,
 };
@@ -73,6 +73,12 @@ use crate::state::{ClientId, Outbound};
 /// link is a single ordered stream, so queueing more than a burst behind
 /// it only adds latency. Producers `try_send` and fail fast on `Full`.
 pub(crate) const RELAY_MAILBOX: usize = 64;
+/// Maximum number of opaque chunks accepted before one relayed READY.
+///
+/// This matches the native engine's bounded capture page maximum. Together
+/// with the negotiated per-chunk limit it bounds every subscriber's retained
+/// pre-READY queue without interpreting codec bytes.
+const MAX_RELAY_BOOTSTRAP_CHUNKS: u32 = 4096;
 
 /// Upper bound on one relayed command round trip, measured at the
 /// consumer-facing [`RelayHandle::command`]. Deliberately equal to the
@@ -686,30 +692,57 @@ enum Registration {
 /// and the proxy-subscription registry. All state is session-scoped:
 /// [`Self::teardown`] fails pending commands and notifies subscribers, so
 /// a reconnected link starts clean (consumers re-issue and re-subscribe).
+#[derive(Debug, Clone, Copy)]
+struct RelayBootstrapFlow {
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    next_chunk_seq: u32,
+    retained_bytes: u64,
+}
 #[derive(Debug)]
+
 pub(crate) struct RelaySession {
     host: SatelliteHost,
     bootstrap_limits: BootstrapLimits,
+    bootstrap_profile: BootstrapProfile,
     next_request_id: u32,
     pending: HashMap<u32, PendingCommand>,
+    enforce_bootstrap_flow: bool,
     /// Relayed `SPAWN_TERMINAL`s awaiting their `TERMINAL_SPAWNED`
     /// (phux-v45.6). Shares the link-side `request_id` space with
     /// [`Self::pending`] so one allocator covers both reply frames.
     pending_spawns: HashMap<u32, oneshot::Sender<SpawnResult>>,
     subscribers: HashMap<u32, Vec<ProxySubscriber>>,
+    bootstrap_flows: HashMap<u32, RelayBootstrapFlow>,
     encode_buf: BytesMut,
 }
 
 impl RelaySession {
     /// Fresh session state for one established connection to `host`.
+    #[cfg(test)]
     pub(crate) fn new(host: SatelliteHost, bootstrap_limits: BootstrapLimits) -> Self {
+        let mut session =
+            Self::new_negotiated(host, bootstrap_limits, BootstrapProfile::SynthesizedVtRaw);
+        session.enforce_bootstrap_flow = false;
+        session
+    }
+
+    /// Fresh session state pinned to the connection's exact negotiated profile.
+    pub(crate) fn new_negotiated(
+        host: SatelliteHost,
+        bootstrap_limits: BootstrapLimits,
+        bootstrap_profile: BootstrapProfile,
+    ) -> Self {
         Self {
             host,
             bootstrap_limits,
+            bootstrap_profile,
             next_request_id: 1,
             pending: HashMap::new(),
             pending_spawns: HashMap::new(),
+            enforce_bootstrap_flow: true,
             subscribers: HashMap::new(),
+            bootstrap_flows: HashMap::new(),
             encode_buf: BytesMut::with_capacity(1024),
         }
     }
@@ -973,6 +1006,12 @@ impl RelaySession {
                 bytes,
             } => {
                 if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
+                    if self.enforce_bootstrap_flow && self.bootstrap_flows.contains_key(&id) {
+                        return Err(format!(
+                            "satellite {} sent TERMINAL_OUTPUT before BOOTSTRAP_READY",
+                            self.host
+                        ));
+                    }
                     self.fan_out(
                         id,
                         &FrameKind::TerminalOutput {
@@ -995,6 +1034,9 @@ impl RelaySession {
                 base_seq,
             } => {
                 if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
+                    if self.enforce_bootstrap_flow {
+                        self.begin_bootstrap_flow(id, stream_id, bootstrap_id, profile)?;
+                    }
                     self.fan_out(
                         id,
                         &FrameKind::BootstrapBegin {
@@ -1017,6 +1059,15 @@ impl RelaySession {
                 payload,
             } => {
                 if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
+                    if self.enforce_bootstrap_flow {
+                        self.accept_bootstrap_chunk(
+                            id,
+                            stream_id,
+                            bootstrap_id,
+                            chunk_seq,
+                            payload.len(),
+                        )?;
+                    }
                     self.fan_out(
                         id,
                         &FrameKind::BootstrapChunk {
@@ -1036,6 +1087,9 @@ impl RelaySession {
                 history_cursor,
             } => {
                 if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
+                    if self.enforce_bootstrap_flow {
+                        self.finish_bootstrap_flow(id, stream_id, bootstrap_id)?;
+                    }
                     self.fan_out(
                         id,
                         &FrameKind::BootstrapReady {
@@ -1043,6 +1097,101 @@ impl RelaySession {
                             stream_id,
                             bootstrap_id,
                             history_cursor,
+                        },
+                    );
+                }
+            }
+            FrameKind::HistoryPage {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                page_seq,
+                cursor,
+                next_cursor,
+                payload,
+                rows,
+            } => {
+                if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
+                    self.fan_out(
+                        id,
+                        &FrameKind::HistoryPage {
+                            terminal_id: TerminalId::satellite(self.host.clone(), id),
+                            stream_id,
+                            bootstrap_id,
+                            page_seq,
+                            cursor,
+                            next_cursor,
+                            payload,
+                            rows,
+                        },
+                    );
+                }
+            }
+            FrameKind::BootstrapTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                reason,
+                last_valid_seq,
+            } => {
+                if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
+                    if self.bootstrap_flows.get(&id).is_some_and(|flow| {
+                        flow.stream_id == stream_id && flow.bootstrap_id == bootstrap_id
+                    }) {
+                        self.bootstrap_flows.remove(&id);
+                    }
+                    self.fan_out(
+                        id,
+                        &FrameKind::BootstrapTombstone {
+                            terminal_id: TerminalId::satellite(self.host.clone(), id),
+                            stream_id,
+                            bootstrap_id,
+                            reason,
+                            last_valid_seq,
+                        },
+                    );
+                }
+            }
+            FrameKind::HistoryTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+            } => {
+                if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
+                    self.fan_out(
+                        id,
+                        &FrameKind::HistoryTombstone {
+                            terminal_id: TerminalId::satellite(self.host.clone(), id),
+                            stream_id,
+                            bootstrap_id,
+                            cursor,
+                            reason,
+                        },
+                    );
+                }
+            }
+            FrameKind::HistoryRejected {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+                required_bytes,
+                required_rows,
+            } => {
+                if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
+                    self.fan_out(
+                        id,
+                        &FrameKind::HistoryRejected {
+                            terminal_id: TerminalId::satellite(self.host.clone(), id),
+                            stream_id,
+                            bootstrap_id,
+                            cursor,
+                            reason,
+                            required_bytes,
+                            required_rows,
                         },
                     );
                 }
@@ -1136,6 +1285,7 @@ impl RelaySession {
             );
         }
         self.subscribers.clear();
+        self.bootstrap_flows.clear();
     }
 
     /// Drop pending entries whose consumer stopped waiting (the
@@ -1296,6 +1446,134 @@ impl RelaySession {
             None => None,
         }
     }
+    fn expected_stream_profile(&self) -> Option<BootstrapStreamProfile> {
+        match self.bootstrap_profile {
+            BootstrapProfile::NativeState { codec, .. } => {
+                Some(BootstrapStreamProfile::NativeState { codec })
+            }
+            BootstrapProfile::SynthesizedVtRaw => Some(BootstrapStreamProfile::SynthesizedVtRaw),
+            BootstrapProfile::SynthesizedVtStateSync => {
+                Some(BootstrapStreamProfile::SynthesizedVtStateSync)
+            }
+            _ => None,
+        }
+    }
+
+    fn begin_bootstrap_flow(
+        &mut self,
+        terminal: u32,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        profile: BootstrapStreamProfile,
+    ) -> Result<(), String> {
+        if Some(profile) != self.expected_stream_profile() {
+            return Err(format!(
+                "satellite {} sent BOOTSTRAP_BEGIN profile {profile:?}, negotiated {:?}",
+                self.host, self.bootstrap_profile
+            ));
+        }
+        if self.bootstrap_flows.contains_key(&terminal) {
+            return Err(format!(
+                "satellite {} sent overlapping BOOTSTRAP_BEGIN for terminal {terminal}",
+                self.host
+            ));
+        }
+        self.bootstrap_flows.insert(
+            terminal,
+            RelayBootstrapFlow {
+                stream_id,
+                bootstrap_id,
+                next_chunk_seq: 0,
+                retained_bytes: 0,
+            },
+        );
+        Ok(())
+    }
+
+    fn accept_bootstrap_chunk(
+        &mut self,
+        terminal: u32,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        chunk_seq: u32,
+        payload_len: usize,
+    ) -> Result<(), String> {
+        let Some(flow) = self.bootstrap_flows.get_mut(&terminal) else {
+            return Err(format!(
+                "satellite {} sent BOOTSTRAP_CHUNK before BEGIN for terminal {terminal}",
+                self.host
+            ));
+        };
+        if flow.stream_id != stream_id || flow.bootstrap_id != bootstrap_id {
+            return Err(format!(
+                "satellite {} changed bootstrap identity before READY for terminal {terminal}",
+                self.host
+            ));
+        }
+        if chunk_seq != flow.next_chunk_seq {
+            return Err(format!(
+                "satellite {} sent BOOTSTRAP_CHUNK sequence {chunk_seq}, expected {}",
+                self.host, flow.next_chunk_seq
+            ));
+        }
+        if chunk_seq >= MAX_RELAY_BOOTSTRAP_CHUNKS {
+            return Err(format!(
+                "satellite {} exceeded the relayed bootstrap chunk-count limit",
+                self.host
+            ));
+        }
+        let payload_len = u64::try_from(payload_len)
+            .map_err(|_| format!("satellite {} sent an oversized bootstrap chunk", self.host))?;
+        let max_chunk = u64::from(self.bootstrap_limits.max_chunk_bytes());
+        if payload_len > max_chunk {
+            return Err(format!(
+                "satellite {} exceeded the negotiated bootstrap chunk limit",
+                self.host
+            ));
+        }
+        let max_retained = max_chunk
+            .checked_mul(u64::from(MAX_RELAY_BOOTSTRAP_CHUNKS))
+            .ok_or_else(|| "relayed bootstrap retention limit overflow".to_owned())?;
+        flow.retained_bytes = flow
+            .retained_bytes
+            .checked_add(payload_len)
+            .filter(|total| *total <= max_retained)
+            .ok_or_else(|| {
+                format!(
+                    "satellite {} exceeded the relayed bootstrap byte limit",
+                    self.host
+                )
+            })?;
+        flow.next_chunk_seq = flow.next_chunk_seq.checked_add(1).ok_or_else(|| {
+            format!(
+                "satellite {} overflowed the bootstrap chunk sequence",
+                self.host
+            )
+        })?;
+        Ok(())
+    }
+
+    fn finish_bootstrap_flow(
+        &mut self,
+        terminal: u32,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+    ) -> Result<(), String> {
+        let Some(flow) = self.bootstrap_flows.get(&terminal) else {
+            return Err(format!(
+                "satellite {} sent BOOTSTRAP_READY before BEGIN for terminal {terminal}",
+                self.host
+            ));
+        };
+        if flow.stream_id != stream_id || flow.bootstrap_id != bootstrap_id {
+            return Err(format!(
+                "satellite {} changed bootstrap identity at READY for terminal {terminal}",
+                self.host
+            ));
+        }
+        self.bootstrap_flows.remove(&terminal);
+        Ok(())
+    }
 
     /// Push `frame` to every proxy subscriber of satellite-local terminal
     /// `id`. `try_send` per consumer: a slow consumer drops its copy, the
@@ -1328,37 +1606,59 @@ impl RelaySession {
         let is_begin = matches!(frame, FrameKind::BootstrapBegin { .. });
         let is_chunk = matches!(frame, FrameKind::BootstrapChunk { .. });
         let is_ready = matches!(frame, FrameKind::BootstrapReady { .. });
-        for sub in subs.iter_mut() {
-            if is_begin {
+        let replace_legacy_begin = is_begin && !self.enforce_bootstrap_flow;
+        let is_tombstone = matches!(frame, FrameKind::BootstrapTombstone { .. });
+        subs.retain_mut(|sub| {
+            if replace_legacy_begin {
                 sub.gate = SnapshotGate::AwaitingFirst;
-                Self::push_bootstrap_frame(sub, frame.clone(), false);
+                Self::push_bootstrap_frame(sub, frame.clone(), false)
+            } else if is_begin || is_tombstone {
+                Self::push_bootstrap_frame(sub, frame.clone(), false)
             } else if is_chunk {
-                Self::push_bootstrap_frame(sub, frame.clone(), false);
+                Self::push_bootstrap_frame(sub, frame.clone(), false)
             } else if is_ready {
-                Self::push_bootstrap_frame(sub, frame.clone(), true);
+                Self::push_bootstrap_frame(sub, frame.clone(), true)
             } else if Self::flush_pending_snapshot(sub) {
-                let _ = sub.out_tx.try_send(Outbound::Frame(frame.clone()));
+                !matches!(
+                    sub.out_tx.try_send(Outbound::Frame(frame.clone())),
+                    Err(mpsc::error::TrySendError::Closed(_))
+                )
+            } else {
+                true
             }
+        });
+        let empty = subs.is_empty();
+        if empty {
+            self.subscribers.remove(&id);
         }
     }
 
-    fn push_bootstrap_frame(
-        sub: &mut ProxySubscriber,
-        frame: FrameKind,
-        open_after: bool,
-    ) {
+    fn push_bootstrap_frame(sub: &mut ProxySubscriber, frame: FrameKind, open_after: bool) -> bool {
         let gate = std::mem::replace(&mut sub.gate, SnapshotGate::AwaitingFirst);
         match gate {
             SnapshotGate::Retained {
                 mut frames,
                 open_after: prior_open_after,
             } => {
+                if frames.len()
+                    >= usize::try_from(MAX_RELAY_BOOTSTRAP_CHUNKS)
+                        .unwrap_or(usize::MAX)
+                        .saturating_add(2)
+                {
+                    warn!(
+                        client = ?sub.client,
+                        "reaping saturated relay subscriber whose retained bootstrap exceeded bounds"
+                    );
+                    sub.gate = SnapshotGate::Open;
+                    return false;
+                }
                 frames.push_back(frame);
                 sub.gate = SnapshotGate::Retained {
                     frames,
                     open_after: prior_open_after || open_after,
                 };
                 let _ = Self::flush_pending_snapshot(sub);
+                true
             }
             SnapshotGate::AwaitingFirst | SnapshotGate::Open => {
                 match sub.out_tx.try_send(Outbound::Frame(frame.clone())) {
@@ -1368,15 +1668,18 @@ impl RelaySession {
                         } else {
                             SnapshotGate::AwaitingFirst
                         };
+                        true
                     }
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         sub.gate = SnapshotGate::Retained {
                             frames: VecDeque::from([frame]),
                             open_after,
                         };
+                        true
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
                         sub.gate = SnapshotGate::Open;
+                        false
                     }
                 }
             }
@@ -1888,6 +2191,156 @@ mod tests {
             .expect_err("duplicate HELLO_OK must tear down the relay");
         assert!(error.contains("direction-invalid"));
     }
+    fn native_profile() -> BootstrapProfile {
+        BootstrapProfile::NativeState {
+            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+            features: phux_protocol::caps::EngineFeatureSet::required_native(),
+        }
+    }
+
+    fn native_stream_profile() -> BootstrapStreamProfile {
+        BootstrapStreamProfile::NativeState {
+            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+        }
+    }
+
+    #[test]
+    fn relay_rejects_bootstrap_profile_mismatch_before_fanout() {
+        let mut session =
+            RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        attach(&mut session, 7, ClientId(1), out_tx);
+        let error = session
+            .handle_inbound(&encode(&FrameKind::BootstrapBegin {
+                terminal_id: TerminalId::local(7),
+                stream_id: StreamId::new(1).expect("stream"),
+                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            }))
+            .expect_err("profile mismatch must fail the link");
+        assert!(error.contains("negotiated"));
+        assert!(out_rx.try_recv().is_err(), "mismatched BEGIN leaked");
+        assert!(session.bootstrap_flows.is_empty());
+    }
+
+    #[test]
+    fn relay_rejects_gapped_chunks_and_live_delta_before_ready() {
+        let stream_id = StreamId::new(2).expect("stream");
+        let bootstrap_id = BootstrapId::new(3).expect("bootstrap");
+
+        let mut gapped =
+            RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
+        gapped
+            .handle_inbound(&encode(&FrameKind::BootstrapBegin {
+                terminal_id: TerminalId::local(7),
+                stream_id,
+                bootstrap_id,
+                profile: native_stream_profile(),
+                cols: 80,
+                rows: 24,
+                base_seq: 10,
+            }))
+            .expect("valid BEGIN");
+        let error = gapped
+            .handle_inbound(&encode(&FrameKind::BootstrapChunk {
+                terminal_id: TerminalId::local(7),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 1,
+                payload: bytes::Bytes::from_static(b"opaque"),
+            }))
+            .expect_err("gapped chunk must fail the link");
+        assert!(error.contains("expected 0"));
+
+        let mut early_live =
+            RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
+        early_live
+            .handle_inbound(&encode(&FrameKind::BootstrapBegin {
+                terminal_id: TerminalId::local(7),
+                stream_id,
+                bootstrap_id,
+                profile: native_stream_profile(),
+                cols: 80,
+                rows: 24,
+                base_seq: 10,
+            }))
+            .expect("valid BEGIN");
+        let error = early_live
+            .handle_inbound(&encode(&FrameKind::TerminalOutput {
+                terminal_id: TerminalId::local(7),
+                stream_id,
+                bootstrap_id,
+                seq: 11,
+                bytes: bytes::Bytes::from_static(b"x"),
+            }))
+            .expect_err("live output before READY must fail the link");
+        assert!(error.contains("before BOOTSTRAP_READY"));
+    }
+
+    #[test]
+    fn relay_fans_out_complete_native_prefix_before_live_delta() {
+        let mut session =
+            RelaySession::new_negotiated(host(), BootstrapLimits::default(), native_profile());
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        attach(&mut session, 7, ClientId(1), out_tx);
+        let stream_id = StreamId::new(4).expect("stream");
+        let bootstrap_id = BootstrapId::new(5).expect("bootstrap");
+        for frame in [
+            FrameKind::BootstrapBegin {
+                terminal_id: TerminalId::local(7),
+                stream_id,
+                bootstrap_id,
+                profile: native_stream_profile(),
+                cols: 80,
+                rows: 24,
+                base_seq: 20,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: TerminalId::local(7),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"opaque"),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: TerminalId::local(7),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+            FrameKind::TerminalOutput {
+                terminal_id: TerminalId::local(7),
+                stream_id,
+                bootstrap_id,
+                seq: 21,
+                bytes: bytes::Bytes::from_static(b"live"),
+            },
+        ] {
+            session
+                .handle_inbound(&encode(&frame))
+                .expect("ordered native bootstrap frame");
+        }
+        assert!(matches!(
+            out_rx.try_recv().expect("BEGIN"),
+            Outbound::Frame(FrameKind::BootstrapBegin { .. })
+        ));
+        assert!(matches!(
+            out_rx.try_recv().expect("CHUNK"),
+            Outbound::Frame(FrameKind::BootstrapChunk { .. })
+        ));
+        assert!(matches!(
+            out_rx.try_recv().expect("READY"),
+            Outbound::Frame(FrameKind::BootstrapReady { .. })
+        ));
+        assert!(matches!(
+            out_rx.try_recv().expect("live"),
+            Outbound::Frame(FrameKind::TerminalOutput { seq: 21, .. })
+        ));
+        assert!(session.bootstrap_flows.is_empty());
+    }
 
     #[test]
     fn session_remaps_request_ids_and_resolves_replies() {
@@ -2099,8 +2552,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::TerminalOutput {
                 terminal_id: TerminalId::local(9),
                 stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-                bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
-                    .expect("test bootstrap id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
                 seq: 42,
                 bytes: bytes::Bytes::from_static(b"hi"),
             }))
@@ -2181,8 +2633,7 @@ mod tests {
         FrameKind::BootstrapReady {
             terminal_id: TerminalId::local(id),
             stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-            bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
-                .expect("test bootstrap id"),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
             history_cursor: None,
         }
     }
@@ -2204,8 +2655,7 @@ mod tests {
         FrameKind::TerminalOutput {
             terminal_id: TerminalId::local(id),
             stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-            bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
-                .expect("test bootstrap id"),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
             seq,
             bytes: bytes::Bytes::from_static(bytes),
         }
@@ -2751,8 +3201,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::TerminalOutput {
                 terminal_id: TerminalId::local(9),
                 stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-                bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
-                    .expect("test bootstrap id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
                 seq: 7,
                 bytes: bytes::Bytes::from_static(b"live"),
             }))
@@ -2879,8 +3328,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::TerminalOutput {
                 terminal_id: TerminalId::local(9),
                 stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-                bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
-                    .expect("test bootstrap id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
                 seq: 1,
                 bytes: bytes::Bytes::from_static(b"leak"),
             }))
@@ -3028,8 +3476,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::TerminalOutput {
                 terminal_id: TerminalId::local(9),
                 stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
-                bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
-                    .expect("test bootstrap id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
                 seq: 1,
                 bytes: bytes::Bytes::from_static(b"still here"),
             }))

@@ -810,7 +810,8 @@ async fn run_relay_session<C: LinkConn>(
 ) -> Option<String> {
     let profile = conn.bootstrap_profile();
     info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
-    let mut session = super::relay::RelaySession::new(host.clone(), conn.bootstrap_limits());
+    let mut session =
+        super::relay::RelaySession::new_negotiated(host.clone(), conn.bootstrap_limits(), profile);
     // Housekeeping tick: transport keepalive + pending-map pruning. First
     // tick one interval out — the connection was live zero seconds ago.
     let mut keepalive = tokio::time::interval_at(

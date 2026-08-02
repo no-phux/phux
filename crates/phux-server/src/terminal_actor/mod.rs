@@ -444,6 +444,7 @@ impl NativeRequestReceivers {
         }
         #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
         {
+            let _disabled = NativeActorRequest::Disabled;
             std::future::pending::<NativeActorRequest>().await
         }
     }
@@ -4930,7 +4931,11 @@ mod tests {
                         stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
                         bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                             .expect("bootstrap id"),
-                        limits: phux_protocol::caps::BootstrapLimits::default(),
+                        limits: phux_protocol::caps::BootstrapLimits::new(
+                            phux_protocol::MAX_BOOTSTRAP_CHUNK_BYTES,
+                            phux_protocol::DEFAULT_HISTORY_PAGE_BYTES,
+                        )
+                        .expect("wide negotiated bootstrap bound"),
                         reply,
                     })
                     .await

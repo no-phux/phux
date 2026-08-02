@@ -1738,20 +1738,10 @@ mod tests {
                         phux_protocol::caps::BootstrapLimits::default(),
                         &test_root_token,
                         &mut output_pumps,
+                        &test_root_token,
                     )
                     .await;
                 });
-
-                // First the writer should see ATTACHED.
-                let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
-                    .await
-                    .expect("attached frame did not arrive")
-                    .expect("out_rx closed before attached");
-                let Outbound::Frame(frame) = attached;
-                assert!(
-                    matches!(frame, FrameKind::Attached { .. }),
-                    "expected Attached, got {frame:?}",
-                );
 
                 // Now collect all N SnapshotRequests BEFORE replying to
                 // any of them. Under the old sequential loop the
@@ -1781,6 +1771,16 @@ mod tests {
                     };
                     let _ = reply.send((payload, u64::try_from(i).unwrap()));
                 }
+                // First the writer should see ATTACHED.
+                let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                    .await
+                    .expect("attached frame did not arrive")
+                    .expect("out_rx closed before attached");
+                let Outbound::Frame(frame) = attached;
+                assert!(
+                    matches!(frame, FrameKind::Attached { .. }),
+                    "expected Attached, got {frame:?}",
+                );
 
                 // Drain one BEGIN/CHUNK/READY sequence per pane.
                 let mut begins = 0usize;
@@ -1908,24 +1908,16 @@ mod tests {
                         false,
                         0,
                         &first_out_tx,
-                        ClientCapabilities::default(),
+                        ClientCapabilities::default()
+                            .with_output_mode(phux_protocol::caps::OutputMode::StateSync),
                         phux_protocol::caps::BootstrapProfile::SynthesizedVtStateSync,
                         phux_protocol::caps::BootstrapLimits::default(),
                         &token,
                         &mut output_pumps,
+                        &token,
                     )
                     .await;
                 });
-
-                // ATTACHED first.
-                let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
-                    .await
-                    .expect("attached frame did not arrive")
-                    .expect("out_rx closed");
-                assert!(matches!(
-                    attached,
-                    Outbound::Frame(FrameKind::Attached { .. })
-                ));
 
                 // The consumer-attach request must land, carrying the wire
                 // terminal id. Reply Ok so `handle_attach` proceeds.
@@ -1967,6 +1959,15 @@ mod tests {
                         }),
                     }))
                     .expect("send attach reply");
+                // ATTACHED first.
+                let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                    .await
+                    .expect("attached frame did not arrive")
+                    .expect("out_rx closed");
+                assert!(matches!(
+                    attached,
+                    Outbound::Frame(FrameKind::Attached { .. })
+                ));
 
                 attach_task.await.expect("attach task panicked");
                 for expected in [
@@ -2008,11 +2009,13 @@ mod tests {
                         false,
                         0,
                         &second_out_tx,
-                        ClientCapabilities::default(),
+                        ClientCapabilities::default()
+                            .with_output_mode(phux_protocol::caps::OutputMode::StateSync),
                         phux_protocol::caps::BootstrapProfile::SynthesizedVtStateSync,
                         phux_protocol::caps::BootstrapLimits::default(),
                         &second_token,
                         &mut output_pumps,
+                        &second_token,
                     )
                     .await;
                 });
@@ -2030,14 +2033,6 @@ mod tests {
                     .send(())
                     .expect("ack prior consumer retirement");
 
-                let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
-                    .await
-                    .expect("replacement ATTACHED did not arrive")
-                    .expect("outbound closed before replacement ATTACHED");
-                assert!(matches!(
-                    attached,
-                    Outbound::Frame(FrameKind::Attached { attach_id: 2, .. })
-                ));
                 let replacement = tokio::time::timeout(MAILBOX_DEADLINE, consumer_attach_rx.recv())
                     .await
                     .expect("replacement ConsumerAttachRequest did not arrive")
@@ -2059,6 +2054,14 @@ mod tests {
                         }),
                     }))
                     .expect("ack replacement consumer");
+                let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                    .await
+                    .expect("replacement ATTACHED did not arrive")
+                    .expect("outbound closed before replacement ATTACHED");
+                assert!(matches!(
+                    attached,
+                    Outbound::Frame(FrameKind::Attached { attach_id: 2, .. })
+                ));
                 for expected in [
                     "BOOTSTRAP_BEGIN",
                     "BOOTSTRAP_CHUNK",
@@ -2346,5 +2349,235 @@ mod tests {
             .with(|s| s.registry.terminal(pid).map(|p| p.dims))
             .expect("pane exists");
         assert_eq!(before, after, "no mutation expected for unattached client");
+    }
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "end-to-end fatal resync setup keeps the fake actor, publication, and cleanup assertions together"
+    )]
+    async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer() {
+        use phux_core::ids::TerminalId as CoreTerminalId;
+        use phux_protocol::caps::{
+            BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, EngineCodec,
+            EngineFeatureSet,
+        };
+        use tokio::sync::{broadcast, mpsc};
+        use tokio::task::LocalSet;
+
+        use crate::terminal_actor::{
+            ConsumerAttachOutcome, NativeBootstrapReply, PaneOutput, ResyncReason, TerminalHandle,
+        };
+
+        let local = LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_sid, _wid, terminal): (_, _, CoreTerminalId) =
+                    state.with_mut(|s| s.seed_session("native-fatal"));
+                let (output_tx, _output_seed) = broadcast::channel::<PaneOutput>(8);
+                let (native_bootstrap_tx, mut native_bootstrap_rx) = mpsc::channel(8);
+                let (consumer_attach_tx, mut consumer_attach_rx) = mpsc::channel(8);
+                let (consumer_detach_tx, mut consumer_detach_rx) = mpsc::channel(8);
+                let handle = TerminalHandle {
+                    input: mpsc::channel(8).0,
+                    encoded_input: mpsc::channel(8).0,
+                    input_snapshot: tokio::sync::watch::channel(
+                        crate::input::InputEncoderSnapshot::default(),
+                    )
+                    .1,
+                    snapshot: mpsc::channel(8).0,
+                    native_bootstrap: native_bootstrap_tx,
+                    native_history: mpsc::channel(8).0,
+                    native_release: mpsc::channel(8).0,
+                    set_default_colors: mpsc::channel(8).0,
+                    screen: mpsc::channel(8).0,
+                    upgrade: mpsc::channel(8).0,
+                    pwd: mpsc::channel(8).0,
+                    output: output_tx.clone(),
+                    resize: mpsc::channel(8).0,
+                    consumer_attach: consumer_attach_tx,
+                    consumer_detach: consumer_detach_tx,
+                    consumer_ack: mpsc::channel(8).0,
+                    subscribe_to_events: mpsc::channel(8).0,
+                    unsubscribe_from_events: mpsc::channel(8).0,
+                    control: mpsc::channel(8).0,
+                    cols: 80,
+                    rows: 24,
+                };
+                state.with_mut(|s| {
+                    let _ = s.register_terminal_handle(terminal, handle, CancellationToken::new());
+                });
+
+                let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                let (out_tx, mut out_rx) =
+                    mpsc::channel::<Outbound>(crate::state::DEFAULT_CLIENT_MAILBOX);
+                let connection_token = CancellationToken::new();
+                let task_token = connection_token.clone();
+                let state_for_task = state.clone();
+                let out_for_task = out_tx.clone();
+                let attach_task = tokio::task::spawn_local(async move {
+                    let root_token = CancellationToken::new();
+                    let mut output_pumps = JoinSet::new();
+                    handle_attach(
+                        &state_for_task,
+                        client_id,
+                        1,
+                        AttachTarget::ByName("native-fatal".to_owned()),
+                        ViewportInfo::new(80, 24),
+                        false,
+                        0,
+                        &out_for_task,
+                        ClientCapabilities::default(),
+                        BootstrapProfile::NativeState {
+                            codec: EngineCodec::LibghosttyCheckpointV2,
+                            features: EngineFeatureSet::required_native(),
+                        },
+                        BootstrapLimits::default(),
+                        &root_token,
+                        &mut output_pumps,
+                        &task_token,
+                    )
+                    .await;
+                    task_token.cancelled().await;
+                    abort_output_pumps(&mut output_pumps, client_id, "fatal-native-resync").await;
+                });
+
+                let registration =
+                    tokio::time::timeout(MAILBOX_DEADLINE, consumer_attach_rx.recv())
+                        .await
+                        .expect("consumer registration timed out")
+                        .expect("consumer registration sender closed");
+                registration
+                    .reply
+                    .send(Ok(ConsumerAttachOutcome {
+                        tick_managed: false,
+                        state_sync_bootstrap: None,
+                    }))
+                    .expect("consumer registration reply");
+
+                let initial = tokio::time::timeout(MAILBOX_DEADLINE, native_bootstrap_rx.recv())
+                    .await
+                    .expect("initial native request timed out")
+                    .expect("native request sender closed");
+                let terminal_id = initial.terminal_id.clone();
+                let stream_id = initial.stream_id;
+                let bootstrap_id = initial.bootstrap_id;
+                initial
+                    .reply
+                    .send(Ok(NativeBootstrapReply {
+                        frames: vec![
+                            FrameKind::BootstrapBegin {
+                                terminal_id: terminal_id.clone(),
+                                stream_id,
+                                bootstrap_id,
+                                profile: BootstrapStreamProfile::NativeState {
+                                    codec: EngineCodec::LibghosttyCheckpointV2,
+                                },
+                                cols: 80,
+                                rows: 24,
+                                base_seq: 0,
+                            },
+                            FrameKind::BootstrapChunk {
+                                terminal_id: terminal_id.clone(),
+                                stream_id,
+                                bootstrap_id,
+                                chunk_seq: 0,
+                                payload: bytes::Bytes::from_static(b"opaque-checkpoint"),
+                            },
+                            FrameKind::BootstrapReady {
+                                terminal_id,
+                                stream_id,
+                                bootstrap_id,
+                                history_cursor: None,
+                            },
+                        ],
+                        base_seq: 0,
+                    }))
+                    .expect("initial native reply");
+
+                for expected in ["ATTACHED", "BEGIN", "CHUNK", "READY", "ATTACH_READY"] {
+                    let Outbound::Frame(frame) =
+                        tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                            .await
+                            .expect("bootstrap frame timed out")
+                            .expect("outbound closed");
+                    let actual = match frame {
+                        FrameKind::Attached { .. } => "ATTACHED",
+                        FrameKind::BootstrapBegin { .. } => "BEGIN",
+                        FrameKind::BootstrapChunk { .. } => "CHUNK",
+                        FrameKind::BootstrapReady { .. } => "READY",
+                        FrameKind::AttachReady { .. } => "ATTACH_READY",
+                        other => panic!("unexpected initial frame: {other:?}"),
+                    };
+                    assert_eq!(actual, expected);
+                }
+
+                output_tx
+                    .send(PaneOutput::Live {
+                        seq: 1,
+                        bytes: bytes::Bytes::from_static(b"live"),
+                    })
+                    .expect("live receiver");
+                assert!(matches!(
+                    tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                        .await
+                        .expect("live output timed out")
+                        .expect("outbound closed"),
+                    Outbound::Frame(FrameKind::TerminalOutput { seq: 1, .. })
+                ));
+
+                output_tx
+                    .send(PaneOutput::Resync {
+                        cols: 80,
+                        rows: 24,
+                        bytes: bytes::Bytes::new(),
+                        reason: ResyncReason::OutboundGap,
+                        base_seq: 1,
+                    })
+                    .expect("resync receiver");
+                assert!(matches!(
+                    tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                        .await
+                        .expect("tombstone timed out")
+                        .expect("outbound closed"),
+                    Outbound::Frame(FrameKind::BootstrapTombstone {
+                        last_valid_seq: 1,
+                        ..
+                    })
+                ));
+                let failed = tokio::time::timeout(MAILBOX_DEADLINE, native_bootstrap_rx.recv())
+                    .await
+                    .expect("replacement native request timed out")
+                    .expect("native request sender closed");
+                failed
+                    .reply
+                    .send(Err(crate::native_state::NativeStateError::OutOfMemory))
+                    .expect("replacement failure reply");
+
+                assert!(matches!(
+                    tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                        .await
+                        .expect("fatal error timed out")
+                        .expect("outbound closed"),
+                    Outbound::Frame(FrameKind::Error {
+                        code: ErrorCode::CodecUnavailable,
+                        ..
+                    })
+                ));
+                tokio::time::timeout(MAILBOX_DEADLINE, connection_token.cancelled())
+                    .await
+                    .expect("connection was not cancelled");
+                tokio::time::timeout(MAILBOX_DEADLINE, consumer_detach_rx.recv())
+                    .await
+                    .expect("consumer rollback timed out")
+                    .expect("consumer detach sender closed");
+                assert!(
+                    state.with(|s| !s.attached.contains_key(&client_id)),
+                    "fatal native replacement left the aggregate consumer attached"
+                );
+                attach_task.await.expect("attach task");
+            })
+            .await;
     }
 }
