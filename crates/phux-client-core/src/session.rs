@@ -1728,6 +1728,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
                     replica.history.tombstone();
                 }
                 self.adapter.clear_document_state(&mut replica.engine);
+                effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
+                    key: replica.key.clone(),
+                    reason: HistoryUnavailableReason::CodecFailure,
+                }));
                 effects.push(KernelEffect::Status(KernelStatus::History {
                     key: replica.key.clone(),
                     status: replica.history.status(),
@@ -1751,6 +1755,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 replica.history.tombstone();
                 self.adapter.clear_document_state(&mut replica.engine);
                 self.engine_effects.clear();
+                effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
+                    key: replica.key.clone(),
+                    reason: HistoryUnavailableReason::CodecFailure,
+                }));
                 effects.push(KernelEffect::Status(KernelStatus::History {
                     key: replica.key.clone(),
                     status: replica.history.status(),
@@ -1768,6 +1776,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
             replica.history.tombstone();
             self.adapter.clear_document_state(&mut replica.engine);
             self.engine_effects.clear();
+            effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
+                key: replica.key.clone(),
+                reason: HistoryUnavailableReason::CodecFailure,
+            }));
             effects.push(KernelEffect::Status(KernelStatus::History {
                 key: replica.key.clone(),
                 status: replica.history.status(),
@@ -1784,6 +1796,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
             replica.history.tombstone();
             self.adapter.clear_document_state(&mut replica.engine);
             self.engine_effects.clear();
+            effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
+                key: replica.key.clone(),
+                reason: HistoryUnavailableReason::CodecFailure,
+            }));
             effects.push(KernelEffect::Status(KernelStatus::History {
                 key: replica.key.clone(),
                 status: replica.history.status(),
@@ -1805,6 +1821,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
             replica.history.tombstone();
             self.adapter.clear_document_state(&mut replica.engine);
             self.engine_effects.clear();
+            effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
+                key: replica.key.clone(),
+                reason: HistoryUnavailableReason::CodecFailure,
+            }));
             effects.push(KernelEffect::Status(KernelStatus::History {
                 key: replica.key.clone(),
                 status: replica.history.status(),
@@ -2166,6 +2186,7 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
             .get_mut(terminal_id)
             .and_then(|state| state.published.as_mut())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        replica.history.ensure_anchor_capacity(1)?;
         let anchor = self
             .adapter
             .track_document_anchor(&mut replica.engine, point)
@@ -2261,17 +2282,32 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
             .get_mut(terminal_id)
             .and_then(|state| state.published.as_mut())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        let max_matches = max_matches.min(replica.history.remaining_anchor_capacity() / 2);
+        if max_matches == 0 {
+            return Ok(Vec::new());
+        }
         let matches = self
             .adapter
             .search_loaded(&mut replica.engine, needle, max_matches)
             .map_err(KernelError::Engine)?;
-        for found in &matches {
+        let registration = matches.iter().try_for_each(|found| {
             replica
                 .history
                 .register_anchor_pages(found.start, std::iter::empty())?;
             replica
                 .history
-                .register_anchor_pages(found.end, std::iter::empty())?;
+                .register_anchor_pages(found.end, std::iter::empty())
+        });
+        if let Err(error) = registration {
+            for found in &matches {
+                self.adapter
+                    .release_document_anchor(&mut replica.engine, found.start);
+                self.adapter
+                    .release_document_anchor(&mut replica.engine, found.end);
+                replica.history.remove_anchor(found.start);
+                replica.history.remove_anchor(found.end);
+            }
+            return Err(KernelError::HistoryCache(error));
         }
         Ok(matches)
     }

@@ -555,12 +555,36 @@ impl HistoryCache {
         Ok(())
     }
 
+    /// Remaining bounded engine-anchor registrations.
+    pub(crate) fn remaining_anchor_capacity(&self) -> usize {
+        self.config
+            .max_materialized_rows
+            .saturating_sub(self.anchor_pages.len())
+    }
+
+    /// Reject an operation before creating more engine-owned tracked anchors.
+    pub(crate) fn ensure_anchor_capacity(
+        &self,
+        additional: usize,
+    ) -> Result<(), HistoryCacheError> {
+        if additional > self.remaining_anchor_capacity() {
+            return Err(HistoryCacheError::ProjectionTooLarge {
+                required: self.anchor_pages.len().saturating_add(additional),
+                budget: self.config.max_materialized_rows,
+            });
+        }
+        Ok(())
+    }
+
     /// Associate an engine-owned anchor with every loaded page it protects.
     pub(crate) fn register_anchor_pages(
         &mut self,
         anchor: DocumentAnchorId,
         pages: impl IntoIterator<Item = HistoryPageId>,
     ) -> Result<(), HistoryCacheError> {
+        if !self.anchor_pages.contains_key(&anchor) {
+            self.ensure_anchor_capacity(1)?;
+        }
         let pages: HashSet<_> = pages.into_iter().collect();
         if pages
             .iter()
@@ -933,6 +957,21 @@ mod tests {
         );
         assert_eq!(cache.status().next_cursor, Some(cursor(1)));
         assert_eq!(cache.status().state, HistoryLoadState::Loading);
+    }
+
+    #[test]
+    fn tracked_anchor_registrations_are_bounded() {
+        let mut cache = HistoryCache::new(config(64, 1), None, 80);
+        cache
+            .register_anchor_pages(DocumentAnchorId::from_raw(1), std::iter::empty())
+            .unwrap();
+        assert_eq!(
+            cache.register_anchor_pages(DocumentAnchorId::from_raw(2), std::iter::empty()),
+            Err(HistoryCacheError::ProjectionTooLarge {
+                required: 2,
+                budget: 1,
+            })
+        );
     }
 
     #[test]
