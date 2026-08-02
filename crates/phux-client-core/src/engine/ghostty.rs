@@ -31,7 +31,7 @@ use super::{
     EngineHistoryProjection, EngineProjectionOrigin, EngineProjectionRow, EngineSearchMatch,
     EngineSend, HistoryApplyOutcome,
 };
-use crate::history::{DocumentAnchorId, MAX_HISTORY_PAGE_ROWS};
+use crate::history::DocumentAnchorId;
 
 const CHECKPOINT_VERSION: u16 = EngineCodec::LibghosttyCheckpointV2 as u8 as u16;
 const CHECKPOINT_IDENTITY: &str = "ghostty.snapshot.v1-v2.incremental.v1";
@@ -1697,7 +1697,7 @@ mod tests {
                 .expect("bounded projection");
             assert!(projection.rows.len() <= 2);
         }
-        assert!(physical_high_water <= MAX_HISTORY_PAGE_ROWS as usize);
+        assert!(physical_high_water <= crate::history::MAX_HISTORY_PAGE_ROWS as usize);
     }
 
     #[test]
