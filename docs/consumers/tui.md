@@ -1128,8 +1128,9 @@ surfaces trigger the same in-place reload of a running client:
 A reload re-runs the full layered loader — `extends` stacks and `-append`
 array merges resolve exactly as at startup — and rebuilds, atomically:
 keybindings (prefix, both tables, plugin-contributed chords, the
-which-key knobs), the theme, the status-bar composition, and the plugin
-action rows in the palette. Failure semantics are all-or-nothing: on any
+which-key knobs), the theme, the status-bar composition (widgets,
+plugin `[[widgets]]` contributions, and `[status] position`), and the
+plugin action rows in the palette. Failure semantics are all-or-nothing: on any
 parse or validation error the client keeps the **previous** config fully
 in effect and surfaces the error as a dismissable toast — never a crash,
 never a half-applied mix of old and new. This is deliberately stricter

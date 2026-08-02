@@ -4388,28 +4388,21 @@ fn build_status_bar_painter() -> Option<StatusBarPainter> {
             return Some(StatusBarPainter::error_line(config_error_line(&err)));
         }
     };
-    let registry = phux_config::WidgetRegistry::with_builtins();
-    // phux-r82.6: fold enabled plugins' `[[widgets]]` contributions in
-    // after the user's own `[status]` widgets. Invalid contributions are
-    // dropped with a warning inside the merge (mirroring the plugin
-    // keybinding policy), so a broken plugin cannot flip the bar into the
-    // error strip; a genuinely broken USER config still can, below.
-    let mut status = cfg.status.clone();
-    if !cfg.plugins.is_empty() {
+    let manifests = if cfg.plugins.is_empty() {
+        Vec::new()
+    } else {
         let config_path = phux_config::loader::config_path();
-        let manifests = phux_config::plugin::load_enabled_manifests(&config_path, &cfg.plugins);
-        phux_config::plugin::merge_widget_contributions(&mut status, &manifests, &registry);
-    }
-    match phux_config::widget::StatusBar::build(&status, &registry) {
-        Ok(bar) if bar.is_empty() => None,
-        Ok(bar) => {
-            // phux-foz.8: `[status] position = "top" | "bottom"` picks the
-            // reserved row; the pane content rect shifts to match (see
-            // `paint::content_rect`).
-            let mut painter = StatusBarPainter::new(bar, cfg.status.position.into());
-            painter.set_prefix(cfg.keybindings.prefix);
-            Some(painter)
-        }
+        phux_config::plugin::load_enabled_manifests(&config_path, &cfg.plugins)
+    };
+    // phux-i0e8.6.1: the composition itself (plugin `[[widgets]]` merge,
+    // bar build, `[status] position`, prefix) is shared with the reload
+    // path via `reload::compose_status_bar` so the two cannot drift.
+    // Only the error POLICY differs, and it stays here: startup degrades
+    // a build failure to the error-line painter so a broken config never
+    // blocks attach; a reload instead fails atomically and keeps the
+    // previous config.
+    match super::reload::compose_status_bar(&cfg, &manifests) {
+        Ok(painter) => painter,
         Err(err) => {
             tracing::warn!(error = %err, "status-bar build failed; surfacing on status bar");
             Some(StatusBarPainter::error_line(config_error_line(&err)))
