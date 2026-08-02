@@ -1207,6 +1207,7 @@ fn encode_split_with_ratio(ratio: f32) -> Vec<u8> {
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &snap); // field::attached::SNAPSHOT
     tlv_field(&mut fields, 2, &0u32.to_be_bytes()); // field::attached::INITIAL_CLIENT_ID
+    tlv_field(&mut fields, 3, &1u32.to_be_bytes()); // field::attached::ATTACH_ID
     framed_tlv(0x81, &fields)
 }
 
@@ -1420,9 +1421,8 @@ proptest! {
         prop_assert!(tail.is_empty());
     }
 
-    /// HELLO carries `client_caps.layers` as a trailing byte (phux-4li.2).
-    /// The encoder always emits it; the decoder accepts every prefix shape
-    /// per SPEC §6.
+    /// HELLO carries the complete protocol-0.7 capability record, including
+    /// layer and bootstrap negotiation fields.
     #[test]
     fn roundtrip_hello_layers(
         layers in arb_layer_set(),
@@ -1430,7 +1430,7 @@ proptest! {
         let frame = FrameKind::Hello {
             client_name: "phux-client/test".to_owned(),
             protocol_major: 0,
-            protocol_minor: 2,
+            protocol_minor: 7,
             protocol_patch: 0,
             client_caps: ClientCapabilities::new()
                 .with_color_support(ColorSupport::TrueColor)
@@ -1445,28 +1445,17 @@ proptest! {
 }
 
 #[test]
-fn hello_decoder_accepts_legacy_body_with_color_but_no_layers() {
-    // A 7lf-era HELLO ends right after the ColorSupport byte; a 4li.2+
-    // decoder must accept it and substitute the default LayerSet.
-    // A CLIENT_CAPS field (id 5) carrying only the color_support byte (no
-    // layers byte) decodes with L1 implied and no L3.
+fn hello_decoder_rejects_legacy_body_with_color_but_no_layers() {
     let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, b"x"); // CLIENT_NAME
+    tlv_field(&mut fields, 1, b"x");
     tlv_field(&mut fields, 2, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 3, &2u16.to_be_bytes());
+    tlv_field(&mut fields, 3, &7u16.to_be_bytes());
     tlv_field(&mut fields, 4, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 5, &[0x00]); // CLIENT_CAPS: ColorSupport::TrueColor; no layers
-    let framed = framed_tlv(0x01, &fields);
-    let (decoded, tail) = FrameKind::decode(&framed).unwrap();
-    assert!(tail.is_empty());
-    match decoded {
-        FrameKind::Hello { client_caps, .. } => {
-            // L1 always implied even when the byte is missing.
-            assert!(client_caps.layers.contains(Layer::L1));
-            assert!(!client_caps.layers.contains(Layer::L3));
-        }
-        other => panic!("expected Hello, got {other:?}"),
-    }
+    tlv_field(&mut fields, 5, &[0x00]);
+    assert_eq!(
+        FrameKind::decode(&framed_tlv(0x01, &fields)).unwrap_err(),
+        DecodeError::UnexpectedEof
+    );
 }
 
 #[test]
