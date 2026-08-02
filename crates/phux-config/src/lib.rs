@@ -21,6 +21,7 @@ pub mod plugin;
 pub mod remote;
 pub mod satellite;
 mod schema;
+pub mod vocab; // phux-i0e8.3.1 (validation vocabulary: action + hook event names)
 
 // Wave 5 modules — each owned by its respective subtask:
 pub mod keybind; // phux-nz4.3

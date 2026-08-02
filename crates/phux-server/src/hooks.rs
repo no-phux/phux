@@ -50,18 +50,14 @@ pub const HOOK_EVENT_QUEUE: usize = 64;
 /// killed and logged; it never wedges the dispatcher's concurrency budget.
 pub const HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Hook point: pane creation (`docs/consumers/tui.md` §9).
-pub const AFTER_NEW_PANE: &str = "after-new-pane";
-/// Hook point: inner process exit.
-pub const PANE_EXIT: &str = "pane-exit";
-/// Hook point: a client changed focus to a pane.
-pub const FOCUS_CHANGED: &str = "focus-changed";
-/// Hook point: client attach completed.
-pub const CLIENT_ATTACHED: &str = "client-attached";
-/// Hook point: client detach (any reason).
-pub const CLIENT_DETACHED: &str = "client-detached";
-/// Hook point: a pane's derived agent state changed (ADR-0046).
-pub const AGENT_STATE_CHANGED: &str = "agent-state-changed";
+/// Hook point names (`docs/consumers/tui.md` §9). The definitions live
+/// in [`phux_config::vocab`] (phux-i0e8.3.1) so `phux config check` can
+/// validate `[[hooks.<event>]]` names; these re-exports keep the
+/// server-side paths working.
+pub use phux_config::vocab::{
+    AFTER_NEW_PANE, AGENT_STATE_CHANGED, CLIENT_ATTACHED, CLIENT_DETACHED, FOCUS_CHANGED,
+    PANE_EXIT,
+};
 
 /// The `to` value the agent hook reports when the detector withdraws a
 /// record: the agent is gone, so its state is no longer knowable.

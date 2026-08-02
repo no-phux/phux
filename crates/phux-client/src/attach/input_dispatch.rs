@@ -1716,51 +1716,15 @@ pub enum ReattachTarget {
 
 /// Canonical names of every action `run_action` handles.
 ///
-/// This is the single source of truth for the dispatcher's action set.
-/// The command-palette registry
+/// The list itself lives in [`phux_config::vocab`] (phux-i0e8.3.1) so
+/// `phux config check` can validate against it; this re-export keeps the
+/// dispatcher-side path working. The command-palette registry
 /// ([`super::action_registry::REGISTRY`]) is checked against this list by
 /// a unit test so the two cannot drift: adding a `run_action` arm without
-/// adding it here (and to the registry) fails CI. Keep this list in sync
-/// with the `match resolved.action.as_str()` arms below — they are the
-/// same set by construction, and the test enforces it.
-pub const ACTION_NAMES: &[&str] = &[
-    "split-pane",
-    "kill-pane",
-    "new-window",
-    "kill-window",
-    "next-window",
-    "previous-window",
-    "select-window",
-    "rename-window",
-    "rename-session",
-    "focus-direction",
-    "resize-pane",
-    "show-help",
-    "copy-mode",
-    "detach",
-    "next-pane",
-    "previous-pane",
-    "last-pane",
-    "toggle-zoom",
-    "toggle-sidebar",
-    "command-palette",
-    "context-menu",
-    "window-picker",
-    "session-picker",
-    "agent-fleet",
-    "focus-pane",
-    "next-attention",
-    "return-from-attention",
-    "switch-session",
-    "new-session",
-    "take-input",
-    "give-input",
-    "signal-terminal",
-    "set-pane",
-    "plugin-action",
-    "plugin-pane",
-    "reload-config",
-];
+/// adding it to the vocab (and to the registry) fails CI. Keep the vocab
+/// list in sync with the `match resolved.action.as_str()` arms below —
+/// they are the same set by construction, and the test enforces it.
+pub use phux_config::vocab::ACTION_NAMES;
 
 /// Dispatch a resolved action against the driver's context.
 ///
