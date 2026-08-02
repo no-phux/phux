@@ -1083,7 +1083,7 @@ fn finish_native(native: &mut NativeReplica) -> Result<BootstrapProgress, Ghostt
 fn push_history(
     native: &mut NativeReplica,
     mut input: &[u8],
-    ) -> Result<HistoryApplyOutcome, GhosttyEngineError> {
+) -> Result<HistoryApplyOutcome, GhosttyEngineError> {
     if !native.protocol_finished {
         return Err(GhosttyEngineError::HistoryBeforePublication);
     }
@@ -1145,6 +1145,7 @@ fn push_history(
                 decoder,
                 progress,
                 retained: page_retained,
+                ..
             }) => {
                 retained &= page_retained;
                 let version = check_version(progress);
@@ -1705,7 +1706,6 @@ mod tests {
         assert!(projection.rows.len() <= 2);
     }
 
-
     #[test]
     fn native_projection_search_and_anchors_remain_engine_owned() {
         let records = capture_records();
@@ -1739,10 +1739,12 @@ mod tests {
             .project_history(&mut replica, 1, EngineProjectionOrigin::Tail, 3)
             .expect("minimum-width projection");
         assert_eq!(narrow.width, 2);
-        assert!(narrow
-            .rows
-            .iter()
-            .all(|row| row.text.chars().count() <= usize::from(narrow.width)));
+        assert!(
+            narrow
+                .rows
+                .iter()
+                .all(|row| row.text.chars().count() <= usize::from(narrow.width))
+        );
 
         let found = adapter
             .search_loaded(&mut replica, "line 10", 1)
@@ -1791,7 +1793,11 @@ mod tests {
             distance_after
         );
         adapter
-            .apply_output(&mut replica, b"coalesced-one\r\ncoalesced-two\r\n", &mut effects)
+            .apply_output(
+                &mut replica,
+                b"coalesced-one\r\ncoalesced-two\r\n",
+                &mut effects,
+            )
             .expect("coalesced output");
         assert_eq!(
             adapter

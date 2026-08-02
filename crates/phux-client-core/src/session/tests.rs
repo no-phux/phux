@@ -867,7 +867,6 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
     );
 }
 
-
 #[test]
 fn retained_history_limit_and_prefetch_threshold_are_explicit() {
     let terminal_id = terminal(35);
@@ -1087,7 +1086,6 @@ fn oversized_history_rejection_ends_history_without_retiring_live_generation() {
         effect,
         KernelEffect::Send(KernelSend::HistoryRequest { .. })
     )));
-
 
     kernel
         .update(

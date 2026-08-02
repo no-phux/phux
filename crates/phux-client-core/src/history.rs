@@ -3,9 +3,9 @@
 //! This module never interprets history payload bytes. Only an [`EngineAdapter`](crate::engine::EngineAdapter)
 //! may import them and produce semantic projection/search/selection results.
 
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use sha2::{Digest, Sha256};
 
 /// Hard client-side row cap for one progressive history response.
 pub const MAX_HISTORY_PAGE_ROWS: u32 = 4096;
@@ -354,10 +354,7 @@ impl HistoryCache {
 
     /// Mark the exact next cursor as requested and return it once.
     pub(crate) fn begin_fetch(&mut self) -> Option<HistoryCursor> {
-        self.begin_fetch_with_limits(
-            self.config.request_max_bytes,
-            self.config.request_max_rows,
-        )
+        self.begin_fetch_with_limits(self.config.request_max_bytes, self.config.request_max_rows)
     }
 
     pub(crate) fn begin_fetch_with_limits(
@@ -393,12 +390,10 @@ impl HistoryCache {
     ) -> Option<(u32, u32)> {
         if required_bytes == 0
             || required_rows == 0
-            || (required_bytes <= self.request_max_bytes
-                && required_rows <= self.request_max_rows)
+            || (required_bytes <= self.request_max_bytes && required_rows <= self.request_max_rows)
             || required_bytes > u32::try_from(self.config.max_bytes).unwrap_or(u32::MAX)
             || required_rows > MAX_HISTORY_PAGE_ROWS
-            || required_rows
-                > u32::try_from(self.config.max_materialized_rows).unwrap_or(u32::MAX)
+            || required_rows > u32::try_from(self.config.max_materialized_rows).unwrap_or(u32::MAX)
         {
             return None;
         }
@@ -449,15 +444,11 @@ impl HistoryCache {
         if payload.is_empty() {
             return Err(HistoryCacheError::EmptyPayload);
         }
-        if payload.len() > self.config.max_bytes
-            || payload.len() > self.request_max_bytes as usize
+        if payload.len() > self.config.max_bytes || payload.len() > self.request_max_bytes as usize
         {
             return Err(HistoryCacheError::PageTooLarge {
                 required: payload.len(),
-                budget: self
-                    .config
-                    .max_bytes
-                    .min(self.request_max_bytes as usize),
+                budget: self.config.max_bytes.min(self.request_max_bytes as usize),
             });
         }
         if declared_rows > self.request_max_rows || declared_rows > MAX_HISTORY_PAGE_ROWS {
@@ -557,9 +548,7 @@ impl HistoryCache {
         self.consumed_bytes = self.consumed_bytes.saturating_add(accounted_bytes);
         while self.consumed.len() > 64 {
             let removed = self.consumed.pop_front().expect("ledger is nonempty");
-            self.consumed_bytes = self
-                .consumed_bytes
-                .saturating_sub(removed.accounted_bytes);
+            self.consumed_bytes = self.consumed_bytes.saturating_sub(removed.accounted_bytes);
         }
         self.next_page_seq = next_cursor
             .as_ref()
@@ -642,10 +631,7 @@ impl HistoryCache {
         pages: impl IntoIterator<Item = HistoryPageId>,
     ) -> Result<(), HistoryCacheError> {
         let next: HashSet<_> = pages.into_iter().collect();
-        if next
-            .iter()
-            .any(|page| !self.pages.contains_key(page))
-        {
+        if next.iter().any(|page| !self.pages.contains_key(page)) {
             return Err(HistoryCacheError::PageUnavailable);
         }
         let removed: Vec<_> = self.visible.difference(&next).cloned().collect();
@@ -692,10 +678,7 @@ impl HistoryCache {
             self.ensure_anchor_capacity(1)?;
         }
         let pages: HashSet<_> = pages.into_iter().collect();
-        if pages
-            .iter()
-            .any(|page| !self.pages.contains_key(page))
-        {
+        if pages.iter().any(|page| !self.pages.contains_key(page)) {
             return Err(HistoryCacheError::PageUnavailable);
         }
         if let Some(old) = self.anchor_pages.remove(&anchor) {
@@ -759,10 +742,7 @@ impl HistoryCache {
         pages: impl IntoIterator<Item = HistoryPageId>,
     ) -> Result<(), HistoryCacheError> {
         let next: HashSet<_> = pages.into_iter().collect();
-        if next
-            .iter()
-            .any(|page| !self.pages.contains_key(page))
-        {
+        if next.iter().any(|page| !self.pages.contains_key(page)) {
             return Err(HistoryCacheError::PageUnavailable);
         }
         let removed: Vec<_> = self.selection.difference(&next).cloned().collect();
@@ -855,10 +835,7 @@ impl HistoryCache {
             let Some(id) = self.evictable.pop_front() else {
                 break;
             };
-            let removable = self
-                .pages
-                .get(&id)
-                .is_some_and(|page| page.pin_count == 0);
+            let removable = self.pages.get(&id).is_some_and(|page| page.pin_count == 0);
             if !removable {
                 continue;
             }

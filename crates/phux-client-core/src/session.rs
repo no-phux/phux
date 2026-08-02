@@ -1659,7 +1659,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
                     .history_anchor_tail_distance(&replica.engine, anchor),
             ) {
                 (Some(before), Ok(Some(after))) => {
-                    replica.history.note_live_output(after.saturating_sub(before));
+                    replica
+                        .history
+                        .note_live_output(after.saturating_sub(before));
                 }
                 (None, Ok(Some(_))) | (_, Ok(None)) => {
                     replica.history.mark_pruned();
@@ -1843,14 +1845,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
             return Ok(());
         }
 
-        if let Err(error) = replica.history.accept_page(
-            cursor,
-            page_seq,
-            next_cursor,
-            rows,
-            rows as usize,
-            payload,
-        ) {
+        if let Err(error) =
+            replica
+                .history
+                .accept_page(cursor, page_seq, next_cursor, rows, rows as usize, payload)
+        {
             replica.history.tombstone();
             self.adapter.clear_document_state(&mut replica.engine);
             self.engine_effects.clear();
