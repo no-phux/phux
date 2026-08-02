@@ -1218,7 +1218,17 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
             &mut effects,
         )
         .unwrap();
-    assert!(effects.is_empty());
+    let published_key = kernel.published(&terminal_id).unwrap().key().clone();
+    assert_eq!(published_key.terminal_id, terminal_id);
+    assert_eq!(published_key.stream_id, stream_id);
+    assert_eq!(published_key.bootstrap_id, bootstrap_id);
+    assert_eq!(
+        effects.as_slice(),
+        &[KernelEffect::Damage(KernelDamage {
+            terminal_id: terminal_id.clone(),
+            kind: KernelDamageKind::Full,
+        })]
+    );
 
     let live_a: &[u8] = b"\x80live-a\xff";
     let history: &[u8] = b"\0\xfehistory-future\x81";
