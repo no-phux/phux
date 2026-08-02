@@ -332,7 +332,10 @@ above the negotiated bound before allocating it; opaque cursors are at most
 4 KiB.
 
 `ServerCapabilities` remains `layers: u8` followed by optional
-`features: u32`; `ACKNOWLEDGED_INPUT = 0x10` and `FILE_UPLOAD = 0x20`.
+`features: u32`; `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`, and
+`TERMINAL_REPLY = 0x40`. Unknown feature bits are ignored. The absence of
+`TERMINAL_REPLY` in an otherwise valid 0.7 `HELLO_OK` is authoritative: that
+server does not accept `INPUT_TERMINAL_REPLY`.
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,

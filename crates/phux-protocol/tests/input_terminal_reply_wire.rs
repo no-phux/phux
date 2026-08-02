@@ -3,6 +3,9 @@
 #![allow(clippy::unwrap_used)]
 
 use bytes::{Bytes, BytesMut};
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, ServerCapabilities, ServerFeature, ServerFeatureSet,
+};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
@@ -55,6 +58,37 @@ fn take_varint(input: &[u8], offset: &mut usize) -> u64 {
         }
         shift += 7;
     }
+}
+
+#[test]
+fn hello_ok_explicitly_negotiates_terminal_replies() {
+    let old_07 = ServerCapabilities::new();
+    assert!(!old_07.features.contains(ServerFeature::TerminalReply));
+
+    let negotiated = ServerCapabilities::new().with_features(ServerFeatureSet::with(&[
+        ServerFeature::TerminalReply,
+    ]));
+    let hello_ok = FrameKind::HelloOk {
+        protocol_major: 0,
+        protocol_minor: 7,
+        protocol_patch: 0,
+        server_caps: negotiated,
+        server_id: b"terminal-reply-server".to_vec(),
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::default(),
+    };
+    let mut encoded = BytesMut::new();
+    hello_ok.encode(&mut encoded);
+    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+    assert!(tail.is_empty());
+    let FrameKind::HelloOk { server_caps, .. } = decoded else {
+        panic!("expected HELLO_OK");
+    };
+    assert!(
+        server_caps
+            .features
+            .contains(ServerFeature::TerminalReply)
+    );
 }
 
 #[test]

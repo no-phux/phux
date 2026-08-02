@@ -790,6 +790,8 @@ impl Default for LayerSet {
 pub const ACKNOWLEDGED_INPUT: u32 = 0x0000_0010;
 /// Wire bit advertising chunked, acknowledged `Command::PutFile` uploads.
 pub const FILE_UPLOAD: u32 = 0x0000_0020;
+/// Wire bit advertising opaque client terminal-emulator PTY replies.
+pub const TERMINAL_REPLY: u32 = 0x0000_0040;
 
 /// An additive server-owned protocol feature.
 #[repr(u32)]
@@ -800,6 +802,8 @@ pub enum ServerFeature {
     AcknowledgedInput = ACKNOWLEDGED_INPUT,
     /// The server accepts sandboxed, chunked `Command::PutFile` uploads.
     FileUpload = FILE_UPLOAD,
+    /// The server accepts opaque terminal-emulator replies for attached PTYs.
+    TerminalReply = TERMINAL_REPLY,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -807,8 +811,9 @@ pub enum ServerFeature {
 pub struct ServerFeatureSet(u32);
 
 impl ServerFeatureSet {
-    const KNOWN: u32 =
-        (ServerFeature::AcknowledgedInput as u32) | (ServerFeature::FileUpload as u32);
+    const KNOWN: u32 = (ServerFeature::AcknowledgedInput as u32)
+        | (ServerFeature::FileUpload as u32)
+        | (ServerFeature::TerminalReply as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1448,16 +1453,27 @@ mod tests {
     }
 
     #[test]
-    fn server_feature_bits_are_stable() {
+    fn server_feature_bits_are_stable_and_unknown_bits_are_ignored() {
         assert_eq!(ACKNOWLEDGED_INPUT, 0x0000_0010);
         assert_eq!(FILE_UPLOAD, 0x0000_0020);
-        assert_eq!(ServerFeature::AcknowledgedInput as u32, ACKNOWLEDGED_INPUT);
+        assert_eq!(TERMINAL_REPLY, 0x0000_0040);
+        assert_eq!(
+            ServerFeature::AcknowledgedInput as u32,
+            ACKNOWLEDGED_INPUT
+        );
         assert_eq!(ServerFeature::FileUpload as u32, FILE_UPLOAD);
-        let set =
-            ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput, ServerFeature::FileUpload]);
+        assert_eq!(ServerFeature::TerminalReply as u32, TERMINAL_REPLY);
+        let set = ServerFeatureSet::with(&[
+            ServerFeature::AcknowledgedInput,
+            ServerFeature::FileUpload,
+            ServerFeature::TerminalReply,
+        ]);
         assert!(set.contains(ServerFeature::AcknowledgedInput));
         assert!(set.contains(ServerFeature::FileUpload));
-        assert_eq!(set.as_wire(), 0x0000_0030);
-        assert_eq!(ServerFeatureSet::from_wire(u32::MAX), set);
+        assert!(set.contains(ServerFeature::TerminalReply));
+        assert_eq!(set.as_wire(), 0x0000_0070);
+        let future = 1_u32 << 31;
+        assert!(ServerFeatureSet::from_wire(future).is_empty());
+        assert_eq!(ServerFeatureSet::from_wire(set.as_wire() | future), set);
     }
 }
