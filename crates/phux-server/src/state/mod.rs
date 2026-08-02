@@ -562,6 +562,12 @@ mod tests {
             )
             .1,
             snapshot: snapshot_tx,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_bootstrap: mpsc::channel(8).0,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_history: mpsc::channel(8).0,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_release: mpsc::channel(8).0,
             set_default_colors: mpsc::channel(8).0,
             screen: screen_tx,
             upgrade: upgrade_tx,

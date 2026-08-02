@@ -3,7 +3,9 @@
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use phux_core::TerminalId;
-use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile, ClientCapabilities, OutputMode};
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities, OutputMode,
+};
 use phux_protocol::ids::{BootstrapId, GroupId, StreamId};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, SpawnError,
@@ -917,6 +919,31 @@ pub(crate) async fn handle_spawn_terminal(
     });
 
     if let Some((wire_terminal_id, handle, client_caps)) = wire_and_handle {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let server_bootstrap = crate::native_state::native_bootstrap_capabilities();
+        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+        let server_bootstrap = phux_protocol::caps::BootstrapCapabilities::new();
+        let Ok((bootstrap_profile, bootstrap_limits)) =
+            phux_protocol::caps::select_bootstrap_profile(&client_caps, &server_bootstrap)
+        else {
+            let _ = out_tx
+                .send(Outbound::Frame(FrameKind::Error {
+                    request_id: Some(request_id),
+                    code: ErrorCode::CodecUnavailable,
+                    message: "no common bootstrap profile for spawned terminal".to_owned(),
+                }))
+                .await;
+            return;
+        };
+        let profile = match bootstrap_profile {
+            BootstrapProfile::NativeState { codec, .. } => {
+                BootstrapStreamProfile::NativeState { codec }
+            }
+            BootstrapProfile::SynthesizedVtStateSync => {
+                BootstrapStreamProfile::SynthesizedVtStateSync
+            }
+            BootstrapProfile::SynthesizedVtRaw => BootstrapStreamProfile::SynthesizedVtRaw,
+        };
         // Spawn the output pump BEFORE replying with `TerminalSpawned`
         // so any bytes the freshly-spawned PTY emits in the gap between
         // exec and the client's first read are queued on the broadcast
@@ -926,7 +953,8 @@ pub(crate) async fn handle_spawn_terminal(
         let pump_out_tx = out_tx.clone();
         let pump_wire_terminal_id = wire_terminal_id.clone();
         let stream_id = stream_id_from(u64::from(request_id));
-        let profile = synthesized_stream_profile(client_caps);
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let pump_native_bootstrap = handle.native_bootstrap.clone();
         let (bootstrap_gate_tx, bootstrap_gate_rx) = oneshot::channel();
         tokio::task::spawn_local(async move {
             if bootstrap_gate_rx.await.is_err() {
@@ -949,8 +977,64 @@ pub(crate) async fn handle_spawn_terminal(
                             break;
                         }
                     }
-                    Ok(PaneOutput::Resync { cols, rows, bytes }) => {
+                    Ok(PaneOutput::Resync { cols, rows, bytes, reason }) => {
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        let prior_bootstrap_id = bootstrap_id;
                         bootstrap_id = next_bootstrap_id(bootstrap_id);
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        if matches!(
+                            profile,
+                            BootstrapStreamProfile::NativeState {
+                                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+                            }
+                        ) {
+                            if pump_out_tx
+                                .send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                                    terminal_id: pump_wire_terminal_id.clone(),
+                                    stream_id,
+                                    bootstrap_id: prior_bootstrap_id,
+                                    reason: match reason {
+                                        crate::terminal_actor::ResyncReason::Resize => {
+                                            phux_protocol::wire::frame::TombstoneReason::Resize
+                                        }
+                                        crate::terminal_actor::ResyncReason::OutboundGap => {
+                                            phux_protocol::wire::frame::TombstoneReason::OutboundGap
+                                        }
+                                    },
+                                    last_valid_seq: seq,
+                                }))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            let (reply_tx, reply_rx) = oneshot::channel();
+                            if pump_native_bootstrap
+                                .send(crate::terminal_actor::NativeBootstrapRequest {
+                                    outbound: pump_out_tx.clone(),
+                                    owner: client_id.0,
+                                    terminal_id: pump_wire_terminal_id.clone(),
+                                    stream_id,
+                                    bootstrap_id,
+                                    limits: bootstrap_limits,
+                                    base_seq: seq,
+                                    reply: reply_tx,
+                                })
+                                .await
+                                .is_err()
+                                || !matches!(reply_rx.await, Ok(Ok(())))
+                            {
+                                let _ = pump_out_tx
+                                    .send(Outbound::Frame(FrameKind::Error {
+                                        request_id: None,
+                                        code: ErrorCode::CodecUnavailable,
+                                        message: "native checkpoint resync failed".to_owned(),
+                                    }))
+                                    .await;
+                                break;
+                            }
+                            continue;
+                        }
                         let payload = downsample_for_caps(&bytes, client_caps);
                         if send_synthesized_bootstrap(
                             &pump_out_tx,
@@ -988,6 +1072,44 @@ pub(crate) async fn handle_spawn_terminal(
                 result: SpawnResult::Ok(wire_terminal_id.clone()),
             }))
             .await;
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        if matches!(
+            profile,
+            BootstrapStreamProfile::NativeState {
+                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+            }
+        ) {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            if handle
+                .native_bootstrap
+                .send(crate::terminal_actor::NativeBootstrapRequest {
+                    outbound: out_tx.clone(),
+                    owner: client_id.0,
+                    terminal_id: wire_terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id: initial_bootstrap_id(),
+                    limits: bootstrap_limits,
+                    base_seq: 0,
+                    reply: reply_tx,
+                })
+                .await
+                .is_err()
+                || !matches!(reply_rx.await, Ok(Ok(())))
+            {
+                let _ = out_tx
+                    .send(Outbound::Frame(FrameKind::Error {
+                        request_id: Some(request_id),
+                        code: ErrorCode::CodecUnavailable,
+                        message: "native checkpoint failed for spawned terminal".to_owned(),
+                    }))
+                    .await;
+                return;
+            }
+            let _ = bootstrap_gate_tx.send(());
+            broadcast_event(state, Some(&wire_terminal_id), &AgentEvent::PaneSpawned);
+            return;
+        }
+
         let (snapshot_tx, snapshot_rx) = oneshot::channel();
         if handle
             .snapshot
@@ -1101,6 +1223,8 @@ pub(crate) async fn handle_attach(
     scrollback_limit_lines: u32,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     client_caps: ClientCapabilities,
+    negotiated_profile: BootstrapProfile,
+    bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
 ) {
@@ -1216,8 +1340,13 @@ pub(crate) async fn handle_attach(
         phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
     let stream_id = stream_id_from(u64::from(attach_id));
     let bootstrap_id = initial_bootstrap_id();
-    let stream_profile = synthesized_stream_profile(client_caps);
-    let bootstrap_limits = BootstrapLimits::default();
+    let stream_profile = match negotiated_profile {
+        BootstrapProfile::NativeState { codec, .. } => {
+            BootstrapStreamProfile::NativeState { codec }
+        }
+        BootstrapProfile::SynthesizedVtStateSync => BootstrapStreamProfile::SynthesizedVtStateSync,
+        BootstrapProfile::SynthesizedVtRaw => BootstrapStreamProfile::SynthesizedVtRaw,
+    };
 
     // phux-7w1j: per-pane "snapshot has been sent" gates. The output pump
     // subscribes to the broadcast in this loop (BEFORE the SnapshotRequest, so
@@ -1229,6 +1358,8 @@ pub(crate) async fn handle_attach(
     let mut snapshot_gates: Vec<(TerminalId, oneshot::Sender<()>)> = Vec::new();
 
     let mut pending: FuturesUnordered<_> = FuturesUnordered::new();
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    let mut native_pending: FuturesUnordered<_> = FuturesUnordered::new();
     for pane in panes_to_snapshot {
         let terminal_id = pane.terminal_id;
         let handle = pane.handle;
@@ -1335,6 +1466,8 @@ pub(crate) async fn handle_attach(
             // in-band resync (a full grid snapshot on the same ordered channel)
             // so a consumer that dropped bytes reconverges.
             let pump_resize = handle.resize.clone();
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            let pump_native_bootstrap = handle.native_bootstrap.clone();
             // phux-7w1j: hold this pump's first forward until the pane's
             // snapshot has been sent (the drain loop fires `gate_tx`).
             let (gate_tx, gate_rx) = oneshot::channel::<()>();
@@ -1360,8 +1493,64 @@ pub(crate) async fn handle_attach(
                                 break;
                             }
                         }
-                        Ok(PaneOutput::Resync { cols, rows, bytes }) => {
+                        Ok(PaneOutput::Resync { cols, rows, bytes, reason }) => {
+                            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                            let prior_bootstrap_id = bootstrap_id;
                             bootstrap_id = next_bootstrap_id(bootstrap_id);
+                            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                            if matches!(
+                                stream_profile,
+                                BootstrapStreamProfile::NativeState {
+                                    codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+                                }
+                            ) {
+                                if pump_out_tx
+                                    .send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                                        terminal_id: pump_wire_terminal_id.clone(),
+                                        stream_id,
+                                        bootstrap_id: prior_bootstrap_id,
+                                        reason: match reason {
+                                            crate::terminal_actor::ResyncReason::Resize => {
+                                                phux_protocol::wire::frame::TombstoneReason::Resize
+                                            }
+                                            crate::terminal_actor::ResyncReason::OutboundGap => {
+                                                phux_protocol::wire::frame::TombstoneReason::OutboundGap
+                                            }
+                                        },
+                                        last_valid_seq: seq,
+                                    }))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                let (reply_tx, reply_rx) = oneshot::channel();
+                                if pump_native_bootstrap
+                                    .send(crate::terminal_actor::NativeBootstrapRequest {
+                                        outbound: pump_out_tx.clone(),
+                                        owner: client_id.0,
+                                        terminal_id: pump_wire_terminal_id.clone(),
+                                        stream_id,
+                                        bootstrap_id,
+                                        limits: bootstrap_limits,
+                                        base_seq: seq,
+                                        reply: reply_tx,
+                                    })
+                                    .await
+                                    .is_err()
+                                    || !matches!(reply_rx.await, Ok(Ok(())))
+                                {
+                                    let _ = pump_out_tx
+                                        .send(Outbound::Frame(FrameKind::Error {
+                                            request_id: None,
+                                            code: ErrorCode::CodecUnavailable,
+                                            message: "native checkpoint resync failed".to_owned(),
+                                        }))
+                                        .await;
+                                    break;
+                                }
+                                continue;
+                            }
                             let payload = downsample_for_caps(&bytes, pump_client_caps);
                             if send_synthesized_bootstrap(
                                 &pump_out_tx,
@@ -1411,6 +1600,36 @@ pub(crate) async fn handle_attach(
             });
         }
 
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        if matches!(
+            stream_profile,
+            BootstrapStreamProfile::NativeState {
+                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+            }
+        ) {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            if handle
+                .native_bootstrap
+                .send(crate::terminal_actor::NativeBootstrapRequest {
+                    outbound: out_tx.clone(),
+                    owner: client_id.0,
+                    terminal_id: wire_terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    limits: bootstrap_limits,
+                    base_seq: 0,
+                    reply: reply_tx,
+                })
+                .await
+                .is_err()
+            {
+                warn!(?terminal_id, "pane actor dropped before native bootstrap");
+                continue;
+            }
+            native_pending.push(async move { (terminal_id, reply_rx.await) });
+            continue;
+        }
+
         let (reply_tx, reply_rx) = oneshot::channel();
         if handle
             .snapshot
@@ -1427,6 +1646,36 @@ pub(crate) async fn handle_attach(
         // Tag each in-flight receiver with its identifiers so the drain
         // loop can warn / build a frame without re-deriving them.
         pending.push(async move { (terminal_id, wire_terminal_id, reply_rx.await) });
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    while let Some((terminal_id, reply)) = native_pending.next().await {
+        match reply {
+            Ok(Ok(())) => {
+                if let Some(pos) = snapshot_gates
+                    .iter()
+                    .position(|(tid, _)| *tid == terminal_id)
+                {
+                    let (_, gate_tx) = snapshot_gates.swap_remove(pos);
+                    let _ = gate_tx.send(());
+                }
+            }
+            Ok(Err(error)) => {
+                warn!(?terminal_id, %error, "native checkpoint failed");
+                let _ = out_tx
+                    .send(Outbound::Frame(FrameKind::Error {
+                        request_id: None,
+                        code: phux_protocol::wire::frame::ErrorCode::CodecUnavailable,
+                        message: format!("native checkpoint failed: {error}"),
+                    }))
+                    .await;
+                return;
+            }
+            Err(_) => {
+                warn!(?terminal_id, "pane actor failed to reply with native checkpoint");
+                return;
+            }
+        }
     }
 
     while let Some((terminal_id, wire_terminal_id, reply)) = pending.next().await {

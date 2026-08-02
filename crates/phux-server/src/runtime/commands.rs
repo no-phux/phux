@@ -870,8 +870,29 @@ async fn handle_attach_terminal(
     let mut tick_managed = false;
     let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
     let bootstrap_id = crate::runtime::attach::initial_bootstrap_id();
-    let stream_profile = crate::runtime::attach::synthesized_stream_profile(client_caps);
-    let bootstrap_limits = phux_protocol::caps::BootstrapLimits::default();
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    let server_bootstrap = crate::native_state::native_bootstrap_capabilities();
+    #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+    let server_bootstrap = phux_protocol::caps::BootstrapCapabilities::new();
+    let Ok((bootstrap_profile, bootstrap_limits)) =
+        phux_protocol::caps::select_bootstrap_profile(&client_caps, &server_bootstrap)
+    else {
+        return CommandResult::Error {
+            code: ErrorCode::CodecUnavailable,
+            message: "no common bootstrap profile for ATTACH_TERMINAL".to_owned(),
+        };
+    };
+    let stream_profile = match bootstrap_profile {
+        phux_protocol::caps::BootstrapProfile::NativeState { codec, .. } => {
+            phux_protocol::caps::BootstrapStreamProfile::NativeState { codec }
+        }
+        phux_protocol::caps::BootstrapProfile::SynthesizedVtStateSync => {
+            phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtStateSync
+        }
+        phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw => {
+            phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw
+        }
+    };
     if let Some(wire_id) = terminal_id.local_id() {
         let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
         if handle
@@ -918,6 +939,8 @@ async fn handle_attach_terminal(
         let pump_out_tx = out_tx.clone();
         let pump_wire_terminal_id = terminal_id.clone();
         let pump_resize = handle.resize.clone();
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let pump_native_bootstrap = handle.native_bootstrap.clone();
         let (gate_tx, gate_rx) = oneshot::channel::<()>();
         snapshot_gate = Some(gate_tx);
         tokio::task::spawn_local(async move {
@@ -948,9 +971,65 @@ async fn handle_attach_terminal(
                             break;
                         }
                     }
-                    Ok(PaneOutput::Resync { cols, rows, bytes }) => {
+                    Ok(PaneOutput::Resync { cols, rows, bytes, reason }) => {
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        let prior_bootstrap_id = bootstrap_id;
                         bootstrap_id =
                             crate::runtime::attach::next_bootstrap_id(bootstrap_id);
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        if matches!(
+                            stream_profile,
+                            phux_protocol::caps::BootstrapStreamProfile::NativeState {
+                                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+                            }
+                        ) {
+                            if pump_out_tx
+                                .send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                                    terminal_id: pump_wire_terminal_id.clone(),
+                                    stream_id,
+                                    bootstrap_id: prior_bootstrap_id,
+                                    reason: match reason {
+                                        crate::terminal_actor::ResyncReason::Resize => {
+                                            phux_protocol::wire::frame::TombstoneReason::Resize
+                                        }
+                                        crate::terminal_actor::ResyncReason::OutboundGap => {
+                                            phux_protocol::wire::frame::TombstoneReason::OutboundGap
+                                        }
+                                    },
+                                    last_valid_seq: seq,
+                                }))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            let (reply_tx, reply_rx) = oneshot::channel();
+                            if pump_native_bootstrap
+                                .send(crate::terminal_actor::NativeBootstrapRequest {
+                                    outbound: pump_out_tx.clone(),
+                                    owner: client_id.0,
+                                    terminal_id: pump_wire_terminal_id.clone(),
+                                    stream_id,
+                                    bootstrap_id,
+                                    limits: bootstrap_limits,
+                                    base_seq: seq,
+                                    reply: reply_tx,
+                                })
+                                .await
+                                .is_err()
+                                || !matches!(reply_rx.await, Ok(Ok(())))
+                            {
+                                let _ = pump_out_tx
+                                    .send(Outbound::Frame(FrameKind::Error {
+                                        request_id: None,
+                                        code: ErrorCode::CodecUnavailable,
+                                        message: "native checkpoint resync failed".to_owned(),
+                                    }))
+                                    .await;
+                                break;
+                            }
+                            continue;
+                        }
                         let payload =
                             crate::runtime::attach::downsample_for_caps(&bytes, client_caps);
                         if crate::runtime::attach::send_synthesized_bootstrap(
@@ -989,6 +1068,57 @@ async fn handle_attach_terminal(
                 }
             }
         });
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    if matches!(
+        stream_profile,
+        phux_protocol::caps::BootstrapStreamProfile::NativeState {
+            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+        }
+    ) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if handle
+            .native_bootstrap
+            .send(crate::terminal_actor::NativeBootstrapRequest {
+                outbound: out_tx.clone(),
+                owner: client_id.0,
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                limits: bootstrap_limits,
+                base_seq: 0,
+                reply: reply_tx,
+            })
+            .await
+            .is_err()
+        {
+            return CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: "pane actor unavailable for native ATTACH_TERMINAL".to_owned(),
+            };
+        }
+        match reply_rx.await {
+            Ok(Ok(())) => {
+                if let Some(gate) = snapshot_gate {
+                    let _ = gate.send(());
+                }
+                debug!(?client_id, ?terminal_id, "native ATTACH_TERMINAL subscribed");
+                return CommandResult::Ok;
+            }
+            Ok(Err(error)) => {
+                return CommandResult::Error {
+                    code: ErrorCode::CodecUnavailable,
+                    message: format!("native ATTACH_TERMINAL failed: {error}"),
+                };
+            }
+            Err(_) => {
+                return CommandResult::Error {
+                    code: ErrorCode::InternalError,
+                    message: "pane actor dropped native ATTACH_TERMINAL".to_owned(),
+                };
+            }
+        }
     }
 
     // Authoritative snapshot, sent before the pump's first delta (the

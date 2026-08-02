@@ -1538,6 +1538,12 @@ mod tests {
             )
             .1,
             snapshot: snapshot_tx,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_bootstrap: mpsc::channel(8).0,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_history: mpsc::channel(8).0,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_release: mpsc::channel(8).0,
             set_default_colors: mpsc::channel(8).0,
             screen: screen_tx,
             upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
@@ -1678,6 +1684,12 @@ mod tests {
                         )
                         .1,
                         snapshot: snapshot_tx,
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        native_bootstrap: mpsc::channel(8).0,
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        native_history: mpsc::channel(8).0,
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        native_release: mpsc::channel(8).0,
                         set_default_colors: mpsc::channel(8).0,
                         screen: screen_tx,
                         upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
@@ -1722,6 +1734,8 @@ mod tests {
                         0,
                         &out_tx,
                         ClientCapabilities::default(),
+                        phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw,
+                        phux_protocol::caps::BootstrapLimits::default(),
                         &test_root_token,
                         &mut output_pumps,
                     )
@@ -1843,6 +1857,12 @@ mod tests {
                     )
                     .1,
                     snapshot: snapshot_tx,
+                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                    native_bootstrap: mpsc::channel(8).0,
+                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                    native_history: mpsc::channel(8).0,
+                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                    native_release: mpsc::channel(8).0,
                     set_default_colors: mpsc::channel(8).0,
                     screen: screen_tx,
                     upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
@@ -1880,6 +1900,8 @@ mod tests {
                         0,
                         &out_tx,
                         ClientCapabilities::default(),
+                        phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw,
+                        phux_protocol::caps::BootstrapLimits::default(),
                         &token,
                         &mut output_pumps,
                     )
@@ -2055,6 +2077,12 @@ mod tests {
                 )
                 .1,
                 snapshot: mpsc::channel(8).0,
+                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                native_bootstrap: mpsc::channel(8).0,
+                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                native_history: mpsc::channel(8).0,
+                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                native_release: mpsc::channel(8).0,
                 set_default_colors: mpsc::channel(8).0,
                 screen: mpsc::channel(8).0,
                 upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,

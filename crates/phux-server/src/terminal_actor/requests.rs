@@ -236,6 +236,14 @@ impl EncodedInputRequest {
 /// slow subscriber falls behind and gets a `RecvError::Lagged`.
 pub const DEFAULT_OUTPUT_BROADCAST: usize = 256;
 
+/// Continuity reason carried with an actor-generated full resync.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResyncReason {
+    /// Authoritative geometry changed.
+    Resize,
+    /// A bounded output subscriber observed a sequence gap.
+    OutboundGap,
+}
 /// Payload of the per-pane output broadcast ([`TerminalHandle::output`]).
 ///
 /// Subscribers (the per-attach output pumps in `runtime::attach`) map each
@@ -255,6 +263,7 @@ pub const DEFAULT_OUTPUT_BROADCAST: usize = 256;
 /// promoting the survivor, or enlarging the outer window — could never fill
 /// the freed space (phux-3ns5). The snapshot path resizes first, then
 /// applies the synthesized grid, so grow and shrink both reconverge.
+
 #[derive(Clone, Debug)]
 pub enum PaneOutput {
     /// Live PTY byte chunk forwarded as `TERMINAL_OUTPUT`.
@@ -269,6 +278,8 @@ pub enum PaneOutput {
         cols: u16,
         /// Post-reflow grid height the client mirror resizes to.
         rows: u16,
+        /// Why the prior generation can no longer continue.
+        reason: ResyncReason,
         /// Synthesized grid replay (with reset preamble) for `vt_write`.
         bytes: Bytes,
     },
@@ -292,6 +303,60 @@ pub struct SnapshotRequest {
     /// just discards the reply.
     pub reply: oneshot::Sender<SnapshotBytes>,
 }
+
+/// Native checkpoint publication performed atomically on the terminal actor.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativeBootstrapRequest {
+    /// Client mailbox receiving the bounded BEGIN/CHUNK/READY sequence.
+    pub outbound: mpsc::Sender<Outbound>,
+    /// Server-local owner identity used for detach and TTL cleanup.
+    pub owner: u64,
+    /// Wire terminal identity for this subscription.
+    pub terminal_id: phux_protocol::ids::TerminalId,
+    /// Logical stream identity.
+    pub stream_id: StreamId,
+    /// Replica generation identity.
+    pub bootstrap_id: BootstrapId,
+    /// Negotiated payload limits.
+    pub limits: phux_protocol::caps::BootstrapLimits,
+    /// Last live sequence included in the actor cut.
+    pub base_seq: u64,
+    /// Completion status; failure before BEGIN is safe to surface directly.
+    pub reply: oneshot::Sender<Result<(), crate::native_state::NativeStateError>>,
+}
+
+/// One bounded native history request routed to the owning terminal actor.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativeHistoryRequest {
+    /// Client mailbox receiving one HISTORY_PAGE or a terminal error.
+    pub outbound: mpsc::Sender<Outbound>,
+    /// Server-local owner identity authenticated against the retained cut.
+    pub owner: u64,
+    /// Wire terminal identity for this subscription.
+    pub terminal_id: phux_protocol::ids::TerminalId,
+    /// Logical stream identity.
+    pub stream_id: StreamId,
+    /// Replica generation identity.
+    pub bootstrap_id: BootstrapId,
+    /// Opaque manager capability echoed by the client.
+    pub cursor: Bytes,
+    /// Requested non-zero response bound.
+    pub max_bytes: u32,
+    /// Negotiated connection bounds.
+    pub limits: phux_protocol::caps::BootstrapLimits,
+    /// Completion acknowledgement.
+    pub reply: oneshot::Sender<Result<(), crate::native_state::NativeStateError>>,
+}
+/// Release every retained native history cut owned by one detached client.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativeReleaseRequest {
+    /// Server-local owner identity.
+    pub owner: u64,
+}
+
 
 /// Install the effective default palette reported by an interactive client.
 ///
@@ -460,6 +525,15 @@ pub struct TerminalHandle {
     /// Sender for snapshot requests. The ATTACH handler uses this to
     /// build `TERMINAL_SNAPSHOT` frames.
     pub snapshot: mpsc::Sender<SnapshotRequest>,
+    /// Actor-serialized native checkpoint capture.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pub native_bootstrap: mpsc::Sender<NativeBootstrapRequest>,
+    /// Actor-serialized native history paging.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pub native_history: mpsc::Sender<NativeHistoryRequest>,
+    /// Actor-serialized detach cleanup for retained native cuts.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pub native_release: mpsc::Sender<NativeReleaseRequest>,
     /// Sender for host-palette updates. The most recently attached client
     /// that advertises colors is authoritative for the shared pane.
     pub set_default_colors: mpsc::Sender<SetDefaultColorsRequest>,

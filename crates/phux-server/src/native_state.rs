@@ -9,7 +9,7 @@ use libghostty_vt::{
     Terminal as GhosttyTerminal,
     snapshot::incremental::{
         self, Capture, CaptureEventKind, CaptureOptions, HistoryEvent, HistoryOptions,
-        LiveHistoryCursor, ScreenKey, TOKEN_LEN,
+        LiveHistoryCursor, LiveHistorySet, LiveSetCapture, ScreenKey, TOKEN_LEN,
     },
 };
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet};
@@ -320,6 +320,181 @@ impl<'terminal_alloc: 'cb, 'cb> NativeHistoryCursor<'terminal_alloc, 'cb> {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct NativeManagerInitFailure {
+    pub(crate) error: NativeStateError,
+    pub(crate) terminal: GhosttyTerminal<'static, 'static>,
+}
+
+/// Actor-owned terminal and bounded concurrent native history cuts.
+#[derive(Debug)]
+pub(crate) struct NativeTerminalManager {
+    inner: LiveHistorySet<'static, 'static, 'static>,
+    engine: incremental::Capabilities,
+}
+
+impl NativeTerminalManager {
+    pub(crate) fn new(
+        terminal: GhosttyTerminal<'static, 'static>,
+        capacity: usize,
+    ) -> Result<Self, NativeManagerInitFailure> {
+        let engine = match require_protocol_07_native() {
+            Ok(engine) => engine,
+            Err(error) => return Err(NativeManagerInitFailure { error, terminal }),
+        };
+        match terminal.into_live_history_set(capacity) {
+            Ok(inner) => Ok(Self { inner, engine }),
+            Err(failure) => Err(NativeManagerInitFailure {
+                error: failure.error,
+                terminal: failure.terminal,
+            }),
+        }
+    }
+
+    pub(crate) fn terminal(&self) -> &GhosttyTerminal<'static, 'static> {
+        self.inner.terminal()
+    }
+
+    pub(crate) fn vt_write(&mut self, bytes: &[u8]) {
+        self.inner.vt_write(bytes);
+    }
+
+    pub(crate) fn resize(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        cell_width_px: u32,
+        cell_height_px: u32,
+    ) -> libghostty_vt::error::Result<()> {
+        self.inner
+            .resize(cols, rows, cell_width_px, cell_height_px)
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    pub(crate) fn capture(
+        &mut self,
+        limits: BootstrapLimits,
+    ) -> Result<NativeManagedCapture<'_>, NativeStateError> {
+        let max_record_bytes = usize::try_from(limits.max_chunk_bytes())
+            .map_err(|_| NativeStateError::LimitExceeded)?
+            .min(self.engine.max_record_bytes);
+        let max_pages = CaptureOptions::default().max_pages.min(self.engine.max_pages);
+        if max_record_bytes == 0 || max_pages == 0 {
+            return Err(NativeStateError::LimitExceeded);
+        }
+        let capture = self.inner.capture(
+            ScreenKey::PRIMARY,
+            CaptureOptions {
+                max_record_bytes,
+                max_pages,
+            },
+        )?;
+        Ok(NativeManagedCapture {
+            capture,
+            max_record_bytes,
+            ready_cursor: None,
+        })
+    }
+
+    pub(crate) fn next<'buffer>(
+        &mut self,
+        cursor: &OpaqueHistoryCursor,
+        limits: BootstrapLimits,
+        requested_max_bytes: u32,
+        buffer: &'buffer mut [u8],
+    ) -> Result<NativeHistoryEvent<'buffer>, NativeStateError> {
+        let negotiated = usize::try_from(limits.max_history_page_bytes())
+            .map_err(|_| NativeStateError::LimitExceeded)?
+            .min(self.engine.max_unit_bytes);
+        let requested = usize::try_from(requested_max_bytes)
+            .map_err(|_| NativeStateError::LimitExceeded)?;
+        let defaults = HistoryOptions::default();
+        let options = HistoryOptions {
+            max_unit_bytes: negotiated.min(requested),
+            max_rows: defaults.max_rows.min(self.engine.max_rows),
+            max_units: defaults.max_units.min(self.engine.max_pages),
+        };
+        if options.max_unit_bytes == 0 || options.max_rows == 0 || options.max_units == 0 {
+            return Err(NativeStateError::LimitExceeded);
+        }
+        match self.inner.next(cursor, options, buffer)? {
+            HistoryEvent::Unit {
+                unit,
+                rows,
+                page_complete,
+            } => Ok(NativeHistoryEvent::Page {
+                bytes: unit,
+                rows,
+                page_complete,
+                next_cursor: *cursor,
+            }),
+            HistoryEvent::End => Ok(NativeHistoryEvent::End),
+        }
+    }
+
+    pub(crate) fn release(
+        &mut self,
+        cursor: &OpaqueHistoryCursor,
+    ) -> Result<(), NativeStateError> {
+        self.inner.release(cursor)
+    }
+
+    pub(crate) fn into_terminal(self) -> GhosttyTerminal<'static, 'static> {
+        self.inner.into_terminal()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct NativeManagedCapture<'manager> {
+    capture: LiveSetCapture<'manager, 'static, 'static, 'static, 'static>,
+    max_record_bytes: usize,
+    ready_cursor: Option<OpaqueHistoryCursor>,
+}
+
+impl NativeManagedCapture<'_> {
+    pub(crate) fn step<'buffer>(
+        &mut self,
+        buffer: &'buffer mut [u8],
+    ) -> Result<NativeCheckpointChunk<'buffer>, NativeStateError> {
+        if self.ready_cursor.is_some() {
+            return Err(NativeStateError::InvalidState);
+        }
+        let event = self.capture.next(buffer)?;
+        if event.codec_version != CHECKPOINT_VERSION {
+            return Err(NativeStateError::UnknownVersion);
+        }
+        if event.record.len() > self.max_record_bytes {
+            return Err(NativeStateError::LimitExceeded);
+        }
+        let kind = match event.kind {
+            CaptureEventKind::Record => NativeCheckpointChunkKind::Record,
+            CaptureEventKind::Ready { .. } => {
+                let cut = self
+                    .capture
+                    .ready_cut()
+                    .ok_or(NativeStateError::InvalidState)?;
+                self.ready_cursor = Some(*cut.capability());
+                NativeCheckpointChunkKind::Ready
+            }
+            CaptureEventKind::HistoryBegin { .. }
+            | CaptureEventKind::HistoryPage { .. }
+            | CaptureEventKind::Finish => return Err(NativeStateError::InvalidState),
+        };
+        Ok(NativeCheckpointChunk {
+            kind,
+            codec_version: event.codec_version,
+            bytes: event.record,
+        })
+    }
+
+    pub(crate) fn ready_cursor(&self) -> Option<&OpaqueHistoryCursor> {
+        self.ready_cursor.as_ref()
+    }
+}
+
 fn require_protocol_07_native() -> Result<incremental::Capabilities, NativeStateError> {
     let engine = incremental::capabilities()?;
     if supports_protocol_07_native(&engine) {
@@ -620,5 +795,56 @@ mod tests {
                 .unwrap_err(),
             NativeStateError::Resize
         );
+    }
+
+    #[test]
+    fn manager_bounds_retained_cuts_and_keeps_live_terminal_writable() {
+        let limits = BootstrapLimits::new(64 * 1024, 64 * 1024).expect("test limits");
+        let mut manager =
+            NativeTerminalManager::new(history_terminal(), 1).expect("native manager");
+        let cursor = {
+            let mut capture = manager.capture(limits).expect("managed capture preflight");
+            loop {
+                let required = match capture.step(&mut []) {
+                    Err(NativeStateError::OutOfSpace {
+                        required_bytes,
+                        required_rows: 0,
+                    }) => required_bytes,
+                    other => panic!("managed capture probe: {other:?}"),
+                };
+                let mut exact = vec![0; required];
+                let event = capture.step(&mut exact).expect("managed record");
+                if matches!(event.kind, NativeCheckpointChunkKind::Ready) {
+                    break *capture.ready_cursor().expect("managed READY cursor");
+                }
+            }
+        };
+
+        manager.vt_write(b"live PTY bytes while retained history is leased\r\n");
+        assert!(matches!(
+            manager.capture(limits),
+            Err(NativeStateError::LimitExceeded)
+        ));
+
+        let mut page = vec![
+            0;
+            usize::try_from(limits.max_history_page_bytes())
+                .expect("native history bound")
+        ];
+        assert!(matches!(
+            manager
+                .next(
+                    &cursor,
+                    limits,
+                    limits.max_history_page_bytes(),
+                    &mut page,
+                )
+                .expect("retained history page"),
+            NativeHistoryEvent::Page { .. } | NativeHistoryEvent::End
+        ));
+        manager.release(&cursor).expect("release retained cut");
+        manager
+            .capture(limits)
+            .expect("released capacity admits next capture");
     }
 }

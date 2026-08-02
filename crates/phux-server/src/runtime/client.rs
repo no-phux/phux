@@ -489,6 +489,10 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
         phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
     let handles = state.with(|s| s.subscribed_terminal_handles(client_id));
     for handle in handles {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let _ = handle
+            .native_release
+            .try_send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 });
         let (reply_tx, _reply_rx) = oneshot::channel();
         match handle.consumer_detach.try_send(ConsumerDetachRequest {
             client_id: wire_client_id,
@@ -944,6 +948,9 @@ where
                     let _ = sibling_tasks.join_next().await;
                     return Ok(());
                 }
+                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                let server_bootstrap = crate::native_state::native_bootstrap_capabilities();
+                #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
                 let server_bootstrap = BootstrapCapabilities::new();
                 let (selected_profile, bootstrap_limits) = match select_bootstrap_profile(
                     &client_caps,
@@ -1069,6 +1076,8 @@ where
                     scrollback_limit_lines,
                     &out_tx,
                     selection.client_caps,
+                    selection.profile,
+                    selection.limits,
                     &root_token,
                     &mut output_pumps,
                 )
@@ -1160,6 +1169,85 @@ where
                     bootstrap_id,
                     seq,
                 );
+            }
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            FrameKind::HistoryRequest {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                max_bytes,
+            } => {
+                let selection =
+                    negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
+                if !matches!(
+                    selection.profile,
+                    BootstrapProfile::NativeState {
+                        codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+                        ..
+                    }
+                ) {
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::CodecUnavailable,
+                            message: "HISTORY_REQUEST requires negotiated native checkpoint v2"
+                                .to_owned(),
+                        }))
+                        .await;
+                    continue;
+                }
+                let handle = state.with(|server| {
+                    server
+                        .terminal_from_wire(&terminal_id)
+                        .and_then(|pane| server.terminal_handle(pane).cloned())
+                });
+                let Some(handle) = handle else {
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::TerminalNotFound,
+                            message: format!("no such terminal: {terminal_id:?}"),
+                        }))
+                        .await;
+                    continue;
+                };
+                let (reply_tx, reply_rx) = oneshot::channel();
+                if handle
+                    .native_history
+                    .send(crate::terminal_actor::NativeHistoryRequest {
+                        outbound: out_tx.clone(),
+                        owner: client_id.0,
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        cursor,
+                        max_bytes,
+                        limits: selection.limits,
+                        reply: reply_tx,
+                    })
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                if let Ok(Err(error)) = reply_rx.await {
+                    let code = match error {
+                        crate::native_state::NativeStateError::OutOfMemory
+                        | crate::native_state::NativeStateError::OutOfSpace { .. }
+                        | crate::native_state::NativeStateError::LimitExceeded => {
+                            ErrorCode::ResourceExhausted
+                        }
+                        _ => ErrorCode::InternalError,
+                    };
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code,
+                            message: format!("native history request failed: {error}"),
+                        }))
+                        .await;
+                }
             }
             FrameKind::GetMetadata {
                 request_id,
