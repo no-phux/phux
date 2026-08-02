@@ -486,18 +486,52 @@ pub struct BootstrapCapabilities {
 }
 
 impl BootstrapCapabilities {
-    /// Protocol-0.7 capabilities: native checkpoint v2 plus synthesized VT fallback.
+    /// Protocol-0.7 synthesized VT compatibility profiles.
+    ///
+    /// Native engine state is never assumed from a protocol build. A native
+    /// host must probe its linked engine and opt in through [`Self::with_native`].
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            profiles: BootstrapProfileSet::all(),
-            native_codecs: EngineCodecSet::all(),
-            native_features: EngineFeatureSet::required_native(),
+            profiles: BootstrapProfileSet::with(&[
+                BootstrapProfileKind::SynthesizedVtRaw,
+                BootstrapProfileKind::SynthesizedVtStateSync,
+            ]),
+            native_codecs: EngineCodecSet::new(),
+            native_features: EngineFeatureSet::new(),
             limits: BootstrapLimits {
                 max_chunk_bytes: DEFAULT_BOOTSTRAP_CHUNK_BYTES,
                 max_history_page_bytes: DEFAULT_HISTORY_PAGE_BYTES,
             },
         }
+    }
+
+    /// Advertise one exact native codec after a successful engine probe.
+    ///
+    /// Native support is indivisible: callers must provide every feature
+    /// required by protocol 0.7. A partial feature set removes any existing
+    /// native advertisement rather than publishing a misleading subset.
+    #[must_use]
+    pub const fn with_native(
+        mut self,
+        codec: EngineCodec,
+        features: EngineFeatureSet,
+    ) -> Self {
+        if !features.supports_native() {
+            self.profiles = BootstrapProfileSet::from_wire(
+                self.profiles.as_wire() & !(BootstrapProfileKind::NativeState as u8),
+            );
+            self.native_codecs = EngineCodecSet::new();
+            self.native_features = EngineFeatureSet::new();
+            return self;
+        }
+
+        self.profiles = BootstrapProfileSet::from_wire(
+            self.profiles.as_wire() | BootstrapProfileKind::NativeState as u8,
+        );
+        self.native_codecs = EngineCodecSet::with(&[codec]);
+        self.native_features = EngineFeatureSet::required_native();
+        self
     }
 
     /// Replace the profile set.
@@ -1362,6 +1396,58 @@ mod tests {
     fn client_capabilities_builder() {
         let caps = ClientCapabilities::new().with_color_support(ColorSupport::Indexed16);
         assert_eq!(caps.color_support, ColorSupport::Indexed16);
+    }
+
+    #[test]
+    fn bootstrap_capabilities_default_to_synthesis_only() {
+        let caps = BootstrapCapabilities::new();
+        assert!(caps.profiles.contains(BootstrapProfileKind::SynthesizedVtRaw));
+        assert!(
+            caps.profiles
+                .contains(BootstrapProfileKind::SynthesizedVtStateSync)
+        );
+        assert!(!caps.profiles.contains(BootstrapProfileKind::NativeState));
+        assert_eq!(caps.native_codecs.as_wire(), 0);
+        assert_eq!(caps.native_features.as_wire(), 0);
+    }
+
+    #[test]
+    fn native_builder_advertises_the_exact_indivisible_profile() {
+        let caps = BootstrapCapabilities::new().with_native(
+            EngineCodec::LibghosttyCheckpointV2,
+            EngineFeatureSet::required_native(),
+        );
+        assert!(caps.profiles.contains(BootstrapProfileKind::SynthesizedVtRaw));
+        assert!(
+            caps.profiles
+                .contains(BootstrapProfileKind::SynthesizedVtStateSync)
+        );
+        assert!(caps.profiles.contains(BootstrapProfileKind::NativeState));
+        assert!(
+            caps.native_codecs
+                .contains(EngineCodec::LibghosttyCheckpointV2)
+        );
+        assert_eq!(
+            caps.native_features,
+            EngineFeatureSet::required_native()
+        );
+    }
+
+    #[test]
+    fn native_builder_rejects_partial_features() {
+        let partial = EngineFeatureSet::with(&[
+            EngineFeature::Continuation,
+            EngineFeature::ReadyBoundary,
+        ]);
+        let caps = BootstrapCapabilities::new()
+            .with_native(
+                EngineCodec::LibghosttyCheckpointV2,
+                EngineFeatureSet::required_native(),
+            )
+            .with_native(EngineCodec::LibghosttyCheckpointV2, partial);
+        assert!(!caps.profiles.contains(BootstrapProfileKind::NativeState));
+        assert_eq!(caps.native_codecs.as_wire(), 0);
+        assert_eq!(caps.native_features.as_wire(), 0);
     }
 
     #[test]

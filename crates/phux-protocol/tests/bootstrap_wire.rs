@@ -502,9 +502,17 @@ fn malformed_native_state_sync_combination_is_rejected() {
 #[test]
 fn profile_selection_prefers_native_then_explicit_compatibility() {
     let server = BootstrapCapabilities::new()
+        .with_native(
+            EngineCodec::LibghosttyCheckpointV2,
+            EngineFeatureSet::required_native(),
+        )
         .with_limits(BootstrapLimits::new(64 * 1024, 256 * 1024).unwrap());
     let client = ClientCapabilities::new().with_bootstrap(
         BootstrapCapabilities::new()
+            .with_native(
+                EngineCodec::LibghosttyCheckpointV2,
+                EngineFeatureSet::required_native(),
+            )
             .with_limits(BootstrapLimits::new(128 * 1024, 128 * 1024).unwrap()),
     );
     let (profile, limits) = select_bootstrap_profile(&client, &server).unwrap();
@@ -533,10 +541,19 @@ fn profile_selection_prefers_native_then_explicit_compatibility() {
     let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
     let client = ClientCapabilities::new().with_bootstrap(
         BootstrapCapabilities::new()
+            .with_native(
+                EngineCodec::LibghosttyCheckpointV2,
+                EngineFeatureSet::required_native(),
+            )
             .with_profiles(native_only)
             .with_native_codecs(EngineCodecSet::new()),
     );
-    let server = BootstrapCapabilities::new().with_profiles(native_only);
+    let server = BootstrapCapabilities::new()
+        .with_native(
+            EngineCodec::LibghosttyCheckpointV2,
+            EngineFeatureSet::required_native(),
+        )
+        .with_profiles(native_only);
     assert!(select_bootstrap_profile(&client, &server).is_err());
 }
 #[test]

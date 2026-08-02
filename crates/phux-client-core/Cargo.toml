@@ -12,9 +12,16 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# Safe native libghostty checkpoint host. The target-qualified optional
+# dependency below keeps wasm builds, including `--all-features`, off the
+# native C/Zig linkage graph.
+native-engine = ["dep:libghostty-vt"]
+
 [dependencies]
 # Stable IDs, ungated wire/input atoms, bootstrap profiles, and layout records.
-# Engine-specific server conversions remain disabled so this core stays
+# Engine-specific server conversions remain disabled so the default core stays
 # native/wasm portable.
 phux-protocol.workspace = true
 # phux-9gw.1.4: width-aware UTF-8 prediction. The predict layer must know
@@ -34,6 +41,9 @@ ciborium = "0.2"
 # near-empty shell per ADR-0011), so this crate mirrors the shapes locally.
 serde = { workspace = true }
 thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libghostty-vt = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

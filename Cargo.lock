@@ -1626,8 +1626,8 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libghostty-vt"
-version = "0.2.0"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=9d02528ac8028670b7d63596a2f049f64fd5f07f#9d02528ac8028670b7d63596a2f049f64fd5f07f"
+version = "0.2.1"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=481a09211ba13a5ee01c9e8351fa13592cc7a5db#481a09211ba13a5ee01c9e8351fa13592cc7a5db"
 dependencies = [
  "bitflags 2.13.0",
  "int-enum",
@@ -1637,8 +1637,8 @@ dependencies = [
 
 [[package]]
 name = "libghostty-vt-sys"
-version = "0.2.0"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=9d02528ac8028670b7d63596a2f049f64fd5f07f#9d02528ac8028670b7d63596a2f049f64fd5f07f"
+version = "0.2.1"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=481a09211ba13a5ee01c9e8351fa13592cc7a5db#481a09211ba13a5ee01c9e8351fa13592cc7a5db"
 
 [[package]]
 name = "libm"
@@ -2188,6 +2188,7 @@ version = "0.7.0"
 dependencies = [
  "ciborium",
  "insta",
+ "libghostty-vt",
  "phux-protocol",
  "proptest",
  "serde",
