@@ -48,6 +48,20 @@ pub(crate) fn synthesized_stream_profile(caps: ClientCapabilities) -> BootstrapS
         BootstrapStreamProfile::SynthesizedVtRaw
     }
 }
+pub(crate) const fn bootstrap_stream_profile(
+    profile: BootstrapProfile,
+) -> Option<BootstrapStreamProfile> {
+    match profile {
+        BootstrapProfile::NativeState { codec, .. } => {
+            Some(BootstrapStreamProfile::NativeState { codec })
+        }
+        BootstrapProfile::SynthesizedVtStateSync => {
+            Some(BootstrapStreamProfile::SynthesizedVtStateSync)
+        }
+        BootstrapProfile::SynthesizedVtRaw => Some(BootstrapStreamProfile::SynthesizedVtRaw),
+        _ => None,
+    }
+}
 
 pub(crate) fn stream_id_from(raw: u64) -> StreamId {
     StreamId::new(raw.saturating_add(1)).expect("derived stream id is non-zero")
@@ -675,6 +689,16 @@ pub(crate) async fn handle_spawn_terminal(
     bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
 ) {
+    let Some(profile) = bootstrap_stream_profile(bootstrap_profile) else {
+        let _ = out_tx
+            .send(Outbound::Frame(FrameKind::Error {
+                request_id: Some(request_id),
+                code: ErrorCode::CodecUnavailable,
+                message: "SPAWN_TERMINAL selected an unsupported bootstrap profile".to_owned(),
+            }))
+            .await;
+        return;
+    };
     let SpawnRequest {
         group,
         command,
@@ -921,15 +945,8 @@ pub(crate) async fn handle_spawn_terminal(
     });
 
     if let Some((wire_terminal_id, handle, client_caps)) = wire_and_handle {
-        let profile = match bootstrap_profile {
-            BootstrapProfile::NativeState { codec, .. } => {
-                BootstrapStreamProfile::NativeState { codec }
-            }
-            BootstrapProfile::SynthesizedVtStateSync => {
-                BootstrapStreamProfile::SynthesizedVtStateSync
-            }
-            BootstrapProfile::SynthesizedVtRaw => BootstrapStreamProfile::SynthesizedVtRaw,
-        };
+        // `profile` was validated before spawning the pane, so an unknown
+        // future profile can never publish a partial bootstrap generation.
         // Spawn the output pump BEFORE replying with `TerminalSpawned`
         // so any bytes the freshly-spawned PTY emits in the gap between
         // exec and the client's first read are queued on the broadcast
@@ -1134,8 +1151,7 @@ pub(crate) async fn handle_spawn_terminal(
         let Ok((snapshot, cut)) = snapshot_rx.await else {
             return;
         };
-        let replay =
-            downsample_for_caps(&bytes::Bytes::from(snapshot.bytes), client_caps);
+        let replay = downsample_for_caps(&bytes::Bytes::from(snapshot.bytes), client_caps);
         if send_synthesized_bootstrap(
             out_tx,
             wire_terminal_id.clone(),
@@ -1237,6 +1253,15 @@ pub(crate) async fn handle_attach(
     root_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
 ) {
+    let Some(stream_profile) = bootstrap_stream_profile(negotiated_profile) else {
+        send_error(
+            out_tx,
+            ErrorCode::CodecUnavailable,
+            "ATTACH selected an unsupported bootstrap profile",
+        )
+        .await;
+        return;
+    };
     // phux-9q5f: honor the ATTACH scrollback request. `request_scrollback`
     // gates the feature; `scrollback_limit_lines` caps it (0 ⇒ all retained
     // history, the SCROLLBACK_ALL sentinel). The per-pane SnapshotRequest
@@ -1390,21 +1415,15 @@ pub(crate) async fn handle_attach(
     // one slow pane no longer stalls the rest.
     let stream_id = stream_id_from(u64::from(attach_id));
     let bootstrap_id = initial_bootstrap_id();
-    let stream_profile = match negotiated_profile {
-        BootstrapProfile::NativeState { codec, .. } => {
-            BootstrapStreamProfile::NativeState { codec }
-        }
-        BootstrapProfile::SynthesizedVtStateSync => BootstrapStreamProfile::SynthesizedVtStateSync,
-        BootstrapProfile::SynthesizedVtRaw => BootstrapStreamProfile::SynthesizedVtRaw,
-    };
-
+    // `stream_profile` was validated before resolving or mutating the attach
+    // target, so no ATTACHED/BOOTSTRAP_BEGIN can precede this preflight.
     // phux-7w1j: per-pane "snapshot has been sent" gates. The output pump
     // subscribes to the broadcast in this loop (BEFORE the SnapshotRequest, so
     // no live bytes are lost), but must not FORWARD a `TerminalOutput` frame
     // until the pane's `TerminalSnapshot` has been written to `out_tx` — else a
     // PTY-active pane races output ahead of its snapshot and the client sees
-    // frame 2 = OUTPUT instead of SNAPSHOT. The pump parks on `gate_rx`; the
-    // The barrier releases every pump only after every pane has queued READY
+    // frame 2 = OUTPUT instead of SNAPSHOT. The pump parks on `gate_rx`;
+    // the barrier releases every pump only after every pane has queued READY
     // (or a close outcome) and the aggregate ATTACH_READY has been queued.
     let mut snapshot_gates: Vec<(TerminalId, oneshot::Sender<u64>, Option<u64>)> = Vec::new();
 
@@ -1701,8 +1720,7 @@ pub(crate) async fn handle_attach(
                 }
                 continue;
             }
-            native_pending
-                .push(async move { (terminal_id, wire_terminal_id, reply_rx.await) });
+            native_pending.push(async move { (terminal_id, wire_terminal_id, reply_rx.await) });
             continue;
         }
 
@@ -1716,7 +1734,10 @@ pub(crate) async fn handle_attach(
             .await
             .is_err()
         {
-            warn!(?terminal_id, "pane actor dropped before synthesized bootstrap");
+            warn!(
+                ?terminal_id,
+                "pane actor dropped before synthesized bootstrap"
+            );
             if let Some(pos) = snapshot_gates
                 .iter()
                 .position(|(tid, _, _)| *tid == terminal_id)
@@ -1761,7 +1782,10 @@ pub(crate) async fn handle_attach(
                 return;
             }
             Err(_) => {
-                warn!(?terminal_id, "pane actor failed to reply with native checkpoint");
+                warn!(
+                    ?terminal_id,
+                    "pane actor failed to reply with native checkpoint"
+                );
                 if let Some(pos) = snapshot_gates
                     .iter()
                     .position(|(tid, _, _)| *tid == terminal_id)

@@ -5,9 +5,7 @@ use std::path::PathBuf;
 use phux_core::ids::{SessionId, TerminalId, WindowId};
 use phux_core::registry::Registry;
 use phux_core::session::Session;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, Layer, LayerSet,
-};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities, Layer, LayerSet};
 use phux_protocol::ids::{TerminalId as WireTerminalId, WindowId as WireWindowId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use portable_pty::CommandBuilder;
@@ -1080,7 +1078,7 @@ impl ServerState {
     /// Look up the [`SessionId`] for a name by scanning the registry.
     ///
     /// Uses [`Registry::sessions`] directly — no side ledger required.
-    fn find_session_by_name(&self, name: &str) -> Option<SessionId> {
+    pub(crate) fn find_session_by_name(&self, name: &str) -> Option<SessionId> {
         self.registry
             .sessions()
             .find(|(_, s)| s.name == name)

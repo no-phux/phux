@@ -862,6 +862,13 @@ async fn handle_attach_terminal(
     bootstrap_limits: BootstrapLimits,
 ) -> CommandResult {
     use crate::terminal_actor::{ConsumerAttachRequest, PaneOutput, SnapshotRequest};
+    let Some(stream_profile) = crate::runtime::attach::bootstrap_stream_profile(bootstrap_profile)
+    else {
+        return CommandResult::Error {
+            code: ErrorCode::CodecUnavailable,
+            message: "ATTACH_TERMINAL selected an unsupported bootstrap profile".to_owned(),
+        };
+    };
 
     // Resolve and register the subscription in one critical section. Codec
     // selection is connection-scoped and comes directly from HELLO; it is
@@ -889,17 +896,8 @@ async fn handle_attach_terminal(
     let mut tick_managed = false;
     let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
     let bootstrap_id = crate::runtime::attach::initial_bootstrap_id();
-    let stream_profile = match bootstrap_profile {
-        phux_protocol::caps::BootstrapProfile::NativeState { codec, .. } => {
-            phux_protocol::caps::BootstrapStreamProfile::NativeState { codec }
-        }
-        phux_protocol::caps::BootstrapProfile::SynthesizedVtStateSync => {
-            phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtStateSync
-        }
-        phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw => {
-            phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw
-        }
-    };
+    // `stream_profile` was validated before registering the subscription, so
+    // an unknown future profile cannot expose a partial bootstrap generation.
     let (live_gate_tx, live_gate_rx) = tokio::sync::watch::channel(false);
     if let Some(wire_id) = terminal_id.local_id() {
         let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
@@ -973,10 +971,7 @@ async fn handle_attach_terminal(
                             stream_id,
                             bootstrap_id,
                             seq,
-                            bytes: crate::runtime::attach::downsample_for_caps(
-                                &bytes,
-                                client_caps,
-                            ),
+                            bytes: crate::runtime::attach::downsample_for_caps(&bytes, client_caps),
                         };
                         if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                             break;
@@ -1128,7 +1123,11 @@ async fn handle_attach_terminal(
                 if let Some(gate) = snapshot_gate {
                     let _ = gate.send(cut);
                 }
-                debug!(?client_id, ?terminal_id, "native ATTACH_TERMINAL subscribed");
+                debug!(
+                    ?client_id,
+                    ?terminal_id,
+                    "native ATTACH_TERMINAL subscribed"
+                );
                 return CommandResult::Ok;
             }
             Ok(Err(error)) => {
@@ -3020,33 +3019,31 @@ pub(crate) fn handle_terminal_reply(
         client_id,
         wire_terminal_id,
         FRAME_LABEL,
-        |destination| {
-            match destination
-                .handle
-                .encoded_input
-                .try_send(EncodedInputRequest::opaque(bytes))
-            {
-                Ok(()) => {
-                    trace!(
-                        ?client_id,
-                        ?wire_terminal_id,
-                        "opaque terminal reply routed to PTY byte lane",
-                    );
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    warn!(
-                        ?client_id,
-                        ?wire_terminal_id,
-                        "encoded-input actor mailbox full; dropping terminal reply",
-                    );
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    debug!(
-                        ?client_id,
-                        ?wire_terminal_id,
-                        "pane actor gone; dropping terminal reply",
-                    );
-                }
+        |destination| match destination
+            .handle
+            .encoded_input
+            .try_send(EncodedInputRequest::opaque(bytes))
+        {
+            Ok(()) => {
+                trace!(
+                    ?client_id,
+                    ?wire_terminal_id,
+                    "opaque terminal reply routed to PTY byte lane",
+                );
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                warn!(
+                    ?client_id,
+                    ?wire_terminal_id,
+                    "encoded-input actor mailbox full; dropping terminal reply",
+                );
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                debug!(
+                    ?client_id,
+                    ?wire_terminal_id,
+                    "pane actor gone; dropping terminal reply",
+                );
             }
         },
     );

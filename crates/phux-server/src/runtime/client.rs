@@ -6,9 +6,11 @@ use std::path::Path;
 
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
+#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::{
-    BootstrapCapabilities, BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet,
-    ServerCapabilities, ServerFeature, ServerFeatureSet, select_bootstrap_profile,
+    BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet, ServerCapabilities,
+    ServerFeature, ServerFeatureSet, select_bootstrap_profile,
 };
 use phux_protocol::policy::{ConsumerId as PolicyConsumerId, PeerIdentity};
 use phux_protocol::wire::frame::{AgentEvent, ErrorCode, FrameKind, TERMINAL_AGENT_KEY};
@@ -1202,9 +1204,8 @@ where
                         .send(Outbound::Frame(FrameKind::Error {
                             request_id: None,
                             code: ErrorCode::UnknownMessageType,
-                            message:
-                                "INPUT_TERMINAL_REPLY was not advertised for this connection"
-                                    .to_owned(),
+                            message: "INPUT_TERMINAL_REPLY was not advertised for this connection"
+                                .to_owned(),
                         }))
                         .await;
                     // The frame is additive within protocol 0.7: report the
