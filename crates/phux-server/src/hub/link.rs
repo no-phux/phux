@@ -826,8 +826,9 @@ async fn run_relay_session<C: LinkConn>(
                 let Some(request) = request else {
                     break (false, "relay handles dropped".to_owned());
                 };
-                let frame = session.handle_request(request);
-                if let Err(error) = send_bounded(&mut conn, &frame).await {
+                if let Some(frame) = session.handle_request_checked(request)
+                    && let Err(error) = send_bounded(&mut conn, &frame).await
+                {
                     break (true, error);
                 }
             }

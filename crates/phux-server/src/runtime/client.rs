@@ -2083,6 +2083,8 @@ pub(crate) fn handle_subscribe_events(
                     // deltas must flow immediately, so it is not gated
                     // (phux-v45.14).
                     awaits_snapshot: false,
+                    bootstrap_profile: None,
+                    bootstrap_limits: None,
                 },
                 FrameKind::SubscribeEvents {
                     terminal: Some(phux_protocol::ids::TerminalId::local(id)),

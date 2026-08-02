@@ -642,6 +642,8 @@ pub(crate) async fn handle_command(
                         sha256,
                     },
                     out_tx,
+                    bootstrap_profile,
+                    bootstrap_limits,
                 )
                 .await;
                 return;
@@ -670,6 +672,8 @@ pub(crate) async fn handle_command(
             &sat_host,
             local_command,
             out_tx,
+            bootstrap_profile,
+            bootstrap_limits,
         )
         .await;
         return;
@@ -1527,6 +1531,8 @@ async fn handle_satellite_command(
     host: &phux_protocol::ids::SatelliteHost,
     command: Command,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    bootstrap_profile: BootstrapProfile,
+    bootstrap_limits: BootstrapLimits,
 ) {
     let result = match state.with(|s| s.hub_relay(host)) {
         None => CommandResult::Error {
@@ -1557,6 +1563,13 @@ async fn handle_satellite_command(
                                 // carries no snapshot; gating it would strand
                                 // its EVENT stream.
                                 awaits_snapshot: matches!(command, Command::AttachTerminal { .. }),
+                                bootstrap_profile: matches!(
+                                    command,
+                                    Command::AttachTerminal { .. }
+                                )
+                                .then_some(bootstrap_profile),
+                                bootstrap_limits: matches!(command, Command::AttachTerminal { .. })
+                                    .then_some(bootstrap_limits),
                             },
                         )
                         .await
