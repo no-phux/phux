@@ -172,6 +172,18 @@ pub trait EngineAdapter {
         effects: &mut EngineEffectBuffer,
     ) -> Result<BootstrapProgress, Self::Error>;
 
+    /// Apply one borrowed opaque history page after the replica is published.
+    ///
+    /// History delivery is generation-bound but independent of live output
+    /// sequencing. Native adapters retain their post-READY decoder across
+    /// calls; compatibility adapters reject history as unsupported.
+    fn apply_history_page(
+        &mut self,
+        replica: &mut Self::Replica,
+        payload: &[u8],
+        effects: &mut EngineEffectBuffer,
+    ) -> Result<BootstrapProgress, Self::Error>;
+
     /// Apply one borrowed, exactly sequenced live payload.
     fn apply_output(
         &mut self,

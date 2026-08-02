@@ -121,6 +121,25 @@ impl EngineAdapter for FakeAdapter {
         })
     }
 
+    fn apply_history_page(
+        &mut self,
+        replica: &mut Self::Replica,
+        payload: &[u8],
+        effects: &mut EngineEffectBuffer,
+    ) -> Result<BootstrapProgress, Self::Error> {
+        replica.transcript.extend_from_slice(payload);
+        if payload == b"history-error" {
+            effects.push(EngineEffect::Damage(EngineDamage::Full));
+            return Err(FakeError::MutatedThenFailed);
+        }
+        if payload == b"history-effects" {
+            effects.push(EngineEffect::Status(EngineStatus::Title(
+                "history-imported".to_owned(),
+            )));
+        }
+        Ok(BootstrapProgress::Ready)
+    }
+
     fn apply_output(
         &mut self,
         replica: &mut Self::Replica,
@@ -564,6 +583,133 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         &mut effects,
     );
     assert!(matches!(stale, Err(KernelError::RetiredGeneration { .. })));
+}
+
+#[test]
+fn published_history_is_generation_bound_and_interleaves_without_advancing_live_seq() {
+    let terminal_id = terminal(30);
+    let stream_id = stream(130);
+    let bootstrap_id = bootstrap(230);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    publish_direct(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        40,
+        &mut effects,
+    );
+
+    kernel
+        .update(
+            KernelInput::HistoryPage {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                payload: b"history-one",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert_eq!(kernel.published(&terminal_id).unwrap().last_seq(), 40);
+
+    kernel
+        .update(
+            KernelInput::TerminalOutput {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq: 41,
+                payload: b"live-between-history",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    kernel
+        .update(
+            KernelInput::HistoryPage {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                payload: b"history-two",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    let published = kernel.published(&terminal_id).unwrap();
+    assert_eq!(published.last_seq(), 41);
+    assert!(published
+        .engine()
+        .transcript
+        .ends_with(b"history-onelive-between-historyhistory-two"));
+
+    let before_wrong_generation = published.engine().transcript.clone();
+    let wrong_generation = kernel.update(
+        KernelInput::HistoryPage {
+            terminal_id: &terminal_id,
+            stream_id,
+            bootstrap_id: bootstrap(999),
+            payload: b"wrong-generation",
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        wrong_generation,
+        Err(KernelError::GenerationMismatch { .. })
+    ));
+    assert_eq!(
+        kernel.published(&terminal_id).unwrap().engine().transcript,
+        before_wrong_generation
+    );
+}
+
+#[test]
+fn history_engine_failure_retires_the_exact_published_generation() {
+    let terminal_id = terminal(31);
+    let stream_id = stream(131);
+    let bootstrap_id = bootstrap(231);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    publish_direct(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        73,
+        &mut effects,
+    );
+
+    let failed = kernel.update(
+        KernelInput::HistoryPage {
+            terminal_id: &terminal_id,
+            stream_id,
+            bootstrap_id,
+            payload: b"history-error",
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        failed,
+        Err(KernelError::Engine(FakeError::MutatedThenFailed))
+    ));
+    assert!(kernel.published(&terminal_id).is_none());
+    assert_eq!(
+        kernel
+            .tombstone(&terminal_id, stream_id, bootstrap_id)
+            .unwrap()
+            .last_valid_seq,
+        73
+    );
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Status(KernelStatus::ResyncRequired {
+            terminal_id: id,
+            stream_id: stream,
+            bootstrap_id: bootstrap,
+            reason: TombstoneReason::CodecFailure,
+        }) if id == &terminal_id && *stream == stream_id && *bootstrap == bootstrap_id
+    )));
 }
 
 #[test]

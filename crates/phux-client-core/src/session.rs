@@ -76,6 +76,17 @@ pub enum KernelInput<'a> {
         /// Replica generation.
         bootstrap_id: BootstrapId,
     },
+    /// Apply one borrowed post-publication native history page.
+    HistoryPage {
+        /// Target terminal.
+        terminal_id: &'a TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Published replica generation.
+        bootstrap_id: BootstrapId,
+        /// Borrowed opaque selected-codec history bytes.
+        payload: &'a [u8],
+    },
     /// Apply one borrowed live output fragment.
     TerminalOutput {
         /// Target terminal.
@@ -783,6 +794,12 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 stream_id,
                 bootstrap_id,
             } => self.bootstrap_ready(terminal_id, stream_id, bootstrap_id, effects),
+            KernelInput::HistoryPage {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                payload,
+            } => self.history_page(terminal_id, stream_id, bootstrap_id, payload, effects),
             KernelInput::TerminalOutput {
                 terminal_id,
                 stream_id,
@@ -1327,6 +1344,75 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 seq,
             }));
         }
+        Ok(())
+    }
+
+    fn history_page(
+        &mut self,
+        terminal_id: &TerminalId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        payload: &[u8],
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
+        self.ensure_open(terminal_id)?;
+        let generation = GenerationId {
+            stream_id,
+            bootstrap_id,
+        };
+        let state = self
+            .terminals
+            .get_mut(terminal_id)
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        if state.retired.contains_key(&generation) {
+            return Err(retired_error(terminal_id, generation));
+        }
+        let replica = state
+            .published
+            .as_mut()
+            .filter(|replica| generation_of(&replica.key) == generation)
+            .ok_or_else(|| mismatch_error(terminal_id, generation))?;
+
+        self.engine_effects.clear();
+        if let Err(error) = self.adapter.apply_history_page(
+            &mut replica.engine,
+            payload,
+            &mut self.engine_effects,
+        ) {
+            let last_valid_seq = replica.last_seq;
+            self.engine_effects.clear();
+            state.published = None;
+            state.retired.insert(
+                generation,
+                TombstoneRecord {
+                    reason: TombstoneReason::CodecFailure,
+                    last_valid_seq,
+                },
+            );
+            let damage_blocked = self.attach_blocks(terminal_id);
+            self.mark_attach_unresolved(terminal_id, damage_blocked);
+            effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                reason: TombstoneReason::CodecFailure,
+            }));
+            if !damage_blocked {
+                effects.push(KernelEffect::Damage(KernelDamage {
+                    terminal_id: terminal_id.clone(),
+                    kind: KernelDamageKind::Removed,
+                }));
+            }
+            return Err(KernelError::Engine(error));
+        }
+
+        let replica_key = replica.key.clone();
+        let damage_allowed = !self.attach_blocks(terminal_id);
+        let mut captured = std::mem::take(&mut self.engine_effects);
+        for effect in captured.drain() {
+            self.translate_engine_effect(&replica_key, effect, damage_allowed, effects);
+        }
+        self.engine_effects = captured;
         Ok(())
     }
 
