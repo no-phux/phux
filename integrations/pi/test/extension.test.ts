@@ -40,6 +40,67 @@ test("detailed status exposes stale state instead of choosing another pane", () 
   );
 });
 
+test("injects phux context after the user message and forces a checkpoint after compaction", async () => {
+  type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
+  const handlers = new Map<string, Handler[]>();
+  const sent: Array<{ content?: string; display?: boolean }> = [];
+  const api = {
+    appendEntry: () => {},
+    sendMessage: (message: { content?: string; display?: boolean }) => { sent.push(message); },
+    on: (name: string, handler: Handler) => {
+      const registered = handlers.get(name) ?? [];
+      registered.push(handler);
+      handlers.set(name, registered);
+    },
+    registerTool: () => {},
+    registerCommand: () => {},
+  } as unknown as ExtensionAPI;
+  const cli = new PhuxCli({
+    runner: async () => ({
+      termination: "completed",
+      exitCode: 0,
+      stderr: "",
+      stdout: JSON.stringify({
+        schema_version: 1,
+        agents: [{
+          terminal: "@65",
+          session: "phux",
+          window: "window-0",
+          agent: { id: "pi", label: "Pi", kind: "declared" },
+          state: "working",
+          confidence: 1,
+          attention: "normal",
+          title: "not model context",
+          cwd: "/repo",
+          sources: [],
+          explanation: "not model context",
+        }],
+      }),
+    }),
+  });
+  registerPhuxExtension(api, { cli, env: { PHUX_TERMINAL_ID: "65" } });
+  const ctx = {
+    signal: undefined,
+    sessionManager: { getSessionId: () => "pi-session" },
+  } as unknown as ExtensionContext;
+  const before = handlers.get("before_agent_start")?.[0];
+  const compact = handlers.get("session_compact")?.[0];
+  assert.notEqual(before, undefined);
+  assert.notEqual(compact, undefined);
+
+  const first = await before?.({}, ctx) as { message?: { content?: string; display?: boolean } } | undefined;
+  assert.match(first?.message?.content ?? "", /kind="checkpoint" seq="1"/);
+  assert.match(first?.message?.content ?? "", /"self":"@65"/);
+  assert.equal(first?.message?.display, false);
+  assert.equal(await before?.({}, ctx), undefined, "unchanged state emits no custom message");
+
+  await compact?.({}, ctx);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0]?.content ?? "", /kind="checkpoint" seq="2"/);
+  assert.equal(sent[0]?.display, false);
+  assert.equal(await before?.({}, ctx), undefined, "the persisted compaction checkpoint is already current");
+});
+
 test("registers Pi-native commands and tolerates custom UI being unavailable", async () => {
   const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
   const events: string[] = [];
@@ -87,7 +148,8 @@ test("registers Pi-native commands and tolerates custom UI being unavailable", a
     "phux_rendered_snapshot", "phux_targets",
   ]);
   assert.deepEqual(events, [
-    "session_start", "session_tree", "session_start", "agent_start", "agent_settled", "session_shutdown",
+    "session_start", "session_tree", "before_agent_start", "session_compact",
+    "session_start", "agent_start", "agent_settled", "session_shutdown",
   ]);
 
   let customCalls = 0;

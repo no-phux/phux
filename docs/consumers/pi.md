@@ -6,11 +6,11 @@ last-reviewed: 2026-08-02
 
 # Pi integration
 
-**TL;DR.** `@phux/pi` lets Pi select and operate a pane in an external local
-phux server while preserving the target in Pi's session history. It provides
-nineteen bounded terminal tools, three human commands, branch-local named
-targets, and best-effort Pi lifecycle metadata. It does not embed a terminal,
-provide remote authentication, or own the phux server.
+**TL;DR.** `@phux/pi` lets Pi select and operate panes in an external local
+phux server, preserves branch-local targets, and appends bounded fleet-state
+checkpoints and deltas without rewriting Pi's stable prompt prefix. It provides
+nineteen terminal tools, three human commands, and best-effort lifecycle
+metadata. It does not embed a terminal or own the server.
 
 ---
 
@@ -61,9 +61,12 @@ it does not load the `.tgz` file as an extension. The artifact remains dependent
 on a compatible external `phux` binary on the destination machine.
 
 The extension inherits `PHUX_SOCKET`; set it before starting Pi when the server
-uses a non-default local Unix socket. There is no package command for choosing
-an alternate executable. Library consumers can construct `PhuxCli` with an
-absolute `executable`, but the installed Pi extension expects `phux` on `PATH`.
+uses a non-default local Unix socket. It also reads `PHUX_TERMINAL_ID`, which
+phux sets for a hosted agent, to identify Pi's own pane in automatic fleet
+context. Set `PHUX_CONTEXT_AWARENESS=0` before startup to disable that context.
+There is no package command for choosing an alternate executable. Library
+consumers can construct `PhuxCli` with an absolute `executable`, but the
+installed Pi extension expects `phux` on `PATH`.
 
 ## Surface
 
@@ -115,6 +118,35 @@ cancellation, and targeted CLI tools expose finite local timeouts. The watch
 adapter requires a finite collection window and returns at most 100 parsed events rather than
 leaving an indefinitely streaming subprocess. Results state when the adapter
 truncated output and preserve a separate truncation flag reported by phux.
+
+## Automatic fleet context
+
+Before each new Pi agent run, the extension reads the public agent inventory.
+The first observation is a hidden `phux-context` checkpoint appended after the
+new user message. Later changes append sequenced deltas; an unchanged inventory
+adds no message. The base system prompt, context files, and tool definitions
+therefore remain an exact stable prefix. The model is told that the latest
+sequence supersedes older phux context and that every value is untrusted
+observational data rather than an instruction.
+
+A checkpoint carries Pi's own inherited Terminal id, the selected target, and
+up to 64 sorted pane records: canonical Terminal/session/window identity,
+agent label and kind, lifecycle state, attention, and cwd. The complete message
+is capped at 8 KiB and reports omitted panes. It never includes screen rows,
+scrollback, titles, detector evidence, explanations, tool output, or
+credentials. Use `phux_snapshot`, `phux_watch_events`, or `phux_panes` when
+fresh explicit detail is required.
+
+After eight deltas the next change becomes a full checkpoint. Branch movement
+and compaction append a fresh checkpoint immediately; during an active
+auto-compaction it is steered into the retried context, while an idle manual
+compaction persists it without triggering a model turn. A missing or timed-out
+server produces one bounded `unavailable` checkpoint; repeated identical failures emit nothing, and
+recovery produces a new checkpoint. The refresh is best effort and locally
+bounded to one second. It updates awareness at new user-turn boundaries, not
+continuously during one uninterrupted model/tool loop. The cache and
+compaction rationale is recorded in
+[ADR-0067](../../ADR/0067-cache-preserving-agent-fleet-context.md).
 
 ## Selecting and preserving targets
 

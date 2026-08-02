@@ -36,6 +36,27 @@ function completed(stdout = "", exitCode = 0) {
   return { termination: "completed", exitCode, stdout, stderr: "" };
 }
 
+function userMessage(sessionID, id) {
+  return {
+    id,
+    sessionID,
+    role: "user",
+    time: { created: Date.now() },
+    agent: "build",
+    model: { providerID: "test", modelID: "test" },
+  };
+}
+
+function textPart(sessionID, messageID, text) {
+  return {
+    id: `${messageID}-text`,
+    sessionID,
+    messageID,
+    type: "text",
+    text,
+  };
+}
+
 test("public plugin loads six tools without invoking phux", async () => {
   let calls = 0;
   const cli = new PhuxCli({ runner: async () => {
@@ -54,6 +75,8 @@ test("public plugin loads six tools without invoking phux", async () => {
     "phux_snapshot",
     "phux_wait",
   ]);
+  assert.equal(typeof hooks["chat.message"], "function");
+  assert.equal(typeof hooks["experimental.session.compacting"], "function");
   assert.equal(typeof hooks.event, "function");
   assert.equal(typeof hooks.dispose, "function");
   assert.equal(calls, 0);
@@ -138,6 +161,87 @@ test("tools preserve target precedence, command shape, deadlines, cancellation, 
   const snapshotRequest = snapshots[0];
   assert.equal(snapshotRequest.timeoutMs, DEFAULT_SHORT_TIMEOUT_MS);
   assert.equal(snapshotRequest.signal, toolContext.abort);
+  await hooks.dispose();
+});
+
+test("appends sequenced synthetic fleet context without rewriting prior messages", async () => {
+  let state = "working";
+  let calls = 0;
+  const cli = new PhuxCli({ runner: async (request) => {
+    calls += 1;
+    assert.deepEqual(request.args.slice(0, 3), ["agent", "list", "--json"]);
+    return completed(JSON.stringify({
+      schema_version: 1,
+      agents: [{
+        terminal: "@7",
+        session: "shared",
+        window: "window-0",
+        agent: { id: "codex", label: "Codex", kind: "codex" },
+        state,
+        confidence: 1,
+        attention: state === "working" ? "normal" : "low",
+        title: "do not inject screen title",
+        cwd: "/repo",
+        sources: [{ kind: "screen", signal: "secret screen evidence", confidence: 1, observed: "contents" }],
+        explanation: "screen contents",
+      }],
+    }));
+  } });
+  const hooks = await PhuxPlugin({}, {
+    cli,
+    env: { PHUX_TARGET: "@7", PHUX_TERMINAL_ID: "65" },
+    contextTimeoutMs: 432,
+  });
+  const hook = hooks["chat.message"];
+
+  const first = { message: userMessage("session-one", "message-one"), parts: [textPart("session-one", "message-one", "user request")] };
+  await hook({ sessionID: "session-one", messageID: "message-one" }, first);
+  assert.equal(first.parts.length, 2);
+  assert.equal(first.parts[1].synthetic, true);
+  assert.match(first.parts[1].text, /kind="checkpoint" seq="1"/);
+  assert.match(first.parts[1].text, /"self":"@65"/);
+  assert.doesNotMatch(first.parts[1].text, /do not inject screen title|secret screen evidence|"contents"/);
+
+  const unchanged = { message: userMessage("session-one", "message-two"), parts: [textPart("session-one", "message-two", "next request")] };
+  await hook({ sessionID: "session-one", messageID: "message-two" }, unchanged);
+  assert.equal(unchanged.parts.length, 1, "unchanged fleet state adds no suffix");
+
+  state = "idle";
+  const changed = { message: userMessage("session-one", "message-three"), parts: [textPart("session-one", "message-three", "next request")] };
+  await hook({ sessionID: "session-one", messageID: "message-three" }, changed);
+  assert.match(changed.parts[1].text, /kind="delta" seq="2"/);
+  assert.match(changed.parts[1].text, /"state":"idle"/);
+  assert.equal(calls, 3);
+  await hooks.dispose();
+});
+
+test("compaction receives a canonical checkpoint and forces the next message checkpoint", async () => {
+  const cli = new PhuxCli({ runner: async () => completed(JSON.stringify({ schema_version: 1, agents: [] })) });
+  const hooks = await PhuxPlugin({}, { cli, env: {} });
+  const compacting = hooks["experimental.session.compacting"];
+  const output = { context: [] };
+
+  await compacting({ sessionID: "compact-me" }, output);
+  assert.equal(output.context.length, 1);
+  assert.match(output.context[0], /canonical phux fleet checkpoint/);
+  assert.match(output.context[0], /kind="checkpoint" seq="1"/);
+
+  await hooks.event({ event: { type: "session.compacted", properties: { sessionID: "compact-me" } } });
+  const after = { message: userMessage("compact-me", "after-compact"), parts: [textPart("compact-me", "after-compact", "continue")] };
+  await hooks["chat.message"]({ sessionID: "compact-me", messageID: "after-compact" }, after);
+  assert.match(after.parts[1].text, /kind="checkpoint" seq="2"/);
+  await hooks.dispose();
+});
+
+test("context awareness can be disabled without probing phux", async () => {
+  let calls = 0;
+  const cli = new PhuxCli({ runner: async () => { calls += 1; return completed(); } });
+  const hooks = await PhuxPlugin({}, { cli, env: { PHUX_CONTEXT_AWARENESS: "0" } });
+  const output = { message: userMessage("off", "message"), parts: [textPart("off", "message", "hello")] };
+  await hooks["chat.message"]({ sessionID: "off", messageID: "message" }, output);
+  await hooks["experimental.session.compacting"]({ sessionID: "off" }, { context: [] });
+  assert.equal(output.parts.length, 1);
+  assert.equal(calls, 0);
   await hooks.dispose();
 });
 

@@ -1,7 +1,8 @@
 # @phux/pi
 
 Pi package for selecting, orchestrating, and supervising shared phux terminals
-through the external canonical CLI. It provides bounded pane inventory,
+through the external canonical CLI. It appends cache-preserving fleet context
+at user-turn boundaries and provides bounded pane inventory,
 spawn/launch with local placement, insert/move/swap topology edits, confirmed
 kill/destructive-signal controls, tags, asks, finite event collection, composited
 snapshots, and branch-local aliases/groups while keeping

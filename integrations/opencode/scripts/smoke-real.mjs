@@ -106,6 +106,31 @@ try {
   const target = created.metadata.target;
   assert.match(target, /^@\d+$/);
 
+  const message = {
+    id: "phux-context-smoke-message",
+    sessionID: toolContext.sessionID,
+    role: "user",
+    time: { created: Date.now() },
+    agent: "smoke",
+    model: { providerID: "offline", modelID: "offline" },
+  };
+  const contextOutput = {
+    message,
+    parts: [{
+      id: "phux-context-smoke-user-text",
+      sessionID: message.sessionID,
+      messageID: message.id,
+      type: "text",
+      text: "Inspect the fleet without calling a model.",
+    }],
+  };
+  await hooks["chat.message"]({ sessionID: message.sessionID, messageID: message.id }, contextOutput);
+  assert.equal(contextOutput.parts.length, 2, "real agent inventory must append one synthetic context part");
+  assert.equal(contextOutput.parts[1].synthetic, true);
+  assert.match(contextOutput.parts[1].text, /kind="checkpoint" seq="1"/);
+  assert.match(contextOutput.parts[1].text, new RegExp(`"selected":"${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+  assert.doesNotMatch(contextOutput.parts[1].text, /"title"|"sources"|"explanation"/);
+
   const marker = "PHUX_OPENCODE_SMOKE_OK";
   const command = await hooks.tool.phux_run.execute({
     command: `printf '${marker}\\n'`,

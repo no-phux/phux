@@ -4,6 +4,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { PhuxCli } from "./adapter.js";
+import {
+  PHUX_CONTEXT_CUSTOM_TYPE,
+  PhuxContextAwareness,
+  contextAwarenessEnabled,
+  type PhuxContextEmission,
+  normalizeTerminalIdentity,
+} from "./awareness.js";
 import { PhuxTargetPicker } from "./components.js";
 import { registerPhuxLifecycle } from "./lifecycle.js";
 import type { AgentPane } from "./schemas.js";
@@ -16,6 +23,8 @@ import {
 
 export interface PhuxExtensionOptions {
   readonly cli?: PhuxCli;
+  readonly contextAwareness?: PhuxContextAwareness;
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 /** Register commands and lifecycle hooks around the extension's single shared target store. */
@@ -24,7 +33,19 @@ export function registerPhuxExtension(
   options: PhuxExtensionOptions = {},
 ): PhuxTargetStore {
   const cli = options.cli ?? new PhuxCli();
+  const environment = options.env ?? process.env;
   const store = new PhuxTargetStore(pi, cli);
+  const awareness = options.contextAwareness ?? new PhuxContextAwareness(cli, {
+    enabled: contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS),
+  });
+  const contextIdentity = () => {
+    const self = normalizeTerminalIdentity(environment.PHUX_TERMINAL_ID);
+    const selected = store.snapshot.selection?.selector;
+    return {
+      ...(self === null ? {} : { self }),
+      ...(selected === undefined ? {} : { selected }),
+    };
+  };
   registerPhuxTools(pi, cli, store);
 
   const updateStatus = (ctx: ExtensionContext): void => {
@@ -38,8 +59,34 @@ export function registerPhuxExtension(
     updateStatus(ctx);
   };
 
+  const contextMessage = (emission: PhuxContextEmission) => ({
+    customType: PHUX_CONTEXT_CUSTOM_TYPE,
+    content: emission.text,
+    display: false,
+    details: { version: emission.version, kind: emission.kind, seq: emission.seq },
+  });
+  const appendCheckpoint = async (ctx: ExtensionContext): Promise<void> => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    awareness.forceCheckpoint(sessionId);
+    const emission = await awareness.next(sessionId, contextIdentity(), ctx.signal);
+    if (emission !== null) pi.sendMessage(contextMessage(emission));
+  };
+
   pi.on("session_start", async (_event, ctx) => restore(ctx));
-  pi.on("session_tree", async (_event, ctx) => restore(ctx));
+  pi.on("session_tree", async (_event, ctx) => {
+    await restore(ctx);
+    await appendCheckpoint(ctx);
+  });
+  pi.on("before_agent_start", async (_event, ctx) => {
+    const emission = await awareness.next(
+      ctx.sessionManager.getSessionId(),
+      contextIdentity(),
+      ctx.signal,
+    );
+    if (emission === null) return;
+    return { message: contextMessage(emission) };
+  });
+  pi.on("session_compact", async (_event, ctx) => appendCheckpoint(ctx));
 
   pi.registerCommand("phux", {
     description: "Select the default phux pane target",

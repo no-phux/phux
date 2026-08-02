@@ -1,7 +1,8 @@
 # @phux/opencode
 
 Public OpenCode plugin for operating shared terminals through an external local
-phux server. Installation, configuration, tool behavior, target precedence,
+phux server and appending cache-preserving fleet context. Installation,
+configuration, tool behavior, target precedence,
 lifecycle gaps, and safety boundaries live in the canonical
 [OpenCode integration guide](../../docs/consumers/opencode.md).
 

@@ -1,5 +1,6 @@
 export * from "./activation.js";
 export * from "./adapter.js";
+export * from "./awareness.js";
 export * from "./errors.js";
 export * from "./schemas.js";
 export * from "./truncate.js";
