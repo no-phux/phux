@@ -82,7 +82,7 @@ There is no L2 collection tier. Group lifecycle — "these terminals belong toge
 
 The wire surface itself is owned by the spec: L1 by [`spec/L1.md`](./spec/L1.md), the metadata model and grouping conventions by [`spec/L3.md`](./spec/L3.md), and the byte-level codec by [`spec/appendix-encoding.md`](./spec/appendix-encoding.md).
 
-The dissolution of the collection lifecycle tier shipped in protocol 0.3.0: the `CREATE_SESSION`, `RENAME_SESSION`, and `KILL_COLLECTION` verbs are gone from the wire. Create is `SPAWN_TERMINAL` plus a metadata key, rename is a metadata SET, and atomic group teardown is the single `KILL_TERMINALS` operation. `GroupId` is retained as a documented opaque grouping key, not a lifecycle tier; its full removal is tracked work (bead phux-0bmc). The decomposition is decided in [ADR-0030](../ADR/0030-engine-delegated-wire-and-projection-consumers.md).
+The dissolution of the collection lifecycle tier shipped in protocol 0.3.0: the `CREATE_SESSION`, `RENAME_SESSION`, and `KILL_COLLECTION` verbs are gone from the wire. Create is `SPAWN_TERMINAL` plus a metadata key, rename is a metadata SET, and atomic group teardown is the single `KILL_TERMINALS` operation. `GroupId` is retained as a documented opaque grouping key, not a lifecycle tier (settled: bead phux-0bmc closed as resolved-by-rename — it is not a remnant slated for removal). The decomposition is decided in [ADR-0030](../ADR/0030-engine-delegated-wire-and-projection-consumers.md).
 
 ---
 
