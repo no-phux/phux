@@ -67,7 +67,7 @@ pub(crate) fn check_struct(
     Ok(())
 }
 
-pub unsafe fn bytes_in<'a>(data: *const u8, len: usize) -> Result<&'a [u8], BridgeError> {
+pub(crate) unsafe fn bytes_in<'a>(data: *const u8, len: usize) -> Result<&'a [u8], BridgeError> {
     if len == 0 {
         return Ok(&[]);
     }
@@ -80,7 +80,7 @@ pub unsafe fn bytes_in<'a>(data: *const u8, len: usize) -> Result<&'a [u8], Brid
     Ok(unsafe { std::slice::from_raw_parts(data, len) })
 }
 
-pub unsafe fn outbound_bytes_in<'a>(
+pub(crate) unsafe fn outbound_bytes_in<'a>(
     data: *const u8,
     len: usize,
     field: &'static str,
@@ -94,7 +94,9 @@ pub unsafe fn outbound_bytes_in<'a>(
     unsafe { bytes_in(data, len) }
 }
 
-pub unsafe fn terminal_id_in(value: *const PhuxTerminalId) -> Result<TerminalId, BridgeError> {
+pub(crate) unsafe fn terminal_id_in(
+    value: *const PhuxTerminalId,
+) -> Result<TerminalId, BridgeError> {
     // SAFETY: pointer validity is checked before dereference.
     let value =
         unsafe { value.as_ref() }.ok_or_else(|| BridgeError::invalid("terminal_id is null"))?;
