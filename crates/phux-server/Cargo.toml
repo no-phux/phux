@@ -232,6 +232,13 @@ phux-relay.workspace = true
 # HTTP/3 CONNECT are still exercised end-to-end). Test builds only.
 wtransport = { version = "0.7.1", default-features = false, features = ["ring", "dangerous-configuration"] }
 
+# Native capture tests inject allocator failures through libghostty's safe
+# allocator API to prove checkpoint cleanup. Keep those test-only features off
+# the wasm dependency graph with the same native target gate as production.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+libghostty-vt = { workspace = true, features = ["allocator_api"] }
+allocator-api2 = "0.4"
+
 [[bench]]
 name = "capture"
 harness = false
