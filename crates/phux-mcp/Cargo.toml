@@ -22,7 +22,6 @@ path = "src/main.rs"
 # (ADR-0022 §5). No MCP framework dep: the JSON-RPC is hand-rolled over
 # serde_json so the surface stays reimplementable in any language.
 phux-client.workspace = true
-phux-core.workspace = true
 phux-config.workspace = true
 phux-plugin.workspace = true
 phux-protocol = { workspace = true, features = ["server"] }
