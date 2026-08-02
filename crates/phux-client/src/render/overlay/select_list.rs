@@ -764,13 +764,6 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
     Some(score)
 }
 
-/// Boolean subsequence test — `true` iff [`fuzzy_score`] would match.
-/// Retained as a convenience for callers that only need a yes/no answer.
-#[must_use]
-pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
-    fuzzy_score(needle, haystack).is_some()
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
@@ -812,15 +805,15 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_match_subsequence() {
-        assert!(fuzzy_match("", "anything"));
-        assert!(fuzzy_match("sp", "split-pane"));
-        assert!(fuzzy_match("spn", "split-pane")); // s-p-(a)n
-        assert!(fuzzy_match("nw", "new-window"));
-        assert!(!fuzzy_match("zzz", "new-window"));
+    fn fuzzy_score_matches_subsequence() {
+        assert!(fuzzy_score("", "anything").is_some());
+        assert!(fuzzy_score("sp", "split-pane").is_some());
+        assert!(fuzzy_score("spn", "split-pane").is_some()); // s-p-(a)n
+        assert!(fuzzy_score("nw", "new-window").is_some());
+        assert!(fuzzy_score("zzz", "new-window").is_none());
         // Order matters: "wen" can't be a subsequence — there is no 'e'
         // after the first 'w' in "new-window".
-        assert!(!fuzzy_match("wen", "new-window"));
+        assert!(fuzzy_score("wen", "new-window").is_none());
     }
 
     #[test]

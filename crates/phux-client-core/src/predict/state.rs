@@ -21,7 +21,7 @@ use super::reconcile::ReconcileStats;
 
 /// Per-client knob for predictive echo.
 ///
-/// Wire to `phux_client::attach::run_with_predict`. Default is `enabled: false`
+/// Wire to `phux_client::attach::run_with_predict_dial`. Default is `enabled: false`
 /// — predictive echo is off until field-proven. Future config keys
 /// (timeout, decoration choice, RTT-adaptive predict policy) belong here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -126,9 +126,10 @@ pub enum PredictionOutcome {
 /// - [`Self::predict_key`] is called on the keystroke path, before the
 ///   `INPUT_KEY` frame is sent. It either enqueues a prediction (and
 ///   advances the cursor estimate) or returns [`PredictionOutcome::Skipped`].
-/// - [`super::reconcile_terminal_output`] is called on the server-frame
-///   path when a `TerminalOutput` arrives. It drains the queue and resyncs
-///   the cursor estimate from authoritative state.
+/// - [`super::reconcile_terminal_output_per_cell`] is called on the
+///   server-frame path when a `TerminalOutput` arrives. It confirms,
+///   keeps, or drops predictions cell by cell and resyncs the cursor
+///   estimate from authoritative state once the queue drains.
 #[derive(Debug, Default)]
 pub struct PredictionState {
     cfg: PredictiveConfig,
@@ -343,8 +344,7 @@ impl PredictionState {
     ///
     /// Called from [`super::reconcile_terminal_output_per_cell`] just before
     /// it returns, so every per-cell reconcile caller gets back-off for
-    /// free. The wholesale-drain [`super::reconcile_terminal_output`] does
-    /// not feed this — it is not a per-cell verdict.
+    /// free.
     pub fn note_reconcile(&mut self, stats: ReconcileStats) {
         if stats.contradicted > 0 {
             self.contradiction_streak = self.contradiction_streak.saturating_add(1);
@@ -400,13 +400,6 @@ impl PredictionState {
     #[must_use]
     pub const fn cursor(&self) -> (u16, u16) {
         (self.cursor_row, self.cursor_col)
-    }
-
-    /// Current viewport `(cols, rows)`. Exposed for diagnostics and
-    /// tests; production callers do not need this.
-    #[must_use]
-    pub const fn viewport(&self) -> (u16, u16) {
-        (self.cols, self.rows)
     }
 
     /// Read-only access to the pending queue (used by the overlay).

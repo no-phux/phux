@@ -312,17 +312,6 @@ impl Connection {
         }
     }
 
-    /// Split into independent read and write halves.
-    ///
-    /// Useful when the attach loop wants to `tokio::select!` on the read
-    /// side while a separate task drains a write queue. The current driver
-    /// uses [`Self::send`] / [`Self::recv`] directly and does not need the
-    /// split — kept for forward use by phux-9gw.1.
-    #[must_use]
-    pub fn into_split(self) -> (FrameReader, FrameWriter) {
-        (self.reader, self.writer)
-    }
-
     /// Encode `frame` and write it to the server.
     pub async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
         self.writer.send(frame).await

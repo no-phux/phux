@@ -77,11 +77,6 @@ pub enum ParseError {
     Empty,
     /// `@N` or `host/@N` carried a non-numeric or out-of-range id.
     BadTerminalId(String),
-    /// A legacy error retained for source compatibility.
-    ///
-    /// Empty satellite host tokens are now valid because [`TerminalId`] and
-    /// the satellite registry accept them; [`parse`] no longer returns this.
-    EmptySatelliteHost,
     /// A pane index `M` (after the `.`) was non-numeric or out of range.
     BadPaneIndex(String),
     /// `#` carried no tag (the bare sigil).
@@ -95,7 +90,6 @@ impl std::fmt::Display for ParseError {
         match self {
             Self::Empty => write!(f, "empty selector"),
             Self::BadTerminalId(s) => write!(f, "invalid terminal id in '@{s}'"),
-            Self::EmptySatelliteHost => write!(f, "empty satellite host in terminal selector"),
             Self::BadPaneIndex(s) => write!(f, "invalid pane index '{s}'"),
             Self::EmptyTag => write!(f, "empty tag in '#' selector"),
             Self::LastUnsupported => write!(

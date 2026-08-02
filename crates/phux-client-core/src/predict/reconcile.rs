@@ -1,26 +1,21 @@
 //! Reconciliation — confirm, contradict, or keep predictions when
 //! authoritative state arrives.
 //!
-//! Two entry points are exported:
+//! The entry point is [`reconcile_terminal_output_per_cell`], the v1.1
+//! per-cell match game (phux-9gw.1.1). It walks the prediction queue
+//! from the front, peeks each prediction's target cell via a
+//! caller-supplied read closure, and partitions the queue into:
 //!
-//! - [`reconcile_terminal_output`] is the v0 wholesale-drain policy
-//!   retained for callers that cannot read individual cells (e.g.
-//!   `TERMINAL_SNAPSHOT` replays, where the entire viewport is being
-//!   stomped anyway). It empties the queue and resyncs the cursor.
-//! - [`reconcile_terminal_output_per_cell`] is the v1.1 per-cell match
-//!   game (this ticket, phux-9gw.1.1). It walks the prediction queue
-//!   from the front, peeks each prediction's target cell via a
-//!   caller-supplied read closure, and partitions the queue into:
+//! - **confirmed** — drop (the server already painted the cell
+//!   exactly as predicted, so the overlay can stop decorating it);
+//! - **pending** — keep (the cell is still blank, the server
+//!   hasn't echoed yet — keep the overlay alive);
+//! - **contradicted** — drop this *and* every subsequent prediction
+//!   (the server diverged from our guess, so the entire suffix is
+//!   suspect).
 //!
-//!     * **confirmed** — drop (the server already painted the cell
-//!       exactly as predicted, so the overlay can stop decorating it);
-//!     * **pending** — keep (the cell is still blank, the server
-//!       hasn't echoed yet — keep the overlay alive);
-//!     * **contradicted** — drop this *and* every subsequent prediction
-//!       (the server diverged from our guess, so the entire suffix is
-//!       suspect).
-//!
-//! The match game is what eliminates the visual flicker that v0 suffered:
+//! The match game is what eliminates the visual flicker that the retired
+//! v0 wholesale-drain policy suffered:
 //! every server frame previously dropped all predictions, briefly
 //! showing the underline disappear before the renderer caught up. With
 //! per-cell match, predictions that the server has already confirmed
@@ -55,24 +50,6 @@ pub struct ReconcileStats {
     pub contradicted: usize,
     /// Predictions kept because the server has not yet echoed the cell.
     pub pending: usize,
-}
-
-/// Drain every pending prediction and re-anchor the cursor estimate.
-///
-/// Retained for callers that do not read individual cells (snapshot
-/// replays, error paths). The per-cell match path lives in
-/// [`reconcile_terminal_output_per_cell`].
-///
-/// Returns the number of predictions that were dropped.
-pub fn reconcile_terminal_output(
-    state: &mut PredictionState,
-    cursor_row: u16,
-    cursor_col: u16,
-) -> usize {
-    let dropped = state.pending_len();
-    state.clear();
-    state.set_cursor(cursor_row, cursor_col);
-    dropped
 }
 
 /// Per-cell match reconcile. Walks the prediction queue against the
@@ -264,55 +241,6 @@ mod tests {
             text: None,
             unshifted_codepoint: None,
         }
-    }
-
-    // -- legacy drain path -----------------------------------------------
-
-    /// Confirm path: server output arrives with the cursor sitting where
-    /// the prediction said it would. We still drop the prediction (legacy
-    /// drain semantics) — the test asserts the queue empties and the
-    /// cursor estimate now matches authoritative state.
-    #[test]
-    fn drain_confirm_path_drops_prediction_and_updates_cursor() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.predict_key(&key_text("a"));
-        assert_eq!(s.pending_len(), 1);
-        let dropped = reconcile_terminal_output(&mut s, 0, 1);
-        assert_eq!(dropped, 1);
-        assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cursor(), (0, 1));
-    }
-
-    #[test]
-    fn drain_contradict_path_rolls_back_cleanly() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        for ch in ["a", "b", "c"] {
-            s.predict_key(&key_text(ch));
-        }
-        let dropped = reconcile_terminal_output(&mut s, 5, 10);
-        assert_eq!(dropped, 3);
-        assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cursor(), (5, 10));
-    }
-
-    #[test]
-    fn drain_slow_link_many_predictions_drain_at_once() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        for _ in 0..20 {
-            s.predict_key(&key_text("x"));
-        }
-        assert_eq!(s.pending_len(), 20);
-        let dropped = reconcile_terminal_output(&mut s, 0, 20);
-        assert_eq!(dropped, 20);
-        assert_eq!(s.pending_len(), 0);
-    }
-
-    #[test]
-    fn drain_empty_queue_is_a_noop_but_resyncs_cursor() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        let dropped = reconcile_terminal_output(&mut s, 7, 4);
-        assert_eq!(dropped, 0);
-        assert_eq!(s.cursor(), (7, 4));
     }
 
     // -- per-cell match game ---------------------------------------------

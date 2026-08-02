@@ -18,9 +18,9 @@
 //! [`Workspace::encode_cbor`] / [`Workspace::decode_cbor`]. Focus fields remain
 //! for compatibility but are non-authoritative; ADR-0049 requires recipients
 //! to preserve their client-local focus when adopting topology. The legacy
-//! v1 single-window envelope (`{version, root, focus}`,
-//! [`LayoutState::encode_cbor`]) is still decoded for back-compat and
-//! wrapped as a one-window workspace.
+//! v1 single-window envelope (`{version, root, focus}`) is no longer
+//! written but is still decoded for back-compat
+//! ([`LayoutState::decode_cbor`]) and wrapped as a one-window workspace.
 //!
 //! The wire crate exposes neither `serde::Serialize` for its types nor
 //! a public encoder API; for the CBOR envelope we therefore round-trip
@@ -48,11 +48,11 @@ pub use phux_protocol::wire::info::{LayoutNode, SplitDir};
 /// single-window envelope (`{version, root, focus}`); [`Workspace::decode_cbor`]
 /// still reads v1 blobs for back-compat, wrapping them as a one-window
 /// workspace.
-pub const LAYOUT_ENVELOPE_VERSION: u8 = 2;
+pub(crate) const LAYOUT_ENVELOPE_VERSION: u8 = 2;
 
-/// The legacy single-window envelope version that [`LayoutState::encode_cbor`]
-/// emits and [`LayoutState::decode_cbor`] expects. [`Workspace::decode_cbor`]
-/// accepts it for back-compat with layout blobs written by pre-window clients.
+/// The legacy single-window envelope version that [`LayoutState::decode_cbor`]
+/// expects. [`Workspace::decode_cbor`] accepts it for back-compat with layout
+/// blobs written by pre-window clients.
 const LAYOUT_ENVELOPE_VERSION_V1: u8 = 1;
 
 // -----------------------------------------------------------------------------
@@ -102,7 +102,7 @@ pub struct Rect {
 
 /// One step down the binary split tree: into the `left` or `right` child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeStep {
+pub(crate) enum NodeStep {
     /// Descend into the `left` child of a [`LayoutNode::Split`].
     Left,
     /// Descend into the `right` child.
@@ -118,7 +118,7 @@ pub enum NodeStep {
 /// ([`set_ratio_at`]). Decoupled from the wire-side `LayoutNode` so it
 /// stays a pure TUI-local geometry concern.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NodePath(pub Vec<NodeStep>);
+pub struct NodePath(pub(crate) Vec<NodeStep>);
 
 impl NodePath {
     /// The root path (empty).
@@ -128,12 +128,12 @@ impl NodePath {
     }
 
     /// Push a step onto the path (descend one level).
-    pub fn push(&mut self, step: NodeStep) {
+    pub(crate) fn push(&mut self, step: NodeStep) {
         self.0.push(step);
     }
 
     /// Pop the last step (ascend one level).
-    pub fn pop(&mut self) -> Option<NodeStep> {
+    pub(crate) fn pop(&mut self) -> Option<NodeStep> {
         self.0.pop()
     }
 }
@@ -180,7 +180,7 @@ pub enum LayoutDecodeError {
     Cbor(String),
 }
 
-/// Errors returned by [`LayoutState::encode_cbor`].
+/// Errors returned by [`Workspace::encode_cbor`].
 #[derive(Debug, Error)]
 pub enum LayoutEncodeError {
     /// Encoding a layout with no tree (`tree.is_none()`) or no focus
@@ -207,7 +207,8 @@ pub enum LayoutEncodeError {
 /// re-renders multi-pane. If absent, it falls back to single-pane
 /// (the [`Default`] shape — an empty tree, no focus). On `split_at` /
 /// `kill_pane` the TUI mutates the in-memory tree and pushes the new
-/// shape back to the server via [`Self::encode_cbor`] + `SET_METADATA`.
+/// shape back to the server via [`Workspace::encode_cbor`] +
+/// `SET_METADATA`.
 ///
 /// Focus is per-client (ADR-0019 decision 6). Compatibility envelopes still
 /// serialize it, but recipients ignore the sender's value during topology
@@ -239,28 +240,6 @@ impl LayoutState {
             tree: Some(LayoutNode::Leaf(pane)),
             focus: Some(focus),
         }
-    }
-
-    /// Encode the layout as the v1 CBOR envelope described in
-    /// ADR-0019 decision 1.
-    ///
-    /// # Errors
-    /// * [`LayoutEncodeError::Empty`] if `tree` or `focus` is `None`.
-    /// * [`LayoutEncodeError::Cbor`] if ciborium fails to encode (rare;
-    ///   in practice only on allocator OOM for the output buffer).
-    pub fn encode_cbor(&self) -> Result<Vec<u8>, LayoutEncodeError> {
-        let (Some(tree), Some(focus)) = (self.tree.as_ref(), self.focus.as_ref()) else {
-            return Err(LayoutEncodeError::Empty);
-        };
-        let envelope = CborEnvelope {
-            version: LAYOUT_ENVELOPE_VERSION_V1,
-            root: CborLayoutNode::from(tree),
-            focus: CborTerminalId::from(focus),
-        };
-        let mut buf = Vec::with_capacity(64);
-        ciborium::ser::into_writer(&envelope, &mut buf)
-            .map_err(|e| LayoutEncodeError::Cbor(e.to_string()))?;
-        Ok(buf)
     }
 
     /// Decode a v1 CBOR envelope into a [`LayoutState`].
@@ -393,18 +372,6 @@ impl Workspace {
         self.active = self.windows.len() - 1;
     }
 
-    /// Remove the active window, clamping `active` back into range.
-    /// Returns the removed window (its panes still need killing) or
-    /// `None` when the workspace is empty.
-    pub fn close_active(&mut self) -> Option<WindowState> {
-        if self.windows.is_empty() {
-            return None;
-        }
-        let removed = self.windows.remove(self.active);
-        self.clamp_active();
-        Some(removed)
-    }
-
     /// Drop any window whose pane tree has become empty (its last pane
     /// closed). The active window stays pointed at the same window if it
     /// survived, otherwise at the survivor that took its place. Returns
@@ -479,14 +446,6 @@ impl Workspace {
             .find(|n| !used.contains(n))
             .unwrap_or(1)
             .to_string()
-    }
-
-    const fn clamp_active(&mut self) {
-        if self.windows.is_empty() {
-            self.active = 0;
-        } else if self.active >= self.windows.len() {
-            self.active = self.windows.len() - 1;
-        }
     }
 
     /// Encode the workspace as the v2 CBOR envelope (docs/spec/L3.md §3.2).
@@ -1018,7 +977,7 @@ const fn perpendicular_axis(dir: Direction) -> SplitDir {
 // and unit-tested below.
 
 /// CBOR shadow types + conversions for layout persistence (L3 metadata).
-pub mod serialize;
+mod serialize;
 
 use serialize::{
     CborEnvelope, CborLayoutNode, CborTerminalId, CborWindow, CborWorkspaceEnvelope, VersionProbe,
@@ -1041,6 +1000,21 @@ mod tests {
 
     fn leaf(id: u32) -> LayoutNode {
         LayoutNode::Leaf(t(id))
+    }
+
+    /// Test-only v1 writer. Production stopped emitting the v1
+    /// single-window envelope (every write path is v2,
+    /// [`Workspace::encode_cbor`]), but the v1 decode path is retained
+    /// for back-compat, so tests synthesize v1 blobs here.
+    fn encode_cbor_v1(state: &LayoutState) -> Vec<u8> {
+        let envelope = CborEnvelope {
+            version: LAYOUT_ENVELOPE_VERSION_V1,
+            root: CborLayoutNode::from(state.tree.as_ref().expect("tree")),
+            focus: CborTerminalId::from(state.focus.as_ref().expect("focus")),
+        };
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&envelope, &mut buf).expect("cbor encode");
+        buf
     }
 
     fn ws_split(a: u32, b: u32, focus: u32) -> Workspace {
@@ -1197,7 +1171,7 @@ mod tests {
     #[test]
     fn cbor_round_trip_single_pane() {
         let state = LayoutState::single(t(7));
-        let bytes = state.encode_cbor().unwrap();
+        let bytes = encode_cbor_v1(&state);
         let decoded = LayoutState::decode_cbor(&bytes).unwrap();
         assert_eq!(decoded, state);
     }
@@ -1211,7 +1185,7 @@ mod tests {
             tree: Some(t2),
             focus: Some(t(2)),
         };
-        let bytes = state.encode_cbor().unwrap();
+        let bytes = encode_cbor_v1(&state);
         let decoded = LayoutState::decode_cbor(&bytes).unwrap();
         assert_eq!(decoded, state);
     }
@@ -1223,16 +1197,9 @@ mod tests {
             tree: Some(LayoutNode::Leaf(focus.clone())),
             focus: Some(focus),
         };
-        let bytes = state.encode_cbor().unwrap();
+        let bytes = encode_cbor_v1(&state);
         let decoded = LayoutState::decode_cbor(&bytes).unwrap();
         assert_eq!(decoded, state);
-    }
-
-    #[test]
-    fn cbor_rejects_empty_state() {
-        let state = LayoutState::default();
-        let err = state.encode_cbor().unwrap_err();
-        assert!(matches!(err, LayoutEncodeError::Empty));
     }
 
     #[test]
@@ -1328,15 +1295,6 @@ mod tests {
     }
 
     #[test]
-    fn close_active_clamps_active() {
-        let mut ws = ws3(); // active = 2 (last)
-        let removed = ws.close_active().unwrap();
-        assert_eq!(removed.name, "3");
-        assert_eq!(ws.windows.len(), 2);
-        assert_eq!(ws.active, 1); // clamped from 2 to last survivor
-    }
-
-    #[test]
     fn rename_active_updates_name() {
         let mut ws = ws3();
         ws.rename_active("build".to_owned());
@@ -1403,7 +1361,7 @@ mod tests {
             tree: Some(split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap()),
             focus: Some(t(2)),
         };
-        let bytes = v1.encode_cbor().unwrap();
+        let bytes = encode_cbor_v1(&v1);
         let ws = Workspace::decode_cbor(&bytes).unwrap();
         assert_eq!(ws.windows.len(), 1);
         assert_eq!(ws.active, 0);
@@ -1603,7 +1561,7 @@ mod tests {
             let Some(tree) = tree else { return Ok(()) };
             let Some(focus) = alive.last().cloned() else { return Ok(()) };
             let state = LayoutState { tree: Some(tree), focus: Some(focus) };
-            let bytes = state.encode_cbor().expect("encode");
+            let bytes = encode_cbor_v1(&state);
             let decoded = LayoutState::decode_cbor(&bytes).expect("decode");
             prop_assert_eq!(decoded, state);
         }

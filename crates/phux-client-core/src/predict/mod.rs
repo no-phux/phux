@@ -27,9 +27,7 @@
 //!   prediction queue against the freshly painted authoritative cells
 //!   and the new cursor position; drops confirmed predictions, drops
 //!   the suffix from any contradiction, and keeps predictions still
-//!   ahead of confirmed state. The older wholesale-drain
-//!   [`reconcile::reconcile_terminal_output`] is retained for
-//!   `TERMINAL_SNAPSHOT` replays where the entire viewport is stomped.
+//!   ahead of confirmed state.
 //!
 //! # Visual decoration: underline
 //!
@@ -134,7 +132,7 @@
 //! # Off by default
 //!
 //! Predictive echo is gated behind [`PredictiveConfig::enabled`], wired
-//! through `phux_client::attach::run_with_predict`. The default is `false`
+//! through `phux_client::attach::run_with_predict_dial`. The default is `false`
 //! until the feature has miles on it. The TOML `[experimental]
 //! predictive-echo = true` knob is parsed by `phux-config` and converted
 //! into `PredictiveConfig { enabled: true, .. }` by the attach command.
@@ -151,17 +149,11 @@
 //! **contradicted** (drop the prediction *and* every prediction behind
 //! it — the server diverged so the suffix is suspect). See the
 //! `reconcile` module for the per-`PredictionKind` truth table.
-//!
-//! The wholesale-drain `reconcile_terminal_output` is retained for
-//! `TERMINAL_SNAPSHOT` replays, where the entire viewport is stomped
-//! and per-cell match would be redundant.
 
 mod overlay;
 mod reconcile;
 mod state;
 
 pub use overlay::Overlay;
-pub use reconcile::{
-    ReconcileStats, reconcile_terminal_output, reconcile_terminal_output_per_cell,
-};
+pub use reconcile::{ReconcileStats, reconcile_terminal_output_per_cell};
 pub use state::{Prediction, PredictionKind, PredictionOutcome, PredictionState, PredictiveConfig};

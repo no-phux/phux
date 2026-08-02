@@ -72,8 +72,8 @@ pub mod ws;
 
 pub use connection::{CertTrust, Dial, QuicDial, WsDial};
 pub use driver::{
-    AttachEnd, AttachError, run, run_headless_rendered, run_recorded_dial, run_with_predict,
-    run_with_predict_dial, run_with_stdout, write_terminal_reset,
+    AttachEnd, AttachError, run_headless_rendered, run_recorded_dial, run_with_predict_dial,
+    run_with_stdout, write_terminal_reset,
 };
 
 // Multi-pane composition moved to `phux-client-core` with phux-0fv

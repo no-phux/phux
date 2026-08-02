@@ -828,40 +828,6 @@ impl AttachEnd {
     }
 }
 
-/// Public entry point: run an attach loop against `socket`, targeting
-/// `target`. Blocks until the server sends `DETACHED` or the user
-/// detaches.
-///
-/// The function is `async` because it relies on tokio; embedders must
-/// drive it on a tokio runtime. Per ADR-0003 the canonical runtime is
-/// `tokio::runtime::Builder::new_current_thread` — the returned future
-/// is intentionally `!Send` because libghostty's `Terminal` is `!Send`
-/// and lives on the attach task's stack across `await` points. The
-/// single-threaded runtime never moves the future between threads.
-///
-/// # Ordering (`phux-roz`)
-///
-/// The expensive pre-handshake work — UDS connect, `HELLO`, `ATTACH`,
-/// and the `ATTACHED` wait — runs on the *cooked* outer terminal.
-/// Failures there propagate as `Err(_)` without ever entering raw mode
-/// or the alt screen, so a missing server / bad session name / Ctrl-C
-/// during connect prints a one-line error on the normal screen and
-/// exits cleanly. Only after the server's `ATTACHED` frame arrives do
-/// we flip the terminal into raw + alt screen via [`RawModeGuard`].
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-pub async fn run(socket: &Path, target: AttachTarget) -> Result<AttachEnd, AttachError> {
-    run_buffered(
-        &Dial::uds(socket),
-        target,
-        PredictiveConfig::disabled(),
-        None,
-    )
-    .await
-}
-
 /// Production attach: wrap stdout in the off-loop [`StdoutSink`](super::stdout_writer)
 /// so a slow terminal never blocks the select loop (phux-fysb), then run the
 /// session. Tests use the synchronous [`run_with_stdout`] seam directly.
@@ -913,33 +879,33 @@ async fn run_buffered(
     }
 }
 
-/// Like [`run`], with predictive local echo configurable per call.
-///
-/// `predict.enabled = false` is identical to [`run`]; `predict.enabled =
-/// true` engages the Mosh-class prediction layer documented in
-/// [`crate::predict`] (`phux-9gw.1`).
-///
-/// Kept as a separate entry point (rather than a new parameter on
-/// [`run`]) so existing callers — and the integration tests in
-/// `phux-server` that exercise the attach loop — continue to compile
-/// without churn.
-#[allow(
-    clippy::future_not_send,
-    reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
-)]
-pub async fn run_with_predict(
-    socket: &Path,
-    target: AttachTarget,
-    predict: PredictiveConfig,
-) -> Result<AttachEnd, AttachError> {
-    run_buffered(&Dial::uds(socket), target, predict, None).await
-}
-
 /// Dial-aware production attach (UDS *or* QUIC) with predictive echo config.
 ///
-/// The transport-agnostic sibling of [`run_with_predict`]: the CLI builds a
-/// [`Dial`] from its flags (a UDS path or a remote `--quic` target) and the
-/// same off-loop-stdout production path runs regardless of byte plumbing.
+/// The CLI builds a [`Dial`] from its flags (a UDS path or a remote
+/// `--quic` target) and the same off-loop-stdout production path runs
+/// regardless of byte plumbing. Blocks until the server sends `DETACHED`
+/// or the user detaches.
+///
+/// The function is `async` because it relies on tokio; embedders must
+/// drive it on a tokio runtime. Per ADR-0003 the canonical runtime is
+/// `tokio::runtime::Builder::new_current_thread` — the returned future
+/// is intentionally `!Send` because libghostty's `Terminal` is `!Send`
+/// and lives on the attach task's stack across `await` points. The
+/// single-threaded runtime never moves the future between threads.
+///
+/// `predict.enabled = false` bypasses prediction entirely;
+/// `predict.enabled = true` engages the Mosh-class prediction layer
+/// documented in [`crate::predict`] (`phux-9gw.1`).
+///
+/// # Ordering (`phux-roz`)
+///
+/// The expensive pre-handshake work — connect, `HELLO`, `ATTACH`,
+/// and the `ATTACHED` wait — runs on the *cooked* outer terminal.
+/// Failures there propagate as `Err(_)` without ever entering raw mode
+/// or the alt screen, so a missing server / bad session name / Ctrl-C
+/// during connect prints a one-line error on the normal screen and
+/// exits cleanly. Only after the server's `ATTACHED` frame arrives do
+/// we flip the terminal into raw + alt screen via [`RawModeGuard`].
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -972,7 +938,7 @@ pub async fn run_recorded_dial(
     run_buffered(dial, target, predict, Some(rec)).await
 }
 
-/// Same as [`run`], but writes the entire composited output stream to a
+/// UDS attach that writes the entire composited output stream to a
 /// caller-supplied [`RenderSink`](super::RenderSink) (any `Write`).
 ///
 /// The stream covers alt-screen enter, cursor hide, every pane's per-row
@@ -982,8 +948,9 @@ pub async fn run_recorded_dial(
 /// driver threads this one sink through `main_loop` into
 /// `handle_server_frame`, `paint_full_frame`, and `dispatch_input_events`.
 /// So the whole attach render path is injectable: production passes real
-/// stdout via [`run`]; tests and the headless agent surface pass a
-/// `Vec<u8>` (or any other `Write`) and read back the captured VT.
+/// stdout via [`run_with_predict_dial`]; tests and the headless agent
+/// surface pass a `Vec<u8>` (or any other `Write`) and read back the
+/// captured VT.
 ///
 /// Exposed so tests can capture the byte stream and assert on it — in
 /// particular, the regression guard for `phux-roz` asserts that the
@@ -1003,8 +970,8 @@ pub async fn run_with_stdout<W: super::RenderSink>(
 }
 
 /// As [`run_with_stdout`], but with an explicit predictive-echo config.
-/// Production callers should reach for [`run_with_predict`]; this is the
-/// test-injectable variant.
+/// Production callers should reach for [`run_with_predict_dial`]; this is
+/// the test-injectable variant.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"

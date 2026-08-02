@@ -573,7 +573,7 @@ pub(crate) fn run_attach_rec(
 
     // Best-effort: if no socket exists, fork-exec ourselves into a
     // detached server. Failures here are non-fatal — the subsequent
-    // `attach::run` call will surface the connect error.
+    // attach driver call will surface the connect error.
     //
     // `phux-roz` (4): the spawned server is pre-seeded with the same
     // session name the user is trying to attach to, so the subsequent

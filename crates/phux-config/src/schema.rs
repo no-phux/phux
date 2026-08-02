@@ -527,7 +527,7 @@ pub struct ExperimentalCfg {
     /// Engage Mosh-class predictive local echo in `phux attach`.
     ///
     /// When `true`, the attach loop dispatches to
-    /// `phux_client::attach::run_with_predict` with a
+    /// `phux_client::attach::run_with_predict_dial` with a
     /// `PredictiveConfig { enabled: true, .. }`. See `phux-9gw.1` for
     /// the algorithm and `crates/phux-client/src/predict/` for the
     /// implementation.
