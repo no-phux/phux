@@ -9,6 +9,7 @@ use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, Strea
 use super::{
     EffectBuffer, InputBlockReason, InputEligibility, KernelAction, KernelDamage, KernelDamageKind,
     KernelEffect, KernelError, KernelInput, KernelJob, KernelSend, KernelStatus, SessionKernel,
+    TombstoneRecord,
 };
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
@@ -712,6 +713,14 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
     assert_eq!(
         kernel.published(&terminal_id).unwrap().key().bootstrap_id,
         replacement
+    );
+    assert_eq!(
+        kernel.tombstone(&terminal_id, stream_id, bootstrap_id),
+        Some(TombstoneRecord {
+            reason: TombstoneReason::OutboundGap,
+            last_valid_seq: 42,
+        }),
+        "replacement publication must not overwrite the authoritative tombstone"
     );
 }
 

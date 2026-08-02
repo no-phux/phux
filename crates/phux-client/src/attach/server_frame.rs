@@ -7,15 +7,15 @@
 
 use std::collections::{HashMap, HashSet};
 
+use phux_client_core::engine::CanonicalGeometry;
+use phux_client_core::session::{
+    EffectBuffer as KernelEffectBuffer, KernelEffect, KernelInput, KernelSend,
+};
 use phux_protocol::ids::{ClientId, SessionId, TerminalId};
 use phux_protocol::wire::frame::{
     AgentEvent, CONFIG_RELOAD_KEY, ErrorCode, FrameKind, Scope, SpawnError, SpawnResult,
 };
 use phux_protocol::wire::info::SessionInfo;
-use phux_client_core::engine::CanonicalGeometry;
-use phux_client_core::session::{
-    EffectBuffer as KernelEffectBuffer, KernelEffect, KernelInput, KernelSend,
-};
 use phux_protocol::{BootstrapId, StreamId};
 
 use super::actions::{self, PendingSplit, PendingWindow, apply_spawned_ok, apply_terminal_closed};
@@ -155,8 +155,7 @@ pub(super) struct FrameOutcome {
     /// Exact cumulative StateSync acknowledgement emitted by the session kernel.
     pub(super) ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
     /// Pull the next opaque native history page after READY or a prior page.
-    pub(super) history_request:
-        Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes)>,
+    pub(super) history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes)>,
     /// phux-4li.20: `Some((sessions, focused))` ⇒ ATTACHED just landed
     /// and carried the server's full session graph. The driver caches
     /// it so the `<leader> a` session picker can list the other
@@ -320,9 +319,9 @@ fn route_engine_frame(
                 terminals: &terminals,
             })
         }
-        FrameKind::AttachReady { attach_id } => {
-            Some(KernelInput::AttachReady { attach_id: *attach_id })
-        }
+        FrameKind::AttachReady { attach_id } => Some(KernelInput::AttachReady {
+            attach_id: *attach_id,
+        }),
         FrameKind::BootstrapBegin {
             terminal_id,
             stream_id,
@@ -425,12 +424,7 @@ fn route_engine_frame(
                 bootstrap_id,
                 seq,
             }) => {
-                route.ack = Some((
-                    terminal_id.clone(),
-                    *stream_id,
-                    *bootstrap_id,
-                    *seq,
-                ));
+                route.ack = Some((terminal_id.clone(), *stream_id, *bootstrap_id, *seq));
             }
             KernelEffect::Damage(damage) => {
                 route.damaged.insert(damage.terminal_id.clone());
@@ -656,9 +650,8 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             Ok(FrameOutcome {
                 layout_replaced: kernel_route.damaged(&terminal_id),
                 chrome_dirty: title_changed,
-                history_request: history_cursor.map(|cursor| {
-                    (terminal_id, stream_id, bootstrap_id, cursor)
-                }),
+                history_request: history_cursor
+                    .map(|cursor| (terminal_id, stream_id, bootstrap_id, cursor)),
                 ..FrameOutcome::default()
             })
         }
@@ -669,9 +662,8 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             next_cursor,
             ..
         } => Ok(FrameOutcome {
-            history_request: next_cursor.map(|cursor| {
-                (terminal_id, stream_id, bootstrap_id, cursor)
-            }),
+            history_request: next_cursor
+                .map(|cursor| (terminal_id, stream_id, bootstrap_id, cursor)),
             ..FrameOutcome::default()
         }),
         FrameKind::AttachReady { .. } => Ok(FrameOutcome {
@@ -694,32 +686,12 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             frame_span.record("terminal_id", tracing::field::debug(&terminal_id));
             frame_span.record("seq", seq);
             frame_span.record("bytes", bytes.len());
-            if !kernel_route.damaged(&terminal_id) {
-                return Ok(FrameOutcome {
-                    ack,
-                    ..FrameOutcome::default()
-                });
-            }
-            // phux-4li.4: ingest output into the matching pane's
-            // libghostty Terminal even when it's not focused, so the
-            // mirror stays warm for when the user focuses it. Render +
-            // predict-reconcile only fire for the focused pane.
-            let is_focused = Some(&terminal_id) == focused_pane.as_ref();
-            // Drop bytes into the slot's libghostty Terminal. Scoped so
-            // the mut borrow on `panes` releases before the focused-pane
-            // render path re-borrows it via `paint_focused_pane`. Clone
-            // the id into the entry so `terminal_id` survives for the
-            // non-focused repaint below.
-            //
-            // phux-flywheel: this VT-apply (feeding bytes into the
-            // libghostty mirror) is timed by its OWN child span, distinct
-            // from the paint trigger below. The parent
-            // `handle_server_frame` close-duration is apply+paint fused;
-            // splitting them lets a trace attribute client lag to the
-            // libghostty parse (`vt_apply`) versus the render
-            // (`paint_full_frame`, opened inside `paint_focused_pane`)
-            // separately. Debug-level + a lazy `bytes` field ⇒ free at the
-            // default `phux=info` filter.
+            // The kernel already applied these bytes to the published
+            // libghostty terminal, including for an off-screen pane. Refresh
+            // pane metadata from that authoritative terminal before deciding
+            // whether the aggregate attach barrier permits paint damage.
+            // A pre-barrier OSC title must update chrome caches even though
+            // its visible repaint remains suppressed until ATTACH_READY.
             let terminal = super::driver::published_terminal(engine_kernel, &terminal_id)
                 .ok_or_else(|| {
                     AttachError::Protocol(format!(
@@ -744,8 +716,13 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 }
             };
             let title_changed = slot.title_changed(terminal);
-            let sync_output_active =
-                slot.update_sync_output(terminal, tokio::time::Instant::now());
+            let sync_output_active = slot.update_sync_output(terminal, tokio::time::Instant::now());
+            if !kernel_route.damaged(&terminal_id) {
+                return Ok(FrameOutcome {
+                    ack,
+                    ..FrameOutcome::default()
+                });
+            }
             // The libghostty mirror is now warm even for panes in a
             // non-active window (off-screen invariant). Rendering only
             // applies to the active window's composition; if there's no
@@ -1727,7 +1704,11 @@ mod tests {
                 &mut effects,
             )
             .expect("attach");
-        assert!(route_engine_frame(&begin_frame(&terminal_id), &mut kernel, &mut effects).damaged.is_empty());
+        assert!(
+            route_engine_frame(&begin_frame(&terminal_id), &mut kernel, &mut effects)
+                .damaged
+                .is_empty()
+        );
         assert!(
             route_engine_frame(
                 &FrameKind::BootstrapChunk {
@@ -1809,6 +1790,150 @@ mod tests {
         );
         let ready = route_engine_frame(&ready_frame(&terminal_id), &mut kernel, &mut effects);
         assert!(ready.damaged(&terminal_id));
+    }
+    fn dispatch_engine_frame(
+        kernel: &mut phux_client_core::session::SessionKernel<
+            phux_client_core::engine::ghostty::GhosttyAdapter,
+        >,
+        effects: &mut phux_client_core::session::EffectBuffer,
+        panes: &mut HashMap<TerminalId, PaneSlot>,
+        frame: FrameKind,
+    ) -> FrameOutcome {
+        let mut out = Vec::new();
+        let mut workspace = Workspace::default();
+        let mut focused_pane = None;
+        let mut zoomed = None;
+        let mut session_name = String::new();
+        let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
+        let overlay = Overlay;
+        let mut pending_splits = HashMap::new();
+        let mut pending_windows = HashMap::new();
+        let mut expected_closes = HashSet::new();
+        let mut agent_meta = AgentMetaIndex::default();
+        handle_server_frame_with_kernel(
+            kernel,
+            effects,
+            &mut out,
+            frame,
+            panes,
+            &mut workspace,
+            &mut focused_pane,
+            &mut zoomed,
+            &mut session_name,
+            None,
+            None,
+            (80, 24),
+            &mut predict,
+            &overlay,
+            None,
+            &mut pending_splits,
+            &mut pending_windows,
+            &mut expected_closes,
+            &mut agent_meta,
+            false,
+            true,
+        )
+        .expect("engine frame")
+    }
+
+    #[test]
+    fn pre_barrier_output_refreshes_title_cache_before_attach_ready() {
+        let ready_terminal = tid(92);
+        let pending_terminal = tid(93);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        let mut panes = HashMap::new();
+        kernel
+            .update(
+                phux_client_core::session::KernelInput::AttachStarted {
+                    attach_id: 8,
+                    terminals: &[ready_terminal.clone(), pending_terminal.clone()],
+                },
+                &mut effects,
+            )
+            .expect("attach");
+
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            begin_frame(&ready_terminal),
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapChunk {
+                terminal_id: ready_terminal.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"\x1b]2;shell\x07"),
+            },
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            ready_frame(&ready_terminal),
+        );
+        assert_eq!(panes[&ready_terminal].last_title, "shell");
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            begin_frame(&pending_terminal),
+        );
+
+        let pre_barrier = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::TerminalOutput {
+                terminal_id: ready_terminal.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                seq: 1,
+                bytes: bytes::Bytes::from_static(b"\x1b]2;vim\x07"),
+            },
+        );
+        assert!(!pre_barrier.chrome_dirty);
+        assert_eq!(
+            panes[&ready_terminal].last_title, "vim",
+            "damage suppression must not suppress engine-derived metadata refresh"
+        );
+
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapChunk {
+                terminal_id: pending_terminal.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"pending"),
+            },
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            ready_frame(&pending_terminal),
+        );
+        let released = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::AttachReady { attach_id: 8 },
+        );
+        assert!(released.layout_replaced);
+        assert_eq!(panes[&ready_terminal].last_title, "vim");
     }
 
     #[allow(clippy::too_many_arguments)]

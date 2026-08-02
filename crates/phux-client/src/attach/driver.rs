@@ -31,17 +31,17 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use libghostty_vt::terminal::Mode;
 use libghostty_vt::Terminal as GhosttyTerminal;
 #[cfg(test)]
 use libghostty_vt::TerminalOptions;
+use libghostty_vt::terminal::Mode;
+use phux_client_core::engine::ghostty::GhosttyAdapter;
+use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKernel};
+#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::{
     BootstrapLimits, ClientCapabilities, Layer, LayerSet, OutputMode, detect_color_support,
 };
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
-use phux_client_core::engine::ghostty::GhosttyAdapter;
-use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKernel};
 use phux_protocol::ids::{ClientId, TerminalId};
 use phux_protocol::wire::frame::{
     AttachTarget, CONFIG_RELOAD_KEY, Command, FrameKind, Scope, TerminalLifecycle, ViewportInfo,
@@ -250,10 +250,7 @@ impl PaneSlot {
     }
 
     /// Update the cached title after a terminal mutation.
-    pub(super) fn title_changed(
-        &mut self,
-        terminal: &GhosttyTerminal<'_, '_>,
-    ) -> bool {
+    pub(super) fn title_changed(&mut self, terminal: &GhosttyTerminal<'_, '_>) -> bool {
         let current = terminal.title().unwrap_or_default();
         if self.last_title == current {
             return false;
@@ -1001,6 +998,68 @@ pub async fn run_with_stdout_predict<W: super::RenderSink>(
     // Synchronous-sink test seam: no off-loop writer, no resync flag.
     attach_session(&Dial::uds(socket), target, out, predict, None, None, false).await
 }
+type HeadlessHistoryGeneration = (
+    TerminalId,
+    phux_protocol::StreamId,
+    phux_protocol::BootstrapId,
+);
+
+#[derive(Debug, Default)]
+struct HeadlessCompletion {
+    attach_ready: bool,
+    pending_history: HashSet<HeadlessHistoryGeneration>,
+    pending_layout: Option<u32>,
+}
+
+impl HeadlessCompletion {
+    fn new(pending_layout: Option<u32>) -> Self {
+        Self {
+            pending_layout,
+            ..Self::default()
+        }
+    }
+
+    fn observe_frame(&mut self, frame: &FrameKind, attach_id: u32) {
+        match frame {
+            FrameKind::AttachReady {
+                attach_id: ready_id,
+            } if *ready_id == attach_id => self.attach_ready = true,
+            FrameKind::HistoryPage {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                next_cursor: None,
+                ..
+            } => {
+                self.pending_history
+                    .remove(&(terminal_id.clone(), *stream_id, *bootstrap_id));
+            }
+            FrameKind::MetadataValue { request_id, .. }
+                if self.pending_layout == Some(*request_id) =>
+            {
+                self.pending_layout = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn note_history_request(
+        &mut self,
+        terminal_id: &TerminalId,
+        stream_id: phux_protocol::StreamId,
+        bootstrap_id: phux_protocol::BootstrapId,
+    ) {
+        self.pending_history
+            .insert((terminal_id.clone(), stream_id, bootstrap_id));
+    }
+
+    fn is_complete(&self, agent_metadata_complete: bool) -> bool {
+        self.attach_ready
+            && self.pending_history.is_empty()
+            && self.pending_layout.is_none()
+            && agent_metadata_complete
+    }
+}
 
 /// Headless one-shot: attach, ingest the session's snapshot + layout, and
 /// return the client's composited multi-pane view as dense structured cells
@@ -1016,9 +1075,10 @@ pub async fn run_with_stdout_predict<W: super::RenderSink>(
 /// assembles the frame. There is no TTY, so the viewport `(cols, rows)` is
 /// caller-supplied.
 ///
-/// Completion policy (R3): after the ATTACHED replay and layout `GET`, frames
-/// are drained until the matching `ATTACH_READY` proves every participant
-/// published or closed. The overall deadline is an error, never blank success.
+/// Completion policy (R3): after the ATTACHED replay and one-shot metadata
+/// requests, frames are drained until the matching `ATTACH_READY`, every
+/// requested history cursor chain, and every required metadata reply complete.
+/// The overall deadline is an error, never partial or blank success.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -1044,10 +1104,8 @@ pub async fn run_headless_rendered(
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("headless attach lacks negotiated bootstrap".to_owned())
     })?;
-    let mut engine_kernel = SessionKernel::new(
-        GhosttyAdapter::new(negotiated.limits),
-        negotiated.profile,
-    );
+    let mut engine_kernel =
+        SessionKernel::new(GhosttyAdapter::new(negotiated.limits), negotiated.profile);
     let mut kernel_effects = KernelEffectBuffer::new();
     let attach_id = send_attach(&mut conn, target).await?;
     let attached = wait_for_attached(&mut conn, attach_id).await?;
@@ -1161,13 +1219,14 @@ pub async fn run_headless_rendered(
         .await?;
     }
 
-    // A rendered snapshot is valid only after the server's aggregate barrier.
-    // Propagate both receive/dispatch failures and deadline expiry.
+    // A rendered snapshot is valid only after the server's aggregate barrier
+    // and all work it unlocked has drained. ATTACH_READY can be queued before
+    // the requested post-READY history pages or one-shot metadata replies.
+    let mut completion = HeadlessCompletion::new(layout_get_request_id);
     tokio::time::timeout(ATTACH_READY_DEADLINE, async {
         loop {
             let frame = conn.recv().await?;
-            let matching_attach_ready =
-                matches!(&frame, FrameKind::AttachReady { attach_id: ready } if *ready == attach_id);
+            completion.observe_frame(&frame, attach_id);
             let outcome = handle_server_frame(
                 &mut engine_kernel,
                 &mut kernel_effects,
@@ -1194,6 +1253,7 @@ pub async fn run_headless_rendered(
             if let Some((terminal_id, stream_id, bootstrap_id, cursor)) =
                 outcome.history_request
             {
+                completion.note_history_request(&terminal_id, stream_id, bootstrap_id);
                 conn.send(&FrameKind::HistoryRequest {
                     terminal_id,
                     stream_id,
@@ -1203,7 +1263,7 @@ pub async fn run_headless_rendered(
                 })
                 .await?;
             }
-            if matching_attach_ready {
+            if completion.is_complete(agent_meta.pending.is_empty()) {
                 break;
             }
         }
@@ -1212,7 +1272,7 @@ pub async fn run_headless_rendered(
     .await
     .map_err(|_| {
         AttachError::Protocol(format!(
-            "headless attach {attach_id} timed out before ATTACH_READY"
+            "headless attach {attach_id} timed out before ATTACH_READY, history, and metadata completed"
         ))
     })??;
 
@@ -1526,8 +1586,18 @@ fn write_terminal_clear<W: Write>(out: &mut W) -> io::Result<()> {
 /// `String`), which a `const fn` may not drop at compile time.
 fn should_emit_frame_ack(
     wants_state_sync: bool,
-    ack: Option<(TerminalId, phux_protocol::StreamId, phux_protocol::BootstrapId, u64)>,
-) -> Option<(TerminalId, phux_protocol::StreamId, phux_protocol::BootstrapId, u64)> {
+    ack: Option<(
+        TerminalId,
+        phux_protocol::StreamId,
+        phux_protocol::BootstrapId,
+        u64,
+    )>,
+) -> Option<(
+    TerminalId,
+    phux_protocol::StreamId,
+    phux_protocol::BootstrapId,
+    u64,
+)> {
     wants_state_sync.then_some(ack).flatten()
 }
 /// Build the reference TUI's per-connection HELLO profile.
@@ -1545,8 +1615,9 @@ fn attach_client_caps(
     // phux-4li.5: declare L3 (`Layer::L3`) so the server forwards
     // `MetadataChanged` events for the `phux.tui.layout/v1` key.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    let bootstrap =
-        phux_client_core::engine::ghostty::native_bootstrap_capabilities(BootstrapLimits::default());
+    let bootstrap = phux_client_core::engine::ghostty::native_bootstrap_capabilities(
+        BootstrapLimits::default(),
+    );
     #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
     let bootstrap = BootstrapCapabilities::new().with_limits(BootstrapLimits::default());
     let mut client_caps = ClientCapabilities::new()
@@ -1712,10 +1783,8 @@ async fn main_loop<W: super::RenderSink>(
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("attach loop started before bootstrap negotiation".to_owned())
     })?;
-    let mut engine_kernel = SessionKernel::new(
-        GhosttyAdapter::new(negotiated.limits),
-        negotiated.profile,
-    );
+    let mut engine_kernel =
+        SessionKernel::new(GhosttyAdapter::new(negotiated.limits), negotiated.profile);
     let mut kernel_effects = KernelEffectBuffer::new();
     // `Workspace` mirror (initialized as a single window holding one
     // pane when `ATTACHED` lands; see `handle_server_frame`) is the
@@ -6176,6 +6245,59 @@ mod tests {
         ));
         assert_eq!(should_emit_frame_ack(true, ack.clone()), ack);
         assert_eq!(should_emit_frame_ack(true, None), None);
+    }
+    #[test]
+    fn headless_completion_drains_history_and_metadata_after_attach_ready() {
+        let terminal_id = TerminalId::local(7);
+        let stream_id = phux_protocol::StreamId::new(1).expect("stream");
+        let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
+        let mut completion = HeadlessCompletion::new(Some(1));
+        completion.note_history_request(&terminal_id, stream_id, bootstrap_id);
+
+        completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
+        assert!(
+            !completion.is_complete(false),
+            "ATTACH_READY may be queued before history and metadata replies"
+        );
+        completion.observe_frame(
+            &FrameKind::MetadataValue {
+                request_id: 1,
+                value: None,
+            },
+            7,
+        );
+        assert!(
+            !completion.is_complete(true),
+            "layout and agent replies do not complete a pending history chain"
+        );
+        completion.observe_frame(
+            &FrameKind::HistoryPage {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                cursor: bytes::Bytes::from_static(b"newest"),
+                next_cursor: Some(bytes::Bytes::from_static(b"older")),
+                payload: bytes::Bytes::new(),
+            },
+            7,
+        );
+        completion.note_history_request(&terminal_id, stream_id, bootstrap_id);
+        assert!(
+            !completion.is_complete(true),
+            "an intermediate history page keeps its generation pending"
+        );
+        completion.observe_frame(
+            &FrameKind::HistoryPage {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor: bytes::Bytes::from_static(b"older"),
+                next_cursor: None,
+                payload: bytes::Bytes::new(),
+            },
+            7,
+        );
+        assert!(completion.is_complete(true));
     }
 
     /// ADR-0060 guard: the `rec: None` arm of `run_buffered` must behave

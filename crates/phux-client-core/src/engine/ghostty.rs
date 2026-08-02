@@ -9,8 +9,7 @@ use std::{marker::PhantomData, rc::Rc};
 use libghostty_vt::{
     Terminal as GhosttyTerminal, TerminalOptions,
     snapshot::incremental::{
-        AfterReadyStep, DecodeProgress, DecodeStep, Decoder, DecoderOptions,
-        Error as SnapshotError,
+        AfterReadyStep, DecodeProgress, DecodeStep, Decoder, DecoderOptions, Error as SnapshotError,
     },
     terminal::ScrollViewport,
 };
@@ -157,10 +156,7 @@ impl GhosttyReplica {
     }
 
     /// Apply a client-local viewport scroll without exposing mutable terminal ownership.
-    pub fn scroll_viewport(
-        &mut self,
-        scroll: ScrollViewport,
-    ) -> Result<(), GhosttyEngineError> {
+    pub fn scroll_viewport(&mut self, scroll: ScrollViewport) -> Result<(), GhosttyEngineError> {
         match &mut self.state {
             ReplicaState::Synthesized { terminal, .. } => terminal.scroll_viewport(scroll),
             ReplicaState::Native(native) => match &mut native.decoder {

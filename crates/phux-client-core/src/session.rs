@@ -696,17 +696,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Some(&self.terminals.get(terminal_id)?.published.as_ref()?.engine)
     }
 
-
     /// Mutably borrow a published engine for frontend-local controlled operations.
     ///
     /// Wire bootstrap, history, and live bytes must still enter through
     /// [`Self::update`]. This is only for adapter-owned viewport controls that
     /// do not alter protocol sequencing.
     #[must_use]
-    pub fn published_engine_mut(
-        &mut self,
-        terminal_id: &TerminalId,
-    ) -> Option<&mut E::Replica> {
+    pub fn published_engine_mut(&mut self, terminal_id: &TerminalId) -> Option<&mut E::Replica> {
         Some(
             &mut self
                 .terminals
@@ -760,10 +756,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         let Some(replica) = state.published.as_ref() else {
             return InputEligibility::Ineligible(InputBlockReason::AwaitingReplica);
         };
-        if state
-            .retired
-            .contains_key(&generation_of(&replica.key))
-        {
+        if state.retired.contains_key(&generation_of(&replica.key)) {
             return InputEligibility::Ineligible(InputBlockReason::FrozenReplica);
         }
         if self.attach_blocks(terminal_id) {
@@ -1261,13 +1254,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
             engine: staging.engine,
         };
         if let Some(old) = state.published.replace(replacement) {
-            state.retired.insert(
-                generation_of(&old.key),
-                TombstoneRecord {
+            state
+                .retired
+                .entry(generation_of(&old.key))
+                .or_insert(TombstoneRecord {
                     reason: TombstoneReason::ExplicitReattach,
                     last_valid_seq: old.last_seq,
-                },
-            );
+                });
         }
         self.mark_attach_resolved(terminal_id);
         let damage_allowed = !self.attach_blocks(terminal_id);
