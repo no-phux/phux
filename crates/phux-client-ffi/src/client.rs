@@ -181,6 +181,16 @@ impl Client {
         }
     }
 
+    pub fn ensure_participant(&self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+        if self.session.active_attach_contains(terminal_id) {
+            Ok(())
+        } else {
+            Err(BridgeError::protocol(
+                "terminal state frame targets a terminal outside the active ATTACH",
+            ))
+        }
+    }
+
     pub fn terminal_key(&self, id: &TerminalId) -> Result<ReplicaKey, BridgeError> {
         self.ensure_attached()?;
         self.session
@@ -324,35 +334,41 @@ impl Client {
     }
 
     pub fn process_effects(&mut self) -> Result<(), BridgeError> {
-        let effects: Vec<_> = self.effects.as_slice().to_vec();
-        for effect in effects {
-            match effect {
-                KernelEffect::Send(send) => self.process_send(send)?,
-                KernelEffect::Damage(damage) => {
-                    let mut out = OwnedEffect::simple(1, 0, damage.terminal_id);
-                    match damage.kind {
-                        KernelDamageKind::Full => out.detail = 1,
-                        KernelDamageKind::Rows { first, last } => {
-                            out.detail = 2;
-                            out.first_row = first;
-                            out.last_row = last;
+        let mut effects = self.effects.take();
+        let result: Result<(), BridgeError> = (|| {
+            for effect in effects.drain(..) {
+                match effect {
+                    KernelEffect::Send(send) => self.process_send(send)?,
+                    KernelEffect::Damage(damage) => {
+                        let mut out = OwnedEffect::simple(1, 0, damage.terminal_id);
+                        match damage.kind {
+                            KernelDamageKind::Full => out.detail = 1,
+                            KernelDamageKind::Rows { first, last } => {
+                                out.detail = 2;
+                                out.first_row = first;
+                                out.last_row = last;
+                            }
+                            KernelDamageKind::Removed => out.detail = 3,
                         }
-                        KernelDamageKind::Removed => out.detail = 3,
+                        self.owned_effects.push(out);
                     }
-                    self.owned_effects.push(out);
-                }
-                KernelEffect::Status(status) => self.process_status(status),
-                KernelEffect::Job(job) => {
-                    let detail = match job.job {
-                        phux_client_core::engine::EngineJob::Wakeup => 1,
-                    };
-                    let mut out = OwnedEffect::simple(3, detail, job.key.terminal_id);
-                    out.stream_id = u64::from(job.key.stream_id.get());
-                    out.bootstrap_id = u64::from(job.key.bootstrap_id.get());
-                    self.owned_effects.push(out);
+                    KernelEffect::Status(status) => self.process_status(status),
+                    KernelEffect::Job(job) => {
+                        let detail = match job.job {
+                            phux_client_core::engine::EngineJob::Wakeup => 1,
+                        };
+                        let mut out = OwnedEffect::simple(3, detail, job.key.terminal_id);
+                        out.stream_id = u64::from(job.key.stream_id.get());
+                        out.bootstrap_id = u64::from(job.key.bootstrap_id.get());
+                        self.owned_effects.push(out);
+                    }
                 }
             }
-        }
+            Ok(())
+        })();
+        effects.clear();
+        self.effects.restore_allocation(effects);
+        result?;
         self.rebuild_effect_views();
         Ok(())
     }
@@ -379,7 +395,7 @@ impl Client {
                         ));
                     }
                 };
-                self.queue_frame(frame);
+                self.queue_frame(frame)?;
             }
             KernelSend::PtyWrite { terminal_id, bytes } => {
                 if !self.terminal_reply {
@@ -390,7 +406,7 @@ impl Client {
                 self.queue_frame(FrameKind::InputTerminalReply {
                     terminal_id,
                     bytes: bytes.into(),
-                });
+                })?;
             }
             KernelSend::FrameAck {
                 terminal_id,
@@ -403,7 +419,7 @@ impl Client {
                     stream_id,
                     bootstrap_id,
                     seq,
-                });
+                })?;
             }
             KernelSend::HistoryRequest {
                 key,
@@ -418,7 +434,7 @@ impl Client {
                     cursor: cursor.into(),
                     max_bytes,
                     max_rows,
-                });
+                })?;
             }
         }
         Ok(())
@@ -485,10 +501,20 @@ impl Client {
         }
     }
 
-    pub fn queue_frame(&mut self, kind: FrameKind) {
+    pub fn queue_frame(&mut self, kind: FrameKind) -> Result<(), BridgeError> {
         let mut encoded = bytes::BytesMut::new();
         kind.encode(&mut encoded);
+        let body_len = encoded
+            .len()
+            .checked_sub(4)
+            .ok_or_else(|| BridgeError::engine("protocol encoder produced a truncated frame"))?;
+        if body_len > phux_protocol::wire::frame::MAX_FRAME_LEN as usize {
+            return Err(BridgeError::invalid(
+                "outbound frame exceeds the protocol length limit",
+            ));
+        }
         self.outgoing.push(encoded.to_vec());
+        Ok(())
     }
 
     pub fn rebuild_effect_views(&mut self) {
@@ -613,8 +639,7 @@ impl Client {
                     };
                     let fg = resolve_color(style.fg_color, colors.foreground, &colors.palette);
                     let mut bg = resolve_color(style.bg_color, colors.background, &colors.palette);
-                    let underline_color =
-                        resolve_color(style.underline_color, colors.foreground, &colors.palette);
+                    let underline_color = resolve_color(style.underline_color, fg, &colors.palette);
                     bg = match content_tag {
                         CellContentTag::BgColorPalette => {
                             colors.palette[usize::from(
@@ -837,6 +862,7 @@ impl Client {
         }
         let rows_from_oldest = usize::try_from(scrollbar.offset)
             .map_err(|_| BridgeError::engine("history viewport offset exceeds usize"))?;
+        self.effects.clear();
         if self
             .session
             .prefetch_history(terminal_id, rows_from_oldest, &mut self.effects)
@@ -1024,5 +1050,28 @@ mod tests {
                 bytes,
             } if terminal_id == TerminalId::local(7) && bytes.as_ref() == b"\x1b[1;1R"
         ));
+    }
+
+    #[test]
+    fn underline_color_falls_back_to_resolved_cell_foreground() {
+        let palette = [RgbColor { r: 0, g: 0, b: 0 }; 256];
+        let cell_foreground = RgbColor {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56,
+        };
+        assert_eq!(
+            resolve_color(StyleColor::None, cell_foreground, &palette),
+            cell_foreground
+        );
+        let explicit = RgbColor {
+            r: 0x65,
+            g: 0x43,
+            b: 0x21,
+        };
+        assert_eq!(
+            resolve_color(StyleColor::Rgb(explicit), cell_foreground, &palette),
+            explicit
+        );
     }
 }

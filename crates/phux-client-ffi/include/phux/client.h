@@ -10,6 +10,8 @@ extern "C" {
 #endif
 
 #define PHUX_CLIENT_ABI_VERSION 1u
+#define PHUX_CLIENT_MAX_OUTBOUND_BYTES (64u * 1024u)
+#define PHUX_CLIENT_RELEASE_CARGO_PROFILE "ffi-release"
 #define PHUX_CLIENT_CELL_BOLD (1u << 0)
 #define PHUX_CLIENT_CELL_ITALIC (1u << 1)
 #define PHUX_CLIENT_CELL_FAINT (1u << 2)
@@ -550,13 +552,17 @@ typedef struct PhuxSearchResult {
 } PhuxSearchResult;
 
 /**
- * All functions are panic-contained and return an explicit result. A client
+ * Production artifacts that guarantee panic containment MUST be built with
+ * `cargo build --profile ffi-release -p phux-client-ffi`; the workspace's
+ * ordinary release profile aborts and is not a supported host-library build.
+ * Every API then contains Rust panics and returns PHUX_CLIENT_PANIC. A client
  * and every pointer obtained from it are owning-thread-only. feed_frame borrows
  * input only for the call. Returned frame/effect/grid/search/selection buffers
  * are owned by the bridge and remain valid until the next mutable PhuxClient
  * call. Opaque document anchors remain valid until explicitly released or
- * their terminal generation is replaced. count/get/state/last_error are read-only;
- * clear calls are mutable.
+ * their terminal generation is replaced. count/get/state/last_error are
+ * read-only; clear calls are mutable. Outbound caller-provided byte fields must
+ * not exceed PHUX_CLIENT_MAX_OUTBOUND_BYTES.
  */
 PhuxClientResult phux_client_new(const PhuxClientOptions *options, PhuxClient **out_client);
 PhuxClientResult phux_client_set_callbacks(PhuxClient *client, const PhuxClientCallbacks *callbacks);

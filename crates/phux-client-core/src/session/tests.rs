@@ -1847,6 +1847,11 @@ fn effect_buffer_reuses_high_water_capacity() {
         .unwrap();
     assert_eq!(effects.len(), 4);
     assert_eq!(effects.capacity(), initial_capacity);
+    let drained = effects.take();
+    assert!(effects.is_empty());
+    effects.restore_allocation(drained);
+    assert!(effects.is_empty());
+    assert_eq!(effects.capacity(), initial_capacity);
 
     kernel
         .update(

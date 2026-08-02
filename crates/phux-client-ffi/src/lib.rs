@@ -14,7 +14,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
 use client::{Client, Limits};
-use error::{BridgeError, bytes_in, check_struct, terminal_id_in};
+use error::{BridgeError, bytes_in, check_struct, outbound_bytes_in, terminal_id_in};
 use phux_client_core::engine::CanonicalGeometry;
 use phux_client_core::engine::ghostty::native_bootstrap_capabilities;
 use phux_client_core::session::{KernelAction, KernelInput};
@@ -349,7 +349,7 @@ pub unsafe extern "C" fn phux_client_queue_hello(
         if client.hello_queued || client.protocol_ready {
             return Err(BridgeError::state("HELLO was already queued or negotiated"));
         }
-        let name = unsafe { bytes_in(client_name.data, client_name.len) }?;
+        let name = unsafe { outbound_bytes_in(client_name.data, client_name.len, "client name") }?;
         let name = std::str::from_utf8(name)
             .map_err(|_| BridgeError::invalid("client name is not UTF-8"))?;
         if name.is_empty() {
@@ -366,7 +366,7 @@ pub unsafe extern "C" fn phux_client_queue_hello(
             protocol_minor: PROTOCOL_VERSION.minor,
             protocol_patch: PROTOCOL_VERSION.patch,
             client_caps: caps,
-        });
+        })?;
         client.hello_queued = true;
         Ok(())
     })
@@ -390,6 +390,9 @@ pub unsafe extern "C" fn phux_client_queue_attach(
             mem::size_of::<PhuxAttachOptions>(),
             options.version,
         )?;
+        if options.attach_id == 0 {
+            return Err(BridgeError::invalid("attach_id must be non-zero"));
+        }
         if options.cols == 0 || options.rows == 0 {
             return Err(BridgeError::invalid("attach geometry must be non-zero"));
         }
@@ -404,7 +407,8 @@ pub unsafe extern "C" fn phux_client_queue_attach(
                 "attach pixel geometry is present without its discriminator",
             ));
         }
-        let name_bytes = unsafe { bytes_in(options.name.data, options.name.len) }?;
+        let name_bytes =
+            unsafe { outbound_bytes_in(options.name.data, options.name.len, "attach name") }?;
         let name = std::str::from_utf8(name_bytes)
             .map_err(|_| BridgeError::invalid("attach name is not UTF-8"))?;
         let target = match options.target_kind {
@@ -432,7 +436,7 @@ pub unsafe extern "C" fn phux_client_queue_attach(
             viewport,
             request_scrollback: options.request_scrollback,
             scrollback_limit_lines: options.scrollback_limit_lines,
-        });
+        })?;
         client.attach_queued = true;
         client.expected_attach_id = Some(options.attach_id);
         Ok(())
@@ -448,8 +452,11 @@ pub unsafe extern "C" fn phux_client_feed_frame(
     let mut notify_attached = false;
     let result = with_client_mut(client, |client| {
         let data = unsafe { bytes_in(data, len) }?;
-        let (frame, remaining) =
-            FrameKind::decode(data).map_err(|error| BridgeError::protocol(error.to_string()))?;
+        let decode_limits =
+            BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
+                .ok_or_else(|| BridgeError::state("stored bootstrap limits are invalid"))?;
+        let (frame, remaining) = FrameKind::decode_with_limits(data, decode_limits)
+            .map_err(|error| BridgeError::protocol(error.to_string()))?;
         if !remaining.is_empty() {
             return Err(BridgeError::protocol(
                 "feed_frame accepts exactly one complete frame",
@@ -509,7 +516,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                     .contains(phux_protocol::ServerFeature::TerminalReply);
                 client.protocol_ready = true;
             }
-            FrameKind::Ping { nonce } => client.queue_frame(FrameKind::Pong { nonce }),
+            FrameKind::Ping { nonce } => client.queue_frame(FrameKind::Pong { nonce })?,
             FrameKind::Attached {
                 attach_id,
                 snapshot,
@@ -555,6 +562,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 rows,
                 base_seq,
             } => {
+                client.ensure_participant(&terminal_id)?;
                 let selected_profile = client.selected_profile.ok_or_else(|| {
                     BridgeError::state("BOOTSTRAP_BEGIN arrived before profile negotiation")
                 })?;
@@ -584,6 +592,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 chunk_seq,
                 payload,
             } => {
+                client.ensure_participant(&terminal_id)?;
                 apply_kernel_input(
                     client,
                     KernelInput::BootstrapChunk {
@@ -601,6 +610,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 bootstrap_id,
                 history_cursor,
             } => {
+                client.ensure_participant(&terminal_id)?;
                 apply_kernel_input(
                     client,
                     KernelInput::BootstrapReady {
@@ -623,6 +633,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 payload,
                 rows,
             } => {
+                client.ensure_participant(&terminal_id)?;
                 let before = client.session.history_cache(&terminal_id).map(|cache| {
                     let status = cache.status();
                     (
@@ -663,6 +674,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 cursor,
                 reason,
             } => {
+                client.ensure_participant(&terminal_id)?;
                 apply_kernel_input(
                     client,
                     KernelInput::HistoryTombstone {
@@ -683,6 +695,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 required_bytes,
                 required_rows,
             } => {
+                client.ensure_participant(&terminal_id)?;
                 apply_kernel_input(
                     client,
                     KernelInput::HistoryRejected {
@@ -703,6 +716,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 seq,
                 bytes,
             } => {
+                client.ensure_participant(&terminal_id)?;
                 let before = client
                     .session
                     .published(&terminal_id)
@@ -732,6 +746,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 reason,
                 last_valid_seq,
             } => {
+                client.ensure_participant(&terminal_id)?;
                 apply_kernel_input(
                     client,
                     KernelInput::Tombstone {
@@ -747,6 +762,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 client.invalidate_terminal_handles(&terminal_id);
             }
             FrameKind::TerminalClosed { terminal_id, .. } => {
+                client.ensure_participant(&terminal_id)?;
                 apply_kernel_input(
                     client,
                     KernelInput::TerminalClosed {
@@ -758,6 +774,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 client.invalidate_terminal_handles(&terminal_id);
             }
             FrameKind::Bell { terminal_id } => {
+                client.ensure_participant(&terminal_id)?;
                 client
                     .owned_effects
                     .push(OwnedEffect::simple(2, 1, terminal_id));
@@ -916,7 +933,7 @@ pub unsafe extern "C" fn phux_client_send_key(
             unsafe { event.as_ref() }.ok_or_else(|| BridgeError::invalid("event is null"))?;
         check_struct(event.size, mem::size_of::<PhuxKeyEvent>(), event.version)?;
         let text = if event.has_text {
-            let bytes = unsafe { bytes_in(event.text.data, event.text.len) }?;
+            let bytes = unsafe { outbound_bytes_in(event.text.data, event.text.len, "key text") }?;
             let text = std::str::from_utf8(bytes)
                 .map_err(|_| BridgeError::invalid("key text is not UTF-8"))?;
             if text.chars().any(|ch| {
@@ -1032,7 +1049,7 @@ pub unsafe extern "C" fn phux_client_send_paste(
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
-        let data = unsafe { bytes_in(data, len) }?;
+        let data = unsafe { outbound_bytes_in(data, len, "paste data") }?;
         apply_input(
             client,
             &terminal_id,
@@ -1072,8 +1089,7 @@ pub unsafe extern "C" fn phux_client_terminal_resize(
             terminal_id,
             cols,
             rows,
-        });
-        Ok(())
+        })?;
     })
 }
 
@@ -1112,8 +1128,7 @@ pub unsafe extern "C" fn phux_client_viewport_resize(
         client.queue_frame(FrameKind::ViewportResize {
             viewport: ViewportInfo::new(cols, rows)
                 .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1)),
-        });
-        Ok(())
+        })?;
     })
 }
 
@@ -1367,6 +1382,22 @@ mod tests {
 
     #[test]
     fn callback_panic_is_contained_and_clears_reentry_guard() {
+        const CHILD: &str = "PHUX_CLIENT_FFI_PANIC_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("current test executable"),
+            )
+            .args([
+                "--exact",
+                "tests::callback_panic_is_contained_and_clears_reentry_guard",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .expect("spawn panic-containment host process");
+            assert!(status.success(), "panic-containment host process aborted");
+            return;
+        }
+
         let client = boxed_client();
         unsafe {
             (*client).inner.callbacks = PhuxClientCallbacks {
@@ -1454,6 +1485,149 @@ mod tests {
         );
         assert!(frame.data.is_null());
         assert_eq!(frame.len, 0);
+        unsafe { phux_client_free(client) };
+    }
+
+    fn feed_kind(client: *mut PhuxClient, frame: FrameKind) -> PhuxClientResult {
+        let mut encoded = bytes::BytesMut::new();
+        frame.encode(&mut encoded);
+        unsafe { phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) }
+    }
+
+    #[test]
+    fn attach_id_zero_is_rejected_without_output() {
+        let client = boxed_client();
+        unsafe { (*client).inner.protocol_ready = true };
+        let options = PhuxAttachOptions {
+            size: mem::size_of::<PhuxAttachOptions>(),
+            version: ABI_VERSION,
+            attach_id: 0,
+            target_kind: 0,
+            session_id: 0,
+            name: PhuxBytes::default(),
+            cols: 80,
+            rows: 24,
+            has_pixel_size: false,
+            pixel_width: 0,
+            pixel_height: 0,
+            request_scrollback: true,
+            scrollback_limit_lines: 1_000,
+        };
+        assert_eq!(
+            unsafe { phux_client_queue_attach(client, &options) },
+            PhuxClientResult::InvalidArgument
+        );
+        assert!(unsafe { (*client).inner.outgoing.is_empty() });
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
+    fn outbound_text_limit_rejects_overflow_and_accepts_boundary() {
+        let too_large = vec![b'a'; crate::error::MAX_OUTBOUND_BYTES + 1];
+        let rejected = boxed_client();
+        assert_eq!(
+            unsafe { phux_client_queue_hello(rejected, bytes_out(&too_large)) },
+            PhuxClientResult::InvalidArgument
+        );
+        assert!(unsafe { (*rejected).inner.outgoing.is_empty() });
+        unsafe { phux_client_free(rejected) };
+
+        let boundary = vec![b'a'; crate::error::MAX_OUTBOUND_BYTES];
+        let accepted = boxed_client();
+        assert_eq!(
+            unsafe { phux_client_queue_hello(accepted, bytes_out(&boundary)) },
+            PhuxClientResult::Ok
+        );
+        let (decoded, remaining) = FrameKind::decode(&unsafe { &(*accepted).inner.outgoing[0] })
+            .expect("boundary HELLO decodes");
+        assert!(remaining.is_empty());
+        assert!(
+            matches!(decoded, FrameKind::Hello { client_name, .. } if client_name.len() == boundary.len())
+        );
+        unsafe { phux_client_free(accepted) };
+    }
+
+    #[test]
+    fn feed_rejects_payload_above_current_limit_before_lifecycle_dispatch() {
+        let client = boxed_client();
+        let payload = vec![0_u8; 2 * 1024];
+        assert_eq!(
+            feed_kind(
+                client,
+                FrameKind::BootstrapChunk {
+                    terminal_id: phux_protocol::TerminalId::local(7),
+                    stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+                    bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
+                    chunk_seq: 0,
+                    payload: payload.into(),
+                },
+            ),
+            PhuxClientResult::ProtocolError
+        );
+        assert!(!unsafe {
+            (*client)
+                .inner
+                .session
+                .active_attach_contains(&phux_protocol::TerminalId::local(7))
+        });
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
+    fn terminal_state_frames_require_an_active_attach_participant() {
+        let terminal_id = phux_protocol::TerminalId::local(7);
+        let client = boxed_client();
+        unsafe {
+            (*client).inner.protocol_ready = true;
+            (*client).inner.selected_profile =
+                Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
+        }
+        let begin = FrameKind::BootstrapBegin {
+            terminal_id: terminal_id.clone(),
+            stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+            bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
+            profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 80,
+            rows: 24,
+            base_seq: 0,
+        };
+        assert_eq!(feed_kind(client, begin), PhuxClientResult::ProtocolError);
+        assert_eq!(
+            feed_kind(
+                client,
+                FrameKind::TerminalClosed {
+                    terminal_id: terminal_id.clone(),
+                    exit_status: None,
+                },
+            ),
+            PhuxClientResult::ProtocolError
+        );
+        assert!(!unsafe { (*client).inner.session.active_attach_contains(&terminal_id) });
+        let authorized = [terminal_id.clone()];
+        apply_kernel_input(
+            unsafe { &mut (*client).inner },
+            KernelInput::AttachStarted {
+                attach_id: 7,
+                terminals: &authorized,
+            },
+        )
+        .expect("seed active ATTACH inventory");
+        assert!(unsafe { (*client).inner.session.active_attach_contains(&terminal_id) });
+        assert_eq!(
+            feed_kind(
+                client,
+                FrameKind::BootstrapBegin {
+                    terminal_id: phux_protocol::TerminalId::local(8),
+                    stream_id: phux_protocol::StreamId::new(2).expect("stream"),
+                    bootstrap_id: phux_protocol::BootstrapId::new(2).expect("bootstrap"),
+                    profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+                    cols: 80,
+                    rows: 24,
+                    base_seq: 0,
+                },
+            ),
+            PhuxClientResult::ProtocolError
+        );
         unsafe { phux_client_free(client) };
     }
 }

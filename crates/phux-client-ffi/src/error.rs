@@ -2,6 +2,8 @@ use phux_protocol::{SatelliteHost, TerminalId};
 
 use crate::types::{ABI_VERSION, PhuxClientResult, PhuxTerminalId};
 
+pub const MAX_OUTBOUND_BYTES: usize = phux_protocol::wire::frame::MAX_INPUT_TERMINAL_REPLY_BYTES;
+
 #[derive(Debug)]
 pub struct BridgeError {
     pub result: PhuxClientResult,
@@ -73,6 +75,20 @@ pub unsafe fn bytes_in<'a>(data: *const u8, len: usize) -> Result<&'a [u8], Brid
     Ok(unsafe { std::slice::from_raw_parts(data, len) })
 }
 
+pub unsafe fn outbound_bytes_in<'a>(
+    data: *const u8,
+    len: usize,
+    field: &'static str,
+) -> Result<&'a [u8], BridgeError> {
+    if len > MAX_OUTBOUND_BYTES {
+        return Err(BridgeError::invalid(format!(
+            "{field} exceeds the FFI outbound byte limit"
+        )));
+    }
+    // SAFETY: forwards the caller's span contract after enforcing the outbound bound.
+    unsafe { bytes_in(data, len) }
+}
+
 pub unsafe fn terminal_id_in(value: *const PhuxTerminalId) -> Result<TerminalId, BridgeError> {
     // SAFETY: pointer validity is checked before dereference.
     let value =
@@ -88,7 +104,8 @@ pub unsafe fn terminal_id_in(value: *const PhuxTerminalId) -> Result<TerminalId,
         }
         1 => {
             // SAFETY: span is validated by bytes_in.
-            let host = unsafe { bytes_in(value.host.data, value.host.len) }?;
+            let host =
+                unsafe { outbound_bytes_in(value.host.data, value.host.len, "satellite host") }?;
             let host = std::str::from_utf8(host)
                 .map_err(|_| BridgeError::invalid("satellite host is not UTF-8"))?;
             if host.is_empty() {

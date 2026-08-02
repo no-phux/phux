@@ -421,6 +421,20 @@ impl EffectBuffer {
         self.effects.clear();
     }
 
+    /// Take every pending effect, leaving this buffer logically empty.
+    ///
+    /// Frontends that process effects outside [`SessionKernel::update`] must
+    /// consume rather than repeatedly borrow the previous update's effects.
+    pub fn take(&mut self) -> Vec<KernelEffect> {
+        std::mem::take(&mut self.effects)
+    }
+
+    /// Return an emptied allocation obtained from [`Self::take`] for reuse.
+    pub fn restore_allocation(&mut self, mut effects: Vec<KernelEffect>) {
+        effects.clear();
+        self.effects = effects;
+    }
+
     fn push(&mut self, effect: KernelEffect) {
         self.effects.push(effect);
     }
@@ -822,6 +836,17 @@ impl<E: EngineAdapter> SessionKernel<E> {
     #[must_use]
     pub const fn adapter_mut(&mut self) -> &mut E {
         &mut self.adapter
+    }
+
+    /// Whether the active ATTACH inventory authorizes one terminal.
+    #[must_use]
+    pub fn active_attach_contains(&self, terminal_id: &TerminalId) -> bool {
+        self.attach.as_ref().is_some_and(|attach| {
+            attach
+                .terminals
+                .iter()
+                .any(|participant| &participant.terminal_id == terminal_id)
+        })
     }
 
     /// Borrow the published replica for one terminal.

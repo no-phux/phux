@@ -177,6 +177,14 @@ strip = "symbols"
 panic = "abort"
 opt-level = 3
 
+# Production profile for the C ABI artifact. Workspace binaries keep the
+# release profile's abort policy; the FFI boundary requires unwinding so its
+# catch_unwind guards can return PHUX_CLIENT_PANIC without terminating a host.
+# Build with: cargo build --profile ffi-release -p phux-client-ffi
+[profile.ffi-release]
+inherits = "release"
+panic = "unwind"
+
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"
