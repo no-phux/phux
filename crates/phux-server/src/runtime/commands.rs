@@ -995,6 +995,7 @@ async fn handle_attach_terminal(
             pump_generation_last_seq.store(published_cut, std::sync::atomic::Ordering::Release);
             let mut last_forwarded_seq = published_cut;
             let mut bootstrap_id = bootstrap_id;
+            let mut generation_active = true;
             loop {
                 let msg = tokio::select! {
                     () = token.cancelled() => break,
@@ -1002,7 +1003,7 @@ async fn handle_attach_terminal(
                 };
                 match msg {
                     Ok(PaneOutput::Live { seq, bytes }) => {
-                        if seq <= published_cut {
+                        if !generation_active || seq <= published_cut {
                             continue;
                         }
                         let frame = FrameKind::TerminalOutput {
@@ -1051,10 +1052,11 @@ async fn handle_attach_terminal(
                         if !targets_pump {
                             continue;
                         }
-                        if pump_out_tx.send(Outbound::Frame(frame)).await.is_err()
-                            || ends_generation
-                        {
+                        if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                             break;
+                        }
+                        if ends_generation {
+                            generation_active = false;
                         }
                     }
                     Ok(PaneOutput::Resync {
@@ -1076,7 +1078,8 @@ async fn handle_attach_terminal(
                                 codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
                             }
                         ) {
-                            if pump_out_tx
+                            if generation_active
+                                && pump_out_tx
                                 .send(Outbound::Frame(FrameKind::BootstrapTombstone {
                                     terminal_id: pump_wire_terminal_id.clone(),
                                     stream_id,
@@ -1134,6 +1137,7 @@ async fn handle_attach_terminal(
                             last_forwarded_seq = cut;
                             pump_generation_last_seq
                                 .store(cut, std::sync::atomic::Ordering::Release);
+                            generation_active = true;
                             continue;
                         }
                         let payload =
@@ -1159,6 +1163,7 @@ async fn handle_attach_terminal(
                         last_forwarded_seq = base_seq;
                         pump_generation_last_seq
                             .store(base_seq, std::sync::atomic::Ordering::Release);
+                        generation_active = true;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!(

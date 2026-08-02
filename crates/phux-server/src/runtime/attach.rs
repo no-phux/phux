@@ -979,10 +979,11 @@ pub(crate) async fn handle_spawn_terminal(
             };
             let mut last_forwarded_seq = published_cut;
             let mut bootstrap_id = initial_bootstrap_id();
+            let mut generation_active = true;
             loop {
                 match output_rx.recv().await {
                     Ok(PaneOutput::Live { seq, bytes }) => {
-                        if seq <= published_cut {
+                        if !generation_active || seq <= published_cut {
                             continue;
                         }
                         let frame = FrameKind::TerminalOutput {
@@ -1029,10 +1030,11 @@ pub(crate) async fn handle_spawn_terminal(
                         if !targets_pump {
                             continue;
                         }
-                        if pump_out_tx.send(Outbound::Frame(frame)).await.is_err()
-                            || ends_generation
-                        {
+                        if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                             break;
+                        }
+                        if ends_generation {
+                            generation_active = false;
                         }
                     }
                     Ok(PaneOutput::Resync {
@@ -1055,7 +1057,8 @@ pub(crate) async fn handle_spawn_terminal(
                                 codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
                             }
                         ) {
-                            if pump_out_tx
+                            if generation_active
+                                && pump_out_tx
                                 .send(Outbound::Frame(FrameKind::BootstrapTombstone {
                                     terminal_id: pump_wire_terminal_id.clone(),
                                     stream_id,
@@ -1105,6 +1108,7 @@ pub(crate) async fn handle_spawn_terminal(
                             };
                             published_cut = cut;
                             last_forwarded_seq = cut;
+                            generation_active = true;
                             continue;
                         }
                         let payload = downsample_for_caps(&bytes, client_caps);
@@ -1127,6 +1131,7 @@ pub(crate) async fn handle_spawn_terminal(
                         }
                         published_cut = base_seq;
                         last_forwarded_seq = base_seq;
+                        generation_active = true;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!(
@@ -1606,10 +1611,11 @@ pub(crate) async fn handle_attach(
                 };
                 let mut last_forwarded_seq = published_cut;
                 let mut bootstrap_id = bootstrap_id;
+                let mut generation_active = true;
                 loop {
                     match output_rx.recv().await {
                         Ok(PaneOutput::Live { seq, bytes }) => {
-                            if seq <= published_cut {
+                            if !generation_active || seq <= published_cut {
                                 continue;
                             }
                             let frame = FrameKind::TerminalOutput {
@@ -1656,10 +1662,11 @@ pub(crate) async fn handle_attach(
                             if !targets_pump {
                                 continue;
                             }
-                            if pump_out_tx.send(Outbound::Frame(frame)).await.is_err()
-                                || ends_generation
-                            {
+                            if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                                 break;
+                            }
+                            if ends_generation {
+                                generation_active = false;
                             }
                         }
                         Ok(PaneOutput::Resync {
@@ -1681,7 +1688,8 @@ pub(crate) async fn handle_attach(
                                     codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
                                 }
                             ) {
-                                if pump_out_tx
+                                if generation_active
+                                    && pump_out_tx
                                     .send(Outbound::Frame(FrameKind::BootstrapTombstone {
                                         terminal_id: pump_wire_terminal_id.clone(),
                                         stream_id,
@@ -1733,6 +1741,7 @@ pub(crate) async fn handle_attach(
                                 };
                                 published_cut = cut;
                                 last_forwarded_seq = cut;
+                                generation_active = true;
                                 continue;
                             }
                             let payload = downsample_for_caps(&bytes, pump_client_caps);
@@ -1755,6 +1764,7 @@ pub(crate) async fn handle_attach(
                             }
                             published_cut = base_seq;
                             last_forwarded_seq = base_seq;
+                            generation_active = true;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             warn!(
