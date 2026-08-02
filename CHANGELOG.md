@@ -9,6 +9,38 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.7.0](https://github.com/phall1/phux/compare/v0.6.0...v0.7.0) (2026-08-02)
+
+
+### Features
+
+* **client:** lenient keybinding resolver - one bad chord disables one binding ([0fb2363](https://github.com/phall1/phux/commit/0fb236357668a34921e173a56ac97c47be3cb874))
+* **client:** pane death is visible — exit notice for survivors, explained exit for the last pane ([7da6ee3](https://github.com/phall1/phux/commit/7da6ee32a4fcc7856a1eb8eb43e196887a230fdb))
+* **client:** status-bar transient notice slot with input-authority and degraded-federation consumers ([8a00e93](https://github.com/phall1/phux/commit/8a00e93ae0fb25bb06b7ccf3f9bbdd61690ee747))
+* **cli:** ls empty state names next commands; real attached-client counts ([1690aec](https://github.com/phall1/phux/commit/1690aec8f18c894c451e1277e2ae65e88c4cad55))
+* **config:** add vocab module owning action and hook-event names ([5ef0daf](https://github.com/phall1/phux/commit/5ef0dafe4140ec3008c8ecca8b78dcc2106523d8))
+* **config:** config check validates keybindings semantically ([995e2b6](https://github.com/phall1/phux/commit/995e2b61225932bd650b91eeec124b9b56027e4b))
+* **server:** unify the server log at $XDG_STATE_HOME/phux/server.log ([3d21bef](https://github.com/phall1/phux/commit/3d21bef5fabead1b2bdcf49b321b96b4226e0c10))
+* **ux:** hook validation, reload parity, defaults truth, phux logs, host ADR ([#322](https://github.com/phall1/phux/issues/322)) ([570781d](https://github.com/phall1/phux/commit/570781dce27a6537a84b75b11f5279e990748c17))
+
+
+### Bug Fixes
+
+* **client:** drop a pinned context menu on resize instead of leaving it invisible (phux-fsb) ([#319](https://github.com/phall1/phux/issues/319)) ([66ba8ae](https://github.com/phall1/phux/commit/66ba8ae8cb0527be9f3c622d59a6b999b17fdfad))
+* **client:** drop rustdoc link to the private exit_after_detach fn ([5c386f8](https://github.com/phall1/phux/commit/5c386f8b79a2aeea4edcbf41836edf74de1cd4c1))
+* **config:** drop rustdoc link to the private suggestion-distance const ([ee6b184](https://github.com/phall1/phux/commit/ee6b18433c81fecf8408b8793c1ceb02bc015621))
+* **config:** honest config errors -- config check remedy, no fabricated 1:1 ([54353c6](https://github.com/phall1/phux/commit/54353c6d21158bef2d2c2e89c4e9a2da68854f26))
+* harden worktree remove, HELLO negotiation, TLS provisioning, enroll, and claude shim ([d2946e3](https://github.com/phall1/phux/commit/d2946e3fc1664a6669b2c6a0f4b55d624770f25b))
+* **server:** load config once; a broken config.toml is loudly fatal ([ac39fc7](https://github.com/phall1/phux/commit/ac39fc7e4495e18d3697180b115d580ba6b0c03a))
+* **server:** negotiate hub satellite links ([c9d2048](https://github.com/phall1/phux/commit/c9d20484bdb46c2d5acc026c49aef53d53fb377e))
+* **server:** replay mouse-reporting DEC modes in the snapshot epilogue ([04b289c](https://github.com/phall1/phux/commit/04b289c1e6adfecb3f44386c90941a8f7e8bd154))
+* **server:** stop a transient PTY write error from killing pane input ([#318](https://github.com/phall1/phux/issues/318)) ([4bbe113](https://github.com/phall1/phux/commit/4bbe113e4fcceb3982335d02bf1c380246f9c18e))
+
+
+### Performance
+
+* **ci:** arm runners for the compile lanes; evict the 110s alloc gate to stress ([b1aaf65](https://github.com/phall1/phux/commit/b1aaf650b97cfe793298ca1040ed65a384415db6))
+
 ## [0.6.0](https://github.com/phall1/phux/compare/v0.5.0...v0.6.0) (2026-07-27)
 
 
