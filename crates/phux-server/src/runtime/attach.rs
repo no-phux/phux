@@ -147,7 +147,7 @@ pub(crate) async fn resolve_attach_target(
 /// on AND no explicit
 /// [`crate::state::ServerState::attach_create_seed_command`] preempts
 /// it: an explicit per-server seed command always wins (it's how the
-/// `phux server` binary pins `default_shell_command()` for the user).
+/// `phux server` binary pins the default-shell command for the user).
 /// `cwd` from the wire frame (phux-3mtf) seeds the PTY child's working
 /// directory when it names an existing directory on the server host; a
 /// missing or non-directory path falls back to the pre-existing
@@ -187,12 +187,13 @@ pub(crate) async fn resolve_create_if_missing(
     // Slow path: create the session + seed pane. Snapshot the server's
     // configured PTY mode and (optional) override command before
     // releasing the state borrow.
-    let (with_pty, override_cmd, history_limit, term) = state.with(|s| {
+    let (with_pty, override_cmd, history_limit, term, shell) = state.with(|s| {
         (
             s.attach_create_seeds_pty(),
             s.attach_create_seed_command(),
             s.history_limit(),
             s.term().to_owned(),
+            s.shell().to_owned(),
         )
     });
 
@@ -205,8 +206,9 @@ pub(crate) async fn resolve_create_if_missing(
         //   2. The wire-level `command` from the CreateIfMissing
         //      variant. This is the per-attach command knob clients
         //      use to spawn (e.g.) `phux new -- vim foo.txt`.
-        //   3. `default_shell_command()` (the user's `$SHELL`, or
-        //      `/bin/sh`) — same fallback the pre-seed path uses.
+        //   3. `default_shell_command` over the resolved default shell
+        //      (`defaults.shell` → `$SHELL` → `/bin/sh`, phux-i0e8.4.1)
+        //      — same fallback the pre-seed path uses.
         let mut seed_cmd = override_cmd.unwrap_or_else(|| match command {
             Some(argv) if !argv.is_empty() => {
                 let mut head = argv.into_iter();
@@ -218,7 +220,7 @@ pub(crate) async fn resolve_create_if_missing(
                 }
                 builder
             }
-            _ => crate::terminal_actor::default_shell_command(),
+            _ => crate::terminal_actor::default_shell_command(&shell),
         });
         // phux-3mtf / phux-0v1l: honor the wire `cwd` through the shared
         // validate-and-fall-back helper, uniform with the
@@ -543,8 +545,9 @@ async fn relay_spawn_to_satellite(
 /// `command`/`cwd`/`env` from the wire frame populate the
 /// `portable_pty::CommandBuilder`:
 ///   * `command = None`  → fall back to
-///     [`crate::terminal_actor::default_shell_command`] (same as
-///     `AttachTarget::CreateIfMissing.command = None`).
+///     [`crate::terminal_actor::default_shell_command`] over the
+///     resolved default shell (`defaults.shell` → `$SHELL` → `/bin/sh`;
+///     same as `AttachTarget::CreateIfMissing.command = None`).
 ///   * `cwd = Some(p)`    → `builder.cwd(p)`.
 ///   * `env = Some(v)`    → each `(k, v)` set via `builder.env(k, v)`,
 ///     additive over the parent environment. `env = Some(vec![])` is
@@ -642,7 +645,8 @@ pub(crate) async fn handle_spawn_terminal(
 
     // Build the `CommandBuilder` from the wire frame. `command = None`
     // mirrors `AttachTarget::CreateIfMissing.command = None`: fall back
-    // to the user's default shell (or `/bin/sh`).
+    // to the resolved default shell (`defaults.shell` → `$SHELL` →
+    // `/bin/sh`, phux-i0e8.4.1).
     let mut builder = match command {
         Some(argv) if !argv.is_empty() => {
             let mut head = argv.into_iter();
@@ -653,7 +657,10 @@ pub(crate) async fn handle_spawn_terminal(
             }
             b
         }
-        _ => crate::terminal_actor::default_shell_command(),
+        _ => {
+            let shell = state.with(|s| s.shell().to_owned());
+            crate::terminal_actor::default_shell_command(&shell)
+        }
     };
     // TERM precedence (phux-ign): each later tier overrides the prior via
     // `CommandBuilder::env`, which overwrites. So the order is:

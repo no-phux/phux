@@ -78,8 +78,8 @@ pub struct ServerConfig {
     /// a known session to attach to without first issuing a `COMMAND` (the
     /// `COMMAND` message is not implemented yet).
     pub pre_seeded_session: Option<String>,
-    /// When `true`, the pre-seeded session's initial pane spawns the user's
-    /// default shell (`$SHELL`, falling back to `/bin/sh`) inside a real
+    /// When `true`, the pre-seeded session's initial pane spawns the
+    /// resolved default shell ([`Self::shell`]) inside a real
     /// PTY (see [`seed_session_with_pty`] / [`crate::terminal_actor::TerminalActor::new_with_default_shell`]).
     /// When `false`, the pre-seeded session's pane has a no-PTY actor —
     /// the actor exists for snapshot/input plumbing but no child process
@@ -97,7 +97,8 @@ pub struct ServerConfig {
     /// crisp wire round-trip assertion).
     ///
     /// Ignored when `seed_with_pty` is `false`. `None` (the default)
-    /// falls back to [`crate::terminal_actor::default_shell_command`].
+    /// falls back to [`crate::terminal_actor::default_shell_command`]
+    /// over the resolved default shell ([`Self::shell`]).
     pub seed_command: Option<portable_pty::CommandBuilder>,
     /// Lines of scrollback retained per pane (`defaults.history-limit`,
     /// SPEC DESIGN.md §4.2). Threaded into every `TerminalActor`'s
@@ -126,6 +127,16 @@ pub struct ServerConfig {
     /// `phux_config`'s `defaults.term`; [`Self::with_default_socket`] uses
     /// the schema default (`xterm-256color`).
     pub term: String,
+    /// Resolved default shell for server-spawned panes (phux-i0e8.4.1):
+    /// `defaults.shell` when configured, else `$SHELL`, else `/bin/sh` —
+    /// see [`crate::terminal_actor::resolve_shell`]. Threaded into shared
+    /// state so the seed session, attach-time `CreateIfMissing`,
+    /// `SESSION_CREATE_KEY`, and a command-less `SPAWN_TERMINAL` all run
+    /// it. A wire `command` always wins over this default. The binary
+    /// populates this from its single config load;
+    /// [`Self::with_default_socket`] resolves with no configured value
+    /// (`$SHELL`, else `/bin/sh`).
+    pub shell: String,
     /// How a Terminal viewed by clients of differing sizes resolves its one
     /// authoritative PTY geometry (`defaults.window-size`, phux-nk07).
     /// Threaded into shared state so `handle_viewport_resize` applies the
@@ -230,6 +241,7 @@ impl ServerConfig {
             history_limit: phux_config::DefaultsCfg::default().history_limit,
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
+            shell: crate::terminal_actor::resolve_shell(None),
             window_size: phux_config::WindowSize::default(),
             policy_bundle: None,
             hook_catalog: crate::hooks::HookCatalog::default(),
@@ -762,6 +774,11 @@ impl ServerRuntime {
         // configured `TERM` baseline.
         let term = self.cfg.term.clone();
         state.with_mut(|s| s.set_term(term));
+        // Mirror the resolved default shell (`defaults.shell` → `$SHELL` →
+        // `/bin/sh`, phux-i0e8.4.1) into shared state so every
+        // command-less spawn path runs the configured shell.
+        let shell = self.cfg.shell.clone();
+        state.with_mut(|s| s.set_shell(shell));
         // Mirror `defaults.window-size` into shared state so
         // `handle_viewport_resize` resolves a shared Terminal's geometry from
         // the configured multi-client policy (phux-nk07).
@@ -908,8 +925,13 @@ impl ServerRuntime {
                     }
                 } else if let Some(name) = pre_seeded.as_deref() {
                     let seeded = if seed_with_pty {
-                        let mut cmd = seed_command
-                            .unwrap_or_else(crate::terminal_actor::default_shell_command);
+                        // Fall back to the resolved default shell
+                        // (`defaults.shell` → `$SHELL` → `/bin/sh`,
+                        // phux-i0e8.4.1) mirrored into state above.
+                        let mut cmd = seed_command.unwrap_or_else(|| {
+                            let shell = state.with(|s| s.shell().to_owned());
+                            crate::terminal_actor::default_shell_command(&shell)
+                        });
                         // Apply the configured `defaults.term` over the
                         // builder's baseline so the seed pane advertises the
                         // server-wide `TERM` (phux-ign).

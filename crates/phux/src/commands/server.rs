@@ -75,9 +75,9 @@ fn select_connectors(
 /// until Ctrl-C.
 ///
 /// The runtime pre-seeds a session named `session` whose initial pane
-/// is backed by a real PTY running the user's `$SHELL` (falling back
-/// to `/bin/sh`). On Ctrl-C, `run_async` returns `Ok(())` and the
-/// process exits 0.
+/// is backed by a real PTY running the resolved default shell
+/// (`defaults.shell`, falling back to `$SHELL`, then `/bin/sh`). On
+/// Ctrl-C, `run_async` returns `Ok(())` and the process exits 0.
 #[allow(
     clippy::too_many_arguments,
     clippy::fn_params_excessive_bools,
@@ -162,15 +162,21 @@ pub(crate) fn run_server(
         }
     };
 
-    // phux-07y: `--seed-command` runs that command (via `$SHELL -c`) as
+    // phux-i0e8.4.1: resolve the default shell exactly once, from the
+    // single config snapshot above — `defaults.shell` when set, else
+    // `$SHELL`, else `/bin/sh` — and thread it into every server-owned
+    // spawn path (seed session, `--seed-command`, `CreateIfMissing`,
+    // `SESSION_CREATE_KEY`, command-less `SPAWN_TERMINAL`). This bind
+    // must stay below the config load.
+    let shell = phux_server::terminal_actor::resolve_shell(config.defaults.shell.as_deref());
+
+    // phux-07y: `--seed-command` runs that command (via `<shell> -c`) as
     // the pre-seeded session's initial program instead of a bare shell.
     // The naked-`phux` auto-spawn path passes `defaults.spawn-on-attach`
     // here; `phux new`'s auto-spawn and a hand-started `phux server`
     // pass nothing, so an explicitly-created session still gets a shell.
-    // A8 marker (phux-i0e8.4.1): `defaults.shell` lands here — shell
-    // resolution for the seed command reads from the single `config`
-    // snapshot above; keep this bind below the config load.
-    let seed_command = seed_command.map(phux_server::terminal_actor::shell_command);
+    let seed_command =
+        seed_command.map(|command| phux_server::terminal_actor::shell_command(&shell, command));
 
     // `[[hooks.<name>]]` entries plus enabled plugin manifests' `[[events]]`
     // feed the server-side hook dispatcher (docs/consumers/tui.md §9,
@@ -212,6 +218,7 @@ pub(crate) fn run_server(
         history_limit,
         cwd_inheritance,
         term,
+        shell,
         window_size,
         policy_bundle: None,
         hook_catalog,

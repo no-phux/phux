@@ -70,6 +70,7 @@ impl ServerState {
             history_limit: phux_config::DefaultsCfg::default().history_limit,
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
+            shell: crate::terminal_actor::resolve_shell(None),
             server_socket_path: None,
             window_size: phux_config::WindowSize::default(),
             session_root: HashMap::new(),
@@ -301,6 +302,20 @@ impl ServerState {
     #[must_use]
     pub fn term(&self) -> &str {
         &self.term
+    }
+
+    /// Set the resolved default shell (`defaults.shell` → `$SHELL` →
+    /// `/bin/sh`, phux-i0e8.4.1) server-spawned panes run when no wire
+    /// `command` names a program. Called once at server startup to
+    /// mirror [`crate::runtime::ServerConfig::shell`] into state.
+    pub fn set_shell(&mut self, shell: String) {
+        self.shell = shell;
+    }
+
+    /// Read the resolved default shell set by [`Self::set_shell`].
+    #[must_use]
+    pub fn shell(&self) -> &str {
+        &self.shell
     }
 
     /// Set the UDS path this server listens on. Called once at server

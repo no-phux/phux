@@ -575,10 +575,9 @@ A minimal config:
 
 ```toml
 [defaults]
-shell                 = "/bin/zsh"
+shell                 = "/bin/zsh"         # unset: $SHELL, fallback /bin/sh
 term                  = "xterm-256color"   # TERM advertised to spawned panes
 history-limit         = 50000
-refresh-rate          = 60
 # Sane-default spawn knobs (phux-4li.1):
 cwd-inheritance       = "inherit-focused"
 session-name-template = "default"
@@ -635,6 +634,13 @@ section_header = "yellow"
 **Spawn defaults under `[defaults]`** shape what happens when a new pane
 or session comes into being:
 
+- **`shell`** (string, default unset) is the program server-spawned
+  panes run when nothing names a command: the seed session, attach-time
+  session creation, and a `SPAWN_TERMINAL` whose wire frame carries no
+  `command`; it is also the shell that wraps `spawn-on-attach` and
+  `--seed-command` via `<shell> -c`. The server resolves it once at
+  startup: `defaults.shell` when set, else `$SHELL`, else `/bin/sh`. A
+  wire `command` always wins over this default (phux-i0e8.4.1).
 - **`term`** (string, default `"xterm-256color"`) is the `TERM` the
   server advertises to the inner program of every spawned pane. The
   resolution order for one spawn, lowest to highest: compiled-in
@@ -2335,16 +2341,15 @@ The shipped defaults, in one place:
 
 | Setting                       | Default                                  |
 |-------------------------------|------------------------------------------|
-| Shell                         | `$SHELL`, fallback `/bin/sh`             |
+| Shell                         | `defaults.shell`; unset → `$SHELL`, fallback `/bin/sh` |
 | `TERM` advertised to panes    | `xterm-256color` (phux-7vx/phux-0o8; set `defaults.term = "ghostty"` to opt in) |
 | History limit per pane        | 50 000 lines                             |
-| Pane refresh rate cap         | 60 Hz                                    |
 | Backpressure threshold        | 32 unacked frames                        |
 | Journal size cap (per pane)   | 10 MiB ring                              |
 | Prefix key                    | `C-a`                                    |
 | Which-key popup               | on, 600 ms hesitation delay              |
 | Pane on PTY exit              | close                                    |
-| Mouse                         | on                                       |
+| Mouse                         | on (`defaults.mouse`; `false` = pass-through only, §7) |
 | New-pane CWD inheritance      | `inherit-focused` (tmux-shaped)          |
 | Spawn-on-attach               | `defaults.shell` (unset = inherit)       |
 | Session name template         | `"default"` (supports `${cwd-basename}`) |

@@ -706,12 +706,12 @@ impl TerminalActor {
     }
 
     /// Convenience: spawn the user's default shell (`$SHELL` or
-    /// `/bin/sh`) in a fresh PTY.
+    /// `/bin/sh`; no server config in scope here) in a fresh PTY.
     pub fn new_with_default_shell(
         cols: u16,
         rows: u16,
     ) -> Result<TerminalActorBundle, TerminalActorError> {
-        Self::new_with_command(default_shell_command(), cols, rows)
+        Self::new_with_command(default_shell_command(&resolve_shell(None)), cols, rows)
     }
 
     /// Build an actor whose cancellation token is `token` (typically a
@@ -3387,17 +3387,16 @@ mod tests {
     }
 
     /// phux-07y: `shell_command` runs the user's command via
-    /// `$SHELL -c <command>` so quoting / args work and the pane closes
-    /// when the command exits.
+    /// `<resolved shell> -c <command>` so quoting / args work and the
+    /// pane closes when the command exits. phux-i0e8.4.1: the shell is
+    /// the resolved default (`defaults.shell` → `$SHELL` → `/bin/sh`),
+    /// passed in by the caller.
     #[test]
     fn shell_command_wraps_in_shell_dash_c() {
-        let cmd = shell_command("btop --utf-force");
+        let cmd = shell_command("/opt/fancy/fish", "btop --utf-force");
         let argv = cmd.get_argv();
         assert_eq!(argv.len(), 3, "expected [shell, -c, command]");
-        assert!(
-            !argv[0].is_empty(),
-            "argv[0] is the resolved shell (SHELL or /bin/sh)"
-        );
+        assert_eq!(argv[0], "/opt/fancy/fish");
         assert_eq!(argv[1], "-c");
         assert_eq!(argv[2], "btop --utf-force");
     }

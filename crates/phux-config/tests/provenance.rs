@@ -54,7 +54,7 @@ fn three_layer_stack(tmp: &TempDir) -> (toml::Table, ConfigProvenance, PathBuf) 
         r#"
 [defaults]
 history-limit = 1111
-refresh-rate  = 30
+mouse         = false
 
 [[plugins-append]]
 manifest = "/opt/base/phux-plugin.toml"
@@ -115,7 +115,7 @@ fn scalars_attribute_to_the_last_layer_that_set_them() {
     // Untouched shipped default.
     assert_eq!(origin(&provenance, "defaults.term").layer, 0);
     // Set by base, never overridden above it.
-    assert_eq!(origin(&provenance, "defaults.refresh-rate").layer, 1);
+    assert_eq!(origin(&provenance, "defaults.mouse").layer, 1);
     // Base sets it, distro overrides: distro owns it.
     assert_eq!(origin(&provenance, "defaults.history-limit").layer, 2);
     // User leaf wins over everything.

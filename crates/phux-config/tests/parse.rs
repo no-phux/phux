@@ -20,7 +20,6 @@ const CANONICAL: &str = r##"
 [defaults]
 shell          = "/bin/zsh"
 history-limit  = 50000
-refresh-rate   = 60
 
 [keybindings]
 prefix = "ctrl+space"

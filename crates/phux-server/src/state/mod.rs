@@ -279,8 +279,9 @@ pub struct ServerState {
     /// Optional pre-built `CommandBuilder` used when
     /// [`Self::attach_create_seeds_pty`] is `true` and `CreateIfMissing`
     /// fires. `None` falls back to
-    /// [`crate::terminal_actor::default_shell_command`] (the user's
-    /// `$SHELL`, or `/bin/sh`).
+    /// [`crate::terminal_actor::default_shell_command`] over the resolved
+    /// default shell ([`Self::shell`]: `defaults.shell`, `$SHELL`, or
+    /// `/bin/sh`).
     attach_create_seed_command: Option<CommandBuilder>,
     /// Lines of scrollback retained per pane (`defaults.history-limit`).
     /// Mirrors [`crate::runtime::ServerConfig::history_limit`] so the
@@ -314,6 +315,19 @@ pub struct ServerState {
     /// Defaults to the `phux_config` schema default (`xterm-256color`) so
     /// tests that never call the setter get the safe baseline.
     term: String,
+    /// Resolved default shell for server-spawned panes (phux-i0e8.4.1):
+    /// `defaults.shell` → `$SHELL` → `/bin/sh`, resolved once by the
+    /// binary from its single config load. Mirrors
+    /// [`crate::runtime::ServerConfig::shell`] so the attach-time
+    /// creation path, `SESSION_CREATE_KEY`, and a command-less
+    /// `SPAWN_TERMINAL` spawn the configured shell without an extra
+    /// channel to the runtime. A wire `command` always wins over this
+    /// default. Set by the runtime via [`Self::set_shell`] right after
+    /// `SharedState::new`.
+    ///
+    /// Defaults to `resolve_shell(None)` (`$SHELL`, else `/bin/sh`) so
+    /// state-only tests keep the pre-config behavior.
+    shell: String,
     /// The UDS path this server listens on. Mirrors
     /// [`crate::runtime::ServerConfig::socket_path`] so every pane spawn
     /// site can inject it into the child environment as `PHUX_SOCKET`

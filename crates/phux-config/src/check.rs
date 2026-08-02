@@ -634,6 +634,26 @@ mod tests {
         assert!(report.is_ok(), "hooks flagged: {:?}", report.findings);
     }
 
+    /// A key that used to exist and was deleted (phux-i0e8.4.1 removed
+    /// `defaults.refresh-rate` and `defaults.log-filter`) must not fail
+    /// silently in a stale config: `deny_unknown_fields` rejects it, and
+    /// the check locates it — full path, unknown-key fault, and the layer
+    /// file that set it.
+    #[test]
+    fn a_removed_key_is_a_located_unknown_key_finding() {
+        let path = Path::new("/nonexistent/config.toml");
+        let report = check("[defaults]\nrefresh-rate = 60\n", path).expect("check runs");
+        assert_eq!(paths(&report), vec!["defaults.refresh-rate"]);
+        let finding = &report.findings[0];
+        assert_eq!(finding.fault, Fault::UnknownKey);
+        assert_eq!(
+            finding.source,
+            Some(LayerSource::User(path.to_path_buf())),
+            "origin was {}",
+            finding.origin()
+        );
+    }
+
     /// The finding names the file to open, which is the real question once
     /// `extends` layers are in play.
     #[test]

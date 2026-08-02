@@ -33,7 +33,9 @@
 # the shipped default stays conservative.
 term = "xterm-256color"
 history-limit = 50000
-refresh-rate = 60
+# Client-side outer-terminal mouse tracking on attach (ADR-0048): divider
+# drag-to-resize and click-to-focus work without an inner program turning
+# mouse mode on. false = pass-through-only (native click-drag selection).
 mouse = true
 
 # How a newly-spawned pane picks its working directory. One of:

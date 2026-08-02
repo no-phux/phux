@@ -63,8 +63,9 @@ pub(crate) fn seed_session_with_actor(
 ///   [`super::ServerConfig::seed_with_pty`] (with
 ///   [`super::ServerConfig::seed_command`]
 ///   left `None` to fall back to
-///   [`crate::terminal_actor::default_shell_command`] — the user's `$SHELL`,
-///   or `/bin/sh` per the byc.5 convention).
+///   [`crate::terminal_actor::default_shell_command`] — the resolved
+///   default shell: `defaults.shell`, then `$SHELL`, then `/bin/sh`
+///   per the byc.5 convention).
 /// * Anything embedding `phux-server` and wanting a specific command
 ///   (e.g. an integration test driving a known fixture; see the
 ///   `input_dispatch.rs` test, which seeds with `cat` to get
@@ -1459,12 +1460,13 @@ pub(crate) fn create_named_session(
         return Err(format!("session {name:?} already exists"));
     }
 
-    let (with_pty, override_cmd, history_limit, term) = state.with(|s| {
+    let (with_pty, override_cmd, history_limit, term, shell) = state.with(|s| {
         (
             s.attach_create_seeds_pty(),
             s.attach_create_seed_command(),
             s.history_limit(),
             s.term().to_owned(),
+            s.shell().to_owned(),
         )
     });
 
@@ -1482,7 +1484,7 @@ pub(crate) fn create_named_session(
                 }
                 builder
             }
-            _ => crate::terminal_actor::default_shell_command(),
+            _ => crate::terminal_actor::default_shell_command(&shell),
         });
         // phux-0v1l: apply the wire cwd through the shared validate-and-fall-
         // back helper, uniform with the attach CreateIfMissing seed path.

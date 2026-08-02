@@ -25,7 +25,7 @@ use crate::{
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Server-wide defaults — shell, history, refresh rate, log filter.
+    /// Server-wide defaults — shell, `TERM`, scrollback, spawn policy.
     #[serde(default)]
     pub defaults: DefaultsCfg,
 
@@ -92,6 +92,15 @@ pub struct Config {
 pub struct DefaultsCfg {
     /// Shell to spawn in new panes. `None` ⇒ honor `$SHELL` (fallback
     /// `/bin/sh`) at runtime.
+    ///
+    /// Consumed by the server at startup (phux-i0e8.4.1): the binary
+    /// resolves `configured → $SHELL → /bin/sh` once from its single
+    /// config load and threads the result into every server-owned spawn
+    /// path — the pre-seeded session, `--seed-command`,
+    /// attach-time `CreateIfMissing`, `SESSION_CREATE_KEY`, and a
+    /// `SPAWN_TERMINAL` whose wire frame carries no `command`. A wire
+    /// `command` always wins over this default, mirroring the
+    /// `defaults.term` precedent.
     #[serde(default)]
     pub shell: Option<String>,
 
@@ -126,14 +135,6 @@ pub struct DefaultsCfg {
     /// duplicated: they describe the same per-Terminal scrollback cap.
     #[serde(default = "default_history_limit", rename = "history-limit")]
     pub history_limit: u32,
-
-    /// Cap on pane re-render rate, in Hz.
-    #[serde(default = "default_refresh_rate", rename = "refresh-rate")]
-    pub refresh_rate: u32,
-
-    /// `tracing` filter directive (overridden by `$PHUX_LOG`).
-    #[serde(default, rename = "log-filter")]
-    pub log_filter: Option<String>,
 
     /// Whether the client enables its own outer-terminal mouse tracking
     /// on attach (ADR-0048). `true` (default) emits DECSET
@@ -212,8 +213,6 @@ impl Default for DefaultsCfg {
             shell: None,
             term: default_term(),
             history_limit: default_history_limit(),
-            refresh_rate: default_refresh_rate(),
-            log_filter: None,
             mouse: true,
             cwd_inheritance: CwdInheritance::default(),
             spawn_on_attach: None,
@@ -230,9 +229,6 @@ fn default_term() -> String {
 }
 const fn default_history_limit() -> u32 {
     50_000
-}
-const fn default_refresh_rate() -> u32 {
-    60
 }
 const fn default_true() -> bool {
     true

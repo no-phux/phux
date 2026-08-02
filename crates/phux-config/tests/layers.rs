@@ -43,7 +43,7 @@ fn three_layer_merge_later_layers_win_per_leaf() {
         r#"
 [defaults]
 history-limit = 1111
-refresh-rate  = 30
+mouse         = false
 
 [keybindings.prefix-table]
 "b" = "new-window"
@@ -76,7 +76,7 @@ prefix = "C-b"
     // Distro overrides base.
     assert_eq!(cfg.defaults.history_limit, 2222);
     // Base leaf survives where nothing above touches it.
-    assert_eq!(cfg.defaults.refresh_rate, 30);
+    assert!(!cfg.defaults.mouse);
     // Prefix-table entries from both layers coexist (tables merge per
     // key), alongside the shipped defaults.
     assert!(cfg.keybindings.prefix_table.contains_key("b"));

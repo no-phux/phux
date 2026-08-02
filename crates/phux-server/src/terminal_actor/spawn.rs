@@ -203,8 +203,36 @@ pub(crate) fn exit_status_to_wire(status: &portable_pty::ExitStatus) -> Option<i
     Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX))
 }
 
-/// Resolve the default shell. Reads `$SHELL`; falls back to `/bin/sh`
-/// (POSIX-guaranteed) when unset.
+/// Resolve the shell server-spawned panes run (phux-i0e8.4.1):
+/// `configured` (the server's `defaults.shell`) when set, else `$SHELL`,
+/// else `/bin/sh` (POSIX-guaranteed).
+///
+/// The seam mirrors the `defaults.term` / [`apply_term`] precedent: the
+/// binary resolves once from its single config load and threads the
+/// result into every server-owned spawn path, so a mid-run environment
+/// change cannot make two panes disagree. A configured value that is
+/// empty or whitespace-only is treated as unset rather than spawning an
+/// empty program name.
+#[must_use]
+pub fn resolve_shell(configured: Option<&str>) -> String {
+    resolve_shell_from(configured, std::env::var("SHELL").ok())
+}
+
+/// Env-independent core of [`resolve_shell`], split out so the
+/// precedence is testable without mutating the process environment
+/// (nextest runs tests in parallel; `set_var` races).
+fn resolve_shell_from(configured: Option<&str>, env_shell: Option<String>) -> String {
+    configured
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or(env_shell)
+        .unwrap_or_else(|| "/bin/sh".to_owned())
+}
+
+/// Build the [`CommandBuilder`] for a pane that runs a plain interactive
+/// shell — `shell` is the already-resolved program (see
+/// [`resolve_shell`]).
 ///
 /// Sets `TERM=xterm-256color` on the spawned process. This is deliberate
 /// (phux-7vx): we previously advertised `TERM=ghostty`, but ghostty's
@@ -242,8 +270,7 @@ pub(crate) fn exit_status_to_wire(status: &portable_pty::ExitStatus) -> Option<i
 /// deliberately stays `xterm-256color`; flip it only with fresh htop
 /// evidence (the harness has an `#[ignore]`d htop probe ready).
 #[must_use]
-pub fn default_shell_command() -> CommandBuilder {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+pub fn default_shell_command(shell: &str) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(shell);
     cmd.env("TERM", DEFAULT_TERM);
     cmd
@@ -380,13 +407,14 @@ fn dir_is_enterable(path: &std::path::Path) -> bool {
 /// seed pane's initial program (e.g. `defaults.spawn-on-attach`,
 /// phux-07y).
 ///
-/// The command runs via `$SHELL -c <command>` (falling back to
-/// `/bin/sh`), so shell quoting and arguments inside `command` behave the
-/// same as they would at an interactive prompt, and the pane closes when
-/// the command exits. `TERM` is set to match [`default_shell_command`].
+/// The command runs via `<shell> -c <command>` — `shell` is the resolved
+/// default shell (see [`resolve_shell`]: `defaults.shell`, then `$SHELL`,
+/// then `/bin/sh`) — so shell quoting and arguments inside `command`
+/// behave the same as they would at an interactive prompt, and the pane
+/// closes when the command exits. `TERM` is set to match
+/// [`default_shell_command`].
 #[must_use]
-pub fn shell_command(command: &str) -> CommandBuilder {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+pub fn shell_command(shell: &str, command: &str) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(shell);
     cmd.arg("-c");
     cmd.arg(command);
@@ -754,5 +782,54 @@ mod writer_tests {
         w.flush_script = vec![Err(std::io::Error::from_raw_os_error(EIO))];
         let err = flush_resilient(&mut w).expect_err("should fail");
         assert_eq!(err.failure, WriteFailure::PaneGone);
+||||||| parent of 15b02da0 (feat(config): defaults-table truth: implement defaults.shell, delete refresh-rate/log-filter)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// phux-i0e8.4.1: a configured `defaults.shell` wins over `$SHELL`.
+    #[test]
+    fn resolve_shell_prefers_the_configured_shell() {
+        assert_eq!(
+            resolve_shell_from(Some("/opt/fancy/fish"), Some("/bin/zsh".to_owned())),
+            "/opt/fancy/fish"
+        );
+    }
+
+    /// phux-i0e8.4.1: with `defaults.shell` unset (or blank — an empty
+    /// program name must never be spawned), `$SHELL` is honored.
+    #[test]
+    fn resolve_shell_falls_back_to_env_shell() {
+        assert_eq!(
+            resolve_shell_from(None, Some("/bin/zsh".to_owned())),
+            "/bin/zsh"
+        );
+        assert_eq!(
+            resolve_shell_from(Some("  "), Some("/bin/zsh".to_owned())),
+            "/bin/zsh"
+        );
+    }
+
+    /// phux-i0e8.4.1: with neither configured nor `$SHELL`, the
+    /// POSIX-guaranteed `/bin/sh` is the last resort.
+    #[test]
+    fn resolve_shell_falls_back_to_bin_sh() {
+        assert_eq!(resolve_shell_from(None, None), "/bin/sh");
+    }
+
+    /// Spawn path: the resolved shell IS the program the pane runs —
+    /// `default_shell_command` builds its `CommandBuilder` around it, so
+    /// a configured `defaults.shell` (threaded via `resolve_shell`)
+    /// drives the spawned child, not `$SHELL`.
+    #[test]
+    fn default_shell_command_spawns_the_resolved_shell() {
+        let cmd = default_shell_command(&resolve_shell_from(
+            Some("/opt/fancy/fish"),
+            Some("/bin/zsh".to_owned()),
+        ));
+        let argv = cmd.get_argv();
+        assert_eq!(argv.len(), 1, "a plain shell takes no arguments");
+        assert_eq!(argv[0], "/opt/fancy/fish");
     }
 }
