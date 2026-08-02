@@ -21,8 +21,9 @@ For implementers extending the protocol:
 
 - Message IDs `0x04..=0x0F` and `0x84..=0x8F` remain open for connection
   lifecycle; `ATTACH_READY = 0x83` is allocated.
-- `0x14` is allocated, `0x15` is retired, `HISTORY_REQUEST = 0x16` is
-  allocated, and `0x17..=0x1F` remain open. `0x91` is permanently retired.
+- `0x14` is allocated, `0x15` is retired, `HISTORY_REQUEST = 0x16` and
+  `INPUT_TERMINAL_REPLY = 0x17` are allocated, and `0x18..=0x1F` remain open.
+  `0x91` is permanently retired.
   `BOOTSTRAP_BEGIN..BOOTSTRAP_TOMBSTONE = 0x93..=0x97` are allocated and
   `0x98..=0x9F` remain open for hot-path messages.
 - Message IDs `0x24..=0x2F` and `0xA3..=0xAF`: reserved for further L1

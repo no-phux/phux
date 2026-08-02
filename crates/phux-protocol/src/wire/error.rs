@@ -67,6 +67,10 @@ pub enum DecodeError {
     #[error("APPLY_INPUT batch exceeds protocol limits")]
     ApplyInputLimitExceeded,
 
+    /// An `INPUT_TERMINAL_REPLY` payload was empty or exceeded its byte limit.
+    #[error("INPUT_TERMINAL_REPLY payload exceeds protocol limits")]
+    InputTerminalReplyLimitExceeded,
+
     /// A file-upload id used the reserved all-zero value.
     #[error("file upload id must not be zero")]
     InvalidFileUploadId,

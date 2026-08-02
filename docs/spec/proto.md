@@ -731,7 +731,7 @@ Every conforming consumer additionally implements:
 - **Terminal lifecycle:** `TERMINAL_OPENED`, `TERMINAL_CLOSED`.
 - **Structured events:** `TERMINAL_EVENT`, `BELL`; `ALERT` is recommended.
 - **Input:** `INPUT_KEY`, `INPUT_PASTE`, `VIEWPORT_RESIZE`;
-  `INPUT_MOUSE`, `INPUT_FOCUS`, and `INPUT_RAW` are recommended.
+  `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`, and `INPUT_RAW` are recommended.
 - **L1 commands:** `SPAWN`, `ATTACH_TERMINAL`, `DETACH_TERMINAL`,
   `KILL_TERMINAL`, `RESIZE_TERMINAL`.
 

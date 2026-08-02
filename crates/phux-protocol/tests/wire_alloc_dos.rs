@@ -21,7 +21,10 @@ use std::cell::Cell;
 
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::wire::DecodeError;
-use phux_protocol::wire::frame::{FrameKind, TYPE_BOOTSTRAP_CHUNK};
+use phux_protocol::wire::frame::{
+    FrameKind, MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_BOOTSTRAP_CHUNK,
+    TYPE_INPUT_TERMINAL_REPLY,
+};
 
 std::thread_local! {
     static MAX_ALLOC: Cell<usize> = const { Cell::new(0) };
@@ -211,5 +214,27 @@ fn malformed_bootstrap_payload_length_rejects_without_reserving() {
     assert_eq!(
         max, 0,
         "malformed payload length must fail before allocation"
+    );
+}
+
+#[test]
+fn oversized_terminal_reply_rejects_before_owned_bytes_allocation() {
+    let mut terminal = [0_u8; 5];
+    terminal[1..].copy_from_slice(&1_u32.to_be_bytes());
+    let payload = vec![0xA5; MAX_INPUT_TERMINAL_REPLY_BYTES + 1];
+    let mut body = vec![TYPE_INPUT_TERMINAL_REPLY];
+    tlv_field(&mut body, 1, &terminal);
+    tlv_field(&mut body, 2, &payload);
+    let frame = framed(&body);
+
+    let (result, max) =
+        largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
+    assert_eq!(
+        result.unwrap_err(),
+        DecodeError::InputTerminalReplyLimitExceeded
+    );
+    assert_eq!(
+        max, 0,
+        "oversized terminal reply must fail before Bytes allocation"
     );
 }

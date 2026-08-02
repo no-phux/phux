@@ -131,6 +131,14 @@ pub mod input_paste {
     pub const EVENT: u32 = 2;
 }
 
+/// `INPUT_TERMINAL_REPLY` body fields (`docs/spec/input.md` §6).
+pub mod input_terminal_reply {
+    /// Attached target `TerminalId` (positional tagged union).
+    pub const TERMINAL_ID: u32 = 1;
+    /// Opaque terminal-emulator-generated PTY reply bytes.
+    pub const BYTES: u32 = 2;
+}
+
 /// `FRAME_ACK` body fields (`docs/spec/proto.md` §7.2 / §8.2).
 pub mod frame_ack {
     /// Acked `TerminalId` (positional tagged union).
