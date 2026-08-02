@@ -103,6 +103,18 @@ impl ServerGuard {
     }
 }
 
+fn wait_for_terminal_absent(socket: &str, selector: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let (code, _, _) = ServerGuard::run(&["snapshot", "--json", "--socket", socket, selector]);
+        if code != 0 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("{selector} was still present five seconds after kill");
+}
+
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
 fn workspace_archive_saves_and_restores_sessions() {
@@ -377,6 +389,7 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
         code, 0,
         "remove the pre-agent seed pane before save: {stderr}"
     );
+    wait_for_terminal_absent(&source_socket, "@1");
     let (code, _, stderr) = ServerGuard::run_with_xdg(
         &[
             "workspace",
