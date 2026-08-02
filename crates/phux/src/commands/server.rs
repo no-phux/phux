@@ -19,6 +19,19 @@ const AUTO_SPAWN_SOCKET_TIMEOUT: Duration = Duration::from_secs(2);
 /// that the typical happy path resolves in a single poll.
 const AUTO_SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+/// Compose the fatal message printed when the server refuses to start
+/// because the config file exists but failed to load: the config path,
+/// the real loader error, and the remedy (`phux config check`).
+///
+/// One string, built once, so stderr and the server log tell the same
+/// story (phux-i0e8.1.1).
+fn broken_config_message(path: &Path, err: &impl std::fmt::Display) -> String {
+    format!(
+        "phux server: cannot start: config at {} failed to load\n  {err}\nrun: phux config check",
+        path.display()
+    )
+}
+
 fn select_connectors(
     configured: Vec<phux_config::ConnectorConfigEntry>,
     connect: Option<&str>,
@@ -100,63 +113,71 @@ pub(crate) fn run_server(
         let _ = rustix::process::setsid();
     }
 
+    // phux-i0e8.1.1: the config is loaded exactly ONCE, here. Every
+    // consumer below (seed command, `defaults.*`, hook catalog, connector
+    // registry, hub satellites) binds from this one snapshot, so an edit
+    // mid-startup cannot yield a torn read. A missing file is not an
+    // error — the loader returns the shipped defaults (loader.rs, NotFound
+    // arm). A file that exists but fails to load is fatal: silently
+    // disabling every configured hook and reverting scrollback/TERM/
+    // window-size policy behind a normal "listening on ..." banner is
+    // strictly worse than refusing to start. The connector registry's
+    // security stance (malformed must not read as empty) already made a
+    // parse error fatal; this makes the reported error the real one.
+    let config = match config_loader::load() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            let msg = broken_config_message(&config_loader::config_path(), &err);
+            // Both surfaces on purpose: stderr reaches a human who
+            // hand-started a foreground server; the auto-spawn path nulls
+            // stdout/stdin and points stderr at a log file, so the
+            // `tracing::error!` line is the durable trace either way.
+            eprintln!("{msg}");
+            tracing::error!(
+                path = %config_loader::config_path().display(),
+                error = %err,
+                "refusing to start: config failed to load; run: phux config check"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
     // phux-07y: `--seed-command` runs that command (via `$SHELL -c`) as
     // the pre-seeded session's initial program instead of a bare shell.
     // The naked-`phux` auto-spawn path passes `defaults.spawn-on-attach`
     // here; `phux new`'s auto-spawn and a hand-started `phux server`
     // pass nothing, so an explicitly-created session still gets a shell.
+    // A8 marker (phux-i0e8.4.1): `defaults.shell` lands here — shell
+    // resolution for the seed command reads from the single `config`
+    // snapshot above; keep this bind below the config load.
     let seed_command = seed_command.map(phux_server::terminal_actor::shell_command);
-
-    // `defaults.history-limit` bounds each pane's retained scrollback.
-    // A failed/absent config falls back to the schema default rather
-    // than aborting startup, mirroring the other config reads here.
-    let history_limit = config_loader::load().map_or_else(
-        |_| phux_config::DefaultsCfg::default().history_limit,
-        |cfg| cfg.defaults.history_limit,
-    );
-
-    // `defaults.cwd-inheritance` selects how `SPAWN_TERMINAL` resolves a
-    // new pane's working directory. Same fallback-on-error policy as the
-    // other config reads here.
-    let cwd_inheritance = config_loader::load().map_or_else(
-        |_| phux_config::DefaultsCfg::default().cwd_inheritance,
-        |cfg| cfg.defaults.cwd_inheritance,
-    );
-
-    // `defaults.term` is the `TERM` advertised to every server-spawned
-    // pane (a per-spawn `SPAWN_TERMINAL.env` entry for `TERM` overrides
-    // it). Same fallback-on-error policy as the other config reads here.
-    let term = config_loader::load().map_or_else(
-        |_| phux_config::DefaultsCfg::default().term,
-        |cfg| cfg.defaults.term,
-    );
-
-    // `defaults.window-size` picks the multi-client geometry policy
-    // (phux-nk07). Same fallback-on-error policy as the other config reads.
-    let window_size = config_loader::load().map_or_else(
-        |_| phux_config::WindowSize::default(),
-        |cfg| cfg.defaults.window_size,
-    );
 
     // `[[hooks.<name>]]` entries plus enabled plugin manifests' `[[events]]`
     // feed the server-side hook dispatcher (docs/consumers/tui.md §9,
     // phux-r82.1). Relative manifest paths resolve against the config file's
-    // directory. Same fallback-on-error policy as the other config reads.
-    let hook_catalog = config_loader::load().map_or_else(
-        |_| phux_server::hooks::HookCatalog::default(),
-        |cfg| phux_server::hooks::HookCatalog::from_config(&cfg, &config_loader::config_path()),
-    );
+    // directory.
+    let hook_catalog =
+        phux_server::hooks::HookCatalog::from_config(&config, &config_loader::config_path());
 
-    // Connector configuration is security-sensitive. Unlike appearance and
-    // convenience defaults above, a malformed registry must not be treated as
-    // an empty registry: that would silently stop the server dialing out.
-    let configured_connectors = match config_loader::load() {
-        Ok(cfg) => cfg.connector,
-        Err(err) => {
-            eprintln!("phux server: cannot read connector registry: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
+    // `defaults.history-limit` bounds each pane's retained scrollback.
+    // `defaults.cwd-inheritance` selects how `SPAWN_TERMINAL` resolves a
+    // new pane's working directory. `defaults.term` is the `TERM`
+    // advertised to every server-spawned pane (a per-spawn
+    // `SPAWN_TERMINAL.env` entry for `TERM` overrides it).
+    // `defaults.window-size` picks the multi-client geometry policy
+    // (phux-nk07).
+    let history_limit = config.defaults.history_limit;
+    let cwd_inheritance = config.defaults.cwd_inheritance;
+    let term = config.defaults.term;
+    let window_size = config.defaults.window_size;
+
+    // `[[satellites]]` registry, consumed below only when `--hub` was
+    // asked for.
+    let satellites = config.satellites;
+
+    // Connector registry — same single snapshot; a malformed config never
+    // reads as an empty registry because it never gets this far.
+    let configured_connectors = config.connector;
     let connector_entries = select_connectors(configured_connectors, connect.as_deref());
     if let Err(err) = phux_server::connector::plan_connectors(&connector_entries) {
         eprintln!("phux server failed: connector: {err}");
@@ -237,17 +258,10 @@ pub(crate) fn run_server(
     }
     // Hub mode (phux-v45.1, ADR-0007): hand the `[[satellites]]` registry to
     // the runtime, which validates it into the satellite table before
-    // binding. Unlike the `defaults.*` reads above, a failed config load is
-    // NOT swallowed here — the user explicitly asked for a hub, and starting
-    // one with a silently empty table would drop every configured satellite.
+    // binding. The registry comes from the same single config snapshot as
+    // everything else, so a hub can never start with a silently empty
+    // table: a broken config already refused to start above.
     if hub {
-        let satellites = match config_loader::load() {
-            Ok(cfg) => cfg.satellites,
-            Err(err) => {
-                eprintln!("phux server --hub: cannot read the satellite registry: {err}");
-                return ExitCode::FAILURE;
-            }
-        };
         server = server.hub(satellites);
     }
     if let Some(fd) = resume {
@@ -372,6 +386,23 @@ mod tests {
             token_file: Some(PathBuf::from(token)),
             cert_fingerprint: Some("AB".to_owned()),
         }
+    }
+
+    #[test]
+    fn broken_config_message_names_path_error_and_remedy() {
+        let msg = broken_config_message(
+            Path::new("/home/u/.config/phux/config.toml"),
+            &"config.toml: 3:14: expected `=` after key",
+        );
+        // The path the user must edit.
+        assert!(msg.contains("/home/u/.config/phux/config.toml"), "{msg}");
+        // The real loader error, verbatim — never a misattributed one.
+        assert!(
+            msg.contains("config.toml: 3:14: expected `=` after key"),
+            "{msg}"
+        );
+        // The remedy, exactly as the bead specifies it.
+        assert!(msg.contains("run: phux config check"), "{msg}");
     }
 
     #[test]
