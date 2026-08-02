@@ -499,7 +499,6 @@ impl Connection {
         id
     }
 
-
     /// Encode `frame` and write it to the server.
     pub async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
         self.writer.send(frame).await
@@ -788,9 +787,7 @@ fn validate_hello_ok(
     {
         return Err(AttachError::Protocol(format!(
             "HELLO_OK selected unsupported protocol {protocol_major}.{protocol_minor}.{protocol_patch}; client offered {}.{}.{}",
-            PROTOCOL_VERSION.major,
-            PROTOCOL_VERSION.minor,
-            PROTOCOL_VERSION.patch,
+            PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor, PROTOCOL_VERSION.patch,
         )));
     }
 
@@ -1093,7 +1090,7 @@ impl WsReader {
             )));
         }
         let (decoded, rest) =
-            FrameKind::decode_with_bootstrap_limits(&frame, self.bootstrap_limits).map_err(
+            FrameKind::decode_with_limits(&frame, self.bootstrap_limits).map_err(
                 |err| AttachError::Protocol(format!("server sent undecodable frame: {err:?}")),
             )?;
         if !rest.is_empty() {
@@ -1132,7 +1129,7 @@ fn decode_buffered(
         return Ok(None);
     }
     let (frame, _rest) =
-        FrameKind::decode_with_bootstrap_limits(&buf[..frame_len], bootstrap_limits).map_err(
+        FrameKind::decode_with_limits(&buf[..frame_len], bootstrap_limits).map_err(
             |err| AttachError::Protocol(format!("server sent undecodable frame: {err:?}")),
         )?;
     buf.advance(frame_len);
@@ -1628,5 +1625,4 @@ mod tests {
             Err(AttachError::Protocol(message)) if message.contains("limits outside")
         ));
     }
-
 }

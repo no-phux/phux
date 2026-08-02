@@ -609,7 +609,6 @@ pub(crate) trait LinkTransport {
     async fn connect(&self, spec: &DialSpec, token: Option<String>) -> Result<Self::Conn, String>;
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NegotiatedBootstrap {
     profile: BootstrapProfile,
@@ -811,8 +810,7 @@ async fn run_relay_session<C: LinkConn>(
 ) -> Option<String> {
     let profile = conn.bootstrap_profile();
     info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
-    let mut session =
-        super::relay::RelaySession::new(host.clone(), conn.bootstrap_limits());
+    let mut session = super::relay::RelaySession::new(host.clone(), conn.bootstrap_limits());
     // Housekeeping tick: transport keepalive + pending-map pruning. First
     // tick one interval out — the connection was live zero seconds ago.
     let mut keepalive = tokio::time::interval_at(
@@ -1137,8 +1135,9 @@ impl NetLinkConn {
         match self {
             Self::Quic { negotiated, .. }
             | Self::Ws { negotiated, .. }
-            | Self::Ssh { negotiated, .. } => negotiated
-                .expect("production link constructors negotiate before returning"),
+            | Self::Ssh { negotiated, .. } => {
+                negotiated.expect("production link constructors negotiate before returning")
+            }
         }
     }
 }
@@ -1374,7 +1373,9 @@ impl LinkConn for NetLinkConn {
             // reason. The bridged stream stays byte-transparent — there
             // is no in-band phux ping to originate on either.
             Self::Quic { .. } | Self::Ssh { .. } => Ok(()),
-            Self::Ws { ws, last_inbound } => {
+            Self::Ws {
+                ws, last_inbound, ..
+            } => {
                 if let Some(reason) = ws_idle_error(last_inbound.elapsed()) {
                     return Err(reason);
                 }

@@ -79,9 +79,7 @@ use std::fmt;
 
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile,
-};
+use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, SpawnResult,

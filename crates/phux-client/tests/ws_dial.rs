@@ -10,9 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, WsDial};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile,
-};
+use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::FrameKind;
 use tokio::net::TcpListener;

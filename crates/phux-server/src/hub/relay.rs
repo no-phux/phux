@@ -926,8 +926,7 @@ impl RelaySession {
         reason = "one resolve/re-tag arm per relayable return-leg frame kind; splitting hides the catalog"
     )]
     pub(crate) fn handle_inbound(&mut self, framed: &[u8]) {
-        let frame =
-            match FrameKind::decode_with_bootstrap_limits(framed, self.bootstrap_limits) {
+        let frame = match FrameKind::decode_with_limits(framed, self.bootstrap_limits) {
             Ok((frame, _rest)) => frame,
             Err(err) => {
                 warn!(satellite = %self.host, error = ?err, "undecodable frame from satellite; dropping");

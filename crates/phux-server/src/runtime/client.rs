@@ -812,7 +812,7 @@ where
         };
 
         let decoded = if let Some(selection) = negotiated {
-            FrameKind::decode_with_bootstrap_limits(&framed, selection.limits)
+            FrameKind::decode_with_limits(&framed, selection.limits)
         } else {
             FrameKind::decode(&framed)
         };
@@ -945,44 +945,44 @@ where
                     return Ok(());
                 }
                 let server_bootstrap = BootstrapCapabilities::new();
-                let (selected_profile, bootstrap_limits) =
-                    match select_bootstrap_profile(&client_caps, &server_bootstrap) {
-                        Ok(selection) => selection,
-                        Err(_) => {
-                            let message = format!(
-                                "no common protocol-0.7 bootstrap profile: client profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}; server profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}. NativeState requires an exact common codec and every required engine feature; advertise SynthesizedVtRaw/SynthesizedVtStateSync or update the incompatible peer",
-                                client_caps.bootstrap.profiles.as_wire(),
-                                client_caps.bootstrap.native_codecs.as_wire(),
-                                client_caps.bootstrap.native_features.as_wire(),
-                                server_bootstrap.profiles.as_wire(),
-                                server_bootstrap.native_codecs.as_wire(),
-                                server_bootstrap.native_features.as_wire(),
-                            );
-                            warn!(?client_id, %message, "HELLO codec unavailable");
-                            let _ = out_tx
-                                .send(Outbound::Frame(FrameKind::Error {
-                                    request_id: None,
-                                    code: ErrorCode::CodecUnavailable,
-                                    message,
-                                }))
-                                .await;
-                            drop(out_tx);
-                            let _ = sibling_tasks.join_next().await;
-                            return Ok(());
-                        }
-                    };
-                let mut effective_client_caps = client_caps;
-                effective_client_caps.output_mode = if matches!(
-                    selected_profile,
-                    BootstrapProfile::SynthesizedVtStateSync
+                let (selected_profile, bootstrap_limits) = match select_bootstrap_profile(
+                    &client_caps,
+                    &server_bootstrap,
                 ) {
-                    phux_protocol::caps::OutputMode::StateSync
-                } else {
-                    // NativeState and SynthesizedVtRaw both carry raw live PTY
-                    // output regardless of the client's compatibility
-                    // preference field.
-                    phux_protocol::caps::OutputMode::Raw
+                    Ok(selection) => selection,
+                    Err(_) => {
+                        let message = format!(
+                            "no common protocol-0.7 bootstrap profile: client profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}; server profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}. NativeState requires an exact common codec and every required engine feature; advertise SynthesizedVtRaw/SynthesizedVtStateSync or update the incompatible peer",
+                            client_caps.bootstrap.profiles.as_wire(),
+                            client_caps.bootstrap.native_codecs.as_wire(),
+                            client_caps.bootstrap.native_features.as_wire(),
+                            server_bootstrap.profiles.as_wire(),
+                            server_bootstrap.native_codecs.as_wire(),
+                            server_bootstrap.native_features.as_wire(),
+                        );
+                        warn!(?client_id, %message, "HELLO codec unavailable");
+                        let _ = out_tx
+                            .send(Outbound::Frame(FrameKind::Error {
+                                request_id: None,
+                                code: ErrorCode::CodecUnavailable,
+                                message,
+                            }))
+                            .await;
+                        drop(out_tx);
+                        let _ = sibling_tasks.join_next().await;
+                        return Ok(());
+                    }
                 };
+                let mut effective_client_caps = client_caps;
+                effective_client_caps.output_mode =
+                    if matches!(selected_profile, BootstrapProfile::SynthesizedVtStateSync) {
+                        phux_protocol::caps::OutputMode::StateSync
+                    } else {
+                        // NativeState and SynthesizedVtRaw both carry raw live PTY
+                        // output regardless of the client's compatibility
+                        // preference field.
+                        phux_protocol::caps::OutputMode::Raw
+                    };
 
                 // Cache all negotiated state exactly once before any stateful
                 // frame can be processed. Subsequent decoding immediately uses

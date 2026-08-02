@@ -345,7 +345,7 @@ fn handle_frame(app: &Rc<RefCell<App>>, frame: FrameKind) {
 fn decode_server_frame(app: &Rc<RefCell<App>>, framed: &[u8]) -> Result<FrameKind, String> {
     let limits = app.borrow().session.bootstrap_limits();
     let decoded = match limits {
-        Some(limits) => FrameKind::decode_with_bootstrap_limits(framed, limits),
+        Some(limits) => FrameKind::decode_with_limits(framed, limits),
         None => FrameKind::decode(framed),
     }
     .map_err(|error| format!("server sent undecodable frame: {error:?}"))?;

@@ -18,9 +18,7 @@ use bytes::BytesMut;
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, QuicDial};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile,
-};
+use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::policy::QUIC_ALPN;
 use phux_protocol::wire::frame::FrameKind;

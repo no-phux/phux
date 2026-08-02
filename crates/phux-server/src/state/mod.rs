@@ -1024,7 +1024,6 @@ mod tests {
         assert_eq!(client.client_caps.color_support, ColorSupport::Indexed16);
     }
 
-
     #[test]
     fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
         let mut s = ServerState::new();
