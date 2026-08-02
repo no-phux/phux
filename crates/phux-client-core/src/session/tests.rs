@@ -867,6 +867,84 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
     );
 }
 
+
+#[test]
+fn retained_history_limit_and_prefetch_threshold_are_explicit() {
+    let terminal_id = terminal(35);
+    let stream_id = stream(135);
+    let bootstrap_id = bootstrap(235);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    publish_direct_with_history(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        40,
+        b"cursor-0",
+        &mut effects,
+    );
+    effects.clear();
+    kernel
+        .update(
+            KernelInput::HistoryPage {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor: b"cursor-0",
+                next_cursor: Some(b"cursor-1"),
+                payload: b"history-page",
+                page_seq: 1,
+                rows: 128,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.as_slice().iter().all(|effect| !matches!(
+        effect,
+        KernelEffect::Send(KernelSend::HistoryRequest { .. })
+    )));
+    assert!(kernel.prefetch_history(&terminal_id, 0, &mut effects));
+
+    let limited = terminal(36);
+    publish_direct_with_history(
+        &mut kernel,
+        &limited,
+        stream_id,
+        bootstrap_id,
+        50,
+        b"limited-0",
+        &mut effects,
+    );
+    effects.clear();
+    kernel
+        .update(
+            KernelInput::HistoryPage {
+                terminal_id: &limited,
+                stream_id,
+                bootstrap_id,
+                cursor: b"limited-0",
+                next_cursor: Some(b"limited-1"),
+                payload: b"history-not-retained",
+                page_seq: 1,
+                rows: 1,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Status(KernelStatus::HistoryUnavailable {
+            reason: HistoryUnavailableReason::Limit,
+            ..
+        })
+    )));
+    assert_eq!(
+        kernel.history_cache(&limited).unwrap().status().state,
+        HistoryLoadState::Tombstoned
+    );
+}
+
 #[test]
 fn history_engine_failure_invalidates_only_history_and_live_output_continues() {
     let terminal_id = terminal(31);
@@ -961,7 +1039,7 @@ fn history_engine_failure_invalidates_only_history_and_live_output_continues() {
 }
 
 #[test]
-fn history_rejection_and_tombstone_never_retire_live_generation() {
+fn oversized_history_rejection_ends_history_without_retiring_live_generation() {
     let terminal_id = terminal(32);
     let stream_id = stream(132);
     let bootstrap_id = bootstrap(232);
@@ -995,43 +1073,21 @@ fn history_rejection_and_tombstone_never_retire_live_generation() {
     assert!(effects.as_slice().iter().any(|effect| matches!(
         effect,
         KernelEffect::Status(KernelStatus::History { status, .. })
-            if status.state == HistoryLoadState::Idle
-                && status.next_cursor.as_ref().is_some_and(|cursor| cursor.as_bytes() == b"cursor-0")
+            if status.state == HistoryLoadState::Tombstoned
+                && status.next_cursor.is_none()
+    )));
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Status(KernelStatus::HistoryUnavailable {
+            reason: HistoryUnavailableReason::Limit,
+            ..
+        })
     )));
     assert!(effects.as_slice().iter().all(|effect| !matches!(
         effect,
         KernelEffect::Send(KernelSend::HistoryRequest { .. })
     )));
 
-    effects.clear();
-    kernel
-        .update(
-            KernelInput::HistoryTombstone {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: b"cursor-0",
-                reason: HistoryUnavailableReason::Pruned,
-            },
-            &mut effects,
-        )
-        .unwrap();
-    assert!(
-        kernel
-            .tombstone(&terminal_id, stream_id, bootstrap_id)
-            .is_none()
-    );
-    assert!(effects.as_slice().iter().any(|effect| matches!(
-        effect,
-        KernelEffect::Status(KernelStatus::HistoryUnavailable {
-            reason: HistoryUnavailableReason::Pruned,
-            ..
-        })
-    )));
-    assert_eq!(
-        kernel.history_cache(&terminal_id).unwrap().status().state,
-        HistoryLoadState::Pruned
-    );
 
     kernel
         .update(
@@ -1040,7 +1096,7 @@ fn history_rejection_and_tombstone_never_retire_live_generation() {
                 stream_id,
                 bootstrap_id,
                 seq: 81,
-                payload: b"live-after-prune",
+                payload: b"live-after-limit",
             },
             &mut effects,
         )

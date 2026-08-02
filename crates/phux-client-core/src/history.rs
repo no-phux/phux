@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use sha2::{Digest, Sha256};
 
 /// Hard client-side row cap for one progressive history response.
 pub const MAX_HISTORY_PAGE_ROWS: u32 = 4096;
@@ -238,7 +239,6 @@ pub enum HistoryCacheError {
 
 #[derive(Debug, Clone)]
 struct CachedPage {
-    id: HistoryPageId,
     next_cursor: Option<HistoryCursor>,
     declared_rows: usize,
     payload: Arc<[u8]>,
@@ -246,12 +246,24 @@ struct CachedPage {
     pin_count: usize,
 }
 
+#[derive(Debug, Clone)]
+struct ConsumedPage {
+    id: HistoryPageId,
+    next_cursor: Option<HistoryCursor>,
+    declared_rows: usize,
+    digest: [u8; 32],
+    accounted_bytes: usize,
+}
+
 /// Bounded immutable newest-first history for one terminal generation.
 #[derive(Debug)]
 pub struct HistoryCache {
     config: HistoryCacheConfig,
-    pages: VecDeque<CachedPage>,
-    page_indices: HashMap<HistoryPageId, usize>,
+    pages: HashMap<HistoryPageId, CachedPage>,
+    page_order: VecDeque<HistoryPageId>,
+    evictable: VecDeque<HistoryPageId>,
+    consumed: VecDeque<ConsumedPage>,
+    consumed_bytes: usize,
     anchor_pages: HashMap<DocumentAnchorId, HashSet<HistoryPageId>>,
     visible: HashSet<HistoryPageId>,
     selection: HashSet<HistoryPageId>,
@@ -286,8 +298,11 @@ impl HistoryCache {
         let next_page_seq = newest_cursor.as_ref().map(|_| 1);
         Self {
             config,
-            pages: VecDeque::new(),
-            page_indices: HashMap::new(),
+            pages: HashMap::new(),
+            page_order: VecDeque::new(),
+            evictable: VecDeque::new(),
+            consumed: VecDeque::new(),
+            consumed_bytes: 0,
             anchor_pages: HashMap::new(),
             visible: HashSet::new(),
             selection: HashSet::new(),
@@ -301,7 +316,7 @@ impl HistoryCache {
             pinned_bytes: 0,
             pinned_materialized_rows: 0,
             viewport: ViewportAnchor::Tail,
-            projection_width: projection_width.max(1),
+            projection_width: projection_width.max(2),
             unread_rows: 0,
         }
     }
@@ -312,7 +327,7 @@ impl HistoryCache {
         HistoryStatus {
             state: self.state,
             loaded_pages: self.pages.len(),
-            loaded_bytes: self.loaded_bytes,
+            loaded_bytes: self.loaded_bytes.saturating_add(self.consumed_bytes),
             materialized_rows: self.materialized_rows,
             unread_rows: self.unread_rows,
             next_cursor: self.next_cursor.clone(),
@@ -334,7 +349,7 @@ impl HistoryCache {
 
     /// Record a frontend-local width for the next cooperative adapter projection.
     pub(crate) fn reproject(&mut self, width: u16) {
-        self.projection_width = width.max(1);
+        self.projection_width = width.max(2);
     }
 
     /// Mark the exact next cursor as requested and return it once.
@@ -413,11 +428,19 @@ impl HistoryCache {
             cursor: cursor.clone(),
             page_seq,
         };
-        if let Some(index) = self.page_indices.get(&id).copied() {
-            let existing = &self.pages[index];
+        if let Some(existing) = self.pages.get(&id) {
             if existing.payload.as_ref() == payload
                 && existing.next_cursor.as_ref() == next_cursor
                 && existing.declared_rows == declared_rows as usize
+            {
+                return Ok(HistoryPageCheck::Duplicate(id));
+            }
+            return Err(HistoryCacheError::DuplicateConflict);
+        }
+        if let Some(consumed) = self.consumed.iter().find(|entry| entry.id == id) {
+            if consumed.digest == payload_digest(payload)
+                && consumed.next_cursor.as_ref() == next_cursor
+                && consumed.declared_rows == declared_rows as usize
             {
                 return Ok(HistoryPageCheck::Duplicate(id));
             }
@@ -503,15 +526,41 @@ impl HistoryCache {
             .min(self.config.max_materialized_rows);
         self.loaded_bytes += payload.len();
         self.materialized_rows += materialized_rows;
-        self.pages.push_back(CachedPage {
+        self.pages.insert(
+            id.clone(),
+            CachedPage {
+                next_cursor: next_cursor.clone(),
+                declared_rows: declared_rows as usize,
+                payload: Arc::from(payload),
+                materialized_rows,
+                pin_count: 0,
+            },
+        );
+        self.page_order.push_back(id.clone());
+        self.evictable.push_back(id.clone());
+        let digest = payload_digest(payload);
+        let accounted_bytes = 32usize
+            .saturating_add(id.cursor.as_bytes().len())
+            .saturating_add(
+                next_cursor
+                    .as_ref()
+                    .map_or(0, |cursor| cursor.as_bytes().len()),
+            )
+            .saturating_add(std::mem::size_of::<u64>() + std::mem::size_of::<u32>());
+        self.consumed.push_back(ConsumedPage {
             id: id.clone(),
             next_cursor: next_cursor.clone(),
             declared_rows: declared_rows as usize,
-            payload: Arc::from(payload),
-            materialized_rows,
-            pin_count: 0,
+            digest,
+            accounted_bytes,
         });
-        self.page_indices.insert(id.clone(), self.pages.len() - 1);
+        self.consumed_bytes = self.consumed_bytes.saturating_add(accounted_bytes);
+        while self.consumed.len() > 64 {
+            let removed = self.consumed.pop_front().expect("ledger is nonempty");
+            self.consumed_bytes = self
+                .consumed_bytes
+                .saturating_sub(removed.accounted_bytes);
+        }
         self.next_page_seq = next_cursor
             .as_ref()
             .map(|next| if next == &cursor { page_seq + 1 } else { 1 });
@@ -530,8 +579,7 @@ impl HistoryCache {
     /// Borrow immutable opaque bytes for engine import or diagnostics.
     #[must_use]
     pub(crate) fn payload(&self, page: &HistoryPageId) -> Option<&[u8]> {
-        let index = self.page_indices.get(page).copied()?;
-        Some(&self.pages[index].payload)
+        Some(&self.pages.get(page)?.payload)
     }
 
     /// Record adapter-owned projection materialization accounting for one page.
@@ -540,13 +588,12 @@ impl HistoryCache {
         page: &HistoryPageId,
         rows: usize,
     ) -> Result<(), HistoryCacheError> {
-        let index = self
-            .page_indices
+        let existing = self
+            .pages
             .get(page)
-            .copied()
             .ok_or(HistoryCacheError::PageUnavailable)?;
-        let old = self.pages[index].materialized_rows;
-        let pinned = self.pages[index].pin_count > 0;
+        let old = existing.materialized_rows;
+        let pinned = existing.pin_count > 0;
         let old_pinned_rows = self.pinned_materialized_rows;
         if pinned {
             let required = self
@@ -565,7 +612,10 @@ impl HistoryCache {
             .materialized_rows
             .saturating_sub(old)
             .saturating_add(rows);
-        self.pages[index].materialized_rows = rows;
+        self.pages
+            .get_mut(page)
+            .expect("page checked above")
+            .materialized_rows = rows;
         self.evict_materializations();
         if self.materialized_rows > self.config.max_materialized_rows {
             let required = self.materialized_rows;
@@ -573,7 +623,10 @@ impl HistoryCache {
                 .materialized_rows
                 .saturating_sub(rows)
                 .saturating_add(old);
-            self.pages[index].materialized_rows = old;
+            self.pages
+                .get_mut(page)
+                .expect("page checked above")
+                .materialized_rows = old;
             self.pinned_materialized_rows = old_pinned_rows;
             return Err(HistoryCacheError::ProjectionTooLarge {
                 required,
@@ -591,7 +644,7 @@ impl HistoryCache {
         let next: HashSet<_> = pages.into_iter().collect();
         if next
             .iter()
-            .any(|page| !self.page_indices.contains_key(page))
+            .any(|page| !self.pages.contains_key(page))
         {
             return Err(HistoryCacheError::PageUnavailable);
         }
@@ -641,7 +694,7 @@ impl HistoryCache {
         let pages: HashSet<_> = pages.into_iter().collect();
         if pages
             .iter()
-            .any(|page| !self.page_indices.contains_key(page))
+            .any(|page| !self.pages.contains_key(page))
         {
             return Err(HistoryCacheError::PageUnavailable);
         }
@@ -708,7 +761,7 @@ impl HistoryCache {
         let next: HashSet<_> = pages.into_iter().collect();
         if next
             .iter()
-            .any(|page| !self.page_indices.contains_key(page))
+            .any(|page| !self.pages.contains_key(page))
         {
             return Err(HistoryCacheError::PageUnavailable);
         }
@@ -738,7 +791,11 @@ impl HistoryCache {
     }
 
     pub(crate) fn all_page_ids(&self) -> Vec<HistoryPageId> {
-        self.pages.iter().map(|page| page.id.clone()).collect()
+        self.page_order
+            .iter()
+            .filter(|id| self.pages.contains_key(*id))
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn invalidate_cursor(
@@ -768,9 +825,8 @@ impl HistoryCache {
         self.invalidate(HistoryLoadState::Tombstoned);
     }
 
-    fn pin(&mut self, page: &HistoryPageId) {
-        if let Some(index) = self.page_indices.get(page).copied() {
-            let page = &mut self.pages[index];
+    fn pin(&mut self, id: &HistoryPageId) {
+        if let Some(page) = self.pages.get_mut(id) {
             if page.pin_count == 0 {
                 self.pinned_bytes = self.pinned_bytes.saturating_add(page.payload.len());
                 self.pinned_materialized_rows = self
@@ -781,14 +837,14 @@ impl HistoryCache {
         }
     }
 
-    fn unpin(&mut self, page: &HistoryPageId) {
-        if let Some(index) = self.page_indices.get(page).copied() {
-            let page = &mut self.pages[index];
+    fn unpin(&mut self, id: &HistoryPageId) {
+        if let Some(page) = self.pages.get_mut(id) {
             if page.pin_count == 1 {
                 self.pinned_bytes = self.pinned_bytes.saturating_sub(page.payload.len());
                 self.pinned_materialized_rows = self
                     .pinned_materialized_rows
                     .saturating_sub(page.materialized_rows);
+                self.evictable.push_back(id.clone());
             }
             page.pin_count = page.pin_count.saturating_sub(1);
         }
@@ -796,34 +852,43 @@ impl HistoryCache {
 
     fn evict_to_budget(&mut self) {
         while self.loaded_bytes > self.config.max_bytes {
-            let Some(index) = self.pages.iter().position(|page| page.pin_count == 0) else {
+            let Some(id) = self.evictable.pop_front() else {
                 break;
             };
-            let removed = self.pages.remove(index).expect("existing page");
+            let removable = self
+                .pages
+                .get(&id)
+                .is_some_and(|page| page.pin_count == 0);
+            if !removable {
+                continue;
+            }
+            let removed = self.pages.remove(&id).expect("evictable page exists");
             self.loaded_bytes = self.loaded_bytes.saturating_sub(removed.payload.len());
             self.materialized_rows = self
                 .materialized_rows
                 .saturating_sub(removed.materialized_rows);
-            self.visible.remove(&removed.id);
-            self.selection.remove(&removed.id);
+            self.visible.remove(&id);
+            self.selection.remove(&id);
             for pages in self.anchor_pages.values_mut() {
-                pages.remove(&removed.id);
+                pages.remove(&id);
             }
-            self.reindex();
+        }
+        if self.page_order.len() > self.pages.len().saturating_mul(2).saturating_add(64) {
+            self.page_order.retain(|id| self.pages.contains_key(id));
         }
         self.evict_materializations();
     }
 
     fn evict_materializations(&mut self) {
         while self.materialized_rows > self.config.max_materialized_rows {
-            let Some(page) = self
-                .pages
-                .iter_mut()
-                .rev()
-                .find(|page| page.pin_count == 0 && page.materialized_rows > 0)
-            else {
+            let Some(id) = self.page_order.iter().rev().find(|id| {
+                self.pages
+                    .get(*id)
+                    .is_some_and(|page| page.pin_count == 0 && page.materialized_rows > 0)
+            }) else {
                 break;
             };
+            let page = self.pages.get_mut(id).expect("ordered page exists");
             self.materialized_rows = self
                 .materialized_rows
                 .saturating_sub(page.materialized_rows);
@@ -831,24 +896,17 @@ impl HistoryCache {
         }
     }
 
-    fn reindex(&mut self) {
-        self.page_indices.clear();
-        self.page_indices.extend(
-            self.pages
-                .iter()
-                .enumerate()
-                .map(|(index, page)| (page.id.clone(), index)),
-        );
-    }
-
     fn invalidate(&mut self, state: HistoryLoadState) {
         self.pages.clear();
-        self.page_indices.clear();
+        self.page_order.clear();
+        self.evictable.clear();
         self.anchor_pages.clear();
         self.visible.clear();
         self.selection.clear();
         self.next_cursor = None;
         self.next_page_seq = None;
+        self.consumed.clear();
+        self.consumed_bytes = 0;
         self.request_max_bytes = 0;
         self.request_max_rows = 0;
         self.loaded_bytes = 0;
@@ -861,8 +919,13 @@ impl HistoryCache {
     }
 }
 
+fn payload_digest(payload: &[u8]) -> [u8; 32] {
+    Sha256::digest(payload).into()
+}
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn config(bytes: usize, rows: usize) -> HistoryCacheConfig {
@@ -1059,5 +1122,81 @@ mod tests {
         assert_eq!(status.state, HistoryLoadState::Loading);
         assert_eq!(status.loaded_pages, 0);
         assert_eq!(status.next_cursor, Some(cursor(1)));
+    }
+
+    #[test]
+    fn empty_anchor_registration_survives_page_eviction() {
+        let mut cache = HistoryCache::new(config(4, 1), Some(cursor(1)), 80);
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        cache
+            .accept_page(cursor(1), 1, Some(cursor(1)), 0, 0, b"aaaa")
+            .unwrap();
+        cache
+            .register_anchor_pages(DocumentAnchorId::from_raw(1), std::iter::empty())
+            .unwrap();
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        cache
+            .accept_page(cursor(1), 2, None, 0, 0, b"bbbb")
+            .unwrap();
+        assert_eq!(
+            cache.register_anchor_pages(DocumentAnchorId::from_raw(2), std::iter::empty()),
+            Err(HistoryCacheError::ProjectionTooLarge {
+                required: 2,
+                budget: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn consumed_digest_survives_raw_page_eviction() {
+        let mut cache = HistoryCache::new(config(4, 4), Some(cursor(1)), 80);
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        let first = cache
+            .accept_page(cursor(1), 1, Some(cursor(1)), 1, 1, b"aaaa")
+            .unwrap();
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        cache
+            .accept_page(cursor(1), 2, None, 1, 1, b"bbbb")
+            .unwrap();
+        assert!(cache.payload(&first).is_none());
+        assert_eq!(
+            cache.check_page(&cursor(1), 1, Some(&cursor(1)), 1, b"aaaa"),
+            Ok(HistoryPageCheck::Duplicate(first))
+        );
+        assert_eq!(
+            cache.check_page(&cursor(1), 1, Some(&cursor(1)), 1, b"changed"),
+            Err(HistoryCacheError::DuplicateConflict)
+        );
+    }
+
+    #[test]
+    fn retry_requires_growth_within_hard_caps() {
+        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        assert_eq!(cache.retry_limits(64, 8), None);
+        assert_eq!(cache.retry_limits(80, 8), Some((80, 8)));
+        assert_eq!(cache.retry_limits(129, 8), None);
+        assert_eq!(cache.retry_limits(80, 9), None);
+    }
+
+    #[test]
+    fn sustained_budget_eviction_keeps_stable_order_storage_bounded() {
+        let mut cache = HistoryCache::new(config(1, 1), Some(cursor(1)), 80);
+        for page_seq in 1..=1_000 {
+            assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+            cache
+                .accept_page(
+                    cursor(1),
+                    page_seq,
+                    Some(cursor(1)),
+                    0,
+                    0,
+                    &[page_seq as u8],
+                )
+                .unwrap();
+        }
+        assert_eq!(cache.pages.len(), 1);
+        assert!(cache.page_order.len() <= cache.pages.len() * 2 + 64);
+        assert_eq!(cache.consumed.len(), 64);
     }
 }

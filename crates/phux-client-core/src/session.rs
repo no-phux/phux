@@ -14,7 +14,7 @@ use crate::engine::{
 };
 use crate::history::{
     DocumentAnchorId, HistoryCache, HistoryCacheConfig, HistoryCacheError, HistoryCursor,
-    HistoryLoadState, HistoryPageCheck, HistoryStatus,
+    HistoryLoadState, HistoryPageCheck, HistoryStatus, ViewportAnchor,
 };
 
 /// Why one history cursor became unavailable without retiring live state.
@@ -1610,10 +1610,17 @@ impl<E: EngineAdapter> SessionKernel<E> {
             });
         }
 
-        let rows_before = self
-            .adapter
-            .total_rows(&replica.engine)
-            .map_err(KernelError::Engine)?;
+        let pinned_anchor = match replica.history.viewport_anchor() {
+            ViewportAnchor::Pinned(anchor) => Some(anchor),
+            ViewportAnchor::Tail => None,
+        };
+        let distance_before = if let Some(anchor) = pinned_anchor {
+            self.adapter
+                .history_anchor_tail_distance(&replica.engine, anchor)
+                .map_err(KernelError::Engine)?
+        } else {
+            None
+        };
         self.engine_effects.clear();
         if let Err(error) =
             self.adapter
@@ -1645,13 +1652,41 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }
             return Err(KernelError::Engine(error));
         }
-        let rows_after = self
-            .adapter
-            .total_rows(&replica.engine)
-            .map_err(KernelError::Engine)?;
-        replica
-            .history
-            .note_live_output(rows_after.saturating_sub(rows_before));
+        if let Some(anchor) = pinned_anchor {
+            match (
+                distance_before,
+                self.adapter
+                    .history_anchor_tail_distance(&replica.engine, anchor),
+            ) {
+                (Some(before), Ok(Some(after))) => {
+                    replica.history.note_live_output(after.saturating_sub(before));
+                }
+                (None, Ok(Some(_))) | (_, Ok(None)) => {
+                    replica.history.mark_pruned();
+                    self.adapter.clear_document_state(&mut replica.engine);
+                    effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
+                        key: replica.key.clone(),
+                        reason: HistoryUnavailableReason::Pruned,
+                    }));
+                    effects.push(KernelEffect::Status(KernelStatus::History {
+                        key: replica.key.clone(),
+                        status: replica.history.status(),
+                    }));
+                }
+                (_, Err(_)) => {
+                    replica.history.tombstone();
+                    self.adapter.clear_document_state(&mut replica.engine);
+                    effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
+                        key: replica.key.clone(),
+                        reason: HistoryUnavailableReason::CodecFailure,
+                    }));
+                    effects.push(KernelEffect::Status(KernelStatus::History {
+                        key: replica.key.clone(),
+                        status: replica.history.status(),
+                    }));
+                }
+            }
+        }
         replica.last_seq = seq;
         replica.next_seq = seq.checked_add(1);
         let replica_key = replica.key.clone();
@@ -1939,22 +1974,36 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .filter(|replica| generation_of(&replica.key) == generation)
             .ok_or_else(|| mismatch_error(terminal_id, generation))?;
         let cursor = HistoryCursor::new(cursor);
+        let retry_limits = (reason == HistoryRejectionReason::TooSmall)
+            .then(|| replica.history.retry_limits(required_bytes, required_rows))
+            .flatten();
         if !replica.history.cancel_fetch(&cursor) {
             return Err(KernelError::HistoryCache(HistoryCacheError::Gap));
         }
-        let retry = reason == HistoryRejectionReason::TooSmall
-            && replica.history.can_retry(required_bytes, required_rows);
-        let next_request = retry.then(|| replica.history.begin_fetch()).flatten();
+        let next_request = retry_limits.and_then(|(max_bytes, max_rows)| {
+            replica
+                .history
+                .begin_fetch_with_limits(max_bytes, max_rows)
+                .map(|cursor| (cursor, max_bytes, max_rows))
+        });
+        if reason == HistoryRejectionReason::TooSmall && next_request.is_none() {
+            replica.history.tombstone();
+            self.adapter.clear_document_state(&mut replica.engine);
+            effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
+                key: replica.key.clone(),
+                reason: HistoryUnavailableReason::Limit,
+            }));
+        }
         effects.push(KernelEffect::Status(KernelStatus::History {
             key: replica.key.clone(),
             status: replica.history.status(),
         }));
-        if let Some(cursor) = next_request {
+        if let Some((cursor, max_bytes, max_rows)) = next_request {
             effects.push(KernelEffect::Send(KernelSend::HistoryRequest {
                 key: replica.key.clone(),
                 cursor: cursor.as_bytes().to_vec(),
-                max_bytes: self.history_config.request_max_bytes.max(required_bytes),
-                max_rows: self.history_config.request_max_rows.max(required_rows),
+                max_bytes,
+                max_rows,
             }));
         }
         Ok(())
@@ -2167,14 +2216,28 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
         replica.history.reproject(width);
         let width = replica.history.projection_width();
         let origin = match replica.history.viewport_anchor() {
-            crate::history::ViewportAnchor::Tail => EngineProjectionOrigin::Tail,
-            crate::history::ViewportAnchor::Pinned(anchor) => {
-                EngineProjectionOrigin::Anchor(anchor)
+            ViewportAnchor::Tail => EngineProjectionOrigin::Tail,
+            ViewportAnchor::Pinned(anchor) => {
+                let valid = self
+                    .adapter
+                    .document_anchor_point(&replica.engine, anchor, DocumentSpace::History)
+                    .map_err(KernelError::Engine)?
+                    .is_some();
+                if valid {
+                    EngineProjectionOrigin::Anchor(anchor)
+                } else {
+                    replica.history.mark_pruned();
+                    self.adapter.clear_document_state(&mut replica.engine);
+                    EngineProjectionOrigin::Tail
+                }
             }
         };
-        self.adapter
+        let mut projection = self
+            .adapter
             .project_history(&mut replica.engine, width, origin, max_rows)
-            .map_err(KernelError::Engine)
+            .map_err(KernelError::Engine)?;
+        projection.has_older |= replica.history.has_continuation();
+        Ok(projection)
     }
 
     /// Create one engine-owned anchor in the published document.

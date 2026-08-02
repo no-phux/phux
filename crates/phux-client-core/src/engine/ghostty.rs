@@ -427,6 +427,30 @@ impl EngineAdapter for GhosttyAdapter {
         replica.anchors.clear();
     }
 
+    fn history_anchor_tail_distance(
+        &self,
+        replica: &Self::Replica,
+        anchor: DocumentAnchorId,
+    ) -> Result<Option<u64>, Self::Error> {
+        let Some(anchor) = replica.anchors.get(&anchor) else {
+            return Ok(None);
+        };
+        let Some(point) = anchor.point(PointSpace::History)? else {
+            return Ok(None);
+        };
+        let rows = replica
+            .terminal()
+            .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?
+            .scrollback_rows()?;
+        let y = point.y as usize;
+        if y >= rows {
+            return Ok(None);
+        }
+        Ok(Some(
+            u64::try_from(rows.saturating_sub(y).saturating_sub(1)).unwrap_or(u64::MAX),
+        ))
+    }
+
     fn apply_bootstrap_chunk(
         &mut self,
         replica: &mut Self::Replica,
@@ -566,7 +590,7 @@ impl EngineDocumentAdapter for GhosttyAdapter {
         let terminal = replica
             .terminal()
             .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?;
-        let width = width.max(1);
+        let width = width.max(2);
         if max_rows == 0 {
             return Ok(EngineHistoryProjection {
                 width,
@@ -576,7 +600,7 @@ impl EngineDocumentAdapter for GhosttyAdapter {
         }
         let history_rows = terminal.scrollback_rows()?;
         let physical_limit = max_rows.saturating_add(1);
-        let (start, tail) = match origin {
+        let (mut start, tail) = match origin {
             EngineProjectionOrigin::Tail => (history_rows.saturating_sub(physical_limit), true),
             EngineProjectionOrigin::Anchor(anchor) => {
                 let Some(anchor) = replica.anchors.get(&anchor) else {
@@ -596,17 +620,28 @@ impl EngineDocumentAdapter for GhosttyAdapter {
                 (point.y as usize, false)
             }
         };
-        let physical_end = history_rows.min(start.saturating_add(physical_limit));
+        while start > 0 && history_row_wrapped(terminal, start - 1)? {
+            start -= 1;
+        }
+        let mut physical_end = history_rows.min(start.saturating_add(physical_limit));
+        while physical_end < history_rows
+            && physical_end > start
+            && history_row_wrapped(terminal, physical_end - 1)?
+        {
+            physical_end += 1;
+        }
         let source = engine_history_rows(terminal, start, physical_end)?;
         let mut rows = rewrap_history_rows(source, width);
-        let mut has_older = start > 0 || physical_end < history_rows || rows.len() > max_rows;
+        let mut has_older = start > 0;
         if rows.len() > max_rows {
             if tail {
                 rows.drain(..rows.len() - max_rows);
             } else {
                 rows.truncate(max_rows);
             }
-            has_older = true;
+            if tail {
+                has_older = true;
+            }
         }
         Ok(EngineHistoryProjection {
             width,
@@ -785,9 +820,11 @@ impl EngineDocumentAdapter for GhosttyAdapter {
 }
 
 fn enforce_history_budget(replica: &mut GhosttyReplica) -> Result<(), GhosttyEngineError> {
-    let history_max_bytes = replica.history_max_bytes;
-    if history_max_bytes.is_some() {
-        replica.set_scrollback_max_bytes(history_max_bytes)?;
+    if replica.history_max_bytes.is_some() {
+        replica.set_scrollback_max_bytes(replica.history_max_bytes)?;
+    }
+    if replica.history_max_lines.is_some() {
+        replica.set_scrollback_max_lines(replica.history_max_lines)?;
     }
     Ok(())
 }
@@ -810,6 +847,17 @@ fn to_ghostty_space(space: DocumentSpace) -> PointSpace {
         DocumentSpace::Viewport => PointSpace::Viewport,
         DocumentSpace::Active => PointSpace::Active,
     }
+}
+
+fn history_row_wrapped(
+    terminal: &GhosttyTerminal<'_, '_>,
+    row: usize,
+) -> Result<bool, GhosttyEngineError> {
+    let y = u32::try_from(row).unwrap_or(u32::MAX);
+    Ok(terminal
+        .grid_ref(Point::History(PointCoordinate { x: 0, y }))?
+        .row()?
+        .is_wrapped()?)
 }
 
 fn grid_ref_graphemes(
@@ -1340,7 +1388,8 @@ mod tests {
             for fragment in history.chunks(width) {
                 history_progress = adapter
                     .apply_history_page(&mut replica, fragment, &mut effects)
-                    .expect("arbitrary history fragment");
+                    .expect("arbitrary history fragment")
+                    .progress;
             }
             assert_eq!(history_progress, BootstrapProgress::Finished);
             assert_eq!(
@@ -1630,7 +1679,8 @@ mod tests {
         assert_eq!(
             adapter
                 .apply_history_page(&mut replica, &history, &mut effects)
-                .expect("complete history"),
+                .expect("complete history")
+                .progress,
             BootstrapProgress::Finished
         );
 
@@ -1640,6 +1690,14 @@ mod tests {
         assert_eq!(projection.width, 12);
         assert_eq!(projection.rows.len(), 3);
         assert!(projection.has_older);
+        let narrow = adapter
+            .project_history(&mut replica, 1, EngineProjectionOrigin::Tail, 3)
+            .expect("minimum-width projection");
+        assert_eq!(narrow.width, 2);
+        assert!(narrow
+            .rows
+            .iter()
+            .all(|row| row.text.chars().count() <= usize::from(narrow.width)));
 
         let found = adapter
             .search_loaded(&mut replica, "line 10", 1)
@@ -1657,9 +1715,18 @@ mod tests {
                 .as_deref(),
             Some("line 10")
         );
+        let distance_before = adapter
+            .history_anchor_tail_distance(&replica, found[0].start)
+            .expect("anchor distance")
+            .expect("live anchor");
         adapter
             .apply_output(&mut replica, b"newer-live-output\r\n", &mut effects)
             .expect("live append");
+        let distance_after = adapter
+            .history_anchor_tail_distance(&replica, found[0].start)
+            .expect("anchor distance")
+            .expect("retained anchor");
+        assert_eq!(distance_after, distance_before + 1);
         assert!(
             adapter
                 .document_anchor_point(&replica, found[0].start, DocumentSpace::History)
@@ -1681,6 +1748,38 @@ mod tests {
         assert!(replica.anchors.is_empty());
         assert!(other.anchors.is_empty());
     }
+
+    #[test]
+    fn projection_extends_anchor_to_complete_soft_wrapped_line() {
+        let mut adapter = native_adapter();
+        let mut replica = adapter
+            .start_replica(BootstrapStreamProfile::SynthesizedVtRaw, geometry())
+            .expect("synthesized replica");
+        let mut effects = EngineEffectBuffer::new();
+        let mut output = vec![b'x'; 320];
+        output.extend_from_slice(b"\r\none\r\ntwo\r\nthree\r\nfour\r\n");
+        adapter
+            .apply_output(&mut replica, &output, &mut effects)
+            .expect("wrapped output");
+        let anchor = adapter
+            .track_document_anchor(
+                &mut replica,
+                DocumentPoint {
+                    space: DocumentSpace::History,
+                    x: 1,
+                    y: 2,
+                },
+            )
+            .expect("anchor inside wrapped line");
+        let projection = adapter
+            .project_history(&mut replica, 320, EngineProjectionOrigin::Anchor(anchor), 1)
+            .expect("complete logical line");
+        assert_eq!(projection.width, 320);
+        assert_eq!(projection.rows.len(), 1);
+        assert_eq!(projection.rows[0].text, "x".repeat(320));
+        assert!(!projection.has_older);
+    }
+
     fn projected(text: &str, width: usize) -> ProjectedCell {
         ProjectedCell {
             text: text.to_owned(),
@@ -1737,6 +1836,20 @@ mod tests {
                 .map(|row| (row.text.as_str(), row.soft_wrapped))
                 .collect::<Vec<_>>(),
             vec![("ae\u{301}", true), ("界z", false)]
+        );
+    }
+
+    #[test]
+    fn minimum_projection_width_keeps_leading_cjk_within_row() {
+        let rows = rewrap_history_rows(
+            vec![(vec![projected("界", 2), projected("a", 1)], false)],
+            2,
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.text.as_str(), row.soft_wrapped))
+                .collect::<Vec<_>>(),
+            vec![("界", true), ("a", false)]
         );
     }
 }
