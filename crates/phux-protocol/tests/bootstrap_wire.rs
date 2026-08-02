@@ -875,14 +875,22 @@ fn every_native_required_feature_is_strict() {
         EngineFeatureSet::with(&[
             EngineFeature::ReadyBoundary,
             EngineFeature::HistoryPages,
+            EngineFeature::BoundedHistoryControl,
         ]),
         EngineFeatureSet::with(&[
             EngineFeature::Continuation,
             EngineFeature::HistoryPages,
+            EngineFeature::BoundedHistoryControl,
         ]),
         EngineFeatureSet::with(&[
             EngineFeature::Continuation,
             EngineFeature::ReadyBoundary,
+            EngineFeature::BoundedHistoryControl,
+        ]),
+        EngineFeatureSet::with(&[
+            EngineFeature::Continuation,
+            EngineFeature::ReadyBoundary,
+            EngineFeature::HistoryPages,
         ]),
     ];
     let native_and_raw = BootstrapProfileSet::with(&[
@@ -1004,7 +1012,7 @@ fn opaque_lifecycle_records_reencode_byte_identically() {
 }
 
 #[test]
-fn negotiated_payload_limits_reject_before_owned_copy() {
+fn negotiated_response_payload_limits_reject_but_request_budgets_reach_the_host() {
     let limits = BootstrapLimits::new(1024, 2048).unwrap();
     let chunk = FrameKind::BootstrapChunk {
         terminal_id: TerminalId::local(1),
@@ -1049,11 +1057,9 @@ fn negotiated_payload_limits_reject_before_owned_copy() {
     };
     encoded.clear();
     request.encode(&mut encoded);
-    assert_eq!(
-        FrameKind::decode_with_limits(&encoded, limits).unwrap_err(),
-        DecodeError::BootstrapLimitExceeded
-    );
-    assert!(FrameKind::decode(&encoded).is_ok());
+    let (decoded, tail) = FrameKind::decode_with_limits(&encoded, limits).unwrap();
+    assert!(tail.is_empty());
+    assert_eq!(decoded, request);
 }
 
 #[test]

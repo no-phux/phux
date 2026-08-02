@@ -282,9 +282,10 @@ EngineCodecSet = bitset (u64) {
 }
 
 EngineFeatureSet = bitset (u32) {
-    CONTINUATION   = 0x00000001,
-    READY_BOUNDARY = 0x00000002,
-    HISTORY_PAGES  = 0x00000004,
+    CONTINUATION           = 0x00000001,
+    READY_BOUNDARY         = 0x00000002,
+    HISTORY_PAGES          = 0x00000004,
+    BOUNDED_HISTORY_CONTROL = 0x00000008,
 }
 
 BootstrapProfile = tagged_union {
@@ -301,8 +302,9 @@ The three profile variants are the complete mode matrix. Native always means
 exact checkpoint plus byte-identical raw PTY continuation; there is no native
 StateSync value to encode. `OutputMode` chooses a preferred synthesized profile
 only. Native is selected first when both peers advertise it, share an exact
-codec, and the feature intersection contains all three required v2 features.
-Otherwise the selected synthesized variant must be in both advertised sets.
+codec, and the feature intersection contains all four required v2 features,
+including `BOUNDED_HISTORY_CONTROL`. Otherwise the selected synthesized variant
+must be in both advertised sets.
 No fallback occurs after HELLO_OK.
 
 `ClientCapabilities` is one positional sub-record inside HELLO field 5. Protocol

@@ -406,6 +406,8 @@ pub enum EngineFeature {
     ReadyBoundary = 1 << 1,
     /// History can continue in independently delivered pages after READY.
     HistoryPages = 1 << 2,
+    /// Bounded history requests, sequenced pages, and cursor-scoped statuses.
+    BoundedHistoryControl = 1 << 3,
 }
 
 /// Additive set of libghostty checkpoint features.
@@ -415,7 +417,8 @@ pub struct EngineFeatureSet(u32);
 impl EngineFeatureSet {
     const KNOWN: u32 = (EngineFeature::Continuation as u32)
         | (EngineFeature::ReadyBoundary as u32)
-        | (EngineFeature::HistoryPages as u32);
+        | (EngineFeature::HistoryPages as u32)
+        | (EngineFeature::BoundedHistoryControl as u32);
 
     /// Empty feature set.
     #[must_use]
@@ -1435,6 +1438,8 @@ mod tests {
                 .contains(EngineCodec::LibghosttyCheckpointV2)
         );
         assert_eq!(caps.native_features, EngineFeatureSet::required_native());
+        assert_eq!(EngineFeature::BoundedHistoryControl as u32, 0x0000_0008);
+        assert_eq!(caps.native_features.as_wire(), 0x0000_000f);
     }
 
     #[test]

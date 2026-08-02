@@ -73,10 +73,13 @@ HELLO_OK. No shared usable profile produces fatal
 Native codec/version negotiation is orthogonal to profile negotiation.
 `NativeState` requires an exact codec intersection, not an inferred range.
 Protocol 0.7 allocates `LibghosttyCheckpointV2` and requires the
-`CONTINUATION`, `READY_BOUNDARY`, and `HISTORY_PAGES` engine feature bits.
-HELLO advertises exact codec and feature sets; HELLO_OK names the exact selected
-codec and negotiated feature intersection. Future checkpoint versions receive
-new set bits and are never assumed compatible.
+`CONTINUATION`, `READY_BOUNDARY`, `HISTORY_PAGES`, and
+`BOUNDED_HISTORY_CONTROL` engine feature bits. The last bit covers the bounded
+row budgets, sequenced/authenticated pages, and cursor-scoped history statuses
+defined by this ADR; a peer lacking it cannot negotiate NativeState. HELLO
+advertises exact codec and feature sets; HELLO_OK names the exact selected codec
+and negotiated feature intersection. Future checkpoint versions receive new
+set bits and are never assumed compatible.
 
 Each HELLO also advertises nonzero `max_chunk_bytes` and
 `max_history_page_bytes`; HELLO_OK selects the per-axis minimum. Both are hard
