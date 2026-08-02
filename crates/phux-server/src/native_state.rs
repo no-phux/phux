@@ -367,6 +367,25 @@ mod tests {
     use super::*;
     use libghostty_vt::TerminalOptions;
     use phux_protocol::caps::BootstrapProfileKind;
+    use allocator_api2::alloc::{
+        AllocError, Allocator as RustAllocator, Layout,
+    };
+    use std::ptr::NonNull;
+
+    #[derive(Clone, Copy, Debug)]
+    struct AlwaysOom;
+
+    // SAFETY: This allocator never returns an allocation, so no live memory
+    // block or cross-clone ownership invariant can arise.
+    unsafe impl RustAllocator for AlwaysOom {
+        fn allocate(&self, _layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+            Err(AllocError)
+        }
+
+        unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) {
+            unreachable!("AlwaysOom never allocates")
+        }
+    }
 
     fn terminal(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
         GhosttyTerminal::new(TerminalOptions {
@@ -549,7 +568,16 @@ mod tests {
         source.vt_write(b"-still-live");
         NativeCheckpointCapture::new(&mut source, BootstrapLimits::default())
             .expect("failed construction released resources");
-        assert_eq!(NativeStateError::OutOfMemory, incremental::Error::OutOfMemory);
+        let allocator = libghostty_vt::alloc::Allocator::from(AlwaysOom);
+        assert_eq!(
+            source
+                .capture_with_alloc(&allocator, CaptureOptions::default())
+                .unwrap_err(),
+            NativeStateError::OutOfMemory
+        );
+        source.vt_write(b"-after-oom");
+        NativeCheckpointCapture::new(&mut source, BootstrapLimits::default())
+            .expect("OOM construction released the canonical terminal");
     }
 
     #[test]
