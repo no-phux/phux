@@ -861,7 +861,9 @@ async fn handle_attach_terminal(
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
 ) -> CommandResult {
-    use crate::terminal_actor::{ConsumerAttachRequest, PaneOutput, SnapshotRequest};
+    use crate::terminal_actor::{
+        ConsumerAttachRequest, ConsumerDetachRequest, PaneOutput, SnapshotRequest,
+    };
     let Some(stream_profile) = crate::runtime::attach::bootstrap_stream_profile(bootstrap_profile)
     else {
         return CommandResult::Error {
@@ -890,14 +892,14 @@ async fn handle_attach_terminal(
     };
 
     // Register the per-consumer state-sync entry (ADR-0018) so FRAME_ACK
-    // from this consumer drives the actor's eviction loop. Mirrors the
-    // handle_attach registration; a failure degrades to the broadcast
-    // path, never fails the attach.
+    // from this consumer drives the actor's eviction loop. StateSync cannot
+    // degrade to the raw broadcast path: its selected wire profile requires
+    // this actor-owned generation to exist before bootstrap publication.
     let mut tick_managed = false;
     let mut state_sync_bootstrap = None;
+    let mut consumer_registered = false;
     let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
-    let Some(bootstrap_id) =
-        state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
+    let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
     else {
         return CommandResult::Error {
             code: ErrorCode::ResourceExhausted,
@@ -908,14 +910,28 @@ async fn handle_attach_terminal(
     // byte emitted in the handoff window. The new receiver remains gated
     // until this generation reaches READY.
     let mut output_rx = handle.output.subscribe();
-    let (token, pump_done, generation_last_seq, prior) = state.with_mut(|s| {
-        s.replace_attach_terminal_pump(client_id, core, bootstrap_id)
-    });
+    let (token, pump_done, generation_last_seq, prior) =
+        state.with_mut(|s| s.replace_attach_terminal_pump(client_id, core, bootstrap_id));
     let mut pump_done_guard = Some(pump_done.drop_guard());
     if let Some((_, prior_done, _)) = &prior {
         prior_done.cancelled().await;
     }
     let (live_gate_tx, live_gate_rx) = tokio::sync::watch::channel(false);
+    let rollback = || {
+        state.with_mut(|s| {
+            s.cancel_attach_terminal_pump(client_id, core);
+            s.unsubscribe_terminal(client_id, core);
+        });
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let _ = handle
+            .native_release
+            .try_send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 });
+        let (reply, _ack) = oneshot::channel();
+        let _ = handle.consumer_detach.try_send(ConsumerDetachRequest {
+            client_id: wire_client_id(client_id),
+            reply,
+        });
+    };
     if let Some(wire_id) = terminal_id.local_id() {
         let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
         if handle
@@ -942,9 +958,21 @@ async fn handle_attach_terminal(
             .is_ok()
             && let Ok(Ok(outcome)) = attach_reply_rx.await
         {
+            consumer_registered = true;
             tick_managed = outcome.tick_managed;
             state_sync_bootstrap = outcome.state_sync_bootstrap;
         }
+    }
+    if matches!(
+        client_caps.output_mode,
+        phux_protocol::caps::OutputMode::StateSync
+    ) && !consumer_registered
+    {
+        rollback();
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "ATTACH_TERMINAL state-sync registration failed".to_owned(),
+        };
     }
     if tick_managed {
         // No raw pump owns this generation; replacement may proceed without
@@ -963,6 +991,7 @@ async fn handle_attach_terminal(
             .await
             .is_err()
         {
+            rollback();
             return CommandResult::Error {
                 code: ErrorCode::InternalError,
                 message: "consumer went away during ATTACH_TERMINAL replacement".to_owned(),
@@ -1017,8 +1046,7 @@ async fn handle_attach_terminal(
                             break;
                         }
                         last_forwarded_seq = seq;
-                        pump_generation_last_seq
-                            .store(seq, std::sync::atomic::Ordering::Release);
+                        pump_generation_last_seq.store(seq, std::sync::atomic::Ordering::Release);
                     }
                     Ok(PaneOutput::Control { owner, frame }) => {
                         if owner != client_id.0 {
@@ -1124,12 +1152,11 @@ async fn handle_attach_terminal(
                                     .await;
                                 break;
                             };
-                            let Ok(cut) =
-                                crate::runtime::attach::publish_native_bootstrap(
-                                    &pump_out_tx,
-                                    reply,
-                                )
-                                .await
+                            let Ok(cut) = crate::runtime::attach::publish_native_bootstrap(
+                                &pump_out_tx,
+                                reply,
+                            )
+                            .await
                             else {
                                 break;
                             };
@@ -1186,8 +1213,10 @@ async fn handle_attach_terminal(
     }
     if let Some(state_sync) = state_sync_bootstrap {
         let snap = state_sync.snapshot;
-        let replay =
-            crate::runtime::attach::downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps);
+        let replay = crate::runtime::attach::downsample_for_caps(
+            &bytes::Bytes::from(snap.bytes),
+            client_caps,
+        );
         let mut payloads = Vec::with_capacity(2);
         if !snap.scrollback.is_empty() {
             payloads.push(bytes::Bytes::from(snap.scrollback));
@@ -1208,19 +1237,16 @@ async fn handle_attach_terminal(
         .await
         .is_err()
         {
+            rollback();
             return CommandResult::Error {
                 code: ErrorCode::InternalError,
                 message: "consumer went away during state-sync ATTACH_TERMINAL".to_owned(),
             };
         }
-        generation_last_seq.store(
-            state_sync.base_seq,
-            std::sync::atomic::Ordering::Release,
-        );
+        generation_last_seq.store(state_sync.base_seq, std::sync::atomic::Ordering::Release);
         let _ = live_gate_tx.send(true);
         return CommandResult::Ok;
     }
-
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     if matches!(
@@ -1243,6 +1269,7 @@ async fn handle_attach_terminal(
             .await
             .is_err()
         {
+            rollback();
             return CommandResult::Error {
                 code: ErrorCode::InternalError,
                 message: "pane actor unavailable for native ATTACH_TERMINAL".to_owned(),
@@ -1250,9 +1277,9 @@ async fn handle_attach_terminal(
         }
         match reply_rx.await {
             Ok(Ok(reply)) => {
-                let Ok(cut) =
-                    crate::runtime::attach::publish_native_bootstrap(out_tx, reply).await
+                let Ok(cut) = crate::runtime::attach::publish_native_bootstrap(out_tx, reply).await
                 else {
+                    rollback();
                     return CommandResult::Error {
                         code: ErrorCode::InternalError,
                         message: "consumer went away during native ATTACH_TERMINAL".to_owned(),
@@ -1271,12 +1298,14 @@ async fn handle_attach_terminal(
                 return CommandResult::Ok;
             }
             Ok(Err(error)) => {
+                rollback();
                 return CommandResult::Error {
                     code: ErrorCode::CodecUnavailable,
                     message: format!("native ATTACH_TERMINAL failed: {error}"),
                 };
             }
             Err(_) => {
+                rollback();
                 return CommandResult::Error {
                     code: ErrorCode::InternalError,
                     message: "pane actor dropped native ATTACH_TERMINAL".to_owned(),
@@ -1297,12 +1326,14 @@ async fn handle_attach_terminal(
         .await
         .is_err()
     {
+        rollback();
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "pane actor unavailable for ATTACH_TERMINAL".to_owned(),
         };
     }
     let Ok((snap, cut)) = reply_rx.await else {
+        rollback();
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "pane actor dropped the ATTACH_TERMINAL snapshot".to_owned(),
@@ -1325,6 +1356,7 @@ async fn handle_attach_terminal(
     .await
     .is_err()
     {
+        rollback();
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "consumer went away during ATTACH_TERMINAL".to_owned(),
