@@ -123,6 +123,19 @@ fn fields_are_required_and_encoded_in_allocated_order() {
 }
 
 #[test]
+fn maximum_sized_reply_is_accepted() {
+    let frame = FrameKind::InputTerminalReply {
+        terminal_id: TerminalId::local(1),
+        bytes: Bytes::from(vec![0xA5; MAX_INPUT_TERMINAL_REPLY_BYTES]),
+    };
+    let mut encoded = BytesMut::new();
+    frame.encode(&mut encoded);
+    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+    assert!(tail.is_empty());
+    assert_eq!(decoded, frame);
+}
+
+#[test]
 fn empty_and_oversized_replies_are_rejected_before_dispatch() {
     for bytes in [
         Bytes::new(),
