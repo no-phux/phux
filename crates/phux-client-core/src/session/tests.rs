@@ -15,6 +15,7 @@ use crate::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
     EngineEffectBuffer, EngineJob, EngineSend, EngineStatus,
 };
+use crate::history::HistoryLoadState;
 
 const READY_MARKER: &[u8] = b"<SYNTHESIZED_VT_V1_READY>";
 
@@ -786,10 +787,17 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
                 cursor: b"cursor-0",
                 next_cursor: Some(b"cursor-1"),
                 payload: b"history-one",
+                page_seq: 1,
+                rows: 0,
             },
             &mut effects,
         )
         .unwrap();
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. })
+            if cursor == b"cursor-1"
+    )));
     assert_eq!(kernel.published(&terminal_id).unwrap().last_seq(), 40);
 
     kernel
@@ -804,7 +812,6 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
             &mut effects,
         )
         .unwrap();
-    assert!(kernel.prefetch_history(&terminal_id, 0, &mut effects));
     assert!(!kernel.prefetch_history(&terminal_id, 0, &mut effects));
     kernel
         .update(
@@ -815,6 +822,8 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
                 cursor: b"cursor-1",
                 next_cursor: Some(b"cursor-2"),
                 payload: b"history-two",
+                page_seq: 1,
+                rows: 0,
             },
             &mut effects,
         )
@@ -837,6 +846,8 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
             cursor: b"wrong-cursor",
             next_cursor: Some(b"wrong-next"),
             payload: b"wrong-generation",
+            page_seq: 1,
+            rows: 0,
         },
         &mut effects,
     );
@@ -851,7 +862,7 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
 }
 
 #[test]
-fn history_engine_failure_freezes_the_last_published_view() {
+fn history_engine_failure_invalidates_only_history_and_live_output_continues() {
     let terminal_id = terminal(31);
     let stream_id = stream(131);
     let bootstrap_id = bootstrap(231);
@@ -866,12 +877,15 @@ fn history_engine_failure_freezes_the_last_published_view() {
         b"cursor-0",
         &mut effects,
     );
+    effects.clear();
 
     let failed = kernel.update(
         KernelInput::HistoryPage {
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id,
+            page_seq: 1,
+            rows: 0,
             cursor: b"cursor-0",
             next_cursor: Some(b"cursor-1"),
             payload: b"history-error",
@@ -882,13 +896,10 @@ fn history_engine_failure_freezes_the_last_published_view() {
         failed,
         Err(KernelError::Engine(FakeError::MutatedThenFailed))
     ));
-    assert!(kernel.published(&terminal_id).is_some());
-    assert_eq!(
+    assert!(
         kernel
             .tombstone(&terminal_id, stream_id, bootstrap_id)
-            .unwrap()
-            .last_valid_seq,
-        73
+            .is_none()
     );
     assert!(
         !kernel
@@ -899,26 +910,48 @@ fn history_engine_failure_freezes_the_last_published_view() {
             .ends_with(b"history-error"),
         "history import errors are transactional"
     );
-    assert_eq!(
+    assert!(matches!(
         kernel.input_eligibility(&terminal_id),
-        InputEligibility::Ineligible(InputBlockReason::FrozenReplica)
-    );
+        InputEligibility::Eligible {
+            stream_id: actual_stream,
+            bootstrap_id: actual_bootstrap,
+        } if actual_stream == stream_id && actual_bootstrap == bootstrap_id
+    ));
     assert!(effects.as_slice().iter().any(|effect| matches!(
         effect,
-        KernelEffect::Status(KernelStatus::ResyncRequired {
-            terminal_id: id,
-            stream_id: stream,
-            bootstrap_id: bootstrap,
-            reason: TombstoneReason::CodecFailure,
-        }) if id == &terminal_id && *stream == stream_id && *bootstrap == bootstrap_id
+        KernelEffect::Status(KernelStatus::History { status, .. })
+            if status.state == HistoryLoadState::Tombstoned
     )));
     assert!(effects.as_slice().iter().all(|effect| !matches!(
         effect,
-        KernelEffect::Damage(KernelDamage {
-            kind: KernelDamageKind::Removed,
-            ..
-        })
+        KernelEffect::Status(KernelStatus::ResyncRequired { .. })
+            | KernelEffect::Damage(KernelDamage {
+                kind: KernelDamageKind::Removed,
+                ..
+            })
     )));
+
+    effects.clear();
+    kernel
+        .update(
+            KernelInput::TerminalOutput {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq: 74,
+                payload: b"live-after-history-error",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(
+        kernel
+            .published(&terminal_id)
+            .unwrap()
+            .engine()
+            .transcript
+            .ends_with(b"live-after-history-error")
+    );
 }
 
 #[test]
@@ -1194,6 +1227,8 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
             cursor: b"cursor-0",
             next_cursor: Some(b"cursor-1"),
             payload: b"\xfefuture-history-before-ready",
+            page_seq: 1,
+            rows: 0,
         },
         &mut effects,
     );
@@ -1320,6 +1355,8 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
                 cursor: b"cursor-0",
                 next_cursor: Some(b"cursor-1"),
                 payload: history,
+                page_seq: 1,
+                rows: 0,
             },
             &mut effects,
         )
@@ -1327,7 +1364,7 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     assert!(effects.as_slice().iter().any(|effect| matches!(
         effect,
         KernelEffect::Status(KernelStatus::History { status, .. })
-            if status.state == HistoryLoadState::Idle
+            if status.state == HistoryLoadState::Loading
     )));
     kernel
         .update(
@@ -1437,6 +1474,8 @@ fn native_history_requires_finish_exactly_on_the_final_cursor_page() {
                 cursor: b"cursor-0",
                 next_cursor: has_more.then_some(b"cursor-1".as_slice()),
                 payload,
+                page_seq: 1,
+                rows: 0,
             },
             &mut effects,
         );
@@ -1449,16 +1488,23 @@ fn native_history_requires_finish_exactly_on_the_final_cursor_page() {
         ));
         assert!(
             kernel.published(&terminal_id).is_some(),
-            "mismatch freezes rather than discards the last renderable replica"
+            "history mismatch retains the last renderable replica"
         );
-        assert_eq!(
+        assert!(
             kernel
                 .tombstone(&terminal_id, stream_id, bootstrap_id)
-                .unwrap()
-                .reason,
-            TombstoneReason::CodecFailure
+                .is_none()
         );
+        assert!(matches!(
+            kernel.input_eligibility(&terminal_id),
+            InputEligibility::Eligible { .. }
+        ));
         assert!(effects.as_slice().iter().any(|effect| matches!(
+            effect,
+            KernelEffect::Status(KernelStatus::History { status, .. })
+                if status.state == HistoryLoadState::Tombstoned
+        )));
+        assert!(effects.as_slice().iter().all(|effect| !matches!(
             effect,
             KernelEffect::Status(KernelStatus::ResyncRequired { .. })
         )));

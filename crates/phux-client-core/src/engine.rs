@@ -127,6 +127,11 @@ impl EngineEffectBuffer {
     pub(crate) fn drain(&mut self) -> std::vec::Drain<'_, EngineEffect> {
         self.effects.drain(..)
     }
+
+    #[cfg(test)]
+    pub(crate) fn as_slice(&self) -> &[EngineEffect] {
+        &self.effects
+    }
 }
 
 /// Synchronous terminal-engine operations required by [`SessionKernel`].
@@ -166,6 +171,23 @@ pub trait EngineAdapter {
         payload: &[u8],
         effects: &mut EngineEffectBuffer,
     ) -> Result<BootstrapProgress, Self::Error>;
+
+    /// Apply the client-local decoded scrollback memory budget.
+    fn configure_history_budget(
+        &mut self,
+        _replica: &mut Self::Replica,
+        _max_bytes: usize,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Current engine-owned total row count for exact import/output deltas.
+    fn total_rows(&self, _replica: &Self::Replica) -> Result<u64, Self::Error> {
+        Ok(0)
+    }
+
+    /// Release all engine-owned tracked document state.
+    fn clear_document_state(&mut self, _replica: &mut Self::Replica) {}
 
     /// Finish the bootstrap transcript at the protocol READY boundary.
     fn finish_bootstrap(
@@ -263,6 +285,14 @@ pub struct EngineSearchMatch {
     pub end: DocumentAnchorId,
 }
 
+/// Where an engine projection begins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineProjectionOrigin {
+    /// Project the newest loaded tail.
+    Tail,
+    /// Project forward from a resolved tracked anchor.
+    Anchor(DocumentAnchorId),
+}
 /// Optional semantic document operations for adapters with an engine-owned grid.
 pub trait EngineDocumentAdapter: EngineAdapter {
     /// Cooperatively project imported history without resizing canonical PTY state.
@@ -270,6 +300,7 @@ pub trait EngineDocumentAdapter: EngineAdapter {
         &mut self,
         replica: &mut Self::Replica,
         width: u16,
+        origin: EngineProjectionOrigin,
         max_rows: usize,
     ) -> Result<EngineHistoryProjection, Self::Error>;
 

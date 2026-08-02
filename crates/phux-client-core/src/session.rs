@@ -9,13 +9,45 @@ use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, Strea
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
     EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
-    EngineHistoryProjection, EngineJob, EngineSearchMatch, EngineSend, EngineStatus,
+    EngineHistoryProjection, EngineJob, EngineProjectionOrigin, EngineSearchMatch, EngineSend,
+    EngineStatus,
 };
 use crate::history::{
     DocumentAnchorId, HistoryCache, HistoryCacheConfig, HistoryCacheError, HistoryCursor,
-    HistoryPageCheck, HistoryStatus,
+    HistoryLoadState, HistoryPageCheck, HistoryStatus,
 };
 
+/// Why one history cursor became unavailable without retiring live state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryUnavailableReason {
+    /// Cursor checkpoint no longer matches current engine history.
+    Stale,
+    /// Cursor boundary was pruned.
+    Pruned,
+    /// Terminal reset invalidated the captured history.
+    Reset,
+    /// Resize or reflow invalidated the captured history.
+    Resize,
+    /// Server lease expired.
+    Expired,
+    /// Server released the lease.
+    Released,
+    /// Server history retention limit removed the boundary.
+    Limit,
+    /// The selected codec could not import the page.
+    CodecFailure,
+}
+
+/// Why a bounded request was not consumed or invalidated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryRejectionReason {
+    /// Either requested budget was zero.
+    ZeroLimit,
+    /// The next indivisible engine unit exceeds a requested budget.
+    TooSmall,
+    /// The engine is temporarily serving another import/export transaction.
+    Busy,
+}
 /// Exact identity of one terminal replica generation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReplicaKey {
@@ -91,12 +123,46 @@ pub enum KernelInput<'a> {
         stream_id: StreamId,
         /// Published replica generation.
         bootstrap_id: BootstrapId,
+        /// Non-zero cursor-local page sequence.
+        page_seq: u64,
+        /// Declared decoded row contribution.
+        rows: u32,
         /// Borrowed opaque selected-codec history bytes.
         payload: &'a [u8],
         /// Opaque cursor consumed by this response.
         cursor: &'a [u8],
         /// Opaque cursor for the next older page, if any.
         next_cursor: Option<&'a [u8]>,
+    },
+    /// Invalidate only one progressive-history cursor.
+    HistoryTombstone {
+        /// Target terminal.
+        terminal_id: &'a TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Published replica generation.
+        bootstrap_id: BootstrapId,
+        /// Exact outstanding cursor being invalidated.
+        cursor: &'a [u8],
+        /// Engine/server invalidation cause.
+        reason: HistoryUnavailableReason,
+    },
+    /// Reject one request without advancing or invalidating its cursor.
+    HistoryRejected {
+        /// Target terminal.
+        terminal_id: &'a TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Published replica generation.
+        bootstrap_id: BootstrapId,
+        /// Exact outstanding cursor not consumed.
+        cursor: &'a [u8],
+        /// Non-advancing rejection class.
+        reason: HistoryRejectionReason,
+        /// Minimum byte budget required, if known.
+        required_bytes: u32,
+        /// Minimum row budget required, if known.
+        required_rows: u32,
     },
     /// Apply one borrowed live output fragment.
     TerminalOutput {
@@ -210,6 +276,8 @@ pub enum KernelSend {
         cursor: Vec<u8>,
         /// Negotiated response byte bound.
         max_bytes: u32,
+        /// Negotiated response row bound.
+        max_rows: u32,
     },
 }
 
@@ -265,6 +333,13 @@ pub enum KernelStatus {
         key: ReplicaKey,
         /// Frontend presentation state.
         status: HistoryStatus,
+    },
+    /// One progressive-history boundary became unavailable; live state remains valid.
+    HistoryUnavailable {
+        /// Exact published generation.
+        key: ReplicaKey,
+        /// Engine/server reason for ending this cursor chain.
+        reason: HistoryUnavailableReason,
     },
 }
 
@@ -541,6 +616,14 @@ pub enum KernelError<E: std::error::Error + 'static> {
         /// Whether the wire page advertised a next cursor.
         has_more: bool,
     },
+    /// The authenticated history row contribution disagreed with the engine.
+    #[error("history page declared {declared} rows but imported {actual}")]
+    HistoryRowCountMismatch {
+        /// Rows declared by the wire response.
+        declared: u32,
+        /// Exact engine total-row delta.
+        actual: u64,
+    },
     /// Progressive history cache rejected cursor continuity or bounds.
     #[error("progressive history failed: {0}")]
     HistoryCache(#[from] HistoryCacheError),
@@ -782,21 +865,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Some(&self.terminals.get(terminal_id)?.published.as_ref()?.history)
     }
 
-    /// Mutably borrow client-local history projection and anchor state.
-    ///
-    /// This never exposes mutable terminal ownership or changes PTY geometry.
-    #[must_use]
-    pub fn history_cache_mut(&mut self, terminal_id: &TerminalId) -> Option<&mut HistoryCache> {
-        Some(
-            &mut self
-                .terminals
-                .get_mut(terminal_id)?
-                .published
-                .as_mut()?
-                .history,
-        )
-    }
-
     /// Request the next older page when a pinned viewport nears the cache edge.
     ///
     /// Returns `true` only when a request was emitted. Repeated calls are
@@ -807,13 +875,15 @@ impl<E: EngineAdapter> SessionKernel<E> {
         rows_from_oldest: usize,
         effects: &mut EffectBuffer,
     ) -> bool {
-        let Some(replica) = self
-            .terminals
-            .get_mut(terminal_id)
-            .and_then(|state| state.published.as_mut())
-        else {
+        let Some(state) = self.terminals.get_mut(terminal_id) else {
             return false;
         };
+        let Some(replica) = state.published.as_mut() else {
+            return false;
+        };
+        if state.retired.contains_key(&generation_of(&replica.key)) {
+            return false;
+        }
         if !replica.history.should_prefetch(rows_from_oldest) {
             return false;
         }
@@ -824,6 +894,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             key: replica.key.clone(),
             cursor: cursor.as_bytes().to_vec(),
             max_bytes: self.history_config.request_max_bytes,
+            max_rows: self.history_config.request_max_rows,
         }));
         effects.push(KernelEffect::Status(KernelStatus::History {
             key: replica.key.clone(),
@@ -951,6 +1022,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
+                page_seq,
+                rows,
                 payload,
                 cursor,
                 next_cursor,
@@ -958,9 +1031,43 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
+                page_seq,
+                rows,
                 payload,
                 cursor,
                 next_cursor,
+                effects,
+            ),
+            KernelInput::HistoryTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+            } => self.history_tombstone(
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+                effects,
+            ),
+            KernelInput::HistoryRejected {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+                required_bytes,
+                required_rows,
+            } => self.history_rejected(
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+                required_bytes,
+                required_rows,
                 effects,
             ),
             KernelInput::TerminalOutput {
@@ -1380,11 +1487,18 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 .terminals
                 .get_mut(terminal_id)
                 .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+            let staging = state
+                .staging
+                .as_mut()
+                .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
+            debug_assert!(staging.engine_ready && staging.protocol_ready);
+            self.adapter
+                .configure_history_budget(&mut staging.engine, history_config.max_bytes)
+                .map_err(KernelError::Engine)?;
             let mut staging = state
                 .staging
                 .take()
-                .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
-            debug_assert!(staging.engine_ready && staging.protocol_ready);
+                .expect("staging checked before publication");
             let replica_key = staging.key.clone();
             let pending_effects = std::mem::take(&mut staging.pending_effects);
             let mut history = HistoryCache::new(
@@ -1434,6 +1548,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 key: replica_key.clone(),
                 cursor: cursor.as_bytes().to_vec(),
                 max_bytes: history_config.request_max_bytes,
+                max_rows: history_config.request_max_rows,
             }));
             effects.push(KernelEffect::Status(KernelStatus::History {
                 key: replica_key.clone(),
@@ -1491,6 +1606,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
             });
         }
 
+        let rows_before = self
+            .adapter
+            .total_rows(&replica.engine)
+            .map_err(KernelError::Engine)?;
         self.engine_effects.clear();
         if let Err(error) =
             self.adapter
@@ -1522,9 +1641,15 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }
             return Err(KernelError::Engine(error));
         }
+        let rows_after = self
+            .adapter
+            .total_rows(&replica.engine)
+            .map_err(KernelError::Engine)?;
+        replica
+            .history
+            .note_live_output(rows_after.saturating_sub(rows_before));
         replica.last_seq = seq;
         replica.next_seq = seq.checked_add(1);
-        replica.history.note_live_output(1);
         let replica_key = replica.key.clone();
         let acknowledge = matches!(
             replica_key.profile,
@@ -1553,6 +1678,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
         terminal_id: &TerminalId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
+        page_seq: u64,
+        rows: u32,
         payload: &[u8],
         cursor: &[u8],
         next_cursor: Option<&[u8]>,
@@ -1579,7 +1706,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         let next_cursor = next_cursor.map(HistoryCursor::new);
         match replica
             .history
-            .check_page(&cursor, next_cursor.as_ref(), payload)
+            .check_page(&cursor, page_seq, next_cursor.as_ref(), rows, payload)
         {
             Ok(HistoryPageCheck::Duplicate(_)) => {
                 effects.push(KernelEffect::Status(KernelStatus::History {
@@ -1590,32 +1717,29 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }
             Ok(HistoryPageCheck::New) => {}
             Err(error) => {
-                let last_valid_seq = replica.last_seq;
-                let reason = if error == HistoryCacheError::Gap {
+                if matches!(
+                    error,
+                    HistoryCacheError::Gap
+                        | HistoryCacheError::SequenceGap { .. }
+                        | HistoryCacheError::SequenceExhausted
+                ) {
                     replica.history.mark_gap();
-                    TombstoneReason::OutboundGap
                 } else {
                     replica.history.tombstone();
-                    TombstoneReason::CodecFailure
-                };
-                state.retired.insert(
-                    generation,
-                    TombstoneRecord {
-                        reason,
-                        last_valid_seq,
-                    },
-                );
-                self.mark_attach_unresolved(terminal_id, false);
-                effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
-                    terminal_id: terminal_id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    reason,
+                }
+                self.adapter.clear_document_state(&mut replica.engine);
+                effects.push(KernelEffect::Status(KernelStatus::History {
+                    key: replica.key.clone(),
+                    status: replica.history.status(),
                 }));
                 return Err(KernelError::HistoryCache(error));
             }
         }
 
+        let rows_before = self
+            .adapter
+            .total_rows(&replica.engine)
+            .map_err(KernelError::Engine)?;
         self.engine_effects.clear();
         let progress = match self.adapter.apply_history_page(
             &mut replica.engine,
@@ -1624,22 +1748,12 @@ impl<E: EngineAdapter> SessionKernel<E> {
         ) {
             Ok(progress) => progress,
             Err(error) => {
-                let last_valid_seq = replica.last_seq;
                 replica.history.tombstone();
+                self.adapter.clear_document_state(&mut replica.engine);
                 self.engine_effects.clear();
-                state.retired.insert(
-                    generation,
-                    TombstoneRecord {
-                        reason: TombstoneReason::CodecFailure,
-                        last_valid_seq,
-                    },
-                );
-                self.mark_attach_unresolved(terminal_id, false);
-                effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
-                    terminal_id: terminal_id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    reason: TombstoneReason::CodecFailure,
+                effects.push(KernelEffect::Status(KernelStatus::History {
+                    key: replica.key.clone(),
+                    status: replica.history.status(),
                 }));
                 return Err(KernelError::Engine(error));
             }
@@ -1650,50 +1764,55 @@ impl<E: EngineAdapter> SessionKernel<E> {
             replica.key.profile,
             BootstrapStreamProfile::NativeState { .. }
         );
-        let completion_mismatch =
-            native && (matches!(progress, BootstrapProgress::Finished) != !has_more);
-        if completion_mismatch {
-            let last_valid_seq = replica.last_seq;
+        if native && (matches!(progress, BootstrapProgress::Finished) != !has_more) {
             replica.history.tombstone();
+            self.adapter.clear_document_state(&mut replica.engine);
             self.engine_effects.clear();
-            state.retired.insert(
-                generation,
-                TombstoneRecord {
-                    reason: TombstoneReason::CodecFailure,
-                    last_valid_seq,
-                },
-            );
-            self.mark_attach_unresolved(terminal_id, false);
-            effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                reason: TombstoneReason::CodecFailure,
+            effects.push(KernelEffect::Status(KernelStatus::History {
+                key: replica.key.clone(),
+                status: replica.history.status(),
             }));
             return Err(KernelError::HistoryCompletionMismatch { progress, has_more });
         }
 
-        if let Err(error) = replica.history.accept_page(cursor, next_cursor, payload) {
-            let last_valid_seq = replica.last_seq;
+        let rows_after = self
+            .adapter
+            .total_rows(&replica.engine)
+            .map_err(KernelError::Engine)?;
+        let actual_rows = rows_after.saturating_sub(rows_before);
+        if actual_rows != u64::from(rows) {
             replica.history.tombstone();
+            self.adapter.clear_document_state(&mut replica.engine);
             self.engine_effects.clear();
-            state.retired.insert(
-                generation,
-                TombstoneRecord {
-                    reason: TombstoneReason::CodecFailure,
-                    last_valid_seq,
-                },
-            );
-            self.mark_attach_unresolved(terminal_id, false);
-            effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                reason: TombstoneReason::CodecFailure,
+            effects.push(KernelEffect::Status(KernelStatus::History {
+                key: replica.key.clone(),
+                status: replica.history.status(),
+            }));
+            return Err(KernelError::HistoryRowCountMismatch {
+                declared: rows,
+                actual: actual_rows,
+            });
+        }
+
+        if let Err(error) = replica.history.accept_page(
+            cursor,
+            page_seq,
+            next_cursor,
+            rows,
+            usize::try_from(actual_rows).unwrap_or(usize::MAX),
+            payload,
+        ) {
+            replica.history.tombstone();
+            self.adapter.clear_document_state(&mut replica.engine);
+            self.engine_effects.clear();
+            effects.push(KernelEffect::Status(KernelStatus::History {
+                key: replica.key.clone(),
+                status: replica.history.status(),
             }));
             return Err(KernelError::HistoryCache(error));
         }
 
+        let next_request = replica.history.begin_fetch();
         let replica_key = replica.key.clone();
         let history_status = replica.history.status();
         let damage_allowed = !self.attach_blocks(terminal_id);
@@ -1703,9 +1822,119 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
         self.engine_effects = captured;
         effects.push(KernelEffect::Status(KernelStatus::History {
-            key: replica_key,
+            key: replica_key.clone(),
             status: history_status,
         }));
+        if let Some(cursor) = next_request {
+            effects.push(KernelEffect::Send(KernelSend::HistoryRequest {
+                key: replica_key,
+                cursor: cursor.as_bytes().to_vec(),
+                max_bytes: self.history_config.request_max_bytes,
+                max_rows: self.history_config.request_max_rows,
+            }));
+        }
+        Ok(())
+    }
+
+    fn history_tombstone(
+        &mut self,
+        terminal_id: &TerminalId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        cursor: &[u8],
+        reason: HistoryUnavailableReason,
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
+        self.ensure_open(terminal_id)?;
+        let generation = GenerationId {
+            stream_id,
+            bootstrap_id,
+        };
+        let state = self
+            .terminals
+            .get_mut(terminal_id)
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        if state.retired.contains_key(&generation) {
+            return Err(retired_error(terminal_id, generation));
+        }
+        let replica = state
+            .published
+            .as_mut()
+            .filter(|replica| generation_of(&replica.key) == generation)
+            .ok_or_else(|| mismatch_error(terminal_id, generation))?;
+        let cursor = HistoryCursor::new(cursor);
+        let state = match reason {
+            HistoryUnavailableReason::Stale => HistoryLoadState::Stale,
+            HistoryUnavailableReason::Pruned => HistoryLoadState::Pruned,
+            HistoryUnavailableReason::Reset
+            | HistoryUnavailableReason::Resize
+            | HistoryUnavailableReason::Expired
+            | HistoryUnavailableReason::Released
+            | HistoryUnavailableReason::Limit
+            | HistoryUnavailableReason::CodecFailure => HistoryLoadState::Tombstoned,
+        };
+        if !replica.history.invalidate_cursor(&cursor, state) {
+            return Err(KernelError::HistoryCache(HistoryCacheError::Gap));
+        }
+        self.adapter.clear_document_state(&mut replica.engine);
+        effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
+            key: replica.key.clone(),
+            reason,
+        }));
+        effects.push(KernelEffect::Status(KernelStatus::History {
+            key: replica.key.clone(),
+            status: replica.history.status(),
+        }));
+        Ok(())
+    }
+
+    fn history_rejected(
+        &mut self,
+        terminal_id: &TerminalId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        cursor: &[u8],
+        reason: HistoryRejectionReason,
+        required_bytes: u32,
+        required_rows: u32,
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
+        self.ensure_open(terminal_id)?;
+        let generation = GenerationId {
+            stream_id,
+            bootstrap_id,
+        };
+        let state = self
+            .terminals
+            .get_mut(terminal_id)
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        if state.retired.contains_key(&generation) {
+            return Err(retired_error(terminal_id, generation));
+        }
+        let replica = state
+            .published
+            .as_mut()
+            .filter(|replica| generation_of(&replica.key) == generation)
+            .ok_or_else(|| mismatch_error(terminal_id, generation))?;
+        let cursor = HistoryCursor::new(cursor);
+        if !replica.history.cancel_fetch(&cursor) {
+            return Err(KernelError::HistoryCache(HistoryCacheError::Gap));
+        }
+        let retry = reason == HistoryRejectionReason::TooSmall
+            && replica.history.can_retry(required_bytes, required_rows);
+        let next_request = retry.then(|| replica.history.begin_fetch()).flatten();
+        effects.push(KernelEffect::Status(KernelStatus::History {
+            key: replica.key.clone(),
+            status: replica.history.status(),
+        }));
+        if let Some(cursor) = next_request {
+            effects.push(KernelEffect::Send(KernelSend::HistoryRequest {
+                key: replica.key.clone(),
+                cursor: cursor.as_bytes().to_vec(),
+                max_bytes: self.history_config.request_max_bytes.max(required_bytes),
+                max_rows: self.history_config.request_max_rows.max(required_rows),
+            }));
+        }
         Ok(())
     }
 
@@ -1915,8 +2144,14 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
         replica.history.reproject(width);
         let width = replica.history.projection_width();
+        let origin = match replica.history.viewport_anchor() {
+            crate::history::ViewportAnchor::Tail => EngineProjectionOrigin::Tail,
+            crate::history::ViewportAnchor::Pinned(anchor) => {
+                EngineProjectionOrigin::Anchor(anchor)
+            }
+        };
         self.adapter
-            .project_history(&mut replica.engine, width, max_rows)
+            .project_history(&mut replica.engine, width, origin, max_rows)
             .map_err(KernelError::Engine)
     }
 
