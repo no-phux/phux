@@ -763,10 +763,9 @@ impl HistoryCache {
                 .saturating_sub(removed.materialized_rows);
             self.visible.remove(&removed.id);
             self.selection.remove(&removed.id);
-            self.anchor_pages.retain(|_, pages| {
+            for pages in self.anchor_pages.values_mut() {
                 pages.remove(&removed.id);
-                !pages.is_empty()
-            });
+            }
             self.reindex();
         }
         self.evict_materializations();
