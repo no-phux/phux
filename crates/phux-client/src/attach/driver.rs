@@ -71,7 +71,7 @@ pub(super) use crate::layout_ops::{
 };
 use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 use crate::render::chrome::sidebar::{AgentEntry, SidebarPainter, attention_rank};
-use crate::render::chrome::status_bar::StatusBarPainter;
+use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use crate::render::overlay::OverlayState;
 use phux_config::SidebarPosition;
 
@@ -845,6 +845,7 @@ async fn run_buffered(
     target: AttachTarget,
     predict: PredictiveConfig,
     rec: Option<Rc<RefCell<SessionRecorder>>>,
+    initial_notice: Option<Notice>,
 ) -> Result<AttachEnd, AttachError> {
     let (mut sink, writer) = super::stdout_writer::spawn_stdout_writer();
     // Cloned BEFORE any wrap: the resync flag belongs to the StdoutSink, not
@@ -863,6 +864,7 @@ async fn run_buffered(
             Some(resync.as_ref()),
             Some(writer),
             true,
+            initial_notice,
         )
         .await
     } else {
@@ -874,6 +876,7 @@ async fn run_buffered(
             Some(resync.as_ref()),
             Some(writer),
             true,
+            initial_notice,
         )
         .await
     }
@@ -906,6 +909,12 @@ async fn run_buffered(
 /// during connect prints a one-line error on the normal screen and
 /// exits cleanly. Only after the server's `ATTACHED` frame arrives do
 /// we flip the terminal into raw + alt screen via [`RawModeGuard`].
+///
+/// `initial_notice` (phux-i0e8.2.3) is a transient status-bar message shown
+/// once the session is attached and painting — the CLI's reconnect loop
+/// passes `re-attached after server restart` so the recovery is visible
+/// *inside* the TUI (a cooked-terminal eprintln is alt-screened over within
+/// milliseconds). `None` on a first attach.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -914,8 +923,9 @@ pub async fn run_with_predict_dial(
     dial: &Dial,
     target: AttachTarget,
     predict: PredictiveConfig,
+    initial_notice: Option<Notice>,
 ) -> Result<AttachEnd, AttachError> {
-    run_buffered(dial, target, predict, None).await
+    run_buffered(dial, target, predict, None, initial_notice).await
 }
 
 /// As [`run_with_predict_dial`], but tees the composited output stream into
@@ -934,8 +944,9 @@ pub async fn run_recorded_dial(
     target: AttachTarget,
     predict: PredictiveConfig,
     rec: Rc<RefCell<SessionRecorder>>,
+    initial_notice: Option<Notice>,
 ) -> Result<AttachEnd, AttachError> {
-    run_buffered(dial, target, predict, Some(rec)).await
+    run_buffered(dial, target, predict, Some(rec), initial_notice).await
 }
 
 /// UDS attach that writes the entire composited output stream to a
@@ -983,7 +994,17 @@ pub async fn run_with_stdout_predict<W: super::RenderSink>(
     predict: PredictiveConfig,
 ) -> Result<AttachEnd, AttachError> {
     // Synchronous-sink test seam: no off-loop writer, no resync flag.
-    attach_session(&Dial::uds(socket), target, out, predict, None, None, false).await
+    attach_session(
+        &Dial::uds(socket),
+        target,
+        out,
+        predict,
+        None,
+        None,
+        false,
+        None,
+    )
+    .await
 }
 
 /// Headless one-shot: attach, ingest the session's snapshot + layout, and
@@ -1227,6 +1248,10 @@ pub async fn run_headless_rendered(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "per-invocation knobs from the run_* entry points; a builder for one internal fn would be ceremony"
+)]
 async fn attach_session<W: super::RenderSink>(
     dial: &Dial,
     target: AttachTarget,
@@ -1235,6 +1260,10 @@ async fn attach_session<W: super::RenderSink>(
     resync: Option<&AtomicBool>,
     mut writer: Option<super::stdout_writer::WriterHandle>,
     probe_default_colors: bool,
+    // phux-i0e8.2.3: transient status-bar notice for the FIRST `main_loop`
+    // entry only (an in-invocation session switch must not re-show it) —
+    // the reconnect loop's "re-attached after server restart".
+    initial_notice: Option<Notice>,
 ) -> Result<AttachEnd, AttachError> {
     // STAGE 1 — pre-handshake, on the cooked outer terminal.
     //
@@ -1316,6 +1345,10 @@ async fn attach_session<W: super::RenderSink>(
     // of a one-step cross-session pane pick (`switch-session { .., pane }`).
     let mut pending_window: Option<usize> = None;
     let mut pending_pane: Option<usize> = None;
+    // phux-i0e8.2.3: hand the reconnect notice to the first `main_loop`
+    // entry only (same `take` pattern as the onboarding hint above): a
+    // session switch re-enters `main_loop` but is not a reconnect.
+    let mut initial_notice = initial_notice;
     loop {
         let show_onboarding_hint = std::mem::take(&mut show_onboarding);
         let exit = match main_loop(
@@ -1326,6 +1359,7 @@ async fn attach_session<W: super::RenderSink>(
             resync,
             wants_state_sync,
             show_onboarding_hint,
+            initial_notice.take(),
             pending_window.take(),
             pending_pane.take(),
         )
@@ -1638,6 +1672,13 @@ async fn main_loop<W: super::RenderSink>(
     // only on the first `main_loop` entry, so a session switch never
     // re-shows a hint the user already dismissed.
     show_onboarding: bool,
+    // phux-i0e8.2.3: transient status-bar notice to seed at attach time —
+    // the reconnect loop's "re-attached after server restart". Applied to
+    // the painter right after the bootstrap chrome refresh, so the first
+    // bar paint (driven by the initial TERMINAL_SNAPSHOT burst) shows it;
+    // expiry rides the ordinary 1 s status_tick. `None` on a first attach
+    // and on session switches.
+    initial_notice: Option<Notice>,
     // phux-foz.8: window index to select once this session's persisted
     // layout loads. Set by the outer loop when a one-step cross-session
     // window pick (`switch-session { name, window }`) drove the re-attach;
@@ -2073,6 +2114,14 @@ async fn main_loop<W: super::RenderSink>(
             &mut vcs,
         );
     }
+
+    // phux-i0e8.2.3: seed the post-reconnect notice now that the session is
+    // attached and the bar painter exists. The first bar paint — driven by
+    // the initial TERMINAL_SNAPSHOT burst that follows ATTACHED — picks it
+    // up, and the ordinary 1 s status_tick expires it, so "re-attached
+    // after server restart" is visible inside the live TUI instead of on
+    // the cooked terminal the alt screen replaced.
+    apply_initial_notice(status_bar.as_mut(), initial_notice);
 
     // phux-foz.6: first-run onboarding hint. The caller already applied the
     // trigger rule (nothing exists at the canonical config path; once per
@@ -4370,6 +4419,31 @@ fn handle_config_reload<W: super::RenderSink>(
     }
 }
 
+/// phux-i0e8.2.3: set a caller-supplied attach-time notice (the reconnect
+/// loop's "re-attached after server restart") on the status-bar painter's
+/// transient slot.
+///
+/// Returns `true` when the painter accepted it. Degrades to a `tracing`
+/// line — never silently — when there is no painter, mirroring the
+/// per-frame `FrameOutcome::notices` drain; the painter itself degrades
+/// the empty-bar and persistent-error-line cases the same way inside
+/// `set_notice`.
+fn apply_initial_notice(status_bar: Option<&mut StatusBarPainter>, notice: Option<Notice>) -> bool {
+    let Some(notice) = notice else {
+        return false;
+    };
+    if let Some(sb) = status_bar {
+        sb.set_notice(notice, std::time::Instant::now())
+    } else {
+        tracing::info!(
+            severity = ?notice.severity,
+            text = %notice.text,
+            "attach-time notice dropped: no status bar configured",
+        );
+        false
+    }
+}
+
 fn build_status_bar_painter() -> Option<StatusBarPainter> {
     let cfg = match phux_config::loader::load() {
         Ok(c) => c,
@@ -4965,6 +5039,54 @@ mod tests {
                 cwd: Some(expected),
             }
         );
+    }
+
+    /// phux-i0e8.2.3: the attach-time notice seam `main_loop` calls right
+    /// after the bootstrap chrome refresh. A configured bar accepts the
+    /// reconnect notice (and paints it full-row on the next bar paint); no
+    /// painter, or no notice, is a quiet no-op.
+    #[test]
+    fn apply_initial_notice_sets_the_painter_slot_at_attach() {
+        use phux_config::widget::WidgetRegistry;
+        use phux_config::{StatusCfg, Widget};
+
+        let cfg = StatusCfg {
+            left: vec![Widget::Bare("session-name".into())],
+            ..StatusCfg::default()
+        };
+        let bar = phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins())
+            .expect("bar");
+        let mut painter =
+            StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom);
+        let before = std::time::Instant::now();
+        assert!(
+            apply_initial_notice(
+                Some(&mut painter),
+                Some(Notice::info("re-attached after server restart")),
+            ),
+            "a configured bar must accept the reconnect notice"
+        );
+        // The slot is genuinely occupied: it survives until NOTICE_TTL and
+        // clears on the tick after — the same expiry path the live
+        // status_tick drives (full-row rendering itself is pinned by the
+        // phux-i0e8.2.1 painter tests).
+        assert!(
+            !painter.clear_expired_notice(before),
+            "the notice must hold the slot for its TTL"
+        );
+        assert!(
+            painter
+                .clear_expired_notice(before + crate::render::chrome::status_bar::NOTICE_TTL * 2),
+            "the seeded notice must expire like any other transient notice"
+        );
+
+        // No painter: degrades (returns false), never panics.
+        assert!(!apply_initial_notice(
+            None,
+            Some(Notice::info("re-attached after server restart")),
+        ));
+        // No notice: a first attach is a no-op even with a painter.
+        assert!(!apply_initial_notice(Some(&mut painter), None));
     }
 
     #[test]
@@ -6062,6 +6184,7 @@ mod tests {
             &Dial::uds(&socket),
             AttachTarget::Last,
             PredictiveConfig::disabled(),
+            None,
             None,
         )
         .await

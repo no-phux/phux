@@ -2073,11 +2073,13 @@ pub(crate) fn print_attach_error(err: &AttachError, socket_path: &Path, session:
 /// The lines [`print_attach_error`] prints, pure so tests can pin every arm.
 ///
 /// The first three arms are self-explaining (each names its own remedy or
-/// cause), so they stay single-line. The fallthrough —
-/// `Disconnected`/`Protocol`/`Terminal`/`Ghostty`/… — is where the sentence
-/// alone was a dead end (phux-i0e8.7.3): those failures leave their reason in
-/// this client's own log, and a `Protocol` error in particular usually means
-/// the binaries disagree, so the remedy block names the client log, `phux
+/// cause), so they stay single-line. `Disconnected` gets its own arm
+/// (phux-i0e8.2.3): the server vanished mid-session, so the remedy is its
+/// log and doctor, not this client's. The fallthrough —
+/// `Protocol`/`Terminal`/`Ghostty`/… — is where the sentence alone was a
+/// dead end (phux-i0e8.7.3): those failures leave their reason in this
+/// client's own log, and a `Protocol` error in particular usually means the
+/// binaries disagree, so the remedy block names the client log, `phux
 /// doctor`, and this client's protocol triple for the comparison.
 fn attach_error_lines(
     err: &AttachError,
@@ -2103,6 +2105,21 @@ fn attach_error_lines(
         AttachError::NotATty => {
             vec!["phux: attach requires an interactive terminal (stdin is not a TTY).".to_owned()]
         }
+        // phux-i0e8.2.3: a dedicated arm for the mid-session disconnect that
+        // reaches here WITHOUT the reconnect window (e.g. `phux new`'s
+        // attach tail; `attach_with_reconnect` reports its own failures and
+        // its call sites skip this printer for `Disconnected`). The server
+        // went away, so the reason lives in its log; name it and doctor
+        // instead of the old dead-end "attach failed: connection closed by
+        // server before DETACHED".
+        AttachError::Disconnected => vec![
+            "phux: the server closed the connection unexpectedly".to_owned(),
+            format!(
+                "  server log: {}",
+                phux_server::telemetry::server_log_path().display()
+            ),
+            "  run `phux doctor` for a health check".to_owned(),
+        ],
         other => {
             let version = phux_protocol::PROTOCOL_VERSION;
             vec![
@@ -2210,7 +2227,34 @@ mod tests {
         );
     }
 
-    /// phux-i0e8.7.3: the fallthrough (`Disconnected`/`Protocol`/`Terminal`/…)
+    /// phux-i0e8.2.3: a mid-session disconnect that reaches the printer
+    /// without the reconnect window (e.g. `phux new`'s attach tail) names
+    /// its cause, the SERVER log (the reason the server went away lives
+    /// there, not in this client's log), and the doctor remedy.
+    #[test]
+    fn attach_error_disconnected_arm_names_the_remedy() {
+        let lines = attach_error_lines(
+            &AttachError::Disconnected,
+            Path::new("/tmp/a.sock"),
+            "main",
+            Path::new("/state/phux/client-42.log"),
+        );
+        assert_eq!(
+            lines[0],
+            "phux: the server closed the connection unexpectedly"
+        );
+        assert_eq!(
+            lines[1],
+            format!(
+                "  server log: {}",
+                phux_server::telemetry::server_log_path().display()
+            )
+        );
+        assert_eq!(lines[2], "  run `phux doctor` for a health check");
+        assert_eq!(lines.len(), 3);
+    }
+
+    /// phux-i0e8.7.3: the fallthrough (`Protocol`/`Terminal`/…)
     /// used to end at "attach failed: {err}" with nowhere to go. It must now
     /// name this client's own log, doctor, and the client protocol triple —
     /// a `Protocol` error usually means the binaries disagree, and doctor

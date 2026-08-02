@@ -2116,6 +2116,11 @@ Current producers:
   via `kill-pane` / `kill-window` (the kill dispatch marks its targets
   as expected, and the matching close consumes the marker — so a later
   spontaneous death of a reused pane id still notifies).
+- **Server restart recovery** (phux-i0e8.2.3). When the client rides out
+  a server restart (§8.8), the first bar paint of the new attach shows
+  an info notice — `re-attached after server restart` — so the recovery
+  is announced *inside* the live TUI. (A cooked-terminal line would be
+  replaced by the alt screen within milliseconds of being printed.)
 
 When the **last** pane dies there is no bar left to notice on: the
 client's consumer-owned detach policy (phux-4r1) tears the TUI down.
@@ -2140,6 +2145,36 @@ Precedence and degradation:
   transient notices.
 - Notices are client-local and never persist: nothing crosses the wire,
   and a detach/reattach clears the slot.
+
+### 8.8 The reconnect window
+
+When the server vanishes mid-session (the graceful-upgrade blink of
+ADR-0032, or a crash), the TUI tears down to the cooked primary screen
+and the client waits up to **10 seconds** for the server to come back —
+visibly, not as a blank terminal (phux-i0e8.2.3):
+
+```
+phux: lost the server connection; waiting up to 10s for it to come back
+phux: reconnecting… 7s left (Ctrl-C to give up)
+```
+
+The second line is overwritten in place once per second. Three endings:
+
+- **The server comes back** (a graceful upgrade re-execs in well under
+  a second): `phux: server is back; re-attaching…`, the TUI returns
+  with its state replayed, and the status bar shows the `re-attached
+  after server restart` notice (§8.7).
+- **The socket file is gone**: the server shut down *cleanly* (a clean
+  shutdown unlinks its socket) and is not restarting. The client stops
+  waiting immediately and says so, naming the restart commands and
+  `phux doctor`.
+- **The window elapses** with the socket present but never accepting:
+  the server likely crashed or hung. The failure names the server log
+  (where the reason lives) and `phux doctor`.
+
+Either failure exits non-zero. The distinction matters: a gone socket
+is an ordinary shutdown you can restart your way out of; a timeout is a
+server that needs its log read.
 
 ---
 

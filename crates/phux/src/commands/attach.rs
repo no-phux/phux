@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
 use phux_client::attach::record::SessionRecorder;
+use phux_client::attach::status_bar::Notice;
 use phux_client::attach::{self, AttachEnd, AttachError, CertTrust, Dial, QuicDial, WsDial};
 use phux_client::predict::PredictiveConfig;
 use phux_config::loader as config_loader;
@@ -142,6 +143,11 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
             report_attach_end(end);
             ExitCode::SUCCESS
         }
+        // `Disconnected` can only leave `attach_with_reconnect` through the
+        // reconnect window, which already printed the distinct SocketGone /
+        // TimedOut report (both naming `phux doctor`); a second remedy block
+        // here would double-print.
+        Err(AttachError::Disconnected) => ExitCode::FAILURE,
         Err(err) => {
             print_attach_error(&err, &socket_path, &default_name);
             ExitCode::FAILURE
@@ -193,14 +199,17 @@ pub(crate) async fn run_attach_once(
     target: AttachTarget,
     predict_cfg: PredictiveConfig,
 ) -> Result<AttachEnd, AttachError> {
-    run_attach_once_rec(dial, target, predict_cfg, None).await
+    run_attach_once_rec(dial, target, predict_cfg, None, None).await
 }
 
-/// [`run_attach_once`] with an optional live recorder.
+/// [`run_attach_once`] with an optional live recorder and an optional
+/// attach-time status-bar notice.
 ///
 /// Split from the plain form so callers that cannot record — `phux new`,
 /// which attaches as the tail of a create — are not forced to pass a `None`
-/// that means nothing to them.
+/// that means nothing to them. `initial_notice` (phux-i0e8.2.3) is the
+/// reconnect loop's "re-attached after server restart", shown inside the
+/// next attach's TUI; every first attach passes `None`.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -210,14 +219,17 @@ pub(crate) async fn run_attach_once_rec(
     target: AttachTarget,
     predict_cfg: PredictiveConfig,
     rec: Option<RecorderHandle>,
+    initial_notice: Option<Notice>,
 ) -> Result<AttachEnd, AttachError> {
     // `run_with_predict_dial` with `predict.enabled = false` is identical to the
     // non-predictive path, so one call covers both transports and both modes.
     // The recorded entry point differs only in wrapping the driver's render
     // sink with the tee, so the two branches share every other behaviour.
     match rec {
-        Some(rec) => attach::run_recorded_dial(dial, target, predict_cfg, rec).await,
-        None => attach::run_with_predict_dial(dial, target, predict_cfg).await,
+        Some(rec) => {
+            attach::run_recorded_dial(dial, target, predict_cfg, rec, initial_notice).await
+        }
+        None => attach::run_with_predict_dial(dial, target, predict_cfg, initial_notice).await,
     }
 }
 
@@ -239,18 +251,31 @@ pub(crate) async fn attach_default_with_fallback(
     default_name: &str,
     predict_cfg: PredictiveConfig,
     rec: Option<&RecorderHandle>,
+    initial_notice: Option<Notice>,
 ) -> Result<AttachEnd, AttachError> {
-    match run_attach_once_rec(dial, AttachTarget::Last, predict_cfg, rec.map(Rc::clone)).await {
+    match run_attach_once_rec(
+        dial,
+        AttachTarget::Last,
+        predict_cfg,
+        rec.map(Rc::clone),
+        initial_notice.clone(),
+    )
+    .await
+    {
         Ok(end) => Ok(end),
         Err(AttachError::Refused(message)) => {
             eprintln!(
                 "phux: no prior-attach session (server said: {message}); creating `{default_name}`"
             );
+            // The notice rides the fallback attempt too: whichever attempt
+            // actually attaches is the one whose TUI should announce the
+            // reconnect.
             run_attach_once_rec(
                 dial,
                 default_create_target(default_name),
                 predict_cfg,
                 rec.map(Rc::clone),
+                initial_notice,
             )
             .await
         }
@@ -298,11 +323,15 @@ const RECONNECT_POLL: Duration = Duration::from_millis(100);
 /// handshake resyncs the screen via `TERMINAL_SNAPSHOT`.
 ///
 /// A clean detach returns `Ok`. An [`AttachError::Disconnected`] (server closed
-/// without `DETACHED`) triggers a bounded reconnect: if the socket starts
-/// accepting again within [`RECONNECT_DEADLINE`] we re-attach; if the socket
-/// file is gone (a clean shutdown unlinks it) or never accepts again, the
-/// disconnect is surfaced. `default_name = Some` drives the naked-`phux`
-/// `Last` + `CreateIfMissing` cascade each attempt; `None` re-attaches `target`
+/// without `DETACHED`) triggers a bounded reconnect, visible on the cooked
+/// terminal as a live per-second countdown (phux-i0e8.2.3): if the socket
+/// starts accepting again within [`RECONNECT_DEADLINE`] we re-attach — with a
+/// status-bar notice inside the new TUI announcing the recovery; if the socket
+/// file is gone (a clean shutdown unlinks it) or never accepts again, the two
+/// distinct failure reports are printed HERE (both naming `phux doctor`) and
+/// `Err(Disconnected)` is returned — call sites must NOT print a second remedy
+/// block for it. `default_name = Some` drives the naked-`phux` `Last` +
+/// `CreateIfMissing` cascade each attempt; `None` re-attaches `target`
 /// directly.
 #[allow(
     clippy::future_not_send,
@@ -334,10 +363,23 @@ async fn attach_with_reconnect(
         None => None,
     };
 
+    // phux-i0e8.2.3: set after a successful reconnect so the NEXT attach's
+    // status bar announces the recovery inside the live TUI. A cooked-
+    // terminal eprintln here is alt-screened over within milliseconds, so
+    // the in-TUI notice is the visible surface; `take()` per attempt keeps
+    // a later, unrelated re-attach from re-announcing an old restart.
+    let mut initial_notice: Option<Notice> = None;
     let outcome = loop {
         let result = match default_name {
             Some(name) => {
-                attach_default_with_fallback(dial, name, predict_cfg, recorder.as_ref()).await
+                attach_default_with_fallback(
+                    dial,
+                    name,
+                    predict_cfg,
+                    recorder.as_ref(),
+                    initial_notice.take(),
+                )
+                .await
             }
             None => {
                 run_attach_once_rec(
@@ -345,6 +387,7 @@ async fn attach_with_reconnect(
                     target.clone(),
                     predict_cfg,
                     recorder.as_ref().map(Rc::clone),
+                    initial_notice.take(),
                 )
                 .await
             }
@@ -352,10 +395,29 @@ async fn attach_with_reconnect(
         match result {
             Ok(end) => break Ok(end),
             Err(AttachError::Disconnected) => {
-                if wait_until_connectable(dial, RECONNECT_DEADLINE).await {
-                    eprintln!("phux: server restarted; re-attaching…");
-                } else {
-                    break Err(AttachError::Disconnected);
+                // The RawModeGuard dropped on the unwind out of the attach,
+                // so this whole window runs on the cooked primary screen —
+                // an honest, visible countdown instead of ~10 s of blank
+                // terminal (phux-i0e8.2.3).
+                eprintln!(
+                    "phux: lost the server connection; waiting up to {}s for it to come back",
+                    RECONNECT_DEADLINE.as_secs()
+                );
+                match wait_with_countdown(dial, RECONNECT_DEADLINE).await {
+                    ReconnectOutcome::Connectable => {
+                        eprintln!("phux: server is back; re-attaching…");
+                        initial_notice = Some(Notice::info(RECONNECT_NOTICE_TEXT));
+                    }
+                    outcome @ (ReconnectOutcome::SocketGone | ReconnectOutcome::TimedOut) => {
+                        // Fully reported here — the call sites map a
+                        // `Disconnected` breaking out of this loop straight
+                        // to the failure exit code without a second remedy
+                        // block (see `run_naked` / `run_attach`).
+                        for line in reconnect_failure_lines(outcome, RECONNECT_DEADLINE) {
+                            eprintln!("{line}");
+                        }
+                        break Err(AttachError::Disconnected);
+                    }
                 }
             }
             Err(other) => break Err(other),
@@ -364,6 +426,94 @@ async fn attach_with_reconnect(
 
     close_recorder(recorder);
     outcome
+}
+
+/// The status-bar notice text a post-reconnect attach shows (phux-i0e8.2.3).
+const RECONNECT_NOTICE_TEXT: &str = "re-attached after server restart";
+
+/// How the bounded reconnect probe ended (phux-i0e8.2.3).
+///
+/// Three-way rather than a bool because the two failure shapes mean
+/// different things to the user: a *gone* socket is a server that shut
+/// down cleanly (a clean shutdown unlinks it — nothing is coming back),
+/// while a socket that exists but never accepts within the deadline is a
+/// server that crashed or hung.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconnectOutcome {
+    /// The server accepts connections again — re-attach now.
+    Connectable,
+    /// The UDS socket file disappeared: the server shut down cleanly and
+    /// is not restarting. Only reachable on UDS dials; remote transports
+    /// have no socket file to observe.
+    SocketGone,
+    /// The deadline elapsed with every probe still failing.
+    TimedOut,
+}
+
+/// One line of `\r`-overwritten countdown, pure so tests can pin the
+/// format. `remaining` is rounded UP to whole seconds so the countdown
+/// starts at the full deadline and never shows `0s` while still waiting.
+fn reconnect_progress_line(remaining: Duration) -> String {
+    let secs = remaining
+        .saturating_add(Duration::from_millis(999))
+        .as_secs();
+    format!("phux: reconnecting… {secs}s left (Ctrl-C to give up)")
+}
+
+/// The cooked-terminal failure report for a reconnect window that closed
+/// without a server (phux-i0e8.2.3). Pure so tests can pin both shapes;
+/// each names its distinct cause and ends with the `phux doctor` remedy.
+///
+/// Only the two failure outcomes are meaningful here; `Connectable` never
+/// reaches this function on the production path and maps to an empty
+/// report rather than a panic.
+fn reconnect_failure_lines(outcome: ReconnectOutcome, deadline: Duration) -> Vec<String> {
+    match outcome {
+        ReconnectOutcome::Connectable => Vec::new(),
+        ReconnectOutcome::SocketGone => vec![
+            "phux: the server shut down (its socket is gone) and is not restarting".to_owned(),
+            "  start a new one with `phux` (attaches, auto-starting a server) or `phux server`"
+                .to_owned(),
+            "  run `phux doctor` for a health check".to_owned(),
+        ],
+        ReconnectOutcome::TimedOut => vec![
+            format!(
+                "phux: the server did not come back within {}s — it may have crashed",
+                deadline.as_secs()
+            ),
+            format!(
+                "  server log: {}",
+                phux_server::telemetry::server_log_path().display()
+            ),
+            "  run `phux doctor` for a health check".to_owned(),
+        ],
+    }
+}
+
+/// Drive [`wait_until_connectable`] while painting a `\r`-overwritten
+/// per-second countdown on stderr, so the reconnect window is visible
+/// while it happens rather than after it succeeded.
+///
+/// The countdown line is erased (`\r` + EL) before returning, so whatever
+/// the caller prints next starts on a clean line.
+async fn wait_with_countdown(dial: &Dial, deadline: Duration) -> ReconnectOutcome {
+    let end = Instant::now() + deadline;
+    let mut probe = std::pin::pin!(wait_until_connectable(dial, deadline));
+    // The first tick fires immediately, so the countdown appears at the
+    // full deadline before the first probe can even fail.
+    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            outcome = &mut probe => {
+                eprint!("\r\x1b[K");
+                return outcome;
+            }
+            _ = ticker.tick() => {
+                let remaining = end.saturating_duration_since(Instant::now());
+                eprint!("\r\x1b[K{}", reconnect_progress_line(remaining));
+            }
+        }
+    }
 }
 
 /// Flush the residual UTF-8 tail, backfill `duration`, and close the cast.
@@ -392,21 +542,22 @@ fn close_recorder(recorder: Option<RecorderHandle>) {
 
 /// Wait until the server accepts again on `dial`, or give up.
 ///
-/// Returns `true` as soon as a fresh connection succeeds (the re-exec'd server
-/// is up), and `false` once `deadline` elapses while connections keep failing
-/// (e.g. a crashed server). For UDS it short-circuits to `false` if the socket
-/// file is gone — a clean shutdown unlinks it, so there is nothing to reconnect
-/// to; a graceful upgrade never removes the socket, so it falls into the
-/// retry-until-connectable path. Remote transports probe by completing a real
-/// dial and dropping it, the transport analogue of the UDS connect-and-drop
-/// probe.
-async fn wait_until_connectable(dial: &Dial, deadline: Duration) -> bool {
+/// Returns [`ReconnectOutcome::Connectable`] as soon as a fresh connection
+/// succeeds (the re-exec'd server is up), and [`ReconnectOutcome::TimedOut`]
+/// once `deadline` elapses while connections keep failing (e.g. a crashed
+/// server). For UDS it short-circuits to [`ReconnectOutcome::SocketGone`] if
+/// the socket file is gone — a clean shutdown unlinks it, so there is nothing
+/// to reconnect to; a graceful upgrade never removes the socket, so it falls
+/// into the retry-until-connectable path. Remote transports probe by
+/// completing a real dial and dropping it, the transport analogue of the UDS
+/// connect-and-drop probe.
+async fn wait_until_connectable(dial: &Dial, deadline: Duration) -> ReconnectOutcome {
     let end = Instant::now() + deadline;
     loop {
         let connectable = match dial {
             Dial::Uds(path) => {
                 if !path.exists() {
-                    return false;
+                    return ReconnectOutcome::SocketGone;
                 }
                 tokio::net::UnixStream::connect(path).await.is_ok()
             }
@@ -429,10 +580,10 @@ async fn wait_until_connectable(dial: &Dial, deadline: Duration) -> bool {
             },
         };
         if connectable {
-            return true;
+            return ReconnectOutcome::Connectable;
         }
         if Instant::now() >= end {
-            return false;
+            return ReconnectOutcome::TimedOut;
         }
         tokio::time::sleep(RECONNECT_POLL).await;
     }
@@ -635,6 +786,9 @@ pub(crate) fn run_attach_rec(
             report_attach_end(end);
             ExitCode::SUCCESS
         }
+        // Already reported by the reconnect window (distinct SocketGone /
+        // TimedOut lines naming `phux doctor`) — see `attach_with_reconnect`.
+        Err(AttachError::Disconnected) => ExitCode::FAILURE,
         Err(err) => {
             // `phux-roz` (5): produce actionable text per variant. The
             // guard (if any) has already dropped, so this lands on the
@@ -841,6 +995,9 @@ pub(crate) fn run_attach_quic(
             report_attach_end(end);
             ExitCode::SUCCESS
         }
+        // Already reported by the reconnect window (distinct SocketGone /
+        // TimedOut lines naming `phux doctor`) — see `attach_with_reconnect`.
+        Err(AttachError::Disconnected) => ExitCode::FAILURE,
         Err(err) => {
             eprintln!("phux: QUIC attach to {target} failed: {err}");
             if let Some(hint) = reachability_hint(&err, addr.ip().is_loopback()) {
@@ -951,6 +1108,9 @@ pub(crate) fn run_attach_ws(
             report_attach_end(end);
             ExitCode::SUCCESS
         }
+        // Already reported by the reconnect window (distinct SocketGone /
+        // TimedOut lines naming `phux doctor`) — see `attach_with_reconnect`.
+        Err(AttachError::Disconnected) => ExitCode::FAILURE,
         Err(err) => {
             eprintln!("phux: WebSocket attach failed: {err}");
             if let Some(hint) = reachability_hint(&err, loopback) {
@@ -1019,24 +1179,104 @@ mod tests {
         );
     }
 
-    /// The reconnect probe returns fast for a missing socket (clean shutdown),
-    /// and `true` once a listener is bound (the re-exec'd server is up).
+    /// phux-i0e8.2.3: the reconnect probe is three-way. A missing socket
+    /// (clean shutdown) is `SocketGone`, and fast; a bound listener (the
+    /// re-exec'd server is up) is `Connectable`; a path that exists but
+    /// never accepts (a crashed/hung server) burns the deadline into
+    /// `TimedOut`.
     #[tokio::test]
-    async fn reconnect_probe_distinguishes_missing_and_live_sockets() {
+    async fn reconnect_probe_distinguishes_gone_live_and_dead_sockets() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("probe.sock");
 
         // No socket file: nothing to reconnect to — returns without waiting.
         let start = Instant::now();
-        assert!(!wait_until_connectable(&Dial::uds(&path), Duration::from_secs(5)).await);
+        assert_eq!(
+            wait_until_connectable(&Dial::uds(&path), Duration::from_secs(5)).await,
+            ReconnectOutcome::SocketGone
+        );
         assert!(
             start.elapsed() < Duration::from_secs(1),
             "a missing socket should fail fast, not burn the deadline"
         );
 
         // A bound listener: connectable.
-        let _listener = tokio::net::UnixListener::bind(&path).expect("bind");
-        assert!(wait_until_connectable(&Dial::uds(&path), Duration::from_secs(2)).await);
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        assert_eq!(
+            wait_until_connectable(&Dial::uds(&path), Duration::from_secs(2)).await,
+            ReconnectOutcome::Connectable
+        );
+        drop(listener);
+
+        // A path that exists but never accepts: the deadline elapses.
+        std::fs::remove_file(&path).ok();
+        std::fs::File::create(&path).expect("plug the socket path");
+        assert_eq!(
+            wait_until_connectable(&Dial::uds(&path), Duration::from_millis(300)).await,
+            ReconnectOutcome::TimedOut
+        );
+    }
+
+    /// phux-i0e8.2.3: the countdown line is `\r`-overwritten in place, so
+    /// the format is pinned exactly; remaining time rounds UP to whole
+    /// seconds so it opens at the full deadline and never reads `0s`
+    /// mid-wait.
+    #[test]
+    fn reconnect_progress_line_rounds_up_and_pins_format() {
+        assert_eq!(
+            reconnect_progress_line(Duration::from_secs(10)),
+            "phux: reconnecting… 10s left (Ctrl-C to give up)"
+        );
+        assert_eq!(
+            reconnect_progress_line(Duration::from_millis(9_100)),
+            "phux: reconnecting… 10s left (Ctrl-C to give up)"
+        );
+        assert_eq!(
+            reconnect_progress_line(Duration::from_millis(200)),
+            "phux: reconnecting… 1s left (Ctrl-C to give up)"
+        );
+        assert_eq!(
+            reconnect_progress_line(Duration::ZERO),
+            "phux: reconnecting… 0s left (Ctrl-C to give up)"
+        );
+    }
+
+    /// phux-i0e8.2.3: the two reconnect-window failure shapes are distinct
+    /// sentences — a gone socket is a clean shutdown, a timeout is a crash
+    /// — and BOTH name `phux doctor` as the remedy.
+    #[test]
+    fn reconnect_failure_lines_are_distinct_and_name_doctor() {
+        let deadline = Duration::from_secs(10);
+
+        let gone = reconnect_failure_lines(ReconnectOutcome::SocketGone, deadline);
+        assert_eq!(
+            gone[0],
+            "phux: the server shut down (its socket is gone) and is not restarting"
+        );
+        assert!(
+            gone.iter().any(|l| l.contains("phux doctor")),
+            "SocketGone must name phux doctor: {gone:?}"
+        );
+
+        let timed_out = reconnect_failure_lines(ReconnectOutcome::TimedOut, deadline);
+        assert_eq!(
+            timed_out[0],
+            "phux: the server did not come back within 10s — it may have crashed"
+        );
+        assert!(
+            timed_out.iter().any(|l| l.contains("phux doctor")),
+            "TimedOut must name phux doctor: {timed_out:?}"
+        );
+        assert!(
+            timed_out.iter().any(|l| l.starts_with("  server log: ")),
+            "TimedOut points at the server log (the crash reason lives there): {timed_out:?}"
+        );
+
+        assert_ne!(gone[0], timed_out[0], "the two failures read differently");
+        assert!(
+            reconnect_failure_lines(ReconnectOutcome::Connectable, deadline).is_empty(),
+            "a successful reconnect has nothing to report"
+        );
     }
 
     /// The overlay hint fires only for a reachability failure on a
