@@ -47,9 +47,36 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use super::help::HardcodedBinding;
 use super::widgets::Modal;
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::Theme;
+
+/// The context-menu gesture table for the help overlay's `Mouse & menus`
+/// section (phux-i0e8.10.3). COLOCATED with the [`ContextMenu`] handlers
+/// below; the `help_table_matches_handler_arms` adjacency test drives
+/// each in-menu row through the real handler. The `right-click` open
+/// gesture itself is dispatcher-owned (the ADR-0058 arms in
+/// `attach::input_dispatch`, covered by its phux-wrnm tests) — it leads
+/// the table because it is the row users need first.
+pub static HELP_BINDINGS: &[HardcodedBinding] = &[
+    HardcodedBinding {
+        chord: "right-click",
+        action: "open the context menu (pane, window tab, or session chrome)",
+    },
+    HardcodedBinding {
+        chord: "Up/Down",
+        action: "move the menu selection (also j/k, C-n/C-p)",
+    },
+    HardcodedBinding {
+        chord: "Enter",
+        action: "run the selected menu row",
+    },
+    HardcodedBinding {
+        chord: "Esc",
+        action: "close the menu (also q)",
+    },
+];
 
 /// Interior padding: one blank column either side of a row's text, so
 /// labels don't sit flush against the border.
@@ -804,5 +831,64 @@ mod tests {
     #[test]
     fn a_menu_does_not_survive_a_resize() {
         assert!(!menu_at(10, 4).survives_resize());
+    }
+
+    /// phux-i0e8.10.3: the colocated help table and the handler arms stay
+    /// in lockstep — every advertised in-menu gesture is driven through
+    /// the real [`ContextMenu`] handler. The `right-click` open gesture is
+    /// dispatcher-owned (ADR-0058 arms in `attach::input_dispatch`, held
+    /// by its phux-wrnm tests), so its check here is that the row exists —
+    /// the help overlay's own render test asserts it reaches the screen.
+    #[test]
+    fn help_table_matches_handler_arms() {
+        let mut saw_right_click = false;
+        for binding in HELP_BINDINGS {
+            match binding.chord {
+                "right-click" => saw_right_click = true,
+                "Up/Down" => {
+                    let mut menu = menu_at(10, 4);
+                    menu.handle_key(&key(PhysicalKey::ArrowDown));
+                    assert_eq!(menu.selected, 1, "Down steps the selection");
+                    menu.handle_key(&key(PhysicalKey::ArrowUp));
+                    assert_eq!(menu.selected, 0, "Up steps it back");
+                    // The parenthetical aliases are real arms too.
+                    menu.handle_key(&key(PhysicalKey::J));
+                    assert_eq!(menu.selected, 1, "j steps like Down");
+                    menu.handle_key(&key(PhysicalKey::K));
+                    assert_eq!(menu.selected, 0, "k steps like Up");
+                }
+                "Enter" => {
+                    let mut menu = menu_at(10, 4);
+                    assert!(
+                        matches!(
+                            menu.handle_key(&key(PhysicalKey::Enter)),
+                            OverlayCommand::Commit(_)
+                        ),
+                        "Enter commits the selected row"
+                    );
+                }
+                "Esc" => {
+                    let mut menu = menu_at(10, 4);
+                    assert_eq!(
+                        menu.handle_key(&key(PhysicalKey::Escape)),
+                        OverlayCommand::Dismiss
+                    );
+                    let mut menu = menu_at(10, 4);
+                    assert_eq!(
+                        menu.handle_key(&key(PhysicalKey::Q)),
+                        OverlayCommand::Dismiss,
+                        "q closes too, as the row promises"
+                    );
+                }
+                other => panic!(
+                    "help table row `{other}` has no adjacency check — \
+                     add one that drives its handler arm"
+                ),
+            }
+        }
+        assert!(
+            saw_right_click,
+            "the table must advertise the right-click open gesture"
+        );
     }
 }

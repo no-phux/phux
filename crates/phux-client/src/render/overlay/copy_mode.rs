@@ -14,11 +14,65 @@ use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+use super::help::HardcodedBinding;
 use super::{
     CopyRequest, OverlayCommand, RenderOverlay, SelectionGrab, SelectionMode, SelectionRect,
 };
 
 const WHEEL_SCROLL_LINES: isize = 3;
+
+/// Copy-mode's key table for the help overlay's `Copy mode` section
+/// (phux-i0e8.10.3). COLOCATED with the `handle_key` / `handle_mouse`
+/// arms below on purpose: every row must map to a real handler arm, and
+/// the `help_table_matches_handler_arms` adjacency test holds the two in
+/// lockstep — change a key here or there and the other side breaks
+/// visibly.
+pub static HELP_BINDINGS: &[HardcodedBinding] = &[
+    HardcodedBinding {
+        chord: "Arrows",
+        action: "move the cursor (Shift extends the selection)",
+    },
+    HardcodedBinding {
+        chord: "Tab",
+        action: "cycle selection mode (char / line / rect)",
+    },
+    HardcodedBinding {
+        chord: "Enter",
+        action: "copy the selection and exit",
+    },
+    HardcodedBinding {
+        chord: "w",
+        action: "copy the word under the cursor",
+    },
+    HardcodedBinding {
+        chord: "v",
+        action: "copy the line under the cursor",
+    },
+    HardcodedBinding {
+        chord: "V",
+        action: "copy the semantic line (prompt zones)",
+    },
+    HardcodedBinding {
+        chord: "A",
+        action: "copy all selectable content",
+    },
+    HardcodedBinding {
+        chord: "]",
+        action: "copy the command output under the cursor",
+    },
+    HardcodedBinding {
+        chord: "PageUp/PageDown",
+        action: "scroll the viewport a page",
+    },
+    HardcodedBinding {
+        chord: "drag",
+        action: "select with the mouse; release copies",
+    },
+    HardcodedBinding {
+        chord: "Esc",
+        action: "exit copy mode",
+    },
+];
 
 fn quantize_mouse_cell(value: f64, max: u16) -> u16 {
     if !value.is_finite() || max == 0 {
@@ -738,6 +792,115 @@ mod tests {
             (2, 4, 2, 5),
             "shift-arrows extend the selection"
         );
+    }
+
+    /// phux-i0e8.10.3: the colocated help table and the handler arms stay
+    /// in lockstep. Every advertised chord is driven through the real
+    /// handler and must produce the behavior its row describes; a table
+    /// row with no matching arm here panics, so adding a row forces
+    /// adding its adjacency check (and its handler).
+    #[test]
+    fn help_table_matches_handler_arms() {
+        for binding in HELP_BINDINGS {
+            match binding.chord {
+                "Arrows" => {
+                    let mut overlay = CopyModeOverlay::new(2, 5, 80, 24);
+                    overlay.handle_key(&press(PhysicalKey::ArrowRight, ModSet::empty()));
+                    assert_eq!(overlay.cursor_col, 6, "arrow moves the cursor");
+                    overlay.handle_key(&press(PhysicalKey::ArrowRight, ModSet::SHIFT));
+                    assert_eq!(
+                        overlay.anchor_col, 6,
+                        "shift-arrow leaves the anchor behind (extends)"
+                    );
+                }
+                "Tab" => {
+                    let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
+                    overlay.handle_key(&press(PhysicalKey::Tab, ModSet::empty()));
+                    assert_eq!(overlay.mode(), SelectionMode::Line, "Tab cycles the mode");
+                }
+                "Enter" => {
+                    assert_eq!(
+                        grab_of(&dispatch(PhysicalKey::Enter, ModSet::empty())),
+                        SelectionGrab::Rect
+                    );
+                }
+                "w" => {
+                    assert_eq!(
+                        grab_of(&dispatch(PhysicalKey::W, ModSet::empty())),
+                        SelectionGrab::Word
+                    );
+                }
+                "v" => {
+                    assert_eq!(
+                        grab_of(&dispatch(PhysicalKey::V, ModSet::empty())),
+                        SelectionGrab::Line
+                    );
+                }
+                "V" => {
+                    assert_eq!(
+                        grab_of(&dispatch(PhysicalKey::V, ModSet::SHIFT)),
+                        SelectionGrab::LineSemantic
+                    );
+                }
+                "A" => {
+                    assert_eq!(
+                        grab_of(&dispatch(PhysicalKey::A, ModSet::SHIFT)),
+                        SelectionGrab::All
+                    );
+                }
+                "]" => {
+                    assert_eq!(
+                        grab_of(&dispatch(PhysicalKey::BracketRight, ModSet::empty())),
+                        SelectionGrab::Output
+                    );
+                }
+                "PageUp/PageDown" => {
+                    assert!(matches!(
+                        dispatch(PhysicalKey::PageUp, ModSet::empty()),
+                        OverlayCommand::ScrollViewport(n) if n < 0
+                    ));
+                    assert!(matches!(
+                        dispatch(PhysicalKey::PageDown, ModSet::empty()),
+                        OverlayCommand::ScrollViewport(n) if n > 0
+                    ));
+                }
+                "drag" => {
+                    let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
+                    overlay.handle_mouse(&mouse_event(
+                        MouseAction::Press,
+                        MouseButton::Left,
+                        1.0,
+                        1.0,
+                    ));
+                    overlay.handle_mouse(&mouse_event(
+                        MouseAction::Motion,
+                        MouseButton::Left,
+                        5.0,
+                        2.0,
+                    ));
+                    let cmd = overlay.handle_mouse(&mouse_event(
+                        MouseAction::Release,
+                        MouseButton::Left,
+                        5.0,
+                        2.0,
+                    ));
+                    assert!(
+                        matches!(cmd, OverlayCommand::Copy(_)),
+                        "releasing a drag copies: {cmd:?}"
+                    );
+                }
+                "Esc" => {
+                    assert_eq!(
+                        dispatch(PhysicalKey::Escape, ModSet::empty()),
+                        OverlayCommand::Dismiss
+                    );
+                }
+                other => panic!(
+                    "help table row `{other}` has no adjacency check — \
+                     add one that drives its handler arm"
+                ),
+            }
+        }
     }
 
     #[test]

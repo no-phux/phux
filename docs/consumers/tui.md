@@ -2407,7 +2407,21 @@ Beyond that, two client-rendered overlays teach the bindings themselves
 (the TUI owns its chrome — nothing here is server-rendered):
 
 - `C-a ?` opens the **help modal**, a centered reference listing every
-  prefix-table and global binding. A table taller than the modal scrolls —
+  prefix-table and global binding, followed by three built-in sections
+  covering the driver-owned interactions no keybinding table describes:
+  **Copy mode** (the in-overlay selection keys — arrows, `Tab` mode
+  cycle, the one-shot grab keys, mouse drag), **Mouse & menus** (the
+  right-click context menus and their in-menu navigation, divider
+  drag-to-resize, and the sidebar's click targets, labelled with the
+  same `+ new` / `= menu` affordance strings the sidebar paints), and
+  **Panels & dashboards**, which advertises the window sidebar (off by
+  default) and the agent-fleet dashboard with their `toggle-sidebar` /
+  `agent-fleet` chords resolved from the active config — a rebind shows
+  the rebound chord, an unbound action says `unbound`. The built-in
+  rows are sourced from tables colocated with the implementing modules
+  and held in lockstep by per-module tests, so the modal cannot
+  advertise a gesture that has no handler. A table taller than the
+  modal scrolls —
   arrows / `j` / `k` / `C-n` / `C-p` step a row, `PageUp` / `PageDown` a
   screenful, `Home` / `End` jump to the ends, the wheel scrolls a detent,
   and an overflowing table paints a scrollbar in the right border column

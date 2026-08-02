@@ -21,8 +21,9 @@
 //! into the live config, which keeps `Box<dyn RenderOverlay>` `'static`.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 
-use phux_config::keybind::chord_str_matches_event;
+use phux_config::keybind::{ResolvedAction, chord_str_matches_event};
 use phux_config::{Action, KeybindingsCfg};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
@@ -44,11 +45,43 @@ struct Entry {
     action: String,
 }
 
+impl From<&HardcodedBinding> for Entry {
+    fn from(b: &HardcodedBinding) -> Self {
+        Self {
+            chord: b.chord.to_owned(),
+            action: b.action.to_owned(),
+        }
+    }
+}
+
+/// One driver-owned, non-rebindable interaction, as advertised in the
+/// help overlay's built-in sections (phux-i0e8.10.3).
+///
+/// Tables of these are COLOCATED with the modules that implement the
+/// interaction — copy-mode keys with [`super::copy_mode`], context-menu
+/// gestures with [`super::menu`], divider drag-resize with
+/// [`crate::render::chrome::dividers`], sidebar clicks with
+/// [`crate::render::chrome::sidebar`] — and aggregated by
+/// [`HelpOverlay::from_config`] into named sections. Colocation plus a
+/// per-module adjacency test (every table row must map to a real
+/// `handle_key` / `handle_mouse` arm) is the anti-rot mechanism: a module
+/// that changes its input handling has the table describing it in the
+/// same file.
+#[derive(Debug, Clone, Copy)]
+pub struct HardcodedBinding {
+    /// The literal gesture: a key (`"Tab"`), a mouse gesture
+    /// (`"right-click"`), or a clickable label (the sidebar's `+ new`).
+    pub chord: &'static str,
+    /// What the gesture does.
+    pub action: &'static str,
+}
+
 /// Help overlay — keybindings reference modal.
 ///
 /// Built from a [`KeybindingsCfg`] snapshot via [`Self::from_config`].
 /// Rendering composes a [`KeyChordTable`] (sections grouped prefix-table
-/// → global → hardcoded) into a centered [`Modal`].
+/// → global → the built-in `Copy mode` / `Mouse & menus` /
+/// `Panels & dashboards` sections) into a centered [`Modal`].
 #[derive(Debug)]
 pub struct HelpOverlay {
     /// Pretty-printed prefix chord (e.g. `"C-a"`), or empty if no
@@ -58,9 +91,12 @@ pub struct HelpOverlay {
     prefix_entries: Vec<Entry>,
     /// Global entries — chord shown as-is.
     global_entries: Vec<Entry>,
-    /// Hardcoded driver-owned chords (detach, etc.). Authored at
-    /// construction time so the overlay stays `'static`.
-    hardcoded_entries: Vec<Entry>,
+    /// Driver-owned interactions, grouped into named sections
+    /// (`Copy mode`, `Mouse & menus`, `Panels & dashboards`). Authored at
+    /// construction time from the tables colocated with the implementing
+    /// modules (plus the config-resolved panel chords) so the overlay
+    /// stays `'static`.
+    hardcoded_sections: Vec<(String, Vec<Entry>)>,
     /// Chord (as authored in cfg) that opens this overlay. Used in
     /// the footer hint so a user who rebound `show-help` to e.g. `?`
     /// sees `Press ? or Esc to close` rather than a stale `F1`.
@@ -118,7 +154,7 @@ impl HelpOverlay {
                 action: action_label(action),
             })
             .collect();
-        let hardcoded_entries = Vec::new();
+        let hardcoded_sections = built_in_sections(cfg);
         // Find the chord (if any) that the user bound to `show-help`
         // for the footer hint. Scans `cfg.global` only — `show-help`
         // is a global by default and surfacing a prefix-table entry
@@ -139,7 +175,7 @@ impl HelpOverlay {
             },
             prefix_entries,
             global_entries,
-            hardcoded_entries,
+            hardcoded_sections,
             show_help_chord,
             theme: *theme,
             scroll: Cell::new(0),
@@ -148,8 +184,8 @@ impl HelpOverlay {
     }
 
     /// Group the snapshotted entries into the [`KeyChordTable`]'s
-    /// sections (prefix → global → hardcoded). Empty sections are dropped
-    /// by the table itself.
+    /// sections (prefix → global → the named built-in sections). Empty
+    /// sections are dropped by the table itself.
     fn chord_table(&self) -> KeyChordTable {
         let to_rows = |entries: &[Entry]| {
             entries
@@ -157,14 +193,16 @@ impl HelpOverlay {
                 .map(|e| ChordRow::new(e.chord.clone(), e.action.clone()))
                 .collect::<Vec<_>>()
         };
-        let sections = vec![
+        let mut sections = vec![
             ChordSection::new(
                 format!("Prefix bindings ({})", self.prefix),
                 to_rows(&self.prefix_entries),
             ),
             ChordSection::new("Global bindings", to_rows(&self.global_entries)),
-            ChordSection::new("Hardcoded", to_rows(&self.hardcoded_entries)),
         ];
+        for (title, entries) in &self.hardcoded_sections {
+            sections.push(ChordSection::new(title.clone(), to_rows(entries)));
+        }
         KeyChordTable::new(&self.theme, sections).empty_notice("No keybindings configured.")
     }
 
@@ -378,6 +416,61 @@ fn compact_window_jump(prefix: &str, keys: &[String]) -> Option<Entry> {
     })
 }
 
+/// The overlay's built-in sections (phux-i0e8.10.3): the driver-owned
+/// interactions no keybinding table describes, aggregated from the
+/// [`HardcodedBinding`] tables colocated with the implementing modules,
+/// plus the `Panels & dashboards` discoverability section — whose chords
+/// ARE rebindable and therefore resolve against the active config.
+fn built_in_sections(cfg: &KeybindingsCfg) -> Vec<(String, Vec<Entry>)> {
+    let copy_mode: Vec<Entry> = super::copy_mode::HELP_BINDINGS
+        .iter()
+        .map(Entry::from)
+        .collect();
+    // Mouse-driven surfaces share one section: the right-click menus,
+    // divider drag-resize, and the sidebar's click targets.
+    let mouse: Vec<Entry> = super::menu::HELP_BINDINGS
+        .iter()
+        .chain(crate::render::chrome::dividers::HELP_BINDINGS)
+        .chain(crate::render::chrome::sidebar::HELP_BINDINGS)
+        .map(Entry::from)
+        .collect();
+    // phux-i0e8.7's punted discoverability findings land here: the
+    // sidebar is off by default and the fleet dashboard hides behind one
+    // chord — advertise both, with the chord resolved from the active
+    // config (the same resolver the palette and context menus use, so
+    // the surfaces cannot disagree about which chord runs an action).
+    let panels = vec![
+        Entry {
+            chord: resolved_chord(cfg, "toggle-sidebar"),
+            action: "toggle-sidebar (window sidebar; off by default)".to_owned(),
+        },
+        Entry {
+            chord: resolved_chord(cfg, "agent-fleet"),
+            action: "agent-fleet (dashboard of every agent pane)".to_owned(),
+        },
+    ];
+    vec![
+        ("Copy mode".to_owned(), copy_mode),
+        ("Mouse & menus".to_owned(), mouse),
+        ("Panels & dashboards".to_owned(), panels),
+    ]
+}
+
+/// The chord bound to the bare action `name` in `cfg`, formatted as the
+/// literal keystrokes to type (prefix-table entries include the leader),
+/// or `"unbound"`. Delegates to the shared
+/// [`crate::attach::action_registry::bound_chord_for`] resolver.
+fn resolved_chord(cfg: &KeybindingsCfg, name: &str) -> String {
+    crate::attach::action_registry::bound_chord_for(
+        Some(cfg),
+        &ResolvedAction {
+            action: name.to_owned(),
+            args: BTreeMap::new(),
+        },
+    )
+    .unwrap_or_else(|| "unbound".to_owned())
+}
+
 /// `true` when `action` resolves to `show-help` (bare or parameterized).
 /// Used to find the user-bound chord for the dismiss footer hint.
 fn is_show_help(action: &Action) -> bool {
@@ -439,10 +532,127 @@ mod tests {
         assert_eq!(overlay.prefix, "C-a");
         assert_eq!(overlay.prefix_entries.len(), 3);
         assert_eq!(overlay.global_entries.len(), 1);
-        assert!(overlay.hardcoded_entries.is_empty());
+        // phux-i0e8.10.3: the built-in sections are never empty — every
+        // config gets the driver-owned interactions.
+        assert_eq!(overlay.hardcoded_sections.len(), 3);
+        assert!(
+            overlay
+                .hardcoded_sections
+                .iter()
+                .all(|(_, entries)| !entries.is_empty()),
+            "every built-in section carries rows"
+        );
         assert!(overlay.prefix_entries.iter().any(|e| e.action == "detach"));
         // show-help is bound to F1 in the test cfg.
         assert_eq!(overlay.show_help_chord.as_deref(), Some("F1"));
+    }
+
+    /// phux-i0e8.10.3: the built-in sections render under their own
+    /// names with rows aggregated from the colocated module tables —
+    /// including the `right-click` gesture and a copy-mode row — plus
+    /// the `Panels & dashboards` discoverability rows.
+    #[test]
+    fn built_in_sections_render_named_with_their_rows() {
+        let overlay = HelpOverlay::from_config(&cfg(), &Theme::default());
+        // Tall viewport so the whole table fits without scrolling.
+        let text = render_to_string(&overlay, 110, 80);
+        for header in ["Copy mode", "Mouse & menus", "Panels & dashboards"] {
+            assert!(text.contains(header), "missing `{header}` header:\n{text}");
+        }
+        // A copy-mode row (from copy_mode::HELP_BINDINGS).
+        assert!(
+            text.contains("copy the selection and exit"),
+            "missing copy-mode row:\n{text}"
+        );
+        // The right-click gesture (from menu::HELP_BINDINGS).
+        assert!(
+            text.contains("right-click"),
+            "missing right-click row:\n{text}"
+        );
+        // Drag-resize (dividers) and the sidebar affordances, reusing the
+        // shared label consts.
+        assert!(
+            text.contains("drag divider"),
+            "missing drag-resize row:\n{text}"
+        );
+        assert!(
+            text.contains(crate::render::chrome::sidebar::NEW_LABEL),
+            "missing sidebar `+ new` row:\n{text}"
+        );
+        // Panels & dashboards names both actions.
+        assert!(
+            text.contains("toggle-sidebar"),
+            "missing toggle-sidebar row:\n{text}"
+        );
+        assert!(
+            text.contains("agent-fleet"),
+            "missing agent-fleet row:\n{text}"
+        );
+    }
+
+    /// phux-i0e8.10.3: the `Panels & dashboards` chords resolve from the
+    /// ACTIVE config. Under the shipped defaults that is `C-a b`
+    /// (toggle-sidebar, default.toml) and `C-a A` (agent-fleet).
+    #[test]
+    fn panels_section_resolves_chords_from_the_shipped_defaults() {
+        let cfg = phux_config::parse_str(
+            phux_config::DEFAULT_CONFIG_TOML,
+            std::path::Path::new("default.toml"),
+        )
+        .expect("default config parses");
+        let overlay = HelpOverlay::from_config(&cfg.keybindings, &Theme::default());
+        let panels = panels_entries(&overlay);
+        let chord_for = |name: &str| {
+            panels
+                .iter()
+                .find(|e| e.action.contains(name))
+                .unwrap_or_else(|| panic!("panels section names {name}"))
+                .chord
+                .clone()
+        };
+        assert_eq!(chord_for("toggle-sidebar"), "C-a b");
+        assert_eq!(chord_for("agent-fleet"), "C-a A");
+    }
+
+    /// phux-i0e8.10.3: a rebound config changes the advertised chord; a
+    /// config with no binding shows `unbound` rather than lying.
+    #[test]
+    fn panels_section_follows_rebinds_and_admits_unbound() {
+        // The base test cfg binds neither action: both rows say so.
+        let overlay = HelpOverlay::from_config(&cfg(), &Theme::default());
+        for entry in panels_entries(&overlay) {
+            assert_eq!(entry.chord, "unbound", "{}", entry.action);
+        }
+        // Rebound: globals win when no prefix-table binding exists.
+        let mut c = cfg();
+        c.global
+            .insert("F5".to_owned(), Action::Bare("agent-fleet".to_owned()));
+        c.prefix_table
+            .insert("g".to_owned(), Action::Bare("toggle-sidebar".to_owned()));
+        let overlay = HelpOverlay::from_config(&c, &Theme::default());
+        let panels = panels_entries(&overlay);
+        assert!(
+            panels
+                .iter()
+                .any(|e| e.action.contains("agent-fleet") && e.chord == "F5"),
+            "global rebind resolves: {panels:?}"
+        );
+        assert!(
+            panels
+                .iter()
+                .any(|e| e.action.contains("toggle-sidebar") && e.chord == "C-a g"),
+            "prefix-table rebind resolves with the leader shown: {panels:?}"
+        );
+    }
+
+    /// The `Panels & dashboards` entries of `overlay`.
+    fn panels_entries(overlay: &HelpOverlay) -> Vec<Entry> {
+        overlay
+            .hardcoded_sections
+            .iter()
+            .find(|(title, _)| title == "Panels & dashboards")
+            .map(|(_, entries)| entries.clone())
+            .expect("the panels section exists")
     }
 
     #[test]
@@ -691,19 +901,20 @@ mod tests {
         let top = render_to_string(&overlay, 80, 20);
         assert!(top.contains("action-00"), "head visible at the top:\n{top}");
         assert!(
-            !top.contains("action-29"),
+            !top.contains("agent-fleet"),
             "tail must start beyond the fold:\n{top}"
         );
 
         // Down-arrow steps (paint between each, as the driver does) walk
-        // the window to the tail...
-        for _ in 0..100 {
+        // the window to the tail — which since phux-i0e8.10.3 is the
+        // built-in `Panels & dashboards` section.
+        for _ in 0..200 {
             overlay.handle_key(&key(PhysicalKey::ArrowDown));
             render_to_string(&overlay, 80, 20);
         }
         let bottom = render_to_string(&overlay, 80, 20);
         assert!(
-            bottom.contains("action-29"),
+            bottom.contains("agent-fleet"),
             "the tail must be reachable:\n{bottom}"
         );
         assert!(
@@ -722,7 +933,7 @@ mod tests {
         );
 
         // Up returns all the way and clamps at zero.
-        for _ in 0..100 {
+        for _ in 0..200 {
             overlay.handle_key(&key(PhysicalKey::ArrowUp));
         }
         let text = render_to_string(&overlay, 80, 20);
@@ -747,11 +958,6 @@ mod tests {
 
         overlay.handle_key(&key(PhysicalKey::End));
         let text = render_to_string(&overlay, 80, 20);
-        // The label's closing paren only exists on its *last* wrapped row.
-        assert!(
-            text.contains("argument-)"),
-            "End must reveal the folded label's tail:\n{text}"
-        );
         assert!(
             text.contains("Press Esc to close"),
             "End must reveal the footer beneath the folded label:\n{text}"
@@ -771,12 +977,13 @@ mod tests {
 
     #[test]
     fn fitting_content_is_unscrolled_and_barless() {
-        // The small default cfg fits an 80x24 modal comfortably: no
-        // scrollbar thumb, a zero offset, and inert scroll keys — the
-        // rendered bytes must not change at all (phux-9adu's "fits"
-        // regression guard).
+        // The small test cfg fits a tall viewport's modal comfortably
+        // (the built-in sections add ~30 rows since phux-i0e8.10.3, so
+        // 80x24 no longer fits): no scrollbar thumb, a zero offset, and
+        // inert scroll keys — the rendered bytes must not change at all
+        // (phux-9adu's "fits" regression guard).
         let mut overlay = HelpOverlay::from_config(&cfg(), &Theme::default());
-        let before = render_to_string(&overlay, 80, 24);
+        let before = render_to_string(&overlay, 110, 90);
         assert!(
             !before.contains('█'),
             "no scrollbar when content fits:\n{before}"
@@ -784,7 +991,7 @@ mod tests {
         overlay.handle_key(&key(PhysicalKey::ArrowDown));
         overlay.handle_key(&key(PhysicalKey::PageDown));
         overlay.handle_key(&key(PhysicalKey::End));
-        let after = render_to_string(&overlay, 80, 24);
+        let after = render_to_string(&overlay, 110, 90);
         assert_eq!(overlay.scroll.get(), 0, "offset clamps to zero on a fit");
         assert_eq!(after, before, "scroll keys must not move a fitting table");
     }
@@ -816,10 +1023,15 @@ mod tests {
         overlay.handle_key(&key(PhysicalKey::PageUp));
         render_to_string(&overlay, 80, 20);
         assert_eq!(overlay.scroll.get(), 1);
-        // End lands flush with the bottom, Home rewinds to the top.
+        // End lands flush with the bottom, Home rewinds to the top. The
+        // tail is the built-in `Panels & dashboards` section
+        // (phux-i0e8.10.3).
         overlay.handle_key(&key(PhysicalKey::End));
         let text = render_to_string(&overlay, 80, 20);
-        assert!(text.contains("action-29"), "End reaches the tail:\n{text}");
+        assert!(
+            text.contains("agent-fleet"),
+            "End reaches the tail:\n{text}"
+        );
         overlay.handle_key(&key(PhysicalKey::Home));
         render_to_string(&overlay, 80, 20);
         assert_eq!(overlay.scroll.get(), 0);

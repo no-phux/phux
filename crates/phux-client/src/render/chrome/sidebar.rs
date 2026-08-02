@@ -41,6 +41,7 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::agent_meta::AgentMetaState;
 use crate::layout::Rect;
 use crate::render::Theme;
+use crate::render::overlay::help::HardcodedBinding;
 
 /// Label of the "create" affordance row (phux-fce4).
 ///
@@ -70,6 +71,31 @@ pub const AGENTS_EMPTY: &str = "no agents";
 /// The collapse chevron painted in the strip's bottom corner
 /// (phux-foz.9). Clicking it runs `toggle-sidebar`.
 pub const COLLAPSE_GLYPH: &str = "‹";
+
+/// The sidebar's click-target table for the help overlay's
+/// `Mouse & menus` section (phux-i0e8.10.3). COLOCATED with [`hit_test`]
+/// and the row model it reads, and REUSING the affordance-label consts
+/// above so a rename breaks the help text visibly instead of letting it
+/// rot. The `help_table_matches_hit_targets` adjacency test drives each
+/// advertised click through the real [`hit_test`].
+pub static HELP_BINDINGS: &[HardcodedBinding] = &[
+    HardcodedBinding {
+        chord: "click",
+        action: "select the clicked window (sidebar row)",
+    },
+    HardcodedBinding {
+        chord: NEW_LABEL,
+        action: "create a window (sidebar click)",
+    },
+    HardcodedBinding {
+        chord: MENU_LABEL,
+        action: "open the command palette (sidebar click)",
+    },
+    HardcodedBinding {
+        chord: COLLAPSE_GLYPH,
+        action: "collapse the sidebar (bottom-corner click)",
+    },
+];
 
 /// Minimum strip height (rows) at which the footer affordances render.
 /// Below this every row goes to the section body — a 2–3 row strip
@@ -1172,6 +1198,47 @@ mod tests {
             !plain.contains(COLLAPSE_GLYPH),
             "short strip must not render the chevron: {plain:?}"
         );
+    }
+
+    /// phux-i0e8.10.3: every click the help table advertises resolves
+    /// through the real [`hit_test`] to the target its row describes, on
+    /// a strip tall enough to render the footer. The affordance rows
+    /// match on the shared label consts, so renaming `+ new` / `= menu`
+    /// without updating the table (or vice versa) breaks here.
+    #[test]
+    fn help_table_matches_hit_targets() {
+        // 1 window, footer rendered: rows 0 header, 1-2 window block,
+        // 6 `+ new`, 7 `= menu`, corner (19, 7) collapse.
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 8,
+        };
+        for binding in HELP_BINDINGS {
+            match binding.chord {
+                "click" => {
+                    assert_eq!(
+                        hit_test(rect, 1, &[], 3, 1),
+                        Some(SidebarHit::Window(0)),
+                        "a window row click selects that window"
+                    );
+                }
+                NEW_LABEL => {
+                    assert_eq!(hit_test(rect, 1, &[], 3, 6), Some(SidebarHit::NewWindow));
+                }
+                MENU_LABEL => {
+                    assert_eq!(hit_test(rect, 1, &[], 3, 7), Some(SidebarHit::Menu));
+                }
+                COLLAPSE_GLYPH => {
+                    assert_eq!(hit_test(rect, 1, &[], 19, 7), Some(SidebarHit::Collapse));
+                }
+                other => panic!(
+                    "help table row `{other}` has no adjacency check — \
+                     add one that drives hit_test"
+                ),
+            }
+        }
     }
 
     // ---------- phux-fce4 / phux-foz.9: row model + hit-test ----------

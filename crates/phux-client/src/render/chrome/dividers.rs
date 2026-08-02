@@ -46,6 +46,18 @@ use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::Rect as RataRect;
 
 use crate::attach::multi_pane::PaneLayout;
+use crate::render::overlay::help::HardcodedBinding;
+
+/// The divider drag-resize table for the help overlay's `Mouse & menus`
+/// section (phux-i0e8.10.3). COLOCATED with the divider layer: the drag
+/// itself is driven by the dispatcher's ADR-0048 grab, whose targets are
+/// the `divider_hits` that `compute_layout` produces alongside the glyph
+/// cells this module paints. The `help_table_targets_exist` adjacency
+/// test asserts a split layout actually yields those grab targets.
+pub static HELP_BINDINGS: &[HardcodedBinding] = &[HardcodedBinding {
+    chord: "drag divider",
+    action: "resize the panes either side",
+}];
 
 /// Render the divider layer for `layout` to `out` using a ratatui buffer
 /// with pane-interior cells marked `skip`.
@@ -372,6 +384,30 @@ mod tests {
                 d.y
             );
         }
+    }
+
+    /// phux-i0e8.10.3: the help table advertises drag-to-resize, so the
+    /// drag targets must actually exist — a split layout yields the
+    /// `divider_hits` the dispatcher's ADR-0048 grab resolves against
+    /// (the drag behavior itself is held by `input_dispatch`'s ADR-0048
+    /// tests). If dividers stop producing hit targets, the advertised
+    /// gesture would be dead and this fails.
+    #[test]
+    fn help_table_targets_exist() {
+        assert!(
+            HELP_BINDINGS.iter().any(|b| b.chord.contains("drag")),
+            "the table must advertise the drag gesture"
+        );
+        let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
+        let state = LayoutState {
+            tree: Some(tree),
+            focus: Some(t(1)),
+        };
+        let layout = compute_layout(&state, (80, 24));
+        assert!(
+            !layout.divider_hits.is_empty(),
+            "a split layout must yield divider grab targets"
+        );
     }
 
     // -- helpers ---------------------------------------------------------------
