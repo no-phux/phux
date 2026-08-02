@@ -32,21 +32,17 @@ require_regex() {
   fi
 }
 
-require_fixed README.md "Install and run"
+# The README is a landing page: it carries the brew one-liner, the platform
+# truth, and a pointer to INSTALL.md. The full channel matrix, source builds,
+# and cargo-install caveats are gated on docs/INSTALL.md below.
+require_fixed README.md "Quick start"
 require_fixed README.md "brew install phall1/phux/phux"
-require_fixed README.md "nix develop -c cargo install --locked --path crates/phux"
-require_fixed README.md "nix develop -c cargo install --locked --path crates/phux-mcp"
-# The README must point at the releases page instead of naming a version:
-# a hardcoded version literal here guaranteed staleness (it pinned v0.0.3
-# while the repo shipped v0.7.0).
-require_fixed README.md "github.com/phall1/phux/releases"
-require_fixed README.md "Supported install channels"
-require_fixed README.md 'cargo install phux` is unsupported'
-require_fixed README.md "Windows is not supported"
-require_fixed README.md "First run: persistent session + agent loop"
 require_fixed README.md "macOS arm64, Linux x86_64, and Linux arm64"
+require_fixed README.md "Windows is not supported"
+require_fixed README.md "docs/INSTALL.md"
 forbid_fixed README.md "macOS x86_64"
-# Version literals in the README rot; forbid the ones that already have.
+# Version literals in the README rot; forbid the one that already did
+# (the README pinned v0.0.3 while the repo shipped v0.7.0).
 forbid_fixed README.md "v0.0.3"
 
 require_fixed docs/INSTALL.md "Homebrew is the recommended install on supported macOS and Linux"
