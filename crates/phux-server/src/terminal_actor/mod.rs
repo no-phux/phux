@@ -434,26 +434,44 @@ struct NativeRequestReceivers {
 }
 
 impl NativeRequestReceivers {
-    async fn recv(&mut self) -> Option<NativeActorRequest> {
+    async fn recv(&mut self) -> NativeActorRequest {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         {
             tokio::select! {
-                request = self.bootstrap.recv() => request.map(NativeActorRequest::Bootstrap),
-                request = self.history.recv() => request.map(NativeActorRequest::History),
-                request = self.release.recv() => request.map(NativeActorRequest::Release),
+                Some(request) = self.bootstrap.recv() => NativeActorRequest::Bootstrap(request),
+                Some(request) = self.history.recv() => NativeActorRequest::History(request),
+                Some(request) = self.release.recv() => NativeActorRequest::Release(request),
+                else => std::future::pending().await,
             }
         }
         #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
         {
-            std::future::pending::<Option<NativeActorRequest>>().await
+            std::future::pending::<NativeActorRequest>().await
         }
     }
+}
 
-    async fn recv_or_pending(&mut self, enabled: bool) -> Option<NativeActorRequest> {
-        if enabled {
-            self.recv().await
-        } else {
-            std::future::pending().await
+enum NativeOrPty {
+    Native(NativeActorRequest),
+    Pty(Option<PtyEvent>),
+}
+
+async fn recv_native_or_pty(
+    native: &mut NativeRequestReceivers,
+    pty: Option<&mut mpsc::UnboundedReceiver<PtyEvent>>,
+    prefer_native: bool,
+) -> NativeOrPty {
+    if prefer_native {
+        tokio::select! {
+            biased;
+            request = native.recv() => NativeOrPty::Native(request),
+            event = recv_or_pending(pty) => NativeOrPty::Pty(event),
+        }
+    } else {
+        tokio::select! {
+            biased;
+            event = recv_or_pending(pty) => NativeOrPty::Pty(event),
+            request = native.recv() => NativeOrPty::Native(request),
         }
     }
 }
@@ -1281,6 +1299,7 @@ impl TerminalActor {
         bootstrap_id: phux_protocol::ids::BootstrapId,
         wants_state_sync: bool,
         live_gate: watch::Receiver<bool>,
+        next_seq: u64,
     ) -> Result<(), ConsumerAttachError> {
         // Priming the per-consumer reference + cursor/mode capture costs two
         // full-grid render passes, but a raw broadcast-pump consumer (the
@@ -1323,10 +1342,9 @@ impl TerminalActor {
                 stream_id,
                 bootstrap_id,
                 live_gate,
-                // First emission gets `seq == 1`. `0` is reserved for
-                // the "empty initial frame" sentinel matching
-                // `FrameId::ZERO` in [`LastAckedCursorMode`]'s doc.
-                next_seq: 1,
+                // The synthesized bootstrap and this sequence share one actor
+                // cut, so the first live delta is exactly `base_seq + 1`.
+                next_seq,
                 last_acked_seq: 0,
                 last_cursor_mode,
                 // Force one synthesis pass on the next tick even if the
@@ -1370,7 +1388,75 @@ impl TerminalActor {
             phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
             wants_state_sync,
             live_gate,
+            1,
         )
+    }
+    fn handle_consumer_attach(&mut self, req: ConsumerAttachRequest) {
+        let ConsumerAttachRequest {
+            client_id,
+            outbound,
+            wire_terminal_id,
+            stream_id,
+            bootstrap_id,
+            wants_state_sync,
+            state_sync_scrollback,
+            loss_tolerant,
+            live_gate,
+            reply,
+        } = req;
+        // Registration, synthesized snapshot, and reference priming are one
+        // actor turn. No PTY event can land between the snapshot cut and the
+        // reference it installs.
+        let tick_managed = self.consumer_tick_emits || wants_state_sync;
+        let result = (|| {
+            let base_seq = self.raw_seq;
+            let next_seq = if tick_managed {
+                base_seq
+                    .checked_add(1)
+                    .ok_or(ConsumerAttachError::SequenceExhausted)?
+            } else {
+                1
+            };
+            let state_sync_bootstrap = if wants_state_sync {
+                Some(StateSyncBootstrap {
+                    snapshot: self.synthesize_with_scrollback(state_sync_scrollback)?,
+                    base_seq,
+                })
+            } else {
+                None
+            };
+            self.register_consumer_generation(
+                client_id,
+                outbound,
+                wire_terminal_id,
+                stream_id,
+                bootstrap_id,
+                wants_state_sync,
+                live_gate,
+                next_seq,
+            )?;
+            if loss_tolerant && tick_managed {
+                self.enable_loss_tolerance(client_id);
+            }
+            Ok(ConsumerAttachOutcome {
+                tick_managed,
+                state_sync_bootstrap,
+            })
+        })();
+        if let Err(err) = &result {
+            warn!(
+                ?client_id,
+                wire_terminal_id,
+                error = %err,
+                "consumer attach: atomic state-sync bootstrap failed",
+            );
+        } else {
+            trace!(
+                ?client_id,
+                wire_terminal_id, tick_managed, "consumer attached at atomic state-sync cut"
+            );
+        }
+        let _ = reply.send(result);
     }
 
     /// Switch an already-registered consumer to the advance-on-ack
@@ -3196,18 +3282,13 @@ impl TerminalActor {
         tokio::pin!(resync_debounce);
         let mut resync_pending = false;
         let mut resync_reason = ResyncReason::Resize;
-        // Alternate a ready native request with a ready PTY turn. Input and
-        // shutdown remain strictly higher priority, while neither native
-        // publication nor live output can starve the other under sustained load.
-        let mut native_turn = false;
+        // Native control and PTY output are one outer select arm so the actor
+        // never borrows either receiver twice. Preference swaps after every
+        // selected ingress, but both sources remain enabled: a silent PTY can
+        // never park bootstrap or consecutive history requests.
+        let mut prefer_native = false;
 
         loop {
-            // For panes without a PTY, the `pty_rx` branch needs an
-            // always-pending future. We construct that with
-            // `recv_or_pending`: when the receiver is `Some`, it polls
-            // it; when `None`, it parks forever (so the select! arm
-            // never fires and the other arms are the only ones live).
-            let native_enabled = native_turn || self.pty_rx.is_none();
             tokio::select! {
                 biased;
 
@@ -3253,23 +3334,23 @@ impl TerminalActor {
                     }
                 }
 
-                Some(req) = self.native_requests.recv_or_pending(native_enabled) => {
-                    native_turn = false;
-                    self.handle_native_actor_request(req).await;
-                }
-
-                // PTY → Terminal + broadcast. Polled after the input arm:
-                // when this arm finishes one bounded payload and returns to
-                // the `select!`, the biased re-poll offers `input_rx`
-                // first, so a keystroke queued during the burst is serviced
-                // before the next `vt_write`. When the byte cap stops the
-                // drain mid-burst the arm additionally yields to the
-                // scheduler before re-entering, so sibling tasks on the
-                // LocalSet (and a freshly-queued keystroke) get a turn
-                // between bounded parses rather than after the whole burst.
-                evt = recv_or_pending(self.pty_rx.as_mut()) => {
-                    native_turn = true;
-                    match evt {
+                ingress = recv_native_or_pty(
+                    &mut self.native_requests,
+                    self.pty_rx.as_mut(),
+                    prefer_native,
+                ) => {
+                    match ingress {
+                        NativeOrPty::Native(req) => {
+                            prefer_native = false;
+                            self.handle_native_actor_request(req).await;
+                        }
+                        NativeOrPty::Pty(evt) => {
+                            prefer_native = true;
+                            // PTY -> Terminal + broadcast. One bounded parse
+                            // returns to this combined ingress arm so native
+                            // control and live output alternate when both are
+                            // continuously ready.
+                            match evt {
                         Some(PtyEvent::Bytes(first)) => {
                             // Coalesce any chunks already queued behind this one
                             // into a single Terminal write + broadcast frame
@@ -3381,7 +3462,9 @@ impl TerminalActor {
                             self.handle_pty_eof();
                         }
                     }
-                }
+                            }
+                        }
+                    }
 
 
 
@@ -3536,59 +3619,7 @@ impl TerminalActor {
                 }
 
                 Some(req) = self.consumer_attach_rx.recv() => {
-                    let ConsumerAttachRequest {
-                        client_id,
-                        outbound,
-                        wire_terminal_id,
-                        stream_id,
-                        bootstrap_id,
-                        wants_state_sync,
-                        loss_tolerant,
-                        live_gate,
-                        reply,
-                    } = req;
-                    // phux-3uv / phux-fseo: map register success to an outcome
-                    // that tells the runtime whether this actor is
-                    // tick-managing the consumer. Tick-managed ⇒ the runtime
-                    // suppresses its broadcast pump for this pane (single
-                    // emitter). A consumer is tick-managed if it negotiated
-                    // `OutputMode::StateSync` (`wants_state_sync`), OR the
-                    // global test gate forces every consumer onto the tick.
-                    let tick_managed = self.consumer_tick_emits || wants_state_sync;
-                    let result = self
-                        .register_consumer_generation(
-                            client_id,
-                            outbound,
-                            wire_terminal_id,
-                            stream_id,
-                            bootstrap_id,
-                            wants_state_sync,
-                            live_gate,
-                        )
-                        .map(|()| ConsumerAttachOutcome { tick_managed });
-                    // phux-v45.8: a forwarded/lossy-leg state-sync consumer
-                    // opts into the advance-on-ack loss-tolerant model right
-                    // after a successful registration. No-op for a direct
-                    // reliable-transport consumer (`loss_tolerant == false`).
-                    if result.is_ok() && loss_tolerant && tick_managed {
-                        self.enable_loss_tolerance(client_id);
-                    }
-                    if let Err(err) = &result {
-                        warn!(
-                            ?client_id,
-                            wire_terminal_id,
-                            error = %err,
-                            "consumer attach: per-consumer synthesizer setup failed",
-                        );
-                    } else {
-                        trace!(
-                            ?client_id,
-                            wire_terminal_id,
-                            tick_managed,
-                            "consumer attached: per-consumer synthesizer primed"
-                        );
-                    }
-                    let _ = reply.send(result);
+                    self.handle_consumer_attach(req);
                 }
 
                 Some(req) = self.consumer_detach_rx.recv() => {
@@ -4832,6 +4863,61 @@ mod tests {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     #[tokio::test(flavor = "current_thread")]
+    async fn combined_native_pty_ingress_never_parks_on_a_silent_source() {
+        let (_bootstrap_tx, bootstrap) = mpsc::channel(1);
+        let (_history_tx, history) = mpsc::channel(1);
+        let (release_tx, release) = mpsc::channel(4);
+        let mut native = NativeRequestReceivers {
+            bootstrap,
+            history,
+            release,
+        };
+        let (pty_tx, mut pty) = mpsc::unbounded_channel();
+
+        release_tx
+            .send(NativeReleaseRequest { owner: 1 })
+            .await
+            .expect("first native request");
+        release_tx
+            .send(NativeReleaseRequest { owner: 2 })
+            .await
+            .expect("second native request");
+        for owner in [1, 2] {
+            let ingress = tokio::time::timeout(
+                ACTOR_EXIT_DEADLINE,
+                recv_native_or_pty(&mut native, Some(&mut pty), false),
+            )
+            .await
+            .expect("silent PTY must not park native control");
+            assert!(matches!(
+                ingress,
+                NativeOrPty::Native(NativeActorRequest::Release(NativeReleaseRequest {
+                    owner: actual
+                })) if actual == owner
+            ));
+        }
+
+        release_tx
+            .send(NativeReleaseRequest { owner: 3 })
+            .await
+            .expect("ready native request");
+        pty_tx
+            .send(PtyEvent::Bytes(vec![b'x']))
+            .expect("ready PTY event");
+        assert!(matches!(
+            recv_native_or_pty(&mut native, Some(&mut pty), false).await,
+            NativeOrPty::Pty(Some(PtyEvent::Bytes(bytes))) if bytes == b"x"
+        ));
+        assert!(matches!(
+            recv_native_or_pty(&mut native, Some(&mut pty), true).await,
+            NativeOrPty::Native(NativeActorRequest::Release(NativeReleaseRequest {
+                owner: 3
+            }))
+        ));
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
     async fn history_host_allocation_failure_does_not_advance_cursor() {
         let local = tokio::task::LocalSet::new();
         local
@@ -5236,6 +5322,7 @@ mod tests {
                         bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                             .expect("test bootstrap id"),
                         wants_state_sync: false,
+                        state_sync_scrollback: None,
                         loss_tolerant: false,
                         live_gate: watch::channel(true).1,
                         reply: tx_a,
@@ -5430,6 +5517,64 @@ mod tests {
             1,
             "no emission means the per-consumer seq never advanced",
         );
+    }
+
+    #[test]
+    fn atomic_state_sync_bootstrap_primes_exact_cut_and_sequence() {
+        let bundle = TerminalActor::new(20, 5).expect("new");
+        let mut actor = bundle.actor;
+        actor.raw_seq = 7;
+        actor.vt_write_for_test(b"before-cut");
+
+        let client = ClientId(1);
+        let (outbound, mut outbound_rx) = dummy_outbound();
+        let (live_gate_tx, live_gate) = watch::channel(false);
+        let (reply, mut replied) = oneshot::channel();
+        actor.handle_consumer_attach(ConsumerAttachRequest {
+            client_id: client,
+            outbound,
+            wire_terminal_id: 11,
+            stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+            wants_state_sync: true,
+            state_sync_scrollback: None,
+            loss_tolerant: false,
+            live_gate,
+            reply,
+        });
+
+        let outcome = replied
+            .try_recv()
+            .expect("atomic attach reply")
+            .expect("atomic attach");
+        let bootstrap = outcome.state_sync_bootstrap.expect("state-sync bootstrap");
+        assert_eq!(bootstrap.base_seq, 7);
+        assert!(
+            contains_subslice(&bootstrap.snapshot.bytes, b"before-cut"),
+            "snapshot must include the exact pre-registration terminal cut",
+        );
+        assert_eq!(actor.consumer_state(client).expect("consumer").next_seq, 8,);
+
+        actor.tick_emit();
+        assert!(
+            outbound_rx.try_recv().is_err(),
+            "closed aggregate gate must retain the primed reference",
+        );
+        live_gate_tx.send(true).expect("open aggregate gate");
+
+        actor.vt_write_for_test(b"after-cut");
+        actor.tick_emit();
+        let Outbound::Frame(FrameKind::TerminalOutput { seq, bytes, .. }) =
+            outbound_rx.try_recv().expect("post-cut diff")
+        else {
+            panic!("expected terminal output");
+        };
+        assert_eq!(seq, 8, "first live diff is exactly base_seq + 1");
+        assert!(
+            !contains_subslice(&bytes, b"before-cut"),
+            "the first diff must not duplicate snapshot content",
+        );
+        assert!(contains_subslice(&bytes, b"after-cut"));
     }
 
     /// phux-bowo: dirty/idle settling is independent of the state-sync

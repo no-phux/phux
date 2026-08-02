@@ -146,6 +146,7 @@ async fn ack_round_trip_emits_post_ack_tick() {
                     bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                         .expect("test bootstrap id"),
                     wants_state_sync: false,
+                    state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
                     reply: reply_tx,
@@ -229,6 +230,7 @@ async fn older_and_duplicate_acks_do_not_crash_the_actor() {
                     bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                         .expect("test bootstrap id"),
                     wants_state_sync: false,
+                    state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
                     reply: reply_tx,
@@ -300,6 +302,7 @@ async fn ack_for_unregistered_consumer_is_silent_noop() {
                     bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                         .expect("test bootstrap id"),
                     wants_state_sync: false,
+                    state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
                     reply: reply_tx,
@@ -371,6 +374,7 @@ async fn ack_after_detach_is_silent_noop() {
                     bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                         .expect("test bootstrap id"),
                     wants_state_sync: false,
+                    state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
                     reply: reply_tx,

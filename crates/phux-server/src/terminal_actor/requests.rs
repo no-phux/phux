@@ -65,13 +65,11 @@ pub enum ControlRequest {
 /// runtime's ATTACH path, which has just installed the client in
 /// `ServerState`.
 ///
-/// The actor allocates a fresh `RenderState`, primes it against the
-/// live `Terminal` (so the next incremental synthesis emits only
-/// deltas *from now*), captures the cursor + mode state, and stores
-/// the resulting [`super::ConsumerSyncState`] keyed by `client_id`. The reply
-/// fires once the entry is in place; the caller can then proceed to
-/// emit `TERMINAL_SNAPSHOT` (which brings the consumer to the same
-/// reference point this `RenderState` was primed against).
+/// For state-sync consumers the actor synthesizes the bootstrap snapshot,
+/// primes the per-consumer reference from that exact canonical terminal cut,
+/// installs the lifecycle entry, and returns both snapshot and cut in one
+/// reply. No PTY event can run between those operations. Raw consumers retain
+/// the lightweight lifecycle-only path and return no synthesized bootstrap.
 #[derive(Debug)]
 pub struct ConsumerAttachRequest {
     /// Identifier the actor will key the per-consumer state by. Must
@@ -98,6 +96,11 @@ pub struct ConsumerAttachRequest {
     /// suppresses its broadcast pump for it; when `false` the consumer
     /// stays on the raw PTY broadcast (the human-TUI default).
     pub wants_state_sync: bool,
+    /// Requested synthesized scrollback for the atomic state-sync bootstrap.
+    ///
+    /// Ignored when [`Self::wants_state_sync`] is false. `None` means the
+    /// state-sync snapshot contains only the active screen.
+    pub state_sync_scrollback: Option<u32>,
     /// Whether this consumer is on a lossy/forwarded leg and should use the
     /// advance-on-ack loss-tolerant emission model (phux-v45.8, ADR-0042).
     ///
@@ -121,22 +124,28 @@ pub struct ConsumerAttachRequest {
     pub reply: oneshot::Sender<Result<ConsumerAttachOutcome, ConsumerAttachError>>,
 }
 
+/// Snapshot and exact actor cut produced atomically with state-sync
+/// registration.
+#[derive(Debug)]
+pub struct StateSyncBootstrap {
+    /// Synthesized VT snapshot captured from the canonical terminal.
+    pub snapshot: SnapshotBytes,
+    /// Actor-global raw sequence included by that same cut.
+    pub base_seq: u64,
+}
+
 /// Successful outcome of a [`ConsumerAttachRequest`].
 ///
 /// phux-3uv: the runtime needs to know whether this actor will *emit*
-/// `TERMINAL_OUTPUT` for the consumer via the state-sync tick
-/// (`consumer_tick_emits == true`). If so, the runtime must SUPPRESS its
-/// own broadcast pump for this pane so exactly one emitter serves the
-/// consumer (SPEC §12.2 monotonic-per-consumer; two independent `seq`
-/// streams on one mailbox would double-paint). If the actor is not
-/// tick-managing (gate off, or a non-emitting variant), the runtime keeps
-/// the broadcast pump as the sole emitter.
-#[derive(Debug, Clone, Copy)]
+/// `TERMINAL_OUTPUT` for the consumer via the state-sync tick. If so, the
+/// runtime must suppress its own broadcast pump. State-sync registration also
+/// returns the snapshot captured in the same actor turn as its reference.
+#[derive(Debug)]
 pub struct ConsumerAttachOutcome {
-    /// `true` ⇒ this actor's `tick_emit` will push `TERMINAL_OUTPUT`
-    /// frames for the consumer; the runtime must NOT also spawn a
-    /// broadcast pump for this pane.
+    /// `true` when this actor's tick is the sole live emitter.
     pub tick_managed: bool,
+    /// Atomic synthesized bootstrap for a state-sync consumer.
+    pub state_sync_bootstrap: Option<StateSyncBootstrap>,
 }
 
 /// Errors surfaced by the private `TerminalActor::register_consumer`
@@ -151,6 +160,9 @@ pub enum ConsumerAttachError {
     /// (`SnapshotSynthesizer::prime_reference`) failed.
     #[error("reference priming failed: {0}")]
     Synth(#[from] crate::grid::SynthesisError),
+    /// The actor-global sequence cannot represent a post-bootstrap frame.
+    #[error("state-sync sequence exhausted")]
+    SequenceExhausted,
 }
 
 /// Request to drop the per-consumer state for `client_id`.

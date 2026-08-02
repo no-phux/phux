@@ -173,6 +173,7 @@ async fn single_consumer_tick_keeps_actor_healthy() {
                     bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                         .expect("test bootstrap id"),
                     wants_state_sync: false,
+                    state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
                     reply: reply_tx,
@@ -233,6 +234,7 @@ async fn multiple_consumers_get_independent_per_consumer_seq() {
                         bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                             .expect("test bootstrap id"),
                         wants_state_sync: false,
+                        state_sync_scrollback: None,
                         loss_tolerant: false,
                         live_gate: tokio::sync::watch::channel(true).1,
                         reply: reply_tx,
@@ -303,6 +305,7 @@ async fn detached_consumer_receives_no_emission() {
                     bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                         .expect("test bootstrap id"),
                     wants_state_sync: false,
+                    state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
                     reply: reply_tx,
