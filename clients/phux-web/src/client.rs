@@ -490,7 +490,7 @@ fn install_keyboard(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         let Some(event) = key_event_from_browser(&e) else {
             return;
         };
-        let a = app.borrow();
+        let mut a = app.borrow_mut();
         if let Some(frame) = a.session.key_frame(event) {
             a.tx.send(&frame);
             e.prevent_default();
@@ -618,7 +618,7 @@ mod tests {
     };
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
     use phux_protocol::wire::frame::{FrameKind, MAX_FRAME_LEN};
-    use phux_protocol::wire::info::SessionSnapshot;
+    use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo};
     use phux_vt_web::Vt;
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -672,8 +672,53 @@ mod tests {
                             SessionId::new(1),
                             WindowId::new(1),
                             terminal_id.clone(),
-                        ),
+                        )
+                        .with_panes(vec![TerminalInfo::new(
+                            terminal_id.clone(),
+                            WindowId::new(1),
+                            80,
+                            24,
+                        )]),
                         initial_client_id: ClientId::new(1),
+                    })
+                    .fatal
+                    .is_none()
+            );
+            let stream_id = StreamId::new(1).unwrap();
+            let bootstrap_id = BootstrapId::new(1).unwrap();
+            assert!(
+                session
+                    .on_frame(FrameKind::BootstrapBegin {
+                        terminal_id: terminal_id.clone(),
+                        stream_id,
+                        bootstrap_id,
+                        profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+                        cols: 80,
+                        rows: 24,
+                        base_seq: 0,
+                    })
+                    .fatal
+                    .is_none()
+            );
+            assert!(
+                session
+                    .on_frame(FrameKind::BootstrapChunk {
+                        terminal_id: terminal_id.clone(),
+                        stream_id,
+                        bootstrap_id,
+                        chunk_seq: 0,
+                        payload: bytes::Bytes::from_static(b"ready"),
+                    })
+                    .fatal
+                    .is_none()
+            );
+            assert!(
+                session
+                    .on_frame(FrameKind::BootstrapReady {
+                        terminal_id: terminal_id.clone(),
+                        stream_id,
+                        bootstrap_id,
+                        history_cursor: None,
                     })
                     .fatal
                     .is_none()
@@ -707,8 +752,8 @@ mod tests {
 
             let after_exit = session.on_frame(FrameKind::TerminalOutput {
                 terminal_id,
-                stream_id: StreamId::new(1).unwrap(),
-                bootstrap_id: BootstrapId::new(1).unwrap(),
+                stream_id,
+                bootstrap_id,
                 seq: 1,
                 bytes: bytes::Bytes::from_static(b"ignored"),
             });

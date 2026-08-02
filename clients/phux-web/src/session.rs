@@ -1,110 +1,211 @@
-//! Wire-protocol session over the ghostty-vt engine.
+//! Protocol-0.7 web session over the shared synchronous client kernel.
 //!
-//! Decodes server frames, feeds the engine, and produces frames to send back —
-//! all pure logic (no DOM, no WebSocket), so it's deterministically testable.
-//! The DOM/WebSocket glue in [`crate::client`] drives it.
+//! Transport framing stays here; replica lifecycle, generation validation,
+//! ordering, READY fences, and input eligibility stay in `phux-client-core`.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use bytes::BytesMut;
-use phux_protocol::PROTOCOL_VERSION;
+use bytes::{Bytes, BytesMut};
+use phux_client_core::engine::{
+    BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
+    EngineEffectBuffer,
+};
+use phux_client_core::session::{
+    EffectBuffer, KernelAction, KernelDamageKind, KernelEffect, KernelInput, KernelSend,
+    SessionKernel,
+};
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
-    BootstrapProfileSet, ClientCapabilities, EngineCodecSet, EngineFeatureSet, ImageProtocolSet,
+    BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, ImageProtocolSet,
 };
-use phux_protocol::ids::TerminalId;
+use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
+use phux_protocol::PROTOCOL_VERSION;
 use phux_vt_web::{Grid, Terminal, Vt};
 
+const ATTACH_ID: u32 = 1;
+const HISTORY_LINES: u32 = 5_000;
 
 /// The capability set phux-web advertises in `HELLO`.
 ///
-/// The canvas renderer paints text, color, and the cursor only
-/// (`docs/consumers/web.md` "Scope and limits"): image escapes the engine
-/// parses are never projected to the canvas. Advertising an image protocol
-/// we cannot render would make the server forward image payloads
-/// (kitty graphics APC, sixel DCS, iTerm2 OSC 1337 — SPEC 6.2 /
-/// `phux-server::downsample`) that die on arrival, wasting wire bytes on
-/// exactly the largest escape class. Advertise NO image protocols until an
-/// image-aware renderer pass exists (ADR-0034 sketches it); the server
-/// then strips image escapes before forwarding. Everything else keeps the
-/// defaults: the engine we carry handles truecolor, kitty keyboard
-/// replies, and OSC 8 hyperlink framing without harm.
+/// The browser engine consumes only synthesized VT profiles. It never
+/// advertises native libghostty checkpoint support and advertises no image
+/// protocols until the canvas renderer can project them.
 #[must_use]
 pub fn client_caps() -> ClientCapabilities {
-    let bootstrap = BootstrapCapabilities::new()
-        .with_profiles(BootstrapProfileSet::with(&[
-            BootstrapProfileKind::SynthesizedVtRaw,
-        ]))
-        .with_native_codecs(EngineCodecSet::new())
-        .with_native_features(EngineFeatureSet::new());
+    let profiles = BootstrapProfileSet::with(&[
+        BootstrapProfileKind::SynthesizedVtRaw,
+        BootstrapProfileKind::SynthesizedVtStateSync,
+    ]);
     ClientCapabilities::new()
         .with_image_protocols(ImageProtocolSet::new())
-        .with_bootstrap(bootstrap)
+        .with_bootstrap(BootstrapCapabilities::new().with_profiles(profiles))
 }
 
 /// The result of handling one incoming frame.
 #[derive(Default)]
 pub struct Outcome {
-    /// Encoded frames to write back to the transport (e.g. `FRAME_ACK`).
+    /// Encoded frames for the browser transport to send.
     pub send: Vec<Vec<u8>>,
-    /// Whether the grid changed and should be repainted.
+    /// Whether a published replica changed and should be repainted.
     pub render: bool,
-    /// Fatal protocol violation. The transport must close without sending any
-    /// stateful follow-up.
+    /// Fatal protocol/kernel failure; the transport must close.
     pub fatal: Option<String>,
 }
 
-#[derive(Debug)]
-enum Phase {
-    AwaitHelloOk,
-    AwaitAttached {
-        attach_id: u32,
-        profile: BootstrapProfile,
-        limits: BootstrapLimits,
-    },
-    AwaitReady {
-        attach_id: u32,
-        profile: BootstrapProfile,
-        limits: BootstrapLimits,
-        terminal_id: Option<TerminalId>,
-    },
-    Attached {
-        profile: BootstrapProfile,
-        limits: BootstrapLimits,
-    },
-    Failed,
+struct WebEngine {
+    vt: Rc<Vt>,
 }
 
-/// A single-terminal wire session backed by a ghostty-vt engine terminal.
+struct WebReplica {
+    terminal: Terminal,
+}
+
+#[derive(Debug)]
+enum WebEngineError {
+    UnsupportedProfile(BootstrapStreamProfile),
+}
+
+impl std::fmt::Display for WebEngineError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedProfile(profile) => {
+                write!(formatter, "unsupported web bootstrap profile: {profile:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WebEngineError {}
+
+impl EngineAdapter for WebEngine {
+    type Replica = WebReplica;
+    type Error = WebEngineError;
+
+    fn start_replica(
+        &mut self,
+        profile: BootstrapStreamProfile,
+        geometry: CanonicalGeometry,
+    ) -> Result<Self::Replica, Self::Error> {
+        if !matches!(
+            profile,
+            BootstrapStreamProfile::SynthesizedVtRaw
+                | BootstrapStreamProfile::SynthesizedVtStateSync
+        ) {
+            return Err(WebEngineError::UnsupportedProfile(profile));
+        }
+        Ok(WebReplica {
+            terminal: self.vt.terminal(geometry.cols, geometry.rows),
+        })
+    }
+
+    fn apply_bootstrap_chunk(
+        &mut self,
+        replica: &mut Self::Replica,
+        payload: &[u8],
+        effects: &mut EngineEffectBuffer,
+    ) -> Result<BootstrapProgress, Self::Error> {
+        replica.terminal.write(payload);
+        effects.push(EngineEffect::Damage(EngineDamage::Full));
+        Ok(BootstrapProgress::Pending)
+    }
+
+    fn finish_bootstrap(
+        &mut self,
+        _replica: &mut Self::Replica,
+        effects: &mut EngineEffectBuffer,
+    ) -> Result<BootstrapProgress, Self::Error> {
+        effects.push(EngineEffect::Damage(EngineDamage::Full));
+        Ok(BootstrapProgress::Ready)
+    }
+
+    fn apply_history_page(
+        &mut self,
+        _replica: &mut Self::Replica,
+        _payload: &[u8],
+        _effects: &mut EngineEffectBuffer,
+    ) -> Result<BootstrapProgress, Self::Error> {
+        // Synthesized history pages are opaque and independently bounded.
+        // The current wasm ABI has no history-import surface; consume them to
+        // advance the protocol cursor without replaying them into the live grid.
+        Ok(BootstrapProgress::Finished)
+    }
+
+    fn apply_output(
+        &mut self,
+        replica: &mut Self::Replica,
+        payload: &[u8],
+        effects: &mut EngineEffectBuffer,
+    ) -> Result<(), Self::Error> {
+        replica.terminal.write(payload);
+        effects.push(EngineEffect::Damage(EngineDamage::Full));
+        Ok(())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct HistoryKey {
+    terminal_id: TerminalId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+}
+
+/// A wire session whose terminal replicas are owned by [`SessionKernel`].
 pub struct Session {
-    term: Terminal,
+    vt: Rc<Vt>,
+    blank: Terminal,
+    kernel: Option<SessionKernel<WebEngine>>,
+    effects: EffectBuffer,
     cols: u16,
     rows: u16,
-    terminal_id: Option<TerminalId>,
-    phase: Phase,
-    next_attach_id: u32,
+    focused_terminal: Option<TerminalId>,
+    terminal_order: Vec<TerminalId>,
+    history_cursors: HashMap<HistoryKey, Bytes>,
+    bootstrap_limits: Option<BootstrapLimits>,
+    failed: bool,
 }
 
 impl Session {
-    /// Open a session with a fresh engine terminal of `cols`×`rows`.
+    /// Open a session with a blank fallback grid of `cols`×`rows`.
     #[must_use]
     pub fn new(vt: &Rc<Vt>, cols: u16, rows: u16) -> Self {
         Self {
-            term: vt.terminal(cols, rows),
+            vt: Rc::clone(vt),
+            blank: vt.terminal(cols, rows),
+            kernel: None,
+            effects: EffectBuffer::new(),
             cols,
             rows,
-            terminal_id: None,
-            phase: Phase::AwaitHelloOk,
-            next_attach_id: 1,
+            focused_terminal: None,
+            terminal_order: Vec::new(),
+            history_cursors: HashMap::new(),
+            bootstrap_limits: None,
+            failed: false,
         }
     }
+    /// Negotiated decode limits after `HELLO_OK`.
+    #[must_use]
+    pub const fn bootstrap_limits(&self) -> Option<BootstrapLimits> {
+        self.bootstrap_limits
+    }
 
-    /// Frame to send immediately once the transport opens: `HELLO`.
-    ///
-    /// `ATTACH` is returned from [`Self::on_frame`] only after `HELLO_OK`,
-    /// so a refusal can never race a stateful frame onto the connection.
+    /// Whether this session has entered its terminal protocol-failure state.
+    #[must_use]
+    pub const fn is_failed(&self) -> bool {
+        self.failed
+    }
+
+    /// Permanently fail this session after a transport or framing violation.
+    pub fn fail_protocol(&mut self, _message: &str) {
+        self.failed = true;
+        self.history_cursors.clear();
+    }
+
+
+    /// Frame sent when the transport opens. Stateful frames wait for `HELLO_OK`.
     #[must_use]
     pub fn handshake(&self) -> Vec<Vec<u8>> {
         vec![encode(&FrameKind::Hello {
@@ -116,53 +217,45 @@ impl Session {
         })]
     }
 
-    /// Handle one decoded server frame: feed the engine and return any frames
-    /// to send back plus whether a repaint is needed.
+    /// Reduce one decoded server frame through the shared kernel.
     pub fn on_frame(&mut self, frame: FrameKind) -> Outcome {
-        if matches!(&self.phase, Phase::Failed) {
-            return fatal("web session already failed");
+        if self.failed {
+            return Outcome::default();
         }
-
         match frame {
             FrameKind::HelloOk {
-                protocol_major,
-                protocol_minor,
-                protocol_patch,
                 selected_profile,
                 bootstrap_limits,
                 ..
             } => {
-                if !matches!(&self.phase, Phase::AwaitHelloOk) {
-                    return self.fail("duplicate or out-of-phase HELLO_OK");
+                if self.kernel.is_some() {
+                    return self.protocol_failure("server sent duplicate HELLO_OK");
                 }
-                if let Err(message) = validate_hello_ok(
-                    &client_caps(),
-                    protocol_major,
-                    protocol_minor,
-                    protocol_patch,
+                if !matches!(
                     selected_profile,
-                    bootstrap_limits,
+                    BootstrapProfile::SynthesizedVtRaw
+                        | BootstrapProfile::SynthesizedVtStateSync
                 ) {
-                    return self.fail(message);
+                    return self.protocol_failure("server selected an unadvertised native profile");
                 }
-                let attach_id = self.next_attach_id;
-                self.next_attach_id = self.next_attach_id.wrapping_add(1).max(1);
-                self.phase = Phase::AwaitAttached {
-                    attach_id,
-                    profile: selected_profile,
-                    limits: bootstrap_limits,
-                };
+                self.bootstrap_limits = Some(bootstrap_limits);
+                self.kernel = Some(SessionKernel::new(
+                    WebEngine {
+                        vt: Rc::clone(&self.vt),
+                    },
+                    selected_profile,
+                ));
                 Outcome {
                     send: vec![encode(&FrameKind::Attach {
-                        attach_id,
+                        attach_id: ATTACH_ID,
                         target: AttachTarget::CreateIfMissing {
                             name: "default".to_owned(),
                             command: None,
                             cwd: None,
                         },
                         viewport: ViewportInfo::new(self.cols, self.rows),
-                        request_scrollback: false,
-                        scrollback_limit_lines: 0,
+                        request_scrollback: true,
+                        scrollback_limit_lines: HISTORY_LINES,
                     })],
                     render: false,
                     fatal: None,
@@ -173,227 +266,347 @@ impl Session {
                 snapshot,
                 ..
             } => {
-                let (expected, profile, limits) = match &self.phase {
-                    Phase::AwaitAttached {
-                        attach_id,
-                        profile,
-                        limits,
-                    } => (*attach_id, *profile, *limits),
-                    _ => return self.fail("ATTACHED received outside the attach phase"),
-                };
-                if attach_id != expected {
-                    return self.fail(format!(
-                        "ATTACHED attach_id mismatch: expected {expected}, received {attach_id}",
-                    ));
+                if attach_id != ATTACH_ID {
+                    return self.protocol_failure("ATTACHED used the wrong attach identifier");
                 }
-                self.phase = Phase::AwaitReady {
+                let terminal_ids: Vec<_> = snapshot
+                    .panes
+                    .iter()
+                    .map(|pane| pane.id.clone())
+                    .collect();
+                let focused_terminal = snapshot.focused_pane;
+                let (outcome, applied) = self.apply_kernel(KernelInput::AttachStarted {
                     attach_id,
-                    profile,
-                    limits,
-                    terminal_id: Some(snapshot.focused_pane),
-                };
-                Outcome::default()
-            }
-            FrameKind::AttachReady { attach_id } => {
-                let (expected, profile, limits, terminal_id) = match &self.phase {
-                    Phase::AwaitReady {
-                        attach_id,
-                        profile,
-                        limits,
-                        terminal_id,
-                    } => (*attach_id, *profile, *limits, terminal_id.clone()),
-                    _ => return self.fail("ATTACH_READY received outside the ready phase"),
-                };
-                if attach_id != expected {
-                    return self.fail(format!(
-                        "ATTACH_READY attach_id mismatch: expected {expected}, received {attach_id}",
-                    ));
+                    terminals: &terminal_ids,
+                });
+                if applied {
+                    self.focused_terminal = Some(focused_terminal);
+                    self.terminal_order = terminal_ids;
                 }
-                self.terminal_id = terminal_id;
-                self.phase = Phase::Attached { profile, limits };
-                Outcome::default()
+                outcome
             }
+            FrameKind::BootstrapBegin {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile,
+                cols,
+                rows,
+                base_seq,
+            } => {
+                let (outcome, applied) = self.apply_kernel(KernelInput::BootstrapBegin {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    profile,
+                    geometry: CanonicalGeometry { cols, rows },
+                    base_seq,
+                });
+                if applied {
+                    self.focused_terminal
+                        .get_or_insert_with(|| terminal_id.clone());
+                }
+                outcome
+            }
+            FrameKind::BootstrapChunk {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
+                payload,
+            } => {
+                self.apply_kernel(KernelInput::BootstrapChunk {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq,
+                    payload: &payload,
+                })
+                .0
+            }
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor,
+            } => {
+                let (mut outcome, applied) = self.apply_kernel(KernelInput::BootstrapReady {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                });
+                if applied {
+                    if let Some(cursor) = history_cursor {
+                        let key = HistoryKey {
+                            terminal_id: terminal_id.clone(),
+                            stream_id,
+                            bootstrap_id,
+                        };
+                        self.history_cursors.insert(key, cursor.clone());
+                        outcome.send.push(self.history_request(
+                            terminal_id,
+                            stream_id,
+                            bootstrap_id,
+                            cursor,
+                        ));
+                    }
+                }
+                outcome
+            }
+            FrameKind::HistoryPage {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                next_cursor,
+                payload,
+            } => self.history_page(
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                next_cursor,
+                payload,
+            ),
             FrameKind::TerminalOutput {
                 terminal_id,
-                stream_id: _,
-                bootstrap_id: _,
-                seq: _,
+                stream_id,
+                bootstrap_id,
+                seq,
                 bytes,
             } => {
-                if !matches!(&self.phase, Phase::Attached { .. }) {
-                    return self.fail("TERMINAL_OUTPUT received before ATTACH_READY");
-                }
-                if self
-                    .terminal_id
-                    .as_ref()
-                    .is_some_and(|expected| expected != &terminal_id)
-                {
-                    return self.fail(format!(
-                        "TERMINAL_OUTPUT terminal mismatch: expected {:?}, received {terminal_id:?}",
-                        self.terminal_id,
-                    ));
-                }
-                self.terminal_id.get_or_insert(terminal_id);
-                self.term.write(&bytes);
-                Outcome {
-                    send: Vec::new(),
-                    render: true,
-                    fatal: None,
-                }
+                self.apply_kernel(KernelInput::TerminalOutput {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    seq,
+                    payload: &bytes,
+                })
+                .0
             }
-            FrameKind::BootstrapBegin { .. }
-            | FrameKind::BootstrapChunk { .. }
-            | FrameKind::BootstrapReady { .. }
-            | FrameKind::HistoryPage { .. }
-                if matches!(
-                    &self.phase,
-                    Phase::AwaitReady { .. } | Phase::Attached { .. }
-                ) =>
-            {
-                Outcome::default()
+            FrameKind::BootstrapTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                reason,
+                last_valid_seq,
+            } => {
+                self.history_cursors.remove(&HistoryKey {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                });
+                self.apply_kernel(KernelInput::Tombstone {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    reason,
+                    last_valid_seq,
+                })
+                .0
             }
-            FrameKind::Pong { .. }
-            | FrameKind::Bell { .. }
-            | FrameKind::TerminalClosed { .. }
-            | FrameKind::Event { .. }
-                if matches!(&self.phase, Phase::Attached { .. }) =>
-            {
-                Outcome::default()
+            FrameKind::TerminalClosed { terminal_id, .. } => {
+                let was_focused = self.focused_terminal.as_ref() == Some(&terminal_id);
+                self.history_cursors
+                    .retain(|key, _| key.terminal_id != terminal_id);
+                let (mut outcome, applied) =
+                    self.apply_kernel(KernelInput::TerminalClosed {
+                        terminal_id: &terminal_id,
+                    });
+                if applied && was_focused {
+                    self.focused_terminal = self.first_published_terminal();
+                    outcome.render = true;
+                }
+                outcome
             }
-            other => self.fail(format!(
-                "unexpected server frame in web session phase: {other:?}",
-            )),
+            FrameKind::AttachReady { attach_id } => {
+                self.apply_kernel(KernelInput::AttachReady { attach_id }).0
+            }
+            _ => Outcome::default(),
         }
     }
 
-    fn fail(&mut self, message: impl Into<String>) -> Outcome {
-        self.phase = Phase::Failed;
-        self.terminal_id = None;
-        fatal(message)
-    }
-
-    pub(crate) fn fail_protocol(&mut self, message: impl Into<String>) {
-        let _ = self.fail(message);
-    }
-
-    /// The current styled grid (for the renderer).
+    /// Current styled grid from a published replica, or the initial blank grid.
     #[must_use]
     pub fn grid(&self) -> Grid {
-        self.term.grid()
+        self.published_terminal()
+            .map_or_else(|| self.blank.grid(), |terminal| terminal.grid())
     }
 
-    /// Grid dimensions in cells.
+    /// Current published grid dimensions in cells.
     #[must_use]
-    pub const fn dims(&self) -> (u16, u16) {
-        (self.cols, self.rows)
+    pub fn dims(&self) -> (u16, u16) {
+        self.published_geometry()
+            .map_or((self.cols, self.rows), |geometry| {
+                (geometry.cols, geometry.rows)
+            })
     }
 
-    /// Negotiated payload bounds used by the browser receive path.
+    /// Encode an eligible structured key event for the focused published pane.
     #[must_use]
-    pub fn bootstrap_limits(&self) -> Option<BootstrapLimits> {
-        match &self.phase {
-            Phase::AwaitAttached { limits, .. }
-            | Phase::AwaitReady { limits, .. }
-            | Phase::Attached { limits, .. } => Some(*limits),
-            Phase::AwaitHelloOk | Phase::Failed => None,
-        }
-    }
-
-    /// Exact profile selected by HELLO_OK, retained through the connection.
-    #[must_use]
-    pub fn bootstrap_profile(&self) -> Option<BootstrapProfile> {
-        match &self.phase {
-            Phase::AwaitAttached { profile, .. }
-            | Phase::AwaitReady { profile, .. }
-            | Phase::Attached { profile, .. } => Some(*profile),
-            Phase::AwaitHelloOk | Phase::Failed => None,
-        }
-    }
-
-    /// Whether a fatal protocol violation permanently stopped this session.
-    #[must_use]
-    pub fn is_failed(&self) -> bool {
-        matches!(&self.phase, Phase::Failed)
-    }
-
-    /// Encode an `INPUT_KEY` for the attached terminal, or `None` if not yet
-    /// attached.
-    #[must_use]
-    pub fn key_frame(&self, event: KeyEvent) -> Option<Vec<u8>> {
-        if !matches!(&self.phase, Phase::Attached { .. }) {
+    pub fn key_frame(&mut self, event: KeyEvent) -> Option<Vec<u8>> {
+        if self.failed {
             return None;
         }
-        self.terminal_id
-            .clone()
-            .map(|terminal_id| encode(&FrameKind::InputKey { terminal_id, event }))
+        let terminal_id = self.first_published_terminal()?;
+        let (outcome, applied) = self.apply_kernel(KernelInput::Action(KernelAction::Input {
+            terminal_id: &terminal_id,
+            event: &InputEvent::Key(event),
+        }));
+        if applied {
+            outcome.send.into_iter().next()
+        } else {
+            None
+        }
+    }
+
+    fn history_page(
+        &mut self,
+        terminal_id: TerminalId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        cursor: Bytes,
+        next_cursor: Option<Bytes>,
+        payload: Bytes,
+    ) -> Outcome {
+        let key = HistoryKey {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+        };
+        if self.history_cursors.get(&key) != Some(&cursor) {
+            return self.protocol_failure("history page cursor did not match the requested cursor");
+        }
+
+        let (mut outcome, applied) = self.apply_kernel(KernelInput::HistoryPage {
+            terminal_id: &terminal_id,
+            stream_id,
+            bootstrap_id,
+            payload: &payload,
+        });
+        if !applied {
+            self.history_cursors.remove(&key);
+            return outcome;
+        }
+
+        if let Some(next) = next_cursor {
+            self.history_cursors.insert(key, next.clone());
+            outcome.send.push(self.history_request(
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                next,
+            ));
+        } else {
+            self.history_cursors.remove(&key);
+        }
+        outcome
+    }
+
+    fn history_request(
+        &self,
+        terminal_id: TerminalId,
+        stream_id: StreamId,
+        bootstrap_id: BootstrapId,
+        cursor: Bytes,
+    ) -> Vec<u8> {
+        encode(&FrameKind::HistoryRequest {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor,
+            max_bytes: self
+                .bootstrap_limits
+                .unwrap_or_default()
+                .max_history_page_bytes(),
+        })
+    }
+
+    fn apply_kernel(&mut self, input: KernelInput<'_>) -> (Outcome, bool) {
+        let Some(kernel) = self.kernel.as_mut() else {
+            self.effects.clear();
+            return (
+                self.protocol_failure("stateful frame arrived before HELLO_OK"),
+                false,
+            );
+        };
+        let result = kernel.update(input, &mut self.effects);
+        let focused = self.focused_terminal.as_ref();
+        let mut outcome = Outcome::default();
+        for effect in self.effects.as_slice() {
+            match effect {
+                KernelEffect::Send(KernelSend::Input { terminal_id, event }) => {
+                    outcome.send.push(encode(
+                        &(*event).clone().into_frame(terminal_id.clone()),
+                    ));
+                }
+                KernelEffect::Send(KernelSend::FrameAck {
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    seq,
+                }) => outcome.send.push(encode(&FrameKind::FrameAck {
+                    terminal_id: terminal_id.clone(),
+                    stream_id: *stream_id,
+                    bootstrap_id: *bootstrap_id,
+                    seq: *seq,
+                })),
+                KernelEffect::Send(KernelSend::PtyWrite { .. }) => {}
+                KernelEffect::Damage(damage) => {
+                    if focused == Some(&damage.terminal_id)
+                        || (focused.is_none() && damage.kind != KernelDamageKind::Removed)
+                    {
+                        outcome.render = true;
+                    }
+                }
+                KernelEffect::Status(_) | KernelEffect::Job(_) => {}
+            }
+        }
+        match result {
+            Ok(()) => (outcome, true),
+            Err(error) => {
+                self.failed = true;
+                outcome.fatal = Some(error.to_string());
+                (outcome, false)
+            }
+        }
+    }
+
+    fn protocol_failure(&mut self, message: &str) -> Outcome {
+        self.fail_protocol(message);
+        Outcome {
+            fatal: Some(message.to_owned()),
+            ..Outcome::default()
+        }
+    }
+
+    fn first_published_terminal(&self) -> Option<TerminalId> {
+        let kernel = self.kernel.as_ref()?;
+        if let Some(focused) = self.focused_terminal.as_ref() {
+            if kernel.published(focused).is_some() {
+                return Some(focused.clone());
+            }
+        }
+        self.terminal_order
+            .iter()
+            .find(|terminal_id| kernel.published(terminal_id).is_some())
+            .cloned()
+    }
+
+    fn published_terminal(&self) -> Option<&Terminal> {
+        let terminal_id = self.first_published_terminal()?;
+        let kernel = self.kernel.as_ref()?;
+        Some(&kernel.published(&terminal_id)?.engine().terminal)
+    }
+
+    fn published_geometry(&self) -> Option<CanonicalGeometry> {
+        let terminal_id = self.first_published_terminal()?;
+        self.kernel.as_ref()?.published(&terminal_id).map(|replica| replica.geometry())
     }
 }
 
-/// Encode a frame to a length-prefixed byte vector (one WebSocket message).
 fn encode(frame: &FrameKind) -> Vec<u8> {
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
     buf.to_vec()
-}
-
-fn fatal(message: impl Into<String>) -> Outcome {
-    Outcome {
-        send: Vec::new(),
-        render: false,
-        fatal: Some(message.into()),
-    }
-}
-
-fn validate_hello_ok(
-    offered: &ClientCapabilities,
-    protocol_major: u16,
-    protocol_minor: u16,
-    protocol_patch: u16,
-    selected_profile: BootstrapProfile,
-    selected_limits: BootstrapLimits,
-) -> Result<(), String> {
-    if (protocol_major, protocol_minor, protocol_patch)
-        != (
-            PROTOCOL_VERSION.major,
-            PROTOCOL_VERSION.minor,
-            PROTOCOL_VERSION.patch,
-        )
-    {
-        return Err(format!(
-            "HELLO_OK selected unsupported protocol {protocol_major}.{protocol_minor}.{protocol_patch}",
-        ));
-    }
-    let profile_is_offered = match selected_profile {
-        BootstrapProfile::NativeState { codec, features } => {
-            offered
-                .bootstrap
-                .profiles
-                .contains(BootstrapProfileKind::NativeState)
-                && offered.bootstrap.native_codecs.contains(codec)
-                && features.supports_native()
-                && offered.bootstrap.native_features.intersect(features) == features
-        }
-        BootstrapProfile::SynthesizedVtRaw => offered
-            .bootstrap
-            .profiles
-            .contains(BootstrapProfileKind::SynthesizedVtRaw),
-        BootstrapProfile::SynthesizedVtStateSync => offered
-            .bootstrap
-            .profiles
-            .contains(BootstrapProfileKind::SynthesizedVtStateSync),
-        _ => false,
-    };
-    if !profile_is_offered {
-        return Err(format!(
-            "HELLO_OK selected bootstrap profile outside the web client's offer: {selected_profile:?}",
-        ));
-    }
-    if offered.bootstrap.limits.intersect(selected_limits) != selected_limits {
-        return Err(format!(
-            "HELLO_OK selected bootstrap limits outside the web client's offer: chunk={} history_page={}",
-            selected_limits.max_chunk_bytes(),
-            selected_limits.max_history_page_bytes(),
-        ));
-    }
-    Ok(())
 }
