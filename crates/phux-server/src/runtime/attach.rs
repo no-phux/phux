@@ -2254,7 +2254,10 @@ pub(crate) async fn handle_attach(
             .await
             .is_err()
         {
-            warn!(?terminal_id, "pane actor dropped before synthesized bootstrap");
+            warn!(
+                ?terminal_id,
+                "pane actor dropped before synthesized bootstrap"
+            );
             fail_prepublication!("pane actor dropped synthesized bootstrap request");
         }
         let (snap, cut) = match reply_rx.await {
@@ -2264,7 +2267,10 @@ pub(crate) async fn handle_attach(
                 fail_prepublication!("synthesized bootstrap source limit exceeded");
             }
             Err(_) => {
-                warn!(?terminal_id, "pane actor dropped synthesized snapshot reply");
+                warn!(
+                    ?terminal_id,
+                    "pane actor dropped synthesized snapshot reply"
+                );
                 fail_prepublication!("pane actor dropped synthesized snapshot reply");
             }
         };
@@ -2300,7 +2306,6 @@ pub(crate) async fn handle_attach(
             *gate_cut = Some(cut);
         }
     }
-
 
     // Commit the replacement only after every pane has produced a complete,
     // bounded bootstrap. Until this point the prior generation's pumps remain
@@ -2565,8 +2570,7 @@ mod tests {
             }
         });
         let client_id = state.with_mut(crate::state::ServerState::new_client_id);
-        let (out_tx, _out_rx) =
-            tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
+        let (out_tx, _out_rx) = tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
         assert!(matches!(
             prepare_attach(
                 &state,

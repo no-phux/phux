@@ -122,7 +122,10 @@ impl std::io::Write for BoundedSnapshotBytes {
             return Err(std::io::Error::other("snapshot byte limit exceeded"));
         }
         self.bytes.try_reserve(buf.len()).map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::OutOfMemory, "snapshot allocation failed")
+            std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                "snapshot allocation failed",
+            )
         })?;
         self.bytes.extend_from_slice(buf);
         Ok(buf.len())
@@ -1263,7 +1266,6 @@ fn emit_cell(
     out: &mut Vec<u8>,
     prev: &mut Option<Pen>,
 ) -> Result<(), SynthesisError> {
-
     // Discriminate wide-cell tails (the right half of a double-width
     // glyph) from genuinely-blank cells. The base grapheme on the wide
     // cell already advanced the cursor across both columns, so the tail
@@ -1651,7 +1653,7 @@ mod tests {
     #[test]
     fn bounded_synthesis_rejects_tiny_source_budget() {
         let terminal = fresh(80, 24);
-        let mut synth = SnapshotSynthesizer::new().expect("synth");
+        let synth = SnapshotSynthesizer::new().expect("synth");
         assert!(matches!(
             synth.synthesize_bounded(&terminal, 4),
             Err(SynthesisError::LimitExceeded)

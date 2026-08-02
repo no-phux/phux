@@ -1447,10 +1447,8 @@ impl TerminalActor {
                     bootstrap_chunk_bytes,
                 )?;
                 Some(StateSyncBootstrap {
-                    snapshot: self.synthesize_with_scrollback_bounded(
-                        state_sync_scrollback,
-                        max_bytes,
-                    )?,
+                    snapshot: self
+                        .synthesize_with_scrollback_bounded(state_sync_scrollback, max_bytes)?,
                     base_seq,
                 })
             } else {
@@ -2826,7 +2824,6 @@ impl TerminalActor {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn handle_native_bootstrap(&mut self, req: NativeBootstrapRequest) {
-
         let NativeBootstrapRequest {
             owner,
             terminal_id,

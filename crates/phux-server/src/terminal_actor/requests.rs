@@ -349,8 +349,7 @@ pub struct SnapshotRequest {
     pub chunk_bytes: usize,
     /// Channel receiving the snapshot and actor-global raw cut.
     /// Dropping the receiver is benign; the actor discards the reply.
-    pub reply:
-        oneshot::Sender<Result<(SnapshotBytes, u64), crate::grid::SynthesisError>>,
+    pub reply: oneshot::Sender<Result<(SnapshotBytes, u64), crate::grid::SynthesisError>>,
 }
 
 /// Fully-owned native prefix captured atomically by the terminal actor.

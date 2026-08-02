@@ -474,11 +474,7 @@ impl NativeTerminalManager {
         &mut self,
         limits: BootstrapLimits,
     ) -> Result<NativeManagedCapture<'_>, NativeStateError> {
-        self.capture_bounded(
-            limits,
-            MAX_NATIVE_PREFIX_BYTES,
-            MAX_NATIVE_PREFIX_CHUNKS,
-        )
+        self.capture_bounded(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
     }
 
     pub(crate) fn capture_bounded(
