@@ -547,7 +547,7 @@ pub(crate) enum Command {
 
     /// Kill a session, window, or pane.
     ///
-    /// `TARGET` uses the selector grammar (`docs/consumers/tui.md` §3):
+    /// `TARGET` uses the selector grammar (see the top-level help):
     /// `name`, `name:N`, `name:N.M`, `name:tag`, `@N`, `.`. The selector
     /// is resolved client-side against a server-state snapshot to a set of
     /// Terminals; the server is then asked to kill each.
@@ -623,25 +623,29 @@ pub(crate) enum Command {
     },
 
     /// Set a pane's grid size, with no TTY.
-    ///
-    /// The headless counterpart to resizing your terminal window: names one
-    /// pane and gives it an exact cell geometry. Nothing attaches and
-    /// nothing subscribes, so the pane is never dragged toward the 80x24
-    /// size a program with no terminal would otherwise report.
-    ///
-    /// The new size takes effect immediately, even with someone attached.
-    /// It is not permanent against an attached view: under the default
-    /// `window-size = "smallest"` policy the next attach, detach, or window
-    /// resize recomputes the pane's geometry from the attached views and
-    /// overrides it. Set `window-size = "manual"` when an explicit size
-    /// must hold. Either way this verb reads the server's real size back
-    /// before exiting, and exits nonzero if it is not the one you asked
-    /// for, so a script can never mistake a delivered request for an
-    /// applied one.
-    ///
-    ///   phux resize demo 120x40
-    ///   phux resize @7 200x50 --json
-    #[command(about = "Set a pane's grid size, with no TTY")]
+    // Spelled out in `long_about` (the shape `rec` and `play` set) because
+    // clap reflows doc-comment paragraphs: as a doc comment the examples
+    // below collapse onto one run-on line.
+    #[command(
+        about = "Set a pane's grid size, with no TTY",
+        long_about = "Set a pane's grid size, with no TTY.\n\n\
+            The headless counterpart to resizing your terminal window: names one \
+            pane and gives it an exact cell geometry. Nothing attaches and \
+            nothing subscribes, so the pane is never dragged toward the 80x24 \
+            size a program with no terminal would otherwise report.\n\n\
+            The new size takes effect immediately, even with someone attached. \
+            It is not permanent against an attached view: under the default \
+            `window-size = \"smallest\"` policy the next attach, detach, or window \
+            resize recomputes the pane's geometry from the attached views and \
+            overrides it. Set `window-size = \"manual\"` when an explicit size \
+            must hold. Either way this verb reads the server's real size back \
+            before exiting, and exits nonzero if it is not the one you asked \
+            for, so a script can never mistake a delivered request for an \
+            applied one.\n\n\
+            Examples:\n  \
+            phux resize demo 120x40\n  \
+            phux resize @7 200x50 --json"
+    )]
     Resize {
         /// Target selector: session, session:window, session:window.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
@@ -691,15 +695,20 @@ pub(crate) enum Command {
     },
 
     /// Signal a pane's process group.
-    ///
-    /// Delivers a POSIX signal to the program running in the resolved pane and
-    /// every subprocess it spawned — distinct from `phux kill`, which destroys
-    /// the pane. `freeze` (SIGSTOP) pauses the process mid-step; `resume`
-    /// (SIGCONT) lets it run again — the reversible brake for an agent about to
-    /// do something rash. TARGET is a selector.
-    ///
-    ///   phux signal build freeze
-    ///   phux signal . kill
+    // `long_about` for the same reason `rec` spells one out: clap reflows
+    // doc-comment paragraphs and the examples need real newlines.
+    #[command(
+        about = "Signal a pane's process group",
+        long_about = "Signal a pane's process group.\n\n\
+            Delivers a POSIX signal to the program running in the resolved pane and \
+            every subprocess it spawned — distinct from `phux kill`, which destroys \
+            the pane. `freeze` (SIGSTOP) pauses the process mid-step; `resume` \
+            (SIGCONT) lets it run again — the reversible brake for an agent about to \
+            do something rash. TARGET is a selector.\n\n\
+            Examples:\n  \
+            phux signal build freeze\n  \
+            phux signal . kill"
+    )]
     Signal {
         /// Target selector (resolves to one pane).
         target: String,
@@ -782,20 +791,24 @@ pub(crate) enum Command {
     },
 
     /// Send keys to a pane.
-    ///
-    /// tmux-shaped: each KEY is a named key (`Enter`, `Tab`, `Escape`,
-    /// `Up`, `C-c`, `M-x`, …) or a literal string. Literals normally type
-    /// character by character; a literal run immediately before `Enter` is
-    /// delivered as a submission-safe paste followed by the real key, honoring
-    /// the pane's live bracketed-paste mode. TARGET is resolved client-side to
-    /// one pane, so the live pane is neither attached nor resized.
-    ///
-    /// Flags (`--socket`) MUST precede TARGET: KEYS is a trailing var-arg,
-    /// so anything after TARGET is taken as a key to send.
-    ///
-    ///   phux send-keys demo "echo hi" Enter
-    ///   phux send-keys work:1.0 C-c
-    #[command(name = "send-keys", about = "Send keys to a pane")]
+    // `long_about` for the same reason `rec` spells one out: clap reflows
+    // doc-comment paragraphs and the examples need real newlines.
+    #[command(
+        name = "send-keys",
+        about = "Send keys to a pane",
+        long_about = "Send keys to a pane.\n\n\
+            tmux-shaped: each KEY is a named key (`Enter`, `Tab`, `Escape`, \
+            `Up`, `C-c`, `M-x`, …) or a literal string. Literals normally type \
+            character by character; a literal run immediately before `Enter` is \
+            delivered as a submission-safe paste followed by the real key, honoring \
+            the pane's live bracketed-paste mode. TARGET is resolved client-side to \
+            one pane, so the live pane is neither attached nor resized.\n\n\
+            Flags (`--socket`) MUST precede TARGET: KEYS is a trailing var-arg, \
+            so anything after TARGET is taken as a key to send.\n\n\
+            Examples:\n  \
+            phux send-keys demo \"echo hi\" Enter\n  \
+            phux send-keys work:1.0 C-c"
+    )]
     SendKeys {
         /// Target selector: session, session:window, session:window.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
@@ -807,26 +820,28 @@ pub(crate) enum Command {
     },
 
     /// Paste text into a pane.
-    ///
-    /// Delivers the payload as ONE paste event to the resolved pane
-    /// (`ROUTE_INPUT`), so the live pane is neither attached nor resized.
-    /// When the pane's program has bracketed paste (DEC mode 2004) switched
-    /// on, the server wraps the payload in paste markers and the program
-    /// receives it as a single block — auto-indent stays off and multiline
-    /// text arrives intact. Without the mode, the raw bytes are delivered as
-    /// if typed.
-    ///
-    /// A paste INSERTS; it does not SUBMIT. Paste-aware shells and REPLs
-    /// buffer the block until a real Enter — follow with
-    /// `phux send-keys TARGET Enter` to run what you pasted.
-    ///
-    /// TEXT is the payload; omit it to read the payload from stdin.
-    /// Payloads are trusted by default (you vouch for content you
-    /// composed); `--untrusted` opts into the server's safety gate.
-    ///
-    ///   phux paste demo 'SELECT count(*) FROM users;'
-    ///   git diff | phux paste review
-    #[command(about = "Paste text into a pane (bracketed when the pane asks for it)")]
+    // `long_about` for the same reason `rec` spells one out: clap reflows
+    // doc-comment paragraphs and the examples need real newlines.
+    #[command(
+        about = "Paste text into a pane (bracketed when the pane asks for it)",
+        long_about = "Paste text into a pane.\n\n\
+            Delivers the payload as ONE paste event to the resolved pane \
+            (`ROUTE_INPUT`), so the live pane is neither attached nor resized. \
+            When the pane's program has bracketed paste (DEC mode 2004) switched \
+            on, the server wraps the payload in paste markers and the program \
+            receives it as a single block — auto-indent stays off and multiline \
+            text arrives intact. Without the mode, the raw bytes are delivered as \
+            if typed.\n\n\
+            A paste INSERTS; it does not SUBMIT. Paste-aware shells and REPLs \
+            buffer the block until a real Enter — follow with \
+            `phux send-keys TARGET Enter` to run what you pasted.\n\n\
+            TEXT is the payload; omit it to read the payload from stdin. \
+            Payloads are trusted by default (you vouch for content you \
+            composed); `--untrusted` opts into the server's safety gate.\n\n\
+            Examples:\n  \
+            phux paste demo 'SELECT count(*) FROM users;'\n  \
+            git diff | phux paste review"
+    )]
     Paste {
         /// Target selector: session, session:window, session:window.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
@@ -844,18 +859,22 @@ pub(crate) enum Command {
     },
 
     /// Block until a pane meets a condition.
-    ///
-    /// Polls the side-effect-free screen read — the poll
-    /// floor of the event surface: always works, no shell integration.
-    /// Exits 0 when met, 124 on `--timeout`. TARGET is a selector (see the
-    /// top-level help); omit it for the most-recently-focused session.
-    ///
-    /// Flags (`--until`, `--idle`, `--timeout`, `--json`, `--socket`) MUST
-    /// precede TARGET if you give one.
-    ///
-    ///   phux wait --until "BUILD SUCCESSFUL" build
-    ///   phux wait --idle 750 repl
-    #[command(about = "Block until a pane meets a condition")]
+    // `long_about` for the same reason `rec` spells one out: clap reflows
+    // doc-comment paragraphs and the examples need real newlines.
+    #[command(
+        about = "Block until a pane meets a condition",
+        long_about = "Block until a pane meets a condition.\n\n\
+            Polls the side-effect-free screen read — the poll \
+            floor of the event surface: always works, no shell integration. \
+            Exits 0 when the condition is met, and 124 when `--timeout` expires \
+            first. TARGET is a selector (see the \
+            top-level help); omit it for the most-recently-focused session.\n\n\
+            Flags (`--until`, `--idle`, `--timeout`, `--json`, `--socket`) MUST \
+            precede TARGET if you give one.\n\n\
+            Examples:\n  \
+            phux wait --until \"BUILD SUCCESSFUL\" build\n  \
+            phux wait --idle 750 repl"
+    )]
     Wait {
         /// Target selector. Omit for the most-recently-focused session.
         #[arg(value_name = "TARGET")]
@@ -1055,15 +1074,19 @@ pub(crate) enum Command {
     },
 
     /// Report that an agent in a pane is waiting on a human answer.
-    ///
-    /// This is the opt-in hook contract for configured integrations: it emits
-    /// the same `asked` event as the `phux-ask` title sentinel without writing
-    /// escape sequences into the target terminal. TARGET is resolved
-    /// client-side and the command neither attaches nor resizes the pane.
-    ///
-    ///   phux ask work:1.0 --id deploy --suggest Yes --suggest No "Deploy?"
-    ///   phux ask @3 --json "Need approval"
-    #[command(about = "Report an agent ask event for a pane")]
+    // `long_about` for the same reason `rec` spells one out: clap reflows
+    // doc-comment paragraphs and the examples need real newlines.
+    #[command(
+        about = "Report an agent ask event for a pane",
+        long_about = "Report that an agent in a pane is waiting on a human answer.\n\n\
+            This is the opt-in hook contract for configured integrations: it emits \
+            the same `asked` event as the `phux-ask` title sentinel without writing \
+            escape sequences into the target terminal. TARGET is resolved \
+            client-side and the command neither attaches nor resizes the pane.\n\n\
+            Examples:\n  \
+            phux ask work:1.0 --id deploy --suggest Yes --suggest No \"Deploy?\"\n  \
+            phux ask @3 --json \"Need approval\""
+    )]
     Ask {
         /// Target selector: session, session:window, session:window.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
@@ -1099,21 +1122,24 @@ pub(crate) enum Command {
     },
 
     /// Run a command in a pane and capture its exit code.
-    ///
-    /// Reports the command's exit code, output, and duration.
-    /// Brackets the command with sentinels to capture `$?`, so it
-    /// assumes a POSIX shell (sh/bash/zsh). The process exit code mirrors
-    /// the command's (125 if `phux` gives up on `--timeout`), so
-    /// `phux run … && next` composes like a shell. TARGET is a selector
-    /// (see the top-level help), resolved client-side to one pane; the
-    /// command routes to it by id (no attach, no resize).
-    ///
-    /// Flags (`--timeout`, `--json`, `--socket`) MUST precede TARGET, or
-    /// they are swallowed into the trailing command.
-    ///
-    ///   phux run build "cargo test"
-    ///   phux run --timeout 30 work:1.0 "cargo test"
-    #[command(about = "Run a command in a pane and capture its exit code")]
+    // `long_about` for the same reason `rec` spells one out: clap reflows
+    // doc-comment paragraphs and the examples need real newlines.
+    #[command(
+        about = "Run a command in a pane and capture its exit code",
+        long_about = "Run a command in a pane and capture its exit code.\n\n\
+            Reports the command's exit code, output, and duration. \
+            Brackets the command with sentinels to capture `$?`, so it \
+            assumes a POSIX shell (sh/bash/zsh). The process exit code mirrors \
+            the command's — and is 125 when `phux` gives up on `--timeout` — so \
+            `phux run … && next` composes like a shell. TARGET is a selector \
+            (see the top-level help), resolved client-side to one pane; the \
+            command routes to it by id (no attach, no resize).\n\n\
+            Flags (`--timeout`, `--json`, `--socket`) MUST precede TARGET, or \
+            they are swallowed into the trailing command.\n\n\
+            Examples:\n  \
+            phux run build \"cargo test\"\n  \
+            phux run --timeout 30 work:1.0 \"cargo test\""
+    )]
     Run {
         /// Target selector: session, session:window, session:window.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
@@ -1329,20 +1355,23 @@ pub(crate) enum Command {
         action: ServiceAction,
     },
     /// Print a shell completion script on stdout.
-    ///
-    /// The script is generated from the binary's own argument parser, so it
-    /// always matches the verbs this build actually accepts. It contacts no
-    /// server and reads no config, which is what makes it safe to run from a
-    /// shell startup file.
-    ///
-    /// Install it the way your shell prefers, for example:
-    ///
-    ///   phux completion zsh  > ~/.zfunc/_phux   (~/.zfunc must be on $fpath)
-    ///   phux completion bash > ~/.local/share/bash-completion/completions/phux
-    ///   phux completion fish > ~/.config/fish/completions/phux.fish
-    ///
-    /// Regenerate after upgrading phux; a stale script completes verbs the
-    /// installed binary no longer has.
+    // `long_about` for the same reason `rec` spells one out: clap reflows
+    // doc-comment paragraphs and the three install commands need real
+    // newlines — run together on one line they do copy-paste damage.
+    #[command(
+        about = "Print a shell completion script on stdout",
+        long_about = "Print a shell completion script on stdout.\n\n\
+            The script is generated from the binary's own argument parser, so it \
+            always matches the verbs this build actually accepts. It contacts no \
+            server and reads no config, which is what makes it safe to run from a \
+            shell startup file.\n\n\
+            Regenerate after upgrading phux; a stale script completes verbs the \
+            installed binary no longer has.\n\n\
+            Install it the way your shell prefers. Examples:\n  \
+            phux completion zsh  > ~/.zfunc/_phux   (~/.zfunc must be on $fpath)\n  \
+            phux completion bash > ~/.local/share/bash-completion/completions/phux\n  \
+            phux completion fish > ~/.config/fish/completions/phux.fish"
+    )]
     Completion {
         /// Shell dialect to generate for.
         #[arg(value_name = "SHELL")]

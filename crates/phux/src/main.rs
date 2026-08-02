@@ -117,7 +117,22 @@ mod help_inventory;
         TARGET is the selector grammar: a session name, `name:window`,\n\
         `name:window.pane`, `@id`, or `.` (focused). `=` is reserved for the attached TUI's client-local focus MRU. The same\n\
         grammar works across kill/snapshot/send-keys/run/wait/ask.",
-    after_long_help = "ENVIRONMENT\n  \
+    // The EXIT STATUS semantics are the ones `commands::partial` documents:
+    // 3 is distinct from 1 so a script can branch — retry is right for 3 and
+    // wrong for 1. `run` mirrors the child's code, which is why its timeout
+    // is 125 and not wait's 124.
+    after_long_help = "EXIT STATUS\n  \
+        0     Success.\n  \
+        1     Failure: no server, no such target, or the verb itself failed.\n  \
+        2     Usage error, or the server refused the request.\n  \
+        3     Unanswerable: the selector was resolved against a partial view\n  \
+        \x20       of the fleet (a federation satellite was unreachable). Retry\n  \
+        \x20       once the link is back — unlike 1, the target may exist.\n  \
+        124   `phux wait` gave up because `--timeout` expired.\n  \
+        125   `phux run` gave up because `--timeout` expired; otherwise\n  \
+        \x20       `run` mirrors the exit code of the command it ran, so\n  \
+        \x20       `phux run … && next` composes like a shell.\n\n\
+        ENVIRONMENT\n  \
         PHUX_SOCKET        UDS path for the CLI verbs and the server. A `--socket`\n  \
         \x20                 flag overrides it; default is\n  \
         \x20                 $XDG_RUNTIME_DIR/phux/phux.sock (or /tmp/phux-$USER/...).\n  \
@@ -140,7 +155,7 @@ mod help_inventory;
         PHUX_LOG_FORMAT    text (default) or json — log line format.\n  \
         RUST_LOG           tracing level filter, e.g. phux=debug.\n\n\
         Run `phux server --listen 127.0.0.1:8787` to expose a port; see\n  \
-        `phux help server` and docs/operations.md for the remote/TLS details."
+        `phux help server` for the remote/TLS details."
 )]
 struct Cli {
     /// Recording options for the naked `phux` attach. `phux attach` carries
@@ -256,11 +271,14 @@ fn plan_rec(opts: &commands::RecOpts) -> Result<Option<commands::rec::RecordSpec
 /// those leave stderr clean for scripts and agents, and never before a
 /// `--json` path. `phux --version` reports the version on stdout.
 pub(crate) fn print_banner() {
-    eprintln!(
-        "phux {} (pre-alpha; see docs/spec/)",
-        env!("CARGO_PKG_VERSION")
-    );
+    eprintln!("{BANNER}");
 }
+
+/// The banner line itself: a plain `phux <version>`, nothing else. No
+/// repo-internal paths — an installed binary's user has no checkout, so
+/// `docs/…` pointers are noise at best (the leak test in `help_inventory`
+/// scans this constant along with every help string).
+pub(crate) const BANNER: &str = concat!("phux ", env!("CARGO_PKG_VERSION"));
 
 /// Whether this invocation will enter the interactive TUI (raw mode +
 /// alt screen) and therefore MUST keep logs off stderr.

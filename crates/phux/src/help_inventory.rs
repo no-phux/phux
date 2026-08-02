@@ -1,14 +1,17 @@
 //! Test-only guards on the generated CLI help.
 //!
-//! Two properties are pinned here so they fail CI on drift:
+//! Three properties are pinned here so they fail CI on drift:
 //!
 //! 1. The full command inventory (every `phux …` invocation path) matches a
 //!    checked-in snapshot, so a newly-wired or removed subcommand forces this
 //!    file — and whoever adds the command — to acknowledge the surface change.
-//! 2. No user-facing help string leaks an internal ticket id (`phux-xxxx`) or
-//!    ADR reference (`ADR-00xx`), and none still describes the removed
-//!    `CREATE_SESSION` verb. Those belong in code comments and `docs/`, never
-//!    in `--help`.
+//! 2. No user-facing help string (nor the stderr banner) leaks an internal
+//!    ticket id (`phux-xxxx`), an ADR reference (`ADR-00xx`), or a
+//!    repo-internal `docs/` path, and none still describes the removed
+//!    `CREATE_SESSION` verb. Those belong in code comments and the repo's
+//!    docs, never in `--help` — an installed binary's user has no checkout.
+//! 3. The verbs that carry worked examples render them one per line
+//!    (`EXAMPLE_BLOCKS`), and the root help documents EXIT STATUS.
 
 use clap::CommandFactory;
 
@@ -203,11 +206,20 @@ fn top_level_help_lists_every_subcommand() {
 fn help_leaks_no_internal_ids() {
     let mut buf = String::new();
     all_long_help(&Cli::command(), &mut buf);
+    // The stderr banner is user-facing too; scan it with the help strings.
+    buf.push_str(crate::BANNER);
+    buf.push('\n');
 
     assert!(
         !buf.contains("ADR-"),
         "user-facing help leaks an ADR reference; keep ADR ids in code \
          comments and docs, not help strings"
+    );
+    assert!(
+        !buf.contains("docs/"),
+        "user-facing help cites a repo-internal docs/ path; an installed \
+         binary's user has no checkout — point at `phux help <verb>` or the \
+         website instead"
     );
     assert!(
         !buf.contains("CREATE_SESSION"),
@@ -218,4 +230,104 @@ fn help_leaks_no_internal_ids() {
         leaks.is_empty(),
         "user-facing help leaks internal ticket id(s): {leaks:?}"
     );
+}
+
+/// Every command whose long help carries worked examples, with the exact
+/// example lines it must render. Each example must appear on its own line:
+/// clap reflows doc-comment paragraphs, so an example block written as a doc
+/// comment collapses onto one run-on line — three shell commands run together
+/// do copy-paste damage. The fix is a hand-written `long_about` with real
+/// newlines (the `rec`/`play` pattern); this table keeps the eight converted
+/// verbs from regressing.
+const EXAMPLE_BLOCKS: &[(&str, &[&str])] = &[
+    (
+        "send-keys",
+        &[
+            "phux send-keys demo \"echo hi\" Enter",
+            "phux send-keys work:1.0 C-c",
+        ],
+    ),
+    (
+        "wait",
+        &[
+            "phux wait --until \"BUILD SUCCESSFUL\" build",
+            "phux wait --idle 750 repl",
+        ],
+    ),
+    (
+        "run",
+        &[
+            "phux run build \"cargo test\"",
+            "phux run --timeout 30 work:1.0 \"cargo test\"",
+        ],
+    ),
+    (
+        "completion",
+        &[
+            "phux completion zsh  > ~/.zfunc/_phux   (~/.zfunc must be on $fpath)",
+            "phux completion bash > ~/.local/share/bash-completion/completions/phux",
+            "phux completion fish > ~/.config/fish/completions/phux.fish",
+        ],
+    ),
+    (
+        "resize",
+        &["phux resize demo 120x40", "phux resize @7 200x50 --json"],
+    ),
+    (
+        "signal",
+        &["phux signal build freeze", "phux signal . kill"],
+    ),
+    (
+        "paste",
+        &[
+            "phux paste demo 'SELECT count(*) FROM users;'",
+            "git diff | phux paste review",
+        ],
+    ),
+    (
+        "ask",
+        &[
+            "phux ask work:1.0 --id deploy --suggest Yes --suggest No \"Deploy?\"",
+            "phux ask @3 --json \"Need approval\"",
+        ],
+    ),
+];
+
+#[test]
+fn example_blocks_render_one_example_per_line() {
+    let root = Cli::command();
+    for (name, examples) in EXAMPLE_BLOCKS {
+        let sub = root
+            .get_subcommands()
+            .find(|sub| sub.get_name() == *name)
+            .unwrap_or_else(|| panic!("no `{name}` subcommand in the tree"));
+        let long = sub.clone().render_long_help().to_string();
+        assert!(
+            long.contains("Examples:"),
+            "`phux {name} --help` lost its Examples: block:\n{long}"
+        );
+        for example in *examples {
+            assert!(
+                long.lines().any(|line| line.trim() == *example),
+                "`phux {name} --help` does not render {example:?} on its own \
+                 line (clap reflowed it?):\n{long}"
+            );
+        }
+    }
+}
+
+#[test]
+fn root_help_documents_exit_status() {
+    let mut root = Cli::command();
+    let long = root.render_long_help().to_string();
+    assert!(
+        long.contains("EXIT STATUS"),
+        "root --help lost its EXIT STATUS section"
+    );
+    for code in ["124", "125"] {
+        assert!(
+            long.lines().any(|line| line.trim_start().starts_with(code)),
+            "root --help's EXIT STATUS no longer documents {code}"
+        );
+    }
 }

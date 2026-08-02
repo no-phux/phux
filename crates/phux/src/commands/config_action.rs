@@ -94,8 +94,7 @@ pub(crate) enum ConfigAction {
     /// client re-reads its own config file and rebuilds keybindings,
     /// theme, and status bar without restarting. Clients whose re-read
     /// fails keep their previous config. Deliberately explicit — the
-    /// config file is never watched (see docs/consumers/tui.md section
-    /// 4.3).
+    /// config file is never watched.
     Reload,
 
     /// Execute one action declared by a configured plugin manifest.

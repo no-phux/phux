@@ -80,9 +80,11 @@ fn strip_dhat(stderr: &str) -> String {
         })
 }
 
-/// The pre-alpha build banner that used to print on EVERY invocation. No
+/// The build banner line that used to print on EVERY invocation. No
 /// one-shot verb may emit it (it pollutes stderr for scripts/agents).
-const BANNER_FRAGMENT: &str = "pre-alpha";
+/// The banner is now a plain `phux <version>` — matched here in full so
+/// these absence checks stay meaningful.
+const BANNER_FRAGMENT: &str = concat!("phux ", env!("CARGO_PKG_VERSION"));
 
 #[test]
 fn version_is_clean_stdout_with_no_banner() {
@@ -92,9 +94,11 @@ fn version_is_clean_stdout_with_no_banner() {
         stdout.contains(env!("CARGO_PKG_VERSION")),
         "--version stdout should carry the version; got {stdout:?}"
     );
+    // clap's own `--version` output on stdout is legitimately `phux <version>`;
+    // the banner would be a stderr line, so that is where absence is checked.
     assert!(
-        !stdout.contains(BANNER_FRAGMENT) && !stderr.contains(BANNER_FRAGMENT),
-        "--version must not print the pre-alpha banner; stdout={stdout:?} stderr={stderr:?}"
+        !stderr.contains(BANNER_FRAGMENT),
+        "--version must not print the banner to stderr; stdout={stdout:?} stderr={stderr:?}"
     );
 }
 
@@ -104,7 +108,7 @@ fn help_does_not_print_banner() {
     assert_eq!(code, 0, "--help should exit 0");
     assert!(
         !stdout.contains(BANNER_FRAGMENT) && !stderr.contains(BANNER_FRAGMENT),
-        "--help must not print the pre-alpha banner; stdout={stdout:?} stderr={stderr:?}"
+        "--help must not print the build banner; stdout={stdout:?} stderr={stderr:?}"
     );
 }
 

@@ -5,7 +5,9 @@ use std::process::Command;
 use tempfile::TempDir;
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-const BANNER_FRAGMENT: &str = "pre-alpha";
+/// The stderr build banner, now a plain `phux <version>` line, matched in
+/// full so the absence assertions below stay meaningful.
+const BANNER_FRAGMENT: &str = concat!("phux ", env!("CARGO_PKG_VERSION"));
 
 fn run_with_xdg(args: &[&str], xdg_config_home: &std::path::Path) -> (i32, String, String) {
     let out = Command::new(PHUX)
