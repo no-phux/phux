@@ -12,9 +12,7 @@ use libghostty_vt::{
         LiveHistoryCursor, ScreenKey, TOKEN_LEN,
     },
 };
-use phux_protocol::caps::{
-    BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet,
-};
+use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet};
 
 const INCREMENTAL_ABI_VERSION: u32 = 1;
 const CHECKPOINT_VERSION: u16 = EngineCodec::LibghosttyCheckpointV2 as u16;
@@ -365,11 +363,9 @@ fn intersect_engine_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use allocator_api2::alloc::{AllocError, Allocator as RustAllocator, Layout};
     use libghostty_vt::TerminalOptions;
     use phux_protocol::caps::BootstrapProfileKind;
-    use allocator_api2::alloc::{
-        AllocError, Allocator as RustAllocator, Layout,
-    };
     use std::ptr::NonNull;
 
     #[derive(Clone, Copy, Debug)]
@@ -404,11 +400,9 @@ mod tests {
         terminal
     }
 
-    fn capture_to_ready(
-        terminal: &mut GhosttyTerminal<'static, 'static>,
-        limits: BootstrapLimits,
-    ) {
-        let mut capture = NativeCheckpointCapture::new(terminal, limits).expect("capture preflight");
+    fn capture_to_ready(terminal: &mut GhosttyTerminal<'static, 'static>, limits: BootstrapLimits) {
+        let mut capture =
+            NativeCheckpointCapture::new(terminal, limits).expect("capture preflight");
         loop {
             let required = match capture.step(&mut []) {
                 Err(NativeStateError::OutOfSpace {
@@ -452,8 +446,16 @@ mod tests {
         assert_eq!(engine.codec_identity, CHECKPOINT_CODEC_IDENTITY);
 
         let advertised = native_bootstrap_capabilities();
-        assert!(advertised.profiles.contains(BootstrapProfileKind::NativeState));
-        assert!(advertised.profiles.contains(BootstrapProfileKind::SynthesizedVtRaw));
+        assert!(
+            advertised
+                .profiles
+                .contains(BootstrapProfileKind::NativeState)
+        );
+        assert!(
+            advertised
+                .profiles
+                .contains(BootstrapProfileKind::SynthesizedVtRaw)
+        );
         assert!(
             advertised
                 .profiles
@@ -464,7 +466,10 @@ mod tests {
                 .native_codecs
                 .contains(EngineCodec::LibghosttyCheckpointV2)
         );
-        assert_eq!(advertised.native_features, EngineFeatureSet::required_native());
+        assert_eq!(
+            advertised.native_features,
+            EngineFeatureSet::required_native()
+        );
     }
 
     #[test]
@@ -524,9 +529,7 @@ mod tests {
                 .next(limits.max_history_page_bytes(), &mut exact)
                 .expect("bounded history page");
             let NativeHistoryEvent::Page {
-                bytes,
-                next_cursor,
-                ..
+                bytes, next_cursor, ..
             } = event
             else {
                 panic!("probe promised a history page");
@@ -551,11 +554,8 @@ mod tests {
     fn abort_failed_construction_and_oom_status_preserve_cleanup_contract() {
         let mut source = terminal(20, 4);
         source.vt_write(b"checkpoint-state");
-        let mut capture = NativeCheckpointCapture::new(
-            &mut source,
-            BootstrapLimits::default(),
-        )
-        .expect("capture");
+        let mut capture =
+            NativeCheckpointCapture::new(&mut source, BootstrapLimits::default()).expect("capture");
         let _ = capture.step(&mut []);
         capture.abort().expect("explicit abort");
         source.vt_write(b"-after-abort");
@@ -605,7 +605,8 @@ mod tests {
         let mut reset = NativeHistoryCursor::new(history_terminal(), limits).expect("reset cursor");
         reset.reset();
         assert_eq!(
-            reset.next(limits.max_history_page_bytes(), &mut buffer)
+            reset
+                .next(limits.max_history_page_bytes(), &mut buffer)
                 .unwrap_err(),
             NativeStateError::Reset
         );

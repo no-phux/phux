@@ -1374,11 +1374,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .ok_or_else(|| mismatch_error(terminal_id, generation))?;
 
         self.engine_effects.clear();
-        if let Err(error) = self.adapter.apply_history_page(
-            &mut replica.engine,
-            payload,
-            &mut self.engine_effects,
-        ) {
+        if let Err(error) =
+            self.adapter
+                .apply_history_page(&mut replica.engine, payload, &mut self.engine_effects)
+        {
             let last_valid_seq = replica.last_seq;
             self.engine_effects.clear();
             state.published = None;

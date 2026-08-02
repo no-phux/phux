@@ -6,14 +6,12 @@
 
 use std::{marker::PhantomData, rc::Rc};
 
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use libghostty_vt::snapshot::incremental::{
-    AfterReadyStep, DecodeProgress, DecodeStep, Decoder, DecoderOptions,
-    Error as SnapshotError,
+    AfterReadyStep, DecodeProgress, DecodeStep, Decoder, DecoderOptions, Error as SnapshotError,
 };
+use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_protocol::{
-    BootstrapCapabilities, BootstrapLimits, BootstrapStreamProfile, EngineCodec,
-    EngineFeatureSet,
+    BootstrapCapabilities, BootstrapLimits, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
 };
 use thiserror::Error;
 
@@ -100,11 +98,9 @@ impl GhosttyAdapter {
         let native = libghostty_vt::snapshot::incremental::capabilities()
             .ok()
             .filter(|capabilities| supports_native(capabilities, limits));
-        let max_pages = native
-            .as_ref()
-            .map_or(defaults.max_pages, |capabilities| {
-                defaults.max_pages.min(capabilities.max_pages)
-            });
+        let max_pages = native.as_ref().map_or(defaults.max_pages, |capabilities| {
+            defaults.max_pages.min(capabilities.max_pages)
+        });
         Self {
             limits,
             decoder_options: DecoderOptions {
@@ -442,9 +438,9 @@ fn push_native(
                 }
                 Ok(DecodeStep::Ready { decoder, progress }) => {
                     check_version(progress)?;
-                    let continuation = decoder
-                        .take_terminal()
-                        .map_err(|error| GhosttyEngineError::checkpoint(error, progress.consumed))?;
+                    let continuation = decoder.take_terminal().map_err(|error| {
+                        GhosttyEngineError::checkpoint(error, progress.consumed)
+                    })?;
                     let stream = continuation.replay().map_err(|failure| {
                         GhosttyEngineError::checkpoint(failure.error, progress.consumed)
                     })?;
@@ -660,8 +656,9 @@ mod tests {
             let event = capture.next(&mut bytes).expect("capture record");
             let kind = match event.kind {
                 CaptureEventKind::Ready { .. } => RecordKind::Ready,
-                CaptureEventKind::HistoryBegin { .. }
-                | CaptureEventKind::HistoryPage { .. } => RecordKind::History,
+                CaptureEventKind::HistoryBegin { .. } | CaptureEventKind::HistoryPage { .. } => {
+                    RecordKind::History
+                }
                 CaptureEventKind::Finish => RecordKind::Finish,
                 CaptureEventKind::Record => RecordKind::Other,
             };
@@ -761,7 +758,11 @@ mod tests {
             }
             assert_eq!(history_progress, BootstrapProgress::Finished);
             assert_eq!(
-                replica.terminal().expect("finished terminal").title().unwrap(),
+                replica
+                    .terminal()
+                    .expect("finished terminal")
+                    .title()
+                    .unwrap(),
                 "checkpoint-title"
             );
         }
@@ -816,7 +817,10 @@ mod tests {
         adapter
             .apply_output(&mut replica, b"\x1b]2;published-live\x07", &mut effects)
             .expect("published live output");
-        assert_eq!(replica.terminal().unwrap().title().unwrap(), "published-live");
+        assert_eq!(
+            replica.terminal().unwrap().title().unwrap(),
+            "published-live"
+        );
     }
 
     #[test]
@@ -859,7 +863,11 @@ mod tests {
         }
         assert!(wrote_live);
         assert_eq!(
-            replica.terminal().expect("finished terminal").title().unwrap(),
+            replica
+                .terminal()
+                .expect("finished terminal")
+                .title()
+                .unwrap(),
             "live-during-history"
         );
     }
@@ -929,9 +937,11 @@ mod tests {
             .expect("native replica");
         let mut limit_error = None;
         for byte in &bootstrap {
-            if let Err(error) =
-                adapter.apply_bootstrap_chunk(&mut replica, std::slice::from_ref(byte), &mut effects)
-            {
+            if let Err(error) = adapter.apply_bootstrap_chunk(
+                &mut replica,
+                std::slice::from_ref(byte),
+                &mut effects,
+            ) {
                 limit_error = Some(error);
                 break;
             }
@@ -989,9 +999,11 @@ mod tests {
     fn native_capabilities_require_the_exact_runtime_contract() {
         let limits = BootstrapLimits::default();
         let capabilities = native_bootstrap_capabilities(limits);
-        assert!(capabilities
-            .native_codecs
-            .contains(EngineCodec::LibghosttyCheckpointV2));
+        assert!(
+            capabilities
+                .native_codecs
+                .contains(EngineCodec::LibghosttyCheckpointV2)
+        );
         assert_eq!(
             capabilities.native_features,
             EngineFeatureSet::required_native()

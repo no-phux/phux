@@ -639,10 +639,12 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
         .unwrap();
     let published = kernel.published(&terminal_id).unwrap();
     assert_eq!(published.last_seq(), 41);
-    assert!(published
-        .engine()
-        .transcript
-        .ends_with(b"history-onelive-between-historyhistory-two"));
+    assert!(
+        published
+            .engine()
+            .transcript
+            .ends_with(b"history-onelive-between-historyhistory-two")
+    );
 
     let before_wrong_generation = published.engine().transcript.clone();
     let wrong_generation = kernel.update(

@@ -512,11 +512,7 @@ impl BootstrapCapabilities {
     /// required by protocol 0.7. A partial feature set removes any existing
     /// native advertisement rather than publishing a misleading subset.
     #[must_use]
-    pub const fn with_native(
-        mut self,
-        codec: EngineCodec,
-        features: EngineFeatureSet,
-    ) -> Self {
+    pub const fn with_native(mut self, codec: EngineCodec, features: EngineFeatureSet) -> Self {
         if !features.supports_native() {
             self.profiles = BootstrapProfileSet::from_wire(
                 self.profiles.as_wire() & !(BootstrapProfileKind::NativeState as u8),
@@ -1401,7 +1397,10 @@ mod tests {
     #[test]
     fn bootstrap_capabilities_default_to_synthesis_only() {
         let caps = BootstrapCapabilities::new();
-        assert!(caps.profiles.contains(BootstrapProfileKind::SynthesizedVtRaw));
+        assert!(
+            caps.profiles
+                .contains(BootstrapProfileKind::SynthesizedVtRaw)
+        );
         assert!(
             caps.profiles
                 .contains(BootstrapProfileKind::SynthesizedVtStateSync)
@@ -1417,7 +1416,10 @@ mod tests {
             EngineCodec::LibghosttyCheckpointV2,
             EngineFeatureSet::required_native(),
         );
-        assert!(caps.profiles.contains(BootstrapProfileKind::SynthesizedVtRaw));
+        assert!(
+            caps.profiles
+                .contains(BootstrapProfileKind::SynthesizedVtRaw)
+        );
         assert!(
             caps.profiles
                 .contains(BootstrapProfileKind::SynthesizedVtStateSync)
@@ -1427,18 +1429,13 @@ mod tests {
             caps.native_codecs
                 .contains(EngineCodec::LibghosttyCheckpointV2)
         );
-        assert_eq!(
-            caps.native_features,
-            EngineFeatureSet::required_native()
-        );
+        assert_eq!(caps.native_features, EngineFeatureSet::required_native());
     }
 
     #[test]
     fn native_builder_rejects_partial_features() {
-        let partial = EngineFeatureSet::with(&[
-            EngineFeature::Continuation,
-            EngineFeature::ReadyBoundary,
-        ]);
+        let partial =
+            EngineFeatureSet::with(&[EngineFeature::Continuation, EngineFeature::ReadyBoundary]);
         let caps = BootstrapCapabilities::new()
             .with_native(
                 EngineCodec::LibghosttyCheckpointV2,
