@@ -45,7 +45,7 @@ use phux_protocol::wire::frame::{
 use portable_pty::{CommandBuilder, PtySize};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::agent_detect::{AgentDetectEvent, AgentDetector, DetectOutcome};
 use crate::grid::{ConsumerReference, SnapshotBytes, SnapshotSynthesizer};
@@ -2064,11 +2064,21 @@ impl TerminalActor {
             let len = request.bytes.len();
             match tx.try_send(request) {
                 Ok(()) => debug!(len, "input queued to PTY writer"),
+                // Dropping input is fire-and-forget per SPEC L1 §9, but it
+                // is not a debug-level event: the bytes are gone, nothing
+                // downstream reports it, and the caller is still acked `Ok`.
+                // At `debug!` this was invisible by default, which is how a
+                // payload split across several events could lose an
+                // interior one and corrupt mid-stream with no trace
+                // (phux-oxd7).
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    debug!("PTY writer queue full; dropping input");
+                    warn!(len, "PTY writer queue full; dropping input");
                 }
+                // The writer thread is gone. Every subsequent byte for this
+                // pane goes nowhere while output, snapshots, and acks all
+                // keep working — the pane looks alive and is not.
                 Err(mpsc::error::TrySendError::Closed(_)) => {
-                    debug!("PTY writer channel closed; dropping input");
+                    error!(len, "PTY writer channel closed; pane input is dead");
                 }
             }
         } else {

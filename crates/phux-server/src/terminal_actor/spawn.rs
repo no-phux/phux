@@ -13,6 +13,129 @@ use tracing::{debug, error, warn};
 /// rarely splits a sequence boundary.
 const PTY_READ_CHUNK: usize = 4096;
 
+/// `EIO` on a PTY master write means the slave side is gone — the child
+/// exited or closed its end. Every Unix spells it 5; `std::io::ErrorKind`
+/// has no stable variant for it, and `libc` is a macOS-gated dependency in
+/// this crate, so the numeric constant is the portable spelling.
+const EIO: i32 = 5;
+
+/// Bound on `WouldBlock` retries, and the pause between attempts.
+///
+/// Nothing in phux sets `O_NONBLOCK` on the master and portable-pty does not
+/// either, so `WouldBlock` is unreachable today. It is handled anyway
+/// because the cost is a few lines and the failure it prevents is the exact
+/// one [`write_all_resilient`] exists to kill: a transient errno permanently
+/// severing a live pane's input (phux-oxd7). Should the fd ever become
+/// non-blocking, this degrades to a bounded stall instead of a dead pane.
+const WOULD_BLOCK_RETRIES: u32 = 50;
+const WOULD_BLOCK_BACKOFF: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// Why the writer gave up on a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteFailure {
+    /// The child is gone (`EIO` / `EPIPE` / a zero-length write). Expected
+    /// during teardown; the reader thread reports EOF on its own path.
+    PaneGone,
+    /// Anything else. The pane's input path is dead and the user must be
+    /// told, because every other signal keeps looking healthy.
+    Fatal,
+}
+
+/// A failed PTY write, carrying how much of the payload the child already
+/// received before the failure.
+#[derive(Debug)]
+struct WriteError {
+    failure: WriteFailure,
+    source: std::io::Error,
+    /// Bytes successfully written before the failure. Non-zero means the
+    /// child ingested a truncated prefix — the fact that makes an
+    /// unconditional retry unsafe and a silent failure unacceptable.
+    written: usize,
+}
+
+/// Classify a PTY write/flush error into "child went away" versus "real
+/// fault". The distinction is the point: the previous writer treated both
+/// as terminal for the pane's entire input path, so a routine child exit
+/// mid-write produced the same permanent input death as a genuine fault.
+fn classify_write_error(err: &std::io::Error) -> WriteFailure {
+    if err.raw_os_error() == Some(EIO) || err.kind() == std::io::ErrorKind::BrokenPipe {
+        WriteFailure::PaneGone
+    } else {
+        WriteFailure::Fatal
+    }
+}
+
+/// Write every byte of `bytes`, resuming across partial writes and retrying
+/// the transient errno classes.
+///
+/// [`Write::write_all`] is insufficient on two counts. It retries only
+/// `Interrupted`, so a `WouldBlock` propagates as a hard error; and it
+/// reports no progress count, so the caller cannot tell how much of the
+/// payload the child already received. Both matter because a failure here
+/// previously killed the pane's input path for good.
+fn write_all_resilient(writer: &mut (dyn Write + Send), bytes: &[u8]) -> Result<(), WriteError> {
+    let mut written = 0_usize;
+    let mut would_block = 0_u32;
+    while written < bytes.len() {
+        match writer.write(&bytes[written..]) {
+            // A zero-length write with bytes outstanding means no progress
+            // is possible; treat it as the child having gone away rather
+            // than spinning forever.
+            Ok(0) => {
+                return Err(WriteError {
+                    failure: WriteFailure::PaneGone,
+                    source: std::io::Error::from(std::io::ErrorKind::WriteZero),
+                    written,
+                });
+            }
+            Ok(n) => {
+                written += n;
+                would_block = 0;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                would_block += 1;
+                if would_block > WOULD_BLOCK_RETRIES {
+                    return Err(WriteError {
+                        failure: WriteFailure::Fatal,
+                        source: err,
+                        written,
+                    });
+                }
+                std::thread::sleep(WOULD_BLOCK_BACKOFF);
+            }
+            Err(err) => {
+                return Err(WriteError {
+                    failure: classify_write_error(&err),
+                    source: err,
+                    written,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Flush, retrying `Interrupted` and classifying the rest the same way
+/// [`write_all_resilient`] does. By flush time the bytes are already in the
+/// kernel, so `written` is reported as the full payload length by the
+/// caller's accounting rather than tracked here.
+fn flush_resilient(writer: &mut (dyn Write + Send)) -> Result<(), WriteError> {
+    loop {
+        match writer.flush() {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) => {
+                return Err(WriteError {
+                    failure: classify_write_error(&err),
+                    source: err,
+                    written: 0,
+                });
+            }
+        }
+    }
+}
+
 /// Bundle of PTY-side resources owned by a
 /// [`TerminalActor`](crate::terminal_actor::TerminalActor) with a real PTY.
 ///
@@ -351,7 +474,7 @@ fn start_pty_bridge(
     let mut reader = master
         .try_clone_reader()
         .map_err(|e| TerminalActorError::PtyIo(e.to_string()))?;
-    let mut writer = master
+    let writer = master
         .take_writer()
         .map_err(|e| TerminalActorError::PtyIo(e.to_string()))?;
     let master = Arc::new(Mutex::new(master));
@@ -393,29 +516,72 @@ fn start_pty_bridge(
     let writer_thread = std::thread::Builder::new()
         .name("phux-pty-writer".to_owned())
         .spawn(move || {
-            // A write/flush error is terminal for the pane's input path:
-            // the thread exits and every byte queued after it is dropped
-            // on the floor. Log loudly — without this line the
-            // failure is invisible: output, snapshots, and command acks
-            // all keep working while input silently goes nowhere.
-            while let Some(request) = input_rx_for_writer.blocking_recv() {
-                if let Err(err) = writer.write_all(&request.bytes) {
-                    error!(?err, "pty writer: write failed; pane input is now dead");
-                    if let Some(completion) = request.completion {
-                        let _ = completion.send(false);
+            // `take_writer` hands back portable-pty's `UnixMasterWriter`,
+            // whose `Drop` writes `\n` followed by the pane's VEOF into the
+            // master. On a clean shutdown that is the intended courtesy: the
+            // child sees EOF. After a FAILED write it is a hazard — that
+            // newline terminates whatever truncated prefix the line
+            // discipline is still holding, committing a partial line to a
+            // canonical-mode shell exactly as if the user had pressed Enter
+            // (phux-oxd7). Holding the writer in `ManuallyDrop` runs the
+            // destructor on the clean path only. The failure paths leak one
+            // dup'd fd for a pane whose input is already dead, which is the
+            // right trade against executing a command nobody typed.
+            let mut writer = std::mem::ManuallyDrop::new(writer);
+            loop {
+                let Some(request) = input_rx_for_writer.blocking_recv() else {
+                    // Sender dropped — `shutdown_pty` is tearing the pane
+                    // down. Run the destructor so the child still gets EOF.
+                    std::mem::ManuallyDrop::into_inner(writer);
+                    return;
+                };
+                let len = request.bytes.len();
+                let outcome = write_all_resilient(&mut **writer, &request.bytes)
+                    .and_then(|()| flush_resilient(&mut **writer));
+                match outcome {
+                    Ok(()) => {
+                        debug!(len, "pty write flushed");
+                        if let Some(completion) = request.completion {
+                            let _ = completion.send(true);
+                        }
                     }
-                    break;
-                }
-                if let Err(err) = writer.flush() {
-                    error!(?err, "pty writer: flush failed; pane input is now dead");
-                    if let Some(completion) = request.completion {
-                        let _ = completion.send(false);
+                    Err(WriteError {
+                        failure: WriteFailure::PaneGone,
+                        source,
+                        written,
+                    }) => {
+                        // The child exited or closed the slave. Routine
+                        // teardown, not a fault: the reader thread is
+                        // reporting EOF on its own path and the actor will
+                        // close the pane. Anything still queued is moot.
+                        debug!(
+                            ?source,
+                            written, len, "pty writer: child gone; input path closing"
+                        );
+                        if let Some(completion) = request.completion {
+                            let _ = completion.send(false);
+                        }
+                        return;
                     }
-                    break;
-                }
-                debug!(len = request.bytes.len(), "pty write flushed");
-                if let Some(completion) = request.completion {
-                    let _ = completion.send(true);
+                    Err(WriteError {
+                        failure: WriteFailure::Fatal,
+                        source,
+                        written,
+                    }) => {
+                        // Genuinely unexpected. The pane's input path is
+                        // dead and cannot be revived; say so loudly, with
+                        // the partial-write count, because output,
+                        // snapshots, and command acks all keep working
+                        // while input silently goes nowhere.
+                        error!(
+                            ?source,
+                            written, len, "pty writer: write failed; pane input is now dead"
+                        );
+                        if let Some(completion) = request.completion {
+                            let _ = completion.send(false);
+                        }
+                        return;
+                    }
                 }
             }
         })
@@ -431,4 +597,162 @@ fn start_pty_bridge(
             writer_thread: Some(writer_thread),
         },
     ))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod writer_tests {
+    use super::*;
+    use std::io::ErrorKind;
+
+    /// A `Write` whose every call is scripted, so each errno class can be
+    /// exercised without a real PTY.
+    struct ScriptedWriter {
+        /// Popped front-to-back, one per `write` call.
+        script: Vec<Result<usize, std::io::Error>>,
+        /// Bytes the "child" actually received.
+        received: Vec<u8>,
+        flush_script: Vec<Result<(), std::io::Error>>,
+    }
+
+    impl ScriptedWriter {
+        fn new(script: Vec<Result<usize, std::io::Error>>) -> Self {
+            Self {
+                script,
+                received: Vec::new(),
+                flush_script: Vec::new(),
+            }
+        }
+    }
+
+    impl Write for ScriptedWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            match self.script.remove(0) {
+                Ok(n) => {
+                    let n = n.min(buf.len());
+                    self.received.extend_from_slice(&buf[..n]);
+                    Ok(n)
+                }
+                Err(e) => Err(e),
+            }
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.flush_script.is_empty() {
+                return Ok(());
+            }
+            self.flush_script.remove(0)
+        }
+    }
+
+    /// `EIO` and `EPIPE` mean the child went away — routine teardown. The
+    /// bug (phux-oxd7) was treating them identically to a real fault and
+    /// killing the pane's entire input path forever.
+    #[test]
+    fn child_exit_errnos_classify_as_pane_gone() {
+        assert_eq!(
+            classify_write_error(&std::io::Error::from_raw_os_error(EIO)),
+            WriteFailure::PaneGone,
+        );
+        assert_eq!(
+            classify_write_error(&std::io::Error::from(ErrorKind::BrokenPipe)),
+            WriteFailure::PaneGone,
+        );
+        assert_eq!(
+            classify_write_error(&std::io::Error::from(ErrorKind::PermissionDenied)),
+            WriteFailure::Fatal,
+        );
+    }
+
+    /// A short write must be resumed, not abandoned. The kernel is free to
+    /// accept fewer bytes than offered on every call.
+    #[test]
+    fn partial_writes_are_resumed_until_the_payload_lands() {
+        let mut w = ScriptedWriter::new(vec![Ok(3), Ok(3), Ok(3)]);
+        write_all_resilient(&mut w, b"abcdefghi").expect("should complete");
+        assert_eq!(w.received, b"abcdefghi");
+    }
+
+    /// `EINTR` is a signal artifact, never a delivery failure.
+    #[test]
+    fn interrupted_is_retried() {
+        let mut w = ScriptedWriter::new(vec![
+            Err(std::io::Error::from(ErrorKind::Interrupted)),
+            Ok(5),
+        ]);
+        write_all_resilient(&mut w, b"hello").expect("should complete");
+        assert_eq!(w.received, b"hello");
+    }
+
+    /// The core regression. `Write::write_all` propagates `WouldBlock` as a
+    /// hard error, and the old writer treated any error as terminal — so a
+    /// single transient EAGAIN killed a live pane's input permanently.
+    #[test]
+    fn would_block_is_retried_rather_than_killing_the_pane() {
+        let mut w = ScriptedWriter::new(vec![
+            Err(std::io::Error::from(ErrorKind::WouldBlock)),
+            Err(std::io::Error::from(ErrorKind::WouldBlock)),
+            Ok(4),
+        ]);
+        write_all_resilient(&mut w, b"data").expect("transient EAGAIN must not be fatal");
+        assert_eq!(w.received, b"data");
+
+        // Prove the test is not vacuous: the `write_all` the old writer used
+        // fails on this exact script, which is precisely how one transient
+        // EAGAIN became permanent pane-input death.
+        let mut old = ScriptedWriter::new(vec![
+            Err(std::io::Error::from(ErrorKind::WouldBlock)),
+            Err(std::io::Error::from(ErrorKind::WouldBlock)),
+            Ok(4),
+        ]);
+        assert_eq!(
+            old.write_all(b"data")
+                .expect_err("write_all must surface WouldBlock as an error")
+                .kind(),
+            ErrorKind::WouldBlock,
+        );
+    }
+
+    /// Retries are bounded: a permanently un-writable fd must not hang the
+    /// writer thread forever.
+    #[test]
+    fn would_block_retries_are_bounded() {
+        let script = (0..=WOULD_BLOCK_RETRIES + 1)
+            .map(|_| Err(std::io::Error::from(ErrorKind::WouldBlock)))
+            .collect();
+        let mut w = ScriptedWriter::new(script);
+        let err = write_all_resilient(&mut w, b"x").expect_err("must give up eventually");
+        assert_eq!(err.failure, WriteFailure::Fatal);
+    }
+
+    /// A failure must report how much the child already ingested. Without
+    /// the count, a truncated prefix is indistinguishable from a clean
+    /// rejection, and neither the log nor a future retry can be correct.
+    #[test]
+    fn failure_reports_the_partial_write_count() {
+        let mut w = ScriptedWriter::new(vec![Ok(4), Err(std::io::Error::from_raw_os_error(EIO))]);
+        let err = write_all_resilient(&mut w, b"abcdefgh").expect_err("should fail");
+        assert_eq!(err.failure, WriteFailure::PaneGone);
+        assert_eq!(err.written, 4, "must report the truncated prefix length");
+    }
+
+    /// A zero-length write with bytes outstanding means no progress is
+    /// possible; the loop must exit rather than spin forever.
+    #[test]
+    fn zero_length_write_terminates_instead_of_spinning() {
+        let mut w = ScriptedWriter::new(vec![Ok(0)]);
+        let err = write_all_resilient(&mut w, b"abc").expect_err("should fail");
+        assert_eq!(err.failure, WriteFailure::PaneGone);
+        assert_eq!(err.written, 0);
+    }
+
+    /// Flush classifies the same way writes do — a child that exits between
+    /// the write and the flush is teardown, not a fault.
+    #[test]
+    fn flush_classifies_child_exit_as_pane_gone() {
+        let mut w = ScriptedWriter::new(vec![]);
+        w.flush_script = vec![Err(std::io::Error::from_raw_os_error(EIO))];
+        let err = flush_resilient(&mut w).expect_err("should fail");
+        assert_eq!(err.failure, WriteFailure::PaneGone);
+    }
 }
