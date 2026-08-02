@@ -340,12 +340,20 @@ pub struct SnapshotRequest {
     pub reply: oneshot::Sender<(SnapshotBytes, u64)>,
 }
 
-/// Native checkpoint publication performed atomically on the terminal actor.
+/// Fully-owned native prefix captured atomically by the terminal actor.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativeBootstrapReply {
+    /// Bounded BEGIN/CHUNK/READY sequence for the per-client pump to publish.
+    pub frames: Vec<FrameKind>,
+    /// Actor-global raw output cut included by the checkpoint.
+    pub base_seq: u64,
+}
+
+/// Native checkpoint capture request serialized by the terminal actor.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativeBootstrapRequest {
-    /// Client mailbox receiving the bounded BEGIN/CHUNK/READY sequence.
-    pub outbound: mpsc::Sender<Outbound>,
     /// Server-local owner identity used for detach and TTL cleanup.
     pub owner: u64,
     /// Wire terminal identity for this subscription.
@@ -356,16 +364,26 @@ pub struct NativeBootstrapRequest {
     pub bootstrap_id: BootstrapId,
     /// Negotiated payload limits.
     pub limits: phux_protocol::caps::BootstrapLimits,
-    /// Actor-global cut included by the published checkpoint.
-    pub reply: oneshot::Sender<Result<u64, crate::native_state::NativeStateError>>,
+    /// Atomic capture result. The pump alone publishes the returned frames.
+    pub reply: oneshot::Sender<Result<NativeBootstrapReply, crate::native_state::NativeStateError>>,
 }
 
-/// One bounded native history request routed to the owning terminal actor.
+/// Actor result paired with the caller's still-owned outbound permit.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativeHistoryReply {
+    /// Permit proving mailbox capacity was reserved before actor advancement.
+    pub permit: mpsc::OwnedPermit<Outbound>,
+    /// Fully-owned response frame, or an invalid request/host failure.
+    pub result: Result<FrameKind, crate::native_state::NativeStateError>,
+}
+
+/// One bounded native history step routed to the owning terminal actor.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativeHistoryRequest {
-    /// Client mailbox receiving one HISTORY_PAGE or a terminal error.
-    pub outbound: mpsc::Sender<Outbound>,
+    /// Reserved client-mailbox capacity. The actor returns but never consumes it.
+    pub permit: mpsc::OwnedPermit<Outbound>,
     /// Server-local owner identity authenticated against the retained cut.
     pub owner: u64,
     /// Wire terminal identity for this subscription.
@@ -374,14 +392,16 @@ pub struct NativeHistoryRequest {
     pub stream_id: StreamId,
     /// Replica generation identity.
     pub bootstrap_id: BootstrapId,
-    /// Opaque manager capability echoed by the client.
+    /// Stable opaque capability echoed by the client.
     pub cursor: Bytes,
-    /// Requested non-zero response bound.
+    /// Requested non-zero response byte bound.
     pub max_bytes: u32,
+    /// Requested non-zero history row bound.
+    pub max_rows: u32,
     /// Negotiated connection bounds.
     pub limits: phux_protocol::caps::BootstrapLimits,
-    /// Completion acknowledgement.
-    pub reply: oneshot::Sender<Result<(), crate::native_state::NativeStateError>>,
+    /// Actor result; the pump consumes the returned permit.
+    pub reply: oneshot::Sender<NativeHistoryReply>,
 }
 /// Release every retained native history cut owned by one detached client.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

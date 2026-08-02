@@ -366,8 +366,7 @@ impl NativeTerminalManager {
         cell_width_px: u32,
         cell_height_px: u32,
     ) -> libghostty_vt::error::Result<()> {
-        self.inner
-            .resize(cols, rows, cell_width_px, cell_height_px)
+        self.inner.resize(cols, rows, cell_width_px, cell_height_px)
     }
 
     pub(crate) fn reset(&mut self) {
@@ -381,7 +380,9 @@ impl NativeTerminalManager {
         let max_record_bytes = usize::try_from(limits.max_chunk_bytes())
             .map_err(|_| NativeStateError::LimitExceeded)?
             .min(self.engine.max_record_bytes);
-        let max_pages = CaptureOptions::default().max_pages.min(self.engine.max_pages);
+        let max_pages = CaptureOptions::default()
+            .max_pages
+            .min(self.engine.max_pages);
         if max_record_bytes == 0 || max_pages == 0 {
             return Err(NativeStateError::LimitExceeded);
         }
@@ -404,17 +405,23 @@ impl NativeTerminalManager {
         cursor: &OpaqueHistoryCursor,
         limits: BootstrapLimits,
         requested_max_bytes: u32,
+        requested_max_rows: u32,
         buffer: &'buffer mut [u8],
     ) -> Result<NativeHistoryEvent<'buffer>, NativeStateError> {
         let negotiated = usize::try_from(limits.max_history_page_bytes())
             .map_err(|_| NativeStateError::LimitExceeded)?
             .min(self.engine.max_unit_bytes);
-        let requested = usize::try_from(requested_max_bytes)
-            .map_err(|_| NativeStateError::LimitExceeded)?;
+        let requested =
+            usize::try_from(requested_max_bytes).map_err(|_| NativeStateError::LimitExceeded)?;
+        let requested_rows =
+            usize::try_from(requested_max_rows).map_err(|_| NativeStateError::LimitExceeded)?;
         let defaults = HistoryOptions::default();
         let options = HistoryOptions {
             max_unit_bytes: negotiated.min(requested),
-            max_rows: defaults.max_rows.min(self.engine.max_rows),
+            max_rows: defaults
+                .max_rows
+                .min(self.engine.max_rows)
+                .min(requested_rows),
             max_units: defaults.max_units.min(self.engine.max_pages),
         };
         if options.max_unit_bytes == 0 || options.max_rows == 0 || options.max_units == 0 {
@@ -435,10 +442,7 @@ impl NativeTerminalManager {
         }
     }
 
-    pub(crate) fn release(
-        &mut self,
-        cursor: &OpaqueHistoryCursor,
-    ) -> Result<(), NativeStateError> {
+    pub(crate) fn release(&mut self, cursor: &OpaqueHistoryCursor) -> Result<(), NativeStateError> {
         self.inner.release(cursor)
     }
 
@@ -837,6 +841,7 @@ mod tests {
                     &cursor,
                     limits,
                     limits.max_history_page_bytes(),
+                    u32::MAX,
                     &mut page,
                 )
                 .expect("retained history page"),
