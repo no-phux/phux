@@ -174,10 +174,7 @@ fn kernel(mode: ReadyMode) -> SessionKernel<FakeAdapter> {
     kernel_with_profile(mode, BootstrapProfile::SynthesizedVtRaw)
 }
 
-fn kernel_with_profile(
-    mode: ReadyMode,
-    profile: BootstrapProfile,
-) -> SessionKernel<FakeAdapter> {
+fn kernel_with_profile(mode: ReadyMode, profile: BootstrapProfile) -> SessionKernel<FakeAdapter> {
     SessionKernel::new(FakeAdapter { ready_mode: mode }, profile)
 }
 
@@ -1061,10 +1058,12 @@ fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
             &mut effects,
         )
         .unwrap();
-    assert!(effects
-        .as_slice()
-        .iter()
-        .all(|effect| !matches!(effect, KernelEffect::Send(KernelSend::FrameAck { .. }))));
+    assert!(
+        effects
+            .as_slice()
+            .iter()
+            .all(|effect| !matches!(effect, KernelEffect::Send(KernelSend::FrameAck { .. })))
+    );
 }
 
 #[test]
@@ -1098,9 +1097,11 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         Err(KernelError::Engine(FakeError::MutatedThenFailed))
     ));
     assert!(kernel.staging(&chunk_terminal).is_none());
-    assert!(kernel
-        .tombstone(&chunk_terminal, chunk_stream, chunk_bootstrap)
-        .is_some());
+    assert!(
+        kernel
+            .tombstone(&chunk_terminal, chunk_stream, chunk_bootstrap)
+            .is_some()
+    );
     assert_eq!(
         effects.as_slice(),
         &[KernelEffect::Status(KernelStatus::ResyncRequired {
@@ -1161,9 +1162,11 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         Err(KernelError::Engine(FakeError::MutatedThenFailed))
     ));
     assert!(kernel.staging(&finish_terminal).is_none());
-    assert!(kernel
-        .tombstone(&finish_terminal, finish_stream, finish_bootstrap)
-        .is_some());
+    assert!(
+        kernel
+            .tombstone(&finish_terminal, finish_stream, finish_bootstrap)
+            .is_some()
+    );
     let finish_retry = kernel.update(
         KernelInput::BootstrapReady {
             terminal_id: &finish_terminal,
@@ -1203,9 +1206,11 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         Err(KernelError::Engine(FakeError::MutatedThenFailed))
     ));
     assert!(kernel.published(&live_terminal).is_none());
-    assert!(kernel
-        .tombstone(&live_terminal, live_stream, live_bootstrap)
-        .is_some());
+    assert!(
+        kernel
+            .tombstone(&live_terminal, live_stream, live_bootstrap)
+            .is_some()
+    );
     assert_eq!(
         effects.as_slice(),
         &[

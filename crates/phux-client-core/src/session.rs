@@ -1317,11 +1317,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Ok(())
     }
 
-    fn drain_bootstrap_effects(
-        &mut self,
-        terminal_id: &TerminalId,
-        effects: &mut EffectBuffer,
-    ) {
+    fn drain_bootstrap_effects(&mut self, terminal_id: &TerminalId, effects: &mut EffectBuffer) {
         let mut captured = std::mem::take(&mut self.engine_effects);
         for effect in captured.drain() {
             match effect {
