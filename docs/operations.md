@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-08-01
+last-reviewed: 2026-08-02
 ---
 
 # Operations
@@ -9,7 +9,8 @@ last-reviewed: 2026-08-01
 **TL;DR.** How phux behaves at its operational seams: error translation at
 the wire boundary, structured and redaction-safe logging, workspace continuity,
 remote-listener authentication, running the reference relay, and the exact
-trust boundary. phux has no durable access audit log or runtime status command
+trust boundary. `phux status` reports the running server (pid, up-since,
+protocol, clients, sessions, log paths); phux has no durable access audit log
 today.
 
 ---
@@ -40,6 +41,20 @@ line is the durable trace there). A *missing* config file is not an error: the
 server starts with the shipped defaults. The server never silently reverts a
 broken config to defaults — a config the user wrote either applies in full or
 stops the server with the reason.
+
+## Runtime status
+
+`phux status` is the one-glance answer to "is the server up, and what is it
+doing": whether a server is listening at the socket and as which pid (from
+the UDS peer credentials), since when (the socket file's bind time, honest
+across a graceful upgrade), the protocol version it negotiates (a real
+`HELLO`/`HELLO_OK` exchange), the summed attached-client count, one line per
+session plus the satellite-terminal split, and both log paths. A partial
+federation view is reported inline, never silently dropped. `--json` emits a
+stable versioned document; with no server running the human path prints the
+standard no-server diagnostic and `--json` answers `{"running": false, ...}`
+on stdout — both exit 1. Everything it reports is client-side sourcing over
+the existing wire; no protocol surface exists for it.
 
 ## Logging and observability
 

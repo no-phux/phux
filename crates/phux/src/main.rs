@@ -77,6 +77,7 @@ mod help_inventory;
           upgrade    Hot-swap the running server binary, keeping sessions alive\n\n\
         INSPECT\n  \
           ls         List sessions\n  \
+          status     Report the running server: pid, uptime, protocol, clients, logs\n  \
           snapshot   Capture a pane's screen as JSON or a boxed view\n  \
           watch      Stream a pane's live events (bell, title, output, lifecycle)\n  \
           rec        Record a pane to an asciinema cast, a GIF, or an APNG\n  \
@@ -469,6 +470,7 @@ fn main() -> ExitCode {
             resume,
         ),
         Some(Command::Ls { json }) => commands::ls::run_ls(json.json, socket),
+        Some(Command::Status { json }) => commands::status::run_status(json.json, socket),
         Some(Command::New {
             name,
             session,

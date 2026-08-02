@@ -89,7 +89,10 @@ fn session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
 /// One session's `ls` line, rendering the real attached-client count the
 /// wire already carries (`(2 clients attached)`) rather than collapsing it
 /// to a boolean `(attached)`. Zero clients says nothing.
-fn format_session_line(s: &SessionInfo) -> String {
+///
+/// `pub(crate)` so `phux status` renders its per-session lines through the
+/// same formatter and the two views cannot drift.
+pub(crate) fn format_session_line(s: &SessionInfo) -> String {
     let windows = if s.window_count == 1 {
         "window"
     } else {

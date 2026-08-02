@@ -47,6 +47,10 @@ serde_json.workspace = true
 # `phux config show` renders the effective merged config table as TOML.
 toml.workspace = true
 toml_edit.workspace = true
+# `phux status` renders the server's up-since wall-clock timestamp. Already a
+# workspace dependency (protocol/server/config); no new third-party row
+# enters the lockfile.
+chrono.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

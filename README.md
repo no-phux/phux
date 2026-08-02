@@ -122,6 +122,22 @@ reattach -- then the same session driven headlessly.
 
 </sub></div>
 
+## Troubleshooting
+
+When something misbehaves, three commands answer most questions:
+
+```sh
+phux status   # is the server up: pid, uptime, protocol, clients, sessions, logs
+phux doctor   # checks config, socket, server, plugins, and log paths
+phux logs     # names every log file phux writes; tails any of them
+```
+
+`phux status` reports the server behind the socket in one glance -- and with
+no server running says so, naming the command that starts one. `phux doctor`
+runs the checks a debugging session would otherwise discover one by one and
+prints one verdict per line. `phux logs` knows where every log lives, so you
+never have to.
+
 ## Status
 
 The TUI multiplexer and modern-protocol passthrough are stable enough to

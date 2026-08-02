@@ -125,13 +125,18 @@ default. The exact line between shipped behavior and design intent lives in
 
 ## When something misbehaves
 
-Two commands are the starting point for any debugging session:
+Three commands are the starting point for any debugging session:
 
 ```sh
+phux status
 phux doctor
 phux logs
 ```
 
+`phux status` answers the first question -- is the server running -- in one
+glance: its pid, how long it has been up, the protocol version it speaks,
+attached clients, one line per session, and where its logs live. With no
+server running it says so and names the commands that start one.
 `phux doctor` checks the install end to end -- config validity, socket path,
 server reachability, plugin manifests, and where the logs live -- and prints
 one verdict per line, with a hint for anything that is not a pass. `phux logs`

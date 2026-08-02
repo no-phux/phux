@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, Scope, StateScope, TERMINAL_TAGS_KEY,
@@ -211,6 +212,50 @@ pub async fn get_state_on(conn: &mut Connection) -> Result<StateView, AttachErro
         other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
             "GET_STATE",
             &other,
+        ))),
+    }
+}
+
+/// Send `HELLO` on `conn` and return the protocol version triple the server
+/// selected in `HELLO_OK`.
+///
+/// The one-shot CLI verbs skip the handshake entirely (the server does not
+/// require it before commands), so the negotiated protocol version is
+/// invisible to them; this probe performs the same `HELLO`/`HELLO_OK`
+/// exchange the attach path does, minus the terminal capability sniffing a
+/// headless caller has no terminal for. Purely client-side: no wire change,
+/// and any server that can attach a client answers it.
+///
+/// Call it first on a fresh connection — `HELLO` is the opening frame of the
+/// handshake, and the same connection can carry commands afterwards (the
+/// attach path's exact sequence).
+///
+/// # Errors
+///
+/// Returns a transport error when the connection fails mid-exchange, a
+/// refusal carrying the server's message when it answers `ERROR` (version
+/// incompatibility), or a protocol error on any other reply.
+pub async fn probe_hello(conn: &mut Connection) -> Result<(u16, u16, u16), AttachError> {
+    conn.send(&FrameKind::Hello {
+        client_name: format!("phux-cli/{}", env!("CARGO_PKG_VERSION")),
+        protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+        protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+        protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+        client_caps: ClientCapabilities::default(),
+    })
+    .await?;
+    match conn.recv().await? {
+        FrameKind::HelloOk {
+            protocol_major,
+            protocol_minor,
+            protocol_patch,
+            ..
+        } => Ok((protocol_major, protocol_minor, protocol_patch)),
+        FrameKind::Error { message, .. } => Err(AttachError::Refused(message)),
+        // Neither HELLO_OK nor ERROR: the two binaries disagree about the
+        // handshake itself, which is version skew, not a frame worth dumping.
+        _ => Err(AttachError::Protocol(crate::explain::unexpected_reply(
+            "HELLO",
         ))),
     }
 }
@@ -449,6 +494,55 @@ mod tests {
             ["satellite build-box is unreachable: link is down".to_owned()]
         );
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn probe_hello_returns_the_negotiated_version_triple() {
+        // The scripted server answers HELLO with HELLO_OK echoing this
+        // build's PROTOCOL_VERSION — the reference server's shape. The probe
+        // must hand that triple back, and HELLO must be the first (and here
+        // only) frame it sends.
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("hello.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server =
+            tokio::spawn(async move { ScriptedServer::accept(&listener, ScriptSpec::new()).await });
+
+        let mut conn = Connection::connect(&socket).await.unwrap();
+        let triple = super::probe_hello(&mut conn).await.unwrap();
+        assert_eq!(
+            triple,
+            (
+                phux_protocol::PROTOCOL_VERSION.major,
+                phux_protocol::PROTOCOL_VERSION.minor,
+                phux_protocol::PROTOCOL_VERSION.patch,
+            )
+        );
+        drop(conn);
+        let seen = server.await.unwrap();
+        assert!(
+            matches!(seen.first(), Some(FrameKind::Hello { .. })),
+            "the probe's first frame must be HELLO; got {:?}",
+            seen.first()
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_pid_names_the_process_behind_the_socket() {
+        // The listener lives in this test process, so the peer credentials
+        // of a connection to it name this very pid — on both Linux
+        // (SO_PEERCRED) and macOS (LOCAL_PEEREPID), the two platforms phux
+        // ships on. Purely an OS fact: no server code participates.
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("pid.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+
+        let conn = Connection::connect(&socket).await.unwrap();
+        assert_eq!(
+            conn.peer_pid(),
+            Some(i32::try_from(std::process::id()).unwrap()),
+            "a UDS connection's peer pid must be the listening process"
+        );
     }
 
     #[test]

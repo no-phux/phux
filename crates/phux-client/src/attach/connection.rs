@@ -96,6 +96,11 @@ impl Dial {
 pub struct Connection {
     reader: FrameReader,
     writer: FrameWriter,
+    /// Pid of the peer process, read from the UDS peer credentials at
+    /// connect time (`SO_PEERCRED` on Linux, `LOCAL_PEEREPID` on macOS).
+    /// `None` on the remote transports (QUIC/WS have no such channel) and
+    /// on platforms whose credentials carry no pid.
+    peer_pid: Option<i32>,
 }
 
 /// Read half — pulls one [`FrameKind`] per call, over either transport.
@@ -203,6 +208,11 @@ impl Connection {
     /// inner `io::Error`.
     pub async fn connect(socket: &Path) -> Result<Self, AttachError> {
         let stream = UnixStream::connect(socket).await.map_err(AttachError::Io)?;
+        // Read the peer credentials while the stream is still whole: the
+        // split halves do not expose them, and the pid is free to capture
+        // here. Best-effort — a platform without a pid in its credentials
+        // yields `None`, never an error.
+        let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid());
         let (read, write) = stream.into_split();
         Ok(Self {
             reader: FrameReader::Uds(UdsReader {
@@ -213,6 +223,7 @@ impl Connection {
                 inner: write,
                 out: BytesMut::with_capacity(4096),
             }),
+            peer_pid,
         })
     }
 
@@ -242,6 +253,7 @@ impl Connection {
                 endpoint,
                 connection,
             }),
+            peer_pid: None,
         })
     }
 
@@ -260,7 +272,21 @@ impl Connection {
                 inner: ws::WsWriter { tx },
                 out: BytesMut::with_capacity(4096),
             }),
+            peer_pid: None,
         })
+    }
+
+    /// Pid of the peer process on a UDS connection, captured from the
+    /// socket's peer credentials at connect time — for a client dialing the
+    /// server socket, that is the server's pid. `None` on the remote
+    /// transports and on platforms whose peer credentials carry no pid.
+    ///
+    /// This is an OS fact about the socket, not a wire exchange: the server
+    /// neither knows nor participates, so it works against any server
+    /// version.
+    #[must_use]
+    pub const fn peer_pid(&self) -> Option<i32> {
+        self.peer_pid
     }
 
     /// Close the connection cleanly, awaiting transmission of the close frame.
@@ -299,6 +325,7 @@ impl Connection {
     /// connect resolves.
     #[cfg(test)]
     pub(crate) fn from_stream(stream: UnixStream) -> Self {
+        let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid());
         let (read, write) = stream.into_split();
         Self {
             reader: FrameReader::Uds(UdsReader {
@@ -309,6 +336,7 @@ impl Connection {
                 inner: write,
                 out: BytesMut::with_capacity(4096),
             }),
+            peer_pid,
         }
     }
 

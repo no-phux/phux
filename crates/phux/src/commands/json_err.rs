@@ -183,7 +183,11 @@ pub(crate) fn report_no_server(
 }
 
 /// The [`CliError`] behind [`report_no_server`]'s JSON path, pure for tests.
-fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError {
+///
+/// `pub(crate)` so `phux status --json` can embed the same code / message /
+/// remedy vocabulary inside its `{"running": false, ...}` answer document
+/// instead of inventing a parallel no-server shape.
+pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError {
     let server_log = phux_server::telemetry::server_log_path();
     let doctor = format!(
         "server log: {}; run `phux doctor` for a health check",

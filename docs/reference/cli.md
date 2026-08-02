@@ -34,6 +34,7 @@ ATTACH / SERVE
 
 INSPECT
   ls         List sessions
+  status     Report the running server: pid, uptime, protocol, clients, logs
   snapshot   Capture a pane's screen as JSON or a boxed view
   watch      Stream a pane's live events (bell, title, output, lifecycle)
   rec        Record a pane to an asciinema cast, a GIF, or an APNG
@@ -87,6 +88,7 @@ Commands:
   attach        Attach to a session (interactive) [aliases: a]
   server        Run a phux server in the foreground
   ls            List sessions on the running server [aliases: list]
+  status        Report the running server: pid, up since, protocol, clients, logs
   new           Create a new session and attach to it
   spawn         Spawn a Terminal without attaching (`SPAWN_TERMINAL`)
   launch        Launch an agent integration in a new pane
@@ -2192,6 +2194,26 @@ Options:
 
       --json
           Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux status`
+
+```text
+Report the running server: pid, up since, protocol, clients, logs.
+
+One glance at the server behind the socket: whether it is running and as which pid, since when, the protocol version it speaks, how many clients are attached, the sessions it holds, and where its logs live. Does not start a server: with no server running it reports as much and exits non-zero. Pass `--json` for the stable, versioned machine shape instead of the human text; with no server that shape is `{"running": false, ...}` on stdout, still exiting non-zero.
+
+Usage: phux status [OPTIONS]
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
   -h, --help
           Print help (see a summary with '-h')

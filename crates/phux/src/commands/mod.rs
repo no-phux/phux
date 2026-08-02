@@ -173,6 +173,7 @@ pub(crate) mod service;
 pub(crate) mod snapshot;
 pub(crate) mod spatial;
 pub(crate) mod spawn;
+pub(crate) mod status;
 pub(crate) mod stdio_bridge;
 pub(crate) mod supervise;
 pub(crate) mod tag;
@@ -406,6 +407,21 @@ pub(crate) enum Command {
     /// machine shape instead of the human text.
     #[command(visible_alias = "list")]
     Ls {
+        #[command(flatten)]
+        json: JsonOpt,
+    },
+
+    /// Report the running server: pid, up since, protocol, clients, logs.
+    ///
+    /// One glance at the server behind the socket: whether it is running
+    /// and as which pid, since when, the protocol version it speaks, how
+    /// many clients are attached, the sessions it holds, and where its
+    /// logs live. Does not start a server: with no server running it
+    /// reports as much and exits non-zero. Pass `--json` for the stable,
+    /// versioned machine shape instead of the human text; with no server
+    /// that shape is `{"running": false, ...}` on stdout, still exiting
+    /// non-zero.
+    Status {
         #[command(flatten)]
         json: JsonOpt,
     },

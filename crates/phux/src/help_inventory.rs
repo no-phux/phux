@@ -156,6 +156,7 @@ phux service uninstall
 phux signal
 phux snapshot
 phux spawn
+phux status
 phux stdio-bridge
 phux swap-pane
 phux tag
