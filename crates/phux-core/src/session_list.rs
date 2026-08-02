@@ -37,7 +37,22 @@ pub struct SessionJson {
     /// Number of windows in the session.
     pub windows: u16,
     /// Whether at least one client is currently attached.
+    ///
+    /// Kept even though [`Self::attached_clients`] subsumes it: removing (or
+    /// renaming) a key is the breaking move that forces a
+    /// [`LS_SCHEMA_VERSION`] bump, and existing consumers branch on this
+    /// bool. `attached` is always `attached_clients > 0`.
     pub attached: bool,
+    /// Number of clients currently attached to the session — the wire's
+    /// `attached_client_count`, no longer collapsed to a bool.
+    ///
+    /// **Additive, therefore non-breaking** (ADR-0022 stance): consumers of
+    /// this contract must ignore unknown keys, so gaining a key does not bump
+    /// [`LS_SCHEMA_VERSION`]; only removing, renaming, or retyping one does.
+    /// `#[serde(default)]` keeps payloads from a pre-`attached_clients`
+    /// `phux` deserializable (the count reads as `0`).
+    #[serde(default)]
+    pub attached_clients: u16,
 }
 
 /// The `phux ls --json` payload: a versioned list of sessions.
@@ -114,11 +129,13 @@ mod tests {
                 name: "alpha".to_owned(),
                 windows: 2,
                 attached: true,
+                attached_clients: 1,
             },
             SessionJson {
                 name: "beta".to_owned(),
                 windows: 1,
                 attached: false,
+                attached_clients: 0,
             },
         ]);
 
@@ -137,14 +154,18 @@ mod tests {
             name: "work".to_owned(),
             windows: 3,
             attached: true,
+            attached_clients: 2,
         }])
         .with_terminals(vec!["@7".to_owned(), "devbox/@42".to_owned()]);
 
         let json = serde_json::to_value(&list).expect("serialize");
+        // `attached_clients` arrived without a version bump: additive keys
+        // are non-breaking under this contract, so the version stays put.
         assert_eq!(json["schema_version"], 3);
         assert_eq!(json["sessions"][0]["name"], "work");
         assert_eq!(json["sessions"][0]["windows"], 3);
         assert_eq!(json["sessions"][0]["attached"], true);
+        assert_eq!(json["sessions"][0]["attached_clients"], 2);
         assert_eq!(json["terminals"], serde_json::json!(["@7", "devbox/@42"]));
         // Present and empty, not absent: a consumer must be able to read
         // "this listing is complete" positively. An absent key is what an
@@ -161,11 +182,27 @@ mod tests {
     }
 
     #[test]
+    fn payloads_without_attached_clients_still_deserialize() {
+        // A pre-`attached_clients` phux emits sessions without the key; the
+        // additive field must not make those payloads unreadable.
+        let list: SessionListJson = serde_json::from_value(serde_json::json!({
+            "schema_version": 3,
+            "sessions": [
+                { "name": "work", "windows": 3, "attached": true }
+            ]
+        }))
+        .expect("pre-attached_clients payloads remain deserializable");
+        assert_eq!(list.sessions[0].attached_clients, 0);
+        assert!(list.sessions[0].attached);
+    }
+
+    #[test]
     fn a_degraded_listing_names_what_it_could_not_see() {
         let list = SessionListJson::new(vec![SessionJson {
             name: "work".to_owned(),
             windows: 1,
             attached: false,
+            attached_clients: 0,
         }])
         .with_unreachable(vec![
             "satellite build-box is unreachable: link is down".to_owned(),
