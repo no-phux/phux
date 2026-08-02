@@ -1854,7 +1854,12 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         )
         .unwrap();
     let finish_error = kernel.update(
-        KernelInput::BootstrapReady { terminal_id: &finish_terminal, stream_id: finish_stream, bootstrap_id: finish_bootstrap, history_cursor: None },
+        KernelInput::BootstrapReady {
+            terminal_id: &finish_terminal,
+            stream_id: finish_stream,
+            bootstrap_id: finish_bootstrap,
+            history_cursor: None,
+        },
         &mut effects,
     );
     assert!(matches!(
@@ -1868,7 +1873,12 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
             .is_some()
     );
     let finish_retry = kernel.update(
-        KernelInput::BootstrapReady { terminal_id: &finish_terminal, stream_id: finish_stream, bootstrap_id: finish_bootstrap, history_cursor: None },
+        KernelInput::BootstrapReady {
+            terminal_id: &finish_terminal,
+            stream_id: finish_stream,
+            bootstrap_id: finish_bootstrap,
+            history_cursor: None,
+        },
         &mut effects,
     );
     assert!(matches!(

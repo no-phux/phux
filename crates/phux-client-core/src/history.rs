@@ -77,7 +77,10 @@ pub struct HistoryPageId(HistoryCursor);
 
 impl std::fmt::Debug for HistoryPageId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_tuple("HistoryPageId").field(&self.0).finish()
+        formatter
+            .debug_tuple("HistoryPageId")
+            .field(&self.0)
+            .finish()
     }
 }
 
@@ -291,7 +294,8 @@ impl HistoryCache {
         let id = HistoryPageId(cursor.clone());
         if let Some(index) = self.page_indices.get(&id).copied() {
             let existing = &self.pages[index];
-            if existing.payload.as_ref() == payload && existing.next_cursor.as_ref() == next_cursor {
+            if existing.payload.as_ref() == payload && existing.next_cursor.as_ref() == next_cursor
+            {
                 return Ok(HistoryPageCheck::Duplicate(id));
             }
             return Err(HistoryCacheError::DuplicateConflict);
@@ -307,9 +311,7 @@ impl HistoryCache {
                     .min(self.config.request_max_bytes as usize),
             });
         }
-        if self.state != HistoryLoadState::Loading
-            || self.next_cursor.as_ref() != Some(cursor)
-        {
+        if self.state != HistoryLoadState::Loading || self.next_cursor.as_ref() != Some(cursor) {
             return Err(HistoryCacheError::Gap);
         }
         Ok(HistoryPageCheck::New)
@@ -395,7 +397,10 @@ impl HistoryCache {
         pages: impl IntoIterator<Item = HistoryPageId>,
     ) -> Result<(), HistoryCacheError> {
         let next: HashSet<_> = pages.into_iter().collect();
-        if next.iter().any(|page| !self.page_indices.contains_key(page)) {
+        if next
+            .iter()
+            .any(|page| !self.page_indices.contains_key(page))
+        {
             return Err(HistoryCacheError::PageUnavailable);
         }
         let removed: Vec<_> = self.visible.difference(&next).cloned().collect();
@@ -418,7 +423,10 @@ impl HistoryCache {
         pages: impl IntoIterator<Item = HistoryPageId>,
     ) -> Result<(), HistoryCacheError> {
         let pages: HashSet<_> = pages.into_iter().collect();
-        if pages.iter().any(|page| !self.page_indices.contains_key(page)) {
+        if pages
+            .iter()
+            .any(|page| !self.page_indices.contains_key(page))
+        {
             return Err(HistoryCacheError::PageUnavailable);
         }
         if let Some(old) = self.anchor_pages.remove(&anchor) {
@@ -479,7 +487,10 @@ impl HistoryCache {
         pages: impl IntoIterator<Item = HistoryPageId>,
     ) -> Result<(), HistoryCacheError> {
         let next: HashSet<_> = pages.into_iter().collect();
-        if next.iter().any(|page| !self.page_indices.contains_key(page)) {
+        if next
+            .iter()
+            .any(|page| !self.page_indices.contains_key(page))
+        {
             return Err(HistoryCacheError::PageUnavailable);
         }
         let removed: Vec<_> = self.selection.difference(&next).cloned().collect();
@@ -561,7 +572,9 @@ impl HistoryCache {
             else {
                 break;
             };
-            self.materialized_rows = self.materialized_rows.saturating_sub(page.materialized_rows);
+            self.materialized_rows = self
+                .materialized_rows
+                .saturating_sub(page.materialized_rows);
             page.materialized_rows = 0;
         }
     }
@@ -651,9 +664,13 @@ mod tests {
     fn budget_evicts_unpinned_oldest_never_visible_or_selected() {
         let mut cache = HistoryCache::new(config(8, 8), Some(cursor(1)), 80);
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
-        let newest = cache.accept_page(cursor(1), Some(cursor(2)), b"1111").unwrap();
+        let newest = cache
+            .accept_page(cursor(1), Some(cursor(2)), b"1111")
+            .unwrap();
         assert_eq!(cache.begin_fetch(), Some(cursor(2)));
-        let oldest = cache.accept_page(cursor(2), Some(cursor(3)), b"2222").unwrap();
+        let oldest = cache
+            .accept_page(cursor(2), Some(cursor(3)), b"2222")
+            .unwrap();
         cache.set_visible_pages([oldest.clone()]).unwrap();
         cache.set_selection_pages([oldest.clone()]).unwrap();
         assert_eq!(cache.begin_fetch(), Some(cursor(3)));
@@ -666,7 +683,9 @@ mod tests {
     fn materialization_budget_drops_only_unpinned_adapter_projection() {
         let mut cache = HistoryCache::new(config(64, 2), Some(cursor(1)), 80);
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
-        let first = cache.accept_page(cursor(1), Some(cursor(2)), b"one").unwrap();
+        let first = cache
+            .accept_page(cursor(1), Some(cursor(2)), b"one")
+            .unwrap();
         assert_eq!(cache.begin_fetch(), Some(cursor(2)));
         let second = cache.accept_page(cursor(2), None, b"two").unwrap();
         cache.set_visible_pages([second.clone()]).unwrap();

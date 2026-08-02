@@ -8,9 +8,8 @@ use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, Strea
 
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
-    EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect,
-    EngineEffectBuffer, EngineHistoryProjection, EngineJob, EngineSearchMatch, EngineSend,
-    EngineStatus,
+    EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
+    EngineHistoryProjection, EngineJob, EngineSearchMatch, EngineSend, EngineStatus,
 };
 use crate::history::{
     DocumentAnchorId, HistoryCache, HistoryCacheConfig, HistoryCacheError, HistoryCursor,
@@ -1376,40 +1375,55 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         let history_config = self.history_config;
-        let state = self
-            .terminals
-            .get_mut(terminal_id)
-            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-        let mut staging = state
-            .staging
-            .take()
-            .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
-        debug_assert!(staging.engine_ready && staging.protocol_ready);
-        let replica_key = staging.key.clone();
-        let pending_effects = std::mem::take(&mut staging.pending_effects);
-        let mut history = HistoryCache::new(
-            history_config,
-            staging.history_cursor.take(),
-            staging.geometry.cols,
-        );
-        let initial_history_cursor = history.begin_fetch();
-        let replacement = Replica {
-            key: staging.key,
-            geometry: staging.geometry,
-            last_seq: staging.base_seq,
-            next_seq: staging.base_seq.checked_add(1),
-            engine: staging.engine,
-            history,
+        let (replica_key, pending_effects, initial_history_cursor, history_status) = {
+            let state = self
+                .terminals
+                .get_mut(terminal_id)
+                .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+            let mut staging = state
+                .staging
+                .take()
+                .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
+            debug_assert!(staging.engine_ready && staging.protocol_ready);
+            let replica_key = staging.key.clone();
+            let pending_effects = std::mem::take(&mut staging.pending_effects);
+            let mut history = HistoryCache::new(
+                history_config,
+                staging.history_cursor.take(),
+                staging.geometry.cols,
+            );
+            let initial_history_cursor = history.begin_fetch();
+            let replacement = Replica {
+                key: staging.key,
+                geometry: staging.geometry,
+                last_seq: staging.base_seq,
+                next_seq: staging.base_seq.checked_add(1),
+                engine: staging.engine,
+                history,
+            };
+            if let Some(old) = state.published.replace(replacement) {
+                state
+                    .retired
+                    .entry(generation_of(&old.key))
+                    .or_insert(TombstoneRecord {
+                        reason: TombstoneReason::ExplicitReattach,
+                        last_valid_seq: old.last_seq,
+                    });
+            }
+            let history_status = state
+                .published
+                .as_ref()
+                .expect("published replacement")
+                .history
+                .status();
+            (
+                replica_key,
+                pending_effects,
+                initial_history_cursor,
+                history_status,
+            )
         };
-        if let Some(old) = state.published.replace(replacement) {
-            state
-                .retired
-                .entry(generation_of(&old.key))
-                .or_insert(TombstoneRecord {
-                    reason: TombstoneReason::ExplicitReattach,
-                    last_valid_seq: old.last_seq,
-                });
-        }
+
         self.mark_attach_resolved(terminal_id);
         let damage_allowed = !self.attach_blocks(terminal_id);
         for effect in pending_effects {
@@ -1421,12 +1435,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 cursor: cursor.as_bytes().to_vec(),
                 max_bytes: history_config.request_max_bytes,
             }));
-            let history_status = state
-                .published
-                .as_ref()
-                .expect("published replacement")
-                .history
-                .status();
             effects.push(KernelEffect::Status(KernelStatus::History {
                 key: replica_key.clone(),
                 status: history_status,
@@ -1665,11 +1673,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             return Err(KernelError::HistoryCompletionMismatch { progress, has_more });
         }
 
-        if let Err(error) =
-            replica
-                .history
-                .accept_page(cursor, next_cursor, payload)
-        {
+        if let Err(error) = replica.history.accept_page(cursor, next_cursor, payload) {
             let last_valid_seq = replica.last_seq;
             replica.history.tombstone();
             self.engine_effects.clear();

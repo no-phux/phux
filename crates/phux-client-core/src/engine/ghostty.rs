@@ -27,8 +27,8 @@ use thiserror::Error;
 
 use super::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
-    EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect,
-    EngineEffectBuffer, EngineHistoryProjection, EngineProjectionRow, EngineSearchMatch, EngineSend,
+    EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
+    EngineHistoryProjection, EngineProjectionRow, EngineSearchMatch, EngineSend,
 };
 use crate::history::DocumentAnchorId;
 
@@ -539,11 +539,7 @@ impl EngineDocumentAdapter for GhosttyAdapter {
         Ok(id)
     }
 
-    fn release_document_anchor(
-        &mut self,
-        replica: &mut Self::Replica,
-        anchor: DocumentAnchorId,
-    ) {
+    fn release_document_anchor(&mut self, replica: &mut Self::Replica, anchor: DocumentAnchorId) {
         replica.anchors.remove(&anchor);
     }
 
@@ -642,7 +638,7 @@ impl EngineDocumentAdapter for GhosttyAdapter {
                 };
             }
         }
-        let mut matches = Vec::with_capacity(ranges.len());
+        let mut matches: Vec<EngineSearchMatch> = Vec::with_capacity(ranges.len());
         for (start, end) in ranges {
             let start = match self.track_document_anchor(replica, start) {
                 Ok(anchor) => anchor,
@@ -691,10 +687,8 @@ impl EngineDocumentAdapter for GhosttyAdapter {
             return Ok(None);
         };
         let selection = Selection::new(start, end, selection.rectangle);
-        let formatted = terminal.format_selection_alloc(
-            None,
-            FormatOptions::new().with_selection(&selection),
-        )?;
+        let formatted = terminal
+            .format_selection_alloc(None, FormatOptions::new().with_selection(&selection))?;
         Ok(formatted.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
     }
 }
@@ -1100,7 +1094,10 @@ mod tests {
         adapter
             .apply_bootstrap_chunk(&mut replica, b"\x1b[5n", &mut effects)
             .expect("bootstrap DSR query");
-        assert!(effects.as_slice().is_empty(), "bootstrap replay never replies");
+        assert!(
+            effects.as_slice().is_empty(),
+            "bootstrap replay never replies"
+        );
         adapter
             .finish_bootstrap(&mut replica, &mut effects)
             .expect("publish synthesized terminal");

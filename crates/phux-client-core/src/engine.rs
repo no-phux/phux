@@ -1,7 +1,7 @@
 //! Frontend-neutral terminal-engine boundary used by the session kernel.
 
-use phux_protocol::BootstrapStreamProfile;
 use crate::history::{DocumentAnchorId, HistoryPageId};
+use phux_protocol::BootstrapStreamProfile;
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod ghostty;
@@ -281,11 +281,7 @@ pub trait EngineDocumentAdapter: EngineAdapter {
     ) -> Result<DocumentAnchorId, Self::Error>;
 
     /// Release one tracked anchor.
-    fn release_document_anchor(
-        &mut self,
-        replica: &mut Self::Replica,
-        anchor: DocumentAnchorId,
-    );
+    fn release_document_anchor(&mut self, replica: &mut Self::Replica, anchor: DocumentAnchorId);
 
     /// Resolve an anchor immediately before projection.
     fn document_anchor_point(
