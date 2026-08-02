@@ -230,12 +230,6 @@ impl Vt {
         Uint8Array::new(&self.memory.buffer())
     }
 
-    fn w_u16(&self, ptr: u32, v: u16) {
-        let b = self.bytes();
-        b.set_index(ptr, v as u8);
-        b.set_index(ptr + 1, (v >> 8) as u8);
-    }
-
     fn w_u32(&self, ptr: u32, v: u32) {
         let b = self.bytes();
         for i in 0..4 {
