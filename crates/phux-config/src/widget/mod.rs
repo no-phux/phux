@@ -284,7 +284,7 @@ const STYLE_OPT: &str = "style";
 ///
 /// Each widget file defines a `SPEC` const next to its factory, and the
 /// factory validates its options against that same const (via
-/// [`reject_unknown_opts`]), so the documented option surface and the
+/// `reject_unknown_opts`), so the documented option surface and the
 /// enforced one are one object and cannot drift. [`BUILTIN_WIDGET_SPECS`]
 /// aggregates them; a unit test pins that list to
 /// [`WidgetRegistry::with_builtins`], and the generated reference page

@@ -1918,7 +1918,7 @@ There are three categories of widgets:
    133). These are widget kinds (`session-name`, `windows`, `cwd`,
    `exit`, etc.) backed by data the server pushes anyway.
 2. **Client-local widgets.** Things derivable on the client without
-   server help: `time`, `mode`, `key-indicator` (last key chord).
+   server help: `time`, and anything expressible as an `exec` widget.
 3. **`exec` widgets.** The client runs the named program on the
    configured interval and renders its stdout (parsed for SGR if it
    contains ANSI). These run per-client; a clipboard daemon, a battery
@@ -1927,7 +1927,6 @@ There are three categories of widgets:
 ```toml
 right = [
     { kind = "exec", command = "~/.local/bin/battery", interval = "30s" },
-    { kind = "text", value = " | " },
     { kind = "time", format = "%H:%M" },
 ]
 ```
