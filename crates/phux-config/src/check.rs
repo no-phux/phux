@@ -5,7 +5,7 @@
 //! *locatable*. serde names only the leaf field:
 //!
 //! ```text
-//! config.toml: 1:1: unknown field `enabledd`, expected one of `enabled`, `width`, `position`
+//! config.toml: unknown field `enabledd`, expected one of `enabled`, `width`, `position`
 //! ```
 //!
 //! Three things are wrong with that, and this module fixes all three.
@@ -15,10 +15,11 @@
 //!    module reports `sidebar.enabledd`, derived from the schema walk by
 //!    [`serde_path_to_error`] — so it cannot drift the way a hand-maintained
 //!    key list would.
-//! 2. **A false position.** The `1:1` is not where the typo is. It is the
-//!    fallback for a deserialize error carrying no span, because the value
-//!    being deserialized is the *merged* layer stack, not the user's text.
-//!    Reporting a confident, wrong line number is worse than reporting none.
+//! 2. **No usable position.** A deserialize error on the merged layer stack
+//!    carries no span, because the value being deserialized is not the
+//!    user's text. (The loader used to fabricate a `1:1` here; it now
+//!    reports no position at all — phux-i0e8.3.5 — since a confident, wrong
+//!    line number is worse than none.)
 //!    This module attributes each finding to the layer that introduced it
 //!    (ADR-0039) instead, which with `extends` in play is the question the
 //!    operator actually has: is the typo mine, or the distro's?

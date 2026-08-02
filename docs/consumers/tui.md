@@ -1054,15 +1054,16 @@ carries `deny_unknown_fields`, so a typo is a hard error, not a silent
 no-op. What the loader is not is *locatable*. It reports:
 
 ```text
-config.toml: 1:1: unknown field `enabledd`, expected one of `enabled`, `width`, `position`
+config.toml: unknown field `enabledd`, expected one of `enabled`, `width`, `position`
 ```
 
 Three things are wrong with that. It names only the leaf field, and
 `enabledd` does not say which table it is in — several tables have an
-`enabled`, a `width`, and a `position`. The `1:1` is not where the typo is;
-it is the no-span fallback, because what is being deserialized is the
-*merged layer stack*, not your file. And it stops at the first problem, so a
-config with four typos takes four edit-run cycles.
+`enabled`, a `width`, and a `position`. It carries no position, because what
+is being deserialized is the *merged layer stack*, not your file (the loader
+used to fabricate a `1:1` here; it now reports no position rather than a
+confidently wrong one). And it stops at the first problem, so a config with
+four typos takes four edit-run cycles.
 
 `phux config check` fixes all three:
 

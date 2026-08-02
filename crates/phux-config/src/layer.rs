@@ -106,13 +106,10 @@ const MANIFEST_ARRAY_KEYS: [&str; 2] = ["plugins", "plugins-append"];
 /// [`ConfigError::Parse`] with `line:col` pointing into `input`.
 fn parse_table(input: &str, path: &Path) -> Result<toml::Table, ConfigError> {
     toml::from_str(input).map_err(|e| {
-        let (line, col) = e
-            .span()
-            .map_or((1, 1), |r| byte_offset_to_line_col(input, r.start));
+        let position = e.span().map(|r| byte_offset_to_line_col(input, r.start));
         ConfigError::Parse {
             path: path.to_path_buf(),
-            line,
-            col,
+            position,
             message: e.message().to_owned(),
         }
     })

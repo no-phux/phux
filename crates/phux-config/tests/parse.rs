@@ -176,8 +176,12 @@ fn malformed_input_reports_line_col_and_snapshots() {
     let err =
         parse_str(input, &PathBuf::from("config.toml")).expect_err("malformed input should error");
 
-    let ConfigError::Parse { line, col, .. } = &err else {
-        panic!("expected Parse variant, got {err:?}");
+    let ConfigError::Parse {
+        position: Some((line, col)),
+        ..
+    } = &err
+    else {
+        panic!("expected Parse variant with a position, got {err:?}");
     };
 
     // The error must point inside the broken line (line 3) — not at the
@@ -192,6 +196,32 @@ fn malformed_input_reports_line_col_and_snapshots() {
     let rendered = format!("{err}");
     let normalized = normalize_col(&rendered);
     insta::assert_snapshot!("malformed_parse_error", normalized);
+}
+
+#[test]
+fn spanless_schema_error_renders_no_fabricated_position() {
+    // phux-i0e8.3.5: deserializing the merged layer stack yields errors
+    // with no span into the user's text. Those used to render a
+    // fabricated `1:1`; they must now carry no position at all.
+    let input = "[defaults]\nhistory-limit = \"not a number\"\n";
+    let err = phux_config::parse_with_defaults(input, &path())
+        .expect_err("string is not a valid history-limit");
+    let ConfigError::Parse { position, .. } = &err else {
+        panic!("expected Parse variant, got {err:?}");
+    };
+    assert_eq!(
+        *position, None,
+        "merged-stack deserialize errors carry no span; got {position:?}"
+    );
+    let rendered = format!("{err}");
+    assert!(
+        !rendered.contains(":1:1"),
+        "spanless error must not fabricate a 1:1 position: {rendered}"
+    );
+    assert!(
+        rendered.starts_with("config.toml: "),
+        "spanless error still names the file: {rendered}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +285,10 @@ fn experimental_predictive_echo_malformed_value_reports_key() {
 predictive-echo = 1
 ";
     let err = parse_str(input, &path()).expect_err("integer is not a bool");
-    let ConfigError::Parse { message, line, .. } = err else {
+    let ConfigError::Parse {
+        message, position, ..
+    } = err
+    else {
         panic!("expected ConfigError::Parse for malformed value");
     };
     assert!(
@@ -263,7 +296,11 @@ predictive-echo = 1
         "error should mention the expected type; got: {message}"
     );
     // The offending value sits on line 3 (leading newline + section line + value line).
-    assert_eq!(line, 3, "error should point at the broken value line");
+    assert_eq!(
+        position.map(|(line, _)| line),
+        Some(3),
+        "error should point at the broken value line"
+    );
 }
 
 // ---------------------------------------------------------------------------

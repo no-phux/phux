@@ -630,7 +630,7 @@ impl StatusBarPainter {
     /// The attach path reaches for this when the on-disk config fails to
     /// load or build: rather than silently dropping to an empty bar (and
     /// no keybindings) with only a `tracing::warn` the user never sees,
-    /// the bar row shows the parse error and points at `phux config show`
+    /// the bar row shows the parse error and points at `phux config check`
     /// for the full diagnostic. The painter built this way is never
     /// "empty" and always reports a poll interval, so the error stays on
     /// screen across repaints.
@@ -1321,7 +1321,7 @@ mod tests {
         // phux-9vf: an error-line painter must report non-empty + a poll
         // interval so the driver reserves the row and keeps repainting the
         // diagnostic (otherwise pane output stomps it and it never returns).
-        let p = StatusBarPainter::error_line("config error: boom (run: phux config show)");
+        let p = StatusBarPainter::error_line("config error: boom (run: phux config check)");
         assert!(!p.is_empty(), "error-line painter must not be empty");
         assert_eq!(p.min_poll_interval(), Some(Duration::from_secs(1)));
     }
@@ -1332,7 +1332,7 @@ mod tests {
         // no widgets are configured (the normal empty-bar short-circuit
         // would otherwise emit nothing).
         let mut p =
-            StatusBarPainter::error_line("config error: dup [status] (run: phux config show)");
+            StatusBarPainter::error_line("config error: dup [status] (run: phux config check)");
         let mut buf = Vec::new();
         p.paint(&mut buf, BarInset::NONE, 80, 24, &ctx_default(""))
             .unwrap();
@@ -1347,7 +1347,7 @@ mod tests {
             "missing error text: {printable:?} (raw {s:?})"
         );
         assert!(
-            printable.contains("phux config show"),
+            printable.contains("phux config check"),
             "missing call-to-action: {printable:?} (raw {s:?})"
         );
     }

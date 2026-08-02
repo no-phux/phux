@@ -4176,7 +4176,7 @@ async fn emit_view_reflow(
 /// A malformed config never blocks attach — but it no longer vanishes
 /// silently either. On a load or build failure we surface a visible
 /// error line (`StatusBarPainter::error_line`) on the bar row pointing
-/// the user at `phux config show` for the full diagnostic, instead of
+/// the user at `phux config check` for the full diagnostic, instead of
 /// dropping to an empty bar with only a `tracing::warn` nobody sees
 /// (keybindings degrade separately, per binding — see
 /// [`build_resolver_from`]). Returns `None`
@@ -4281,7 +4281,7 @@ fn handle_config_reload<W: super::RenderSink>(
                 vec![
                     msg,
                     String::new(),
-                    "Fix the file and reload again (see: phux config show)".to_owned(),
+                    "Fix the file and reload again (run: phux config check)".to_owned(),
                 ],
                 theme,
             )));
@@ -4343,10 +4343,12 @@ fn build_status_bar_painter() -> Option<StatusBarPainter> {
 }
 
 /// phux-9vf: format a one-line, on-screen config error for the status
-/// bar. Mirrors what `phux config show` prints to stderr (the
-/// `Display` of the error) and appends the actionable next step.
+/// bar: the `Display` of the error plus the actionable next step.
+/// The remedy is `phux config check` — the verb that diagnoses, with
+/// key paths and layer attribution — not `config show`, which only
+/// renders the effective config (phux-i0e8.3.5).
 fn config_error_line(err: &impl std::fmt::Display) -> String {
-    format!("config error: {err} (run: phux config show)")
+    format!("config error: {err} (run: phux config check)")
 }
 
 /// Build a `VIEWPORT_RESIZE` frame from a [`ViewportInfo`].
@@ -5152,6 +5154,26 @@ mod tests {
     #[test]
     fn keybind_error_line_is_empty_without_diagnostics() {
         assert_eq!(keybind_error_line(&[]), "");
+    }
+
+    #[test]
+    fn config_error_line_recommends_config_check() {
+        // phux-i0e8.3.5: the remedy is the verb that diagnoses
+        // (`config check`), not the one that merely renders the
+        // effective config (`config show`).
+        let line = config_error_line(&"boom");
+        assert!(
+            line.contains("phux config check"),
+            "line must point at the checker: {line}"
+        );
+        assert!(
+            !line.contains("config show"),
+            "line must not recommend config show: {line}"
+        );
+        assert!(
+            line.contains("config error: boom"),
+            "line must carry the error display: {line}"
+        );
     }
 
     // -- which-key popup arming (phux-foz.2) ------------------------------
