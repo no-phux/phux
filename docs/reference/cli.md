@@ -833,19 +833,19 @@ Arguments:
           Already-created pane to insert; no implicit spawn occurs
 
 Options:
-      --horizontal
-          Use a horizontal split (stacked panes; the default)
+      --split <SPLIT>
+          Split axis: `horizontal` stacks the panes, `vertical` places them side-by-side
+          
+          [default: horizontal]
+          [possible values: horizontal, vertical]
 
-      --vertical
-          Use a vertical split (side-by-side panes)
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
       --ratio <RATIO>
           Fraction assigned to TARGET; must be strictly between 0 and 1
           
           [default: 0.5]
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
       --json
           Emit a schema-versioned JSON result or error
@@ -1003,19 +1003,19 @@ Arguments:
           Existing destination pane
 
 Options:
-      --horizontal
-          Use a horizontal destination split (the default)
+      --split <SPLIT>
+          Destination split axis: `horizontal` stacks the panes, `vertical` places them side-by-side
+          
+          [default: horizontal]
+          [possible values: horizontal, vertical]
 
-      --vertical
-          Use a vertical destination split
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
       --ratio <RATIO>
           Fraction assigned to TARGET; must be strictly between 0 and 1
           
           [default: 0.5]
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
       --json
           Emit a schema-versioned JSON result or error
@@ -1212,7 +1212,7 @@ Commands:
   link      Add or update a manifest entry in `config.toml`
   install   Fetch, build, validate, and link a plugin package
   update    Re-fetch, rebuild, and revalidate installed plugins
-  unlink    Remove a configured plugin by id
+  unlink    Remove a configured plugin by id [aliases: rm, remove]
   enable    Enable a configured plugin by id
   disable   Disable a configured plugin by id
   validate  Validate one manifest, or every configured manifest when omitted
@@ -1557,8 +1557,8 @@ Usage: phux remote [OPTIONS] <COMMAND>
 
 Commands:
   add     Register a remote server, or replace an entry with the same name
-  list    List registered remotes
-  remove  Remove a registered remote. Its token file is left in place
+  list    List registered remotes [aliases: ls]
+  remove  Remove a registered remote. Its token file is left in place [aliases: rm]
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2251,9 +2251,9 @@ Tags are freeform strings stored as L3 metadata (`phux.tags/v1`), the server sto
 Usage: phux tag [OPTIONS] <COMMAND>
 
 Commands:
-  ls    List the tags on each Terminal a selector resolves to
+  ls    List the tags on each Terminal a selector resolves to [aliases: list]
   add   Add one or more tags to each Terminal a selector resolves to
-  rm    Remove one or more tags from each Terminal a selector resolves to
+  rm    Remove one or more tags from each Terminal a selector resolves to [aliases: remove]
   help  Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2279,6 +2279,9 @@ Arguments:
           Tags to add (the leading `#` is optional)
 
 Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
@@ -2298,6 +2301,9 @@ Arguments:
           Target selector (session, `session:window`, `@id`, `.`, `#tag`)
 
 Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
@@ -2320,6 +2326,9 @@ Arguments:
           Tags to remove (the leading `#` is optional)
 
 Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
@@ -2526,10 +2535,10 @@ Each worktree binds to one session whose name is derived from the worktree's dir
 Usage: phux worktree [OPTIONS] <COMMAND>
 
 Commands:
-  list    List the repository's worktrees and their bound sessions
+  list    List the repository's worktrees and their bound sessions [aliases: ls]
   new     Create a worktree and a session rooted in it
   open    Open the session bound to an existing worktree, creating it if absent
-  remove  Remove a worktree, killing the session bound to it first
+  remove  Remove a worktree, killing the session bound to it first [aliases: rm]
   help    Print this message or the help of the given subcommand(s)
 
 Options:
