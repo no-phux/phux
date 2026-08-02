@@ -48,10 +48,12 @@ fn attached_with_layout(layout: &[u8]) -> Vec<u8> {
     snap.push(0); // focused_pane tag local
     snap.extend_from_slice(&1u32.to_be_bytes());
 
-    // Field-tagged ATTACHED body: SNAPSHOT (id 1) + INITIAL_CLIENT_ID (id 2).
+    // Field-tagged ATTACHED body: SNAPSHOT (id 1), INITIAL_CLIENT_ID (id 2),
+    // and protocol-0.7 attach correlation id (id 3).
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &snap);
     tlv_field(&mut fields, 2, &7u32.to_be_bytes());
+    tlv_field(&mut fields, 3, &1u32.to_be_bytes());
 
     let mut body = vec![0x81u8];
     body.extend_from_slice(&fields);
