@@ -90,7 +90,7 @@ pub(crate) struct RecOpts {
 pub(crate) struct JsonOpt {
     /// Emit stable, versioned JSON on stdout instead of the human view.
     /// On failure, stdout stays empty and stderr carries one JSON error
-    /// object (see docs/consumers/agents.md).
+    /// object.
     #[arg(long)]
     pub(crate) json: bool,
 }

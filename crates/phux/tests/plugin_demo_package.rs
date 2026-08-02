@@ -212,11 +212,25 @@ fn launch_bench_reports_no_server_as_action_failure() {
     );
     let output: serde_json::Value = serde_json::from_str(&stdout).expect("action JSON");
     assert_ne!(output["exit_code"], 0);
+    // The action's inner `phux new --json` fails per the stable JSON error
+    // contract: one JSON line on stderr with a closed error code.
+    let action_stderr = output["stderr"].as_str().expect("action stderr");
+    let json_line = action_stderr
+        .lines()
+        .next()
+        .expect("action stderr should carry the JSON error line");
+    let error_doc: serde_json::Value = serde_json::from_str(json_line).unwrap_or_else(|_| {
+        panic!("action stderr should start with the JSON error contract: {output}")
+    });
+    assert_eq!(
+        error_doc["error"]["code"], "no_server",
+        "action stderr should explain failure: {output}"
+    );
     assert!(
-        output["stderr"]
+        error_doc["error"]["message"]
             .as_str()
-            .expect("action stderr")
-            .contains("phux: no server running at"),
+            .expect("error message")
+            .contains("no server running at"),
         "action stderr should explain failure: {output}"
     );
 }
