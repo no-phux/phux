@@ -32,6 +32,26 @@ fn broken_config_message(path: &Path, err: &impl std::fmt::Display) -> String {
     )
 }
 
+/// Emit the server's startup info line through `tracing`, carrying
+/// pid + version + socket.
+///
+/// Several writers can interleave into the canonical server log
+/// (`$XDG_STATE_HOME/phux/server.log`): successive auto-spawned servers,
+/// a service-managed server across restarts, different binary versions
+/// after an upgrade. This line attributes everything that follows it to
+/// one pid and one build. Emitted at `info` under the `phux` target, so
+/// it passes the default filter (`phux=info,warn`) and — with the
+/// auto-spawn/service stderr redirect — verifiably lands in the log file
+/// (phux-i0e8.5.1).
+fn log_startup(socket_path: &Path) {
+    tracing::info!(
+        pid = std::process::id(),
+        version = %env!("CARGO_PKG_VERSION"),
+        socket = %socket_path.display(),
+        "phux server started",
+    );
+}
+
 fn select_connectors(
     configured: Vec<phux_config::ConnectorConfigEntry>,
     connect: Option<&str>,
@@ -242,6 +262,10 @@ pub(crate) fn run_server(
         "phux server listening on {}{extra} (session={session}; Ctrl-C to stop)",
         socket_path.display()
     );
+    // Attribution line for the (possibly shared) server log — see
+    // `log_startup`. After the human banner so an interactive stderr
+    // reads banner-first.
+    log_startup(&socket_path);
 
     let mut server = ServerRuntime::new(cfg);
     if let Some(addr) = listen {
@@ -290,15 +314,44 @@ pub(crate) fn run_server(
     }
 }
 
+/// Open the canonical server log for appending, creating its parent
+/// directory (the phux state dir) at mode `0o700` and the file itself at
+/// mode `0o600` — the log captures operational detail that must not be
+/// group/world-readable on a shared box (ADR-0028), and the state dir
+/// holds TLS keys and token stores that want the same tight perms.
+fn open_server_log(path: &Path) -> std::io::Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder.create(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 /// Fork-exec the current binary as `phux server` (with the same
 /// `--socket` override), then poll for the socket to appear.
 ///
 /// Detachment strategy: the child is launched with `--daemonize`, so it
 /// calls `setsid(2)` before binding and lands in its own session with no
 /// controlling terminal — closing the launching terminal can't SIGHUP it.
-/// stdin/stdout are nulled; stderr is redirected to `phux-server.log`
-/// beside the socket so a startup crash is debuggable. The server never
-/// opens a tty afterward, so a session-leader double-fork isn't needed.
+/// stdin/stdout are nulled; stderr is redirected to the canonical server
+/// log (`telemetry::server_log_path()`, `$XDG_STATE_HOME/phux/server.log`
+/// — the same file the service unit writes) so a startup crash is
+/// debuggable and `phux service logs` tails the right file for every
+/// spawn path (phux-i0e8.5.1). The server never opens a tty afterward,
+/// so a session-leader double-fork isn't needed.
 ///
 /// Returns `Ok` if the socket showed up within the timeout.
 pub(crate) fn maybe_auto_spawn_server(
@@ -307,25 +360,20 @@ pub(crate) fn maybe_auto_spawn_server(
     seed_command: Option<&str>,
 ) -> std::io::Result<()> {
     let current_exe = std::env::current_exe()?;
+    let log_path = phux_server::telemetry::server_log_path();
 
+    // The banner names the log so the one moment the user watches an
+    // auto-spawn is also the moment they learn where the server writes.
     eprintln!(
-        "phux: starting server at {} (auto-spawn, session={session})",
-        socket_path.display()
+        "phux: starting server at {} (auto-spawn, session={session}; log: {})",
+        socket_path.display(),
+        log_path.display()
     );
 
-    // Redirect the daemon's stderr to a log file next to the socket so a
+    // Redirect the daemon's stderr to the canonical server log so a
     // crash-on-startup is debuggable (nulled stdio leaves no trace).
     // Best-effort: fall back to /dev/null if the file can't be opened.
-    let log = socket_path
-        .parent()
-        .map(|dir| dir.join("phux-server.log"))
-        .and_then(|p| {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(p)
-                .ok()
-        });
+    let log = open_server_log(&log_path).ok();
 
     let mut cmd = std::process::Command::new(current_exe);
     cmd.arg("server")
@@ -403,6 +451,77 @@ mod tests {
         );
         // The remedy, exactly as the bead specifies it.
         assert!(msg.contains("run: phux config check"), "{msg}");
+    }
+
+    /// The startup info line carries pid + version + socket and passes the
+    /// DEFAULT filter (`phux=info,warn`, `telemetry::DEFAULT_FILTER`) into a
+    /// file sink — the attribution contract for the shared server log
+    /// (phux-i0e8.5.1). A scoped subscriber writes to a temp file exactly
+    /// like the auto-spawn stderr redirect does, so passing here means the
+    /// line lands in `$XDG_STATE_HOME/phux/server.log` in production.
+    #[test]
+    #[allow(clippy::expect_used, reason = "test")]
+    fn startup_line_lands_in_file_at_default_filter() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("server.log");
+        let file = std::fs::File::create(&path).expect("create sink");
+        let layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false);
+        let subscriber = tracing_subscriber::registry()
+            // Mirrors telemetry::DEFAULT_FILTER (private const): the filter
+            // a server gets when RUST_LOG is unset.
+            .with(tracing_subscriber::EnvFilter::new("phux=info,warn"))
+            .with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            log_startup(Path::new("/run/user/1000/phux/phux.sock"));
+        });
+
+        let contents = std::fs::read_to_string(&path).expect("read back log");
+        assert!(
+            contents.contains("phux server started"),
+            "startup line filtered out at the default filter: {contents}"
+        );
+        assert!(
+            contents.contains(&format!("pid={}", std::process::id())),
+            "pid missing: {contents}"
+        );
+        assert!(
+            contents.contains(&format!("version={}", env!("CARGO_PKG_VERSION"))),
+            "version missing: {contents}"
+        );
+        assert!(
+            contents.contains("socket=/run/user/1000/phux/phux.sock"),
+            "socket missing: {contents}"
+        );
+    }
+
+    /// The auto-spawn stderr sink opens under a `0o700` parent with the log
+    /// itself at `0o600` — state-dir and log hardening (ADR-0028).
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::expect_used, reason = "test")]
+    fn open_server_log_creates_0700_parent_and_0600_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state").join("phux").join("server.log");
+        let _file = open_server_log(&path).expect("open server log");
+
+        let parent_mode = std::fs::metadata(path.parent().expect("parent"))
+            .expect("parent metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(parent_mode, 0o700, "parent mode was {parent_mode:o}");
+        let file_mode = std::fs::metadata(&path)
+            .expect("file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600, "log mode was {file_mode:o}");
     }
 
     #[test]

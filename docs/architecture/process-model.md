@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-06-06
+last-reviewed: 2026-08-01
 ---
 
 # Process model
@@ -10,8 +10,8 @@ last-reviewed: 2026-06-06
 are separate processes attached over a Unix socket. The single `phux`
 binary contains both halves and dispatches by subcommand; an attach
 auto-spawns a server if none is listening. Runtime paths live under
-`$XDG_RUNTIME_DIR/phux/`, with a per-user state directory still on the
-roadmap.
+`$XDG_RUNTIME_DIR/phux/`; persistent per-user state — logs, TLS
+material, token store — lives under `$XDG_STATE_HOME/phux/`.
 
 ---
 
@@ -21,19 +21,36 @@ socket is `$XDG_RUNTIME_DIR/phux/phux.sock` when that variable is set,
 otherwise `/tmp/phux-$UID/phux.sock`. The parent directory is created
 mode `0o700`.
 
-The persistent per-user state directory below is **design intent, not
-yet implemented**. Today the server keeps state only in memory; logs go
-to stderr by default; journaling and crash recovery have not landed.
+The persistent per-user state directory is real. It resolves via
+`phux_server::telemetry::state_dir()` in
+[`phux-server/src/telemetry.rs`](../../crates/phux-server/src/telemetry.rs)
+to `$XDG_STATE_HOME/phux/` (falling back to `$HOME/.local/state/phux/`
+when `XDG_STATE_HOME` is unset). Its current inventory:
 
 ```
 $XDG_RUNTIME_DIR/phux/phux.sock     # SOCK_STREAM, perms 0o700 dir
-$XDG_STATE_HOME/phux/               # NOT YET IMPLEMENTED
-├── server.pid
-├── log/
-│   └── server.log
-└── journal/                        # per-pane PTY output (crash recovery)
-    └── <pane_id>.log
+$XDG_STATE_HOME/phux/               # per-user state dir (telemetry::state_dir)
+├── server.log                      # THE canonical server log, both spawn paths
+│                                   # (telemetry::server_log_path)
+├── client-<pid>.log                # per-pid client/TUI logs
+├── remote-tokens                   # remote-consumer token store (ADR-0031)
+├── remote-cert.pem                 # auto-provisioned TLS cert (ADR-0031)
+├── remote-key.pem                  # auto-provisioned TLS key (ADR-0031)
+├── service-wrapper.sh              # `phux service install --restore` wrapper
+└── workspace.json                  # `--restore` workspace snapshot
 ```
+
+Server logging: a hand-started foreground `phux server` logs to stderr
+(plus an optional `PHUX_LOG` file tee). Both detached spawn paths — the
+auto-spawn daemon and a `phux service`-installed unit — redirect the
+server's stderr to the one canonical `server.log` above, resolved
+through `telemetry::server_log_path()` so writers and readers
+(`phux service logs`) can never disagree. The startup line carries
+pid + version + socket to attribute interleaved writers.
+
+Still **design intent, not yet implemented**: a `server.pid` file and a
+`journal/` directory of per-pane PTY output for crash recovery. Today
+the server keeps session state only in memory.
 
 The single `phux` binary contains both server and client logic; the
 subcommand dispatches. `phux server` runs the daemon in the foreground;

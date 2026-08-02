@@ -364,7 +364,10 @@ fn resolve_plan(
         socket,
         hub,
         socket_path,
-        log: state.join("server.log"),
+        // The ONE canonical server log — resolved through the shared helper
+        // so the unit's writer and `phux service logs`'s reader can never
+        // disagree (phux-i0e8.5.1).
+        log: phux_server::telemetry::server_log_path(),
         restore: restore.then(|| state.join("workspace.json")),
         wrapper: state.join("service-wrapper.sh"),
     })
@@ -696,13 +699,15 @@ pub(crate) fn run_status() -> ExitCode {
     }
 }
 
-/// `phux service logs` — show the service's log.
+/// `phux service logs` — show the server's log.
 ///
 /// launchd writes to the file the plist names, so this is `tail`. systemd
 /// also captures to the journal, but the unit appends to the same file, so
-/// one implementation covers both.
+/// one implementation covers both. The auto-spawn path redirects its
+/// daemon's stderr to the same canonical file (phux-i0e8.5.1), so this
+/// verb works even when no service unit was ever installed.
 pub(crate) fn run_logs(follow: bool, lines: u32) -> ExitCode {
-    let log = phux_server::telemetry::state_dir().join("server.log");
+    let log = phux_server::telemetry::server_log_path();
     if !log.exists() {
         eprintln!("phux service: no log at {} yet.", log.display());
         return ExitCode::FAILURE;

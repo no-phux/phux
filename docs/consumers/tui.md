@@ -554,6 +554,7 @@ $XDG_RUNTIME_DIR/phux/phux.sock     # SOCK_STREAM, parent dir mode 0o700
                                     #   (fallback: /tmp/phux-$UID/phux.sock)
 
 $XDG_STATE_HOME/phux/
+├── server.log                      # canonical server log (both spawn paths)
 ├── client-<pid>.log                # default interactive-client log
 ├── remote-cert.pem                 # auto-provisioned remote certificate
 ├── remote-key.pem                  # owner-only private key
