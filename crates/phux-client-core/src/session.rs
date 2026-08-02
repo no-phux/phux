@@ -210,8 +210,8 @@ pub enum KernelDamageKind {
 pub enum KernelStatus {
     /// Status emitted by a terminal engine.
     Engine {
-        /// Terminal reporting status.
-        terminal_id: TerminalId,
+        /// Exact published generation reporting status.
+        key: ReplicaKey,
         /// Engine status payload.
         status: EngineStatus,
     },
@@ -231,8 +231,8 @@ pub enum KernelStatus {
 /// Cooperative work handed to the host executor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelJob {
-    /// Terminal requesting work.
-    pub terminal_id: TerminalId,
+    /// Exact published generation requesting work.
+    pub key: ReplicaKey,
     /// Engine-owned-thread work request.
     pub job: EngineJob,
 }
@@ -579,6 +579,7 @@ struct Staging<R> {
     engine_ready: bool,
     protocol_ready: bool,
     engine: R,
+    pending_effects: Vec<EngineEffect>,
 }
 
 struct TerminalState<R> {
@@ -1009,6 +1010,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             engine_ready: false,
             protocol_ready: false,
             engine,
+            pending_effects: Vec::new(),
         }) {
             state.retired.insert(
                 generation_of(&old_staging.key),
@@ -1095,7 +1097,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         };
         staging.next_chunk_seq = chunk_seq.checked_add(1);
         staging.engine_ready |= progress.is_ready();
-        self.drain_bootstrap_effects(terminal_id, effects);
+        self.buffer_bootstrap_effects(terminal_id, generation);
         Ok(())
     }
 
@@ -1166,7 +1168,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 },
             );
         }
-        self.drain_bootstrap_effects(terminal_id, effects);
+        if engine_ready {
+            self.buffer_bootstrap_effects(terminal_id, generation);
+        } else {
+            self.engine_effects.clear();
+        }
         if !engine_ready {
             effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
                 terminal_id: terminal_id.clone(),
@@ -1189,11 +1195,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .terminals
             .get_mut(terminal_id)
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-        let staging = state
+        let mut staging = state
             .staging
             .take()
             .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
         debug_assert!(staging.engine_ready && staging.protocol_ready);
+        let replica_key = staging.key.clone();
+        let pending_effects = std::mem::take(&mut staging.pending_effects);
         let replacement = Replica {
             key: staging.key,
             geometry: staging.geometry,
@@ -1211,7 +1219,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
             );
         }
         self.mark_attach_resolved(terminal_id);
-        if !self.attach_blocks(terminal_id) {
+        let damage_allowed = !self.attach_blocks(terminal_id);
+        for effect in pending_effects {
+            self.translate_engine_effect(&replica_key, effect, damage_allowed, effects);
+        }
+        if damage_allowed {
             effects.push(KernelEffect::Damage(KernelDamage {
                 terminal_id: terminal_id.clone(),
                 kind: KernelDamageKind::Full,
@@ -1295,15 +1307,16 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
         replica.last_seq = seq;
         replica.next_seq = seq.checked_add(1);
+        let replica_key = replica.key.clone();
         let acknowledge = matches!(
-            replica.key.profile,
+            replica_key.profile,
             BootstrapStreamProfile::SynthesizedVtStateSync
         );
 
         let damage_allowed = !self.attach_blocks(terminal_id);
         let mut captured = std::mem::take(&mut self.engine_effects);
         for effect in captured.drain() {
-            self.translate_engine_effect(terminal_id, effect, damage_allowed, effects);
+            self.translate_engine_effect(&replica_key, effect, damage_allowed, effects);
         }
         self.engine_effects = captured;
         if acknowledge {
@@ -1317,34 +1330,37 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Ok(())
     }
 
-    fn drain_bootstrap_effects(&mut self, terminal_id: &TerminalId, effects: &mut EffectBuffer) {
+    fn buffer_bootstrap_effects(
+        &mut self,
+        terminal_id: &TerminalId,
+        generation: GenerationId,
+    ) {
         let mut captured = std::mem::take(&mut self.engine_effects);
-        for effect in captured.drain() {
-            match effect {
-                // Bootstrap is a replay into a staging engine, never live PTY
-                // input. Replies are suppressed and damage is represented by
-                // the eventual atomic full-replica publication.
-                EngineEffect::Send(_) | EngineEffect::Damage(_) => {}
-                EngineEffect::Status(status) => {
-                    effects.push(KernelEffect::Status(KernelStatus::Engine {
-                        terminal_id: terminal_id.clone(),
-                        status,
-                    }));
-                }
-                EngineEffect::Job(job) => {
-                    effects.push(KernelEffect::Job(KernelJob {
-                        terminal_id: terminal_id.clone(),
-                        job,
-                    }));
+        let staging = self
+            .terminals
+            .get_mut(terminal_id)
+            .and_then(|state| state.staging.as_mut())
+            .filter(|staging| generation_of(&staging.key) == generation);
+        if let Some(staging) = staging {
+            for effect in captured.drain() {
+                match effect {
+                    // Bootstrap is replay into staging, never live PTY input.
+                    // Replies are suppressed and publication supplies damage.
+                    EngineEffect::Send(_) | EngineEffect::Damage(_) => {}
+                    effect @ (EngineEffect::Status(_) | EngineEffect::Job(_)) => {
+                        staging.pending_effects.push(effect);
+                    }
                 }
             }
+        } else {
+            captured.clear();
         }
         self.engine_effects = captured;
     }
 
     fn translate_engine_effect(
         &mut self,
-        terminal_id: &TerminalId,
+        key: &ReplicaKey,
         effect: EngineEffect,
         damage_allowed: bool,
         effects: &mut EffectBuffer,
@@ -1352,13 +1368,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
         match effect {
             EngineEffect::Send(EngineSend::PtyWrite(bytes)) => {
                 effects.push(KernelEffect::Send(KernelSend::PtyWrite {
-                    terminal_id: terminal_id.clone(),
+                    terminal_id: key.terminal_id.clone(),
                     bytes,
                 }));
             }
             EngineEffect::Damage(damage) if damage_allowed => {
                 effects.push(KernelEffect::Damage(KernelDamage {
-                    terminal_id: terminal_id.clone(),
+                    terminal_id: key.terminal_id.clone(),
                     kind: match damage {
                         EngineDamage::Full => KernelDamageKind::Full,
                         EngineDamage::Rows { first, last } => {
@@ -1370,13 +1386,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
             EngineEffect::Damage(_) => {}
             EngineEffect::Status(status) => {
                 effects.push(KernelEffect::Status(KernelStatus::Engine {
-                    terminal_id: terminal_id.clone(),
+                    key: key.clone(),
                     status,
                 }));
             }
             EngineEffect::Job(job) => {
                 effects.push(KernelEffect::Job(KernelJob {
-                    terminal_id: terminal_id.clone(),
+                    key: key.clone(),
                     job,
                 }));
             }

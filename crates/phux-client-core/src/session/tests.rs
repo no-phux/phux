@@ -77,7 +77,9 @@ impl EngineAdapter for FakeAdapter {
                 b"suppressed-bootstrap-reply".to_vec(),
             )));
             effects.push(EngineEffect::Damage(EngineDamage::Full));
-            effects.push(EngineEffect::Status(EngineStatus::Bell));
+            effects.push(EngineEffect::Status(EngineStatus::Title(
+                "bootstrap-staging".to_owned(),
+            )));
             effects.push(EngineEffect::Job(EngineJob::Wakeup));
         } else {
             effects.push(EngineEffect::Damage(EngineDamage::Full));
@@ -777,6 +779,7 @@ fn engine_effects_are_drained_after_apply_in_order() {
         0,
         &mut effects,
     );
+    let published_key = kernel.published(&terminal_id).unwrap().key().clone();
 
     kernel
         .update(
@@ -802,11 +805,11 @@ fn engine_effects_are_drained_after_apply_in_order() {
                 kind: KernelDamageKind::Rows { first: 2, last: 4 },
             }),
             KernelEffect::Status(KernelStatus::Engine {
-                terminal_id: terminal_id.clone(),
+                key: published_key.clone(),
                 status: EngineStatus::Bell,
             }),
             KernelEffect::Job(KernelJob {
-                terminal_id: terminal_id.clone(),
+                key: published_key,
                 job: EngineJob::Wakeup,
             }),
         ]
@@ -1243,7 +1246,7 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
 }
 
 #[test]
-fn bootstrap_effects_forward_status_and_jobs_but_suppress_send_and_damage() {
+fn bootstrap_effects_wait_for_publication_and_suppress_send_and_damage() {
     let terminal_id = terminal(16);
     let stream_id = stream(25);
     let bootstrap_id = bootstrap(36);
@@ -1269,19 +1272,7 @@ fn bootstrap_effects_forward_status_and_jobs_but_suppress_send_and_damage() {
             &mut effects,
         )
         .unwrap();
-    assert_eq!(
-        effects.as_slice(),
-        &[
-            KernelEffect::Status(KernelStatus::Engine {
-                terminal_id: terminal_id.clone(),
-                status: EngineStatus::Bell,
-            }),
-            KernelEffect::Job(KernelJob {
-                terminal_id: terminal_id.clone(),
-                job: EngineJob::Wakeup,
-            }),
-        ]
-    );
+    assert!(effects.is_empty());
 
     kernel
         .update(
@@ -1303,15 +1294,24 @@ fn bootstrap_effects_forward_status_and_jobs_but_suppress_send_and_damage() {
         bootstrap_id,
         &mut effects,
     );
+    let published_key = kernel.published(&terminal_id).unwrap().key().clone();
     assert_eq!(
         effects.as_slice(),
         &[
             KernelEffect::Status(KernelStatus::Engine {
-                terminal_id: terminal_id.clone(),
+                key: published_key.clone(),
+                status: EngineStatus::Title("bootstrap-staging".to_owned()),
+            }),
+            KernelEffect::Job(KernelJob {
+                key: published_key.clone(),
+                job: EngineJob::Wakeup,
+            }),
+            KernelEffect::Status(KernelStatus::Engine {
+                key: published_key.clone(),
                 status: EngineStatus::Title("bootstrap-finished".to_owned()),
             }),
             KernelEffect::Job(KernelJob {
-                terminal_id: terminal_id.clone(),
+                key: published_key,
                 job: EngineJob::Wakeup,
             }),
             KernelEffect::Damage(KernelDamage {
@@ -1378,5 +1378,138 @@ fn replacement_attach_close_flushes_pending_removal_at_barrier() {
             terminal_id,
             kind: KernelDamageKind::Removed,
         })]
+    );
+}
+
+#[test]
+fn replacement_effects_are_hidden_until_swap_and_discarded_on_retirement() {
+    let terminal_id = terminal(18);
+    let stream_id = stream(27);
+    let published_bootstrap = bootstrap(38);
+    let cancelled_bootstrap = bootstrap(39);
+    let replacement_bootstrap = bootstrap(40);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    publish_direct(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        published_bootstrap,
+        0,
+        &mut effects,
+    );
+    let published_key = kernel.published(&terminal_id).unwrap().key().clone();
+
+    begin(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        cancelled_bootstrap,
+        10,
+        &mut effects,
+    );
+    kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id: cancelled_bootstrap,
+                chunk_seq: 0,
+                payload: b"bootstrap-effects",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty());
+    assert_eq!(
+        kernel.published(&terminal_id).unwrap().key(),
+        &published_key
+    );
+
+    kernel
+        .update(
+            KernelInput::Tombstone {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id: cancelled_bootstrap,
+                reason: TombstoneReason::CodecFailure,
+                last_valid_seq: 10,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty(), "retired staging effects are discarded");
+    assert_eq!(
+        kernel.published(&terminal_id).unwrap().key(),
+        &published_key
+    );
+
+    begin(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        replacement_bootstrap,
+        20,
+        &mut effects,
+    );
+    kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id: replacement_bootstrap,
+                chunk_seq: 0,
+                payload: b"bootstrap-effects",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty());
+    kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id: replacement_bootstrap,
+                chunk_seq: 1,
+                payload: READY_MARKER,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty());
+    protocol_ready(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        replacement_bootstrap,
+        &mut effects,
+    );
+    let replacement_key = kernel.published(&terminal_id).unwrap().key().clone();
+    assert_eq!(replacement_key.bootstrap_id, replacement_bootstrap);
+    assert_eq!(
+        effects.as_slice(),
+        &[
+            KernelEffect::Status(KernelStatus::Engine {
+                key: replacement_key.clone(),
+                status: EngineStatus::Title("bootstrap-staging".to_owned()),
+            }),
+            KernelEffect::Job(KernelJob {
+                key: replacement_key.clone(),
+                job: EngineJob::Wakeup,
+            }),
+            KernelEffect::Status(KernelStatus::Engine {
+                key: replacement_key.clone(),
+                status: EngineStatus::Title("bootstrap-finished".to_owned()),
+            }),
+            KernelEffect::Job(KernelJob {
+                key: replacement_key,
+                job: EngineJob::Wakeup,
+            }),
+            KernelEffect::Damage(KernelDamage {
+                terminal_id,
+                kind: KernelDamageKind::Full,
+            }),
+        ]
     );
 }

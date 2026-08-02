@@ -132,7 +132,9 @@ impl EngineEffectBuffer {
 /// synchronous side effects to the supplied reusable buffer. Bootstrap
 /// `Send` and `Damage` effects are suppressed because replay is not live PTY
 /// input and publication emits one full damage; bootstrap `Status` and `Job`
-/// effects are forwarded. All successful live effects are forwarded.
+/// effects are generation-bound and buffered until atomic publication. They
+/// are discarded if staging is retired. All successful live effects are
+/// forwarded with the published replica key.
 ///
 /// An error may have partially mutated the replica. The kernel therefore
 /// retires that exact generation immediately and never calls the adapter with
