@@ -11,7 +11,7 @@
 //! * [`input`] — stdin bytes → structured input events for the keybinding
 //!   resolver and pane input forwarding.
 //!
-//! The public entry point is [`run`]. It expects to be called from a tokio
+//! The public entry point is [`driver::run_with_predict_dial`]. It expects to be called from a tokio
 //! current-thread runtime (matching ADR-0003); embedders are responsible for
 //! the runtime lifecycle. The function takes over the controlling terminal
 //! (raw mode + alt screen) and restores it on every exit path including

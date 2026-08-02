@@ -1213,8 +1213,9 @@ pub async fn run_headless_rendered(
     Ok(frame)
 }
 
-/// The attach session body shared by the production ([`run`]) and
-/// test-injectable ([`run_with_stdout_predict`]) entry points.
+/// The attach session body shared by the production
+/// ([`run_with_predict_dial`]) and test-injectable
+/// ([`run_with_stdout_predict`]) entry points.
 ///
 /// `resync` is the [`StdoutSink`](super::stdout_writer) backpressure flag
 /// (`None` for the synchronous test sink); `main_loop` polls it to repaint
