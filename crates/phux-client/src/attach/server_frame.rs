@@ -5,7 +5,7 @@
 //! should take (e.g. exit on `DETACHED`, send `GET_METADATA` after
 //! `ATTACHED`, repaint after a layout-replacing frame).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ids::{ClientId, SessionId, TerminalId};
 use phux_protocol::wire::frame::{
@@ -14,7 +14,7 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::SessionInfo;
 
 use super::actions::{self, PendingSplit, PendingWindow, apply_spawned_ok, apply_terminal_closed};
-use super::driver::{AttachError, DEFAULT_GROUP_ID, PaneSlot};
+use super::driver::{AttachEnd, AttachError, DEFAULT_GROUP_ID, PaneSlot};
 use super::paint::{SidebarReservation, content_rect, paint_bar_after_pane, paint_focused_pane};
 use crate::agent_meta::{AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
 use crate::layout::{self, LayoutState, Workspace};
@@ -113,6 +113,13 @@ pub(super) struct FrameOutcome {
     /// layout and the consumer-owned detach policy (phux-4r1) decided to
     /// leave (nothing left to render or route input to).
     pub(super) exit: bool,
+    /// phux-i0e8.2.2: WHY the loop is exiting, when `exit` is `true`.
+    /// `Some(LastPaneClosed { .. })` is set ONLY by the `TerminalClosed`
+    /// arm when the fold emptied the workspace, carrying the dead pane's
+    /// exit status so the CLI can explain the exit on the cooked terminal
+    /// after teardown. `None` with `exit: true` means a plain detach
+    /// (server `DETACHED`); the driver folds it to [`AttachEnd::Detached`].
+    pub(super) exit_reason: Option<AttachEnd>,
     /// `true` ⇒ ATTACHED just landed; the driver should emit
     /// `GET_METADATA` + `SUBSCRIBE_METADATA` for the layout key so
     /// other clients' mutations broadcast back to us (ADR-0019).
@@ -235,6 +242,31 @@ fn input_authority_notice(holder: Option<ClientId>) -> String {
     )
 }
 
+/// phux-i0e8.2.2: human phrase for a `TERMINAL_CLOSED` exit status.
+///
+/// The wire carries `Some(n)` for a plain `_exit(n)` and `None` for
+/// signal kills / unknown causes (frame.rs `TerminalClosed`). One
+/// spelling shared by the survivor notice and the last-pane exit
+/// explanation, so both surfaces read as one vocabulary.
+pub(super) fn describe_exit(exit_status: Option<i32>) -> String {
+    exit_status.map_or_else(
+        || "killed (signal or unknown)".to_owned(),
+        |code| format!("exited {code}"),
+    )
+}
+
+/// phux-i0e8.2.2: user-facing name for a pane in a status-bar notice.
+///
+/// A local terminal reads `pane N`; a federation satellite's pane keeps
+/// its host tag (`pane host/N`) so the notice does not alias two panes
+/// with the same peer-local id.
+fn pane_label(id: &TerminalId) -> String {
+    match id {
+        TerminalId::Local { id } => format!("pane {id}"),
+        TerminalId::Satellite { host, id } => format!("pane {host}/{id}"),
+    }
+}
+
 /// Process one server-to-client frame. Returns a [`FrameOutcome`]
 /// describing any follow-up the async driver needs to perform.
 ///
@@ -279,6 +311,11 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
     pending_layout_request: Option<u32>,
     pending_splits: &mut HashMap<u32, PendingSplit>,
     pending_windows: &mut HashMap<u32, PendingWindow>,
+    // phux-i0e8.2.2: Terminals whose close THIS client asked for
+    // (kill-pane / kill-window soft-kill dispatch). The `TerminalClosed`
+    // arm drains the marker and suppresses the pane-exit notice for an
+    // expected close — the user killed it; telling them it died is noise.
+    expected_closes: &mut HashSet<TerminalId>,
     // ADR-0040: the driver-held `phux.agent/v1` index. The MetadataValue /
     // MetadataChanged arms decode agent records into it; the driver reads
     // it when composing window labels.
@@ -1195,6 +1232,11 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 exit_status = ?exit_status,
                 "TerminalClosed",
             );
+            // phux-i0e8.2.2: was this close one WE asked for (kill-pane /
+            // kill-window)? Drain the marker unconditionally — every close
+            // consumes at most one expectation, whatever its exit status —
+            // so a later spontaneous death of a re-used id still notifies.
+            let expected = expected_closes.remove(&terminal_id);
             // Always drop the slot — even for unknown leaves (could be
             // a spawn-failure cleanup race or a stale id from before
             // an attach).
@@ -1232,6 +1274,11 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                         tracing::info!("TerminalClosed folded the last pane; detaching");
                         return Ok(FrameOutcome {
                             exit: true,
+                            // phux-i0e8.2.2: carry the dead pane's status up
+                            // so the CLI can explain the exit on the cooked
+                            // terminal — an OOM-killed shell must not look
+                            // like phux crashed.
+                            exit_reason: Some(AttachEnd::LastPaneClosed { exit_status }),
                             ..FrameOutcome::default()
                         });
                     }
@@ -1240,12 +1287,26 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                     // a surviving window's focus to the first DFS leaf;
                     // a pruned active window hands focus to its successor.
                     *focused_pane = workspace.active_window().and_then(|ls| ls.focus.clone());
+                    // phux-i0e8.2.2: survivors get a transient Warn notice
+                    // naming the dead pane and its exit shape. Silent for a
+                    // clean exit 0 (the user typed `exit`; nothing is wrong)
+                    // and for a close this client itself requested.
+                    let notices = if expected || exit_status == Some(0) {
+                        Vec::new()
+                    } else {
+                        vec![Notice::warn(format!(
+                            "{}: {}",
+                            pane_label(&terminal_id),
+                            describe_exit(exit_status),
+                        ))]
+                    };
                     Ok(FrameOutcome {
                         layout_replaced: true,
                         emit_set_metadata: true,
                         // phux-tnh: the survivor's Rect grew; tell the
                         // server so its PTY winsize grows too.
                         reflow_panes: true,
+                        notices,
                         ..FrameOutcome::default()
                     })
                 }
@@ -1593,14 +1654,14 @@ fn reconcile_loaded_layout(state: &mut LayoutState, local_focus: Option<&Termina
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::{AgentMetaIndex, FrameOutcome, handle_server_frame};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
 
     use phux_protocol::ids::{ClientId, SessionId, TerminalId, WindowId};
     use phux_protocol::wire::frame::FrameKind;
     use phux_protocol::wire::info::{LayoutNode, SessionSnapshot, SplitDir, TerminalInfo};
 
-    use crate::attach::driver::PaneSlot;
+    use crate::attach::driver::{AttachEnd, PaneSlot};
     use crate::layout::{LayoutState, Workspace};
     use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 
@@ -1786,6 +1847,7 @@ mod tests {
             pending_layout_request,
             &mut pending_splits,
             &mut pending_windows,
+            &mut HashSet::new(),
             &mut AgentMetaIndex::default(),
             false,
             false,
@@ -2105,6 +2167,7 @@ mod tests {
             None,
             &mut pending_splits,
             &mut pending_windows,
+            &mut HashSet::new(),
             &mut AgentMetaIndex::default(),
             false,
             false,
@@ -2378,6 +2441,7 @@ mod tests {
             None,
             &mut pending_splits,
             &mut pending_windows,
+            &mut HashSet::new(),
             &mut AgentMetaIndex::default(),
             false,
             false,
@@ -2533,6 +2597,7 @@ mod tests {
             None,
             &mut pending_splits,
             &mut pending_windows,
+            &mut HashSet::new(),
             &mut AgentMetaIndex::default(),
             false,
             false,
@@ -2783,6 +2848,7 @@ mod tests {
             None,
             &mut pending_splits,
             &mut pending_windows,
+            &mut HashSet::new(),
             &mut AgentMetaIndex::default(),
             false,
             false,
@@ -2926,6 +2992,7 @@ mod tests {
             None,
             &mut pending_splits,
             &mut pending_windows,
+            &mut HashSet::new(),
             &mut AgentMetaIndex::default(),
             false,
             false,
@@ -2944,6 +3011,26 @@ mod tests {
         panes: &mut HashMap<TerminalId, PaneSlot>,
         terminal_id: &TerminalId,
         exit_status: Option<i32>,
+    ) -> FrameOutcome {
+        drive_closed_expecting(
+            layout,
+            focused,
+            panes,
+            terminal_id,
+            exit_status,
+            &mut HashSet::new(),
+        )
+    }
+
+    /// [`drive_closed`] with a caller-owned `expected_closes` set, so the
+    /// phux-i0e8.2.2 suppress-and-drain contract can be asserted.
+    fn drive_closed_expecting(
+        layout: &mut Workspace,
+        focused: &mut Option<TerminalId>,
+        panes: &mut HashMap<TerminalId, PaneSlot>,
+        terminal_id: &TerminalId,
+        exit_status: Option<i32>,
+        expected_closes: &mut HashSet<TerminalId>,
     ) -> FrameOutcome {
         let mut out: Vec<u8> = Vec::new();
         let mut session_name = String::new();
@@ -2971,6 +3058,7 @@ mod tests {
             None,
             &mut pending_splits,
             &mut pending_windows,
+            expected_closes,
             &mut AgentMetaIndex::default(),
             false,
             false,
@@ -2997,6 +3085,13 @@ mod tests {
             outcome.exit,
             "closing the only pane must make the consumer detach (exit: true)",
         );
+        assert_eq!(
+            outcome.exit_reason,
+            Some(AttachEnd::LastPaneClosed {
+                exit_status: Some(0)
+            }),
+            "the exit must carry WHY: the last pane closed, with its status",
+        );
         assert!(
             workspace.windows.is_empty(),
             "the workspace must have no windows left after the last pane closes",
@@ -3004,6 +3099,25 @@ mod tests {
         assert!(
             !panes.contains_key(&pane),
             "the closed pane's slot must be dropped",
+        );
+    }
+
+    /// phux-i0e8.2.2: a last-pane death by signal (or unknown cause)
+    /// carries `exit_status: None` up as the exit reason, so the CLI can
+    /// say "killed" instead of pretending the exit was clean.
+    #[test]
+    fn last_pane_signal_death_carries_none_status_in_exit_reason() {
+        let pane = tid(1);
+        let mut workspace = Workspace::single(pane.clone());
+        let mut focused = Some(pane.clone());
+        let mut panes = panes_for(&[&pane]);
+
+        let outcome = drive_closed(&mut workspace, &mut focused, &mut panes, &pane, None);
+
+        assert!(outcome.exit);
+        assert_eq!(
+            outcome.exit_reason,
+            Some(AttachEnd::LastPaneClosed { exit_status: None }),
         );
     }
 
@@ -3048,6 +3162,7 @@ mod tests {
             None,
             &mut pending_splits,
             &mut pending_windows,
+            &mut HashSet::new(),
             &mut agent_meta,
             false,
             false,
@@ -3155,6 +3270,7 @@ mod tests {
             None,
             &mut pending_splits,
             &mut pending_windows,
+            &mut HashSet::new(),
             &mut agent_meta,
             false,
             false,
@@ -3303,6 +3419,7 @@ mod tests {
             None,
             &mut pending_splits,
             &mut pending_windows,
+            &mut HashSet::new(),
             &mut agent_meta,
             false,
             false,
@@ -3460,6 +3577,93 @@ mod tests {
             outcome.layout_replaced && outcome.emit_set_metadata && outcome.reflow_panes,
             "the fold triggers repaint + sibling broadcast + survivor reflow",
         );
+        assert!(
+            outcome.notices.is_empty(),
+            "a clean exit 0 is the user typing `exit` — no notice",
+        );
+    }
+
+    /// phux-i0e8.2.2: a surviving layout gets a transient Warn notice when
+    /// a sibling pane dies with a non-zero status — the OOM-killed / crashed
+    /// process must not vanish silently while the fold animates over it.
+    #[test]
+    fn survivor_close_with_nonzero_status_raises_warn_notice() {
+        use crate::render::chrome::status_bar::NoticeSeverity;
+        let left = tid(1);
+        let right = tid(2);
+        let mut workspace = two_pane_workspace(&left, &right, &left);
+        let mut focused = Some(left.clone());
+        let mut panes = panes_for(&[&left, &right]);
+
+        let outcome = drive_closed(&mut workspace, &mut focused, &mut panes, &left, Some(137));
+
+        assert_eq!(outcome.notices.len(), 1, "exactly one notice per close");
+        assert_eq!(outcome.notices[0].severity, NoticeSeverity::Warn);
+        assert_eq!(outcome.notices[0].text, "pane 1: exited 137");
+    }
+
+    /// phux-i0e8.2.2: `exit_status: None` (signal kill / unknown) names the
+    /// shape rather than inventing a code.
+    #[test]
+    fn survivor_close_by_signal_names_the_kill_shape() {
+        use crate::render::chrome::status_bar::NoticeSeverity;
+        let left = tid(1);
+        let right = tid(2);
+        let mut workspace = two_pane_workspace(&left, &right, &left);
+        let mut focused = Some(left.clone());
+        let mut panes = panes_for(&[&left, &right]);
+
+        let outcome = drive_closed(&mut workspace, &mut focused, &mut panes, &right, None);
+
+        assert_eq!(outcome.notices.len(), 1);
+        assert_eq!(outcome.notices[0].severity, NoticeSeverity::Warn);
+        assert_eq!(
+            outcome.notices[0].text,
+            "pane 2: killed (signal or unknown)"
+        );
+    }
+
+    /// phux-i0e8.2.2: a close THIS client requested (kill-pane /
+    /// kill-window parked the id in `expected_closes`) is suppressed —
+    /// and the marker is DRAINED, so a later spontaneous death of the
+    /// same id would notify again.
+    #[test]
+    fn expected_close_suppresses_notice_and_drains_the_marker() {
+        let left = tid(1);
+        let right = tid(2);
+        let mut workspace = two_pane_workspace(&left, &right, &left);
+        let mut focused = Some(left.clone());
+        let mut panes = panes_for(&[&left, &right]);
+        let mut expected: HashSet<TerminalId> = HashSet::new();
+        expected.insert(left.clone());
+
+        let outcome = drive_closed_expecting(
+            &mut workspace,
+            &mut focused,
+            &mut panes,
+            &left,
+            Some(137),
+            &mut expected,
+        );
+
+        assert!(
+            outcome.notices.is_empty(),
+            "a client-initiated kill is not news to the client",
+        );
+        assert!(
+            expected.is_empty(),
+            "the expectation must be consumed by the close it predicted",
+        );
+    }
+
+    /// phux-i0e8.2.2: one wording for every exit shape, shared by the
+    /// survivor notice and the last-pane explanation.
+    #[test]
+    fn describe_exit_covers_all_shapes() {
+        assert_eq!(super::describe_exit(Some(0)), "exited 0");
+        assert_eq!(super::describe_exit(Some(137)), "exited 137");
+        assert_eq!(super::describe_exit(Some(-1)), "exited -1");
+        assert_eq!(super::describe_exit(None), "killed (signal or unknown)");
     }
 
     #[test]
@@ -3513,6 +3717,7 @@ mod tests {
             None,
             &mut pending_splits,
             &mut pending_windows,
+            &mut HashSet::new(),
             agent_meta,
             false,
             false,

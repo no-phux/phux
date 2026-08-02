@@ -2069,6 +2069,27 @@ Current producers:
   { SATELLITE_UNREACHABLE }`), a warn notice reports it (`federation
   degraded: ...`). This is the in-TUI view of the same state `phux
   status` reports on the CLI.
+- **Pane death** (phux-i0e8.2.2). When a pane's process dies and other
+  panes survive the layout fold, a warn notice names the dead pane and
+  its exit shape: `pane 3: exited 137`, or `pane 3: killed (signal or
+  unknown)` when `TERMINAL_CLOSED` carried no exit code (a signal kill).
+  Two deaths are deliberately silent: a clean **exit 0** (the user typed
+  `exit`; nothing is wrong) and a close **this client itself requested**
+  via `kill-pane` / `kill-window` (the kill dispatch marks its targets
+  as expected, and the matching close consumes the marker — so a later
+  spontaneous death of a reused pane id still notifies).
+
+When the **last** pane dies there is no bar left to notice on: the
+client's consumer-owned detach policy (phux-4r1) tears the TUI down.
+Since phux-i0e8.2.2 that exit is *explained*: after the alt screen is
+gone and the terminal is cooked again, the client prints one line to
+stderr — `phux: session ended: the last pane exited 137` (or
+`... killed (signal or unknown)`) — so an OOM-killed shell no longer
+looks like a phux crash. A clean detach prints nothing, and the process
+exit code stays `0` in both cases: the attach succeeded; the ending just
+gets words. (Internally the `run_*` attach entry points return an
+`AttachEnd` — `Detached` vs `LastPaneClosed { exit_status }` — that the
+CLI callers format.)
 
 Precedence and degradation:
 

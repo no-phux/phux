@@ -21,7 +21,7 @@
 )]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -785,6 +785,49 @@ impl From<super::render::RenderError> for AttachError {
     }
 }
 
+/// phux-i0e8.2.2: how a successful attach loop ended.
+///
+/// Threaded out of every `run_*` entry point so the CLI can tell "you
+/// detached" from "your last pane died" — before this, an OOM-killed
+/// shell tore the whole TUI down with zero explanation and looked
+/// exactly like a phux crash. Either way the attach was *successful*
+/// (the process exits `0`); this is an explanation, not an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachEnd {
+    /// The user detached (or the server acknowledged a detach-intended
+    /// disconnect). The quiet, expected ending — nothing to explain.
+    Detached,
+    /// The last pane's process exited, so there was nothing left to
+    /// render or route input to and the consumer-owned detach policy
+    /// (phux-4r1) left the session.
+    LastPaneClosed {
+        /// The dead pane's `_exit(n)` code, or `None` for signal kills /
+        /// unknown causes — the same shape `TERMINAL_CLOSED` carries on
+        /// the wire.
+        exit_status: Option<i32>,
+    },
+}
+
+impl AttachEnd {
+    /// One-line explanation for the cooked terminal after teardown, or
+    /// `None` when the ending needs no words (a plain detach).
+    ///
+    /// Printed by [`exit_after_detach`] on the production path (which
+    /// exits the process before the CLI regains control — see its doc
+    /// comment) and available to CLI callers holding a returned
+    /// `AttachEnd` on any path that does return.
+    #[must_use]
+    pub fn explanation(self) -> Option<String> {
+        match self {
+            Self::Detached => None,
+            Self::LastPaneClosed { exit_status } => Some(format!(
+                "phux: session ended: the last pane {}",
+                super::server_frame::describe_exit(exit_status),
+            )),
+        }
+    }
+}
+
 /// Public entry point: run an attach loop against `socket`, targeting
 /// `target`. Blocks until the server sends `DETACHED` or the user
 /// detaches.
@@ -809,7 +852,7 @@ impl From<super::render::RenderError> for AttachError {
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
-pub async fn run(socket: &Path, target: AttachTarget) -> Result<(), AttachError> {
+pub async fn run(socket: &Path, target: AttachTarget) -> Result<AttachEnd, AttachError> {
     run_buffered(
         &Dial::uds(socket),
         target,
@@ -836,7 +879,7 @@ async fn run_buffered(
     target: AttachTarget,
     predict: PredictiveConfig,
     rec: Option<Rc<RefCell<SessionRecorder>>>,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     let (mut sink, writer) = super::stdout_writer::spawn_stdout_writer();
     // Cloned BEFORE any wrap: the resync flag belongs to the StdoutSink, not
     // to whatever is layered on top of it.
@@ -888,7 +931,7 @@ pub async fn run_with_predict(
     socket: &Path,
     target: AttachTarget,
     predict: PredictiveConfig,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     run_buffered(&Dial::uds(socket), target, predict, None).await
 }
 
@@ -905,7 +948,7 @@ pub async fn run_with_predict_dial(
     dial: &Dial,
     target: AttachTarget,
     predict: PredictiveConfig,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     run_buffered(dial, target, predict, None).await
 }
 
@@ -925,7 +968,7 @@ pub async fn run_recorded_dial(
     target: AttachTarget,
     predict: PredictiveConfig,
     rec: Rc<RefCell<SessionRecorder>>,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     run_buffered(dial, target, predict, Some(rec)).await
 }
 
@@ -955,7 +998,7 @@ pub async fn run_with_stdout<W: super::RenderSink>(
     socket: &Path,
     target: AttachTarget,
     out: &mut W,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     run_with_stdout_predict(socket, target, out, PredictiveConfig::disabled()).await
 }
 
@@ -971,7 +1014,7 @@ pub async fn run_with_stdout_predict<W: super::RenderSink>(
     target: AttachTarget,
     out: &mut W,
     predict: PredictiveConfig,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     // Synchronous-sink test seam: no off-loop writer, no resync flag.
     attach_session(&Dial::uds(socket), target, out, predict, None, None, false).await
 }
@@ -1066,6 +1109,9 @@ pub async fn run_headless_rendered(
     // phux-p4vp: pane cwd + branch memo so the composited sidebar carries
     // the same branch lines a live attach would.
     let mut vcs = VcsIndex::default();
+    // phux-i0e8.2.2: headless composite dispatches no kill actions, so the
+    // expected-close set stays empty; threaded for the shared signature.
+    let mut expected_closes: HashSet<TerminalId> = HashSet::new();
 
     // Replay ATTACHED so the focused-pane + workspace bootstrap runs once.
     let outcome = handle_server_frame(
@@ -1084,6 +1130,7 @@ pub async fn run_headless_rendered(
         layout_get_request_id,
         &mut pending_splits,
         &mut pending_windows,
+        &mut expected_closes,
         &mut agent_meta,
         false,
         true,
@@ -1147,6 +1194,7 @@ pub async fn run_headless_rendered(
                         layout_get_request_id,
                         &mut pending_splits,
                         &mut pending_windows,
+                        &mut expected_closes,
                         &mut agent_meta,
                         false,
                         true,
@@ -1219,7 +1267,7 @@ async fn attach_session<W: super::RenderSink>(
     resync: Option<&AtomicBool>,
     mut writer: Option<super::stdout_writer::WriterHandle>,
     probe_default_colors: bool,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     // STAGE 1 — pre-handshake, on the cooked outer terminal.
     //
     // We deliberately do NOT install RawModeGuard here. If anything in
@@ -1326,9 +1374,9 @@ async fn attach_session<W: super::RenderSink>(
             }
         };
         match exit {
-            LoopExit::Detached => {
+            LoopExit::Detached(end) => {
                 // Lifecycle transition (info): the attach loop is exiting.
-                tracing::info!("attach loop: DETACHED; exiting");
+                tracing::info!(?end, "attach loop: DETACHED; exiting");
                 // The session ended (user detach, server `DETACHED`, or a
                 // detach-intended disconnect). Restore the terminal and
                 // exit now rather than returning up the stack: a returning
@@ -1342,7 +1390,7 @@ async fn attach_session<W: super::RenderSink>(
                 if let Some(writer) = writer.take() {
                     writer.shutdown_and_join();
                 }
-                exit_after_detach();
+                exit_after_detach(end);
             }
             LoopExit::SwitchTo(target) => {
                 // Lifecycle transition (info): switching sessions on the
@@ -1549,10 +1597,11 @@ async fn wait_for_attached(conn: &mut Connection) -> Result<FrameKind, AttachErr
 /// than tear down and rebuild that state in place, the loop signals its
 /// caller ([`run_with_stdout_predict`]'s outer loop) which way it exited:
 ///
-/// * `Detached` — the user detached or the server sent `DETACHED`. The
-///   loop already ran `exit_after_detach` on that path (which never
-///   returns); the outer loop treats a returned `Detached` as a clean
-///   exit too.
+/// * `Detached(end)` — the user detached, the server sent `DETACHED`, or
+///   the last pane closed (phux-i0e8.2.2 — `end` carries which, plus the
+///   dead pane's exit status). The outer loop runs `exit_after_detach(end)`
+///   on this path, which prints the last-pane explanation on the cooked
+///   terminal and exits the process.
 /// * `SwitchTo(target)` — the user committed `switch-session { name }`
 ///   (via the `<leader> a` picker / palette) or `new-session`. The outer
 ///   loop detaches from the current session and re-runs the handshake
@@ -1561,8 +1610,10 @@ async fn wait_for_attached(conn: &mut Connection) -> Result<FrameKind, AttachErr
 ///   and freshly-rebuilt session state.
 #[derive(Debug)]
 enum LoopExit {
-    /// The session ended (detach / server DETACHED). The process exits.
-    Detached,
+    /// The session ended (detach / server DETACHED / last pane closed).
+    /// Carries WHY (phux-i0e8.2.2) so the teardown path can explain a
+    /// last-pane death on the cooked terminal. The process exits.
+    Detached(AttachEnd),
     /// Re-attach on the same connection — to an existing session or a
     /// newly-created one.
     SwitchTo(ReattachTarget),
@@ -1923,6 +1974,11 @@ async fn main_loop<W: super::RenderSink>(
     // old state and toasts the error. The `phux config reload` CLI
     // doorbell reaches the same handler via `FrameOutcome::config_reload`.
     let mut reload_request = false;
+    // phux-i0e8.2.2: Terminals whose close THIS client requested
+    // (kill-pane / kill-window). The action dispatcher parks ids here at
+    // the kill seam; the `TerminalClosed` arm drains them to suppress the
+    // pane-exit notice for a death the user themselves ordered.
+    let mut expected_closes: HashSet<TerminalId> = HashSet::new();
 
     // Replay the `ATTACHED` frame so the focused-pane bookkeeping in
     // `handle_server_frame` runs exactly once, in one place. The sidebar
@@ -1948,13 +2004,16 @@ async fn main_loop<W: super::RenderSink>(
         layout_get_request_id,
         &mut pending_splits,
         &mut pending_windows,
+        &mut expected_closes,
         &mut agent_meta,
         overlays.is_active(),
         // Single replayed frame — no burst to coalesce, paint it.
         false,
     )?;
     if outcome.exit {
-        return Ok(LoopExit::Detached);
+        return Ok(LoopExit::Detached(
+            outcome.exit_reason.unwrap_or(AttachEnd::Detached),
+        ));
     }
     vcs.apply_snapshot(outcome.pane_cwds);
     if let Some((list, focused)) = outcome.sessions {
@@ -2303,6 +2362,7 @@ async fn main_loop<W: super::RenderSink>(
                     next_request_id: &mut next_request_id,
                     pending_splits: &mut pending_splits,
                     pending_windows: &mut pending_windows,
+                    expected_closes: &mut expected_closes,
                     overlays: &mut overlays,
                     keybindings: keybindings_snapshot.as_ref(),
                     theme: &theme,
@@ -2636,6 +2696,7 @@ async fn main_loop<W: super::RenderSink>(
                             layout_get_request_id,
                             &mut pending_splits,
                             &mut pending_windows,
+                            &mut expected_closes,
                             &mut agent_meta,
                             overlays.is_active(),
                             defer_paint,
@@ -2643,7 +2704,9 @@ async fn main_loop<W: super::RenderSink>(
                         focus_history.observe(focused_before_frame, focused_pane.as_ref());
                         focus_history.repair(focused_pane.as_ref(), &workspace);
                         if outcome.exit {
-                            return Ok(LoopExit::Detached);
+                            return Ok(LoopExit::Detached(
+                                outcome.exit_reason.unwrap_or(AttachEnd::Detached),
+                            ));
                         }
                         // A peer headless placement can add a layout leaf
                         // without this attached client being subscribed to the
@@ -3065,7 +3128,7 @@ async fn main_loop<W: super::RenderSink>(
                         // frame — treat it as a clean shutdown because
                         // the user requested detach. Otherwise the loop
                         // bubbles the disconnect up unchanged.
-                        return Ok(LoopExit::Detached);
+                        return Ok(LoopExit::Detached(AttachEnd::Detached));
                     }
                     Err(err) => return Err(err),
                 }
@@ -3138,6 +3201,7 @@ async fn main_loop<W: super::RenderSink>(
                     next_request_id: &mut next_request_id,
                     pending_splits: &mut pending_splits,
                     pending_windows: &mut pending_windows,
+                    expected_closes: &mut expected_closes,
                     overlays: &mut overlays,
                     keybindings: keybindings_snapshot.as_ref(),
                     theme: &theme,
@@ -4809,12 +4873,26 @@ fn terminal_reset_on_signal() {
 /// reattach command, which is why reattach "did nothing." Exiting here
 /// closes that window: the restore mirrors the signal path, and
 /// `process::exit` skips the teardown that would otherwise hang.
+///
+/// phux-i0e8.2.2: because this never returns, the CLI's own `Ok(end)`
+/// handling can't run on this path — so the one-line explanation for a
+/// last-pane death (`AttachEnd::explanation`) is printed HERE, after the
+/// terminal reset (the screen is cooked again) and before the exit. A
+/// plain detach explains nothing. Process exit stays `0` either way:
+/// the attach succeeded; the ending just deserves words.
 #[allow(
     clippy::exit,
     reason = "detach must exit now; runtime drop hangs on the stdin read thread"
 )]
-fn exit_after_detach() -> ! {
+#[allow(
+    clippy::print_stderr,
+    reason = "phux-i0e8.2.2: the terminal is cooked again and the process exits before the CLI could print; this is the only window for the last-pane explanation"
+)]
+fn exit_after_detach(end: AttachEnd) -> ! {
     terminal_reset_on_signal();
+    if let Some(line) = end.explanation() {
+        eprintln!("{line}");
+    }
     std::process::exit(0);
 }
 

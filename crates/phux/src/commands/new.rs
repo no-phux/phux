@@ -11,9 +11,9 @@ use phux_protocol::wire::frame::{
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{
-    DEFAULT_SESSION_NAME, attach::client_cwd, attach::resolved_default_session_name,
-    attach::run_attach_once, cli_runtime, partial, print_attach_error, report_no_server,
-    server::maybe_auto_spawn_server,
+    DEFAULT_SESSION_NAME, attach::client_cwd, attach::report_attach_end,
+    attach::resolved_default_session_name, attach::run_attach_once, cli_runtime, partial,
+    print_attach_error, report_no_server, server::maybe_auto_spawn_server,
 };
 
 /// `phux new` — create a *new* session and attach to it.
@@ -132,7 +132,12 @@ pub(crate) fn run_new(
         target,
         predict_cfg,
     )) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(attach_end) => {
+            // phux-i0e8.2.2: same one-line ending explanation as `phux
+            // attach` — a last-pane death is named, a detach stays quiet.
+            report_attach_end(attach_end);
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             print_attach_error(&err, &socket_path, &name);
             ExitCode::FAILURE

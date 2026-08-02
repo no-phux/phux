@@ -7,7 +7,7 @@
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
 //! chord to its remote `SPAWN_TERMINAL` reply.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use libghostty_vt::terminal::{Mode, ScrollViewport};
 use phux_protocol::TerminalId;
@@ -75,6 +75,13 @@ pub(super) struct DispatchCtx<'a> {
     /// `TERMINAL_SPAWNED` reply. Same lifecycle as `pending_splits`,
     /// keyed in the same request-id space.
     pub pending_windows: &'a mut HashMap<u32, PendingWindow>,
+    /// phux-i0e8.2.2: Terminals whose close THIS client requested
+    /// (kill-pane / kill-window soft-kill). [`apply_action_effects`]
+    /// parks the target ids here at the kill-dispatch seam; the
+    /// `TerminalClosed` arm of `handle_server_frame` drains a matching
+    /// id and suppresses the pane-exit notice — the user ordered that
+    /// death, so reporting it would be noise.
+    pub expected_closes: &'a mut HashSet<TerminalId>,
     /// phux-5ke.4: overlay stack. When non-empty the dispatcher routes
     /// key events to the active overlay (no resolver, no predict, no
     /// pane forwarding) and the `show-help` action pushes onto it.
@@ -1448,7 +1455,11 @@ async fn apply_action_effects<W: super::RenderSink>(
         conn.send(&frame).await?;
     }
     // kill-pane / kill-window keystroke sequences; the TERMINAL_CLOSED
-    // fold-out happens when each shell exits.
+    // fold-out happens when each shell exits. Park the targets FIRST
+    // (phux-i0e8.2.2): once the frames are on the wire the close can
+    // race back, and an unmarked close would notice-spam the user about
+    // a death they ordered.
+    ctx.expected_closes.extend(effects.expected_closes);
     for frame in effects.kill_frames {
         conn.send(&frame).await?;
     }
@@ -1639,6 +1650,11 @@ struct ActionEffects {
     /// resulting `TERMINAL_CLOSED` from the server folds the pane out
     /// of the layout in [`crate::attach::server_frame::handle_server_frame`].
     kill_frames: Vec<FrameKind>,
+    /// phux-i0e8.2.2: the Terminals `kill_frames` targets. The async
+    /// caller parks them in `DispatchCtx::expected_closes` so the
+    /// eventual `TERMINAL_CLOSED` is recognized as client-initiated and
+    /// its pane-exit notice suppressed.
+    expected_closes: Vec<TerminalId>,
     /// ADR-0033: supervisory commands (`ACQUIRE_INPUT` / `RELEASE_INPUT` /
     /// `SIGNAL_TERMINAL`) the `take-input` / `give-input` / `signal-terminal`
     /// actions built for the focused pane. The async caller sends each as a
@@ -1824,6 +1840,9 @@ fn run_action(
                 return effects;
             };
             effects.kill_frames = soft_kill_input_frames(&focused_id);
+            // phux-i0e8.2.2: mark the close as ours so the resulting
+            // TERMINAL_CLOSED does not raise a pane-exit notice.
+            effects.expected_closes = vec![focused_id];
         }
         "take-input" => {
             // ADR-0033: seize the focused pane's input lease so only this
@@ -1969,6 +1988,9 @@ fn run_action(
                 return effects;
             }
             effects.kill_frames = leaves.iter().flat_map(soft_kill_input_frames).collect();
+            // phux-i0e8.2.2: every pane in the window dies at our request;
+            // none of those closes is news.
+            effects.expected_closes = leaves;
         }
         "next-window" => {
             switch_window(ctx, &mut effects, Workspace::next);
@@ -3238,6 +3260,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,
@@ -3320,8 +3343,21 @@ mod tests {
         let effects = run(&bare_action("kill-window"), &mut workspace);
         // 3 leaves x 5 frames (e/x/i/t/Enter) each.
         assert_eq!(effects.kill_frames.len(), 15);
+        // phux-i0e8.2.2: every targeted leaf is marked as an expected
+        // close so the resulting TERMINAL_CLOSEDs stay notice-silent.
+        assert_eq!(effects.expected_closes, vec![tid(1), tid(2), tid(3)]);
         // No synchronous removal — TerminalClosed folds + prunes.
         assert_eq!(workspace.windows.len(), 1);
+    }
+
+    /// phux-i0e8.2.2: `kill-pane` marks its own target as an expected
+    /// close alongside the soft-kill frames.
+    #[test]
+    fn kill_pane_marks_the_focused_pane_as_expected_close() {
+        let mut workspace = Workspace::single(tid(7));
+        let effects = run(&bare_action("kill-pane"), &mut workspace);
+        assert!(!effects.kill_frames.is_empty());
+        assert_eq!(effects.expected_closes, vec![tid(7)]);
     }
 
     #[test]
@@ -3614,6 +3650,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,
@@ -3680,6 +3717,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,
@@ -3781,6 +3819,7 @@ mod tests {
                 next_request_id: &mut next_request_id,
                 pending_splits: &mut pending_splits,
                 pending_windows: &mut pending_windows,
+                expected_closes: &mut HashSet::new(),
                 overlays: &mut overlays,
                 keybindings: None,
                 theme: &theme,
@@ -3945,6 +3984,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,
@@ -4373,6 +4413,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,
@@ -4855,6 +4896,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,
@@ -4942,6 +4984,7 @@ mod tests {
                 next_request_id: &mut next_request_id,
                 pending_splits: &mut pending_splits,
                 pending_windows: &mut pending_windows,
+                expected_closes: &mut HashSet::new(),
                 overlays: &mut overlays,
                 keybindings: None,
                 theme: &theme,
@@ -5117,6 +5160,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,
@@ -5230,6 +5274,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: Some(&cfg.keybindings),
             theme: &theme,
@@ -5390,6 +5435,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,
@@ -5587,6 +5633,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,
@@ -5805,6 +5852,7 @@ mod tests {
                 next_request_id: &mut next_request_id,
                 pending_splits: &mut pending_splits,
                 pending_windows: &mut pending_windows,
+                expected_closes: &mut HashSet::new(),
                 overlays: &mut overlays,
                 keybindings: None,
                 theme: &theme,
@@ -6125,6 +6173,7 @@ mod tests {
                 next_request_id: &mut next_request_id,
                 pending_splits: &mut pending_splits,
                 pending_windows: &mut pending_windows,
+                expected_closes: &mut HashSet::new(),
                 overlays,
                 keybindings: None,
                 theme: &theme,
@@ -6605,6 +6654,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,
@@ -6825,6 +6875,7 @@ mod tests {
             next_request_id: &mut next_request_id,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
+            expected_closes: &mut HashSet::new(),
             overlays: &mut overlays,
             keybindings: None,
             theme: &theme,

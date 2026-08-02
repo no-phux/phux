@@ -72,7 +72,7 @@ pub mod ws;
 
 pub use connection::{CertTrust, Dial, QuicDial, WsDial};
 pub use driver::{
-    AttachError, run, run_headless_rendered, run_recorded_dial, run_with_predict,
+    AttachEnd, AttachError, run, run_headless_rendered, run_recorded_dial, run_with_predict,
     run_with_predict_dial, run_with_stdout, write_terminal_reset,
 };
 
