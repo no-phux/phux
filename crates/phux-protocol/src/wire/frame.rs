@@ -2932,6 +2932,17 @@ impl FrameKind {
     pub fn decode(input: &[u8]) -> Result<(Self, &[u8]), DecodeError> {
         Decoder::new(input).read_frame()
     }
+
+    /// Decode one frame using the payload limits negotiated in `HELLO_OK`.
+    ///
+    /// Bootstrap/history payload lengths are rejected against `limits` while
+    /// still borrowed from the input, before an owned payload copy is made.
+    pub fn decode_with_limits(
+        input: &[u8],
+        limits: BootstrapLimits,
+    ) -> Result<(Self, &[u8]), DecodeError> {
+        Decoder::with_bootstrap_limits(input, limits).read_frame()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -2944,6 +2955,7 @@ pub(super) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut Encoder<'_
             enc.write_u8(BootstrapCodec::SYNTHESIZED_VT_V1_TAG);
         }
         BootstrapCodec::Native(version) => {
+
             enc.write_u8(BootstrapCodec::NATIVE_TAG);
             enc.write_u8(version.as_wire());
         }

@@ -91,6 +91,26 @@ fn encoded_field_ids(frame: &FrameKind) -> Vec<u64> {
     ids
 }
 
+fn encode_without_field(frame: &FrameKind, omitted_id: u64) -> Vec<u8> {
+    let mut encoded = BytesMut::new();
+    frame.encode(&mut encoded);
+    let type_byte = encoded[4];
+    let mut offset = 5;
+    let mut fields = Vec::new();
+    while offset < encoded.len() {
+        let field_start = offset;
+        let id = take_varint(&encoded, &mut offset);
+        assert_eq!(encoded[offset], 4);
+        offset += 1;
+        let length = usize::try_from(take_varint(&encoded, &mut offset)).unwrap();
+        offset += length;
+        if id != omitted_id {
+            fields.extend_from_slice(&encoded[field_start..offset]);
+        }
+    }
+    framed(type_byte, &fields)
+}
+
 fn local_terminal(raw: u32) -> [u8; 5] {
     let mut value = [0u8; 5];
     value[1..].copy_from_slice(&raw.to_be_bytes());
@@ -217,6 +237,44 @@ fn hello_and_all_three_selected_profiles_round_trip() {
             selected_profile,
             bootstrap_limits: BootstrapLimits::new(128 * 1024, 512 * 1024).unwrap(),
         });
+    }
+}
+
+#[test]
+fn hello_rejects_each_omitted_required_field() {
+    let hello = FrameKind::Hello {
+        client_name: "required-fields".to_owned(),
+        protocol_major: 0,
+        protocol_minor: 7,
+        protocol_patch: 0,
+        client_caps: ClientCapabilities::new(),
+    };
+    for omitted_id in 1..=5 {
+        assert_eq!(
+            FrameKind::decode(&encode_without_field(&hello, omitted_id)).unwrap_err(),
+            DecodeError::UnexpectedEof,
+            "HELLO field {omitted_id} must be required",
+        );
+    }
+}
+
+#[test]
+fn hello_ok_rejects_each_omitted_required_field() {
+    let hello_ok = FrameKind::HelloOk {
+        protocol_major: 0,
+        protocol_minor: 7,
+        protocol_patch: 0,
+        server_caps: ServerCapabilities::new(),
+        server_id: Vec::new(),
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::default(),
+    };
+    for omitted_id in 1..=8 {
+        assert_eq!(
+            FrameKind::decode(&encode_without_field(&hello_ok, omitted_id)).unwrap_err(),
+            DecodeError::UnexpectedEof,
+            "HELLO_OK field {omitted_id} must be required",
+        );
     }
 }
 
@@ -454,6 +512,7 @@ fn profile_selection_prefers_native_then_explicit_compatibility() {
         profile,
         BootstrapProfile::NativeState {
             codec: EngineCodec::LibghosttyCheckpointV2,
+
             features: EngineFeatureSet::required_native(),
         }
     );
@@ -479,6 +538,55 @@ fn profile_selection_prefers_native_then_explicit_compatibility() {
     );
     let server = BootstrapCapabilities::new().with_profiles(native_only);
     assert!(select_bootstrap_profile(&client, &server).is_err());
+}
+#[test]
+fn negotiated_payload_limits_reject_before_owned_copy() {
+    let limits = BootstrapLimits::new(1024, 2048).unwrap();
+    let chunk = FrameKind::BootstrapChunk {
+        terminal_id: TerminalId::local(1),
+        stream_id: stream(1),
+        bootstrap_id: bootstrap(1),
+        chunk_seq: 0,
+        payload: Bytes::from(vec![0; 1025]),
+    };
+    let mut encoded = BytesMut::new();
+    chunk.encode(&mut encoded);
+    assert_eq!(
+        FrameKind::decode_with_limits(&encoded, limits).unwrap_err(),
+        DecodeError::BootstrapLimitExceeded
+    );
+    assert!(FrameKind::decode(&encoded).is_ok());
+
+    let page = FrameKind::HistoryPage {
+        terminal_id: TerminalId::local(1),
+        stream_id: stream(1),
+        bootstrap_id: bootstrap(1),
+        cursor: Bytes::from_static(b"cursor"),
+        next_cursor: None,
+        payload: Bytes::from(vec![0; 2049]),
+    };
+    encoded.clear();
+    page.encode(&mut encoded);
+    assert_eq!(
+        FrameKind::decode_with_limits(&encoded, limits).unwrap_err(),
+        DecodeError::BootstrapLimitExceeded
+    );
+    assert!(FrameKind::decode(&encoded).is_ok());
+
+    let request = FrameKind::HistoryRequest {
+        terminal_id: TerminalId::local(1),
+        stream_id: stream(1),
+        bootstrap_id: bootstrap(1),
+        cursor: Bytes::from_static(b"cursor"),
+        max_bytes: 2049,
+    };
+    encoded.clear();
+    request.encode(&mut encoded);
+    assert_eq!(
+        FrameKind::decode_with_limits(&encoded, limits).unwrap_err(),
+        DecodeError::BootstrapLimitExceeded
+    );
+    assert!(FrameKind::decode(&encoded).is_ok());
 }
 
 #[test]

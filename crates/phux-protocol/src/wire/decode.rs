@@ -57,14 +57,12 @@ macro_rules! sub {
 pub struct Decoder<'a> {
     input: &'a [u8],
     pos: usize,
-    /// End offset of the current frame body, set by [`Self::read_frame`]
-    /// once the length header is parsed. Lets variant decoders distinguish
-    /// "ran out of this frame's body" (a backward-compat trailing field is
-    /// absent) from "ran out of the whole buffer", without conflating a
-    /// following frame's bytes with this frame's optional tail. `None`
-    /// outside a framed decode (the boundary is unknown), in which case
-    /// [`Self::at_body_end`] falls back to the input end.
+    /// End offset of the current frame body.
     body_end: Option<usize>,
+    /// Connection-negotiated maximum `BOOTSTRAP_CHUNK.payload` bytes.
+    max_bootstrap_chunk_bytes: u32,
+    /// Connection-negotiated maximum `HISTORY_PAGE.payload` bytes.
+    max_history_page_bytes: u32,
 }
 
 impl<'a> Decoder<'a> {
@@ -75,6 +73,26 @@ impl<'a> Decoder<'a> {
             input,
             pos: 0,
             body_end: None,
+            max_bootstrap_chunk_bytes: MAX_BOOTSTRAP_CHUNK_BYTES,
+            max_history_page_bytes: MAX_HISTORY_PAGE_BYTES,
+        }
+    }
+
+    /// Wrap `input` with the payload limits negotiated in `HELLO_OK`.
+    ///
+    /// The decoder checks a payload's borrowed TLV slice length against these
+    /// limits before copying it into owned [`bytes::Bytes`].
+    #[must_use]
+    pub const fn with_bootstrap_limits(
+        input: &'a [u8],
+        limits: BootstrapLimits,
+    ) -> Self {
+        Self {
+            input,
+            pos: 0,
+            body_end: None,
+            max_bootstrap_chunk_bytes: limits.max_chunk_bytes(),
+            max_history_page_bytes: limits.max_history_page_bytes(),
         }
     }
 
@@ -321,9 +339,9 @@ impl<'a> Decoder<'a> {
         let frame = match type_byte {
             TYPE_HELLO => {
                 let mut client_name: Option<String> = None;
-                let mut protocol_major = 0u16;
-                let mut protocol_minor = 0u16;
-                let mut protocol_patch = 0u16;
+                let mut protocol_major = None;
+                let mut protocol_minor = None;
+                let mut protocol_patch = None;
                 let mut client_caps: Option<crate::caps::ClientCapabilities> = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
@@ -335,13 +353,16 @@ impl<'a> Decoder<'a> {
                             );
                         }
                         field::hello::PROTOCOL_MAJOR => {
-                            protocol_major = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_major =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello::PROTOCOL_MINOR => {
-                            protocol_minor = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_minor =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello::PROTOCOL_PATCH => {
-                            protocol_patch = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_patch =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello::CLIENT_CAPS => {
                             let mut d = Decoder::new(value);
@@ -430,45 +451,47 @@ impl<'a> Decoder<'a> {
                 }
                 FrameKind::Hello {
                     client_name: client_name.ok_or(DecodeError::UnexpectedEof)?,
-                    protocol_major,
-                    protocol_minor,
-                    protocol_patch,
+                    protocol_major: protocol_major.ok_or(DecodeError::UnexpectedEof)?,
+                    protocol_minor: protocol_minor.ok_or(DecodeError::UnexpectedEof)?,
+                    protocol_patch: protocol_patch.ok_or(DecodeError::UnexpectedEof)?,
                     client_caps: client_caps.ok_or(DecodeError::UnexpectedEof)?,
                 }
             }
             TYPE_HELLO_OK => {
-                let mut protocol_major = 0u16;
-                let mut protocol_minor = 0u16;
-                let mut protocol_patch = 0u16;
-                let mut server_caps = crate::caps::ServerCapabilities::default();
-                let mut server_id: Vec<u8> = Vec::new();
+                let mut protocol_major = None;
+                let mut protocol_minor = None;
+                let mut protocol_patch = None;
+                let mut server_caps = None;
+                let mut server_id = None;
                 let mut selected_profile = None;
                 let mut max_chunk_bytes = None;
                 let mut max_history_page_bytes = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::hello_ok::PROTOCOL_MAJOR => {
-                            protocol_major = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_major =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello_ok::PROTOCOL_MINOR => {
-                            protocol_minor = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_minor =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello_ok::PROTOCOL_PATCH => {
-                            protocol_patch = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_patch =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello_ok::SERVER_CAPS => {
                             let mut d = Decoder::new(value);
+                            let mut caps = crate::caps::ServerCapabilities::new()
+                                .with_layers(crate::caps::LayerSet::from_wire(d.read_u8()?));
                             if !d.at_body_end() {
-                                server_caps = server_caps
-                                    .with_layers(crate::caps::LayerSet::from_wire(d.read_u8()?));
-                            }
-                            if !d.at_body_end() {
-                                server_caps = server_caps.with_features(
+                                caps = caps.with_features(
                                     crate::caps::ServerFeatureSet::from_wire(d.read_u32_be()?),
                                 );
                             }
+                            server_caps = Some(caps);
                         }
-                        field::hello_ok::SERVER_ID => server_id = value.to_vec(),
+                        field::hello_ok::SERVER_ID => server_id = Some(value.to_vec()),
                         field::hello_ok::SELECTED_PROFILE => {
                             selected_profile = Some(sub!(value, decode_bootstrap_profile));
                         }
@@ -489,11 +512,11 @@ impl<'a> Decoder<'a> {
                 )
                 .ok_or(DecodeError::BootstrapLimitExceeded)?;
                 FrameKind::HelloOk {
-                    protocol_major,
-                    protocol_minor,
-                    protocol_patch,
-                    server_caps,
-                    server_id,
+                    protocol_major: protocol_major.ok_or(DecodeError::UnexpectedEof)?,
+                    protocol_minor: protocol_minor.ok_or(DecodeError::UnexpectedEof)?,
+                    protocol_patch: protocol_patch.ok_or(DecodeError::UnexpectedEof)?,
+                    server_caps: server_caps.ok_or(DecodeError::UnexpectedEof)?,
+                    server_id: server_id.ok_or(DecodeError::UnexpectedEof)?,
                     selected_profile: selected_profile.ok_or(DecodeError::UnexpectedEof)?,
                     bootstrap_limits,
                 }
@@ -816,7 +839,7 @@ impl<'a> Decoder<'a> {
                             chunk_seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
                         }
                         field::bootstrap_chunk::PAYLOAD => {
-                            if value.len() > MAX_BOOTSTRAP_CHUNK_BYTES as usize {
+                            if value.len() > self.max_bootstrap_chunk_bytes as usize {
                                 return Err(DecodeError::BootstrapLimitExceeded);
                             }
                             payload = Some(bytes::Bytes::copy_from_slice(value));
@@ -894,7 +917,7 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 let max_bytes = max_bytes.ok_or(DecodeError::UnexpectedEof)?;
-                if max_bytes == 0 || max_bytes > MAX_HISTORY_PAGE_BYTES {
+                if max_bytes == 0 || max_bytes > self.max_history_page_bytes {
                     return Err(DecodeError::BootstrapLimitExceeded);
                 }
                 FrameKind::HistoryRequest {
@@ -936,7 +959,7 @@ impl<'a> Decoder<'a> {
                             next_cursor = Some(bytes::Bytes::copy_from_slice(value));
                         }
                         field::history_page::PAYLOAD => {
-                            if value.len() > MAX_HISTORY_PAGE_BYTES as usize {
+                            if value.len() > self.max_history_page_bytes as usize {
                                 return Err(DecodeError::BootstrapLimitExceeded);
                             }
                             payload = Some(bytes::Bytes::copy_from_slice(value));

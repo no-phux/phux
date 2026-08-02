@@ -67,6 +67,7 @@ Server replies (frame type 0x80):
 ```
 Client sends (frame type 0x02):
   ATTACH {
+    attach_id: 23,
     target: CREATE_IF_MISSING {
       name: "scratch",           // L3 name key, resolved client-side
       command: None,             // use the server's default shell
@@ -83,12 +84,13 @@ Client sends (frame type 0x02):
 
 Server replies (frame type 0x81):
   ATTACHED {
+    attach_id: 23,
     snapshot: SubstrateSnapshot { terminals: [...], collections: [], metadata_keys: [] },
     initial_client_id: ClientId(7),
   }
 ```
 
-**Wire shape:** [L1.md §state replay](./L1.md) defines `ATTACH`, its `AttachTarget` union, and `RolePolicy`. The target is a tagged union — `BY_TERMINAL_ID` to attach to one running terminal, `CREATE_IF_MISSING` to spawn one if absent, and others. `viewport` carries the client's drawable size so the server can size the terminal; `role_policy` chooses `PRIMARY` (input-capable) or `VIEWER` (watch-only). `ATTACHED` is metadata only: it carries a `SubstrateSnapshot` of the tier-visible state and the client's `initial_client_id`. It carries no terminal content yet — that arrives next.
+**Wire shape:** [L1.md §state replay](./L1.md) defines `ATTACH`, its `AttachTarget` union, and `RolePolicy`. `attach_id = 23` is client-chosen and echoed by both `ATTACHED` and `ATTACH_READY`, preventing concurrent attach replies from crossing. The target is a tagged union — `BY_TERMINAL_ID` to attach to one running terminal, `CREATE_IF_MISSING` to spawn one if absent, and others. `viewport` carries the client's drawable size so the server can size the terminal; `role_policy` chooses `PRIMARY` (input-capable) or `VIEWER` (watch-only). `ATTACHED` is metadata only: it carries a `SubstrateSnapshot` of the tier-visible state and the client's `initial_client_id`. It carries no terminal content yet — that arrives next.
 
 **Why it matters:** this is where the client says "I want to see and control this terminal," and which role it claims. The server then allocates a subscription and begins the replay sequence.
 
@@ -291,7 +293,6 @@ Client                              Server                    Terminal (PTY)
   |              <----- TERMINAL_OUTPUT (seq 3) -------- ls output
   |                                   |                           |
   |              <----- TERMINAL_OUTPUT (seq 4) -------- prompt   |
-  |------- FRAME_ACK ------>          |                           |
   |                                   |                           |
   |------- DETACH ------>             |                           |
   |                   <------ DETACHED |                           |

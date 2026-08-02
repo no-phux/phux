@@ -33,18 +33,13 @@ src/
 The `input` and `wire` modules are gated behind the `server` cargo
 feature so the no-feature shell compiles without `libghostty-vt`.
 See `lib.rs` for the docs.rs / crates.io rationale. The pre-ADR-0013
-`diff/` module and its companion `wire/diff.rs` have been deleted;
-`PANE_OUTPUT` and `PANE_SNAPSHOT` carry VT bytes directly. A small
-amount of stale doc-comment text inside `wire/field.rs` still mentions
-`DiffOp` and is scheduled for cleanup.
-
-> **Canonical names.** The spec and code call these frames
-> `TERMINAL_OUTPUT` (`0x90`) and `TERMINAL_SNAPSHOT` (`0x91`) per
-> [ADR-0016](../../ADR/0016-terminal-id-as-wire-primary.md); the
-> `PANE_*` spelling that survives in this doc is the pre-layering name
-> for the same bytes. Read `PANE_OUTPUT` / `PANE_SNAPSHOT` here as
-> aliases of the canonical `TERMINAL_*` frames, and "pane" as the TUI's
-> view of a Terminal.
+`diff/` module and its companion `wire/diff.rs` are deleted. Protocol 0.7
+permanently retires `TERMINAL_SNAPSHOT = 0x91`: attach content is
+`BOOTSTRAP_BEGIN` / bounded opaque `BOOTSTRAP_CHUNK`s /
+`BOOTSTRAP_READY`, with retained history pulled afterward. Live
+`TERMINAL_OUTPUT` is generation-bound. Native checkpoint, history, cursor, and
+raw PTY payloads are engine-owned bytes and are never scanned or rewritten by
+phux; synthesized VT remains an explicit compatibility profile.
 
 ## `phux-core`
 
@@ -72,14 +67,13 @@ src/
                         PaneInput, Outbound
   pane_actor.rs       — PaneActor: owns the pane's libghostty Terminal (!Send,
                         in RefCell on the LocalSet), per-pane input encoders,
-                        PTY reader/writer threads, broadcast PANE_OUTPUT fanout,
-                        snapshot synthesis on demand (ADR-0014)
-  grid.rs             — SnapshotSynthesizer: walks the canonical Terminal via
-                        RenderState and emits a self-contained vt_replay_bytes
-                        sequence for PANE_SNAPSHOT (per-row SGR deltas +
-                        graphemes + cursor restore + DECSCUSR)
-  downsample.rs       — per-client capability rewrite of outbound VT bytes
-                        (truecolor → 256/16, OSC 8 / image / KIP gating)
+                        PTY reader/writer threads, actor-global live sequence,
+                        and coherent bootstrap capture cuts (ADR-0067)
+  grid.rs             — synthesized-VT compatibility bootstrap/StateSync
+                        emitter; it is never used to construct native records
+  downsample.rs       — compatibility-profile rewrite of outbound VT bytes
+                        (truecolor → 256/16, OSC 8 / image / KIP gating);
+                        native checkpoint/history/raw live bytes bypass it
   agent_detect/       — level-triggered per-terminal agent-state detector
                         (ADR-0046). mod.rs is the pure state machine (adaptive
                         tick, hysteresis, edge-filtered publish); regions.rs
