@@ -813,7 +813,8 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             seq,
             bytes,
         } => {
-            let ack = kernel_route.ack.clone();
+            let damaged = kernel_route.damaged(&terminal_id);
+            let ack = kernel_route.ack;
             let pty_writes = kernel_route.pty_writes;
             // Correlate this apply: which pane, which seq, how many bytes.
             // The span's CLOSE duration is the per-frame client paint cost
@@ -855,10 +856,10 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             };
             let title_changed = slot.title_changed(terminal);
             let sync_output_active = slot.update_sync_output(terminal, tokio::time::Instant::now());
-            if !kernel_route.damaged(&terminal_id) {
+            if !damaged {
                 return Ok(FrameOutcome {
                     ack,
-                    pty_writes: pty_writes.clone(),
+                    pty_writes,
                     ..FrameOutcome::default()
                 });
             }
@@ -872,7 +873,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             let Some(active_ls) = workspace.render_window(zoomed.as_ref()) else {
                 return Ok(FrameOutcome {
                     ack,
-                    pty_writes: pty_writes.clone(),
+                    pty_writes,
                     chrome_dirty: title_changed,
                     ..FrameOutcome::default()
                 });
