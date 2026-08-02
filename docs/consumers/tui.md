@@ -170,16 +170,20 @@ phux config plugins [--json]  # compatibility alias: inspect plugin manifests
 phux config agents [--json]   # inspect configured plugin agent states
 phux config run PLUGIN ACTION # execute a configured plugin action
 phux plugin <COMMAND>         # install/update/link/list/toggle/unlink/validate plugins
+                              # (list alias: ls; unlink aliases: rm, remove)
 phux satellite <COMMAND>      # enroll/add/list/remove federation satellites
+                              # (aliases: ls, rm)
 phux stdio-bridge             # splice stdin/stdout to the local server socket
                               # (the remote end of the SSH-stdio transport)
 phux worktree list [--json]   # worktrees + their bound session and liveness
+                              # (alias: ls)
 phux worktree new BRANCH [--path P] [--from REF] [-s NAME] [--attach] [-- CMD...]
                               # git worktree add, then create the bound session
 phux worktree open TARGET [--attach]
                               # ensure the bound session exists (idempotent)
 phux worktree remove TARGET [--force]
-                              # kill the bound session, then git worktree remove
+                              # kill the bound session, then git worktree
+                              # remove (alias: rm)
 phux doctor [--json]          # diagnose the install: config, socket path,
                               # server reachability, plugin manifests
 phux completion SHELL         # print a shell completion script on stdout
@@ -196,6 +200,7 @@ phux enroll HOST [--name N] [--endpoint HOST:PORT] [--quic-port P]
                               # Falls back to an ssh:// entry when the host
                               # has nothing dialable
 phux remote <add|list|remove> # the registry `phux attach NAME` resolves
+                              # (aliases: ls, rm)
 phux service <install|uninstall|status|logs|prune-logs>
                               # per-user service unit (launchd LaunchAgent on
                               # macOS, systemd user unit on Linux) that keeps
@@ -411,6 +416,15 @@ phux tag ls .                      # list the focused pane's tags
 phux kill #build                   # kill every Terminal tagged 'build'
 phux tag rm @7 ci                  # untag
 ```
+
+Every tag action accepts `--json` (the document shape lives in
+[agents.md](./agents.md) §4.17). One alias policy covers every list/remove
+sub-registry: `tag ls`/`tag list` and `tag rm`/`tag remove` are the same
+verbs, exactly as `remote`, `worktree`, and `satellite` answer to `ls`/`rm`
+and `plugin unlink` to `rm`/`remove`. `launch --list` deliberately stays a
+flag rather than becoming a `launch ls` subcommand: launch enumerates
+integrations as a mode of one verb, it is not a registry with its own
+subcommand tree (considered and kept).
 
 Headless CLI and MCP calls have no attached client's focus history, so an
 explicit `=` target is rejected with an unsupported-selector error rather than

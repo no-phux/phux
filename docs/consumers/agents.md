@@ -992,6 +992,36 @@ malformed cast, unresolvable TARGET, a refused spawn). A failure creates no
 pane: the cast is parsed in the caller's own process, before anything is
 spawned.
 
+### 4.17 `phux tag --json`
+
+All three tag actions (`ls`, `add`, `rm` — and their `list` / `remove`
+aliases) emit one `schema_version: 1` document with a row per resolved
+Terminal:
+
+```json
+{
+  "schema_version": 1,
+  "terminals": [
+    { "terminal": "@7", "tags": ["build", "ci"] },
+    { "terminal": "edge/@3", "tags": [] }
+  ]
+}
+```
+
+`terminal` is the canonical, reusable selector for that Terminal — `@N`
+locally, `host/@N` for a satellite pane through a hub — so each row's id can
+be fed straight back into any TARGET-taking verb. `tags` is the Terminal's
+complete tag list: for `ls` as stored, and for `add` / `rm` as **read back
+from the server after the write** (the confirming `GET_METADATA`
+round-trip), never echoed from the request. An untagged Terminal is an empty
+list, not an absent key.
+
+Failures follow §5.3: a dead socket emits the contract with `no_server`, an
+unparseable TARGET `invalid_selector`, and a selector miss splits
+`no_such_target` (exit 1) from `partial_view` (exit 3) exactly as the prose
+path splits the exit codes (§5.2). Partial-fleet warnings on a *successful*
+resolution stay prose on stderr ahead of the document.
+
 ## 5. The read-act-wait loop and exit-code mirroring
 
 ### 5.1 The loop
@@ -1109,10 +1139,12 @@ timeout. `kill` is a control-plane verb (not strictly an agent read) but shares
 
 Every core server-talking verb above
 (`ls` / `snapshot` / `wait` / `run` / `watch` / `resize` / `spawn` / `launch` /
-`play` / `rec` / `new` / `ask`, plus the spatial edits of §4.12) reports a
-`--json` failure the same way: **stdout stays empty** (the document channel
-never carries half a result) and **stderr carries one line of JSON**
-(ADR-0065 §4):
+`play` / `rec` / `new` / `ask`, plus the spatial edits of §4.12), and every
+`--json`-bearing registry and inspection verb (`tag`, `plugin`,
+`remote list`, `satellite`, `worktree list`, `workspace inspect`,
+`config check`, `logs`, `doctor`), reports a `--json` failure the same way:
+**stdout stays empty** (the document channel never carries half a result)
+and **stderr carries one line of JSON** (ADR-0065 §4):
 
 ```json
 {
@@ -1132,7 +1164,14 @@ never carries half a result) and **stderr carries one line of JSON**
   `no_such_target` (a miss against a complete view) and `partial_view` (a
   miss against an incomplete fleet — the target may exist on an unreachable
   satellite; retry, per §5.2's exit-3 discussion). Spatial edits add the
-  codes listed in §4.12.
+  codes listed in §4.12. The registry family: `registry` (a local
+  `[[plugins]]` / `[[remote]]` / `[[satellites]]` config-registry read,
+  validate, or write failed), `workspace` (a git workspace/worktree
+  operation failed — not a repository, git failed, or its output did not
+  parse), `invalid_config` (`config check` could not run at all —
+  unreadable file or malformed TOML; exit 2, mirroring its prose path's
+  distinct "could not check" status), and `json_serialize` (a result
+  document failed to render — a phux bug worth filing).
 - `remedy` is always present and non-empty: the next command to run, in
   prose.
 - `exit_code` mirrors the process's own exit status, so a consumer that
