@@ -872,20 +872,17 @@ async fn handle_attach_terminal(
         let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
         if handle
             .consumer_attach
-            .send(ConsumerAttachRequest {
-                client_id: wire_client_id(client_id),
-                outbound: out_tx.clone(),
-                wire_terminal_id: wire_id,
-                wants_state_sync: matches!(
-                    client_caps.output_mode,
-                    phux_protocol::caps::OutputMode::StateSync
-                ),
-                // phux-v45.8: `ATTACH_TERMINAL` over a reliable transport; the
-                // emit-once model is correct. Forwarded-leg loss-tolerance is
-                // the deferred activation (ADR-0042).
-                loss_tolerant: false,
-                reply: attach_reply_tx,
-            })
+            .send(ConsumerAttachRequest { client_id: wire_client_id(client_id),
+            outbound: out_tx.clone(),
+            wire_terminal_id: wire_id,
+            wants_state_sync: matches!(
+                client_caps.output_mode,
+                phux_protocol::caps::OutputMode::StateSync
+            ),
+            // phux-v45.8: `ATTACH_TERMINAL` over a reliable transport; the
+            // emit-once model is correct. Forwarded-leg loss-tolerance is
+            // the deferred activation (ADR-0042).
+            loss_tolerant: false, bootstrap_max_bytes: usize::MAX, bootstrap_max_frames: usize::MAX, bootstrap_chunk_bytes: 1, reply: attach_reply_tx })
             .await
             .is_ok()
             && let Ok(Ok(outcome)) = attach_reply_rx.await
@@ -985,10 +982,7 @@ async fn handle_attach_terminal(
     let (reply_tx, reply_rx) = oneshot::channel();
     if handle
         .snapshot
-        .send(SnapshotRequest {
-            scrollback: None,
-            reply: reply_tx,
-        })
+        .send(SnapshotRequest { scrollback: None, max_bytes: usize::MAX, max_frames: usize::MAX, chunk_bytes: 1, reply: reply_tx })
         .await
         .is_err()
     {

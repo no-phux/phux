@@ -1239,30 +1239,27 @@ pub(crate) async fn handle_attach(
             let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
             if handle
                 .consumer_attach
-                .send(ConsumerAttachRequest {
-                    client_id: wire_client_id,
-                    outbound: out_tx.clone(),
-                    wire_terminal_id: wire_id,
-                    // phux-fseo: honor the consumer's negotiated output mode.
-                    // StateSync ⇒ the actor's tick is this consumer's emitter
-                    // and the broadcast pump below is suppressed for it; Raw
-                    // (the human-TUI default) keeps the pump.
-                    wants_state_sync: matches!(
-                        client_caps.output_mode,
-                        phux_protocol::caps::OutputMode::StateSync
-                    ),
-                    // phux-v45.8: a directly-attached consumer rides a reliable,
-                    // ordered transport (UDS / SSH stdio / WebSocket / QUIC
-                    // stream), so the emit-once model is correct and cheapest —
-                    // no loss-tolerant re-diff needed. Activation for a
-                    // forwarded (hub->satellite->consumer) leg, where the hub's
-                    // fan-out can drop whole frames, is the deferred follow-up
-                    // (the satellite cannot see the downstream drop from the
-                    // link's reliable transport); the advance-on-ack mechanism
-                    // it flips on is fully implemented here (ADR-0042).
-                    loss_tolerant: false,
-                    reply: attach_reply_tx,
-                })
+                .send(ConsumerAttachRequest { client_id: wire_client_id,
+                outbound: out_tx.clone(),
+                wire_terminal_id: wire_id,
+                // phux-fseo: honor the consumer's negotiated output mode.
+                // StateSync ⇒ the actor's tick is this consumer's emitter
+                // and the broadcast pump below is suppressed for it; Raw
+                // (the human-TUI default) keeps the pump.
+                wants_state_sync: matches!(
+                    client_caps.output_mode,
+                    phux_protocol::caps::OutputMode::StateSync
+                ),
+                // phux-v45.8: a directly-attached consumer rides a reliable,
+                // ordered transport (UDS / SSH stdio / WebSocket / QUIC
+                // stream), so the emit-once model is correct and cheapest —
+                // no loss-tolerant re-diff needed. Activation for a
+                // forwarded (hub->satellite->consumer) leg, where the hub's
+                // fan-out can drop whole frames, is the deferred follow-up
+                // (the satellite cannot see the downstream drop from the
+                // link's reliable transport); the advance-on-ack mechanism
+                // it flips on is fully implemented here (ADR-0042).
+                loss_tolerant: false, bootstrap_max_bytes: usize::MAX, bootstrap_max_frames: usize::MAX, bootstrap_chunk_bytes: 1, reply: attach_reply_tx })
                 .await
                 .is_ok()
             {
@@ -1393,10 +1390,7 @@ pub(crate) async fn handle_attach(
         let (reply_tx, reply_rx) = oneshot::channel();
         if handle
             .snapshot
-            .send(SnapshotRequest {
-                scrollback: scrollback_req,
-                reply: reply_tx,
-            })
+            .send(SnapshotRequest { scrollback: scrollback_req, max_bytes: usize::MAX, max_frames: usize::MAX, chunk_bytes: 1, reply: reply_tx })
             .await
             .is_err()
         {

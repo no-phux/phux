@@ -3497,10 +3497,7 @@ mod tests {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 handle
                     .snapshot
-                    .send(SnapshotRequest {
-                        scrollback: None,
-                        reply: reply_tx,
-                    })
+                    .send(SnapshotRequest { scrollback: None, max_bytes: usize::MAX, max_frames: usize::MAX, chunk_bytes: 1, reply: reply_tx })
                     .await
                     .expect("send snapshot request");
                 let snap = reply_rx.await.expect("snapshot reply");
@@ -4142,10 +4139,7 @@ mod tests {
                     .expect("actor task panicked");
 
                 let (reply_tx, reply_rx) = oneshot::channel();
-                let _ = handle.snapshot.try_send(SnapshotRequest {
-                    scrollback: None,
-                    reply: reply_tx,
-                });
+                let _ = handle.snapshot.try_send(SnapshotRequest { scrollback: None, max_bytes: usize::MAX, max_frames: usize::MAX, chunk_bytes: 1, reply: reply_tx });
                 drop(reply_rx);
             })
             .await;
@@ -4297,14 +4291,11 @@ mod tests {
                 let (tx_a, rx_a) = oneshot::channel();
                 handle
                     .consumer_attach
-                    .send(ConsumerAttachRequest {
-                        client_id: client,
-                        outbound: out_tx,
-                        wire_terminal_id: 99,
-                        wants_state_sync: false,
-                        loss_tolerant: false,
-                        reply: tx_a,
-                    })
+                    .send(ConsumerAttachRequest { client_id: client,
+                    outbound: out_tx,
+                    wire_terminal_id: 99,
+                    wants_state_sync: false,
+                    loss_tolerant: false, bootstrap_max_bytes: usize::MAX, bootstrap_max_frames: usize::MAX, bootstrap_chunk_bytes: 1, reply: tx_a })
                     .await
                     .expect("send attach");
                 rx_a.await.expect("attach reply").expect("attach succeeded");
