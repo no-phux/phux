@@ -8,13 +8,12 @@ use std::rc::Rc;
 use bytes::{Bytes, BytesMut};
 use phux_client_core::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
-    EngineEffectBuffer,
+    EngineEffectBuffer, HistoryApplyOutcome,
 };
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::{
-    EffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason,
-    HistoryUnavailableReason, InputEligibility, KernelAction, KernelEffect, KernelInput,
-    KernelSend, SessionKernel,
+    EffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason, HistoryUnavailableReason,
+    InputEligibility, KernelAction, KernelEffect, KernelInput, KernelSend, SessionKernel,
 };
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
@@ -22,7 +21,7 @@ use phux_protocol::caps::{
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, ImageProtocolSet,
     ServerFeature,
 };
-use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::ids::TerminalId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::wire::frame::{
@@ -32,7 +31,6 @@ use phux_vt_web::{Grid, Terminal, Vt};
 
 const ATTACH_ID: u32 = 1;
 const HISTORY_LINES: u32 = 5_000;
-
 
 fn history_unavailable_reason(reason: HistoryTombstoneReason) -> Option<HistoryUnavailableReason> {
     Some(match reason {
@@ -190,11 +188,14 @@ impl EngineAdapter for WebEngine {
         _replica: &mut Self::Replica,
         _payload: &[u8],
         _effects: &mut EngineEffectBuffer,
-    ) -> Result<BootstrapProgress, Self::Error> {
+    ) -> Result<HistoryApplyOutcome, Self::Error> {
         // Synthesized history pages are opaque and independently bounded.
-        // The current wasm ABI has no history-import surface; consume them to
-        // advance the protocol cursor without replaying them into the live grid.
-        Ok(BootstrapProgress::Finished)
+        // The current wasm ABI has no history-import surface; retain the
+        // borrowed payload in the kernel cache without replaying or parsing it.
+        Ok(HistoryApplyOutcome {
+            progress: BootstrapProgress::Finished,
+            retained: true,
+        })
     }
 
     fn apply_output(
@@ -301,9 +302,8 @@ impl Session {
                     return self.protocol_failure(message);
                 }
                 self.bootstrap_limits = Some(bootstrap_limits);
-                self.terminal_reply_supported = server_caps
-                    .features
-                    .contains(ServerFeature::TerminalReply);
+                self.terminal_reply_supported =
+                    server_caps.features.contains(ServerFeature::TerminalReply);
                 let mut history_config = HistoryCacheConfig::default();
                 history_config.request_max_bytes = bootstrap_limits.max_history_page_bytes();
                 self.kernel = Some(SessionKernel::with_history_config(
@@ -563,7 +563,6 @@ impl Session {
             None
         }
     }
-
 
     fn apply_kernel(&mut self, input: KernelInput<'_>) -> (Outcome, bool) {
         let Some(kernel) = self.kernel.as_mut() else {

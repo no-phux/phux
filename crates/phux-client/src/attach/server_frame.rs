@@ -162,8 +162,7 @@ pub(super) struct FrameOutcome {
     /// the frozen published replica visible.
     pub(super) resync_required: bool,
     /// Pull the next opaque native history page after READY or a prior page.
-    pub(super) history_request:
-        Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
+    pub(super) history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
     /// Exact terminal-engine response writes to forward on the ordered PTY lane.
     pub(super) pty_writes: Vec<(TerminalId, Vec<u8>)>,
     /// phux-4li.20: `Some((sessions, focused))` ⇒ ATTACHED just landed
@@ -847,6 +846,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                         .map(|r| (r.w, r.h))
                 })
                 .unwrap_or((content.w, content.h));
+            let is_focused = focused_pane.as_ref() == Some(&terminal_id);
             let slot = match panes.entry(terminal_id.clone()) {
                 std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
                 std::collections::hash_map::Entry::Vacant(v) => {
@@ -1916,10 +1916,7 @@ mod tests {
             &mut kernel,
             &mut effects,
         );
-        assert_eq!(
-            reply.pty_writes,
-            vec![(terminal_id, b"\x1b[0n".to_vec())]
-        );
+        assert_eq!(reply.pty_writes, vec![(terminal_id, b"\x1b[0n".to_vec())]);
     }
 
     #[test]

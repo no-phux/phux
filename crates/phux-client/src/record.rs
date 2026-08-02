@@ -160,7 +160,6 @@ async fn record_on_connection(
 async fn subscribe(
     conn: &mut Connection,
     terminal_id: &TerminalId,
-    next_request_id: &mut u32,
 ) -> Result<Vec<FrameKind>, AttachError> {
     // SPEC §5 permits priming bootstrap frames to arrive before the
     // COMMAND_RESULT, and the reference server sends them that way.
@@ -735,7 +734,8 @@ mod tests {
         // more output, then the pane closing.
         let (recorded, seen) = block_on(run(
             attached(120, 34, b"first")
-                .push(output(1, b"more")).extend(snapshot(100, 30, b"repaint"))
+                .push(output(1, b"more"))
+                .extend(snapshot(100, 30, b"repaint"))
                 .push(output(2, b"tail"))
                 .push(pane_closed(Some(0))),
             None,
@@ -781,7 +781,8 @@ mod tests {
     #[test]
     fn second_snapshot_with_new_dims_emits_r_then_o() {
         let (recorded, _seen) = block_on(run(
-            attached(80, 24, b"a").extend(snapshot(100, 30, b"b"))
+            attached(80, 24, b"a")
+                .extend(snapshot(100, 30, b"b"))
                 .push(pane_closed(Some(0))),
             None,
         ));
@@ -809,7 +810,8 @@ mod tests {
         // This is the lag-recovery resync the output pump injects. It is a
         // repaint, not a resize.
         let (recorded, _seen) = block_on(run(
-            attached(80, 24, b"a").extend(snapshot(80, 24, b"resync"))
+            attached(80, 24, b"a")
+                .extend(snapshot(80, 24, b"resync"))
                 .push(pane_closed(Some(0))),
             None,
         ));
