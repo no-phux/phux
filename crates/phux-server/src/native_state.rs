@@ -581,17 +581,25 @@ mod tests {
     }
 
     #[test]
-    fn history_stale_reset_and_resize_remain_distinct_native_errors() {
+    fn history_pruned_reset_and_resize_remain_distinct_native_errors() {
         let limits = BootstrapLimits::default();
         let size = usize::try_from(limits.max_history_page_bytes()).expect("native usize");
         let mut buffer = vec![0; size];
-
-        let mut stale = NativeHistoryCursor::new(history_terminal(), limits).expect("stale cursor");
-        stale.vt_write(b"\x1b[3J");
         assert_eq!(
-            stale.next(limits.max_history_page_bytes(), &mut buffer)
+            NativeStateError::Stale,
+            incremental::Error::Stale,
+            "the exact stale status remains public even though the safe owned \
+             cursor keeps its lease live"
+        );
+
+        let mut pruned =
+            NativeHistoryCursor::new(history_terminal(), limits).expect("pruned cursor");
+        pruned.vt_write(b"\x1b[3J");
+        assert_eq!(
+            pruned
+                .next(limits.max_history_page_bytes(), &mut buffer)
                 .unwrap_err(),
-            NativeStateError::Stale
+            NativeStateError::Pruned
         );
 
         let mut reset = NativeHistoryCursor::new(history_terminal(), limits).expect("reset cursor");
