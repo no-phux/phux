@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use bytes::{Buf, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities,
+    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities, ServerFeatureSet,
 };
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, MAX_FRAME_LEN, Scope, SpawnResult,
@@ -112,6 +112,8 @@ pub struct NegotiatedBootstrap {
     pub profile: BootstrapProfile,
     /// Exact per-frame bootstrap/history payload bounds.
     pub limits: BootstrapLimits,
+    /// Additive server features authenticated by `HELLO_OK`.
+    pub server_features: ServerFeatureSet,
 }
 
 /// Read half — pulls one [`FrameKind`] per call, over either transport.
@@ -448,7 +450,7 @@ impl Connection {
                 protocol_major,
                 protocol_minor,
                 protocol_patch,
-                server_caps: _,
+                server_caps,
                 server_id: _,
                 selected_profile,
                 bootstrap_limits,
@@ -465,6 +467,7 @@ impl Connection {
                 self.negotiated_bootstrap = Some(NegotiatedBootstrap {
                     profile: selected_profile,
                     limits: bootstrap_limits,
+                    server_features: server_caps.features,
                 });
                 Ok(())
             }

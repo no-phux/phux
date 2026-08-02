@@ -161,6 +161,8 @@ pub(super) struct FrameOutcome {
     pub(super) resync_required: bool,
     /// Pull the next opaque native history page after READY or a prior page.
     pub(super) history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes)>,
+    /// Exact terminal-engine response writes to forward on the ordered PTY lane.
+    pub(super) pty_writes: Vec<(TerminalId, Vec<u8>)>,
     /// phux-4li.20: `Some((sessions, focused))` ⇒ ATTACHED just landed
     /// and carried the server's full session graph. The driver caches
     /// it so the `<leader> a` session picker can list the other
@@ -292,6 +294,8 @@ fn pane_label(id: &TerminalId) -> String {
 #[derive(Default)]
 struct KernelRoute {
     ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
+    history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes)>,
+    pty_writes: Vec<(TerminalId, Vec<u8>)>,
     damaged: HashSet<TerminalId>,
     resync_required: bool,
     ignored: bool,
@@ -364,25 +368,27 @@ fn route_engine_frame(
             terminal_id,
             stream_id,
             bootstrap_id,
-            ..
+            history_cursor,
         } => Some(KernelInput::BootstrapReady {
             terminal_id,
             stream_id: *stream_id,
             bootstrap_id: *bootstrap_id,
+            history_cursor: history_cursor.as_deref(),
         }),
         FrameKind::HistoryPage {
             terminal_id,
             stream_id,
             bootstrap_id,
+            cursor,
             next_cursor,
             payload,
-            ..
         } => Some(KernelInput::HistoryPage {
             terminal_id,
             stream_id: *stream_id,
             bootstrap_id: *bootstrap_id,
             payload,
-            has_more: next_cursor.is_some(),
+            cursor,
+            next_cursor: next_cursor.as_deref(),
         }),
         FrameKind::TerminalOutput {
             terminal_id,
@@ -454,6 +460,17 @@ fn route_engine_frame(
                 seq,
             }) => {
                 route.ack = Some((terminal_id.clone(), *stream_id, *bootstrap_id, *seq));
+            }
+            KernelEffect::Send(KernelSend::HistoryRequest { key, cursor, .. }) => {
+                route.history_request = Some((
+                    key.terminal_id.clone(),
+                    key.stream_id,
+                    key.bootstrap_id,
+                    bytes::Bytes::from(cursor.clone()),
+                ));
+            }
+            KernelEffect::Send(KernelSend::PtyWrite { terminal_id, bytes }) => {
+                route.pty_writes.push((terminal_id.clone(), bytes.clone()));
             }
             KernelEffect::Damage(damage) => {
                 route.damaged.insert(damage.terminal_id.clone());
@@ -665,14 +682,12 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
         } => {
             frame_span.record("terminal_id", tracing::field::debug(&terminal_id));
             frame_span.record("bytes", payload.len());
-            Ok(FrameOutcome::default())
+            Ok(FrameOutcome {
+                pty_writes: kernel_route.pty_writes,
+                ..FrameOutcome::default()
+            })
         }
-        FrameKind::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor,
-        } => {
+        FrameKind::BootstrapReady { terminal_id, .. } => {
             frame_span.record("terminal_id", tracing::field::debug(&terminal_id));
             let terminal = super::driver::published_terminal(engine_kernel, &terminal_id)
                 .ok_or_else(|| {
@@ -689,20 +704,14 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             Ok(FrameOutcome {
                 layout_replaced: damaged,
                 chrome_dirty: damaged && title_changed,
-                history_request: history_cursor
-                    .map(|cursor| (terminal_id, stream_id, bootstrap_id, cursor)),
+                history_request: kernel_route.history_request,
+                pty_writes: kernel_route.pty_writes,
                 ..FrameOutcome::default()
             })
         }
-        FrameKind::HistoryPage {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            next_cursor,
-            ..
-        } => Ok(FrameOutcome {
-            history_request: next_cursor
-                .map(|cursor| (terminal_id, stream_id, bootstrap_id, cursor)),
+        FrameKind::HistoryPage { .. } => Ok(FrameOutcome {
+            history_request: kernel_route.history_request,
+            pty_writes: kernel_route.pty_writes,
             ..FrameOutcome::default()
         }),
         FrameKind::AttachReady { .. } => Ok(FrameOutcome {
@@ -717,6 +726,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             bytes,
         } => {
             let ack = kernel_route.ack.clone();
+            let pty_writes = kernel_route.pty_writes;
             // Correlate this apply: which pane, which seq, how many bytes.
             // The span's CLOSE duration is the per-frame client paint cost
             // (vt_write + render_at for the focused pane) — the headline
@@ -759,6 +769,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             if !kernel_route.damaged(&terminal_id) {
                 return Ok(FrameOutcome {
                     ack,
+                    pty_writes: pty_writes.clone(),
                     ..FrameOutcome::default()
                 });
             }
@@ -772,6 +783,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             let Some(active_ls) = workspace.render_window(zoomed.as_ref()) else {
                 return Ok(FrameOutcome {
                     ack,
+                    pty_writes: pty_writes.clone(),
                     chrome_dirty: title_changed,
                     ..FrameOutcome::default()
                 });
@@ -941,6 +953,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             Ok(FrameOutcome {
                 ack,
                 chrome_dirty: title_changed,
+                pty_writes,
                 ..FrameOutcome::default()
             })
         }
@@ -1803,7 +1816,75 @@ mod tests {
             &mut effects,
         );
         assert!(live.damaged(&terminal_id));
+        let reply = route_engine_frame(
+            &FrameKind::TerminalOutput {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                seq: 3,
+                bytes: bytes::Bytes::from_static(b"\x1b[5n"),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert_eq!(
+            reply.pty_writes,
+            vec![(terminal_id, b"\x1b[0n".to_vec())]
+        );
     }
+
+    #[test]
+    fn ready_history_cursor_is_preserved_into_kernel_request() {
+        let terminal_id = tid(91);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        kernel
+            .update(
+                phux_client_core::session::KernelInput::AttachStarted {
+                    attach_id: 8,
+                    terminals: std::slice::from_ref(&terminal_id),
+                },
+                &mut effects,
+            )
+            .expect("attach");
+        route_engine_frame(&begin_frame(&terminal_id), &mut kernel, &mut effects);
+        route_engine_frame(
+            &FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"seed"),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        let routed = route_engine_frame(
+            &FrameKind::BootstrapReady {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                history_cursor: Some(bytes::Bytes::from_static(b"opaque-cursor")),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert_eq!(
+            routed.history_request,
+            Some((
+                terminal_id,
+                stream(),
+                bootstrap(),
+                bytes::Bytes::from_static(b"opaque-cursor"),
+            ))
+        );
+    }
+
     #[test]
     fn off_window_ready_waits_for_every_snapshot_pane_and_attach_ready() {
         let focused = tid(94);

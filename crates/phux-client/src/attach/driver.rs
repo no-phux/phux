@@ -40,7 +40,8 @@ use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKerne
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::{
-    BootstrapLimits, ClientCapabilities, Layer, LayerSet, OutputMode, detect_color_support,
+    BootstrapLimits, ClientCapabilities, Layer, LayerSet, OutputMode, ServerFeature,
+    detect_color_support,
 };
 use phux_protocol::ids::{ClientId, TerminalId};
 use phux_protocol::wire::frame::{
@@ -67,7 +68,7 @@ use super::plugin_panes;
 use super::record::{SessionRecorder, TeeSink};
 use super::render::{SelectionRect, TerminalRenderer, write_cup, write_reset};
 use super::repaint::{RepaintAccumulator, RepaintLevel};
-use super::server_frame::{AgentMetaIndex, handle_server_frame};
+use super::server_frame::{AgentMetaIndex, FrameOutcome, handle_server_frame};
 use crate::agent_meta::{
     AgentAttention, AgentMetaState, AgentRecord, TERMINAL_AGENT_KEY, agent_name_from_title,
     parse_agent_record,
@@ -78,7 +79,7 @@ pub(super) use crate::layout_ops::{
 };
 use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 use crate::render::chrome::sidebar::{AgentEntry, SidebarPainter, attention_rank};
-use crate::render::chrome::status_bar::StatusBarPainter;
+use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use crate::render::overlay::OverlayState;
 use phux_config::SidebarPosition;
 
@@ -1108,6 +1109,9 @@ pub async fn run_headless_rendered(
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("headless attach lacks negotiated bootstrap".to_owned())
     })?;
+    let terminal_reply_supported = negotiated
+        .server_features
+        .contains(ServerFeature::TerminalReply);
     let mut engine_kernel =
         SessionKernel::new(GhosttyAdapter::new(negotiated.limits), negotiated.profile);
     let mut kernel_effects = KernelEffectBuffer::new();
@@ -1231,7 +1235,7 @@ pub async fn run_headless_rendered(
         loop {
             let frame = conn.recv().await?;
             completion.observe_frame(&frame, attach_id);
-            let outcome = handle_server_frame(
+            let mut outcome = handle_server_frame(
                 &mut engine_kernel,
                 &mut kernel_effects,
                 &mut sink,
@@ -1254,6 +1258,11 @@ pub async fn run_headless_rendered(
                 false,
                 true,
             )?;
+            send_terminal_replies(
+                &mut conn,
+                take_terminal_replies(&mut outcome, terminal_reply_supported),
+            )
+            .await?;
             if outcome.resync_required {
                 if session_name.is_empty() {
                     return Err(AttachError::Protocol(
@@ -1615,6 +1624,37 @@ fn should_emit_frame_ack(
 )> {
     wants_state_sync.then_some(ack).flatten()
 }
+
+fn take_terminal_replies(
+    outcome: &mut FrameOutcome,
+    terminal_reply_supported: bool,
+) -> Vec<(TerminalId, Vec<u8>)> {
+    if terminal_reply_supported {
+        return std::mem::take(&mut outcome.pty_writes);
+    }
+    if outcome.pty_writes.is_empty() {
+        return Vec::new();
+    }
+    outcome.pty_writes.clear();
+    let message = "terminal query reply not sent: server lacks terminal-reply support";
+    tracing::warn!(feature = ?ServerFeature::TerminalReply, "{message}");
+    outcome.notices.push(Notice::warn(message));
+    Vec::new()
+}
+
+async fn send_terminal_replies(
+    conn: &mut Connection,
+    replies: Vec<(TerminalId, Vec<u8>)>,
+) -> Result<(), AttachError> {
+    for (terminal_id, bytes) in replies {
+        conn.send(&FrameKind::InputTerminalReply {
+            terminal_id,
+            bytes: bytes::Bytes::from(bytes),
+        })
+        .await?;
+    }
+    Ok(())
+}
 /// Build the reference TUI's per-connection HELLO profile.
 ///
 /// The same value is passed to [`Connection::connect_dial_with_hello`] before
@@ -1798,6 +1838,9 @@ async fn main_loop<W: super::RenderSink>(
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("attach loop started before bootstrap negotiation".to_owned())
     })?;
+    let terminal_reply_supported = negotiated
+        .server_features
+        .contains(ServerFeature::TerminalReply);
     let mut engine_kernel =
         SessionKernel::new(GhosttyAdapter::new(negotiated.limits), negotiated.profile);
     let mut kernel_effects = KernelEffectBuffer::new();
@@ -2802,7 +2845,7 @@ async fn main_loop<W: super::RenderSink>(
                                 })
                             });
                         let focused_before_frame = focused_pane.clone();
-                        let outcome = handle_server_frame(
+                        let mut outcome = handle_server_frame(
                             &mut engine_kernel,
                             &mut kernel_effects,
                             out,
@@ -2825,6 +2868,11 @@ async fn main_loop<W: super::RenderSink>(
                             overlays.is_active(),
                             defer_paint,
                         )?;
+                        send_terminal_replies(
+                            conn,
+                            take_terminal_replies(&mut outcome, terminal_reply_supported),
+                        )
+                        .await?;
                         focus_history.observe(focused_before_frame, focused_pane.as_ref());
                         focus_history.repair(focused_pane.as_ref(), &workspace);
                         if outcome.exit {
@@ -6276,6 +6324,26 @@ mod tests {
         ));
         assert_eq!(should_emit_frame_ack(true, ack.clone()), ack);
         assert_eq!(should_emit_frame_ack(true, None), None);
+    }
+
+    #[test]
+    fn terminal_replies_require_negotiated_server_feature() {
+        let reply = (TerminalId::local(7), b"\x1b[0n".to_vec());
+        let mut supported = FrameOutcome {
+            pty_writes: vec![reply.clone()],
+            ..FrameOutcome::default()
+        };
+        assert_eq!(take_terminal_replies(&mut supported, true), vec![reply.clone()]);
+        assert!(supported.notices.is_empty());
+
+        let mut old_server = FrameOutcome {
+            pty_writes: vec![reply],
+            ..FrameOutcome::default()
+        };
+        assert!(take_terminal_replies(&mut old_server, false).is_empty());
+        assert!(old_server.pty_writes.is_empty());
+        assert_eq!(old_server.notices.len(), 1);
+        assert!(old_server.notices[0].text.contains("terminal-reply"));
     }
     #[test]
     fn headless_completion_drains_history_and_metadata_after_attach_ready() {

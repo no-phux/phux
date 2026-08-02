@@ -3,7 +3,6 @@
 //! Transport framing stays here; replica lifecycle, generation validation,
 //! ordering, READY fences, and input eligibility stay in `phux-client-core`.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use bytes::{Bytes, BytesMut};
@@ -19,6 +18,7 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, ImageProtocolSet,
+    ServerFeature,
 };
 use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
 use phux_protocol::input::InputEvent;
@@ -180,13 +180,6 @@ impl EngineAdapter for WebEngine {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct HistoryKey {
-    terminal_id: TerminalId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-}
-
 /// A wire session whose terminal replicas are owned by [`SessionKernel`].
 pub struct Session {
     vt: Rc<Vt>,
@@ -197,8 +190,8 @@ pub struct Session {
     rows: u16,
     focused_terminal: Option<TerminalId>,
     terminal_order: Vec<TerminalId>,
-    history_cursors: HashMap<HistoryKey, Bytes>,
     bootstrap_limits: Option<BootstrapLimits>,
+    terminal_reply_supported: bool,
     failed: bool,
     render_visible: bool,
 }
@@ -216,8 +209,8 @@ impl Session {
             rows,
             focused_terminal: None,
             terminal_order: Vec::new(),
-            history_cursors: HashMap::new(),
             bootstrap_limits: None,
+            terminal_reply_supported: false,
             failed: false,
             render_visible: false,
         }
@@ -237,7 +230,6 @@ impl Session {
     /// Permanently fail this session after a transport or framing violation.
     pub fn fail_protocol(&mut self, _message: &str) {
         self.failed = true;
-        self.history_cursors.clear();
     }
 
     /// Frame sent when the transport opens. Stateful frames wait for `HELLO_OK`.
@@ -262,6 +254,7 @@ impl Session {
                 protocol_major,
                 protocol_minor,
                 protocol_patch,
+                server_caps,
                 selected_profile,
                 bootstrap_limits,
                 ..
@@ -279,6 +272,9 @@ impl Session {
                     return self.protocol_failure(message);
                 }
                 self.bootstrap_limits = Some(bootstrap_limits);
+                self.terminal_reply_supported = server_caps
+                    .features
+                    .contains(ServerFeature::TerminalReply);
                 self.kernel = Some(SessionKernel::new(
                     WebEngine {
                         vt: Rc::clone(&self.vt),
@@ -368,28 +364,13 @@ impl Session {
                 bootstrap_id,
                 history_cursor,
             } => {
-                let (mut outcome, applied) = self.apply_kernel(KernelInput::BootstrapReady {
+                self.apply_kernel(KernelInput::BootstrapReady {
                     terminal_id: &terminal_id,
                     stream_id,
                     bootstrap_id,
-                });
-                if applied {
-                    if let Some(cursor) = history_cursor {
-                        let key = HistoryKey {
-                            terminal_id: terminal_id.clone(),
-                            stream_id,
-                            bootstrap_id,
-                        };
-                        self.history_cursors.insert(key, cursor.clone());
-                        outcome.send.push(self.history_request(
-                            terminal_id,
-                            stream_id,
-                            bootstrap_id,
-                            cursor,
-                        ));
-                    }
-                }
-                outcome
+                    history_cursor: history_cursor.as_deref(),
+                })
+                .0
             }
             FrameKind::HistoryPage {
                 terminal_id,
@@ -398,14 +379,17 @@ impl Session {
                 cursor,
                 next_cursor,
                 payload,
-            } => self.history_page(
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor,
-                next_cursor,
-                payload,
-            ),
+            } => {
+                self.apply_kernel(KernelInput::HistoryPage {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    payload: &payload,
+                    cursor: &cursor,
+                    next_cursor: next_cursor.as_deref(),
+                })
+                .0
+            }
             FrameKind::TerminalOutput {
                 terminal_id,
                 stream_id,
@@ -429,11 +413,6 @@ impl Session {
                 reason,
                 last_valid_seq,
             } => {
-                self.history_cursors.remove(&HistoryKey {
-                    terminal_id: terminal_id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                });
                 self.apply_kernel(KernelInput::Tombstone {
                     terminal_id: &terminal_id,
                     stream_id,
@@ -445,8 +424,6 @@ impl Session {
             }
             FrameKind::TerminalClosed { terminal_id, .. } => {
                 let was_focused = self.focused_terminal.as_ref() == Some(&terminal_id);
-                self.history_cursors
-                    .retain(|key, _| key.terminal_id != terminal_id);
                 let (outcome, applied) = self.apply_kernel(KernelInput::TerminalClosed {
                     terminal_id: &terminal_id,
                 });
@@ -509,66 +486,6 @@ impl Session {
         }
     }
 
-    fn history_page(
-        &mut self,
-        terminal_id: TerminalId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        cursor: Bytes,
-        next_cursor: Option<Bytes>,
-        payload: Bytes,
-    ) -> Outcome {
-        let key = HistoryKey {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-        };
-        if self.history_cursors.get(&key) != Some(&cursor) {
-            return self.protocol_failure("history page cursor did not match the requested cursor");
-        }
-
-        let has_more = next_cursor.is_some();
-        let (mut outcome, applied) = self.apply_kernel(KernelInput::HistoryPage {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id,
-            payload: &payload,
-            has_more,
-        });
-        if !applied {
-            self.history_cursors.remove(&key);
-            return outcome;
-        }
-
-        if let Some(next) = next_cursor {
-            self.history_cursors.insert(key, next.clone());
-            outcome
-                .send
-                .push(self.history_request(terminal_id, stream_id, bootstrap_id, next));
-        } else {
-            self.history_cursors.remove(&key);
-        }
-        outcome
-    }
-
-    fn history_request(
-        &self,
-        terminal_id: TerminalId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        cursor: Bytes,
-    ) -> Vec<u8> {
-        encode(&FrameKind::HistoryRequest {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor,
-            max_bytes: self
-                .bootstrap_limits
-                .unwrap_or_default()
-                .max_history_page_bytes(),
-        })
-    }
 
     fn apply_kernel(&mut self, input: KernelInput<'_>) -> (Outcome, bool) {
         let Some(kernel) = self.kernel.as_mut() else {
@@ -599,7 +516,28 @@ impl Session {
                     bootstrap_id: *bootstrap_id,
                     seq: *seq,
                 })),
-                KernelEffect::Send(KernelSend::PtyWrite { .. }) => {}
+                KernelEffect::Send(KernelSend::HistoryRequest { key, cursor, max_bytes }) => {
+                    outcome.send.push(encode(&FrameKind::HistoryRequest {
+                        terminal_id: key.terminal_id.clone(),
+                        stream_id: key.stream_id,
+                        bootstrap_id: key.bootstrap_id,
+                        cursor: Bytes::copy_from_slice(cursor),
+                        max_bytes: *max_bytes,
+                    }));
+                }
+                KernelEffect::Send(KernelSend::PtyWrite { terminal_id, bytes }) => {
+                    if self.terminal_reply_supported {
+                        outcome.send.push(encode(&FrameKind::InputTerminalReply {
+                            terminal_id: terminal_id.clone(),
+                            bytes: Bytes::copy_from_slice(bytes),
+                        }));
+                    } else {
+                        outcome.fatal = Some(
+                            "terminal query reply not sent: server lacks terminal-reply support"
+                                .to_owned(),
+                        );
+                    }
+                }
                 KernelEffect::Damage(damage) => {
                     if focused == Some(&damage.terminal_id) || focused.is_none() {
                         outcome.render = true;
@@ -610,6 +548,10 @@ impl Session {
         }
         if outcome.render {
             self.render_visible = true;
+        }
+        if outcome.fatal.is_some() {
+            self.failed = true;
+            return (outcome, false);
         }
         match result {
             Ok(()) => (outcome, true),

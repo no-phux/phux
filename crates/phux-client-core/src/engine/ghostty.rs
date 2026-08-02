@@ -324,14 +324,10 @@ impl EngineAdapter for GhosttyAdapter {
             BootstrapStreamProfile::SynthesizedVtRaw
             | BootstrapStreamProfile::SynthesizedVtStateSync => {
                 let pty_responses: PtyResponses = Rc::new(RefCell::new(Vec::new()));
-                let mut terminal = GhosttyTerminal::new(TerminalOptions {
+                let terminal = GhosttyTerminal::new(TerminalOptions {
                     cols: geometry.cols,
                     rows: geometry.rows,
                     max_scrollback: SYNTH_SCROLLBACK_ROWS,
-                })?;
-                terminal.on_pty_write({
-                    let pty_responses = Rc::clone(&pty_responses);
-                    move |_terminal, bytes| pty_responses.borrow_mut().push(bytes.to_vec())
                 })?;
                 ReplicaState::Synthesized {
                     terminal,
@@ -364,7 +360,7 @@ impl EngineAdapter for GhosttyAdapter {
         &mut self,
         replica: &mut Self::Replica,
         payload: &[u8],
-        effects: &mut EngineEffectBuffer,
+        _effects: &mut EngineEffectBuffer,
     ) -> Result<BootstrapProgress, Self::Error> {
         let limit = self.limits.max_chunk_bytes() as usize;
         if payload.len() > limit {
@@ -377,13 +373,12 @@ impl EngineAdapter for GhosttyAdapter {
             ReplicaState::Synthesized {
                 terminal,
                 protocol_finished,
-                pty_responses,
+                ..
             } => {
                 if *protocol_finished {
                     return Err(GhosttyEngineError::InputAfterFinish);
                 }
                 terminal.vt_write(payload);
-                drain_pty_responses(pty_responses, effects);
                 Ok(BootstrapProgress::Pending)
             }
             ReplicaState::Native(native) => push_native(native, payload),
@@ -397,11 +392,17 @@ impl EngineAdapter for GhosttyAdapter {
     ) -> Result<BootstrapProgress, Self::Error> {
         match &mut replica.state {
             ReplicaState::Synthesized {
-                protocol_finished, ..
+                terminal,
+                protocol_finished,
+                pty_responses,
             } => {
                 if std::mem::replace(protocol_finished, true) {
                     return Err(GhosttyEngineError::InputAfterFinish);
                 }
+                terminal.on_pty_write({
+                    let pty_responses = Rc::clone(pty_responses);
+                    move |_terminal, bytes| pty_responses.borrow_mut().push(bytes.to_vec())
+                })?;
                 Ok(BootstrapProgress::Finished)
             }
             ReplicaState::Native(native) => finish_native(native),
@@ -1098,10 +1099,20 @@ mod tests {
         let mut effects = EngineEffectBuffer::new();
         adapter
             .apply_bootstrap_chunk(&mut replica, b"\x1b[5n", &mut effects)
-            .expect("DSR query");
+            .expect("bootstrap DSR query");
+        assert!(effects.as_slice().is_empty(), "bootstrap replay never replies");
+        adapter
+            .finish_bootstrap(&mut replica, &mut effects)
+            .expect("publish synthesized terminal");
+        adapter
+            .apply_output(&mut replica, b"\x1b[5n", &mut effects)
+            .expect("live DSR query");
         assert!(matches!(
             effects.as_slice(),
-            [EngineEffect::Send(EngineSend::PtyWrite(bytes))] if bytes == b"\x1b[0n"
+            [
+                EngineEffect::Send(EngineSend::PtyWrite(bytes)),
+                EngineEffect::Damage(EngineDamage::Full),
+            ] if bytes == b"\x1b[0n"
         ));
     }
 
