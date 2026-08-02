@@ -184,6 +184,48 @@ pub(crate) async fn enqueue_output_resync(
     )
 }
 
+async fn fail_aggregate_attach_prepublication(
+    state: &SharedState,
+    client_id: ClientId,
+    attach_id: u32,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    connection_token: &CancellationToken,
+    preserve_prior_attach: bool,
+    staged_handles: &[crate::terminal_actor::TerminalHandle],
+    staged_pumps: &mut JoinSet<()>,
+    reason: &str,
+) {
+    let _ = out_tx
+        .send(Outbound::Frame(FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::CodecUnavailable,
+            message: format!("ATTACH {attach_id} failed before publication: {reason}"),
+        }))
+        .await;
+
+    staged_pumps.abort_all();
+    while staged_pumps.join_next().await.is_some() {}
+
+    if preserve_prior_attach {
+        let wire_client_id =
+            phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
+        for handle in staged_handles {
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            let _ = handle
+                .native_release
+                .try_send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 });
+            let (reply, _done) = oneshot::channel();
+            let _ = handle.consumer_detach.try_send(ConsumerDetachRequest {
+                client_id: wire_client_id,
+                reply,
+            });
+        }
+    } else {
+        crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+        connection_token.cancel();
+    }
+}
+
 /// Tuple bundling everything `handle_attach` needs after it is done
 /// touching [`ServerState`]. Cloned out of the critical section so the
 /// remaining awaits do not hold the state lock.
@@ -1502,9 +1544,6 @@ pub(crate) async fn handle_attach(
             (Some(attached), Some(target)) if attached.session == target
         )
     });
-    if same_session_reattach {
-        super::client::abort_output_pumps(output_pumps, client_id, "replacement ATTACH").await;
-    }
 
     let (snapshot, initial_client_id, panes_to_snapshot) = match prepare_attach(
         state,
@@ -1617,6 +1656,34 @@ pub(crate) async fn handle_attach(
     // the barrier releases every pump only after every pane has queued READY
     // (or a close outcome) and the aggregate ATTACH_READY has been queued.
     let mut snapshot_gates: Vec<(TerminalId, oneshot::Sender<u64>, Option<u64>)> = Vec::new();
+    let preserve_prior_attach = same_session_reattach
+        && !matches!(
+            client_caps.output_mode,
+            phux_protocol::caps::OutputMode::StateSync
+        )
+        && !matches!(stream_profile, BootstrapStreamProfile::NativeState { .. });
+    let mut staged_output_pumps = JoinSet::new();
+    let mut staged_handles = Vec::new();
+    macro_rules! fail_prepublication {
+        ($reason:expr) => {{
+            fail_aggregate_attach_prepublication(
+                state,
+                client_id,
+                attach_id,
+                out_tx,
+                _connection_token,
+                preserve_prior_attach,
+                &staged_handles,
+                &mut staged_output_pumps,
+                $reason,
+            )
+            .await;
+            return;
+        }};
+    }
+    if staged_handles.try_reserve(panes_to_snapshot.len()).is_err() {
+        fail_prepublication!("host allocation failed");
+    }
 
     let mut pending: FuturesUnordered<_> = FuturesUnordered::new();
     let mut bootstrap_frames = Vec::new();
@@ -1626,6 +1693,7 @@ pub(crate) async fn handle_attach(
     for pane in panes_to_snapshot {
         let terminal_id = pane.terminal_id;
         let handle = pane.handle;
+        staged_handles.push(handle.clone());
         let wire_terminal_id = pane.wire_terminal_id;
         // ADR-0018 / phux-0q8: register the per-consumer state-sync entry
         // so the actor allocates and primes a per-consumer `RenderState`
@@ -1725,8 +1793,7 @@ pub(crate) async fn handle_attach(
                 ?terminal_id,
                 "state-sync registration failed before aggregate attach publication"
             );
-            crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-            return;
+            fail_prepublication!("state-sync consumer registration failed");
         }
 
         // phux-3uv: suppress the broadcast pump for a tick-managed
@@ -1755,7 +1822,7 @@ pub(crate) async fn handle_attach(
             // snapshot has been sent (the drain loop fires `gate_tx`).
             let (gate_tx, gate_rx) = oneshot::channel::<u64>();
             snapshot_gates.push((terminal_id, gate_tx, None));
-            output_pumps.spawn_local(async move {
+            staged_output_pumps.spawn_local(async move {
                 let Ok(mut published_cut) = gate_rx.await else {
                     return;
                 };
@@ -1985,12 +2052,10 @@ pub(crate) async fn handle_attach(
                 state_sync.base_seq,
                 payloads,
             ) else {
-                crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-                return;
+                fail_prepublication!("state-sync bootstrap exceeded negotiated bounds");
             };
             if bootstrap_frames.try_reserve(frames.len()).is_err() {
-                crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-                return;
+                fail_prepublication!("state-sync bootstrap allocation failed");
             }
             bootstrap_frames.append(&mut frames);
             continue;
@@ -2024,8 +2089,7 @@ pub(crate) async fn handle_attach(
                 {
                     drop(snapshot_gates.swap_remove(pos));
                 }
-                crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-                return;
+                fail_prepublication!("pane actor dropped native bootstrap request");
             }
             native_pending.push(async move { (terminal_id, reply_rx.await) });
             continue;
@@ -2045,8 +2109,7 @@ pub(crate) async fn handle_attach(
                 ?terminal_id,
                 "pane actor dropped before synthesized bootstrap"
             );
-            crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-            return;
+            fail_prepublication!("pane actor dropped synthesized bootstrap request");
         }
         pending.push(async move { (terminal_id, wire_terminal_id, reply_rx.await) });
     }
@@ -2057,8 +2120,7 @@ pub(crate) async fn handle_attach(
             Ok(Ok(reply)) => {
                 let cut = reply.base_seq;
                 if bootstrap_frames.try_reserve(reply.frames.len()).is_err() {
-                    crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-                    return;
+                    fail_prepublication!("native bootstrap retention allocation failed");
                 }
                 bootstrap_frames.extend(reply.frames);
                 if let Some((_, _, gate_cut)) = snapshot_gates
@@ -2070,16 +2132,14 @@ pub(crate) async fn handle_attach(
             }
             Ok(Err(error)) => {
                 warn!(?terminal_id, %error, "native checkpoint failed before attach publication");
-                crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-                return;
+                fail_prepublication!("native checkpoint capture failed");
             }
             Err(_) => {
                 warn!(
                     ?terminal_id,
                     "pane actor failed to reply with native checkpoint"
                 );
-                crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-                return;
+                fail_prepublication!("pane actor dropped native checkpoint reply");
             }
         }
     }
@@ -2087,8 +2147,7 @@ pub(crate) async fn handle_attach(
     while let Some((terminal_id, wire_terminal_id, reply)) = pending.next().await {
         let Ok((snap, cut)) = reply else {
             warn!(?terminal_id, "pane actor failed to reply with snapshot");
-            crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-            return;
+            fail_prepublication!("pane actor dropped synthesized snapshot reply");
         };
         let replay = downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps);
         let mut payloads = Vec::with_capacity(2);
@@ -2107,12 +2166,10 @@ pub(crate) async fn handle_attach(
             cut,
             payloads,
         ) else {
-            crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-            return;
+            fail_prepublication!("synthesized bootstrap exceeded negotiated bounds");
         };
         if bootstrap_frames.try_reserve(frames.len()).is_err() {
-            crate::runtime::client::detach_and_release_consumer_state(state, client_id);
-            return;
+            fail_prepublication!("synthesized bootstrap retention allocation failed");
         }
         bootstrap_frames.append(&mut frames);
         if let Some((_, _, gate_cut)) = snapshot_gates
@@ -2122,6 +2179,16 @@ pub(crate) async fn handle_attach(
             *gate_cut = Some(cut);
         }
     }
+
+    // Commit the replacement only after every pane has produced a complete,
+    // bounded bootstrap. Until this point the prior generation's pumps remain
+    // live and every new pump is parked on its unpublished gate.
+    if same_session_reattach {
+        super::client::abort_output_pumps(output_pumps, client_id, "replacement ATTACH").await;
+    }
+    let mut committed_output_pumps = staged_output_pumps;
+    output_pumps
+        .spawn_local(async move { while committed_output_pumps.join_next().await.is_some() {} });
 
     if out_tx
         .send(Outbound::Frame(FrameKind::Attached {
@@ -2344,5 +2411,267 @@ mod tests {
             !enqueue_output_resync(&tx).await,
             "closed actor mailbox fails instead of resuming delta forwarding"
         );
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn native_attach_handle() -> (
+        crate::terminal_actor::TerminalHandle,
+        tokio::sync::mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
+        tokio::sync::mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
+    ) {
+        use tokio::sync::{broadcast, mpsc, watch};
+
+        let (output, _seed) = broadcast::channel(8);
+        let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
+        let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
+        (
+            crate::terminal_actor::TerminalHandle {
+                input: mpsc::channel(8).0,
+                encoded_input: mpsc::channel(8).0,
+                input_snapshot: watch::channel(crate::input::InputEncoderSnapshot::default()).1,
+                snapshot: mpsc::channel(8).0,
+                native_bootstrap,
+                native_history: mpsc::channel(8).0,
+                native_release: mpsc::channel(8).0,
+                set_default_colors: mpsc::channel(8).0,
+                screen: mpsc::channel(8).0,
+                upgrade: mpsc::channel(8).0,
+                pwd: mpsc::channel(8).0,
+                output,
+                resize: mpsc::channel(8).0,
+                consumer_attach,
+                consumer_detach: mpsc::channel(8).0,
+                consumer_ack: mpsc::channel(8).0,
+                subscribe_to_events: mpsc::channel(8).0,
+                unsubscribe_from_events: mpsc::channel(8).0,
+                control: mpsc::channel(8).0,
+                cols: 80,
+                rows: 24,
+            },
+            consumer_attach_rx,
+            native_bootstrap_rx,
+        )
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    async fn answer_native_attach(
+        consumer_attach_rx: &mut tokio::sync::mpsc::Receiver<
+            crate::terminal_actor::ConsumerAttachRequest,
+        >,
+        native_bootstrap_rx: &mut tokio::sync::mpsc::Receiver<
+            crate::terminal_actor::NativeBootstrapRequest,
+        >,
+        succeed: bool,
+    ) {
+        let registration = consumer_attach_rx
+            .recv()
+            .await
+            .expect("consumer registration");
+        registration
+            .reply
+            .send(Ok(crate::terminal_actor::ConsumerAttachOutcome {
+                tick_managed: false,
+                state_sync_bootstrap: None,
+            }))
+            .expect("consumer registration reply");
+        let native = native_bootstrap_rx.recv().await.expect("native preflight");
+        if !succeed {
+            native
+                .reply
+                .send(Err(crate::native_state::NativeStateError::LimitExceeded))
+                .expect("continuation-cap failure reply");
+            return;
+        }
+        let terminal_id = native.terminal_id.clone();
+        native
+            .reply
+            .send(Ok(crate::terminal_actor::NativeBootstrapReply {
+                frames: vec![
+                    FrameKind::BootstrapBegin {
+                        terminal_id: terminal_id.clone(),
+                        stream_id: native.stream_id,
+                        bootstrap_id: native.bootstrap_id,
+                        profile: BootstrapStreamProfile::NativeState {
+                            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+                        },
+                        cols: 80,
+                        rows: 24,
+                        base_seq: 0,
+                    },
+                    FrameKind::BootstrapChunk {
+                        terminal_id: terminal_id.clone(),
+                        stream_id: native.stream_id,
+                        bootstrap_id: native.bootstrap_id,
+                        chunk_seq: 0,
+                        payload: bytes::Bytes::from_static(b"opaque"),
+                    },
+                    FrameKind::BootstrapReady {
+                        terminal_id,
+                        stream_id: native.stream_id,
+                        bootstrap_id: native.bootstrap_id,
+                        history_cursor: None,
+                    },
+                ],
+                base_seq: 0,
+            }))
+            .expect("native success reply");
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn native_profile() -> BootstrapProfile {
+        BootstrapProfile::NativeState {
+            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+            features: phux_protocol::caps::EngineFeatureSet::required_native(),
+        }
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn fresh_native_capacity_failure_sends_error_then_closes_without_publication() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_session, _window, terminal) =
+                    state.with_mut(|s| s.seed_session("fresh-failure"));
+                let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) =
+                    native_attach_handle();
+                state.with_mut(|s| {
+                    let _ = s.register_terminal_handle(terminal, handle, CancellationToken::new());
+                });
+                let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                let (out_tx, mut out_rx) =
+                    tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
+                let root_token = CancellationToken::new();
+                let connection_token = CancellationToken::new();
+                let mut output_pumps = JoinSet::new();
+
+                let attach = handle_attach(
+                    &state,
+                    client_id,
+                    41,
+                    AttachTarget::ByName("fresh-failure".to_owned()),
+                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
+                    false,
+                    0,
+                    &out_tx,
+                    ClientCapabilities::default(),
+                    native_profile(),
+                    BootstrapLimits::default(),
+                    &root_token,
+                    &mut output_pumps,
+                    &connection_token,
+                );
+                let actor =
+                    answer_native_attach(&mut consumer_attach_rx, &mut native_bootstrap_rx, false);
+                tokio::join!(attach, actor);
+
+                assert!(matches!(
+                    out_rx.recv().await,
+                    Some(Outbound::Frame(FrameKind::Error {
+                        code: ErrorCode::CodecUnavailable,
+                        ..
+                    }))
+                ));
+                assert!(out_rx.try_recv().is_err(), "no ATTACHED or BEGIN may leak");
+                assert!(connection_token.is_cancelled());
+                assert!(state.with(|s| !s.attached.contains_key(&client_id)));
+                drop(out_tx);
+                assert!(
+                    out_rx.recv().await.is_none(),
+                    "fatal fresh attach must reach EOF"
+                );
+            })
+            .await;
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn replacement_native_capacity_failure_closes_but_preserves_terminal_state() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_session, _window, terminal) =
+                    state.with_mut(|s| s.seed_session("replacement-failure"));
+                let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) =
+                    native_attach_handle();
+                state.with_mut(|s| {
+                    let _ = s.register_terminal_handle(terminal, handle, CancellationToken::new());
+                });
+                let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                let (out_tx, mut out_rx) =
+                    tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
+                let root_token = CancellationToken::new();
+                let connection_token = CancellationToken::new();
+                let mut output_pumps = JoinSet::new();
+
+                let first = handle_attach(
+                    &state,
+                    client_id,
+                    51,
+                    AttachTarget::ByName("replacement-failure".to_owned()),
+                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
+                    false,
+                    0,
+                    &out_tx,
+                    ClientCapabilities::default(),
+                    native_profile(),
+                    BootstrapLimits::default(),
+                    &root_token,
+                    &mut output_pumps,
+                    &connection_token,
+                );
+                tokio::join!(
+                    first,
+                    answer_native_attach(&mut consumer_attach_rx, &mut native_bootstrap_rx, true)
+                );
+                for _ in 0..5 {
+                    out_rx.recv().await.expect("initial attach publication");
+                }
+                assert!(state.with(|s| s.attached.contains_key(&client_id)));
+
+                let replacement = handle_attach(
+                    &state,
+                    client_id,
+                    52,
+                    AttachTarget::ByName("replacement-failure".to_owned()),
+                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
+                    false,
+                    0,
+                    &out_tx,
+                    ClientCapabilities::default(),
+                    native_profile(),
+                    BootstrapLimits::default(),
+                    &root_token,
+                    &mut output_pumps,
+                    &connection_token,
+                );
+                tokio::join!(
+                    replacement,
+                    answer_native_attach(&mut consumer_attach_rx, &mut native_bootstrap_rx, false)
+                );
+                assert!(matches!(
+                    out_rx.recv().await,
+                    Some(Outbound::Frame(FrameKind::Error {
+                        code: ErrorCode::CodecUnavailable,
+                        ..
+                    }))
+                ));
+                assert!(connection_token.is_cancelled());
+                assert!(state.with(|s| !s.attached.contains_key(&client_id)));
+                assert!(
+                    state.with(|s| s.registry.terminal(terminal).is_some()),
+                    "failed replacement must not reap canonical terminal state"
+                );
+                output_pumps.abort_all();
+                while output_pumps.join_next().await.is_some() {}
+                drop(out_tx);
+                assert!(
+                    out_rx.recv().await.is_none(),
+                    "fatal replacement must close cleanly after ERROR"
+                );
+            })
+            .await;
     }
 }
