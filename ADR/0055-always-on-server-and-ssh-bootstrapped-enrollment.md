@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-07-25
+last-reviewed: 2026-08-02
 ---
 
 # 0055 — Always-on server and ssh-bootstrapped enrollment
@@ -13,7 +13,7 @@ reboot. A client-side `[[remote]]` registry names a server the way
 credential over the operator's existing ssh trust. The human never
 transcribes a hex string.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-07-25
 
 ## Context

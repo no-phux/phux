@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-06-09
+last-reviewed: 2026-08-02
 ---
 
 # 0031 — Remote-consumer authentication and encryption (no SSH tunnel)
@@ -13,7 +13,7 @@ authenticated by a pairing-issued bearer token** carried in HELLO. No homegrown
 crypto, no new wire frames: auth and encryption stay a transport concern. Mutual
 TLS and SSH-envelope reuse are the rejected alternatives.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-06-09
 
 ## Context

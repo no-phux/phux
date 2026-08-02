@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-06-17
+last-reviewed: 2026-08-02
 ---
 
 # 0034 — Kitty graphics / image passthrough through the cell renderer
@@ -14,7 +14,7 @@ the existing cell walker already paints — with a client-side **APC re-emit**
 fallback. Snapshot/reattach needs the server grid synthesizer to replay
 live image state. Proposed; no code in this ADR.
 
-Status: Proposed
+Status: Accepted
 Date: 2026-06-17
 
 ## Context
