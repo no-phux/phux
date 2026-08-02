@@ -1731,7 +1731,23 @@ async fn main_loop<W: super::RenderSink>(
     // be forwarded to the focused pane; a chord that resolves to an
     // action mutates the active window here and never reaches the
     // server's input pipe.
-    let mut resolver = keybindings_snapshot.as_ref().and_then(build_resolver_from);
+    // phux-i0e8.3.4: the build is lenient — whenever a snapshot exists a
+    // resolver exists, and each diagnostic disables exactly one binding.
+    // Diagnostics surface as a status-bar error line naming the chord
+    // (unless the bar is already showing a config error, which subsumes
+    // any keybinding problem).
+    let mut resolver: Option<phux_config::keybind::Resolver> = None;
+    if let Some(kb) = keybindings_snapshot.as_ref() {
+        let (built, diags) = build_resolver_from(kb);
+        resolver = Some(built);
+        if !diags.is_empty()
+            && !status_bar
+                .as_ref()
+                .is_some_and(StatusBarPainter::is_error_line)
+        {
+            status_bar = Some(StatusBarPainter::error_line(keybind_error_line(&diags)));
+        }
+    }
     // phux-ahv.4: single source of truth for chrome + overlay colors,
     // owned alongside the keybindings snapshot and threaded into the
     // overlay render path via `DispatchCtx`.
@@ -3702,17 +3718,48 @@ pub(super) fn is_layout_key_string(key: &str) -> bool {
 /// keybindings snapshot (post phux-r82.5: the plugin-merged one, so
 /// manifest `keys` chords resolve like user bindings — the merge already
 /// validated each contributed chord, so a plugin can't poison this
-/// build). Failures log and return `None` — a malformed `[keybindings]`
-/// table degrades to "no actions are bound" rather than blocking attach.
-/// Detach is a normal keybinding action, so a disabled resolver also
-/// disables configured detach chords.
-fn build_resolver_from(kb: &phux_config::KeybindingsCfg) -> Option<phux_config::keybind::Resolver> {
-    match phux_config::keybind::Resolver::new(kb) {
-        Ok(r) => Some(r),
-        Err(err) => {
-            tracing::warn!(error = %err, "keybind resolver build failed; disabled");
-            None
-        }
+/// build).
+///
+/// phux-i0e8.3.4: the build is **lenient per binding** — a resolver
+/// always comes back, and each diagnostic disables exactly the binding
+/// it names. Before this, one malformed chord failed the whole build and
+/// silently disabled EVERY binding, including `detach`. Diagnostics are
+/// logged here; the caller surfaces them as a visible status-bar error
+/// line ([`keybind_error_line`]). Config reload deliberately stays
+/// all-or-nothing instead (`super::reload`, docs/consumers/tui.md §4.3).
+fn build_resolver_from(
+    kb: &phux_config::KeybindingsCfg,
+) -> (
+    phux_config::keybind::Resolver,
+    Vec<phux_config::keybind::BindingDiagnostic>,
+) {
+    let (resolver, diagnostics) = phux_config::keybind::Resolver::new_lenient(kb);
+    for diag in &diagnostics {
+        tracing::warn!(binding = %diag.binding, error = %diag.error, "keybinding disabled");
+    }
+    (resolver, diagnostics)
+}
+
+/// phux-i0e8.3.4: format the lenient resolver's diagnostics as the
+/// one-line status-bar error strip. Names the first offending chord, the
+/// reason, how many more bindings (if any) were also disabled, and the
+/// actionable next step (`phux config check`). Empty input formats to an
+/// empty string (callers gate on non-empty diagnostics).
+fn keybind_error_line(diags: &[phux_config::keybind::BindingDiagnostic]) -> String {
+    let Some(first) = diags.first() else {
+        return String::new();
+    };
+    let more = diags.len() - 1;
+    if more == 0 {
+        format!(
+            "keybinding \"{}\" disabled: {} (run: phux config check)",
+            first.binding, first.error
+        )
+    } else {
+        format!(
+            "keybinding \"{}\" disabled: {} (+{more} more; run: phux config check)",
+            first.binding, first.error
+        )
     }
 }
 
@@ -4089,8 +4136,9 @@ async fn emit_view_reflow(
 /// silently either. On a load or build failure we surface a visible
 /// error line (`StatusBarPainter::error_line`) on the bar row pointing
 /// the user at `phux config show` for the full diagnostic, instead of
-/// dropping to an empty bar (and, alongside [`build_resolver_from`], no
-/// keybindings) with only a `tracing::warn` nobody sees. Returns `None`
+/// dropping to an empty bar with only a `tracing::warn` nobody sees
+/// (keybindings degrade separately, per binding — see
+/// [`build_resolver_from`]). Returns `None`
 /// only when the config is valid and the bar would be empty (no widgets
 /// configured) — callers short-circuit on that.
 /// phux-foz.5: perform one explicit live config reload and repaint.
@@ -4977,6 +5025,92 @@ mod tests {
         let err = AttachError::Io(io::Error::other("boom"));
         let msg = err.to_string();
         assert!(msg.contains("attach loop io error"));
+    }
+
+    // -- lenient resolver at attach (phux-i0e8.3.4) -----------------------
+
+    #[test]
+    fn attach_resolver_survives_one_bad_chord_and_keeps_detach() {
+        // Before phux-i0e8.3.4, one malformed chord ("q-") made
+        // build_resolver_from return None: EVERY binding died, including
+        // detach. Now the attach path always gets a resolver and only the
+        // offending binding is disabled.
+        let cfg = phux_config::parse_str(
+            r#"
+            [keybindings.prefix-table]
+            "q-" = "kill-pane"
+            d = "detach"
+            "#,
+            Path::new("test.toml"),
+        )
+        .expect("test config parses");
+        let (mut resolver, diags) = build_resolver_from(&cfg.keybindings);
+        assert_eq!(diags.len(), 1, "exactly the bad binding is reported");
+        assert_eq!(diags[0].binding, "q-");
+
+        let prefix = phux_config::keybind::parse_chord(&cfg.keybindings.prefix).expect("prefix");
+        assert_eq!(resolver.feed(prefix), phux_config::keybind::Feed::Partial);
+        match resolver.feed(phux_config::keybind::parse_chord("d").expect("chord")) {
+            phux_config::keybind::Feed::Resolved(ra) => assert_eq!(ra.action, "detach"),
+            other => panic!("detach must survive one bad chord, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keybind_error_line_names_the_chord_and_config_check() {
+        let cfg = phux_config::parse_str(
+            r#"
+            [keybindings.prefix-table]
+            "q-" = "kill-pane"
+            "#,
+            Path::new("test.toml"),
+        )
+        .expect("test config parses");
+        let (_, diags) = build_resolver_from(&cfg.keybindings);
+        let line = keybind_error_line(&diags);
+        assert!(
+            line.contains("\"q-\""),
+            "line must name the offending chord: {line}"
+        );
+        assert!(
+            line.contains("run: phux config check"),
+            "line must point at the checker: {line}"
+        );
+        assert!(
+            !line.contains("more;"),
+            "a single diagnostic carries no +N count: {line}"
+        );
+    }
+
+    #[test]
+    fn keybind_error_line_counts_additional_disabled_bindings() {
+        let cfg = phux_config::parse_str(
+            r#"
+            [keybindings.prefix-table]
+            "q-" = "kill-pane"
+            "w-" = "kill-pane"
+            "e-" = "kill-pane"
+            "#,
+            Path::new("test.toml"),
+        )
+        .expect("test config parses");
+        let (_, diags) = build_resolver_from(&cfg.keybindings);
+        assert_eq!(diags.len(), 3);
+        let line = keybind_error_line(&diags);
+        // BTreeMap order: "e-" first, the other two summarized.
+        assert!(
+            line.contains("\"e-\""),
+            "line must name the first offending chord: {line}"
+        );
+        assert!(
+            line.contains("+2 more; run: phux config check"),
+            "line must count the remaining disabled bindings: {line}"
+        );
+    }
+
+    #[test]
+    fn keybind_error_line_is_empty_without_diagnostics() {
+        assert_eq!(keybind_error_line(&[]), "");
     }
 
     // -- which-key popup arming (phux-foz.2) ------------------------------

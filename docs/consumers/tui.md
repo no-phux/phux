@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-07-15
+last-reviewed: 2026-08-01
 ---
 
 # The phux reference TUI
@@ -1119,7 +1119,10 @@ which-key knobs), the theme, the status-bar composition, and the plugin
 action rows in the palette. Failure semantics are all-or-nothing: on any
 parse or validation error the client keeps the **previous** config fully
 in effect and surfaces the error as a dismissable toast — never a crash,
-never a half-applied mix of old and new.
+never a half-applied mix of old and new. This is deliberately stricter
+than attach-time keybinding resolution, which degrades per binding with
+a status-bar diagnostic (§5.1): a reload has a known-good previous
+config to fall back on; attach does not.
 
 Not covered by a reload (restart the client, or detach and re-attach):
 pane-behavior settings read once at attach, such as `[predict]`,
@@ -1213,6 +1216,21 @@ prefix = "C-a"
 The global table is empty by default — no global bindings ship out of
 the box because we cannot assume the user's outer terminal forwards
 hyper/super at all. Users on Ghostty can opt in.
+
+**A bad binding disables exactly that binding, visibly.** At attach,
+keybinding resolution is lenient per binding: a chord that fails to
+parse, or a binding whose sequence is a strict prefix of another's (the
+later one, in table-key order, loses), is skipped — every other
+binding, including `detach`, keeps working. Each skipped binding is
+reported on the status-bar row as an error line naming the offending
+chord and pointing at `phux config check`; when several bindings are
+disabled, the line names the first and counts the rest. A `prefix`
+string that fails to parse falls back to the default `C-a` so the
+prefix table stays reachable. Config **reload** is the deliberate
+exception to this leniency: it stays all-or-nothing (§4.3) — at attach
+there is no known-good previous config to keep, but a reload has one,
+so any bad binding keeps the previous config fully in effect instead of
+applying a partial one.
 
 ### 5.2 The dispatcher
 

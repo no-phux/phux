@@ -540,6 +540,16 @@ impl StatusBarPainter {
         }
     }
 
+    /// `true` when this painter was built by [`Self::error_line`] and is
+    /// showing a fixed error strip instead of the configured widgets.
+    /// The attach path checks this before layering a lesser diagnostic
+    /// (e.g. a disabled keybinding, phux-i0e8.3.4) over a config-load
+    /// error that already owns the bar row.
+    #[must_use]
+    pub const fn is_error_line(&self) -> bool {
+        self.error.is_some()
+    }
+
     /// Which row this painter reserves ([`Position::Bottom`] or
     /// [`Position::Top`]). The paint/layout helpers read this so the pane
     /// content rect and the bar row agree on the reservation (phux-foz.8).
