@@ -66,10 +66,7 @@ pub enum NativeCheckpointChunkKind {
     /// Envelope or non-boundary active-state record.
     Record,
     /// Authenticated renderable boundary and final bootstrap record.
-    Ready {
-        /// Opaque digest authenticating the exact terminal cut through READY.
-        checkpoint: OpaqueHistoryCursor,
-    },
+    Ready,
 }
 
 /// One complete native checkpoint record written into a caller-owned buffer.
@@ -153,11 +150,9 @@ impl<'terminal> NativeCheckpointCapture<'terminal> {
 
         let kind = match event.kind {
             CaptureEventKind::Record => NativeCheckpointChunkKind::Record,
-            CaptureEventKind::Ready { checkpoint } => {
+            CaptureEventKind::Ready { .. } => {
                 self.ready = true;
-                NativeCheckpointChunkKind::Ready {
-                    checkpoint: *checkpoint.as_bytes(),
-                }
+                NativeCheckpointChunkKind::Ready
             }
             CaptureEventKind::HistoryBegin { .. }
             | CaptureEventKind::HistoryPage { .. }
@@ -393,7 +388,7 @@ mod tests {
     fn capture_to_ready(
         terminal: &mut GhosttyTerminal<'static, 'static>,
         limits: BootstrapLimits,
-    ) -> OpaqueHistoryCursor {
+    ) {
         let mut capture = NativeCheckpointCapture::new(terminal, limits).expect("capture preflight");
         loop {
             let required = match capture.step(&mut []) {
@@ -417,7 +412,7 @@ mod tests {
             let mut exact = vec![0; required];
             let event = capture.step(&mut exact).expect("exact bootstrap record");
             assert_eq!(event.bytes.len(), required);
-            if let NativeCheckpointChunkKind::Ready { checkpoint } = event.kind {
+            if matches!(event.kind, NativeCheckpointChunkKind::Ready) {
                 assert!(capture.is_ready());
                 assert_eq!(
                     capture.step(&mut []).unwrap_err(),
@@ -425,7 +420,7 @@ mod tests {
                     "bootstrap host must never expose HISTORY or FINISH"
                 );
                 capture.abort().expect("release terminal after READY");
-                return checkpoint;
+                return;
             }
         }
     }
@@ -477,9 +472,8 @@ mod tests {
     fn ready_handoff_pages_bounded_history_while_live_output_continues() {
         let limits = BootstrapLimits::new(64 * 1024, 64 * 1024).expect("test limits");
         let mut source = history_terminal();
-        let ready_checkpoint = capture_to_ready(&mut source, limits);
+        capture_to_ready(&mut source, limits);
         let mut history = NativeHistoryCursor::new(source, limits).expect("owned history cursor");
-        assert_eq!(history.checkpoint(), &ready_checkpoint, "same terminal cut");
         let capability = *history.cursor();
         history.vt_write(b"live raw PTY bytes after READY\r\n");
 
