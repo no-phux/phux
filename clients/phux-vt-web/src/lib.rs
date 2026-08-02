@@ -175,16 +175,10 @@ impl Vt {
     /// row/cell iterators and scratch buffers.
     #[must_use]
     pub fn terminal(self: &Rc<Self>, cols: u16, rows: u16) -> Terminal {
-        // GhosttyTerminalOptions (wasm32): cols u16@0, rows u16@2, scrollback u32@4.
-        let opts = self.wasm_alloc(8);
-        self.w_u16(opts, cols);
-        self.w_u16(opts + 2, rows);
-        self.w_u32(opts + 4, 5_000);
-
         let term_out = self.wasm_alloc(4);
         let _ = self.call(
             &self.terminal_new,
-            &[0.0, f64::from(term_out), f64::from(opts)],
+            &[0.0, f64::from(term_out), f64::from(cols), f64::from(rows)],
         );
         let term = self.r_u32(term_out);
 
