@@ -2633,8 +2633,7 @@ mod tests {
     fn published_fixture(
         entries: &[(&TerminalId, u16, u16, &[u8])],
     ) -> (EngineFixture, HashMap<TerminalId, PaneSlot>) {
-        let (kernel, effects, panes) =
-            super::super::driver::published_test_state(entries);
+        let (kernel, effects, panes) = super::super::driver::published_test_state(entries);
         (EngineFixture { kernel, effects }, panes)
     }
 
@@ -3454,7 +3453,12 @@ mod tests {
             .expect("published test generation");
         let stream_id = published.key().stream_id;
         let bootstrap_id = phux_protocol::BootstrapId::new(
-            published.key().bootstrap_id.get().checked_add(1).expect("bootstrap id"),
+            published
+                .key()
+                .bootstrap_id
+                .get()
+                .checked_add(1)
+                .expect("bootstrap id"),
         )
         .expect("next bootstrap");
         let base_seq = published.last_seq();

@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use phux_protocol::wire::frame::{
-    AttachTarget, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_ERROR, TYPE_BOOTSTRAP_BEGIN,
+    AttachTarget, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_ERROR,
     ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};

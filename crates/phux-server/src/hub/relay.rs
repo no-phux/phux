@@ -839,11 +839,13 @@ impl RelaySession {
                 forward,
             } => {
                 if let Some((code, message)) = self.subscription_rejection(&subscription) {
-                    let _ = subscription.out_tx.try_send(Outbound::Frame(FrameKind::Error {
-                        request_id: None,
-                        code,
-                        message,
-                    }));
+                    let _ = subscription
+                        .out_tx
+                        .try_send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code,
+                            message,
+                        }));
                     return None;
                 }
                 // Atomic with the wire write: the caller either sees this
@@ -1861,8 +1863,7 @@ impl RelaySession {
                     || next_frames > MAX_RELAY_SUBSCRIBER_RETAINED_FRAMES
                     || connection_bytes.saturating_add(frame_bytes)
                         > MAX_RELAY_CONNECTION_RETAINED_BYTES
-                    || connection_frames.saturating_add(1)
-                        > MAX_RELAY_CONNECTION_RETAINED_FRAMES
+                    || connection_frames.saturating_add(1) > MAX_RELAY_CONNECTION_RETAINED_FRAMES
                 {
                     *connection_bytes = connection_bytes.saturating_sub(retained_bytes);
                     *connection_frames = connection_frames.saturating_sub(frames.len());
@@ -1950,9 +1951,7 @@ impl RelaySession {
             trace!(satellite = %self.host, terminal = id, "ungated frame with no proxy subscribers");
             return;
         };
-        subs.retain(|sub| {
-            matches!(sub.out_tx.try_send(Outbound::Frame(frame.clone())), Ok(()))
-        });
+        subs.retain(|sub| matches!(sub.out_tx.try_send(Outbound::Frame(frame.clone())), Ok(())));
         if subs.is_empty() {
             self.subscribers.remove(&id);
         }
@@ -2648,7 +2647,10 @@ mod tests {
                 bootstrap_limits: Some(limits),
             }),
         });
-        assert!(wire.is_none(), "mismatched content request reached the link");
+        assert!(
+            wire.is_none(),
+            "mismatched content request reached the link"
+        );
         assert!(session.subscribers.is_empty());
         assert!(session.pending.is_empty());
         let result = reply_rx.try_recv().expect("typed local refusal");
@@ -2747,13 +2749,7 @@ mod tests {
             .expect("begin");
         for chunk_seq in 0..64 {
             session
-                .accept_bootstrap_chunk(
-                    7,
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq,
-                    256 * 1024,
-                )
+                .accept_bootstrap_chunk(7, stream_id, bootstrap_id, chunk_seq, 256 * 1024)
                 .expect("within 16 MiB generation budget");
         }
         let error = session
@@ -2827,10 +2823,7 @@ mod tests {
                 .expect("fill consumer mailbox");
             receivers.push(rx);
         }
-        let payload = bytes::Bytes::from(vec![
-            0;
-            1024 * 1024 - RETAINED_FRAME_OVERHEAD
-        ]);
+        let payload = bytes::Bytes::from(vec![0; 1024 * 1024 - RETAINED_FRAME_OVERHEAD]);
         session.fan_out(
             9,
             &FrameKind::BootstrapChunk {
@@ -2842,10 +2835,7 @@ mod tests {
             },
         );
         assert_eq!(session.subscribers[&9].len(), 8);
-        assert_eq!(
-            session.retained_bytes,
-            MAX_RELAY_CONNECTION_RETAINED_BYTES
-        );
+        assert_eq!(session.retained_bytes, MAX_RELAY_CONNECTION_RETAINED_BYTES);
         assert_eq!(session.retained_frames, 8);
         assert_eq!(receivers.len(), 9);
     }

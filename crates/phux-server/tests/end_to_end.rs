@@ -17,8 +17,8 @@ use phux_protocol::caps::{
 use phux_protocol::ids::{BootstrapId, FileUploadId, StreamId, TerminalId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_DETACHED,
-    TYPE_ERROR, TYPE_HELLO_OK, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACHED,
+    TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_ERROR, TYPE_HELLO_OK, TYPE_TERMINAL_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use sha2::{Digest, Sha256};

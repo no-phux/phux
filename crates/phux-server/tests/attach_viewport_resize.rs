@@ -38,7 +38,7 @@
 mod common;
 
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
     ViewportInfo,
 };
 use portable_pty::CommandBuilder;

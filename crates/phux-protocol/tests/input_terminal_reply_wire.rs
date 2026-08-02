@@ -65,9 +65,8 @@ fn hello_ok_explicitly_negotiates_terminal_replies() {
     let old_07 = ServerCapabilities::new();
     assert!(!old_07.features.contains(ServerFeature::TerminalReply));
 
-    let negotiated = ServerCapabilities::new().with_features(ServerFeatureSet::with(&[
-        ServerFeature::TerminalReply,
-    ]));
+    let negotiated = ServerCapabilities::new()
+        .with_features(ServerFeatureSet::with(&[ServerFeature::TerminalReply]));
     let hello_ok = FrameKind::HelloOk {
         protocol_major: 0,
         protocol_minor: 7,
@@ -84,11 +83,7 @@ fn hello_ok_explicitly_negotiates_terminal_replies() {
     let FrameKind::HelloOk { server_caps, .. } = decoded else {
         panic!("expected HELLO_OK");
     };
-    assert!(
-        server_caps
-            .features
-            .contains(ServerFeature::TerminalReply)
-    );
+    assert!(server_caps.features.contains(ServerFeature::TerminalReply));
 }
 
 #[test]

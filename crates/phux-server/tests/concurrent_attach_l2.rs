@@ -85,7 +85,7 @@ use std::time::{Duration, Instant};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACHED,
-    TYPE_COMMAND_RESULT, TYPE_BOOTSTRAP_BEGIN,
+    TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -106,17 +106,25 @@ async fn attach_and_measure(socket_path: &std::path::Path, label: &str) -> (Unix
     send_frame(&mut stream, &attach_by_name("default")).await;
 
     let (type_byte, _attached) = recv_typed(&mut stream).await;
-    assert_eq!(type_byte, TYPE_ATTACHED, "{label}: first frame must be ATTACHED");
+    assert_eq!(
+        type_byte, TYPE_ATTACHED,
+        "{label}: first frame must be ATTACHED"
+    );
     let (type_byte, begin) = recv_typed(&mut stream).await;
     assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
     match begin {
-        FrameKind::BootstrapBegin { cols: 80, rows: 24, .. } => {}
+        FrameKind::BootstrapBegin {
+            cols: 80, rows: 24, ..
+        } => {}
         other => panic!("{label}: expected 80x24 BootstrapBegin, got {other:?}"),
     }
     let (_, chunk) = recv_typed(&mut stream).await;
     match chunk {
         FrameKind::BootstrapChunk { payload, .. } => {
-            assert!(!payload.is_empty(), "{label}: bootstrap payload must not be empty");
+            assert!(
+                !payload.is_empty(),
+                "{label}: bootstrap payload must not be empty"
+            );
         }
         other => panic!("{label}: expected BootstrapChunk, got {other:?}"),
     }
@@ -508,8 +516,12 @@ fn concurrent_attach_l1_snapshot_consistency() {
                     rows: rows_b,
                     ..
                 },
-                FrameKind::BootstrapChunk { payload: bytes_a, .. },
-                FrameKind::BootstrapChunk { payload: bytes_b, .. },
+                FrameKind::BootstrapChunk {
+                    payload: bytes_a, ..
+                },
+                FrameKind::BootstrapChunk {
+                    payload: bytes_b, ..
+                },
             ) => {
                 assert_eq!(cols_a, cols_b, "grid cols differ");
                 assert_eq!(rows_a, rows_b, "grid rows differ");

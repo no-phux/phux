@@ -22,9 +22,9 @@ use std::cell::Cell;
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
-    FrameKind, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS,
-    MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_BOOTSTRAP_CHUNK, TYPE_HISTORY_PAGE,
-    TYPE_HISTORY_REJECTED, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_TERMINAL_REPLY,
+    FrameKind, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS, MAX_INPUT_TERMINAL_REPLY_BYTES,
+    TYPE_BOOTSTRAP_CHUNK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_TOMBSTONE,
+    TYPE_INPUT_TERMINAL_REPLY,
 };
 
 std::thread_local! {
@@ -228,8 +228,7 @@ fn oversized_terminal_reply_rejects_before_owned_bytes_allocation() {
     tlv_field(&mut body, 2, &payload);
     let frame = framed(&body);
 
-    let (result, max) =
-        largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
+    let (result, max) = largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
     assert_eq!(
         result.unwrap_err(),
         DecodeError::InputTerminalReplyLimitExceeded
@@ -258,8 +257,7 @@ fn oversized_history_status_cursors_reject_before_owned_copy() {
         }
         let frame = framed(&body);
 
-        let (result, max) =
-            largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
+        let (result, max) = largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
         assert_eq!(result.unwrap_err(), DecodeError::BootstrapLimitExceeded);
         assert_eq!(max, 0, "oversized cursor must fail before Bytes allocation");
     }
@@ -298,8 +296,7 @@ fn malformed_history_page_scalars_reject_before_payload_allocation_in_any_field_
         }
         let frame = framed(&body);
 
-        let (result, max) =
-            largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
+        let (result, max) = largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
         assert_eq!(result.unwrap_err(), expected);
         assert_eq!(
             max, 0,

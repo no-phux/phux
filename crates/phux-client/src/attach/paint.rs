@@ -35,7 +35,6 @@ const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
 #[cfg(test)]
 pub(super) const FALLBACK_CELL_PX: (u32, u32) = (8, 16);
 
-
 /// The server-authoritative mirror grid `(cols, rows)` used to letterbox a
 /// pane within its render rect (phux-7ubw).
 ///

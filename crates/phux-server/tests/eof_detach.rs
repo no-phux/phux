@@ -35,7 +35,7 @@ mod common;
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_TERMINAL_CLOSED, TYPE_BOOTSTRAP_BEGIN,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_TERMINAL_CLOSED,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;

@@ -29,8 +29,8 @@ mod common;
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_TERMINAL_OUTPUT,
-    TYPE_BOOTSTRAP_BEGIN, ViewportInfo,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED,
+    TYPE_TERMINAL_OUTPUT, ViewportInfo,
 };
 use tempfile::TempDir;
 use tokio::time::timeout;

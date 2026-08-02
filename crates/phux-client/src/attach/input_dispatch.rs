@@ -843,14 +843,13 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                             }
                             continue;
                         }
-                        let scrolled = ctx
-                            .engine_kernel
-                            .published_engine_mut(&target)
-                            .is_some_and(|replica| {
+                        let scrolled = ctx.engine_kernel.published_engine_mut(&target).is_some_and(
+                            |replica| {
                                 replica
                                     .scroll_viewport(ScrollViewport::Delta(delta))
                                     .is_ok()
-                            });
+                            },
+                        );
                         if !scrolled {
                             continue;
                         }
@@ -993,8 +992,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
         if let InputEvent::Key(key_event) = &ev
             && predict.is_enabled()
             && let Some(fid) = ctx.workspace.active_window().and_then(|w| w.focus.as_ref())
-            && let Some(terminal) =
-                super::driver::published_terminal(ctx.engine_kernel, fid)
+            && let Some(terminal) = super::driver::published_terminal(ctx.engine_kernel, fid)
             && !terminal_in_alt_screen(terminal)
             && let Some(slot) = panes.get_mut(fid)
         {
@@ -1156,8 +1154,7 @@ fn snap_scrolled_viewport(
     panes: &mut HashMap<TerminalId, PaneSlot>,
     focused_pane: Option<&TerminalId>,
 ) -> bool {
-    let Some((fid, slot)) =
-        focused_pane.and_then(|fid| panes.get_mut(fid).map(|slot| (fid, slot)))
+    let Some((fid, slot)) = focused_pane.and_then(|fid| panes.get_mut(fid).map(|slot| (fid, slot)))
     else {
         return false;
     };
@@ -3122,7 +3119,6 @@ mod tests {
             _ => unreachable!(),
         }
     }
-
 
     #[test]
     fn split_dir_arg_parses_horizontal_and_vertical() {

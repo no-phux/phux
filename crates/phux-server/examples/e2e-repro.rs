@@ -38,7 +38,7 @@ use libghostty_vt::screen::CellWide;
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
     ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerRuntime};

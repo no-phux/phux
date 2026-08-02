@@ -28,10 +28,10 @@ use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::wire::info::{LayoutNode, SplitDir};
 use phux_protocol::{
     BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, StreamId,
 };
-use phux_protocol::wire::info::{LayoutNode, SplitDir};
 
 use super::driver::PaneSlot;
 use super::paint::{SidebarEdge, SidebarReservation, content_rect, paint_full_frame};
@@ -176,8 +176,10 @@ impl Rig {
     /// with initial content — the "resize handshake in flight" fixture when
     /// the size differs from the pane's layout rect.
     fn seed_pane(&mut self, id: &TerminalId, cols: u16, rows: u16, content: &[u8]) {
-        self.panes
-            .insert(id.clone(), PaneSlot::new_with_size(cols, rows).expect("pane slot"));
+        self.panes.insert(
+            id.clone(),
+            PaneSlot::new_with_size(cols, rows).expect("pane slot"),
+        );
         self.snapshot(id, cols, rows, content);
     }
 

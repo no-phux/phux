@@ -1060,7 +1060,11 @@ async fn await_satellite_echo(
     hub: &mut UnixStream,
     sat_id: &TerminalId,
     needle: u8,
-) -> (phux_protocol::ids::StreamId, phux_protocol::ids::BootstrapId, u64) {
+) -> (
+    phux_protocol::ids::StreamId,
+    phux_protocol::ids::BootstrapId,
+    u64,
+) {
     let mut acc: Vec<u8> = Vec::new();
     let deadline = Instant::now() + STEP_DEADLINE;
     while Instant::now() < deadline {
@@ -1144,8 +1148,7 @@ fn two_hop_attach_snapshot_output_input_ack_and_detach() {
         //    link consumer holds an ATTACH_TERMINAL subscription) and
         //    `cat` echoes back as re-tagged TERMINAL_OUTPUT.
         send_key_and_enter(&mut hub, &sat_id, 'a').await;
-        let (stream_id, bootstrap_id, seq) =
-            await_satellite_echo(&mut hub, &sat_id, b'a').await;
+        let (stream_id, bootstrap_id, seq) = await_satellite_echo(&mut hub, &sat_id, b'a').await;
 
         // 3. FRAME_ACK relays without deadlocking or killing the stream
         //    (ADR-0018 flow control across the extra hop): ack what we

@@ -19,8 +19,8 @@ use super::frame::{
     TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_PING, TYPE_PONG,
     TYPE_SET_METADATA, TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
     TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SPAWNED,
-    TYPE_VIEWPORT_RESIZE, TombstoneReason, decode_agent_event,
-    decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
+    TYPE_VIEWPORT_RESIZE, TombstoneReason, decode_agent_event, decode_attach_target,
+    decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
     decode_bootstrap_stream_profile, decode_command, decode_command_result, decode_env,
     decode_focus_event, decode_key_event, decode_metadata_scope_key, decode_mouse_event,
     decode_paste_event, decode_scope, decode_spawn_result, decode_stream_id, decode_string_list,
@@ -694,9 +694,7 @@ impl<'a> Decoder<'a> {
                             terminal_id = Some(sub!(value, decode_terminal_id));
                         }
                         field::input_terminal_reply::BYTES => {
-                            if value.is_empty()
-                                || value.len() > MAX_INPUT_TERMINAL_REPLY_BYTES
-                            {
+                            if value.is_empty() || value.len() > MAX_INPUT_TERMINAL_REPLY_BYTES {
                                 return Err(DecodeError::InputTerminalReplyLimitExceeded);
                             }
                             bytes = Some(bytes::Bytes::copy_from_slice(value));

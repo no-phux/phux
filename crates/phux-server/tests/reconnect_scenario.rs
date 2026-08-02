@@ -30,7 +30,7 @@ mod common;
 
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_TERMINAL_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;

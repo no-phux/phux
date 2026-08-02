@@ -327,7 +327,6 @@ impl ScriptSpec {
         self
     }
 
-
     /// Append several frames to the post-subscription stream.
     #[must_use]
     pub fn extend(mut self, frames: impl IntoIterator<Item = FrameKind>) -> Self {

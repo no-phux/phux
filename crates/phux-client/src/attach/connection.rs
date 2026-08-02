@@ -1222,8 +1222,7 @@ mod tests {
         assert_eq!(buf.len(), cut, "partial bytes retained");
         // Deliver the tail; now it decodes and the buffer drains.
         buf.extend_from_slice(&whole[cut..]);
-        let frame =
-            decode_buffered(&mut buf, BootstrapLimits::default()).expect("complete");
+        let frame = decode_buffered(&mut buf, BootstrapLimits::default()).expect("complete");
         assert!(matches!(frame, Some(FrameKind::FrameAck { seq: 7, .. })));
         assert!(buf.is_empty());
     }
@@ -1243,10 +1242,10 @@ mod tests {
     // `Connection` holds `!Send` transport halves, so the scripted server
     // side runs on a `LocalSet` rather than `tokio::spawn`.
 
+    use bytes::Bytes;
     use phux_protocol::caps::BootstrapStreamProfile;
     use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
     use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
-    use bytes::Bytes;
     use tokio::net::UnixStream;
 
     fn block_on<F: std::future::Future>(fut: F) -> F::Output {

@@ -36,7 +36,7 @@ use std::time::Duration;
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
 };
 use phux_server::input::key::PerTerminalKeyEncoder;
 use phux_server::terminal_actor::default_shell_command;

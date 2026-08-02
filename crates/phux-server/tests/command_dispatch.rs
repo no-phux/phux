@@ -44,7 +44,7 @@ use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, StateScope, TYPE_ATTACHED,
-    TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_TERMINAL_CLOSED, TYPE_BOOTSTRAP_BEGIN,
+    TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_TERMINAL_CLOSED,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;

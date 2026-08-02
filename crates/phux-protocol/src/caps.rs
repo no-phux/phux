@@ -1469,10 +1469,7 @@ mod tests {
         assert_eq!(ACKNOWLEDGED_INPUT, 0x0000_0010);
         assert_eq!(FILE_UPLOAD, 0x0000_0020);
         assert_eq!(TERMINAL_REPLY, 0x0000_0040);
-        assert_eq!(
-            ServerFeature::AcknowledgedInput as u32,
-            ACKNOWLEDGED_INPUT
-        );
+        assert_eq!(ServerFeature::AcknowledgedInput as u32, ACKNOWLEDGED_INPUT);
         assert_eq!(ServerFeature::FileUpload as u32, FILE_UPLOAD);
         assert_eq!(ServerFeature::TerminalReply as u32, TERMINAL_REPLY);
         let set = ServerFeatureSet::with(&[

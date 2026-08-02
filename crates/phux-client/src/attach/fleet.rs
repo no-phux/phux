@@ -100,8 +100,8 @@ pub(super) fn collect_pane_meta(
     panes
         .iter()
         .map(|(id, slot)| {
-            let title = (!slot.last_title.trim().is_empty())
-                .then(|| slot.last_title.trim().to_owned());
+            let title =
+                (!slot.last_title.trim().is_empty()).then(|| slot.last_title.trim().to_owned());
             // Prefer the live cwd (refined by cwd_changed events); fall
             // back to the snapshot-seeded index the sidebar branch uses.
             let branch = slot

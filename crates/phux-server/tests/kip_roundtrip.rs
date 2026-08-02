@@ -86,7 +86,7 @@ use std::path::PathBuf;
 use phux_protocol::ids::TerminalId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;

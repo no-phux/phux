@@ -3,6 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 use bytes::{Bytes, BytesMut};
+use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, EngineCodec, EngineCodecSet,
@@ -10,7 +11,6 @@ use phux_protocol::caps::{
     ServerCapabilities, select_bootstrap_profile,
 };
 use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
     FrameKind, HistoryRejectionReason, HistoryTombstoneReason, MAX_HISTORY_CURSOR_BYTES,
@@ -521,7 +521,6 @@ fn history_page_sequence_and_row_count_are_required() {
     }
 }
 
-
 #[test]
 fn zero_history_request_limits_decode_for_retryable_rejection() {
     round_trip(FrameKind::HistoryRequest {
@@ -863,11 +862,8 @@ fn future_only_codec_bits_never_select_native() {
     );
 
     let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
-    let client = ClientCapabilities::new().with_bootstrap(
-        client
-            .bootstrap
-            .with_profiles(native_only),
-    );
+    let client =
+        ClientCapabilities::new().with_bootstrap(client.bootstrap.with_profiles(native_only));
     let server = server.with_profiles(native_only);
     assert!(select_bootstrap_profile(&client, &server).is_err());
 }
@@ -919,8 +915,8 @@ fn every_native_required_feature_is_strict() {
             "partial native features must fall back explicitly"
         );
 
-        let native_required = ClientCapabilities::new()
-            .with_bootstrap(bootstrap.with_profiles(native_only));
+        let native_required =
+            ClientCapabilities::new().with_bootstrap(bootstrap.with_profiles(native_only));
         assert!(
             select_bootstrap_profile(&native_required, &server.with_profiles(native_only)).is_err(),
             "partial native features must reject when no synthesis profile is common"
@@ -973,11 +969,12 @@ fn versioned_native_offer_forces_mixed_peers_to_synthesis_or_rejection() {
 
     let old_client_profiles =
         BootstrapProfileSet::from_wire(LEGACY_NATIVE_BIT | SYNTHESIZED_RAW_BIT);
-    let old_client = ClientCapabilities::new().with_bootstrap(
-        BootstrapCapabilities::new().with_profiles(old_client_profiles),
-    );
+    let old_client = ClientCapabilities::new()
+        .with_bootstrap(BootstrapCapabilities::new().with_profiles(old_client_profiles));
     assert_eq!(
-        select_bootstrap_profile(&old_client, &new_server).unwrap().0,
+        select_bootstrap_profile(&old_client, &new_server)
+            .unwrap()
+            .0,
         BootstrapProfile::SynthesizedVtRaw,
         "a new server must ignore the retired legacy native bit"
     );
@@ -1005,10 +1002,7 @@ fn old_engine_capabilities_fall_back_without_changing_protocol_version() {
             .0,
         BootstrapProfile::SynthesizedVtRaw
     );
-    assert_eq!(
-        (PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor),
-        (0, 7)
-    );
+    assert_eq!((PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor), (0, 7));
     assert_eq!(EngineCodec::LibghosttyCheckpointV2.as_wire(), 2);
 }
 

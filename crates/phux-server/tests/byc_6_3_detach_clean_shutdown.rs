@@ -41,7 +41,7 @@
 
 mod common;
 
-use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_BOOTSTRAP_BEGIN};
+use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED};
 use tempfile::TempDir;
 
 use crate::common::{

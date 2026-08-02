@@ -2673,10 +2673,7 @@ impl FrameKind {
                 enc.write_field_with(field::input_terminal_reply::TERMINAL_ID, |e| {
                     encode_terminal_id(terminal_id, e);
                 });
-                enc.write_field(
-                    field::input_terminal_reply::BYTES,
-                    bytes.as_ref(),
-                );
+                enc.write_field(field::input_terminal_reply::BYTES, bytes.as_ref());
             }
             Self::FrameAck {
                 terminal_id,

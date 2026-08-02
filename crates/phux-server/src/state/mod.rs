@@ -129,7 +129,6 @@ struct AttachTerminalGeneration {
     bootstrap_id: BootstrapId,
 }
 
-
 /// Single owner of all server-side state.
 ///
 /// See the module-level doc for the concurrency model. Wrap this in
@@ -174,8 +173,7 @@ pub struct ServerState {
     /// Successful satellite `ATTACH_TERMINAL` proxy ownership mirrored at the
     /// hub authority boundary. Opaque reply/input frames must name one of
     /// these exact `(client, host, terminal)` registrations before relay.
-    satellite_proxy_attaches:
-        HashSet<(ClientId, phux_protocol::ids::SatelliteHost, u32)>,
+    satellite_proxy_attaches: HashSet<(ClientId, phux_protocol::ids::SatelliteHost, u32)>,
     /// Per-`(client, terminal)` `ATTACH_TERMINAL` generation. Replacement
     /// cancels and joins the prior pump before tombstoning its bootstrap id.
     attach_terminal_pumps: HashMap<(ClientId, TerminalId), AttachTerminalGeneration>,

@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACHED,
-    TYPE_COMMAND_RESULT, TYPE_BOOTSTRAP_BEGIN,
+    TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;

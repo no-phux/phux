@@ -7,9 +7,7 @@ use phux_core::ids::{SessionId, TerminalId, WindowId};
 use phux_core::registry::Registry;
 use phux_core::session::Session;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities, Layer, LayerSet};
-use phux_protocol::ids::{
-    BootstrapId, TerminalId as WireTerminalId, WindowId as WireWindowId,
-};
+use phux_protocol::ids::{BootstrapId, TerminalId as WireTerminalId, WindowId as WireWindowId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use portable_pty::CommandBuilder;
 use tokio::sync::mpsc;
@@ -1403,11 +1401,13 @@ impl ServerState {
             .contains(&(client, host.clone(), terminal))
     }
 
-
     /// Allocate one connection-global, never-reused bootstrap id for
     /// `ATTACH_TERMINAL`. Exhaustion is reported instead of wrapping.
     pub fn next_attach_terminal_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {
-        let next = self.attach_terminal_next_bootstrap.entry(client).or_insert(1);
+        let next = self
+            .attach_terminal_next_bootstrap
+            .entry(client)
+            .or_insert(1);
         let raw = *next;
         *next = raw.checked_add(1)?;
         BootstrapId::new(raw)

@@ -287,11 +287,13 @@ impl PaneSlot {
 #[cfg(test)]
 pub(super) fn published_test_state(
     entries: &[(&TerminalId, u16, u16, &[u8])],
-) -> (AttachKernel, KernelEffectBuffer, HashMap<TerminalId, PaneSlot>) {
+) -> (
+    AttachKernel,
+    KernelEffectBuffer,
+    HashMap<TerminalId, PaneSlot>,
+) {
     use phux_client_core::session::KernelInput;
-    use phux_protocol::{
-        BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId,
-    };
+    use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId};
 
     let mut kernel = SessionKernel::new(
         GhosttyAdapter::new(BootstrapLimits::default()),
@@ -5914,8 +5916,7 @@ mod tests {
         // strip must show it (tmux automatic-rename / Warp tab titling).
         let id = TerminalId::local(1);
         let workspace = Workspace::single(id.clone());
-        let (_, _, panes) =
-            published_test_state(&[(&id, 80, 24, b"\x1b]2;~/src/phux\x07")]);
+        let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"\x1b]2;~/src/phux\x07")]);
 
         let infos = window_infos(
             &workspace,
@@ -6004,8 +6005,7 @@ mod tests {
         // tab exactly as before.
         let id = TerminalId::local(1);
         let workspace = Workspace::single(id.clone());
-        let (_, _, panes) =
-            published_test_state(&[(&id, 80, 24, b"\x1b]2;claude task\x07")]);
+        let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"\x1b]2;claude task\x07")]);
 
         let infos = window_infos(
             &workspace,
