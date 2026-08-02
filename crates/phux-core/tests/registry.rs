@@ -108,7 +108,6 @@ fn remove_window_cascades_to_panes() {
     let session = reg.session(s).expect("session exists");
     assert!(!session.windows.contains(&w));
     assert_eq!(session.active, None);
-    assert_eq!(reg.terminal_count(), 0);
 }
 
 #[test]
@@ -144,7 +143,6 @@ fn remove_session_cascades_fully() {
     assert!(reg.terminal(p3).is_none());
     assert_eq!(reg.session_count(), 0);
     assert_eq!(reg.window_count(), 0);
-    assert_eq!(reg.terminal_count(), 0);
 }
 
 #[test]
@@ -158,7 +156,6 @@ fn ids_are_distinct_across_kinds() {
     let p: TerminalId = reg.new_terminal(w).expect("window exists");
     assert_eq!(reg.session_count(), 1);
     assert_eq!(reg.window_count(), 1);
-    assert_eq!(reg.terminal_count(), 1);
     // Force the IDs to be used so the bindings are not dead code.
     assert_eq!(reg.terminal(p).map(|x| x.id), Some(p));
 }

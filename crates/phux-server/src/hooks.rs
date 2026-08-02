@@ -257,7 +257,7 @@ impl HookCatalog {
                 debug!(manifest = %entry.manifest.display(), "hooks: plugin disabled; skipping its events");
                 continue;
             }
-            let manifest_path = resolve_manifest_path(&entry.manifest, config_path);
+            let manifest_path = plugin::resolve_manifest_path(&entry.manifest, config_path);
             let manifest = match plugin::load_plugin_manifest(&manifest_path) {
                 Ok(manifest) => manifest,
                 Err(err) => {
@@ -357,17 +357,6 @@ fn config_action_name(action: &Action) -> &str {
         Action::Bare(name) => name,
         Action::Parameterized(parameterized) => &parameterized.action,
     }
-}
-
-/// Resolve a plugin manifest path: absolute paths pass through; relative
-/// paths anchor at the config file's directory.
-fn resolve_manifest_path(manifest: &Path, config_path: &Path) -> PathBuf {
-    if manifest.is_absolute() {
-        return manifest.to_path_buf();
-    }
-    config_path
-        .parent()
-        .map_or_else(|| manifest.to_path_buf(), |parent| parent.join(manifest))
 }
 
 /// `true` when the current OS is allowed by a manifest `platforms` list

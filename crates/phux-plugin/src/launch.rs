@@ -315,7 +315,8 @@ fn enabled_plugins(config_path: &Path) -> Result<Vec<EnabledPlugin>, LaunchError
         if !entry.enabled {
             continue;
         }
-        let manifest_path = resolve_manifest_path(&entry.manifest, config_path);
+        let manifest_path =
+            phux_config::plugin::resolve_manifest_path(&entry.manifest, config_path);
         let manifest =
             phux_config::plugin::load_plugin_manifest(&manifest_path).map_err(|source| {
                 LaunchError::Manifest {
@@ -354,13 +355,4 @@ fn template_paths(plugin_root: &Path) -> Result<Vec<PathBuf>, LaunchError> {
         .collect();
     paths.sort();
     Ok(paths)
-}
-
-fn resolve_manifest_path(manifest: &Path, config_path: &Path) -> PathBuf {
-    if manifest.is_absolute() {
-        return manifest.to_path_buf();
-    }
-    config_path
-        .parent()
-        .map_or_else(|| manifest.to_path_buf(), |parent| parent.join(manifest))
 }

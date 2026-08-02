@@ -266,10 +266,4 @@ impl Registry {
     pub fn window_count(&self) -> usize {
         self.windows.len()
     }
-
-    /// Number of live terminals.
-    #[must_use]
-    pub fn terminal_count(&self) -> usize {
-        self.terminals.len()
-    }
 }

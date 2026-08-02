@@ -25,7 +25,7 @@ pub(super) fn load_registry_from_path(config_path: &Path) -> Result<Vec<Registry
     let mut seen_ids = BTreeSet::new();
     for (index, entry) in cfg.plugins.into_iter().enumerate() {
         let manifest_text = entry.manifest.to_string_lossy().into_owned();
-        let manifest_path = resolve_manifest_path(&entry.manifest, config_path);
+        let manifest_path = plugin::resolve_manifest_path(&entry.manifest, config_path);
         let manifest = plugin::load_plugin_manifest(&manifest_path)
             .map_err(|err| format!("could not load {}: {err}", manifest_path.display()))?;
         if !seen_ids.insert(manifest.id.clone()) {
@@ -151,15 +151,6 @@ fn plugin_tables_mut(doc: &mut DocumentMut) -> Result<&mut ArrayOfTables, String
         .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()));
     item.as_array_of_tables_mut()
         .ok_or_else(|| "`plugins` must be an array of tables".to_owned())
-}
-
-fn resolve_manifest_path(manifest: &Path, config_path: &Path) -> PathBuf {
-    if manifest.is_absolute() {
-        return manifest.to_path_buf();
-    }
-    config_path
-        .parent()
-        .map_or_else(|| manifest.to_path_buf(), |parent| parent.join(manifest))
 }
 
 pub(super) fn reject_symlinked_config(path: &Path) -> Result<(), String> {

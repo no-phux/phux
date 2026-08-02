@@ -24,13 +24,12 @@ pub(crate) const REQUEST_CANCELLED: i64 = -32800;
 /// `id` is absent for notifications. `params` is optional and method-shaped;
 /// we deserialize it per method rather than into a fixed type so unknown
 /// fields are tolerated.
+///
+/// The `jsonrpc` protocol marker is deliberately not modeled: serde ignores
+/// unknown keys by default (no `deny_unknown_fields`), and a missing/odd
+/// `jsonrpc` is treated leniently to keep the loop robust.
 #[derive(Debug, Deserialize)]
 pub(crate) struct Request {
-    /// Protocol marker; always `"2.0"`. Accepted but not enforced — a
-    /// missing/odd `jsonrpc` is treated leniently to keep the loop robust.
-    #[serde(default)]
-    #[allow(dead_code, reason = "captured for completeness; not validated in v0")]
-    pub(crate) jsonrpc: Option<String>,
     /// Request id. Absent ⇒ notification (no reply is sent).
     #[serde(default)]
     pub(crate) id: Option<Value>,

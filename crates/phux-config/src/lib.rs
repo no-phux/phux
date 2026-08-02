@@ -24,6 +24,7 @@ pub mod plugin;
 pub mod remote;
 pub mod satellite;
 mod schema;
+pub mod socket; // phux-93b (shared default socket path: daemon + thin clients)
 pub mod vocab; // phux-i0e8.3.1 (validation vocabulary: action + hook event names)
 
 // Wave 5 modules — each owned by its respective subtask:

@@ -320,39 +320,11 @@ fn spawn_idle_exit_watchdog(
     });
 }
 
-/// Resolve the default Unix-domain-socket path.
-///
-/// Precedence (matches the MCP adapter's `resolve`, so the daemon, the CLI
-/// verbs, and the MCP bridge all agree on one socket):
-/// 1. `$PHUX_SOCKET` if set — an explicit `--socket` flag still overrides it
-///    at the call sites that take one;
-/// 2. `$XDG_RUNTIME_DIR/phux/phux.sock` if `XDG_RUNTIME_DIR` is set;
-/// 3. `/tmp/phux-$UID/phux.sock` otherwise.
-#[must_use]
-pub fn default_socket_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("PHUX_SOCKET") {
-        return PathBuf::from(path);
-    }
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        let mut p = PathBuf::from(dir);
-        p.push("phux");
-        p.push("phux.sock");
-        return p;
-    }
-    // SAFETY-free: `getuid` is a `libc` call we'd rather not depend on here.
-    // Read the effective UID from `/proc` is Linux-only; instead use the
-    // `USER` env var as a stable, portable fallback when crafting the path.
-    // The exact directory name is cosmetic — it only needs to be unique per
-    // user.
-    let uid_segment = std::env::var("UID")
-        .ok()
-        .or_else(|| std::env::var("USER").ok())
-        .unwrap_or_else(|| "default".to_owned());
-    let mut p = PathBuf::from("/tmp");
-    p.push(format!("phux-{uid_segment}"));
-    p.push("phux.sock");
-    p
-}
+// Re-exported so `phux_server::runtime::default_socket_path` keeps working;
+// the resolver itself lives in the lightweight `phux-config` crate so thin
+// consumers (e.g. the MCP adapter) can share it without depending on the
+// server (phux-93b).
+pub use phux_config::socket::default_socket_path;
 
 /// Maximum byte length of a Unix-domain-socket path on this platform.
 ///

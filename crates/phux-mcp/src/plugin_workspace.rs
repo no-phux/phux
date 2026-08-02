@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use phux_config::loader as config_loader;
 use phux_config::plugin;
@@ -16,7 +16,7 @@ pub(crate) fn call(args: &Value) -> Result<Value, ToolError> {
 
     let mut workspaces = Vec::new();
     for entry in cfg.plugins {
-        let manifest_path = resolve_manifest_path(&entry.manifest, &config_path);
+        let manifest_path = plugin::resolve_manifest_path(&entry.manifest, &config_path);
         let manifest = plugin::load_plugin_manifest(&manifest_path).map_err(|err| {
             ToolError::new(format!("could not load {}: {err}", manifest_path.display()))
         })?;
@@ -55,15 +55,6 @@ pub(crate) fn schema() -> Value {
             }
         }
     })
-}
-
-fn resolve_manifest_path(manifest: &Path, config_path: &Path) -> PathBuf {
-    if manifest.is_absolute() {
-        return manifest.to_path_buf();
-    }
-    config_path
-        .parent()
-        .map_or_else(|| manifest.to_path_buf(), |parent| parent.join(manifest))
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {

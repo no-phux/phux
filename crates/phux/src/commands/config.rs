@@ -422,7 +422,7 @@ fn load_configured_plugins() -> Result<Vec<LoadedPlugin>, String> {
     };
     let mut loaded = Vec::new();
     for entry in cfg.plugins {
-        let manifest_path = resolve_manifest_path(&entry.manifest, &path);
+        let manifest_path = plugin::resolve_manifest_path(&entry.manifest, &path);
         let manifest = match plugin::load_plugin_manifest(&manifest_path) {
             Ok(manifest) => manifest,
             Err(err) => {
@@ -580,13 +580,4 @@ fn action_exit_code(output: &phux_plugin::PluginActionOutput) -> ExitCode {
             .map_or(ExitCode::FAILURE, ExitCode::from),
         phux_plugin::PluginActionOutcome::TimedOut => ExitCode::from(125),
     }
-}
-
-fn resolve_manifest_path(manifest: &Path, config_path: &Path) -> PathBuf {
-    if manifest.is_absolute() {
-        return manifest.to_path_buf();
-    }
-    config_path
-        .parent()
-        .map_or_else(|| manifest.to_path_buf(), |parent| parent.join(manifest))
 }

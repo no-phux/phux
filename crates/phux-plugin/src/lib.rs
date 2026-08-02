@@ -218,7 +218,7 @@ fn resolve_action(
 ) -> Result<ResolvedAction, PluginActionError> {
     let cfg = config_loader::load_from(config_path)?;
     for entry in cfg.plugins {
-        let manifest_path = resolve_manifest_path(&entry.manifest, config_path);
+        let manifest_path = plugin::resolve_manifest_path(&entry.manifest, config_path);
         let manifest = plugin::load_plugin_manifest(&manifest_path).map_err(|source| {
             PluginActionError::Manifest {
                 path: manifest_path.clone(),
@@ -234,15 +234,6 @@ fn resolve_action(
         return action_from_manifest(manifest.plugin_root, plugin_id, action_id, manifest.actions);
     }
     Err(PluginActionError::PluginNotFound(plugin_id.to_owned()))
-}
-
-fn resolve_manifest_path(manifest: &Path, config_path: &Path) -> PathBuf {
-    if manifest.is_absolute() {
-        return manifest.to_path_buf();
-    }
-    config_path
-        .parent()
-        .map_or_else(|| manifest.to_path_buf(), |parent| parent.join(manifest))
 }
 
 fn action_from_manifest(
