@@ -1450,8 +1450,8 @@ async fn attach_session<W: super::RenderSink>(
                 // state fresh (pane mirrors, workspace, predict, overlays,
                 // pending-spawn maps, layout subscription) from the new
                 // ATTACHED frame, then repaints. A full repaint of the new
-                // session's grid happens via the replayed ATTACHED +
-                // TERMINAL_SNAPSHOT frames inside the loop.
+                // session's grid happens via the replayed negotiated bootstrap
+                // frames inside the loop.
                 let _ = write_terminal_clear(out);
             }
         }
@@ -1503,8 +1503,8 @@ async fn detach_and_drain(conn: &mut Connection) -> Result<(), AttachError> {
 
 /// phux-eb0: clear the alt screen between sessions so the previous
 /// session's grid doesn't briefly show under the new session's first
-/// paint. The new `ATTACHED` + `TERMINAL_SNAPSHOT` repaint lands
-/// immediately after, so this is a one-frame clear, not a flicker.
+/// paint. The new bootstrap repaint lands immediately after, so this is a
+/// one-frame clear, not a flicker.
 fn write_terminal_clear<W: Write>(out: &mut W) -> io::Result<()> {
     out.write_all(b"\x1b[2J\x1b[H")?;
     out.flush()
@@ -1646,8 +1646,8 @@ enum LoopExit {
 /// `initial_attached` is the `FrameKind::Attached` frame that
 /// [`wait_for_attached`] already pulled off the wire; we replay it
 /// through `handle_server_frame` so the focused-pane bookkeeping lives
-/// in one place. Subsequent `TERMINAL_SNAPSHOT` / `TERMINAL_OUTPUT` frames come
-/// off the wire as usual.
+/// in one place. Subsequent bootstrap and `TERMINAL_OUTPUT` frames come off the
+/// wire as usual.
 ///
 /// phux-eb0: returns a [`LoopExit`] so the outer loop in
 /// [`run_with_stdout_predict`] can re-attach to another session without
@@ -1706,10 +1706,8 @@ async fn main_loop<W: super::RenderSink>(
     initial_pane: Option<usize>,
 ) -> Result<LoopExit, AttachError> {
     // phux-4li.4: hold N client-side Terminals keyed by `TerminalId`,
-    // not the single Terminal of the wave-A driver. Each pane's slot is
-    // allocated lazily — the first `TERMINAL_SNAPSHOT` or
-    // `TERMINAL_OUTPUT` carrying a given id seeds it via
-    // `panes.entry(id).or_insert_with(PaneSlot::new)`. The
+    // not the single Terminal of the wave-A driver. Each pane's metadata slot
+    // is allocated lazily from authoritative bootstrap geometry.
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("attach loop started before bootstrap negotiation".to_owned())
     })?;
@@ -2119,7 +2117,7 @@ async fn main_loop<W: super::RenderSink>(
     )
     .await?;
     // phux-4li.17: seed the window/tab strip from the bootstrap layout so
-    // the first bar paint (driven by TERMINAL_SNAPSHOT) shows the window.
+    // the first bootstrap-driven bar paint shows the window.
     // phux-4h5a: the sidebar painter tracks the same window list so the strip's
     // tab list stays current whenever the bar's does.
     {

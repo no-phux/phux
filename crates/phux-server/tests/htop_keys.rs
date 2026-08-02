@@ -36,7 +36,7 @@ use std::time::Duration;
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
 };
 use phux_server::input::key::PerTerminalKeyEncoder;
 use phux_server::terminal_actor::default_shell_command;
@@ -148,7 +148,7 @@ fn plain_q_press_round_trips_as_legacy_ascii_byte() {
             other => panic!("expected ATTACHED, got {other:?}"),
         };
         let (type_byte, _snap) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         // Press `q` then Enter so cat's line buffer flushes.
         send_frame(
@@ -242,7 +242,7 @@ fn ctrl_c_round_trips_as_legacy_etx_byte() {
             other => panic!("expected ATTACHED, got {other:?}"),
         };
         let (type_byte, _snap) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         send_frame(
             &mut stream,

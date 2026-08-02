@@ -1402,6 +1402,10 @@ mod tests {
                     if pump_out_tx
                         .send(Outbound::Frame(FrameKind::TerminalOutput {
                             terminal_id: pump_terminal_id.clone(),
+                            stream_id: phux_protocol::ids::StreamId::new(1)
+                                .expect("test stream id"),
+                            bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                                .expect("test bootstrap id"),
                             seq,
                             bytes,
                         }))
@@ -1764,20 +1768,23 @@ mod tests {
                     let _ = reply.send(payload);
                 }
 
-                // Drain N TERMINAL_SNAPSHOT frames out of the writer channel.
-                let mut snaps_seen = 0usize;
-                for _ in 0..N {
+                // Drain one BEGIN/CHUNK/READY sequence per pane.
+                let mut begins = 0usize;
+                let mut chunks = 0usize;
+                let mut ready = 0usize;
+                for _ in 0..(N * 3) {
                     let frame = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
                         .await
-                        .expect("pane snapshot frame did not arrive")
-                        .expect("out_rx closed before snapshot");
-                    if matches!(frame, Outbound::Frame(FrameKind::TerminalSnapshot { .. })) {
-                        snaps_seen += 1;
-                    } else {
-                        panic!("expected TerminalSnapshot, got {frame:?}");
+                        .expect("pane bootstrap frame did not arrive")
+                        .expect("out_rx closed before bootstrap completed");
+                    match frame {
+                        Outbound::Frame(FrameKind::BootstrapBegin { .. }) => begins += 1,
+                        Outbound::Frame(FrameKind::BootstrapChunk { .. }) => chunks += 1,
+                        Outbound::Frame(FrameKind::BootstrapReady { .. }) => ready += 1,
+                        other => panic!("expected bootstrap frame, got {other:?}"),
                     }
                 }
-                assert_eq!(snaps_seen, N, "expected one TERMINAL_SNAPSHOT per pane");
+                assert_eq!((begins, chunks, ready), (N, N, N));
 
                 attach_task.await.expect("attach task panicked");
             })

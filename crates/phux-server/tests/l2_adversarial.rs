@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACHED,
-    TYPE_COMMAND_RESULT, TYPE_TERMINAL_SNAPSHOT,
+    TYPE_COMMAND_RESULT, TYPE_BOOTSTRAP_BEGIN,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -71,7 +71,7 @@ async fn attach_client(socket_path: &std::path::Path, label: &str) -> (UnixStrea
     // Frame 2: TERMINAL_SNAPSHOT
     let (type_byte, _snapshot) = recv_typed(&mut stream).await;
     assert_eq!(
-        type_byte, TYPE_TERMINAL_SNAPSHOT,
+        type_byte, TYPE_BOOTSTRAP_BEGIN,
         "{label}: expected TERMINAL_SNAPSHOT, got {type_byte:#04x}"
     );
 

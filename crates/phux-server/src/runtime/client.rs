@@ -1146,8 +1146,20 @@ where
                     "INPUT_PASTE",
                 );
             }
-            FrameKind::FrameAck { terminal_id, seq } => {
-                handle_frame_ack(&state, client_id, &terminal_id, seq);
+            FrameKind::FrameAck {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq,
+            } => {
+                handle_frame_ack(
+                    &state,
+                    client_id,
+                    &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    seq,
+                );
             }
             FrameKind::GetMetadata {
                 request_id,

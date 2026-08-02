@@ -8,6 +8,7 @@ use libghostty_vt::{
     render::{CursorVisualStyle, Snapshot},
     terminal::Mode,
 };
+use phux_protocol::ids::{BootstrapId, StreamId};
 use tokio::sync::mpsc;
 
 /// Snapshot of the live `Terminal`'s cursor + DEC mode bits captured at
@@ -167,6 +168,10 @@ pub struct ConsumerSyncState {
     /// the mapping `(TerminalActor, WireTerminalId)` and may differ
     /// across consumers in future tier topologies.
     pub wire_terminal_id: u32,
+    /// Logical protocol-0.7 subscription identity.
+    pub stream_id: StreamId,
+    /// Replica generation currently receiving live output.
+    pub bootstrap_id: BootstrapId,
     /// Per-consumer monotonic sequence id for `TERMINAL_OUTPUT`
     /// (`docs/spec/L1.md` §2.1, §12). Starts at `1` and increments on each
     /// emitted frame. Per-consumer (not shared) so each consumer can

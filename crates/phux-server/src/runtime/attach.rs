@@ -3,8 +3,8 @@
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use phux_core::TerminalId;
-use phux_protocol::caps::ClientCapabilities;
-use phux_protocol::ids::GroupId;
+use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile, ClientCapabilities, OutputMode};
+use phux_protocol::ids::{BootstrapId, GroupId, StreamId};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, SpawnError,
     SpawnResult,
@@ -37,6 +37,83 @@ pub(crate) fn downsample_for_caps(
     } else {
         crate::downsample::rewrite_bytes_with_caps(bytes, caps).into()
     }
+}
+
+pub(crate) fn synthesized_stream_profile(caps: ClientCapabilities) -> BootstrapStreamProfile {
+    if matches!(caps.output_mode, OutputMode::StateSync) {
+        BootstrapStreamProfile::SynthesizedVtStateSync
+    } else {
+        BootstrapStreamProfile::SynthesizedVtRaw
+    }
+}
+
+pub(crate) fn stream_id_from(raw: u64) -> StreamId {
+    StreamId::new(raw.saturating_add(1)).expect("derived stream id is non-zero")
+}
+
+pub(crate) fn initial_bootstrap_id() -> BootstrapId {
+    BootstrapId::new(1).expect("initial bootstrap generation is non-zero")
+}
+
+pub(crate) fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
+    BootstrapId::new(id.get().checked_add(1).unwrap_or(1))
+        .expect("wrapped bootstrap generation is non-zero")
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn send_synthesized_bootstrap(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    terminal_id: phux_protocol::ids::TerminalId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    profile: BootstrapStreamProfile,
+    limits: BootstrapLimits,
+    cols: u16,
+    rows: u16,
+    base_seq: u64,
+    payloads: impl IntoIterator<Item = bytes::Bytes>,
+) -> Result<(), ()> {
+    out_tx
+        .send(Outbound::Frame(FrameKind::BootstrapBegin {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            profile,
+            cols,
+            rows,
+            base_seq,
+        }))
+        .await
+        .map_err(|_| ())?;
+
+    let max_chunk = usize::try_from(limits.max_chunk_bytes())
+        .expect("protocol bootstrap chunk bound fits usize");
+    let mut chunk_seq = 0_u32;
+    for payload in payloads {
+        for chunk in payload.chunks(max_chunk) {
+            out_tx
+                .send(Outbound::Frame(FrameKind::BootstrapChunk {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq,
+                    payload: bytes::Bytes::copy_from_slice(chunk),
+                }))
+                .await
+                .map_err(|_| ())?;
+            chunk_seq = chunk_seq.checked_add(1).ok_or(())?;
+        }
+    }
+
+    out_tx
+        .send(Outbound::Frame(FrameKind::BootstrapReady {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        }))
+        .await
+        .map_err(|_| ())
 }
 
 /// Tuple bundling everything `handle_attach` needs after it's done
@@ -848,34 +925,48 @@ pub(crate) async fn handle_spawn_terminal(
         let mut output_rx = handle.output.subscribe();
         let pump_out_tx = out_tx.clone();
         let pump_wire_terminal_id = wire_terminal_id.clone();
+        let stream_id = stream_id_from(u64::from(request_id));
+        let profile = synthesized_stream_profile(client_caps);
+        let (bootstrap_gate_tx, bootstrap_gate_rx) = oneshot::channel();
         tokio::task::spawn_local(async move {
+            if bootstrap_gate_rx.await.is_err() {
+                return;
+            }
             let mut seq: u64 = 0;
+            let mut bootstrap_id = initial_bootstrap_id();
             loop {
                 match output_rx.recv().await {
-                    Ok(msg) => {
-                        // phux-3ns5: same Live→OUTPUT / Resync→SNAPSHOT
-                        // mapping as the main attach pump.
-                        let frame = match msg {
-                            PaneOutput::Live(bytes) => {
-                                seq = seq.wrapping_add(1);
-                                FrameKind::TerminalOutput {
-                                    terminal_id: pump_wire_terminal_id.clone(),
-                                    seq,
-                                    bytes: downsample_for_caps(&bytes, client_caps),
-                                }
-                            }
-                            PaneOutput::Resync { cols, rows, bytes } => {
-                                FrameKind::TerminalSnapshot {
-                                    terminal_id: pump_wire_terminal_id.clone(),
-                                    cols,
-                                    rows,
-                                    vt_replay_bytes: downsample_for_caps(&bytes, client_caps)
-                                        .into(),
-                                    scrollback_bytes: None,
-                                }
-                            }
+                    Ok(PaneOutput::Live(bytes)) => {
+                        seq = seq.wrapping_add(1);
+                        let frame = FrameKind::TerminalOutput {
+                            terminal_id: pump_wire_terminal_id.clone(),
+                            stream_id,
+                            bootstrap_id,
+                            seq,
+                            bytes: downsample_for_caps(&bytes, client_caps),
                         };
                         if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(PaneOutput::Resync { cols, rows, bytes }) => {
+                        bootstrap_id = next_bootstrap_id(bootstrap_id);
+                        let payload = downsample_for_caps(&bytes, client_caps);
+                        if send_synthesized_bootstrap(
+                            &pump_out_tx,
+                            pump_wire_terminal_id.clone(),
+                            stream_id,
+                            bootstrap_id,
+                            profile,
+                            BootstrapLimits::default(),
+                            cols,
+                            rows,
+                            seq,
+                            [payload],
+                        )
+                        .await
+                        .is_err()
+                        {
                             break;
                         }
                     }
@@ -897,6 +988,41 @@ pub(crate) async fn handle_spawn_terminal(
                 result: SpawnResult::Ok(wire_terminal_id.clone()),
             }))
             .await;
+        let (snapshot_tx, snapshot_rx) = oneshot::channel();
+        if handle
+            .snapshot
+            .send(SnapshotRequest {
+                scrollback: None,
+                reply: snapshot_tx,
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let Ok(snapshot) = snapshot_rx.await else {
+            return;
+        };
+        let replay =
+            downsample_for_caps(&bytes::Bytes::from(snapshot.bytes), client_caps);
+        if send_synthesized_bootstrap(
+            out_tx,
+            wire_terminal_id.clone(),
+            stream_id,
+            initial_bootstrap_id(),
+            profile,
+            BootstrapLimits::default(),
+            snapshot.cols,
+            snapshot.rows,
+            0,
+            [replay],
+        )
+        .await
+        .is_err()
+        {
+            return;
+        }
+        let _ = bootstrap_gate_tx.send(());
         // phux-y2t: fan a `pane_spawned` agent event to event-stream
         // subscribers (SPEC §7.5). The new pane's wire id rides the
         // `EVENT` envelope; server-wide subscribers and any per-pane
@@ -1088,6 +1214,10 @@ pub(crate) async fn handle_attach(
     // per-consumer state map keys line up across attach / ack / detach.
     let wire_client_id =
         phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
+    let stream_id = stream_id_from(u64::from(attach_id));
+    let bootstrap_id = initial_bootstrap_id();
+    let stream_profile = synthesized_stream_profile(client_caps);
+    let bootstrap_limits = BootstrapLimits::default();
 
     // phux-7w1j: per-pane "snapshot has been sent" gates. The output pump
     // subscribes to the broadcast in this loop (BEFORE the SnapshotRequest, so
@@ -1132,6 +1262,8 @@ pub(crate) async fn handle_attach(
                     client_id: wire_client_id,
                     outbound: out_tx.clone(),
                     wire_terminal_id: wire_id,
+                    stream_id,
+                    bootstrap_id,
                     // phux-fseo: honor the consumer's negotiated output mode.
                     // StateSync ⇒ the actor's tick is this consumer's emitter
                     // and the broadcast pump below is suppressed for it; Raw
@@ -1208,44 +1340,44 @@ pub(crate) async fn handle_attach(
             let (gate_tx, gate_rx) = oneshot::channel::<()>();
             snapshot_gates.push((terminal_id, gate_tx));
             output_pumps.spawn_local(async move {
-                // `output_rx` is already subscribed, so bytes produced while we
-                // wait are buffered by the broadcast (or surface as `Lagged`) —
-                // never lost, and never forwarded ahead of the snapshot. A
-                // dropped gate (attach aborted / snapshot failed) falls through
-                // to forwarding live output rather than going silent.
-                let _ = gate_rx.await;
+                if gate_rx.await.is_err() {
+                    return;
+                }
                 let mut seq: u64 = 0;
+                let mut bootstrap_id = bootstrap_id;
                 loop {
                     match output_rx.recv().await {
-                        Ok(msg) => {
-                            // phux-3ns5: `Live` chunks forward as
-                            // TERMINAL_OUTPUT (seq'd delta); `Resync`
-                            // forwards as TERMINAL_SNAPSHOT carrying the
-                            // post-reflow dims so the client mirror resizes
-                            // and repaints from authoritative state.
-                            let frame = match msg {
-                                PaneOutput::Live(bytes) => {
-                                    seq = seq.wrapping_add(1);
-                                    let out_bytes = downsample_for_caps(&bytes, pump_client_caps);
-                                    FrameKind::TerminalOutput {
-                                        terminal_id: pump_wire_terminal_id.clone(),
-                                        seq,
-                                        bytes: out_bytes,
-                                    }
-                                }
-                                PaneOutput::Resync { cols, rows, bytes } => {
-                                    let out_bytes = downsample_for_caps(&bytes, pump_client_caps);
-                                    FrameKind::TerminalSnapshot {
-                                        terminal_id: pump_wire_terminal_id.clone(),
-                                        cols,
-                                        rows,
-                                        vt_replay_bytes: out_bytes.into(),
-                                        scrollback_bytes: None,
-                                    }
-                                }
+                        Ok(PaneOutput::Live(bytes)) => {
+                            seq = seq.wrapping_add(1);
+                            let frame = FrameKind::TerminalOutput {
+                                terminal_id: pump_wire_terminal_id.clone(),
+                                stream_id,
+                                bootstrap_id,
+                                seq,
+                                bytes: downsample_for_caps(&bytes, pump_client_caps),
                             };
                             if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
-                                // Client mailbox closed (detach or disconnect).
+                                break;
+                            }
+                        }
+                        Ok(PaneOutput::Resync { cols, rows, bytes }) => {
+                            bootstrap_id = next_bootstrap_id(bootstrap_id);
+                            let payload = downsample_for_caps(&bytes, pump_client_caps);
+                            if send_synthesized_bootstrap(
+                                &pump_out_tx,
+                                pump_wire_terminal_id.clone(),
+                                stream_id,
+                                bootstrap_id,
+                                stream_profile,
+                                bootstrap_limits,
+                                cols,
+                                rows,
+                                seq,
+                                [payload],
+                            )
+                            .await
+                            .is_err()
+                            {
                                 break;
                             }
                         }
@@ -1302,21 +1434,26 @@ pub(crate) async fn handle_attach(
             warn!(?terminal_id, "pane actor failed to reply with snapshot");
             continue;
         };
-        let replay = downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps).into();
-        if out_tx
-            .send(Outbound::Frame(FrameKind::TerminalSnapshot {
-                terminal_id: wire_terminal_id,
-                cols: snap.cols,
-                rows: snap.rows,
-                vt_replay_bytes: replay,
-                // phux-9q5f: when the ATTACH requested scrollback and the pane
-                // retains history, the actor primed these history-priming VT
-                // bytes; the client `vt_write`s them before the viewport
-                // replay. Empty ⇒ `None` (viewport-only, or no history).
-                scrollback_bytes: (!snap.scrollback.is_empty()).then_some(snap.scrollback),
-            }))
-            .await
-            .is_err()
+        let replay = downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps);
+        let mut payloads = Vec::with_capacity(2);
+        if !snap.scrollback.is_empty() {
+            payloads.push(bytes::Bytes::from(snap.scrollback));
+        }
+        payloads.push(replay);
+        if send_synthesized_bootstrap(
+            out_tx,
+            wire_terminal_id,
+            stream_id,
+            bootstrap_id,
+            stream_profile,
+            bootstrap_limits,
+            snap.cols,
+            snap.rows,
+            0,
+            payloads,
+        )
+        .await
+        .is_err()
         {
             return;
         }

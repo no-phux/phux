@@ -868,6 +868,10 @@ async fn handle_attach_terminal(
     // handle_attach registration; a failure degrades to the broadcast
     // path, never fails the attach.
     let mut tick_managed = false;
+    let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
+    let bootstrap_id = crate::runtime::attach::initial_bootstrap_id();
+    let stream_profile = crate::runtime::attach::synthesized_stream_profile(client_caps);
+    let bootstrap_limits = phux_protocol::caps::BootstrapLimits::default();
     if let Some(wire_id) = terminal_id.local_id() {
         let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
         if handle
@@ -876,6 +880,8 @@ async fn handle_attach_terminal(
                 client_id: wire_client_id(client_id),
                 outbound: out_tx.clone(),
                 wire_terminal_id: wire_id,
+                stream_id,
+                bootstrap_id,
                 wants_state_sync: matches!(
                     client_caps.output_mode,
                     phux_protocol::caps::OutputMode::StateSync
@@ -915,52 +921,57 @@ async fn handle_attach_terminal(
         let (gate_tx, gate_rx) = oneshot::channel::<()>();
         snapshot_gate = Some(gate_tx);
         tokio::task::spawn_local(async move {
-            // A dropped gate (snapshot failed) falls through to live
-            // forwarding rather than going silent.
-            let _ = gate_rx.await;
+            if gate_rx.await.is_err() {
+                return;
+            }
             let mut seq: u64 = 0;
+            let mut bootstrap_id = bootstrap_id;
             loop {
                 let msg = tokio::select! {
                     () = token.cancelled() => break,
                     msg = output_rx.recv() => msg,
                 };
                 match msg {
-                    Ok(msg) => {
-                        // Same Live -> OUTPUT / Resync -> SNAPSHOT
-                        // mapping as the session-attach pump.
-                        let frame = match msg {
-                            PaneOutput::Live(bytes) => {
-                                seq = seq.wrapping_add(1);
-                                FrameKind::TerminalOutput {
-                                    terminal_id: pump_wire_terminal_id.clone(),
-                                    seq,
-                                    bytes: crate::runtime::attach::downsample_for_caps(
-                                        &bytes,
-                                        client_caps,
-                                    ),
-                                }
-                            }
-                            PaneOutput::Resync { cols, rows, bytes } => {
-                                FrameKind::TerminalSnapshot {
-                                    terminal_id: pump_wire_terminal_id.clone(),
-                                    cols,
-                                    rows,
-                                    vt_replay_bytes: crate::runtime::attach::downsample_for_caps(
-                                        &bytes,
-                                        client_caps,
-                                    )
-                                    .into(),
-                                    scrollback_bytes: None,
-                                }
-                            }
+                    Ok(PaneOutput::Live(bytes)) => {
+                        seq = seq.wrapping_add(1);
+                        let frame = FrameKind::TerminalOutput {
+                            terminal_id: pump_wire_terminal_id.clone(),
+                            stream_id,
+                            bootstrap_id,
+                            seq,
+                            bytes: crate::runtime::attach::downsample_for_caps(
+                                &bytes,
+                                client_caps,
+                            ),
                         };
                         if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                             break;
                         }
                     }
+                    Ok(PaneOutput::Resync { cols, rows, bytes }) => {
+                        bootstrap_id =
+                            crate::runtime::attach::next_bootstrap_id(bootstrap_id);
+                        let payload =
+                            crate::runtime::attach::downsample_for_caps(&bytes, client_caps);
+                        if crate::runtime::attach::send_synthesized_bootstrap(
+                            &pump_out_tx,
+                            pump_wire_terminal_id.clone(),
+                            stream_id,
+                            bootstrap_id,
+                            stream_profile,
+                            bootstrap_limits,
+                            cols,
+                            rows,
+                            seq,
+                            [payload],
+                        )
+                        .await
+                        .is_err()
+                        {
+                            break;
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        // Ask the actor for an in-band resync so the
-                        // consumer reconverges (phux-y8v6).
                         warn!(
                             terminal_id = ?pump_wire_terminal_id,
                             dropped = n,
@@ -1004,18 +1015,21 @@ async fn handle_attach_terminal(
         };
     };
     let replay =
-        crate::runtime::attach::downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps)
-            .into();
-    if out_tx
-        .send(Outbound::Frame(FrameKind::TerminalSnapshot {
-            terminal_id: terminal_id.clone(),
-            cols: snap.cols,
-            rows: snap.rows,
-            vt_replay_bytes: replay,
-            scrollback_bytes: None,
-        }))
-        .await
-        .is_err()
+        crate::runtime::attach::downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps);
+    if crate::runtime::attach::send_synthesized_bootstrap(
+        out_tx,
+        terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        stream_profile,
+        bootstrap_limits,
+        snap.cols,
+        snap.rows,
+        0,
+        [replay],
+    )
+    .await
+    .is_err()
     {
         return CommandResult::Error {
             code: ErrorCode::InternalError,
@@ -2825,6 +2839,8 @@ pub(crate) fn handle_frame_ack(
     state: &SharedState,
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
+    stream_id: phux_protocol::ids::StreamId,
+    bootstrap_id: phux_protocol::ids::BootstrapId,
     seq: u64,
 ) {
     // Satellite-routed acks relay like input frames (phux-v45.4): forward
@@ -2835,6 +2851,8 @@ pub(crate) fn handle_frame_ack(
             relay_satellite_frame(state, client_id, wire_terminal_id, "FRAME_ACK", |id| {
                 FrameKind::FrameAck {
                     terminal_id: id,
+                    stream_id,
+                    bootstrap_id,
                     seq,
                 }
             });
@@ -2889,6 +2907,8 @@ pub(crate) fn handle_frame_ack(
             phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
         match handle.consumer_ack.try_send(ConsumerAckRequest {
             client_id: wire_client_id,
+            stream_id,
+            bootstrap_id,
             seq,
         }) {
             Ok(()) => {

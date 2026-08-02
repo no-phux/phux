@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use phux_protocol::wire::frame::{
-    AttachTarget, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_ERROR, TYPE_TERMINAL_SNAPSHOT,
+    AttachTarget, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_ERROR, TYPE_BOOTSTRAP_BEGIN,
     ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
@@ -181,37 +181,44 @@ fn attach_returns_attached_and_pane_snapshot() {
             other => panic!("expected Attached, got {other:?}"),
         }
 
-        // Frame 2: TERMINAL_SNAPSHOT for the session's one pane.
+        // Frames 2..4: one bounded BEGIN/CHUNK/READY bootstrap.
         let (type_byte, frame) = read_typed_frame(&mut stream).await;
-        assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
-            "second frame should be TERMINAL_SNAPSHOT",
-        );
-        match frame {
-            FrameKind::TerminalSnapshot {
-                terminal_id: _,
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
+        let (stream_id, bootstrap_id) = match frame {
+            FrameKind::BootstrapBegin {
+                stream_id,
+                bootstrap_id,
                 cols,
                 rows,
-                vt_replay_bytes,
-                scrollback_bytes,
+                ..
             } => {
-                // Pane was created with `TerminalActor::new(80, 24)` per
-                // the runtime's seed path.
                 assert_eq!(cols, 80);
                 assert_eq!(rows, 24);
-                // Blank pane still has the reset preamble +
-                // CUP-home — never empty.
-                assert!(
-                    vt_replay_bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"),
-                    "snapshot bytes should start with reset preamble",
-                );
-                assert!(
-                    scrollback_bytes.is_none(),
-                    "byc.8 never sends scrollback (deferred to byc.5)",
-                );
+                (stream_id, bootstrap_id)
             }
-            other => panic!("expected TerminalSnapshot, got {other:?}"),
-        }
+            other => panic!("expected BootstrapBegin, got {other:?}"),
+        };
+        let (_, chunk) = read_typed_frame(&mut stream).await;
+        let FrameKind::BootstrapChunk {
+            stream_id: chunk_stream,
+            bootstrap_id: chunk_bootstrap,
+            payload,
+            ..
+        } = chunk
+        else {
+            panic!("expected BootstrapChunk");
+        };
+        assert_eq!((chunk_stream, chunk_bootstrap), (stream_id, bootstrap_id));
+        assert!(payload.starts_with(b"\x1b[!p\x1b[2J\x1b[H"));
+        let (_, ready) = read_typed_frame(&mut stream).await;
+        assert!(matches!(
+            ready,
+            FrameKind::BootstrapReady {
+                stream_id: ready_stream,
+                bootstrap_id: ready_bootstrap,
+                ..
+            } if ready_stream == stream_id && ready_bootstrap == bootstrap_id
+        ));
 
         drop(stream);
         shutdown_tx.send(()).ok();

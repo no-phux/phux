@@ -618,10 +618,10 @@ async fn connect_and_attach(
                 assert_eq!(snapshot.panes.len(), 1, "exactly one pane");
                 pane_id = Some(snapshot.panes[0].id.clone());
             }
-            FrameKind::TerminalSnapshot { cols, rows, .. } => {
+            FrameKind::BootstrapBegin { cols, rows, .. } => {
                 assert!(cols > 0 && rows > 0, "snapshot has a real grid");
-                got_snapshot = true;
             }
+            FrameKind::BootstrapReady { .. } => got_snapshot = true,
             _ => {}
         }
     }

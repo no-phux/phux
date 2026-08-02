@@ -1085,11 +1085,13 @@ impl TerminalActor {
     ///
     /// Idempotent: re-attaching the same `client_id` (e.g. on a runtime
     /// bug) overwrites the prior entry.
-    fn register_consumer(
+    fn register_consumer_generation(
         &mut self,
         client_id: ClientId,
         outbound: mpsc::Sender<Outbound>,
         wire_terminal_id: u32,
+        stream_id: phux_protocol::ids::StreamId,
+        bootstrap_id: phux_protocol::ids::BootstrapId,
         wants_state_sync: bool,
     ) -> Result<(), ConsumerAttachError> {
         // Priming the per-consumer reference + cursor/mode capture costs two
@@ -1130,6 +1132,8 @@ impl TerminalActor {
                 reference,
                 outbound,
                 wire_terminal_id,
+                stream_id,
+                bootstrap_id,
                 // First emission gets `seq == 1`. `0` is reserved for
                 // the "empty initial frame" sentinel matching
                 // `FrameId::ZERO` in [`LastAckedCursorMode`]'s doc.
@@ -1157,6 +1161,25 @@ impl TerminalActor {
             },
         );
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn register_consumer(
+        &mut self,
+        client_id: ClientId,
+        outbound: mpsc::Sender<Outbound>,
+        wire_terminal_id: u32,
+        wants_state_sync: bool,
+    ) -> Result<(), ConsumerAttachError> {
+        self.register_consumer_generation(
+            client_id,
+            outbound,
+            wire_terminal_id,
+            phux_protocol::ids::StreamId::new(u64::from(client_id.get()) + 1)
+                .expect("test stream id"),
+            phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
+            wants_state_sync,
+        )
     }
 
     /// Switch an already-registered consumer to the advance-on-ack
@@ -1238,6 +1261,29 @@ impl TerminalActor {
     /// a cue to recompute the shared adaptive tick cadence. `false` when no
     /// sample was produced (no matching emit instant, older/duplicate ack,
     /// or unregistered consumer).
+    fn on_generation_frame_ack(
+        &mut self,
+        client_id: ClientId,
+        stream_id: phux_protocol::ids::StreamId,
+        bootstrap_id: phux_protocol::ids::BootstrapId,
+        seq: u64,
+    ) -> bool {
+        let Some(consumer) = self.consumer_states.get(&client_id) else {
+            return false;
+        };
+        if consumer.stream_id != stream_id || consumer.bootstrap_id != bootstrap_id {
+            trace!(
+                ?client_id,
+                ?stream_id,
+                ?bootstrap_id,
+                seq,
+                "FRAME_ACK for stale stream generation; dropping",
+            );
+            return false;
+        }
+        self.on_frame_ack(client_id, seq)
+    }
+
     fn on_frame_ack(&mut self, client_id: ClientId, seq: u64) -> bool {
         // Captured before the `&mut` borrow below: the global test override
         // that forces every consumer onto the tick.
@@ -2841,6 +2887,8 @@ impl TerminalActor {
                         client_id,
                         outbound,
                         wire_terminal_id,
+                        stream_id,
+                        bootstrap_id,
                         wants_state_sync,
                         loss_tolerant,
                         reply,
@@ -2854,7 +2902,14 @@ impl TerminalActor {
                     // global test gate forces every consumer onto the tick.
                     let tick_managed = self.consumer_tick_emits || wants_state_sync;
                     let result = self
-                        .register_consumer(client_id, outbound, wire_terminal_id, wants_state_sync)
+                        .register_consumer_generation(
+                            client_id,
+                            outbound,
+                            wire_terminal_id,
+                            stream_id,
+                            bootstrap_id,
+                            wants_state_sync,
+                        )
                         .map(|()| ConsumerAttachOutcome { tick_managed });
                     // phux-v45.8: a forwarded/lossy-leg state-sync consumer
                     // opts into the advance-on-ack loss-tolerant model right
@@ -2899,12 +2954,17 @@ impl TerminalActor {
                 // diff against the same older reference — no
                 // retransmit machinery here.
                 Some(req) = self.consumer_ack_rx.recv() => {
-                    let ConsumerAckRequest { client_id, seq } = req;
+                    let ConsumerAckRequest {
+                        client_id,
+                        stream_id,
+                        bootstrap_id,
+                        seq,
+                    } = req;
                     // phux-q0e.5: a fresh RTT sample may shift the adaptive
                     // cadence. Rebuild the shared tick only when the new
                     // minimum-desired interval moves beyond the deadband, so
                     // a steady RTT does not churn the scheduler.
-                    if self.on_frame_ack(client_id, seq) {
+                    if self.on_generation_frame_ack(client_id, stream_id, bootstrap_id, seq) {
                         Self::rearm_tick(&mut tick, &mut tick_interval, self.adaptive_tick_interval());
                     }
                 }
@@ -3223,6 +3283,8 @@ impl TerminalActor {
             state.next_seq = state.next_seq.wrapping_add(1);
             let frame = FrameKind::TerminalOutput {
                 terminal_id: phux_protocol::ids::TerminalId::local(state.wire_terminal_id),
+                stream_id: state.stream_id,
+                bootstrap_id: state.bootstrap_id,
                 seq,
                 bytes: bytes.into(),
             };
@@ -4301,6 +4363,10 @@ mod tests {
                         client_id: client,
                         outbound: out_tx,
                         wire_terminal_id: 99,
+                        stream_id: phux_protocol::ids::StreamId::new(43)
+                            .expect("test stream id"),
+                        bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                            .expect("test bootstrap id"),
                         wants_state_sync: false,
                         loss_tolerant: false,
                         reply: tx_a,
@@ -4953,6 +5019,7 @@ mod tests {
             terminal_id,
             seq,
             bytes,
+            ..
         }) = frame
         else {
             panic!("expected a TerminalOutput frame from tick_emit");

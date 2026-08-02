@@ -54,7 +54,7 @@
 mod common;
 
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
-use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_SNAPSHOT};
+use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
 use phux_server::grid::SnapshotSynthesizer;
 use tempfile::TempDir;
 
@@ -125,43 +125,46 @@ fn byc_6_1_attach_returns_session_id_and_round_trip_snapshot() {
             other => panic!("expected FrameKind::Attached, got {other:?}"),
         };
 
-        // ---- SPEC §13 step 2: TERMINAL_SNAPSHOT (one per pane in focused window) ----
-        let (type_byte, snap_frame) = recv_typed(&mut stream).await;
-        assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
-            "second server-to-client frame must be TERMINAL_SNAPSHOT (got type 0x{type_byte:02x})",
-        );
-        let (snap_cols, snap_rows, vt_replay_bytes, scrollback_bytes) = match snap_frame {
-            FrameKind::TerminalSnapshot {
-                terminal_id: _,
+        // ---- SPEC §13 step 2: one BEGIN/CHUNK/READY bootstrap ----
+        let (type_byte, begin) = recv_typed(&mut stream).await;
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
+        let (snap_cols, snap_rows, stream_id, bootstrap_id) = match begin {
+            FrameKind::BootstrapBegin {
                 cols,
                 rows,
-                vt_replay_bytes,
-                scrollback_bytes,
-            } => (cols, rows, vt_replay_bytes, scrollback_bytes),
-            other => panic!("expected FrameKind::TerminalSnapshot, got {other:?}"),
+                stream_id,
+                bootstrap_id,
+                ..
+            } => (cols, rows, stream_id, bootstrap_id),
+            other => panic!("expected FrameKind::BootstrapBegin, got {other:?}"),
         };
+        let (_, chunk) = recv_typed(&mut stream).await;
+        let vt_replay_bytes = match chunk {
+            FrameKind::BootstrapChunk {
+                stream_id: chunk_stream,
+                bootstrap_id: chunk_bootstrap,
+                payload,
+                ..
+            } => {
+                assert_eq!((chunk_stream, chunk_bootstrap), (stream_id, bootstrap_id));
+                payload
+            }
+            other => panic!("expected FrameKind::BootstrapChunk, got {other:?}"),
+        };
+        let (_, ready) = recv_typed(&mut stream).await;
+        assert!(matches!(
+            ready,
+            FrameKind::BootstrapReady {
+                stream_id: ready_stream,
+                bootstrap_id: ready_bootstrap,
+                history_cursor: None,
+                ..
+            } if ready_stream == stream_id && ready_bootstrap == bootstrap_id
+        ));
 
         assert_eq!(snap_cols, snapshot_cols_expected, "snapshot cols");
         assert_eq!(snap_rows, snapshot_rows_expected, "snapshot rows");
-
-        // byc.8 always emits None for scrollback_bytes; scrollback
-        // negotiation per ATTACH viewport metrics lands with phux-byc.5
-        // (PTY pump). Asserting None here pins the contract.
-        assert!(
-            scrollback_bytes.is_none(),
-            "byc.8 must not emit scrollback_bytes (got {:?} bytes)",
-            scrollback_bytes.as_ref().map(Vec::len),
-        );
-
-        // Reset preamble must be present per `grid::synthesize`. This is
-        // the "minimum viable snapshot" assertion that byc.8's precursor
-        // also makes; keep it as a fast-fail before the round-trip check.
-        assert!(
-            vt_replay_bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"),
-            "vt_replay_bytes must start with DECSTR + ED 2 + CUP home; got first 16 bytes: {:?}",
-            &vt_replay_bytes[..vt_replay_bytes.len().min(16)],
-        );
+        assert!(vt_replay_bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"));
 
         // ---- ADR-0013 round-trip: wire bytes -> Terminal -> resynth (fixed point) ----
         // Build a fresh client-side Terminal of the snapshot's declared

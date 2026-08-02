@@ -74,10 +74,9 @@ impl Dial {
 ///
 /// - `ATTACH_TERMINAL`: `handle_attach_terminal`
 ///   (`crates/phux-server/src/runtime/commands.rs`) pushes the authoritative
-///   `TERMINAL_SNAPSHOT` "before the pump's first delta and before the Ok
-///   reply". A caller that drops it has no opening screen and no geometry —
-///   the exact defect that made every `phux rec` capture come back as a 0x0
-///   grid.
+///   bootstrap transcript before the acknowledgement. A caller that drops it
+///   has no opening screen and no geometry — the exact defect that made every
+///   `phux rec` capture come back as a 0x0 grid.
 /// - `GET_STATE` on a federation hub: `handle_get_state_federated` pushes an
 ///   uncorrelated `ERROR` frame per unreachable satellite, deliberately
 ///   ("observable degradation, not silence"), *before* returning the merged

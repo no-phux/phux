@@ -14,7 +14,7 @@ mod common;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_SNAPSHOT,
+    Command, CommandResult, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -88,7 +88,7 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
         // ---- TERMINAL_SNAPSHOT (one per pane in focused window) ----
         let (type_byte, _snap_frame) = recv_typed(&mut stream).await;
         assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
+            type_byte, TYPE_BOOTSTRAP_BEGIN,
             "second server-to-client frame must be TERMINAL_SNAPSHOT",
         );
 

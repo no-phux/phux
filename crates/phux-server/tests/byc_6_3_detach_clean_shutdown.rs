@@ -41,7 +41,7 @@
 
 mod common;
 
-use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_TERMINAL_SNAPSHOT};
+use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_BOOTSTRAP_BEGIN};
 use tempfile::TempDir;
 
 use crate::common::{
@@ -85,7 +85,7 @@ fn byc_6_3_detach_releases_state_and_allows_fresh_reattach() {
         // Drain TERMINAL_SNAPSHOT — required by SPEC §13 step 2.
         let (type_byte, _snap_a) = recv_typed(&mut client_a).await;
         assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
+            type_byte, TYPE_BOOTSTRAP_BEGIN,
             "client A: second frame TERMINAL_SNAPSHOT",
         );
 
@@ -150,33 +150,33 @@ fn byc_6_3_detach_releases_state_and_allows_fresh_reattach() {
              didn't drop the slot",
         );
 
-        // The pane actor survived: client B got a usable snapshot.
-        let (type_byte, snap_b) = recv_typed(&mut client_b).await;
-        assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
-            "client B: second frame TERMINAL_SNAPSHOT (pane actor still alive)",
-        );
-        match snap_b {
-            FrameKind::TerminalSnapshot {
-                cols,
-                rows,
-                vt_replay_bytes,
-                scrollback_bytes,
+        // The pane actor survived: client B got a complete bootstrap.
+        let (type_byte, begin) = recv_typed(&mut client_b).await;
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
+        let (stream_id, bootstrap_id) = match begin {
+            FrameKind::BootstrapBegin {
+                stream_id,
+                bootstrap_id,
+                cols: 80,
+                rows: 24,
                 ..
-            } => {
-                assert_eq!(cols, 80, "client B: snapshot cols");
-                assert_eq!(rows, 24, "client B: snapshot rows");
-                assert!(
-                    vt_replay_bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"),
-                    "client B: snapshot must carry the reset preamble",
-                );
-                assert!(
-                    scrollback_bytes.is_none(),
-                    "client B: byc.8 never emits scrollback_bytes",
-                );
-            }
-            other => panic!("client B: expected TerminalSnapshot, got {other:?}"),
-        }
+            } => (stream_id, bootstrap_id),
+            other => panic!("client B: expected BootstrapBegin, got {other:?}"),
+        };
+        let (_, chunk) = recv_typed(&mut client_b).await;
+        let FrameKind::BootstrapChunk { payload, .. } = chunk else {
+            panic!("client B: expected BootstrapChunk");
+        };
+        assert!(payload.starts_with(b"\x1b[!p\x1b[2J\x1b[H"));
+        let (_, ready) = recv_typed(&mut client_b).await;
+        assert!(matches!(
+            ready,
+            FrameKind::BootstrapReady {
+                stream_id: ready_stream,
+                bootstrap_id: ready_bootstrap,
+                ..
+            } if ready_stream == stream_id && ready_bootstrap == bootstrap_id
+        ));
 
         // Clean teardown.
         drop(client_b);

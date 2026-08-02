@@ -54,7 +54,7 @@
 //! `flush_pending_snapshots`). Still no head-of-line stall: the retry is
 //! per-consumer, not a link-wide await.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -635,15 +635,13 @@ enum SnapshotGate {
     /// The subscriber's snapshot has been delivered (or it is an event-only
     /// subscription that carries no snapshot): deltas flow normally.
     Open,
-    /// A return-leg `TERMINAL_SNAPSHOT` whose fan-out this consumer's
-    /// briefly-full mailbox refused, retained to retry before any later
-    /// delta reaches it (phux-v45.12). While retained, deltas to this
-    /// subscriber are suppressed so a delta can never overtake the dropped
-    /// snapshot; the retained frame is retried on the next inbound frame for
-    /// the terminal and on the link keepalive tick
-    /// ([`RelaySession::flush_pending_snapshots`]), and a newer snapshot (a
-    /// satellite resync) replaces it — full-grid, the freshest wins.
-    Retained(FrameKind),
+    /// Ordered bootstrap frames refused by a briefly-full consumer mailbox.
+    /// The queue is bounded by the negotiated bootstrap record/page bounds:
+    /// one active generation replaces any older retained generation.
+    Retained {
+        frames: VecDeque<FrameKind>,
+        open_after: bool,
+    },
 }
 
 /// One in-flight relayed command: the waiting consumer plus, when the
@@ -969,6 +967,8 @@ impl RelaySession {
             }
             FrameKind::TerminalOutput {
                 terminal_id,
+                stream_id,
+                bootstrap_id,
                 seq,
                 bytes,
             } => {
@@ -977,28 +977,72 @@ impl RelaySession {
                         id,
                         &FrameKind::TerminalOutput {
                             terminal_id: TerminalId::satellite(self.host.clone(), id),
+                            stream_id,
+                            bootstrap_id,
                             seq,
                             bytes,
                         },
                     );
                 }
             }
-            FrameKind::TerminalSnapshot {
+            FrameKind::BootstrapBegin {
                 terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile,
                 cols,
                 rows,
-                vt_replay_bytes,
-                scrollback_bytes,
+                base_seq,
             } => {
                 if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
                     self.fan_out(
                         id,
-                        &FrameKind::TerminalSnapshot {
+                        &FrameKind::BootstrapBegin {
                             terminal_id: TerminalId::satellite(self.host.clone(), id),
+                            stream_id,
+                            bootstrap_id,
+                            profile,
                             cols,
                             rows,
-                            vt_replay_bytes,
-                            scrollback_bytes,
+                            base_seq,
+                        },
+                    );
+                }
+            }
+            FrameKind::BootstrapChunk {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
+                payload,
+            } => {
+                if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
+                    self.fan_out(
+                        id,
+                        &FrameKind::BootstrapChunk {
+                            terminal_id: TerminalId::satellite(self.host.clone(), id),
+                            stream_id,
+                            bootstrap_id,
+                            chunk_seq,
+                            payload,
+                        },
+                    );
+                }
+            }
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor,
+            } => {
+                if let Some(id) = self.retag_inbound(Some(&terminal_id)) {
+                    self.fan_out(
+                        id,
+                        &FrameKind::BootstrapReady {
+                            terminal_id: TerminalId::satellite(self.host.clone(), id),
+                            stream_id,
+                            bootstrap_id,
+                            history_cursor,
                         },
                     );
                 }
@@ -1281,31 +1325,61 @@ impl RelaySession {
             trace!(satellite = %host, terminal = id, "inbound stream frame with no proxy subscribers");
             return;
         };
-        let is_snapshot = matches!(frame, FrameKind::TerminalSnapshot { .. });
+        let is_begin = matches!(frame, FrameKind::BootstrapBegin { .. });
+        let is_chunk = matches!(frame, FrameKind::BootstrapChunk { .. });
+        let is_ready = matches!(frame, FrameKind::BootstrapReady { .. });
         for sub in subs.iter_mut() {
-            if is_snapshot {
-                match sub.out_tx.try_send(Outbound::Frame(frame.clone())) {
-                    // Delivered: the gate opens and deltas may flow (this is
-                    // both the attach subscriber's first snapshot clearing
-                    // `AwaitingFirst` and a retained snapshot landing).
-                    Ok(()) => sub.gate = SnapshotGate::Open,
-                    // Retain it: a later delta must not overtake it.
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        sub.gate = SnapshotGate::Retained(frame.clone());
-                    }
-                    // Dead consumer; teardown / disconnect reaps it.
-                    Err(mpsc::error::TrySendError::Closed(_)) => {}
-                }
+            if is_begin {
+                sub.gate = SnapshotGate::AwaitingFirst;
+                Self::push_bootstrap_frame(sub, frame.clone(), false);
+            } else if is_chunk {
+                Self::push_bootstrap_frame(sub, frame.clone(), false);
+            } else if is_ready {
+                Self::push_bootstrap_frame(sub, frame.clone(), true);
             } else if Self::flush_pending_snapshot(sub) {
-                // The gate is open (its snapshot has landed) — the delta may
-                // ride. `flush_pending_snapshot` also retries a `Retained`
-                // snapshot first so the delta only follows once it lands.
                 let _ = sub.out_tx.try_send(Outbound::Frame(frame.clone()));
             }
-            // else: the subscriber is still `AwaitingFirst` (its snapshot has
-            // not been delivered) or its `Retained` snapshot is stuck behind
-            // a full mailbox — the delta is dropped now, since delivering it
-            // would precede the snapshot (L1 §9.1).
+        }
+    }
+
+    fn push_bootstrap_frame(
+        sub: &mut ProxySubscriber,
+        frame: FrameKind,
+        open_after: bool,
+    ) {
+        let gate = std::mem::replace(&mut sub.gate, SnapshotGate::AwaitingFirst);
+        match gate {
+            SnapshotGate::Retained {
+                mut frames,
+                open_after: prior_open_after,
+            } => {
+                frames.push_back(frame);
+                sub.gate = SnapshotGate::Retained {
+                    frames,
+                    open_after: prior_open_after || open_after,
+                };
+                let _ = Self::flush_pending_snapshot(sub);
+            }
+            SnapshotGate::AwaitingFirst | SnapshotGate::Open => {
+                match sub.out_tx.try_send(Outbound::Frame(frame.clone())) {
+                    Ok(()) => {
+                        sub.gate = if open_after {
+                            SnapshotGate::Open
+                        } else {
+                            SnapshotGate::AwaitingFirst
+                        };
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        sub.gate = SnapshotGate::Retained {
+                            frames: VecDeque::from([frame]),
+                            open_after,
+                        };
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        sub.gate = SnapshotGate::Open;
+                    }
+                }
+            }
         }
     }
 
@@ -1341,21 +1415,37 @@ impl RelaySession {
     /// (the dead consumer is reaped elsewhere) and reads as delivered so
     /// callers do not loop.
     fn flush_pending_snapshot(sub: &mut ProxySubscriber) -> bool {
-        match &sub.gate {
-            SnapshotGate::Open => true,
-            SnapshotGate::AwaitingFirst => false,
-            SnapshotGate::Retained(snapshot) => {
-                match sub.out_tx.try_send(Outbound::Frame(snapshot.clone())) {
-                    // Delivered, or the consumer is gone (reaped elsewhere):
-                    // either way the gate opens and deltas may resume.
-                    Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {
-                        sub.gate = SnapshotGate::Open;
-                        true
-                    }
-                    Err(mpsc::error::TrySendError::Full(_)) => false,
+        let gate = std::mem::replace(&mut sub.gate, SnapshotGate::AwaitingFirst);
+        let SnapshotGate::Retained {
+            mut frames,
+            open_after,
+        } = gate
+        else {
+            let open = matches!(gate, SnapshotGate::Open);
+            sub.gate = gate;
+            return open;
+        };
+        while let Some(frame) = frames.front() {
+            match sub.out_tx.try_send(Outbound::Frame(frame.clone())) {
+                Ok(()) => {
+                    frames.pop_front();
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    sub.gate = SnapshotGate::Retained { frames, open_after };
+                    return false;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    sub.gate = SnapshotGate::Open;
+                    return true;
                 }
             }
         }
+        sub.gate = if open_after {
+            SnapshotGate::Open
+        } else {
+            SnapshotGate::AwaitingFirst
+        };
+        open_after
     }
 
     /// Retry every subscriber's retained attach snapshot (phux-v45.12).
@@ -1366,7 +1456,7 @@ impl RelaySession {
     pub(crate) fn flush_pending_snapshots(&mut self) {
         for subs in self.subscribers.values_mut() {
             for sub in subs.iter_mut() {
-                if matches!(sub.gate, SnapshotGate::Retained(_)) {
+                if matches!(sub.gate, SnapshotGate::Retained { .. }) {
                     let _ = Self::flush_pending_snapshot(sub);
                 }
             }
@@ -2008,6 +2098,9 @@ mod tests {
         session
             .handle_inbound(&encode(&FrameKind::TerminalOutput {
                 terminal_id: TerminalId::local(9),
+                stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                    .expect("test bootstrap id"),
                 seq: 42,
                 bytes: bytes::Bytes::from_static(b"hi"),
             }))
@@ -2085,18 +2178,34 @@ mod tests {
     // --- attach snapshot ordering under backpressure (phux-v45.12) --------
 
     fn snapshot_frame(id: u32) -> FrameKind {
-        FrameKind::TerminalSnapshot {
+        FrameKind::BootstrapReady {
             terminal_id: TerminalId::local(id),
+            stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                .expect("test bootstrap id"),
+            history_cursor: None,
+        }
+    }
+
+    fn begin_frame(id: u32, generation: u64) -> FrameKind {
+        FrameKind::BootstrapBegin {
+            terminal_id: TerminalId::local(id),
+            stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(generation)
+                .expect("test bootstrap id"),
+            profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
             cols: 80,
             rows: 24,
-            vt_replay_bytes: b"grid".to_vec(),
-            scrollback_bytes: None,
+            base_seq: 0,
         }
     }
 
     fn output_frame(id: u32, seq: u64, bytes: &'static [u8]) -> FrameKind {
         FrameKind::TerminalOutput {
             terminal_id: TerminalId::local(id),
+            stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                .expect("test bootstrap id"),
             seq,
             bytes: bytes::Bytes::from_static(bytes),
         }
@@ -2143,7 +2252,7 @@ mod tests {
 
         let Outbound::Frame(first) = out_rx.try_recv().expect("snapshot delivered");
         assert!(
-            matches!(first, FrameKind::TerminalSnapshot { .. }),
+            matches!(first, FrameKind::BootstrapReady { .. }),
             "the snapshot must reach the consumer before any delta, got {first:?}"
         );
         let Outbound::Frame(second) = out_rx.try_recv().expect("delta delivered");
@@ -2193,7 +2302,7 @@ mod tests {
         session.flush_pending_snapshots();
         let Outbound::Frame(frame) = out_rx.try_recv().expect("snapshot flushed on tick");
         assert!(
-            matches!(frame, FrameKind::TerminalSnapshot { .. }),
+            matches!(frame, FrameKind::BootstrapReady { .. }),
             "the tick flush delivers the retained snapshot, got {frame:?}"
         );
         assert!(
@@ -2215,38 +2324,26 @@ mod tests {
 
         // First snapshot refused and retained.
         session
-            .handle_inbound(&encode(&FrameKind::TerminalSnapshot {
-                terminal_id: TerminalId::local(9),
-                cols: 80,
-                rows: 24,
-                vt_replay_bytes: b"stale".to_vec(),
-                scrollback_bytes: None,
-            }))
+            .handle_inbound(&encode(&begin_frame(9, 1)))
             .expect("valid satellite frame");
         // A fresher snapshot arrives (still full) and must replace it.
         session
-            .handle_inbound(&encode(&FrameKind::TerminalSnapshot {
-                terminal_id: TerminalId::local(9),
-                cols: 80,
-                rows: 24,
-                vt_replay_bytes: b"fresh".to_vec(),
-                scrollback_bytes: None,
-            }))
+            .handle_inbound(&encode(&begin_frame(9, 2)))
             .expect("valid satellite frame");
         assert!(matches!(
             out_rx.try_recv().expect("filler drains"),
             Outbound::Frame(FrameKind::Detach)
         ));
         session.flush_pending_snapshots();
-        let Outbound::Frame(FrameKind::TerminalSnapshot {
-            vt_replay_bytes, ..
-        }) = out_rx.try_recv().expect("snapshot flushed")
+        let Outbound::Frame(FrameKind::BootstrapBegin { bootstrap_id, .. }) =
+            out_rx.try_recv().expect("bootstrap BEGIN flushed")
         else {
-            panic!("expected a snapshot");
+            panic!("expected a bootstrap BEGIN");
         };
         assert_eq!(
-            vt_replay_bytes, b"fresh",
-            "the freshest retained snapshot must win"
+            bootstrap_id.get(),
+            2,
+            "the freshest retained generation must win"
         );
     }
 
@@ -2269,7 +2366,7 @@ mod tests {
             .handle_inbound(&encode(&snapshot_frame(9)))
             .expect("valid satellite frame");
         let Outbound::Frame(a_snap) = rx_a.try_recv().expect("A's snapshot");
-        assert!(matches!(a_snap, FrameKind::TerminalSnapshot { .. }));
+        assert!(matches!(a_snap, FrameKind::BootstrapReady { .. }));
 
         // B attaches to the same terminal (registration is immediate) but its
         // snapshot has not been requested/answered yet.
@@ -2294,7 +2391,7 @@ mod tests {
             .expect("valid satellite frame");
         let Outbound::Frame(b_first) = rx_b.try_recv().expect("B's snapshot lands");
         assert!(
-            matches!(b_first, FrameKind::TerminalSnapshot { .. }),
+            matches!(b_first, FrameKind::BootstrapReady { .. }),
             "B's first frame must be its snapshot, got {b_first:?}"
         );
 
@@ -2428,7 +2525,7 @@ mod tests {
             .expect("valid satellite frame");
         let Outbound::Frame(first) = out_rx.try_recv().expect("the attach snapshot lands");
         assert!(
-            matches!(first, FrameKind::TerminalSnapshot { .. }),
+            matches!(first, FrameKind::BootstrapReady { .. }),
             "the first post-upgrade frame must be the snapshot, got {first:?}"
         );
 
@@ -2653,6 +2750,9 @@ mod tests {
         session
             .handle_inbound(&encode(&FrameKind::TerminalOutput {
                 terminal_id: TerminalId::local(9),
+                stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                    .expect("test bootstrap id"),
                 seq: 7,
                 bytes: bytes::Bytes::from_static(b"live"),
             }))
@@ -2778,6 +2878,9 @@ mod tests {
         session
             .handle_inbound(&encode(&FrameKind::TerminalOutput {
                 terminal_id: TerminalId::local(9),
+                stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                    .expect("test bootstrap id"),
                 seq: 1,
                 bytes: bytes::Bytes::from_static(b"leak"),
             }))
@@ -2842,7 +2945,7 @@ mod tests {
             .expect("valid satellite frame");
         assert!(matches!(
             rx_c.try_recv().expect("C receives its snapshot"),
-            Outbound::Frame(FrameKind::TerminalSnapshot { .. })
+            Outbound::Frame(FrameKind::BootstrapReady { .. })
         ));
 
         // The delayed transient error rolls back B's upgrade. It may only
@@ -2875,7 +2978,7 @@ mod tests {
             .expect("valid satellite frame");
         assert!(matches!(
             rx_b.try_recv().expect("B's retained snapshot flushes"),
-            Outbound::Frame(FrameKind::TerminalSnapshot { .. })
+            Outbound::Frame(FrameKind::BootstrapReady { .. })
         ));
         assert!(matches!(
             rx_b.try_recv().expect("B's delta follows the snapshot"),
@@ -2924,6 +3027,9 @@ mod tests {
         session
             .handle_inbound(&encode(&FrameKind::TerminalOutput {
                 terminal_id: TerminalId::local(9),
+                stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                    .expect("test bootstrap id"),
                 seq: 1,
                 bytes: bytes::Bytes::from_static(b"still here"),
             }))

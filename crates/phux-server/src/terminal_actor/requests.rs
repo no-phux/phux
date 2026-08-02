@@ -6,6 +6,7 @@ use crate::grid::SnapshotBytes;
 use crate::state::{Outbound, TerminalInput};
 use bytes::Bytes;
 use phux_protocol::ClientId;
+use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::wire::frame::{ControlAction, TerminalEventType, TerminalSignal};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -87,6 +88,10 @@ pub struct ConsumerAttachRequest {
     /// from the actor's [`phux_core::ids::TerminalId`] to this wire id and
     /// passes the resolved value here at ATTACH time.
     pub wire_terminal_id: u32,
+    /// Logical protocol-0.7 subscription identity.
+    pub stream_id: StreamId,
+    /// Current replica generation for this subscription.
+    pub bootstrap_id: BootstrapId,
     /// Whether this consumer negotiated the synthesized state-sync tick
     /// emitter (`OutputMode::StateSync`) at HELLO time (phux-fseo). When
     /// `true` the actor's `tick_emit` serves this consumer and the runtime
@@ -176,6 +181,10 @@ pub struct ConsumerDetachRequest {
 pub struct ConsumerAckRequest {
     /// Identifier whose [`super::ConsumerSyncState`]'s dirty cache to evict.
     pub client_id: ClientId,
+    /// Logical subscription being acknowledged.
+    pub stream_id: StreamId,
+    /// Replica generation being acknowledged.
+    pub bootstrap_id: BootstrapId,
     /// Cumulative ack sequence (per SPEC §12.2): the highest `seq` from
     /// `TERMINAL_OUTPUT` this consumer has applied. Strictly-monotonic
     /// against the per-consumer `last_acked_seq` — older/duplicate acks

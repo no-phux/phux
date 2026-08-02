@@ -153,18 +153,17 @@ async fn record_on_connection(
 /// stateful frame order asserted by the tests is therefore `HELLO` ->
 /// `COMMAND { AttachTerminal }` -> `SUBSCRIBE_EVENTS`.
 ///
-/// Returns the frames that arrived interleaved with the `COMMAND_RESULT` --
-/// in practice the priming `TERMINAL_SNAPSHOT`. They are already consumed off
+/// Returns frames that arrived interleaved with the `COMMAND_RESULT` -- in
+/// practice the priming bootstrap transcript. They are already consumed off
 /// the socket, so the caller must feed them to the capture; nothing re-sends
 /// them.
 async fn subscribe(
     conn: &mut Connection,
     terminal_id: &TerminalId,
+    next_request_id: &mut u32,
 ) -> Result<Vec<FrameKind>, AttachError> {
-    // SPEC §5 permits the priming TERMINAL_SNAPSHOT to arrive before the
-    // COMMAND_RESULT, and the reference server always sends it that way
-    // (crates/phux-server/src/runtime/commands.rs: the snapshot is pushed
-    // "before the pump's first delta and before the Ok reply"). So the
+    // SPEC §5 permits priming bootstrap frames to arrive before the
+    // COMMAND_RESULT, and the reference server sends them that way.
     // interleave is the normal case, not an edge case -- but a frame
     // observed here is CONSUMED, and the snapshot is never re-sent. Dropping
     // it silently is what made an entire capture come back as a 0x0 grid
@@ -284,7 +283,7 @@ struct Capture {
     /// start at, and therefore the cast header's. Later resizes live in the
     /// timeline as `r` events, not here.
     opening: Option<(u16, u16)>,
-    /// `None` until the priming `TERMINAL_SNAPSHOT` lands; afterwards the
+    /// `None` until the priming bootstrap transcript lands; afterwards the
     /// last dimensions the server reported, which is what distinguishes a
     /// genuine resize from a lag-recovery resync.
     dims: Option<(u16, u16)>,
@@ -403,7 +402,7 @@ impl Capture {
         }
     }
 
-    /// Absorb a `TERMINAL_SNAPSHOT`.
+    /// Absorb a complete synthesized-VT bootstrap transcript.
     ///
     /// The first one seeds the header dimensions and lands at `t = 0` — the
     /// recording opens on the grid as it was, not on a blank screen. A later
@@ -591,7 +590,7 @@ mod tests {
 
     /// A session whose client will attach a Terminal.
     ///
-    /// The priming `TERMINAL_SNAPSHOT` is not optional and is not a "script"
+    /// The priming bootstrap transcript is not optional and is not a "script"
     /// frame: [`crate::testkit`] sends it *before* the `ATTACH_TERMINAL` ack,
     /// because that is what `handle_attach_terminal` does. Every test below
     /// therefore exercises the interleave, not just the one guard that was
@@ -613,7 +612,7 @@ mod tests {
         assert_eq!(
             (recorded.cols, recorded.rows),
             (120, 40),
-            "the priming TERMINAL_SNAPSHOT arrives BEFORE the COMMAND_RESULT on \
+            "the priming bootstrap arrives BEFORE the COMMAND_RESULT on \
              a real server. A handshake that consumes and discards it leaves the \
              capture with no geometry (0x0) and no opening screen, so the whole \
              recording is unplayable. Feed pre-ack frames to the capture."

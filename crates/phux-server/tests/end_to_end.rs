@@ -18,7 +18,7 @@ use phux_protocol::ids::{BootstrapId, FileUploadId, StreamId, TerminalId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_DETACHED,
-    TYPE_ERROR, TYPE_HELLO_OK, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    TYPE_ERROR, TYPE_HELLO_OK, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
 };
 use portable_pty::CommandBuilder;
 use sha2::{Digest, Sha256};
@@ -216,7 +216,7 @@ fn handshake_hello_round_trip() {
         }
 
         let (type_byte, _snap) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         drop(stream);
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
@@ -685,26 +685,24 @@ fn attach_returns_snapshot() {
             other => panic!("expected Attached, got {other:?}"),
         }
 
-        let (type_byte, snap) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
-        match snap {
-            FrameKind::TerminalSnapshot {
-                cols,
-                rows,
-                vt_replay_bytes,
+        let (type_byte, begin) = recv_typed(&mut stream).await;
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
+        assert!(matches!(
+            begin,
+            FrameKind::BootstrapBegin {
+                cols: 80,
+                rows: 24,
                 ..
-            } => {
-                assert_eq!(cols, 80);
-                assert_eq!(rows, 24);
-                // The reset preamble is the load-bearing invariant for
-                // any client-side replay (see `byc_6_1_attach_snapshot`).
-                assert!(
-                    vt_replay_bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"),
-                    "snapshot must carry the reset preamble",
-                );
             }
-            other => panic!("expected TerminalSnapshot, got {other:?}"),
-        }
+        ));
+        let (_, chunk) = recv_typed(&mut stream).await;
+        assert!(matches!(
+            chunk,
+            FrameKind::BootstrapChunk { ref payload, .. }
+                if payload.starts_with(b"\x1b[!p\x1b[2J\x1b[H")
+        ));
+        let (_, ready) = recv_typed(&mut stream).await;
+        assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
 
         drop(stream);
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
@@ -737,7 +735,7 @@ fn input_routes_to_pane() {
         };
 
         let (type_byte, _snap) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         send_frame(
             &mut stream,
@@ -815,7 +813,7 @@ fn detach_clean_shutdown() {
         let (type_byte, _attached_a) = recv_typed(&mut client_a).await;
         assert_eq!(type_byte, TYPE_ATTACHED);
         let (type_byte, _snap_a) = recv_typed(&mut client_a).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         send_frame(&mut client_a, &FrameKind::Detach).await;
         let (type_byte, detached) = recv_typed(&mut client_a).await;
@@ -837,7 +835,7 @@ fn detach_clean_shutdown() {
             "post-detach reattach must succeed",
         );
         let (type_byte, _snap_b) = recv_typed(&mut client_b).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         drop(client_b);
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
@@ -860,7 +858,7 @@ fn shutdown_with_live_real_clients_releases_input_lane_handles() {
             negotiate(client).await;
             send_frame(client, &attach_by_name("default")).await;
             assert_eq!(recv_typed(client).await.0, TYPE_ATTACHED);
-            assert_eq!(recv_typed(client).await.0, TYPE_TERMINAL_SNAPSHOT);
+            assert_eq!(recv_typed(client).await.0, TYPE_BOOTSTRAP_BEGIN);
         }
 
         // Deliberately keep both real sockets alive across server shutdown.
@@ -903,7 +901,7 @@ fn server_survives_mid_frame_disconnect() {
             "server must keep accepting after a mid-frame disconnect",
         );
         let (type_byte, _snap) = recv_typed(&mut healthy).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         drop(healthy);
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;

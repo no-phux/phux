@@ -33,7 +33,7 @@ mod common;
 use phux_protocol::TerminalId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -118,7 +118,7 @@ async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, u32, Term
 
     let (type_byte, _snap) = recv_typed(&mut stream).await;
     assert_eq!(
-        type_byte, TYPE_TERMINAL_SNAPSHOT,
+        type_byte, TYPE_BOOTSTRAP_BEGIN,
         "second frame must be TERMINAL_SNAPSHOT",
     );
 

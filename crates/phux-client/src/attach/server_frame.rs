@@ -173,9 +173,9 @@ pub(super) struct FrameOutcome {
     /// lifecycle, input-lease holder (`TerminalControl`), or asked-attention
     /// flag (ADR-0035 `Asked`), so the driver must repaint the chrome
     /// (supervisory badge, attention hint, window-tab markers) even though no
-    /// grid content changed. Set by the `Event` arms, and (phux-foz.9) by the
-    /// `TerminalOutput` / `TerminalSnapshot` arms when the applied bytes moved
-    /// the pane's OSC 0/2 title — the title feeds the window-tab labels and
+    /// grid content changed. Set by the `Event`, bootstrap, and
+    /// `TerminalOutput` arms when the applied bytes moved the pane's OSC 0/2
+    /// title — the title feeds the window-tab labels and
     /// the sidebar's agents section (the only identity signal a plain
     /// `claude`/`codex` pane emits), and title bytes arrive on the ordinary
     /// content path that otherwise never refreshes the chrome.
@@ -511,11 +511,8 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
         )));
     }
     // Per-inbound-frame dispatch span (debug; off under the default
-    // `phux=info` filter and free when disabled). For the content frames
-    // this function also paints (TERMINAL_SNAPSHOT / TERMINAL_OUTPUT) the
-    // span's CLOSE duration is the client-side apply+paint cost — the
-    // client lag signal the flywheel reads. `kind` is a payload-free label;
-    // `terminal_id` / `seq` / `bytes` are recorded inside the content arms
+    // `phux=info` filter). Content-frame CLOSE duration is client apply+paint
+    // cost, while identifiers and payload sizes are recorded in their arms.
     // below. Declared `Empty` so they exist for later `record`.
     let frame_span = tracing::debug_span!(
         "handle_server_frame",
@@ -546,7 +543,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             *workspace = Workspace::single(bootstrap.clone());
             // Seed client-side mirrors at their server-advertised sizes
             // before any TERMINAL_OUTPUT can race ahead of the per-pane
-            // TERMINAL_SNAPSHOT. VT interpretation is geometry-sensitive;
+            // bootstrap transcript. VT interpretation is geometry-sensitive;
             // starting at 80x24 and resizing later corrupts wraps, clips,
             // and absolute cursor movement for wider/taller viewports.
             for pane in &snapshot.panes {
@@ -591,8 +588,8 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             // a dedicated request/response frame would be redundant.
             let session_cache = (snapshot.sessions.clone(), snapshot.focused_session);
             // `ATTACHED` per SPEC §13 carries the session/window/pane
-            // graph; the per-pane initial cells arrive separately via
-            // TERMINAL_SNAPSHOT.
+            // graph; the per-pane initial cells arrive separately through each
+            // bootstrap transcript.
             //
             // phux-4li.5: signal the driver to emit GET_METADATA and
             // SUBSCRIBE_METADATA for the layout key so we (a) reconcile
@@ -1110,12 +1107,9 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                             } else {
                                 None
                             };
-                            // Seed a PaneSlot for the new Terminal so the
-                            // first TERMINAL_SNAPSHOT lands on a warm
-                            // mirror. Vacant-or-occupied — never overwrite
-                            // an existing slot (a TERMINAL_OUTPUT could
-                            // legally race ahead of TERMINAL_SPAWNED if
-                            // the server batched the spawn-then-output).
+                            // Seed pane metadata so the first bootstrap lands
+                            // on a warm rendering slot. Vacant-or-occupied —
+                            // never overwrite existing frontend metadata.
                             if let std::collections::hash_map::Entry::Vacant(v) =
                                 panes.entry(new_id)
                             {
@@ -2245,11 +2239,9 @@ mod tests {
         .expect("handle_server_frame")
     }
 
-    /// phux-ih39: a `TERMINAL_OUTPUT` that races ahead of
-    /// `TERMINAL_SNAPSHOT` must allocate the pane mirror at the current viewport width before
-    /// `vt_write`, not at the historical 80x24 placeholder. Absolute cursor
-    /// movement past column 80 is a compact regression oracle: if the slot
-    /// starts 80-wide, the `X` cannot land in column 100.
+    /// phux-ih39: live output that races ahead of bootstrap publication must
+    /// not be interpreted against placeholder geometry. Absolute cursor
+    /// movement past column 80 is the compact regression oracle.
     #[test]
     fn output_before_snapshot_uses_current_viewport_width() {
         let pane = tid(1);
@@ -2384,10 +2376,9 @@ mod tests {
         );
     }
 
-    /// phux-foz.9: the symmetric snapshot path — a resync
-    /// `TERMINAL_SNAPSHOT` replays the pane's title too, so a title the
-    /// client has not seen yet must raise `chrome_dirty` exactly like the
-    /// output hot path, and an unchanged replay must not.
+    /// phux-foz.9: the symmetric bootstrap path — a resync
+    /// replays the pane's title too, so a previously unseen title raises
+    /// `chrome_dirty` exactly like the output hot path.
     #[test]
     fn snapshot_title_change_marks_chrome_dirty() {
         let pane = tid(1);
@@ -2472,8 +2463,8 @@ mod tests {
     }
 
     /// phux-ih39: the ATTACHED graph already carries per-pane dimensions.
-    /// Seed slots from that graph so output between ATTACHED and
-    /// `TERMINAL_SNAPSHOT` doesn't get interpreted at 80x24.
+    /// Seed slots from that graph so pre-bootstrap output doesn't get
+    /// interpreted at 80x24.
     #[test]
     fn attached_seeds_pane_slots_from_snapshot_dimensions() {
         let pane = tid(1);
@@ -2683,10 +2674,10 @@ mod tests {
         .expect("handle bootstrap begin")
     }
 
-    /// phux-paer: on re-attach the server sends a `TERMINAL_SNAPSHOT` per
-    /// pane; a NON-focused pane's snapshot must paint into its rect, or the
-    /// pane renders blank while input still routes — the "screens wiped but
-    /// still typable" report. The symmetric counterpart to
+    /// phux-paer: on re-attach the server sends a bootstrap per pane; a
+    /// NON-focused pane's publication must paint into its rect, or the pane
+    /// renders blank while input still routes — the "screens wiped but still
+    /// typable" report. The symmetric counterpart to
     /// [`non_focused_pane_repaints_on_output`].
     #[test]
     fn non_focused_pane_repaints_on_snapshot() {

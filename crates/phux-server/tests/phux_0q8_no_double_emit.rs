@@ -74,20 +74,19 @@ fn live_output_is_delivered_exactly_once() {
             other => panic!("expected Attached, got {other:?}"),
         };
 
-        // The TERMINAL_SNAPSHOT may legitimately carry the marker once
-        // (the pane already printed it before we attached). Count that
-        // separately: the snapshot is the canonical one-time replay and
-        // is NOT part of the live-output doubling hazard. The hazard is
-        // duplicate TERMINAL_OUTPUT deltas.
-        let (snap_tb, snap) = recv_typed(&mut stream).await;
+        // Drain the one-time bootstrap separately from live output.
+        let (snap_tb, begin) = recv_typed(&mut stream).await;
+        assert_eq!(snap_tb, phux_protocol::wire::frame::TYPE_BOOTSTRAP_BEGIN);
+        assert!(matches!(begin, FrameKind::BootstrapBegin { .. }));
+        let (_, chunk) = recv_typed(&mut stream).await;
         let mut snapshot_count = snapshot_marker_count;
-        if snap_tb == phux_protocol::wire::frame::TYPE_TERMINAL_SNAPSHOT
-            && let FrameKind::TerminalSnapshot {
-                vt_replay_bytes, ..
-            } = snap
-        {
-            snapshot_count += count_occurrences(&vt_replay_bytes, MARKER);
+        if let FrameKind::BootstrapChunk { payload, .. } = chunk {
+            snapshot_count += count_occurrences(&payload, MARKER);
+        } else {
+            panic!("expected BootstrapChunk");
         }
+        let (_, ready) = recv_typed(&mut stream).await;
+        assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
 
         // Drain live TERMINAL_OUTPUT for well past many tick intervals
         // (tick = 30ms). A double-emitting tick would re-paint the dirty

@@ -30,7 +30,7 @@ mod common;
 
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -126,7 +126,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
 
         let (type_byte, _snap_a) = recv_typed(&mut client_a).await;
         assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
+            type_byte, TYPE_BOOTSTRAP_BEGIN,
             "client A: second frame TERMINAL_SNAPSHOT",
         );
 
@@ -210,26 +210,22 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         // The fresh TERMINAL_SNAPSHOT is the resume-from-snapshot half
         // of SPEC §13: the client must be able to reconstruct the
         // pre-reconnect grid without any backfilled TERMINAL_OUTPUT.
-        let (type_byte, snap_b) = recv_typed(&mut client_b).await;
-        assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
-            "client B: second frame TERMINAL_SNAPSHOT (post-reconnect)",
-        );
-        let (snap_cols, snap_rows, snap_bytes) = match snap_b {
-            FrameKind::TerminalSnapshot {
-                cols,
-                rows,
-                vt_replay_bytes,
-                ..
-            } => (cols, rows, vt_replay_bytes),
-            other => panic!("client B: expected TerminalSnapshot, got {other:?}"),
+        let (type_byte, begin_b) = recv_typed(&mut client_b).await;
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
+        let (snap_cols, snap_rows) = match begin_b {
+            FrameKind::BootstrapBegin { cols, rows, .. } => (cols, rows),
+            other => panic!("client B: expected BootstrapBegin, got {other:?}"),
         };
+        let (_, chunk_b) = recv_typed(&mut client_b).await;
+        let snap_bytes = match chunk_b {
+            FrameKind::BootstrapChunk { payload, .. } => payload,
+            other => panic!("client B: expected BootstrapChunk, got {other:?}"),
+        };
+        let (_, ready_b) = recv_typed(&mut client_b).await;
+        assert!(matches!(ready_b, FrameKind::BootstrapReady { .. }));
         assert_eq!(snap_cols, 80, "client B: snapshot cols");
         assert_eq!(snap_rows, 24, "client B: snapshot rows");
-        assert!(
-            !snap_bytes.is_empty(),
-            "client B: snapshot must replay something (reset preamble at minimum)",
-        );
+        assert!(!snap_bytes.is_empty());
 
         // Build a fresh Screen from the snapshot bytes — this is what a
         // reconnecting client renders before any live TERMINAL_OUTPUT

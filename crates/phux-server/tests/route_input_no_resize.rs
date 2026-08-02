@@ -42,7 +42,7 @@ use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, StateScope, TYPE_ATTACHED,
-    TYPE_COMMAND_RESULT, TYPE_TERMINAL_SNAPSHOT,
+    TYPE_COMMAND_RESULT, TYPE_BOOTSTRAP_BEGIN,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -137,7 +137,7 @@ async fn attach_and_drain(stream: &mut UnixStream, name: &str) {
     );
     let (type_byte, _snap) = recv_typed(stream).await;
     assert_eq!(
-        type_byte, TYPE_TERMINAL_SNAPSHOT,
+        type_byte, TYPE_BOOTSTRAP_BEGIN,
         "ATTACHED must be followed by a TERMINAL_SNAPSHOT",
     );
 }

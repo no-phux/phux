@@ -8,10 +8,10 @@
 //! same belief that produced the bug the test is supposed to catch, so the
 //! fake catches nothing. The concrete failure: seventeen `phux rec` unit
 //! tests passed against a completely non-functional feature, because the
-//! local fake answered `COMMAND_RESULT` *before* the priming
-//! `TERMINAL_SNAPSHOT` while the reference server does the opposite. Every
-//! capture against a real server came back as a 0x0 grid with nothing
-//! playable in it, and the suite was green throughout.
+//! local fake answered `COMMAND_RESULT` *before* the priming bootstrap
+//! transcript while the reference server does the opposite. Every capture
+//! against a real server came back as a 0x0 grid with nothing playable in it,
+//! and the suite was green throughout.
 //!
 //! The fix is not "write better fakes". It is to have exactly one place
 //! where the server's frame *order* is written down — the private
@@ -34,10 +34,10 @@
 //!
 //! - `ATTACH_TERMINAL` — `handle_attach_terminal`
 //!   (`crates/phux-server/src/runtime/commands.rs`) pushes the authoritative
-//!   `TERMINAL_SNAPSHOT` "before the pump's first delta and before the Ok
-//!   reply", and never re-sends it. [`ScriptSpec::priming_snapshot`] is
-//!   therefore **mandatory** for any script whose client attaches a
-//!   Terminal: a script without one panics rather than silently modelling a
+//!   bootstrap transcript before the acknowledgement and never re-sends it.
+//!   [`ScriptSpec::priming_snapshot`] is therefore **mandatory** for any script
+//!   whose client attaches a Terminal: a script without one panics rather than
+//!   silently modelling a
 //!   server that does not exist.
 //! - `GET_STATE` — `handle_get_state_federated` emits one uncorrelated
 //!   `ERROR` per unreachable satellite *ahead of* the merged snapshot's ack,

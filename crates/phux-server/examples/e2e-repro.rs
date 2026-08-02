@@ -38,7 +38,7 @@ use libghostty_vt::screen::CellWide;
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_BOOTSTRAP_BEGIN,
     ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerRuntime};
@@ -235,17 +235,17 @@ impl Client {
         };
 
         let mut vt = Vec::new();
-        let (snap_tb, snap) = recv(&mut stream).await;
-        assert_eq!(
-            snap_tb, TYPE_TERMINAL_SNAPSHOT,
-            "second frame must be SNAPSHOT"
-        );
-        if let FrameKind::TerminalSnapshot {
-            vt_replay_bytes, ..
-        } = snap
-        {
-            vt.extend_from_slice(&vt_replay_bytes);
+        let (snap_tb, begin) = recv(&mut stream).await;
+        assert_eq!(snap_tb, TYPE_BOOTSTRAP_BEGIN, "second frame must be BEGIN");
+        assert!(matches!(begin, FrameKind::BootstrapBegin { .. }));
+        let (_, chunk) = recv(&mut stream).await;
+        if let FrameKind::BootstrapChunk { payload, .. } = chunk {
+            vt.extend_from_slice(&payload);
+        } else {
+            panic!("expected BootstrapChunk");
         }
+        let (_, ready) = recv(&mut stream).await;
+        assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
 
         Self {
             stream,

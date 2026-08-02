@@ -86,6 +86,7 @@ fn terminal_outputs(items: &[Outbound]) -> Vec<(u32, u64, &[u8])> {
                 terminal_id,
                 seq,
                 bytes,
+                ..
             }) => Some((
                 terminal_id.local_id().expect("v0.1 local id"),
                 *seq,
@@ -164,14 +165,7 @@ async fn single_consumer_tick_keeps_actor_healthy() {
             let (reply_tx, reply_rx) = oneshot::channel();
             handle
                 .consumer_attach
-                .send(ConsumerAttachRequest {
-                    client_id: ClientId(1),
-                    outbound: out_tx,
-                    wire_terminal_id: WIRE_TID,
-                    wants_state_sync: false,
-                    loss_tolerant: false,
-                    reply: reply_tx,
-                })
+                .send(ConsumerAttachRequest { client_id: ClientId(1), outbound: out_tx, wire_terminal_id: WIRE_TID, stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"), bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"), wants_state_sync: false, loss_tolerant: false, reply: reply_tx })
                 .await
                 .expect("send attach");
             reply_rx
@@ -224,6 +218,10 @@ async fn multiple_consumers_get_independent_per_consumer_seq() {
                         client_id,
                         outbound,
                         wire_terminal_id: WIRE_TID,
+                        stream_id: phux_protocol::ids::StreamId::new(1)
+                            .expect("test stream id"),
+                        bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                            .expect("test bootstrap id"),
                         wants_state_sync: false,
                         loss_tolerant: false,
                         reply: reply_tx,
@@ -286,14 +284,7 @@ async fn detached_consumer_receives_no_emission() {
             let (reply_tx, reply_rx) = oneshot::channel();
             handle
                 .consumer_attach
-                .send(ConsumerAttachRequest {
-                    client_id: client,
-                    outbound: out_tx,
-                    wire_terminal_id: WIRE_TID,
-                    wants_state_sync: false,
-                    loss_tolerant: false,
-                    reply: reply_tx,
-                })
+                .send(ConsumerAttachRequest { client_id: client, outbound: out_tx, wire_terminal_id: WIRE_TID, stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"), bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"), wants_state_sync: false, loss_tolerant: false, reply: reply_tx })
                 .await
                 .expect("send attach");
             reply_rx

@@ -85,7 +85,7 @@ use std::time::{Duration, Instant};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACHED,
-    TYPE_COMMAND_RESULT, TYPE_TERMINAL_SNAPSHOT,
+    TYPE_COMMAND_RESULT, TYPE_BOOTSTRAP_BEGIN,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -97,7 +97,7 @@ use crate::common::{
     spawn_server_with_seed_cmd, wait_for_socket,
 };
 
-/// Attach and drain initial ATTACHED + `TERMINAL_SNAPSHOT`, measuring latency.
+/// Attach and drain the initial ATTACHED + BEGIN/CHUNK/READY bootstrap.
 /// Returns (stream, `latency_ms`).
 #[allow(dead_code)]
 async fn attach_and_measure(socket_path: &std::path::Path, label: &str) -> (UnixStream, u128) {
@@ -105,47 +105,24 @@ async fn attach_and_measure(socket_path: &std::path::Path, label: &str) -> (Unix
     let mut stream = wait_for_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
     send_frame(&mut stream, &attach_by_name("default")).await;
 
-    // Frame 1: ATTACHED with a SessionSnapshot.
     let (type_byte, _attached) = recv_typed(&mut stream).await;
-    assert_eq!(
-        type_byte, TYPE_ATTACHED,
-        "{label}: first frame must be ATTACHED"
-    );
-
-    // Frame 2: TERMINAL_SNAPSHOT for the session's pane.
-    let (type_byte, snap_frame) = recv_typed(&mut stream).await;
-    assert_eq!(
-        type_byte, TYPE_TERMINAL_SNAPSHOT,
-        "{label}: second frame must be TERMINAL_SNAPSHOT"
-    );
-
-    let latency = start.elapsed().as_millis();
-
-    // Sanity-check: the snapshot carries the expected pane dimensions.
-    match snap_frame {
-        FrameKind::TerminalSnapshot {
-            cols,
-            rows,
-            vt_replay_bytes,
-            ..
-        } => {
-            assert_eq!(
-                cols, 80,
-                "{label}: snapshot cols should be 80 (matches viewport)",
-            );
-            assert_eq!(
-                rows, 24,
-                "{label}: snapshot rows should be 24 (matches viewport)",
-            );
-            assert!(
-                !vt_replay_bytes.is_empty(),
-                "{label}: replay bytes should not be empty",
-            );
-        }
-        other => panic!("{label}: expected TerminalSnapshot, got {other:?}"),
+    assert_eq!(type_byte, TYPE_ATTACHED, "{label}: first frame must be ATTACHED");
+    let (type_byte, begin) = recv_typed(&mut stream).await;
+    assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
+    match begin {
+        FrameKind::BootstrapBegin { cols: 80, rows: 24, .. } => {}
+        other => panic!("{label}: expected 80x24 BootstrapBegin, got {other:?}"),
     }
-
-    (stream, latency)
+    let (_, chunk) = recv_typed(&mut stream).await;
+    match chunk {
+        FrameKind::BootstrapChunk { payload, .. } => {
+            assert!(!payload.is_empty(), "{label}: bootstrap payload must not be empty");
+        }
+        other => panic!("{label}: expected BootstrapChunk, got {other:?}"),
+    }
+    let (_, ready) = recv_typed(&mut stream).await;
+    assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
+    (stream, start.elapsed().as_millis())
 }
 
 /// Helper: send a `GET_SCREEN` command and await the response.
@@ -454,28 +431,28 @@ fn concurrent_attach_l1_snapshot_consistency() {
         let attach_a = tokio::spawn(async move {
             let mut stream = wait_for_socket(&socket_a, SOCKET_CONNECT_DEADLINE).await;
             send_frame(&mut stream, &attach_by_name("default")).await;
-
-            // Drain ATTACHED + TERMINAL_SNAPSHOT
-            let (_type_byte_1, attached_frame) = recv_typed(&mut stream).await;
-            let (_type_byte_2, snapshot_frame) = recv_typed(&mut stream).await;
-
-            (attached_frame, snapshot_frame)
+            let (_, attached) = recv_typed(&mut stream).await;
+            let (_, begin) = recv_typed(&mut stream).await;
+            let (_, chunk) = recv_typed(&mut stream).await;
+            let (_, ready) = recv_typed(&mut stream).await;
+            assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
+            (attached, begin, chunk)
         });
 
         let attach_b = tokio::spawn(async move {
             let mut stream = wait_for_socket(&socket_b, SOCKET_CONNECT_DEADLINE).await;
             send_frame(&mut stream, &attach_by_name("default")).await;
-
-            // Drain ATTACHED + TERMINAL_SNAPSHOT
-            let (_type_byte_1, attached_frame) = recv_typed(&mut stream).await;
-            let (_type_byte_2, snapshot_frame) = recv_typed(&mut stream).await;
-
-            (attached_frame, snapshot_frame)
+            let (_, attached) = recv_typed(&mut stream).await;
+            let (_, begin) = recv_typed(&mut stream).await;
+            let (_, chunk) = recv_typed(&mut stream).await;
+            let (_, ready) = recv_typed(&mut stream).await;
+            assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
+            (attached, begin, chunk)
         });
 
         let (res_a, res_b) = tokio::join!(attach_a, attach_b);
-        let (attached_a, snapshot_a) = res_a.unwrap();
-        let (attached_b, snapshot_b) = res_b.unwrap();
+        let (attached_a, snapshot_a, chunk_a) = res_a.unwrap();
+        let (attached_b, snapshot_b, chunk_b) = res_b.unwrap();
 
         // ============================================================
         // Assertions: ATTACHED frames carry the same session/window/pane info
@@ -519,45 +496,26 @@ fn concurrent_attach_l1_snapshot_consistency() {
             (a, b) => panic!("expected both Attached frames, got {:?} and {:?}", a, b),
         }
 
-        // ============================================================
-        // Assertions: TERMINAL_SNAPSHOT frames carry the same grid dimensions
-        // ============================================================
-        match (&snapshot_a, &snapshot_b) {
+        match (&snapshot_a, &snapshot_b, &chunk_a, &chunk_b) {
             (
-                FrameKind::TerminalSnapshot {
+                FrameKind::BootstrapBegin {
                     cols: cols_a,
                     rows: rows_a,
-                    vt_replay_bytes: bytes_a,
                     ..
                 },
-                FrameKind::TerminalSnapshot {
+                FrameKind::BootstrapBegin {
                     cols: cols_b,
                     rows: rows_b,
-                    vt_replay_bytes: bytes_b,
                     ..
                 },
+                FrameKind::BootstrapChunk { payload: bytes_a, .. },
+                FrameKind::BootstrapChunk { payload: bytes_b, .. },
             ) => {
-                // Grid dimensions should be identical
-                assert_eq!(cols_a, cols_b, "grid cols differ (both should be 80)");
-                assert_eq!(rows_a, rows_b, "grid rows differ (both should be 24)");
-
-                // Replay bytes should be identical (same pane state at attach time)
-                assert_eq!(
-                    bytes_a, bytes_b,
-                    "VT replay bytes differ (clients should see identical pane state)"
-                );
-
-                println!(
-                    "✓ TERMINAL_SNAPSHOT frames consistent: {}x{} grid, {} replay bytes",
-                    cols_a,
-                    rows_a,
-                    bytes_a.len()
-                );
+                assert_eq!(cols_a, cols_b, "grid cols differ");
+                assert_eq!(rows_a, rows_b, "grid rows differ");
+                assert_eq!(bytes_a, bytes_b, "bootstrap bytes differ");
             }
-            (a, b) => panic!(
-                "expected both TerminalSnapshot frames, got {:?} and {:?}",
-                a, b
-            ),
+            values => panic!("expected matching bootstrap frames, got {values:?}"),
         }
 
         shutdown_tx.send(()).ok();

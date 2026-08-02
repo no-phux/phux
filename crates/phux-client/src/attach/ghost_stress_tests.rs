@@ -3,9 +3,8 @@
 //!
 //! Root cause: phux-7ubw made `paint_full_frame` / `paint_focused_pane`
 //! letterbox-centre an undersized mirror inside its render rect, but the
-//! `handle_server_frame` paints (`TERMINAL_SNAPSHOT` focused + non-focused,
-//! `TERMINAL_OUTPUT` non-focused) still painted the same mirror pinned at the
-//! rect origin. Whenever the server-authoritative mirror grid lags the
+//! bootstrap and live-output paint paths still painted the same mirror pinned
+//! at the rect origin. Whenever the server-authoritative mirror grid lags the
 //! client rect (any resize handshake in flight: sidebar toggle, zoom, split,
 //! attach from a larger terminal) the two paint families put the SAME
 //! content at TWO different origins — and because the incremental painter

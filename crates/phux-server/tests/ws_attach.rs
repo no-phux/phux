@@ -131,7 +131,7 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
                     let (frame, _) = FrameKind::decode(&data).expect("decode server frame");
                     match frame {
                         FrameKind::Attached { .. } => got_attached = true,
-                        FrameKind::TerminalSnapshot { cols, rows, .. } => {
+                        FrameKind::BootstrapBegin { cols, rows, .. } => {
                             assert!(cols > 0 && rows > 0, "snapshot has a real grid");
                             got_snapshot = true;
                         }
