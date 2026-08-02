@@ -782,7 +782,8 @@ mod writer_tests {
         w.flush_script = vec![Err(std::io::Error::from_raw_os_error(EIO))];
         let err = flush_resilient(&mut w).expect_err("should fail");
         assert_eq!(err.failure, WriteFailure::PaneGone);
-||||||| parent of 15b02da0 (feat(config): defaults-table truth: implement defaults.shell, delete refresh-rate/log-filter)
+    }
+}
 
 #[cfg(test)]
 mod tests {
