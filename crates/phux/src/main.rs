@@ -213,17 +213,26 @@ fn misplaced_scoped_flag(err: &clap::Error) -> Option<String> {
 /// it applies, and map it to the exit code clap itself would use (0 for
 /// `--help`/`--version`, 2 for a usage error).
 fn report_parse_error(err: &clap::Error) -> ExitCode {
-    let _ = err.print();
-    if let Some(flag) = misplaced_scoped_flag(err) {
-        eprintln!(
-            "hint: `{flag}` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> {flag} ...`"
-        );
-    }
     if err.use_stderr() {
-        ExitCode::from(2)
-    } else {
-        ExitCode::SUCCESS
+        // A usage error: clap writes it to stderr, which this crate leaves
+        // un-settled by design (see the `output` module doc).
+        let _ = err.print();
+        if let Some(flag) = misplaced_scoped_flag(err) {
+            eprintln!(
+                "hint: `{flag}` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> {flag} ...`"
+            );
+        }
+        return ExitCode::from(2);
     }
+    // `--help`/`--version`: clap writes them to stdout, so a reader that
+    // hung up (`phux --help | head`) must end the process the same way as
+    // every other stdout write here — `settle` exits 0 on `EPIPE`, running
+    // no destructors (`Cli::parse()`'s internal `Error::exit()` behaved the
+    // same way). Returning through `main` instead would run Drops that
+    // write diagnostics to stderr (the `dhat-heap` profiler), breaking the
+    // hang-up-in-silence contract pinned by `output_hygiene`.
+    output::settle(err.print());
+    ExitCode::SUCCESS
 }
 
 /// Resolve `--rec` into a full recording plan, or report why it cannot be.

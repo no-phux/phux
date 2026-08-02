@@ -41,7 +41,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
     (
         out.status.code().expect("phux exited via code, not signal"),
         String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+        strip_dhat(&String::from_utf8_lossy(&out.stderr)),
     )
 }
 
@@ -54,8 +54,29 @@ fn run_with_xdg(args: &[&str], xdg_config_home: &std::path::Path) -> (i32, Strin
     (
         out.status.code().expect("phux exited via code, not signal"),
         String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+        strip_dhat(&String::from_utf8_lossy(&out.stderr)),
     )
+}
+
+/// Drop `dhat:` diagnostic lines from stderr.
+///
+/// An `--all-features` build (the `just ci` profile) carries the
+/// `dhat-heap` profiler, whose Drop prints nondeterministic heap stats to
+/// stderr on every clean `main` return. Those lines are a build diagnostic,
+/// not CLI output; left in, they break equality assertions (the stats vary
+/// run to run) under that one feature set. Deliberately NOT applied to
+/// `run_with_closed_stdout`: the hang-up path must skip destructors
+/// entirely (`process::exit`), so dhat output there is a real regression
+/// the strict emptiness assertion exists to catch.
+fn strip_dhat(stderr: &str) -> String {
+    stderr
+        .lines()
+        .filter(|line| !line.starts_with("dhat: "))
+        .fold(String::new(), |mut acc, line| {
+            acc.push_str(line);
+            acc.push('\n');
+            acc
+        })
 }
 
 /// The pre-alpha build banner that used to print on EVERY invocation. No
