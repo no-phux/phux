@@ -51,6 +51,9 @@ pub(crate) trait FrameReader {
 /// Write side: writes one complete pre-encoded frame.
 pub(crate) trait FrameWriter {
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()>;
+
+    /// Finish the server-to-client stream after its final frame.
+    async fn close(&mut self) -> io::Result<()>;
 }
 
 /// A listener that accepts connections, each split into a frame reader + writer.
@@ -110,6 +113,10 @@ pub(crate) struct UdsWriter {
 impl FrameWriter for UdsWriter {
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
         self.writer.write_all(frame).await
+    }
+
+    async fn close(&mut self) -> io::Result<()> {
+        self.writer.shutdown().await
     }
 }
 
@@ -351,6 +358,10 @@ impl FrameWriter for WsWriter {
             .send(Message::Binary(frame.to_vec()))
             .await
             .map_err(io::Error::other)
+    }
+
+    async fn close(&mut self) -> io::Result<()> {
+        self.tx.close().await.map_err(io::Error::other)
     }
 }
 

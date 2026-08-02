@@ -315,19 +315,28 @@ struct NativeCursorOwner {
 thread_local! {
     static FAIL_NEXT_NATIVE_HOST_ALLOC: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
+    static PANIC_NEXT_NATIVE_HOST_ALLOC: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn reserve_native_bytes(capacity: usize) -> Result<Vec<u8>, crate::native_state::NativeStateError> {
-    #[cfg(test)]
-    if FAIL_NEXT_NATIVE_HOST_ALLOC.with(|fail| fail.replace(false)) {
-        return Err(crate::native_state::NativeStateError::OutOfMemory);
-    }
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(capacity)
-        .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
-    Ok(bytes)
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        #[cfg(test)]
+        if PANIC_NEXT_NATIVE_HOST_ALLOC.with(|panic| panic.replace(false)) {
+            panic!("injected native host allocation panic");
+        }
+        #[cfg(test)]
+        if FAIL_NEXT_NATIVE_HOST_ALLOC.with(|fail| fail.replace(false)) {
+            return Err(crate::native_state::NativeStateError::OutOfMemory);
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(capacity)
+            .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
+        Ok(bytes)
+    }))
+    .unwrap_or(Err(crate::native_state::NativeStateError::OutOfMemory))
 }
 
 #[derive(Debug)]
@@ -2787,7 +2796,7 @@ impl TerminalActor {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn handle_native_bootstrap(&mut self, req: NativeBootstrapRequest) {
-        const MAX_NATIVE_PREFIX_FRAMES: usize = 4_098;
+        const MAX_NATIVE_PREFIX_FRAMES: usize = crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2;
 
         let NativeBootstrapRequest {
             owner,
@@ -2835,6 +2844,7 @@ impl TerminalActor {
             let manager = host.native_manager()?;
             let mut capture = manager.capture(limits)?;
             let mut chunk_seq = 0_u32;
+            let mut retained_bytes = 0_usize;
             loop {
                 if frames.len() == MAX_NATIVE_PREFIX_FRAMES - 1 {
                     return Err(crate::native_state::NativeStateError::LimitExceeded);
@@ -2854,6 +2864,10 @@ impl TerminalActor {
                         event.bytes.len(),
                     )
                 };
+                retained_bytes = retained_bytes
+                    .checked_add(payload_len)
+                    .filter(|bytes| *bytes <= crate::native_state::MAX_NATIVE_PREFIX_BYTES)
+                    .ok_or(crate::native_state::NativeStateError::LimitExceeded)?;
                 payload.truncate(payload_len);
                 frames.push(FrameKind::BootstrapChunk {
                     terminal_id: terminal_id.clone(),
@@ -5146,6 +5160,36 @@ mod tests {
                     .expect("send failing history request");
                 assert_eq!(
                     failed.await.expect("failure reply").result,
+                    Err(crate::native_state::NativeStateError::OutOfMemory)
+                );
+
+                PANIC_NEXT_NATIVE_HOST_ALLOC.with(|panic| panic.set(true));
+                let panic_permit = outbound
+                    .clone()
+                    .reserve_owned()
+                    .await
+                    .expect("panic request permit");
+                let (panic_reply, panicked) = oneshot::channel();
+                handle
+                    .native_history
+                    .send(NativeHistoryRequest {
+                        permit: panic_permit,
+                        owner: 11,
+                        terminal_id: phux_protocol::ids::TerminalId::local(2),
+                        stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
+                        bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
+                            .expect("bootstrap id"),
+                        cursor: cursor.clone(),
+                        max_bytes: phux_protocol::caps::BootstrapLimits::default()
+                            .max_history_page_bytes(),
+                        max_rows: 128,
+                        limits: phux_protocol::caps::BootstrapLimits::default(),
+                        reply: panic_reply,
+                    })
+                    .await
+                    .expect("send panicking history request");
+                assert_eq!(
+                    panicked.await.expect("panic conversion reply").result,
                     Err(crate::native_state::NativeStateError::OutOfMemory)
                 );
 

@@ -1009,9 +1009,7 @@ async fn handle_attach_terminal(
         let pump_resize = handle.resize.clone();
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_native_bootstrap = handle.native_bootstrap.clone();
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_state = state.clone();
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_connection_token = _connection_token.clone();
         let (gate_tx, gate_rx) = oneshot::channel::<u64>();
         snapshot_gate = Some(gate_tx);
@@ -1225,13 +1223,24 @@ async fn handle_attach_terminal(
                             dropped = n,
                             "ATTACH_TERMINAL output pump lagged; requesting in-band resync",
                         );
-                        let _ = pump_resize.try_send(ResizeRequest {
-                            cols: 0,
-                            rows: 0,
-                            cell_px: None,
-                            resync_clients: true,
-                            resync_only: true,
-                        });
+                        if !crate::runtime::attach::enqueue_output_resync(&pump_resize).await {
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(1),
+                                pump_out_tx.send(Outbound::Frame(FrameKind::Error {
+                                    request_id: None,
+                                    code: ErrorCode::InternalError,
+                                    message: "terminal output gap could not be resynchronized"
+                                        .to_owned(),
+                                })),
+                            )
+                            .await;
+                            crate::runtime::client::detach_and_release_consumer_state(
+                                &pump_state,
+                                client_id,
+                            );
+                            pump_connection_token.cancel();
+                            break;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

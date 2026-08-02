@@ -2170,10 +2170,72 @@ pub(crate) async fn writer_task<W: FrameWriter>(
         frame.encode(&mut buf);
         if let Err(err) = writer.write_frame(&buf).await {
             debug!(?client_id, error = %err, "writer error on frame; client task ending");
+            let _ = writer.close().await;
             return;
         }
     }
+    if let Err(err) = writer.close().await {
+        debug!(?client_id, error = %err, "writer close failed");
+    }
     debug!(?client_id, "writer task exiting (channel closed)");
+}
+
+#[cfg(test)]
+mod writer_close_tests {
+    use std::cell::RefCell;
+    use std::io;
+    use std::rc::Rc;
+
+    use phux_protocol::wire::frame::{ErrorCode, FrameKind};
+
+    use super::writer_task;
+    use crate::state::{ClientId, Outbound};
+    use crate::transport::FrameWriter;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum WriterEvent {
+        Error,
+        Close,
+    }
+
+    struct RecordingWriter(Rc<RefCell<Vec<WriterEvent>>>);
+
+    impl FrameWriter for RecordingWriter {
+        async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
+            assert!(matches!(
+                FrameKind::decode(frame).expect("encoded frame").0,
+                FrameKind::Error { .. }
+            ));
+            self.0.borrow_mut().push(WriterEvent::Error);
+            Ok(())
+        }
+
+        async fn close(&mut self) -> io::Result<()> {
+            self.0.borrow_mut().push(WriterEvent::Close);
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn terminal_error_is_written_before_transport_close() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let writer = RecordingWriter(Rc::clone(&events));
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(Outbound::Frame(FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::CodecUnavailable,
+            message: "fatal native stream failure".to_owned(),
+        }))
+        .await
+        .expect("queue terminal error");
+        drop(tx);
+
+        writer_task(writer, rx, ClientId(7)).await;
+        assert_eq!(
+            events.borrow().as_slice(),
+            [WriterEvent::Error, WriterEvent::Close]
+        );
+    }
 }
 #[cfg(test)]
 mod terminal_metadata_scope_tests {

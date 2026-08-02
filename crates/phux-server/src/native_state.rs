@@ -20,6 +20,11 @@ const INCREMENTAL_ABI_VERSION: u32 = 1;
 const CHECKPOINT_VERSION: u16 = EngineCodec::LibghosttyCheckpointV2 as u16;
 const CHECKPOINT_CODEC_IDENTITY: &str = "ghostty.snapshot.v1-v2.incremental.v1";
 
+/// Greatest number of opaque codec records retained before READY publication.
+pub(crate) const MAX_NATIVE_PREFIX_CHUNKS: usize = 4_096;
+/// Greatest aggregate opaque codec payload retained before READY publication.
+pub(crate) const MAX_NATIVE_PREFIX_BYTES: usize = 64 * 1024 * 1024;
+
 /// Exact status reported by libghostty's incremental checkpoint API.
 ///
 /// This is a public rename, not a translated error. Callers can match
@@ -78,6 +83,38 @@ pub struct NativeCheckpointChunk<'buffer> {
     pub codec_version: u16,
     /// Complete opaque envelope or record bytes.
     pub bytes: &'buffer [u8],
+}
+
+fn bounded_capture_options(
+    limits: BootstrapLimits,
+    engine: &incremental::Capabilities,
+) -> Result<CaptureOptions, NativeStateError> {
+    let max_record_bytes = usize::try_from(limits.max_chunk_bytes())
+        .map_err(|_| NativeStateError::LimitExceeded)?
+        .min(engine.max_record_bytes);
+    if max_record_bytes == 0 {
+        return Err(NativeStateError::LimitExceeded);
+    }
+    let max_pages_by_volume = MAX_NATIVE_PREFIX_BYTES
+        .checked_div(max_record_bytes)
+        .ok_or(NativeStateError::LimitExceeded)?;
+    let max_pages = CaptureOptions::default()
+        .max_pages
+        .min(engine.max_pages)
+        .min(MAX_NATIVE_PREFIX_CHUNKS)
+        .min(max_pages_by_volume);
+    if max_pages == 0
+        || max_record_bytes
+            .checked_mul(max_pages)
+            .filter(|bytes| *bytes <= MAX_NATIVE_PREFIX_BYTES)
+            .is_none()
+    {
+        return Err(NativeStateError::LimitExceeded);
+    }
+    Ok(CaptureOptions {
+        max_record_bytes,
+        max_pages,
+    })
 }
 
 fn preflight_checkpoint_prefix(
@@ -144,18 +181,8 @@ impl<'terminal> NativeCheckpointCapture<'terminal> {
         limits: BootstrapLimits,
     ) -> Result<Self, NativeStateError> {
         let engine = require_protocol_07_native()?;
-        let max_record_bytes = usize::try_from(limits.max_chunk_bytes())
-            .map_err(|_| NativeStateError::LimitExceeded)?
-            .min(engine.max_record_bytes);
-        let max_pages = CaptureOptions::default().max_pages.min(engine.max_pages);
-        if max_record_bytes == 0 || max_pages == 0 {
-            return Err(NativeStateError::LimitExceeded);
-        }
-
-        let options = CaptureOptions {
-            max_record_bytes,
-            max_pages,
-        };
+        let options = bounded_capture_options(limits, &engine)?;
+        let max_record_bytes = options.max_record_bytes;
         preflight_checkpoint_prefix(terminal, options, max_record_bytes)?;
         let capture = terminal.capture(options)?;
         Ok(Self {
@@ -449,15 +476,13 @@ impl NativeTerminalManager {
         if self.continuations.len() == self.capacity {
             return Err(NativeStateError::LimitExceeded);
         }
-        let max_record_bytes = usize::try_from(limits.max_chunk_bytes())
-            .map_err(|_| NativeStateError::LimitExceeded)?
-            .min(self.engine.max_record_bytes);
+        let options = bounded_capture_options(limits, &self.engine)?;
+        let max_record_bytes = options.max_record_bytes;
+        let max_pages = options.max_pages;
         let max_unit_bytes = usize::try_from(limits.max_history_page_bytes())
             .map_err(|_| NativeStateError::LimitExceeded)?
             .min(self.engine.max_unit_bytes);
-        let capture_defaults = CaptureOptions::default();
         let detach_defaults = DetachOptions::default();
-        let max_pages = capture_defaults.max_pages.min(self.engine.max_pages);
         let protocol_max_rows = usize::try_from(phux_protocol::MAX_HISTORY_PAGE_ROWS)
             .map_err(|_| NativeStateError::LimitExceeded)?;
         let max_rows = detach_defaults
@@ -476,10 +501,6 @@ impl NativeTerminalManager {
         {
             return Err(NativeStateError::LimitExceeded);
         }
-        let options = CaptureOptions {
-            max_record_bytes,
-            max_pages,
-        };
         preflight_checkpoint_prefix(&mut self.terminal, options, max_record_bytes)?;
         let capture = self.terminal.capture(options)?;
         Ok(NativeManagedCapture {
@@ -769,7 +790,13 @@ mod tests {
                 break;
             }
         }
-        capture.detach_ready().expect("detach READY continuation")
+        let ready_checkpoint = capture.ready_cursor.expect("READY checkpoint");
+        let detached = capture.detach_ready().expect("detach READY continuation");
+        assert_eq!(
+            detached.0, ready_checkpoint,
+            "published history cursor must be the exact checkpoint authenticated by READY"
+        );
+        detached
     }
 
     #[test]
@@ -803,6 +830,24 @@ mod tests {
         assert_eq!(
             advertised.native_features,
             EngineFeatureSet::required_native()
+        );
+    }
+
+    #[test]
+    fn capture_options_bound_page_count_and_worst_case_retained_volume() {
+        let engine = incremental::capabilities().expect("incremental capability probe");
+        let limits = BootstrapLimits::new(
+            phux_protocol::MAX_BOOTSTRAP_CHUNK_BYTES,
+            phux_protocol::MAX_HISTORY_PAGE_BYTES,
+        )
+        .expect("protocol maxima");
+        let options = bounded_capture_options(limits, &engine).expect("bounded capture options");
+        assert!(options.max_pages <= MAX_NATIVE_PREFIX_CHUNKS);
+        assert!(
+            options
+                .max_record_bytes
+                .checked_mul(options.max_pages)
+                .is_some_and(|bytes| bytes <= MAX_NATIVE_PREFIX_BYTES)
         );
     }
 

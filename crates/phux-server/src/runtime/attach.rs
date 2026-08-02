@@ -160,6 +160,30 @@ pub(crate) async fn send_synthesized_bootstrap(
     Ok(())
 }
 
+/// Queue the mandatory in-band resync after a broadcast gap.
+///
+/// The output pump awaits mailbox capacity and therefore cannot consume or
+/// forward a later delta until the actor has accepted the resync request.
+/// A closed or persistently full actor mailbox fails boundedly.
+pub(crate) async fn enqueue_output_resync(
+    resize: &tokio::sync::mpsc::Sender<ResizeRequest>,
+) -> bool {
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            resize.send(ResizeRequest {
+                cols: 0,
+                rows: 0,
+                cell_px: None,
+                resync_clients: true,
+                resync_only: true,
+            }),
+        )
+        .await,
+        Ok(Ok(()))
+    )
+}
+
 /// Tuple bundling everything `handle_attach` needs after it is done
 /// touching [`ServerState`]. Cloned out of the critical section so the
 /// remaining awaits do not hold the state lock.
@@ -987,11 +1011,8 @@ pub(crate) async fn handle_spawn_terminal(
         let pump_wire_terminal_id = wire_terminal_id.clone();
         let stream_id = stream_id_from(u64::from(request_id));
         let pump_resize = handle.resize.clone();
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_state = state.clone();
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_connection_token = _connection_token.clone();
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_core_terminal_id = core_terminal_id;
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_native_bootstrap = handle.native_bootstrap.clone();
@@ -1175,13 +1196,23 @@ pub(crate) async fn handle_spawn_terminal(
                             dropped = n,
                             "SPAWN_TERMINAL output pump lagged; requesting in-band resync",
                         );
-                        let _ = pump_resize.try_send(ResizeRequest {
-                            cols: 0,
-                            rows: 0,
-                            cell_px: None,
-                            resync_clients: true,
-                            resync_only: true,
-                        });
+                        if !enqueue_output_resync(&pump_resize).await {
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(1),
+                                pump_out_tx.send(Outbound::Frame(FrameKind::Error {
+                                    request_id: None,
+                                    code: ErrorCode::InternalError,
+                                    message: "terminal output gap could not be resynchronized"
+                                        .to_owned(),
+                                })),
+                            )
+                            .await;
+                            pump_state.with_mut(|s| {
+                                s.reap_terminal(pump_core_terminal_id);
+                            });
+                            pump_connection_token.cancel();
+                            break;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -1718,9 +1749,7 @@ pub(crate) async fn handle_attach(
             let pump_resize = handle.resize.clone();
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             let pump_native_bootstrap = handle.native_bootstrap.clone();
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             let pump_state = state.clone();
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             let pump_connection_token = _connection_token.clone();
             // phux-7w1j: hold this pump's first forward until the pane's
             // snapshot has been sent (the drain loop fires `gate_tx`).
@@ -1913,13 +1942,24 @@ pub(crate) async fn handle_attach(
                                 dropped = n,
                                 "TerminalOutput pump lagged; requesting in-band resync",
                             );
-                            let _ = pump_resize.try_send(ResizeRequest {
-                                cols: 0,
-                                rows: 0,
-                                cell_px: None,
-                                resync_clients: true,
-                                resync_only: true,
-                            });
+                            if !enqueue_output_resync(&pump_resize).await {
+                                let _ = tokio::time::timeout(
+                                    std::time::Duration::from_secs(1),
+                                    pump_out_tx.send(Outbound::Frame(FrameKind::Error {
+                                        request_id: None,
+                                        code: ErrorCode::InternalError,
+                                        message: "terminal output gap could not be resynchronized"
+                                            .to_owned(),
+                                    })),
+                                )
+                                .await;
+                                crate::runtime::client::detach_and_release_consumer_state(
+                                    &pump_state,
+                                    client_id,
+                                );
+                                pump_connection_token.cancel();
+                                break;
+                            }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
@@ -2269,5 +2309,40 @@ mod tests {
                 history_cursor: None,
             }) if id == &terminal_id && *stream == stream_id && *bootstrap == bootstrap_id
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn saturated_resync_mailbox_blocks_until_actor_accepts_request() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(ResizeRequest {
+            cols: 80,
+            rows: 24,
+            cell_px: None,
+            resync_clients: false,
+            resync_only: false,
+        })
+        .await
+        .expect("occupy resize mailbox");
+
+        let mut pending = Box::pin(enqueue_output_resync(&tx));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut pending)
+                .await
+                .is_err(),
+            "lagged pump must not resume while the resync mailbox is full"
+        );
+        assert!(
+            !rx.recv().await.expect("occupied request").resync_only,
+            "first request is the existing mailbox occupant"
+        );
+        assert!(pending.await, "resync queues once capacity is available");
+        let queued = rx.recv().await.expect("queued resync");
+        assert!(queued.resync_only && queued.resync_clients);
+
+        drop(rx);
+        assert!(
+            !enqueue_output_resync(&tx).await,
+            "closed actor mailbox fails instead of resuming delta forwarding"
+        );
     }
 }
