@@ -2364,23 +2364,10 @@ mod tests {
                         FrameKind::decode(&hello).expect("decode HELLO").0,
                         FrameKind::Hello { .. }
                     ));
-                    let mut hello_ok = bytes::BytesMut::new();
-                    FrameKind::HelloOk {
-                        protocol_major: PROTOCOL_VERSION.major,
-                        protocol_minor: PROTOCOL_VERSION.minor,
-                        protocol_patch: PROTOCOL_VERSION.patch,
-                        server_caps: phux_protocol::caps::ServerCapabilities::default(),
-                        server_id: vec![0; 16],
-                        selected_profile: BootstrapProfile::NativeState {
-                            codec: phux_protocol::EngineCodec::LibghosttyCheckpointV2,
-                            features: phux_protocol::EngineFeatureSet::required_native(),
-                        },
-                        bootstrap_limits: BootstrapLimits::default(),
-                    }
-                    .encode(&mut hello_ok);
+                    let hello_ok = synthesized_hello_ok();
                     futures_util::SinkExt::send(
                         &mut ws,
-                        tokio_tungstenite::tungstenite::Message::Binary(hello_ok.to_vec()),
+                        tokio_tungstenite::tungstenite::Message::Binary(hello_ok),
                     )
                     .await
                     .expect("send HELLO_OK");
@@ -2429,6 +2416,31 @@ mod tests {
     // signal, exactly as an exiting ssh would be. The stdio *bridge* half
     // (bytes actually splicing to a UDS) is exercised in
     // `crates/phux/tests/stdio_bridge_e2e.rs` against the real binary.
+
+    fn synthesized_hello_ok() -> Vec<u8> {
+        let mut encoded = bytes::BytesMut::new();
+        FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: phux_protocol::caps::ServerCapabilities::default(),
+            server_id: vec![0; 16],
+            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            bootstrap_limits: BootstrapLimits::default(),
+        }
+        .encode(&mut encoded);
+        encoded.to_vec()
+    }
+
+    fn shell_octal(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+
+        let mut escaped = String::with_capacity(bytes.len() * 5);
+        for byte in bytes {
+            write!(escaped, "\\0{byte:03o}").expect("write to String");
+        }
+        escaped
+    }
 
     /// Write an executable stub script and return its path.
     fn write_stub(dir: &std::path::Path, body: &str) -> PathBuf {
@@ -2562,7 +2574,11 @@ mod tests {
                 // it stays up reading stdin (which the hub holds open) and
                 // exits only when the pipe closes or it is killed
                 // (kill_on_drop at cancellation).
-                let stub = write_stub(dir.path(), "exec cat > /dev/null");
+                let reply = shell_octal(&synthesized_hello_ok());
+                let stub = write_stub(
+                    dir.path(),
+                    &format!("printf '%b' '{reply}'\nexec cat > /dev/null"),
+                );
                 let transport = NetLinkTransport {
                     ssh_program: stub.into(),
                 };

@@ -137,12 +137,11 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     /// dimensions have changed since the last pooled walk (phux-5pyx).
     ///
     /// Every pooled-state path ([`Self::prepare_tick`],
-    /// [`Self::synthesize_incremental`], [`Self::mark_synced`],
-    /// [`Self::prime_reference`]) calls this immediately before
-    /// `self.render_state.update`. After a resize the pooled cache can serve
-    /// stale row bodies (see [`Self::last_dims`]); a fresh pool has no prior
-    /// cache, so its first `update` observes every row as it is now — the
-    /// same root fix the fresh-per-call `GET_SCREEN` path
+    /// [`Self::synthesize_incremental`], [`Self::mark_synced`]) calls this
+    /// immediately before `self.render_state.update`. After a resize the pooled
+    /// cache can serve stale row bodies (see [`Self::last_dims`]); a fresh pool
+    /// has no prior cache, so its first `update` observes every row as it is now —
+    /// the same root fix the fresh-per-call `GET_SCREEN` path
     /// ([`Self::screen_state_with_scrollback`]) uses, scoped here to the rare
     /// resize tick instead of every call.
     fn refresh_pool_on_resize(
@@ -1061,13 +1060,21 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         terminal: &GhosttyTerminal<'alloc, '_>,
         reference: &mut ConsumerReference,
     ) -> Result<(), SynthesisError> {
-        self.refresh_pool_on_resize(terminal)?;
-        let snapshot = self.render_state.update(terminal)?;
+        // A full ATTACH snapshot immediately precedes this call and deliberately
+        // uses a fresh RenderState. That walk consumes libghostty's terminal-wide
+        // dirty bits, so the pooled RenderState can legally return its older
+        // cached rows here. Prime from another fresh walk: the bootstrap bytes
+        // and this reference then observe the same canonical actor cut even when
+        // a previous consumer populated the pool.
+        let mut render_state = RenderState::new()?;
+        let mut rows = RowIterator::new()?;
+        let mut cells = CellIterator::new()?;
+        let snapshot = render_state.update(terminal)?;
         let cols = snapshot.cols()?;
         let rows_n = snapshot.rows()?;
         reference.reset_geometry(cols, rows_n);
 
-        let mut row_iter = self.rows.update(&snapshot)?;
+        let mut row_iter = rows.update(&snapshot)?;
         let mut row_index: u16 = 0;
         while let Some(row) = row_iter.next() {
             if row_index >= rows_n {
@@ -1075,7 +1082,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             }
             let mut body: Vec<u8> = Vec::with_capacity(usize::from(cols));
             let mut prev_style: Option<Pen> = None;
-            let mut cell_iter = self.cells.update(row)?;
+            let mut cell_iter = cells.update(row)?;
             while let Some(cell) = cell_iter.next() {
                 emit_cell(cell, &mut body, &mut prev_style)?;
             }

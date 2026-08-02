@@ -5796,8 +5796,18 @@ mod tests {
             "closed aggregate gate must retain the primed reference",
         );
         live_gate_tx.send(true).expect("open aggregate gate");
+        actor.tick_emit();
+        assert!(
+            outbound_rx.try_recv().is_err(),
+            "opening the gate at the exact bootstrap cut must emit no duplicate"
+        );
+        assert_eq!(
+            actor.consumer_state(client).expect("consumer").next_seq,
+            8,
+            "an empty exact-cut tick must not consume the first live sequence"
+        );
 
-        actor.vt_write_for_test(b"after-cut");
+        actor.vt_write_for_test(b"\r\nafter-cut");
         actor.tick_emit();
         let Outbound::Frame(FrameKind::TerminalOutput { seq, bytes, .. }) =
             outbound_rx.try_recv().expect("post-cut diff")
@@ -5810,6 +5820,11 @@ mod tests {
             "the first diff must not duplicate snapshot content",
         );
         assert!(contains_subslice(&bytes, b"after-cut"));
+        assert_eq!(
+            actor.consumer_state(client).expect("consumer").next_seq,
+            9,
+            "one post-cut delta consumes exactly one sequence"
+        );
     }
 
     /// phux-bowo: dirty/idle settling is independent of the state-sync
