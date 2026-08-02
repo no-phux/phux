@@ -168,6 +168,7 @@ impl Rig {
             None,
             &mut self.pending_splits,
             &mut self.pending_windows,
+            &mut std::collections::HashSet::new(),
             &mut self.agent_meta,
             self.overlay_active,
             false,

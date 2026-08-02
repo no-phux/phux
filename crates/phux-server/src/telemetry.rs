@@ -222,12 +222,28 @@ pub fn default_client_log_path() -> PathBuf {
     dir
 }
 
+/// Canonical server log path: `$XDG_STATE_HOME/phux/server.log` (falling
+/// back to `$HOME/.local/state/phux/` when `XDG_STATE_HOME` is unset,
+/// matching the XDG base-directory default).
+///
+/// The ONE server log, regardless of how the server was started: the
+/// auto-spawn path redirects the daemon's stderr here, and the
+/// service-install unit points its log capture at the same file. Every
+/// consumer that names or tails "the server log" (`phux service logs`,
+/// doctor/log-inventory verbs) must resolve it through this helper so the
+/// writers and the readers can never disagree about the path
+/// (phux-i0e8.5.1).
+#[must_use]
+pub fn server_log_path() -> PathBuf {
+    state_dir().join("server.log")
+}
+
 /// phux's per-user state directory: `$XDG_STATE_HOME/phux` (or
 /// `$HOME/.local/state/phux` when `XDG_STATE_HOME` is unset/empty).
 ///
-/// The home for state that should survive across runs but isn't config: client
-/// logs (per-pid), and the auto-provisioned remote-consumer TLS cert + token
-/// store (ADR-0031).
+/// The home for state that should survive across runs but isn't config: the
+/// canonical server log ([`server_log_path`]), client logs (per-pid), and the
+/// auto-provisioned remote-consumer TLS cert + token store (ADR-0031).
 #[must_use]
 pub fn state_dir() -> PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME")
@@ -448,6 +464,35 @@ mod tests {
         match prev {
             Some(v) => unsafe { std::env::set_var(ENV_LOG_FORMAT, v) },
             None => unsafe { std::env::remove_var(ENV_LOG_FORMAT) },
+        }
+    }
+
+    /// `server_log_path` honors `XDG_STATE_HOME` and always names
+    /// `phux/server.log` under it — the single path both spawn paths write
+    /// and every reader tails (phux-i0e8.5.1).
+    #[test]
+    fn server_log_path_honors_xdg_state_home() {
+        let prev = std::env::var_os("XDG_STATE_HOME");
+        // SAFETY-NOTE: env mutation is process-global; nextest runs each
+        // test in its own process, and we restore the var below anyway.
+        // `set_var`/`remove_var` are unsafe in edition 2024; the harness
+        // owns the process here.
+        unsafe { std::env::set_var("XDG_STATE_HOME", "/custom/state") };
+        assert_eq!(
+            server_log_path(),
+            PathBuf::from("/custom/state/phux/server.log")
+        );
+        // Unset (and empty, which must behave as unset) falls back to
+        // `$HOME/.local/state`.
+        unsafe { std::env::set_var("XDG_STATE_HOME", "") };
+        let fallback = server_log_path();
+        assert!(
+            fallback.ends_with(".local/state/phux/server.log"),
+            "got {fallback:?}"
+        );
+        match prev {
+            Some(v) => unsafe { std::env::set_var("XDG_STATE_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
         }
     }
 

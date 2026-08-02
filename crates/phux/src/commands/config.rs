@@ -53,6 +53,11 @@ pub(crate) fn run_config(action: &ConfigAction) -> ExitCode {
 ///
 /// Reports every unknown key and wrong value in the resolved layer stack,
 /// each with its full dotted path and the layer file that introduced it.
+/// Once the stack deserializes, a semantic pass (phux-i0e8.3.2) also
+/// reports keybinding chords that do not parse, action names no dispatcher
+/// arm handles (with a did-you-mean suggestion), and bindings that shadow
+/// each other in the resolver — the mistakes that load fine and then
+/// silently do nothing.
 ///
 /// Exit codes: 0 clean, 1 findings, 2 the check could not run (unreadable
 /// file, malformed TOML, cyclic `extends`). The three are distinct because a

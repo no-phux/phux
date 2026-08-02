@@ -21,7 +21,7 @@
 )]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -123,6 +123,13 @@ pub(super) struct PaneSlot {
     /// "the wheel"), or `None` when the pane is `Open`. Compared against the
     /// driver's own `ClientId` to render "you" vs another client.
     pub input_holder: Option<ClientId>,
+    /// phux-i0e8.2.1: `true` once this slot has folded at least one
+    /// `TerminalControl` event. The first one a slot sees is the
+    /// attach-time initial state (the server re-states the lease on
+    /// subscribe) and must NOT raise the input-authority status-bar
+    /// notice; only later holder changes are transitions worth calling
+    /// out.
+    pub control_seen: bool,
     /// `true` while the client-local viewport is (possibly) scrolled up into
     /// scrollback — set by wheel / copy-mode scrolls, cleared when a key press
     /// headed for the pane snaps the viewport back to the live screen (tmux
@@ -206,6 +213,7 @@ impl PaneSlot {
             // these — a pane that exists before its control state is benign.
             lifecycle: TerminalLifecycle::Running,
             input_holder: None,
+            control_seen: false,
             viewport_scrolled: false,
             attention: false,
             sync_output_since: None,
@@ -777,6 +785,49 @@ impl From<super::render::RenderError> for AttachError {
     }
 }
 
+/// phux-i0e8.2.2: how a successful attach loop ended.
+///
+/// Threaded out of every `run_*` entry point so the CLI can tell "you
+/// detached" from "your last pane died" — before this, an OOM-killed
+/// shell tore the whole TUI down with zero explanation and looked
+/// exactly like a phux crash. Either way the attach was *successful*
+/// (the process exits `0`); this is an explanation, not an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachEnd {
+    /// The user detached (or the server acknowledged a detach-intended
+    /// disconnect). The quiet, expected ending — nothing to explain.
+    Detached,
+    /// The last pane's process exited, so there was nothing left to
+    /// render or route input to and the consumer-owned detach policy
+    /// (phux-4r1) left the session.
+    LastPaneClosed {
+        /// The dead pane's `_exit(n)` code, or `None` for signal kills /
+        /// unknown causes — the same shape `TERMINAL_CLOSED` carries on
+        /// the wire.
+        exit_status: Option<i32>,
+    },
+}
+
+impl AttachEnd {
+    /// One-line explanation for the cooked terminal after teardown, or
+    /// `None` when the ending needs no words (a plain detach).
+    ///
+    /// Printed by `exit_after_detach` on the production path (which
+    /// exits the process before the CLI regains control — see its doc
+    /// comment) and available to CLI callers holding a returned
+    /// `AttachEnd` on any path that does return.
+    #[must_use]
+    pub fn explanation(self) -> Option<String> {
+        match self {
+            Self::Detached => None,
+            Self::LastPaneClosed { exit_status } => Some(format!(
+                "phux: session ended: the last pane {}",
+                super::server_frame::describe_exit(exit_status),
+            )),
+        }
+    }
+}
+
 /// Public entry point: run an attach loop against `socket`, targeting
 /// `target`. Blocks until the server sends `DETACHED` or the user
 /// detaches.
@@ -801,7 +852,7 @@ impl From<super::render::RenderError> for AttachError {
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
-pub async fn run(socket: &Path, target: AttachTarget) -> Result<(), AttachError> {
+pub async fn run(socket: &Path, target: AttachTarget) -> Result<AttachEnd, AttachError> {
     run_buffered(
         &Dial::uds(socket),
         target,
@@ -828,7 +879,7 @@ async fn run_buffered(
     target: AttachTarget,
     predict: PredictiveConfig,
     rec: Option<Rc<RefCell<SessionRecorder>>>,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     let (mut sink, writer) = super::stdout_writer::spawn_stdout_writer();
     // Cloned BEFORE any wrap: the resync flag belongs to the StdoutSink, not
     // to whatever is layered on top of it.
@@ -880,7 +931,7 @@ pub async fn run_with_predict(
     socket: &Path,
     target: AttachTarget,
     predict: PredictiveConfig,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     run_buffered(&Dial::uds(socket), target, predict, None).await
 }
 
@@ -897,7 +948,7 @@ pub async fn run_with_predict_dial(
     dial: &Dial,
     target: AttachTarget,
     predict: PredictiveConfig,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     run_buffered(dial, target, predict, None).await
 }
 
@@ -917,7 +968,7 @@ pub async fn run_recorded_dial(
     target: AttachTarget,
     predict: PredictiveConfig,
     rec: Rc<RefCell<SessionRecorder>>,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     run_buffered(dial, target, predict, Some(rec)).await
 }
 
@@ -947,7 +998,7 @@ pub async fn run_with_stdout<W: super::RenderSink>(
     socket: &Path,
     target: AttachTarget,
     out: &mut W,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     run_with_stdout_predict(socket, target, out, PredictiveConfig::disabled()).await
 }
 
@@ -963,7 +1014,7 @@ pub async fn run_with_stdout_predict<W: super::RenderSink>(
     target: AttachTarget,
     out: &mut W,
     predict: PredictiveConfig,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     // Synchronous-sink test seam: no off-loop writer, no resync flag.
     attach_session(&Dial::uds(socket), target, out, predict, None, None, false).await
 }
@@ -1058,6 +1109,9 @@ pub async fn run_headless_rendered(
     // phux-p4vp: pane cwd + branch memo so the composited sidebar carries
     // the same branch lines a live attach would.
     let mut vcs = VcsIndex::default();
+    // phux-i0e8.2.2: headless composite dispatches no kill actions, so the
+    // expected-close set stays empty; threaded for the shared signature.
+    let mut expected_closes: HashSet<TerminalId> = HashSet::new();
 
     // Replay ATTACHED so the focused-pane + workspace bootstrap runs once.
     let outcome = handle_server_frame(
@@ -1076,6 +1130,7 @@ pub async fn run_headless_rendered(
         layout_get_request_id,
         &mut pending_splits,
         &mut pending_windows,
+        &mut expected_closes,
         &mut agent_meta,
         false,
         true,
@@ -1139,6 +1194,7 @@ pub async fn run_headless_rendered(
                         layout_get_request_id,
                         &mut pending_splits,
                         &mut pending_windows,
+                        &mut expected_closes,
                         &mut agent_meta,
                         false,
                         true,
@@ -1211,7 +1267,7 @@ async fn attach_session<W: super::RenderSink>(
     resync: Option<&AtomicBool>,
     mut writer: Option<super::stdout_writer::WriterHandle>,
     probe_default_colors: bool,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     // STAGE 1 — pre-handshake, on the cooked outer terminal.
     //
     // We deliberately do NOT install RawModeGuard here. If anything in
@@ -1318,9 +1374,9 @@ async fn attach_session<W: super::RenderSink>(
             }
         };
         match exit {
-            LoopExit::Detached => {
+            LoopExit::Detached(end) => {
                 // Lifecycle transition (info): the attach loop is exiting.
-                tracing::info!("attach loop: DETACHED; exiting");
+                tracing::info!(?end, "attach loop: DETACHED; exiting");
                 // The session ended (user detach, server `DETACHED`, or a
                 // detach-intended disconnect). Restore the terminal and
                 // exit now rather than returning up the stack: a returning
@@ -1334,7 +1390,7 @@ async fn attach_session<W: super::RenderSink>(
                 if let Some(writer) = writer.take() {
                     writer.shutdown_and_join();
                 }
-                exit_after_detach();
+                exit_after_detach(end);
             }
             LoopExit::SwitchTo(target) => {
                 // Lifecycle transition (info): switching sessions on the
@@ -1541,10 +1597,11 @@ async fn wait_for_attached(conn: &mut Connection) -> Result<FrameKind, AttachErr
 /// than tear down and rebuild that state in place, the loop signals its
 /// caller ([`run_with_stdout_predict`]'s outer loop) which way it exited:
 ///
-/// * `Detached` — the user detached or the server sent `DETACHED`. The
-///   loop already ran `exit_after_detach` on that path (which never
-///   returns); the outer loop treats a returned `Detached` as a clean
-///   exit too.
+/// * `Detached(end)` — the user detached, the server sent `DETACHED`, or
+///   the last pane closed (phux-i0e8.2.2 — `end` carries which, plus the
+///   dead pane's exit status). The outer loop runs `exit_after_detach(end)`
+///   on this path, which prints the last-pane explanation on the cooked
+///   terminal and exits the process.
 /// * `SwitchTo(target)` — the user committed `switch-session { name }`
 ///   (via the `<leader> a` picker / palette) or `new-session`. The outer
 ///   loop detaches from the current session and re-runs the handshake
@@ -1553,8 +1610,10 @@ async fn wait_for_attached(conn: &mut Connection) -> Result<FrameKind, AttachErr
 ///   and freshly-rebuilt session state.
 #[derive(Debug)]
 enum LoopExit {
-    /// The session ended (detach / server DETACHED). The process exits.
-    Detached,
+    /// The session ended (detach / server DETACHED / last pane closed).
+    /// Carries WHY (phux-i0e8.2.2) so the teardown path can explain a
+    /// last-pane death on the cooked terminal. The process exits.
+    Detached(AttachEnd),
     /// Re-attach on the same connection — to an existing session or a
     /// newly-created one.
     SwitchTo(ReattachTarget),
@@ -1731,7 +1790,23 @@ async fn main_loop<W: super::RenderSink>(
     // be forwarded to the focused pane; a chord that resolves to an
     // action mutates the active window here and never reaches the
     // server's input pipe.
-    let mut resolver = keybindings_snapshot.as_ref().and_then(build_resolver_from);
+    // phux-i0e8.3.4: the build is lenient — whenever a snapshot exists a
+    // resolver exists, and each diagnostic disables exactly one binding.
+    // Diagnostics surface as a status-bar error line naming the chord
+    // (unless the bar is already showing a config error, which subsumes
+    // any keybinding problem).
+    let mut resolver: Option<phux_config::keybind::Resolver> = None;
+    if let Some(kb) = keybindings_snapshot.as_ref() {
+        let (built, diags) = build_resolver_from(kb);
+        resolver = Some(built);
+        if !diags.is_empty()
+            && !status_bar
+                .as_ref()
+                .is_some_and(StatusBarPainter::is_error_line)
+        {
+            status_bar = Some(StatusBarPainter::error_line(keybind_error_line(&diags)));
+        }
+    }
     // phux-ahv.4: single source of truth for chrome + overlay colors,
     // owned alongside the keybindings snapshot and threaded into the
     // overlay render path via `DispatchCtx`.
@@ -1899,6 +1974,11 @@ async fn main_loop<W: super::RenderSink>(
     // old state and toasts the error. The `phux config reload` CLI
     // doorbell reaches the same handler via `FrameOutcome::config_reload`.
     let mut reload_request = false;
+    // phux-i0e8.2.2: Terminals whose close THIS client requested
+    // (kill-pane / kill-window). The action dispatcher parks ids here at
+    // the kill seam; the `TerminalClosed` arm drains them to suppress the
+    // pane-exit notice for a death the user themselves ordered.
+    let mut expected_closes: HashSet<TerminalId> = HashSet::new();
 
     // Replay the `ATTACHED` frame so the focused-pane bookkeeping in
     // `handle_server_frame` runs exactly once, in one place. The sidebar
@@ -1924,13 +2004,16 @@ async fn main_loop<W: super::RenderSink>(
         layout_get_request_id,
         &mut pending_splits,
         &mut pending_windows,
+        &mut expected_closes,
         &mut agent_meta,
         overlays.is_active(),
         // Single replayed frame — no burst to coalesce, paint it.
         false,
     )?;
     if outcome.exit {
-        return Ok(LoopExit::Detached);
+        return Ok(LoopExit::Detached(
+            outcome.exit_reason.unwrap_or(AttachEnd::Detached),
+        ));
     }
     vcs.apply_snapshot(outcome.pane_cwds);
     if let Some((list, focused)) = outcome.sessions {
@@ -2279,6 +2362,7 @@ async fn main_loop<W: super::RenderSink>(
                     next_request_id: &mut next_request_id,
                     pending_splits: &mut pending_splits,
                     pending_windows: &mut pending_windows,
+                    expected_closes: &mut expected_closes,
                     overlays: &mut overlays,
                     keybindings: keybindings_snapshot.as_ref(),
                     theme: &theme,
@@ -2612,6 +2696,7 @@ async fn main_loop<W: super::RenderSink>(
                             layout_get_request_id,
                             &mut pending_splits,
                             &mut pending_windows,
+                            &mut expected_closes,
                             &mut agent_meta,
                             overlays.is_active(),
                             defer_paint,
@@ -2619,7 +2704,9 @@ async fn main_loop<W: super::RenderSink>(
                         focus_history.observe(focused_before_frame, focused_pane.as_ref());
                         focus_history.repair(focused_pane.as_ref(), &workspace);
                         if outcome.exit {
-                            return Ok(LoopExit::Detached);
+                            return Ok(LoopExit::Detached(
+                                outcome.exit_reason.unwrap_or(AttachEnd::Detached),
+                            ));
                         }
                         // A peer headless placement can add a layout leaf
                         // without this attached client being subscribed to the
@@ -2709,6 +2796,31 @@ async fn main_loop<W: super::RenderSink>(
                             // attention change touches a pane interior, so this
                             // is a CHROME raise, not a full-frame clear.
                             if chrome_changed && !overlays.is_active() {
+                                repaint.raise_chrome();
+                            }
+                        }
+                        // phux-i0e8.2.1: drain the frame's transient notices
+                        // into the painter's newest-wins slot; expiry rides
+                        // the 1 s status_tick arm below. With no bar to paint
+                        // on (no painter, an empty bar, or the persistent
+                        // error line holding the row — the painter refuses
+                        // those itself) the notice degrades to a tracing
+                        // line rather than vanishing.
+                        if !outcome.notices.is_empty() {
+                            let now = std::time::Instant::now();
+                            let mut notice_shown = false;
+                            for notice in outcome.notices {
+                                if let Some(sb) = status_bar.as_mut() {
+                                    notice_shown |= sb.set_notice(notice, now);
+                                } else {
+                                    tracing::info!(
+                                        severity = ?notice.severity,
+                                        text = %notice.text,
+                                        "status-bar notice dropped: no status bar configured",
+                                    );
+                                }
+                            }
+                            if notice_shown && !overlays.is_active() {
                                 repaint.raise_chrome();
                             }
                         }
@@ -3016,7 +3128,7 @@ async fn main_loop<W: super::RenderSink>(
                         // frame — treat it as a clean shutdown because
                         // the user requested detach. Otherwise the loop
                         // bubbles the disconnect up unchanged.
-                        return Ok(LoopExit::Detached);
+                        return Ok(LoopExit::Detached(AttachEnd::Detached));
                     }
                     Err(err) => return Err(err),
                 }
@@ -3089,6 +3201,7 @@ async fn main_loop<W: super::RenderSink>(
                     next_request_id: &mut next_request_id,
                     pending_splits: &mut pending_splits,
                     pending_windows: &mut pending_windows,
+                    expected_closes: &mut expected_closes,
                     overlays: &mut overlays,
                     keybindings: keybindings_snapshot.as_ref(),
                     theme: &theme,
@@ -3370,6 +3483,14 @@ async fn main_loop<W: super::RenderSink>(
             // `poll_interval`. Paints in place — no pane re-render, no
             // full-screen redraw.
             () = status_tick => {
+                // phux-i0e8.2.1: expire the transient notice on the tick that
+                // carries the bar's repaint cadence. The clear invalidates the
+                // painter's cache, so the paint below restores the widget row.
+                // Runs even while an overlay is up (the bar repaints on
+                // overlay dismiss, and a stale notice must not resurface).
+                if let Some(sb) = status_bar.as_mut() {
+                    let _ = sb.clear_expired_notice(std::time::Instant::now());
+                }
                 // phux-5ke.4: an overlay above the bar would get
                 // partially overwritten by the bar paint; skip ticks
                 // while a modal is up.
@@ -3702,17 +3823,48 @@ pub(super) fn is_layout_key_string(key: &str) -> bool {
 /// keybindings snapshot (post phux-r82.5: the plugin-merged one, so
 /// manifest `keys` chords resolve like user bindings — the merge already
 /// validated each contributed chord, so a plugin can't poison this
-/// build). Failures log and return `None` — a malformed `[keybindings]`
-/// table degrades to "no actions are bound" rather than blocking attach.
-/// Detach is a normal keybinding action, so a disabled resolver also
-/// disables configured detach chords.
-fn build_resolver_from(kb: &phux_config::KeybindingsCfg) -> Option<phux_config::keybind::Resolver> {
-    match phux_config::keybind::Resolver::new(kb) {
-        Ok(r) => Some(r),
-        Err(err) => {
-            tracing::warn!(error = %err, "keybind resolver build failed; disabled");
-            None
-        }
+/// build).
+///
+/// phux-i0e8.3.4: the build is **lenient per binding** — a resolver
+/// always comes back, and each diagnostic disables exactly the binding
+/// it names. Before this, one malformed chord failed the whole build and
+/// silently disabled EVERY binding, including `detach`. Diagnostics are
+/// logged here; the caller surfaces them as a visible status-bar error
+/// line ([`keybind_error_line`]). Config reload deliberately stays
+/// all-or-nothing instead (`super::reload`, docs/consumers/tui.md §4.3).
+fn build_resolver_from(
+    kb: &phux_config::KeybindingsCfg,
+) -> (
+    phux_config::keybind::Resolver,
+    Vec<phux_config::keybind::BindingDiagnostic>,
+) {
+    let (resolver, diagnostics) = phux_config::keybind::Resolver::new_lenient(kb);
+    for diag in &diagnostics {
+        tracing::warn!(binding = %diag.binding, error = %diag.error, "keybinding disabled");
+    }
+    (resolver, diagnostics)
+}
+
+/// phux-i0e8.3.4: format the lenient resolver's diagnostics as the
+/// one-line status-bar error strip. Names the first offending chord, the
+/// reason, how many more bindings (if any) were also disabled, and the
+/// actionable next step (`phux config check`). Empty input formats to an
+/// empty string (callers gate on non-empty diagnostics).
+fn keybind_error_line(diags: &[phux_config::keybind::BindingDiagnostic]) -> String {
+    let Some(first) = diags.first() else {
+        return String::new();
+    };
+    let more = diags.len() - 1;
+    if more == 0 {
+        format!(
+            "keybinding \"{}\" disabled: {} (run: phux config check)",
+            first.binding, first.error
+        )
+    } else {
+        format!(
+            "keybinding \"{}\" disabled: {} (+{more} more; run: phux config check)",
+            first.binding, first.error
+        )
     }
 }
 
@@ -4088,9 +4240,10 @@ async fn emit_view_reflow(
 /// A malformed config never blocks attach — but it no longer vanishes
 /// silently either. On a load or build failure we surface a visible
 /// error line (`StatusBarPainter::error_line`) on the bar row pointing
-/// the user at `phux config show` for the full diagnostic, instead of
-/// dropping to an empty bar (and, alongside [`build_resolver_from`], no
-/// keybindings) with only a `tracing::warn` nobody sees. Returns `None`
+/// the user at `phux config check` for the full diagnostic, instead of
+/// dropping to an empty bar with only a `tracing::warn` nobody sees
+/// (keybindings degrade separately, per binding — see
+/// [`build_resolver_from`]). Returns `None`
 /// only when the config is valid and the bar would be empty (no widgets
 /// configured) — callers short-circuit on that.
 /// phux-foz.5: perform one explicit live config reload and repaint.
@@ -4192,7 +4345,7 @@ fn handle_config_reload<W: super::RenderSink>(
                 vec![
                     msg,
                     String::new(),
-                    "Fix the file and reload again (see: phux config show)".to_owned(),
+                    "Fix the file and reload again (run: phux config check)".to_owned(),
                 ],
                 theme,
             )));
@@ -4254,10 +4407,12 @@ fn build_status_bar_painter() -> Option<StatusBarPainter> {
 }
 
 /// phux-9vf: format a one-line, on-screen config error for the status
-/// bar. Mirrors what `phux config show` prints to stderr (the
-/// `Display` of the error) and appends the actionable next step.
+/// bar: the `Display` of the error plus the actionable next step.
+/// The remedy is `phux config check` — the verb that diagnoses, with
+/// key paths and layer attribution — not `config show`, which only
+/// renders the effective config (phux-i0e8.3.5).
 fn config_error_line(err: &impl std::fmt::Display) -> String {
-    format!("config error: {err} (run: phux config show)")
+    format!("config error: {err} (run: phux config check)")
 }
 
 /// Build a `VIEWPORT_RESIZE` frame from a [`ViewportInfo`].
@@ -4718,12 +4873,26 @@ fn terminal_reset_on_signal() {
 /// reattach command, which is why reattach "did nothing." Exiting here
 /// closes that window: the restore mirrors the signal path, and
 /// `process::exit` skips the teardown that would otherwise hang.
+///
+/// phux-i0e8.2.2: because this never returns, the CLI's own `Ok(end)`
+/// handling can't run on this path — so the one-line explanation for a
+/// last-pane death (`AttachEnd::explanation`) is printed HERE, after the
+/// terminal reset (the screen is cooked again) and before the exit. A
+/// plain detach explains nothing. Process exit stays `0` either way:
+/// the attach succeeded; the ending just deserves words.
 #[allow(
     clippy::exit,
     reason = "detach must exit now; runtime drop hangs on the stdin read thread"
 )]
-fn exit_after_detach() -> ! {
+#[allow(
+    clippy::print_stderr,
+    reason = "phux-i0e8.2.2: the terminal is cooked again and the process exits before the CLI could print; this is the only window for the last-pane explanation"
+)]
+fn exit_after_detach(end: AttachEnd) -> ! {
     terminal_reset_on_signal();
+    if let Some(line) = end.explanation() {
+        eprintln!("{line}");
+    }
     std::process::exit(0);
 }
 
@@ -4977,6 +5146,112 @@ mod tests {
         let err = AttachError::Io(io::Error::other("boom"));
         let msg = err.to_string();
         assert!(msg.contains("attach loop io error"));
+    }
+
+    // -- lenient resolver at attach (phux-i0e8.3.4) -----------------------
+
+    #[test]
+    fn attach_resolver_survives_one_bad_chord_and_keeps_detach() {
+        // Before phux-i0e8.3.4, one malformed chord ("q-") made
+        // build_resolver_from return None: EVERY binding died, including
+        // detach. Now the attach path always gets a resolver and only the
+        // offending binding is disabled.
+        let cfg = phux_config::parse_str(
+            r#"
+            [keybindings.prefix-table]
+            "q-" = "kill-pane"
+            d = "detach"
+            "#,
+            Path::new("test.toml"),
+        )
+        .expect("test config parses");
+        let (mut resolver, diags) = build_resolver_from(&cfg.keybindings);
+        assert_eq!(diags.len(), 1, "exactly the bad binding is reported");
+        assert_eq!(diags[0].binding, "q-");
+
+        let prefix = phux_config::keybind::parse_chord(&cfg.keybindings.prefix).expect("prefix");
+        assert_eq!(resolver.feed(prefix), phux_config::keybind::Feed::Partial);
+        match resolver.feed(phux_config::keybind::parse_chord("d").expect("chord")) {
+            phux_config::keybind::Feed::Resolved(ra) => assert_eq!(ra.action, "detach"),
+            other => panic!("detach must survive one bad chord, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keybind_error_line_names_the_chord_and_config_check() {
+        let cfg = phux_config::parse_str(
+            r#"
+            [keybindings.prefix-table]
+            "q-" = "kill-pane"
+            "#,
+            Path::new("test.toml"),
+        )
+        .expect("test config parses");
+        let (_, diags) = build_resolver_from(&cfg.keybindings);
+        let line = keybind_error_line(&diags);
+        assert!(
+            line.contains("\"q-\""),
+            "line must name the offending chord: {line}"
+        );
+        assert!(
+            line.contains("run: phux config check"),
+            "line must point at the checker: {line}"
+        );
+        assert!(
+            !line.contains("more;"),
+            "a single diagnostic carries no +N count: {line}"
+        );
+    }
+
+    #[test]
+    fn keybind_error_line_counts_additional_disabled_bindings() {
+        let cfg = phux_config::parse_str(
+            r#"
+            [keybindings.prefix-table]
+            "q-" = "kill-pane"
+            "w-" = "kill-pane"
+            "e-" = "kill-pane"
+            "#,
+            Path::new("test.toml"),
+        )
+        .expect("test config parses");
+        let (_, diags) = build_resolver_from(&cfg.keybindings);
+        assert_eq!(diags.len(), 3);
+        let line = keybind_error_line(&diags);
+        // BTreeMap order: "e-" first, the other two summarized.
+        assert!(
+            line.contains("\"e-\""),
+            "line must name the first offending chord: {line}"
+        );
+        assert!(
+            line.contains("+2 more; run: phux config check"),
+            "line must count the remaining disabled bindings: {line}"
+        );
+    }
+
+    #[test]
+    fn keybind_error_line_is_empty_without_diagnostics() {
+        assert_eq!(keybind_error_line(&[]), "");
+    }
+
+    #[test]
+    fn config_error_line_recommends_config_check() {
+        // phux-i0e8.3.5: the remedy is the verb that diagnoses
+        // (`config check`), not the one that merely renders the
+        // effective config (`config show`).
+        let line = config_error_line(&"boom");
+        assert!(
+            line.contains("phux config check"),
+            "line must point at the checker: {line}"
+        );
+        assert!(
+            !line.contains("config show"),
+            "line must not recommend config show: {line}"
+        );
+        assert!(
+            line.contains("config error: boom"),
+            "line must carry the error display: {line}"
+        );
     }
 
     // -- which-key popup arming (phux-foz.2) ------------------------------

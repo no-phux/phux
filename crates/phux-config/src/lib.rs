@@ -6,7 +6,10 @@
 //! resolution, and hook dispatch all read from this schema.
 //!
 //! Parse errors carry `line:col` locations derived from the TOML byte
-//! span so end-user diagnostics can point at the offending token.
+//! span so end-user diagnostics can point at the offending token. When
+//! the underlying error has no span (deserialize failures on a merged
+//! layer stack), the error carries no position rather than a
+//! fabricated one (phux-i0e8.3.5).
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -21,6 +24,7 @@ pub mod plugin;
 pub mod remote;
 pub mod satellite;
 mod schema;
+pub mod vocab; // phux-i0e8.3.1 (validation vocabulary: action + hook event names)
 
 // Wave 5 modules — each owned by its respective subtask:
 pub mod keybind; // phux-nz4.3
@@ -86,13 +90,12 @@ pub fn parse_str(input: &str, path: &Path) -> Result<Config, ConfigError> {
     match toml::from_str::<Config>(input) {
         Ok(cfg) => Ok(cfg),
         Err(e) => {
-            let (line, col) = e
+            let position = e
                 .span()
-                .map_or((1, 1), |range| byte_offset_to_line_col(input, range.start));
+                .map(|range| byte_offset_to_line_col(input, range.start));
             Err(ConfigError::Parse {
                 path: path.to_path_buf(),
-                line,
-                col,
+                position,
                 message: e.message().to_owned(),
             })
         }
@@ -126,13 +129,15 @@ pub fn parse_str(input: &str, path: &Path) -> Result<Config, ConfigError> {
 pub fn parse_with_defaults(user_input: &str, path: &Path) -> Result<Config, ConfigError> {
     let merged = merged_config_table(user_input, path)?;
     toml::Value::Table(merged).try_into().map_err(|e| {
-        let (line, col) = e
+        // Deserializing the merged table carries no span into the
+        // user's text; a spanless error renders with no position
+        // rather than a fabricated `1:1` (phux-i0e8.3.5).
+        let position = e
             .span()
-            .map_or((1, 1), |r| byte_offset_to_line_col(user_input, r.start));
+            .map(|r| byte_offset_to_line_col(user_input, r.start));
         ConfigError::Parse {
             path: path.to_path_buf(),
-            line,
-            col,
+            position,
             message: e.message().to_owned(),
         }
     })

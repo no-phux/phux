@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-07-21
+last-reviewed: 2026-08-01
 ---
 
 # Operations
@@ -30,6 +30,16 @@ Any other write failure (a full disk, `EIO`) is reported as one stderr line
 with a failing status. The bin crate keeps clippy's `print_stdout` lint armed
 so a new `println!` cannot reintroduce the panic that used to end that
 pipeline.
+
+A **malformed `config.toml` is fatal at server start**. `phux server` loads
+the config exactly once; if the file exists but fails to load, the server
+refuses to start (non-zero exit) and reports the config path, the real loader
+error, and the remedy — `run: phux config check` — on **both** stderr and the
+server log via `tracing::error` (the auto-spawn path nulls stdio, so the log
+line is the durable trace there). A *missing* config file is not an error: the
+server starts with the shipped defaults. The server never silently reverts a
+broken config to defaults — a config the user wrote either applies in full or
+stops the server with the reason.
 
 ## Logging and observability
 

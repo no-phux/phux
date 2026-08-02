@@ -198,7 +198,8 @@ Lists phux sessions on the running server. No target.
 | `socket` | string | no | Override the UDS path (see §2). |
 
 Result: the canonical versioned `phux ls --json` document:
-`{ "schema_version": 3, "sessions": [ { "name", "windows", "attached" } ],
+`{ "schema_version": 3, "sessions": [ { "name", "windows", "attached",
+"attached_clients" } ],
 "terminals": [...], "unreachable": [...] }`, sorted by name. MCP executes and
 parses that CLI surface, so one parser works for both — including
 `unreachable`, which is empty exactly when the listing covers the whole fleet

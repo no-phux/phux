@@ -8,17 +8,19 @@ use std::path::PathBuf;
 pub enum ConfigError {
     /// The TOML failed to parse or did not match the schema.
     ///
-    /// `line` and `col` are 1-indexed and point at the start of the
-    /// offending token (or `1:1` if the underlying error carried no
-    /// span — vanishingly rare for the `toml` crate's parse errors).
-    #[error("{}: {line}:{col}: {message}", path.display())]
+    /// `position` is the 1-indexed `(line, col)` of the start of the
+    /// offending token, when the underlying error carried a span.
+    /// Deserialize errors on a merged layer stack carry none — the
+    /// value being deserialized is not the user's text — and those
+    /// render as `path: message` with no position at all. Reporting a
+    /// confident, fabricated `1:1` is worse than reporting none
+    /// (phux-i0e8.3.5).
+    #[error("{}", parse_display(.path, *.position, .message))]
     Parse {
         /// Source path, used only for display.
         path: PathBuf,
-        /// 1-indexed line number.
-        line: usize,
-        /// 1-indexed column number.
-        col: usize,
+        /// 1-indexed `(line, col)`; `None` when the error had no span.
+        position: Option<(usize, usize)>,
         /// Human-readable parse / deserialize message.
         message: String,
     },
@@ -60,6 +62,19 @@ pub enum ConfigError {
         /// Human-readable description of the violation.
         message: String,
     },
+}
+
+/// Render the [`ConfigError::Parse`] display line: `path: line:col:
+/// message` when a position is known, `path: message` when it is not.
+fn parse_display(
+    path: &std::path::Path,
+    position: Option<(usize, usize)>,
+    message: &str,
+) -> String {
+    match position {
+        Some((line, col)) => format!("{}: {line}:{col}: {message}", path.display()),
+        None => format!("{}: {message}", path.display()),
+    }
 }
 
 /// Convert a byte offset within `input` to a 1-indexed `(line, col)`.

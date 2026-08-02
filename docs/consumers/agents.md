@@ -394,23 +394,29 @@ Each struct carries its own `schema_version`, tracked independently.
 
 Defined in `crates/phux-core/src/session_list.rs` (`LS_SCHEMA_VERSION = 3`).
 Version 2 added the aggregate `terminals` inventory; version 3 adds
-`unreachable`. Shape, name-sorted:
+`unreachable`. `attached_clients` arrived later *without* a bump — adding a
+key is non-breaking under this contract (consumers ignore unknown keys), so
+`schema_version` moves only when a key is removed, renamed, or retyped.
+Shape, name-sorted:
 
 ```json
 {
   "schema_version": 3,
   "sessions": [
-    { "name": "work", "windows": 3, "attached": true }
+    { "name": "work", "windows": 3, "attached": true, "attached_clients": 2 }
   ],
   "terminals": ["@3", "devbox/@7"],
   "unreachable": []
 }
 ```
 
-`windows` is the window count; `attached` is a bool — whether any client is
-attached. `terminals` is the complete addressable inventory in snapshot order,
-using the canonical direct selector syntax. Satellite entries intentionally do
-not imply a hub-local session/window join.
+`windows` is the window count; `attached_clients` is the number of currently
+attached clients; `attached` is the same fact as a bool
+(`attached_clients > 0`), kept for consumers that branch on it. A payload
+from a pre-`attached_clients` `phux` simply lacks the key. `terminals` is the
+complete addressable inventory in snapshot order, using the canonical direct
+selector syntax. Satellite entries intentionally do not imply a hub-local
+session/window join.
 
 **`unreachable` is how you know the listing is complete.** A federation hub
 that cannot reach a satellite still answers — it merges what it has and never

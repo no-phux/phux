@@ -63,7 +63,11 @@ use crate::schema::{Action, KeybindingsCfg};
 // ---------------------------------------------------------------------------
 
 /// Errors produced by chord parsing and resolver construction.
-#[derive(Debug, thiserror::Error)]
+///
+/// `Clone` + `PartialEq` so a lenient resolver build can carry the same
+/// error value in a [`BindingDiagnostic`] that the strict build returns
+/// (see [`Resolver::new`] / [`Resolver::new_lenient`]).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum KeybindError {
     /// Chord string was syntactically malformed (empty token, trailing
     /// dash, unrecognized modifier letter, ...). `pos` is a 0-based byte
@@ -510,6 +514,25 @@ pub fn chord_str_matches_event(s: &str, ev: &KeyEvent) -> bool {
 // Resolver
 // ---------------------------------------------------------------------------
 
+/// One binding skipped by a lenient resolver build
+/// ([`Resolver::new_lenient`]): the binding text as written in config
+/// plus the error that disabled it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingDiagnostic {
+    /// The offending entry as written in config: a chord-sequence key
+    /// from `[keybindings.global]` / `[keybindings.prefix-table]`, or
+    /// the `prefix` string itself.
+    pub binding: String,
+    /// Why the binding was skipped.
+    pub error: KeybindError,
+}
+
+impl std::fmt::Display for BindingDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "keybinding \"{}\": {}", self.binding, self.error)
+    }
+}
+
 /// One node in the resolver trie. A node is either a leaf (carries a
 /// [`ResolvedAction`] and has no children) or an inner node (children,
 /// no action). The validator forbids mixed nodes (see
@@ -585,22 +608,91 @@ pub enum Feed {
 }
 
 impl Resolver {
-    /// Construct a resolver from the user's `[keybindings]` table.
+    /// Construct a resolver from the user's `[keybindings]` table,
+    /// rejecting the whole table on the first problem.
+    ///
+    /// Implemented on top of [`Resolver::new_lenient`] so the strict and
+    /// lenient builds cannot diverge: this is exactly "build leniently,
+    /// then fail with the first diagnostic if there was one".
     ///
     /// # Errors
     ///
     /// Returns [`KeybindError`] if any binding string fails to parse,
     /// the prefix string fails to parse, or two bindings form an
-    /// ambiguous prefix relationship.
+    /// ambiguous prefix relationship. The error equals the first
+    /// diagnostic [`Resolver::new_lenient`] reports for the same table.
     pub fn new(cfg: &KeybindingsCfg) -> Result<Self, KeybindError> {
-        let prefix = parse_chord(&cfg.prefix)?;
+        let (resolver, diagnostics) = Self::new_lenient(cfg);
+        match diagnostics.into_iter().next() {
+            None => Ok(resolver),
+            Some(diag) => Err(diag.error),
+        }
+    }
+
+    /// Construct a resolver from the user's `[keybindings]` table,
+    /// degrading **per binding**: every returned diagnostic disables
+    /// exactly the binding it names, and every other binding keeps
+    /// working (phux-i0e8.3.4 — one typo'd chord must not disable every
+    /// binding including `detach`).
+    ///
+    /// Degradation policy, in check order (which fixes the diagnostic
+    /// order, and therefore the error strict [`Resolver::new`] returns):
+    ///
+    /// 1. A `prefix` that fails to parse is reported and replaced by the
+    ///    shipped default prefix, so the prefix table stays reachable.
+    /// 2. A global or prefix-table binding whose chord sequence fails to
+    ///    parse is reported and skipped.
+    /// 3. A global binding at exactly the prefix chord (while a prefix
+    ///    table exists) is ambiguous — it could never fire, because the
+    ///    prefix chord must open the table — so it is reported and
+    ///    dropped; the prefix table survives.
+    /// 4. A binding that forms an ambiguous prefix with an
+    ///    already-inserted one is reported and dropped (the earlier
+    ///    binding, in `BTreeMap` key order, wins).
+    #[must_use]
+    pub fn new_lenient(cfg: &KeybindingsCfg) -> (Self, Vec<BindingDiagnostic>) {
+        let mut diagnostics = Vec::new();
+
+        let prefix = match parse_chord(&cfg.prefix) {
+            Ok(chord) => chord,
+            Err(error) => {
+                diagnostics.push(BindingDiagnostic {
+                    binding: cfg.prefix.clone(),
+                    error,
+                });
+                // Fall back to the shipped default so the prefix table —
+                // including any configured detach chord — stays reachable.
+                // The default ("C-a") always parses; the literal fallback
+                // is unreachable and only keeps this path panic-free.
+                parse_chord(&KeybindingsCfg::default().prefix).unwrap_or(KeyChord {
+                    modifiers: ModSet::CTRL,
+                    key: PhysicalKey::A,
+                })
+            }
+        };
         let mut root = TrieNode::default();
 
         // Global bindings: insert their parsed sequences directly under
-        // the root.
+        // the root. A failed insert never leaves stray trie nodes:
+        // `TrieNode::insert` only fails on nodes that already existed
+        // with conflicting content, before creating any fresh ones.
         for (binding, action) in &cfg.global {
-            let seq = parse_chord_sequence(binding)?;
-            root.insert(&seq.0, ResolvedAction::from(action), binding)?;
+            let seq = match parse_chord_sequence(binding) {
+                Ok(seq) => seq,
+                Err(error) => {
+                    diagnostics.push(BindingDiagnostic {
+                        binding: binding.clone(),
+                        error,
+                    });
+                    continue;
+                }
+            };
+            if let Err(error) = root.insert(&seq.0, ResolvedAction::from(action), binding) {
+                diagnostics.push(BindingDiagnostic {
+                    binding: binding.clone(),
+                    error,
+                });
+            }
         }
 
         // Prefix-table bindings: insert under a single child keyed by
@@ -608,25 +700,48 @@ impl Resolver {
         // so users can nest `"c x"` under the prefix if they want.
         if !cfg.prefix_table.is_empty() {
             let prefix_child = root.children.entry(prefix).or_default();
-            // Defensive: if a global binding terminated at exactly the
-            // prefix chord, that node would have an action set — and
-            // we'd be about to nest children under it. That's
-            // ambiguous.
-            if prefix_child.action.is_some() {
-                return Err(KeybindError::AmbiguousPrefix(cfg.prefix.clone()));
+            // If a global binding terminated at exactly the prefix
+            // chord, that node has an action set — and we're about to
+            // nest children under it. That's ambiguous; the global leaf
+            // loses (it could never fire anyway — the prefix chord must
+            // open the table) so the whole prefix table survives.
+            if prefix_child.action.take().is_some() {
+                diagnostics.push(BindingDiagnostic {
+                    binding: cfg.prefix.clone(),
+                    error: KeybindError::AmbiguousPrefix(cfg.prefix.clone()),
+                });
             }
             for (binding, action) in &cfg.prefix_table {
-                let seq = parse_chord_sequence(binding)?;
-                prefix_child.insert(&seq.0, ResolvedAction::from(action), binding)?;
+                let seq = match parse_chord_sequence(binding) {
+                    Ok(seq) => seq,
+                    Err(error) => {
+                        diagnostics.push(BindingDiagnostic {
+                            binding: binding.clone(),
+                            error,
+                        });
+                        continue;
+                    }
+                };
+                if let Err(error) =
+                    prefix_child.insert(&seq.0, ResolvedAction::from(action), binding)
+                {
+                    diagnostics.push(BindingDiagnostic {
+                        binding: binding.clone(),
+                        error,
+                    });
+                }
             }
         }
 
-        Ok(Self {
-            root,
-            prefix,
-            cursor: None,
-            pending_path: Vec::new(),
-        })
+        (
+            Self {
+                root,
+                prefix,
+                cursor: None,
+                pending_path: Vec::new(),
+            },
+            diagnostics,
+        )
     }
 
     /// Feed one chord. See [`Feed`] for outcome semantics.
@@ -904,6 +1019,159 @@ mod tests {
         .expect("default config parses");
         Resolver::new(&cfg.keybindings)
             .expect("default keybindings build a resolver with no overlap");
+    }
+
+    // -- lenient resolver build (phux-i0e8.3.4) ---------------------------
+
+    /// Parse an inline `[keybindings]` TOML snippet into a full config.
+    fn cfg_from(toml: &str) -> crate::Config {
+        crate::parse_str(toml, std::path::Path::new("test.toml")).expect("test config parses")
+    }
+
+    #[test]
+    fn lenient_build_skips_only_the_offending_binding() {
+        // One malformed chord ("q-": trailing dash) among valid bindings,
+        // including detach — the failure mode this exists for.
+        let cfg = cfg_from(
+            r#"
+            [keybindings.prefix-table]
+            "q-" = "kill-pane"
+            d = "detach"
+            x = "kill-pane"
+            "#,
+        );
+        let (mut resolver, diags) = Resolver::new_lenient(&cfg.keybindings);
+        assert_eq!(diags.len(), 1, "exactly the bad binding is reported");
+        assert_eq!(diags[0].binding, "q-");
+        assert!(matches!(diags[0].error, KeybindError::Syntax { .. }));
+
+        // Every other binding still works — detach survives.
+        assert_eq!(resolver.feed(ck("C-a")), Feed::Partial);
+        match resolver.feed(ck("d")) {
+            Feed::Resolved(ra) => assert_eq!(ra.action, "detach"),
+            other => panic!("detach must survive one bad chord, got {other:?}"),
+        }
+        assert_eq!(resolver.feed(ck("C-a")), Feed::Partial);
+        match resolver.feed(ck("x")) {
+            Feed::Resolved(ra) => assert_eq!(ra.action, "kill-pane"),
+            other => panic!("sibling binding must survive, got {other:?}"),
+        }
+        // The bad binding itself is dead, not misrouted.
+        assert_eq!(resolver.feed(ck("C-a")), Feed::Partial);
+        assert_eq!(resolver.feed(ck("q")), Feed::NoMatch);
+    }
+
+    #[test]
+    fn lenient_build_falls_back_to_default_prefix_on_bad_prefix() {
+        let cfg = cfg_from(
+            r#"
+            [keybindings]
+            prefix = "Ctrl-a"
+
+            [keybindings.prefix-table]
+            d = "detach"
+            "#,
+        );
+        let (mut resolver, diags) = Resolver::new_lenient(&cfg.keybindings);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].binding, "Ctrl-a");
+        assert!(matches!(diags[0].error, KeybindError::UnknownKey(_)));
+
+        // The prefix table hangs off the shipped default prefix instead.
+        let default_prefix =
+            parse_chord(&crate::KeybindingsCfg::default().prefix).expect("default prefix parses");
+        assert_eq!(resolver.feed(default_prefix), Feed::Partial);
+        assert!(resolver.pending_at_prefix());
+        match resolver.feed(ck("d")) {
+            Feed::Resolved(ra) => assert_eq!(ra.action, "detach"),
+            other => panic!("prefix table must stay reachable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lenient_build_drops_the_later_of_two_ambiguous_bindings() {
+        // "c" is a strict prefix of "c x"; BTreeMap order inserts "c"
+        // first, so "c x" is the later binding and loses.
+        let cfg = cfg_from(
+            r#"
+            [keybindings.prefix-table]
+            "c" = "new-window"
+            "c x" = "kill-pane"
+            "#,
+        );
+        let (mut resolver, diags) = Resolver::new_lenient(&cfg.keybindings);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].binding, "c x");
+        assert!(matches!(diags[0].error, KeybindError::AmbiguousPrefix(_)));
+
+        // The earlier binding still resolves.
+        assert_eq!(resolver.feed(ck("C-a")), Feed::Partial);
+        match resolver.feed(ck("c")) {
+            Feed::Resolved(ra) => assert_eq!(ra.action, "new-window"),
+            other => panic!("earlier binding must win, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lenient_build_drops_a_global_leaf_on_the_prefix_chord() {
+        // A global binding at exactly the prefix chord could never fire
+        // (the prefix chord must open the table); lenient drops it and
+        // keeps the whole prefix table alive.
+        let cfg = cfg_from(
+            r#"
+            [keybindings.global]
+            "C-a" = "kill-pane"
+
+            [keybindings.prefix-table]
+            d = "detach"
+            "#,
+        );
+        let (mut resolver, diags) = Resolver::new_lenient(&cfg.keybindings);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].binding, "C-a");
+        assert!(matches!(diags[0].error, KeybindError::AmbiguousPrefix(_)));
+
+        assert_eq!(
+            resolver.feed(ck("C-a")),
+            Feed::Partial,
+            "prefix opens the table"
+        );
+        match resolver.feed(ck("d")) {
+            Feed::Resolved(ra) => assert_eq!(ra.action, "detach"),
+            other => panic!("prefix table must survive the conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strict_new_errors_with_the_first_lenient_diagnostic() {
+        // Multiple problems: a bad prefix AND a bad binding. Strict `new`
+        // must fail with exactly the first diagnostic's error, because it
+        // is defined as "lenient build, then first diagnostic".
+        let cfg = cfg_from(
+            r#"
+            [keybindings]
+            prefix = "Ctrl-a"
+
+            [keybindings.prefix-table]
+            "q-" = "kill-pane"
+            "#,
+        );
+        let (_, diags) = Resolver::new_lenient(&cfg.keybindings);
+        assert_eq!(diags.len(), 2);
+        let err = Resolver::new(&cfg.keybindings).expect_err("strict build must fail");
+        assert_eq!(err, diags[0].error);
+    }
+
+    #[test]
+    fn lenient_build_of_a_clean_table_reports_nothing() {
+        let cfg = cfg_from(
+            r#"
+            [keybindings.prefix-table]
+            d = "detach"
+            "#,
+        );
+        let (_, diags) = Resolver::new_lenient(&cfg.keybindings);
+        assert!(diags.is_empty(), "clean config must produce no diagnostics");
     }
 
     /// phux-foz.3: the default prefix table binds `H`/`J`/`K`/`L` to

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
 use phux_client::attach::record::SessionRecorder;
-use phux_client::attach::{self, AttachError, CertTrust, Dial, QuicDial, WsDial};
+use phux_client::attach::{self, AttachEnd, AttachError, CertTrust, Dial, QuicDial, WsDial};
 use phux_client::predict::PredictiveConfig;
 use phux_config::loader as config_loader;
 use phux_protocol::wire::frame::AttachTarget;
@@ -24,6 +24,22 @@ use crate::print_banner;
 /// driver's render sink for the duration of one attach, and a graceful-upgrade
 /// reconnect (ADR-0032) starts a *second* attach against the *same* recording.
 type RecorderHandle = Rc<RefCell<SessionRecorder>>;
+
+/// phux-i0e8.2.2: explain how a successful attach ended, once the TUI is
+/// down and stdout/stderr are the user's cooked terminal again.
+///
+/// A plain detach says nothing (the quiet, expected ending); a last-pane
+/// death prints its one-line explanation so an OOM-killed shell does not
+/// look like a phux crash. On the production UDS/QUIC/WS paths the driver
+/// already prints this line inside its own teardown (`exit_after_detach`
+/// exits the process before control returns here — see its doc comment);
+/// this helper covers every path that DOES return an [`AttachEnd`], and
+/// keeps both CLI callers (`phux attach` / `phux new`) on one wording.
+pub(crate) fn report_attach_end(end: AttachEnd) {
+    if let Some(line) = end.explanation() {
+        eprintln!("{line}");
+    }
+}
 
 /// Export the `--rec` capture and report it, once the TUI is down.
 ///
@@ -122,7 +138,10 @@ pub(crate) fn run_naked(rec: Option<&RecordSpec>) -> ExitCode {
     ));
     finalize_recording(rec);
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(end) => {
+            report_attach_end(end);
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             print_attach_error(&err, &socket_path, &default_name);
             ExitCode::FAILURE
@@ -173,7 +192,7 @@ pub(crate) async fn run_attach_once(
     dial: &Dial,
     target: AttachTarget,
     predict_cfg: PredictiveConfig,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     run_attach_once_rec(dial, target, predict_cfg, None).await
 }
 
@@ -191,7 +210,7 @@ pub(crate) async fn run_attach_once_rec(
     target: AttachTarget,
     predict_cfg: PredictiveConfig,
     rec: Option<RecorderHandle>,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     // `run_with_predict_dial` with `predict.enabled = false` is identical to the
     // non-predictive path, so one call covers both transports and both modes.
     // The recorded entry point differs only in wrapping the driver's render
@@ -220,9 +239,9 @@ pub(crate) async fn attach_default_with_fallback(
     default_name: &str,
     predict_cfg: PredictiveConfig,
     rec: Option<&RecorderHandle>,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     match run_attach_once_rec(dial, AttachTarget::Last, predict_cfg, rec.map(Rc::clone)).await {
-        Ok(()) => Ok(()),
+        Ok(end) => Ok(end),
         Err(AttachError::Refused(message)) => {
             eprintln!(
                 "phux: no prior-attach session (server said: {message}); creating `{default_name}`"
@@ -295,7 +314,7 @@ async fn attach_with_reconnect(
     predict_cfg: PredictiveConfig,
     default_name: Option<&str>,
     rec: Option<&RecordSpec>,
-) -> Result<(), AttachError> {
+) -> Result<AttachEnd, AttachError> {
     // Created ONCE, outside the loop, and cloned into each attempt: a
     // graceful-upgrade reconnect must continue the SAME recording. Creating
     // it per attempt would truncate the cast at every server hot-swap, which
@@ -331,7 +350,7 @@ async fn attach_with_reconnect(
             }
         };
         match result {
-            Ok(()) => break Ok(()),
+            Ok(end) => break Ok(end),
             Err(AttachError::Disconnected) => {
                 if wait_until_connectable(dial, RECONNECT_DEADLINE).await {
                     eprintln!("phux: server restarted; re-attaching…");
@@ -612,7 +631,10 @@ pub(crate) fn run_attach_rec(
     };
     finalize_recording(rec);
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(end) => {
+            report_attach_end(end);
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             // `phux-roz` (5): produce actionable text per variant. The
             // guard (if any) has already dropped, so this lands on the
@@ -815,7 +837,10 @@ pub(crate) fn run_attach_quic(
     ));
     finalize_recording(rec);
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(end) => {
+            report_attach_end(end);
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             eprintln!("phux: QUIC attach to {target} failed: {err}");
             if let Some(hint) = reachability_hint(&err, addr.ip().is_loopback()) {
@@ -922,7 +947,10 @@ pub(crate) fn run_attach_ws(
     ));
     finalize_recording(rec);
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(end) => {
+            report_attach_end(end);
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             eprintln!("phux: WebSocket attach failed: {err}");
             if let Some(hint) = reachability_hint(&err, loopback) {
@@ -936,6 +964,42 @@ pub(crate) fn run_attach_ws(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// phux-i0e8.2.2: the one-line ending explanation both CLI callers
+    /// (`phux attach`, `phux new`) print after teardown. A detach says
+    /// nothing; a last-pane death names the exit shape; the process exit
+    /// code stays SUCCESS either way (the callers map `Ok(_)` to
+    /// `ExitCode::SUCCESS` unconditionally).
+    #[test]
+    fn attach_end_explanation_covers_all_shapes() {
+        assert_eq!(
+            AttachEnd::Detached.explanation(),
+            None,
+            "a plain detach needs no words"
+        );
+        assert_eq!(
+            AttachEnd::LastPaneClosed {
+                exit_status: Some(0)
+            }
+            .explanation()
+            .as_deref(),
+            Some("phux: session ended: the last pane exited 0"),
+        );
+        assert_eq!(
+            AttachEnd::LastPaneClosed {
+                exit_status: Some(137)
+            }
+            .explanation()
+            .as_deref(),
+            Some("phux: session ended: the last pane exited 137"),
+        );
+        assert_eq!(
+            AttachEnd::LastPaneClosed { exit_status: None }
+                .explanation()
+                .as_deref(),
+            Some("phux: session ended: the last pane killed (signal or unknown)"),
+        );
+    }
 
     #[test]
     fn default_create_target_carries_client_cwd() {

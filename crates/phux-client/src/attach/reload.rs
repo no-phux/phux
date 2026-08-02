@@ -105,6 +105,13 @@ fn build(cfg: &Config) -> Result<ReloadedConfig, String> {
     let mut keybindings = cfg.keybindings.clone();
     plugin_actions::merge_plugin_bindings(&mut keybindings, &plugin_actions);
 
+    // phux-i0e8.3.4: deliberately the STRICT build. Reload keeps its
+    // all-or-nothing contract (docs/consumers/tui.md §4.3): any binding
+    // the resolver rejects fails the whole reload and the previous
+    // config stays fully in effect. This is the intended asymmetry with
+    // attach, where `build_resolver_from` (driver.rs) builds leniently —
+    // at attach there is no known-good previous config to keep, so a bad
+    // binding degrades per-binding with a status-bar diagnostic instead.
     let resolver = Resolver::new(&keybindings).map_err(|err| err.to_string())?;
     let theme = Theme::from_cfg(&cfg.theme);
     let mut reloaded = ReloadedConfig {

@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-07-15
+last-reviewed: 2026-08-02
 ---
 
 # The phux reference TUI
@@ -554,6 +554,7 @@ $XDG_RUNTIME_DIR/phux/phux.sock     # SOCK_STREAM, parent dir mode 0o700
                                     #   (fallback: /tmp/phux-$UID/phux.sock)
 
 $XDG_STATE_HOME/phux/
+├── server.log                      # canonical server log (both spawn paths)
 ├── client-<pid>.log                # default interactive-client log
 ├── remote-cert.pem                 # auto-provisioned remote certificate
 ├── remote-key.pem                  # owner-only private key
@@ -1054,15 +1055,16 @@ carries `deny_unknown_fields`, so a typo is a hard error, not a silent
 no-op. What the loader is not is *locatable*. It reports:
 
 ```text
-config.toml: 1:1: unknown field `enabledd`, expected one of `enabled`, `width`, `position`
+config.toml: unknown field `enabledd`, expected one of `enabled`, `width`, `position`
 ```
 
 Three things are wrong with that. It names only the leaf field, and
 `enabledd` does not say which table it is in — several tables have an
-`enabled`, a `width`, and a `position`. The `1:1` is not where the typo is;
-it is the no-span fallback, because what is being deserialized is the
-*merged layer stack*, not your file. And it stops at the first problem, so a
-config with four typos takes four edit-run cycles.
+`enabled`, a `width`, and a `position`. It carries no position, because what
+is being deserialized is the *merged layer stack*, not your file (the loader
+used to fabricate a `1:1` here; it now reports no position rather than a
+confidently wrong one). And it stops at the first problem, so a config with
+four typos takes four edit-run cycles.
 
 `phux config check` fixes all three:
 
@@ -1081,9 +1083,20 @@ key came from somewhere other than the file you named — with `extends`
 (ADR-0039) in play, "is this typo mine or the distro's?" is the question you
 actually have, and a line number in your own file would not answer it.
 
+Once the stack deserializes, a semantic pass validates the keybindings —
+the mistakes that load fine and then silently do nothing: every chord
+string must parse under the chord grammar (§5.1), every action name must be
+one the dispatcher actually handles (an unknown name comes with a
+did-you-mean suggestion, e.g. ``unknown action `kill-pain` (did you mean
+`kill-pane`?)``), and no binding's sequence may shadow another's as an
+ambiguous prefix. Parameterized action *arguments* are deliberately not
+validated here — argument schemas belong to the dispatcher, not the loader.
+
 Faults are classified because they have different fixes: an **unknown key**
 is a typo or a key removed in a later version; a **bad value** is a real key
-with the wrong type.
+with the wrong type; a **bad chord** is a binding key that does not parse
+(or clashes with another binding); an **unknown name** is an action no
+dispatcher arm handles. The same labels appear in the `--json` findings.
 
 Exit codes are three-way so a dotfiles CI job can react differently to each:
 
@@ -1119,7 +1132,10 @@ which-key knobs), the theme, the status-bar composition, and the plugin
 action rows in the palette. Failure semantics are all-or-nothing: on any
 parse or validation error the client keeps the **previous** config fully
 in effect and surfaces the error as a dismissable toast — never a crash,
-never a half-applied mix of old and new.
+never a half-applied mix of old and new. This is deliberately stricter
+than attach-time keybinding resolution, which degrades per binding with
+a status-bar diagnostic (§5.1): a reload has a known-good previous
+config to fall back on; attach does not.
 
 Not covered by a reload (restart the client, or detach and re-attach):
 pane-behavior settings read once at attach, such as `[predict]`,
@@ -1213,6 +1229,21 @@ prefix = "C-a"
 The global table is empty by default — no global bindings ship out of
 the box because we cannot assume the user's outer terminal forwards
 hyper/super at all. Users on Ghostty can opt in.
+
+**A bad binding disables exactly that binding, visibly.** At attach,
+keybinding resolution is lenient per binding: a chord that fails to
+parse, or a binding whose sequence is a strict prefix of another's (the
+later one, in table-key order, loses), is skipped — every other
+binding, including `detach`, keeps working. Each skipped binding is
+reported on the status-bar row as an error line naming the offending
+chord and pointing at `phux config check`; when several bindings are
+disabled, the line names the first and counts the rest. A `prefix`
+string that fails to parse falls back to the default `C-a` so the
+prefix table stays reachable. Config **reload** is the deliberate
+exception to this leniency: it stays all-or-nothing (§4.3) — at attach
+there is no known-good previous config to keep, but a reload has one,
+so any bad binding keeps the previous config fully in effect instead of
+applying a partial one.
 
 ### 5.2 The dispatcher
 
@@ -2013,6 +2044,65 @@ hook, server detector/state, and TUI asked fold shipped in commits `bdb64f6`,
 The shared/directed-focus proposals tracked as `phux-oih5.10` and
 `phux-oih5.17` are superseded by accepted ADR-0049: topology may be shared,
 but focus authority and advisory attention navigation remain client-local.
+
+### 8.7 Transient notices
+
+Some lifecycle events deserve a moment of visibility but no persistent
+chrome. The bar has a single **transient notice slot** for them: a
+full-row message (reverse video; warnings additionally bold) that takes
+the bar row over from the widgets for about **7 seconds**, then expires
+on the bar's existing 1-second refresh tick and the widget row returns.
+The slot is **newest-wins** — a fresh notice replaces the current one
+and restarts the clock; nothing queues.
+
+Current producers:
+
+- **Input-authority handovers** (ADR-0033). When the *focused* pane's
+  input lease moves — another client takes or releases the wheel — an
+  info notice calls out the transition (`input: c9 took the wheel`,
+  `input: wheel released`). The persistent `WHEEL:*` badge (same
+  client-id spelling) keeps showing the steady state; the notice marks
+  the moment it changed. The lease state the server re-states at attach
+  time is not a transition and raises no notice, and neither do
+  handovers on unfocused panes.
+- **Degraded federation.** When a hub announces that a satellite became
+  unreachable (a spontaneous, uncorrelated `ERROR
+  { SATELLITE_UNREACHABLE }`), a warn notice reports it (`federation
+  degraded: ...`). This is the in-TUI view of the same state `phux
+  status` reports on the CLI.
+- **Pane death** (phux-i0e8.2.2). When a pane's process dies and other
+  panes survive the layout fold, a warn notice names the dead pane and
+  its exit shape: `pane 3: exited 137`, or `pane 3: killed (signal or
+  unknown)` when `TERMINAL_CLOSED` carried no exit code (a signal kill).
+  Two deaths are deliberately silent: a clean **exit 0** (the user typed
+  `exit`; nothing is wrong) and a close **this client itself requested**
+  via `kill-pane` / `kill-window` (the kill dispatch marks its targets
+  as expected, and the matching close consumes the marker — so a later
+  spontaneous death of a reused pane id still notifies).
+
+When the **last** pane dies there is no bar left to notice on: the
+client's consumer-owned detach policy (phux-4r1) tears the TUI down.
+Since phux-i0e8.2.2 that exit is *explained*: after the alt screen is
+gone and the terminal is cooked again, the client prints one line to
+stderr — `phux: session ended: the last pane exited 137` (or
+`... killed (signal or unknown)`) — so an OOM-killed shell no longer
+looks like a phux crash. A clean detach prints nothing, and the process
+exit code stays `0` in both cases: the attach succeeded; the ending just
+gets words. (Internally the `run_*` attach entry points return an
+`AttachEnd` — `Detached` vs `LastPaneClosed { exit_status }` — that the
+CLI callers format.)
+
+Precedence and degradation:
+
+- The persistent **error line** (a `[status]` config that failed to
+  load, §4.2.1) always outranks the slot: while it holds the row, a
+  notice is refused and degrades to a log line.
+- **No bar row, no notice.** An empty `[status]` config reserves no
+  row, so notices degrade to log lines (`tracing`) instead of painting.
+  This is a documented limitation: configure at least one widget to see
+  transient notices.
+- Notices are client-local and never persist: nothing crosses the wire,
+  and a detach/reattach clears the slot.
 
 ---
 
