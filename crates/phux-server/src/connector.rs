@@ -345,6 +345,7 @@ mod tests {
             relay: relay.to_owned(),
             token_file: token_file.map(PathBuf::from),
             cert_fingerprint: fingerprint.map(str::to_owned),
+            route: None,
         }
     }
 

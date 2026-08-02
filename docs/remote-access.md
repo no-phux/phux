@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-07-21
+last-reviewed: 2026-08-02
 ---
 
 # Remote access over an overlay network
@@ -245,12 +245,28 @@ Set up the route end to end:
    relay = "RELAY_HOST:4433"
    token-file = "/home/me/.local/state/phux/relay-route.token"
    cert-fingerprint = "RELAY_FP"
+   route = "ROUTE"
    ```
 
+   `route` is optional for the connector itself (the tunnel token selects
+   the route relay-side), but recording it lets `phux pair` print a
+   complete relay-fronted connect link in step 4.
 3. Start or restart `phux server`. It supervises every configured connector;
    `--connect RELAY_HOST:4433` selects one exact entry for diagnosis.
-4. Attach the consumer, using the route as TLS SNI and the server's ordinary
-   `phux pair` token as the consumer credential:
+4. Pair and attach the consumer. `phux pair` on the server host now prints,
+   alongside any direct link, one relay connect link per `route`-carrying
+   connector entry — `phux://connect?url=quic://RELAY_HOST:4433&fp=RELAY_FP&sni=ROUTE&token=...`
+   — carrying everything a device needs. From another phux CLI, register
+   the route once and attach by name:
+
+   ```sh
+   phux remote add mini quic://RELAY_HOST:4433 --sni ROUTE \
+     --cert-fingerprint RELAY_FP --token-file ~/.config/phux/mini.token
+   phux attach mini
+   ```
+
+   or hand-wire a one-off attach, using the route as TLS SNI and the
+   server's ordinary `phux pair` token as the consumer credential:
 
    ```sh
    phux attach --quic RELAY_HOST:4433 --tls-server-name ROUTE \

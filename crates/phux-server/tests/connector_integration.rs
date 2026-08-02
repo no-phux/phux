@@ -146,6 +146,7 @@ fn connector_bridges_consumers_rejects_bad_auth_and_redials() {
             relay: relay_addr.to_string(),
             token_file: Some(connector_token.clone()),
             cert_fingerprint: Some(fingerprint.clone()),
+            route: None,
         };
         let cfg = ServerConfig {
             socket_path,

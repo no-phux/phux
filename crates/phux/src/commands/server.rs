@@ -65,6 +65,7 @@ fn select_connectors(
                     relay: relay.to_owned(),
                     token_file: None,
                     cert_fingerprint: None,
+                    route: None,
                 }),
         ],
         None => configured,
@@ -440,6 +441,7 @@ mod tests {
             relay: relay.to_owned(),
             token_file: Some(PathBuf::from(token)),
             cert_fingerprint: Some("AB".to_owned()),
+            route: None,
         }
     }
 

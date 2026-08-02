@@ -477,12 +477,14 @@ pub(crate) fn run_attach_remote(
     };
 
     match endpoint {
+        // The entry's `sni` (a relay route, ADR-0057) rides through as the
+        // TLS server name; `None` keeps the resolved-host default.
         Endpoint::Quic(target) => run_attach_quic(
             session,
             target,
             token,
             entry.cert_fingerprint.clone(),
-            None,
+            entry.sni.clone(),
             rec,
         ),
         Endpoint::Ws(url) => run_attach_ws(
