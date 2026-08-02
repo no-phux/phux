@@ -560,8 +560,9 @@ typedef struct PhuxSearchResult {
  * input only for the call. Returned frame/effect/grid/search/selection buffers
  * are owned by the bridge and remain valid until the next mutable PhuxClient
  * call. Opaque document anchors remain valid until explicitly released or
- * their terminal generation is replaced. count/get/state/last_error are
- * read-only; clear calls are mutable. Outbound caller-provided byte fields must
+ * their terminal generation is replaced. count/get/state/last_error and
+ * terminal_mouse_tracking are read-only and do not invalidate borrowed
+ * pointers; clear calls are mutable. Outbound caller-provided byte fields must
  * not exceed PHUX_CLIENT_MAX_OUTBOUND_BYTES.
  */
 PhuxClientResult phux_client_new(const PhuxClientOptions *options, PhuxClient **out_client);
@@ -579,6 +580,13 @@ size_t phux_client_effect_count(const PhuxClient *client);
 PhuxClientResult phux_client_effect_get(const PhuxClient *client, size_t index, PhuxClientEffect *out_effect);
 PhuxClientResult phux_client_effect_clear(PhuxClient *client);
 PhuxClientResult phux_client_terminal_grid(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxTerminalGridView *out_view);
+/**
+ * Reports whether the published Ghostty terminal has DEC mouse tracking mode
+ * 9, 1000, 1002, or 1003 enabled. Returns PHUX_CLIENT_INVALID_STATE before
+ * publication or after detach, and PHUX_CLIENT_INVALID_ARGUMENT for null or
+ * malformed arguments. This read-only query preserves borrowed bridge views.
+ */
+PhuxClientResult phux_client_terminal_mouse_tracking(const PhuxClient *client, const PhuxTerminalId *terminal_id, bool *out_enabled);
 PhuxClientResult phux_client_send_key(PhuxClient *client, const PhuxTerminalId *terminal_id, const PhuxKeyEvent *event);
 PhuxClientResult phux_client_send_mouse(PhuxClient *client, const PhuxTerminalId *terminal_id, const PhuxMouseEvent *event);
 PhuxClientResult phux_client_send_focus(PhuxClient *client, const PhuxTerminalId *terminal_id, bool focused);

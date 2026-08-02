@@ -5,7 +5,7 @@ use libghostty_vt::render::{CellIterator, CursorVisualStyle, RenderState, RowIte
 use libghostty_vt::screen::CellContentTag;
 use libghostty_vt::selection::Selection;
 use libghostty_vt::style::{RgbColor, StyleColor};
-use libghostty_vt::terminal::{Point, PointCoordinate, ScrollViewport};
+use libghostty_vt::terminal::{Mode, Point, PointCoordinate, ScrollViewport};
 use phux_client_core::engine::ghostty::{GhosttyAdapter, GhosttyReplica};
 use phux_client_core::engine::{DocumentPoint, DocumentSpace, EngineDocumentSelection};
 use phux_client_core::history::{DocumentAnchorId, HistoryCacheConfig, HistoryLoadState};
@@ -216,6 +216,10 @@ impl Client {
             .published(id)
             .map(|published| published.key().clone())
             .ok_or_else(|| BridgeError::state("terminal has no published READY generation"))
+    }
+
+    pub(crate) fn mouse_tracking(&self, id: &TerminalId) -> Result<bool, BridgeError> {
+        Ok(terminal_wants_mouse_tracking(self.terminal(id)?))
     }
 
     pub(crate) fn bump_document_revision(
@@ -1017,6 +1021,17 @@ fn resolve_color(color: StyleColor, fallback: RgbColor, palette: &[RgbColor; 256
     }
 }
 
+fn terminal_wants_mouse_tracking(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
+    [
+        Mode::X10_MOUSE,
+        Mode::NORMAL_MOUSE,
+        Mode::BUTTON_MOUSE,
+        Mode::ANY_MOUSE,
+    ]
+    .into_iter()
+    .any(|mode| terminal.mode(mode).unwrap_or(false))
+}
+
 fn cursor_style(style: CursorVisualStyle) -> u32 {
     match style {
         CursorVisualStyle::Bar => 0,
@@ -1142,5 +1157,20 @@ mod tests {
             resolve_color(StyleColor::Rgb(explicit), cell_foreground, &palette),
             explicit
         );
+    }
+
+    #[test]
+    fn mouse_tracking_follows_decset_1000() {
+        let mut terminal = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
+            cols: 80,
+            rows: 24,
+            max_scrollback: 100,
+        })
+        .expect("terminal");
+        assert!(!terminal_wants_mouse_tracking(&terminal));
+        terminal.vt_write(b"\x1b[?1000h");
+        assert!(terminal_wants_mouse_tracking(&terminal));
+        terminal.vt_write(b"\x1b[?1000l");
+        assert!(!terminal_wants_mouse_tracking(&terminal));
     }
 }

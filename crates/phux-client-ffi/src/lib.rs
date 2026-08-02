@@ -80,6 +80,23 @@ fn with_client_mut(
     }
 }
 
+fn with_client_ref(
+    client: *const PhuxClient,
+    f: impl FnOnce(&Client) -> Result<(), BridgeError>,
+) -> PhuxClientResult {
+    let Some(client_ref) = (unsafe { client.as_ref() }) else {
+        return PhuxClientResult::InvalidArgument;
+    };
+    if client_ref.inner.in_callback {
+        return PhuxClientResult::InvalidState;
+    }
+    match catch_unwind(AssertUnwindSafe(|| f(&client_ref.inner))) {
+        Ok(Ok(())) => PhuxClientResult::Ok,
+        Ok(Err(error)) => error.result,
+        Err(_) => PhuxClientResult::Panic,
+    }
+}
+
 fn invoke_failure(client: *mut PhuxClient, result: PhuxClientResult) -> PhuxClientResult {
     let invocation = {
         let client_ref = unsafe { &mut *client };
@@ -938,6 +955,22 @@ pub unsafe extern "C" fn phux_client_terminal_grid(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_terminal_mouse_tracking(
+    client: *const PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    out_enabled: *mut bool,
+) -> PhuxClientResult {
+    with_client_ref(client, |client| {
+        let out = unsafe { out_enabled.as_mut() }
+            .ok_or_else(|| BridgeError::invalid("out_enabled is null"))?;
+        let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
+        let enabled = client.mouse_tracking(&terminal_id)?;
+        *out = enabled;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_send_key(
     client: *mut PhuxClient,
     terminal_id: *const PhuxTerminalId,
@@ -1716,6 +1749,131 @@ mod tests {
         );
         let client_ref = unsafe { &*client };
         assert_eq!(client_ref.inner.owned_effects.len(), effects_before);
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
+    fn mouse_tracking_getter_uses_published_dec_modes_and_preserves_borrows() {
+        let terminal_id = phux_protocol::TerminalId::local(7);
+        let c_terminal_id = PhuxTerminalId {
+            kind: 0,
+            id: 7,
+            host: PhuxBytes::default(),
+        };
+        let stream_id = phux_protocol::StreamId::new(1).expect("stream");
+        let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
+        let authorized = [terminal_id.clone()];
+        let client = boxed_client();
+        let inner = unsafe { &mut (*client).inner };
+        inner.protocol_ready = true;
+        inner.attach_queued = true;
+        apply_kernel_input(
+            inner,
+            KernelInput::AttachStarted {
+                attach_id: 7,
+                terminals: &authorized,
+            },
+        )
+        .expect("start attach");
+        apply_kernel_input(
+            inner,
+            KernelInput::BootstrapBegin {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+                geometry: CanonicalGeometry::new(80, 24).expect("geometry"),
+                base_seq: 0,
+            },
+        )
+        .expect("begin bootstrap");
+        apply_kernel_input(
+            inner,
+            KernelInput::BootstrapChunk {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: b"\x1b[?1000h",
+            },
+        )
+        .expect("set DEC mouse mode");
+        apply_kernel_input(
+            inner,
+            KernelInput::BootstrapReady {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        )
+        .expect("publish terminal");
+        inner.attach_queued = false;
+        inner.attached = true;
+        inner.selection_buf.extend_from_slice(b"borrowed");
+        let borrowed = inner.selection_buf.as_ptr();
+
+        let mut enabled = false;
+        assert_eq!(
+            unsafe { phux_client_terminal_mouse_tracking(client, &c_terminal_id, &mut enabled) },
+            PhuxClientResult::Ok
+        );
+        assert!(enabled);
+        assert_eq!(unsafe { &*client }.inner.selection_buf.as_ptr(), borrowed);
+
+        apply_kernel_input(
+            unsafe { &mut (*client).inner },
+            KernelInput::TerminalOutput {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq: 1,
+                payload: b"\x1b[?1000l",
+            },
+        )
+        .expect("reset DEC mouse mode");
+        assert_eq!(
+            unsafe { phux_client_terminal_mouse_tracking(client, &c_terminal_id, &mut enabled) },
+            PhuxClientResult::Ok
+        );
+        assert!(!enabled);
+
+        assert_eq!(
+            unsafe { phux_client_terminal_mouse_tracking(client, &c_terminal_id, ptr::null_mut()) },
+            PhuxClientResult::InvalidArgument
+        );
+        assert_eq!(
+            unsafe { phux_client_terminal_mouse_tracking(client, ptr::null(), &mut enabled,) },
+            PhuxClientResult::InvalidArgument
+        );
+        let unknown_id = PhuxTerminalId {
+            id: 8,
+            ..c_terminal_id
+        };
+        assert_eq!(
+            unsafe { phux_client_terminal_mouse_tracking(client, &unknown_id, &mut enabled) },
+            PhuxClientResult::InvalidState
+        );
+        assert_eq!(
+            unsafe {
+                phux_client_terminal_mouse_tracking(ptr::null(), &c_terminal_id, &mut enabled)
+            },
+            PhuxClientResult::InvalidArgument
+        );
+        unsafe { &mut *client }.inner.in_callback = true;
+        enabled = true;
+        assert_eq!(
+            unsafe { phux_client_terminal_mouse_tracking(client, &c_terminal_id, &mut enabled) },
+            PhuxClientResult::InvalidState
+        );
+        assert!(enabled);
+        unsafe { &mut *client }.inner.in_callback = false;
+        unsafe { &mut *client }.inner.detached = true;
+        assert_eq!(
+            unsafe { phux_client_terminal_mouse_tracking(client, &c_terminal_id, &mut enabled) },
+            PhuxClientResult::InvalidState
+        );
+        assert!(enabled);
         unsafe { phux_client_free(client) };
     }
 }
