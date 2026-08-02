@@ -340,7 +340,8 @@ fn snapshot_plus_output_reconstructs_server_grid_across_resize() {
         // The debounced resync snapshot (RESIZE_RESYNC_DEBOUNCE = 50ms) can
         // land after the sentinel. Poll past the debounce, sweeping every
         // trailing byte — including that resync snapshot — into the tail.
-        for _ in 0..40 {
+        // 15 x 10ms covers the 50ms debounce three times over.
+        for _ in 0..15 {
             tail.extend_from_slice(&drain_pending(&mut rx));
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

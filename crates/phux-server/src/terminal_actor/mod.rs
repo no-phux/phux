@@ -5827,13 +5827,22 @@ mod tests {
                 let token = bundle.token;
                 let join = tokio::task::spawn_local(bundle.actor.run());
 
+                // The same degenerate shapes as the deterministic unit repro
+                // (`resize_desync_then_both_shrink_does_not_overflow`): zeros,
+                // 1x1 collapses, extreme aspect ratios, a big grow spiked
+                // straight into a both-shrink. The spike is 300x300 rather
+                // than the unit test's 1000x1000: what this test pins is that
+                // the ACTOR survives the storm and keeps processing, and a
+                // 90k-cell grid exercises that identically to a 1M-cell one
+                // at a tenth of the allocation/walk cost. The magnitude
+                // extreme stays covered by the unit repro.
                 let storm: &[(u16, u16)] = &[
                     (0, 0),
                     (1, 1),
                     (1, 200),
                     (200, 1),
                     (0, 0),
-                    (1000, 1000),
+                    (300, 300),
                     (1, 1),
                     (3, 3),
                     (2, 2),
@@ -5908,8 +5917,13 @@ mod tests {
         })
         .expect("term");
         // Enough scrollback content that a cols-reflow actually walks rows
-        // (the overflow needs real content to reflow).
-        for i in 0..300u32 {
+        // (the overflow needs real content to reflow). 50 lines of ~38 cols
+        // is ample: at the storm's 1-col degenerate width every line reflows
+        // to ~38 rows, far past the 24-row viewport and into scrollback, so
+        // the both-shrink steps still drive `PageList.resizeCols` through
+        // real reflow work. The original 300 bought no extra coverage, only
+        // seconds of wall clock re-reflowing the same shape.
+        for i in 0..50u32 {
             let line = format!("row-{i}-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n");
             term.vt_write(line.as_bytes());
         }
@@ -5930,7 +5944,11 @@ mod tests {
             (100, 30),
         ];
         for &(req_cols, req_rows) in storm {
-            for i in 0..40u32 {
+            // 8 fresh lines per step keeps every resize reflowing content
+            // written at the PREVIOUS geometry — the desync ingredient —
+            // without the volume of the original 40, which only re-walked
+            // the same reflow path more times per step.
+            for i in 0..8u32 {
                 let line = format!("interleave-{i}-bbbbbbbbbbbbbbbbbbbbbbbbbbbb\r\n");
                 term.vt_write(line.as_bytes());
             }

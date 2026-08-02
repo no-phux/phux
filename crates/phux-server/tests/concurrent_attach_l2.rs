@@ -6,7 +6,7 @@
 //!   (grid cursor position, `shell_state`)
 //! - Both event subscriptions receive the same events in the same order
 //! - No duplication: each event appears exactly once per subscription
-//! - No lag: `GetTerminalState` latency < 200ms for both clients
+//! - No lag: `GetTerminalState` replies arrive for both clients
 //! - No corruption: `TerminalState.seq` increases monotonically
 //!
 //! **Status:** Scaffolded for future L2 implementation. Wire discriminants for
@@ -26,7 +26,8 @@
 //! - Each client receives `ATTACHED` frame with a `SessionSnapshot`
 //! - Each client receives `TERMINAL_SNAPSHOT` with seeded pane VT replay bytes
 //! - Assertion: Both snapshots carry identical grid dimensions (80x24) and replay bytes
-//! - Assertion: Attach latency < 200ms for both clients (no excessive lag)
+//! - Assertion: Both attaches complete (hang detection via recv timeouts,
+//!   no wall-clock ceiling — perf gates live in the perf lane)
 //! - Status: ✓ Complete, drives L1 foundation that L2 layers atop
 //!
 //! **Phase 2: L2 State Query (BLOCKED)**
@@ -310,18 +311,14 @@ fn concurrent_attach_l2_identical_state() {
         };
 
         // ============================================================
-        // Assertions: Phase 1 — Attach handshake latency
+        // Assertions: Phase 1 — Attach handshake completed
         // ============================================================
 
-        // No excessive lag (both should attach within 200ms)
-        assert!(
-            latency_a < 200,
-            "client_A attach took {latency_a}ms (should be <200ms)",
-        );
-        assert!(
-            latency_b < 200,
-            "client_B attach took {latency_b}ms (should be <200ms)",
-        );
+        // No wall-clock ceiling here: per the repo's timing philosophy
+        // (see common/mod.rs on WIRE_RECV_TIMEOUT), latency gates live in
+        // the perf lane; a hard 200ms assert on a loaded runner flaked as
+        // phux-br1f. Hang detection is recv_typed's own timeout. The
+        // measured latencies still print below for eyeballing.
 
         assert_eq!(
             terminal_id_a, terminal_id_b,
@@ -371,11 +368,13 @@ fn concurrent_attach_l2_identical_state() {
         // Assertions: Phase 4 — Event Verification
         // ============================================================
 
-        // Give the subscriptions time to settle and collect any background events
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Give the subscriptions time to settle and collect any background
+        // events. Pure padding, not a race guard: the assertions below hold
+        // for whatever (possibly zero) events arrive in the window.
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Collect events from both subscriptions with a 500ms window
-        let deadline = Instant::now() + Duration::from_millis(500);
+        // Collect events from both subscriptions with a short window
+        let deadline = Instant::now() + Duration::from_millis(200);
         let collect_a = async {
             let mut events = Vec::new();
             while let Some(evt) = read_terminal_event(&mut stream_a, deadline).await {

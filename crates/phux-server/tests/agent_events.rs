@@ -52,16 +52,21 @@ fn seed_with_title_bell_then_exit() -> CommandBuilder {
     cmd
 }
 
-/// Drain `EVENT` frames until each of `title_changed`, `bell`, and
-/// `pane_closed` has been seen, or `deadline` elapses. Non-`EVENT` frames
+/// Drain `EVENT` frames until `complete(&seen)` says every event the caller
+/// is waiting on has arrived, or `deadline` elapses. Non-`EVENT` frames
 /// (`ATTACHED`, `TERMINAL_SNAPSHOT`, `TERMINAL_OUTPUT`, `TERMINAL_CLOSED`,
 /// etc.) are skipped — we assert on the event stream specifically.
-async fn collect_events(stream: &mut UnixStream, deadline: Duration) -> Vec<AgentEvent> {
+///
+/// The stop condition is the caller's, not a hardcoded title+bell+closed
+/// triple: a test that only ever receives `pane_closed` would otherwise sit
+/// out the full deadline waiting for events that can never come.
+async fn collect_events(
+    stream: &mut UnixStream,
+    deadline: Duration,
+    complete: impl Fn(&[AgentEvent]) -> bool,
+) -> Vec<AgentEvent> {
     let end = tokio::time::Instant::now() + deadline;
     let mut seen = Vec::new();
-    let mut saw_title = false;
-    let mut saw_bell = false;
-    let mut saw_closed = false;
     loop {
         let remaining = end.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
@@ -71,14 +76,8 @@ async fn collect_events(stream: &mut UnixStream, deadline: Duration) -> Vec<Agen
             return seen;
         };
         if let FrameKind::Event { event, .. } = frame {
-            match &event {
-                AgentEvent::TitleChanged { .. } => saw_title = true,
-                AgentEvent::Bell => saw_bell = true,
-                AgentEvent::PaneClosed { .. } => saw_closed = true,
-                _ => {}
-            }
             seen.push(event);
-            if saw_title && saw_bell && saw_closed {
+            if complete(&seen) {
                 return seen;
             }
         }
@@ -118,7 +117,15 @@ fn subscribed_client_receives_title_bell_and_pane_closed_events() {
         send_frame(&mut stream, &FrameKind::SubscribeEvents { terminal: None }).await;
 
         // ---- collect EVENT frames ----
-        let events = collect_events(&mut stream, Duration::from_secs(3)).await;
+        let events = collect_events(&mut stream, Duration::from_secs(3), |seen| {
+            seen.iter()
+                .any(|e| matches!(e, AgentEvent::TitleChanged { .. }))
+                && seen.iter().any(|e| matches!(e, AgentEvent::Bell))
+                && seen
+                    .iter()
+                    .any(|e| matches!(e, AgentEvent::PaneClosed { .. }))
+        })
+        .await;
 
         assert!(
             events
@@ -173,7 +180,14 @@ fn unattached_subscriber_receives_events() {
         // NO ATTACH. Subscribe server-wide straight away.
         send_frame(&mut stream, &FrameKind::SubscribeEvents { terminal: None }).await;
 
-        let events = collect_events(&mut stream, Duration::from_secs(3)).await;
+        // `pane_closed` is the ONLY event this seed produces, so it is also
+        // the stop condition — the collector returns the moment it lands
+        // instead of sitting out the full deadline.
+        let events = collect_events(&mut stream, Duration::from_secs(3), |seen| {
+            seen.iter()
+                .any(|e| matches!(e, AgentEvent::PaneClosed { .. }))
+        })
+        .await;
         assert!(
             events
                 .iter()
@@ -189,42 +203,6 @@ fn unattached_subscriber_receives_events() {
             .expect("server join")
             .expect("server run_async ok");
     });
-}
-
-/// Drain `EVENT` frames until `command_started`, `command_finished`, and
-/// `cwd_changed` have all been seen, the pane closes (nothing further can
-/// arrive), or `deadline` elapses.
-async fn collect_command_and_cwd_events(
-    stream: &mut UnixStream,
-    deadline: Duration,
-) -> Vec<AgentEvent> {
-    let end = tokio::time::Instant::now() + deadline;
-    let mut seen = Vec::new();
-    let mut saw_started = false;
-    let mut saw_finished = false;
-    let mut saw_cwd = false;
-    loop {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return seen;
-        }
-        let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            return seen;
-        };
-        if let FrameKind::Event { event, .. } = frame {
-            let closed = matches!(event, AgentEvent::PaneClosed { .. });
-            match &event {
-                AgentEvent::CommandStarted => saw_started = true,
-                AgentEvent::CommandFinished { .. } => saw_finished = true,
-                AgentEvent::CwdChanged { .. } => saw_cwd = true,
-                _ => {}
-            }
-            seen.push(event);
-            if (saw_started && saw_finished && saw_cwd) || closed {
-                return seen;
-            }
-        }
-    }
 }
 
 /// phux-foz.4: a subscribed client receives `command_started`,
@@ -265,11 +243,23 @@ fn subscribed_client_receives_command_and_cwd_events() {
         send_frame(&mut stream, &FrameKind::SubscribeEvents { terminal: None }).await;
 
         // Drain EVENT frames until all three targets are seen, or the
-        // pane closes (no further events can follow), or the deadline
-        // elapses. A dedicated collector rather than `collect_events`
-        // because that helper only early-returns on title/bell/closed and
-        // would read into the server's post-exit socket teardown.
-        let events = collect_command_and_cwd_events(&mut stream, Duration::from_secs(4)).await;
+        // pane closes (no further events can follow, and reading on would
+        // run into the server's post-exit socket teardown), or the
+        // deadline elapses.
+        let events = collect_events(&mut stream, Duration::from_secs(4), |seen| {
+            let saw_all = seen.iter().any(|e| matches!(e, AgentEvent::CommandStarted))
+                && seen
+                    .iter()
+                    .any(|e| matches!(e, AgentEvent::CommandFinished { .. }))
+                && seen
+                    .iter()
+                    .any(|e| matches!(e, AgentEvent::CwdChanged { .. }));
+            saw_all
+                || seen
+                    .iter()
+                    .any(|e| matches!(e, AgentEvent::PaneClosed { .. }))
+        })
+        .await;
 
         assert!(
             events

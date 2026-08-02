@@ -1431,7 +1431,9 @@ fn spawn_terminal_inherits_focused_pane_live_cwd() {
         );
 
         // Give the seed shell a beat to run its `cd` before we query it.
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // 75ms is plenty: the shell is already spawned by the time ATTACH
+        // returns, and the cd is its first command.
+        tokio::time::sleep(Duration::from_millis(75)).await;
 
         // SPAWN_TERMINAL with cwd UNSET and a command that prints its
         // CWD. With inherit-focused, the server seeds the new pane's
@@ -1601,8 +1603,8 @@ fn spawn_terminal_session_root_inherits_seed_pane_dir() {
             "expected TERMINAL_SNAPSHOT",
         );
 
-        // Give the seed shell a beat to run its `cd`.
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // Give the seed shell a beat to run its `cd` (75ms: see above).
+        tokio::time::sleep(Duration::from_millis(75)).await;
 
         // SPAWN_TERMINAL, cwd unset, command prints its CWD. Under
         // session-root the server seeds the new pane from the seed pane's
@@ -1691,7 +1693,8 @@ fn spawn_terminal_last_cwd_per_window_inherits_active_pane_dir() {
             "expected TERMINAL_SNAPSHOT",
         );
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // Give the seed shell a beat to run its `cd` (75ms: see above).
+        tokio::time::sleep(Duration::from_millis(75)).await;
 
         send_frame(
             &mut stream,

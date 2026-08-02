@@ -76,10 +76,11 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
 
         // Give the test time to attach before the marker is printed, so the
         // marker lands strictly as a post-attach live delta rather than in
-        // the snapshot.
+        // the snapshot. Attach completes in well under 100 ms; 0.5 s keeps
+        // margin for a loaded 2-core CI runner.
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.arg("-c");
-        cmd.arg("sleep 1; printf PHUX3UVACKMARKER; sleep 30");
+        cmd.arg("sleep 0.5; printf PHUX3UVACKMARKER; sleep 30");
 
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), "default", cmd);
@@ -95,7 +96,7 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
         );
 
         // Drain the snapshot. It must NOT carry the marker (printed only
-        // after the 1s sleep, i.e. after attach + prime).
+        // after the 0.5s sleep, i.e. after attach + prime).
         let (snap_tb, snap) = recv_typed(&mut stream).await;
         if snap_tb == TYPE_TERMINAL_SNAPSHOT
             && let FrameKind::TerminalSnapshot {
@@ -161,13 +162,13 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
         )
         .await;
 
-        // Phase 3: drain for well past many emission intervals. The marker
-        // must NOT be re-delivered: each PTY byte is emitted once and the
-        // ack does not perturb the stream. (Under the broadcast pump the
-        // marker is a single chunk; the assertion would also catch a
-        // double-emitting build.)
+        // Phase 3: drain for well past many emission intervals (~25 ticks
+        // at the 30ms cadence). The marker must NOT be re-delivered: each
+        // PTY byte is emitted once and the ack does not perturb the stream.
+        // (Under the broadcast pump the marker is a single chunk; the
+        // assertion would also catch a double-emitting build.)
         let mut post_ack: Vec<u8> = Vec::new();
-        let drain_deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+        let drain_deadline = tokio::time::Instant::now() + Duration::from_millis(800);
         while tokio::time::Instant::now() < drain_deadline {
             let remaining = drain_deadline - tokio::time::Instant::now();
             match timeout(remaining, recv_typed(&mut stream)).await {

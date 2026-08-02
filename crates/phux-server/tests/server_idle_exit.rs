@@ -38,7 +38,11 @@ use crate::common::{SOCKET_CONNECT_DEADLINE, run_local, wait_for_socket};
 /// exit, once proving no exit), and long enough that the `LocalSet`'s startup
 /// ramp — bind, seed a real PTY, spawn the actor — cannot itself consume the
 /// budget on a loaded machine before the first assertion is even set up.
-const IDLE_LIMIT: Duration = Duration::from_millis(400);
+/// The clock arms at `SharedState::new`, i.e. before the bind, so the ramp
+/// genuinely spends this budget: 200 ms keeps several multiples of headroom
+/// over a ramp that measures in tens of milliseconds even on a busy 2-core
+/// runner (and `wait_for_socket` connects within ~5 ms of the bind).
+const IDLE_LIMIT: Duration = Duration::from_millis(200);
 
 /// Ceiling on "the server noticed it was idle and stopped", as a HANG
 /// detector rather than a timing gate.
@@ -56,9 +60,9 @@ const IDLE_EXIT_HANG_CEILING: Duration = Duration::from_secs(30);
 ///
 /// Must be comfortably longer than `IDLE_LIMIT` so the window genuinely
 /// covers the interval a flagged server would have exited in; the multiple
-/// is what makes "it did not exit" mean "it does not exit" rather than "we
-/// did not wait".
-const NO_LIFETIME_OBSERVATION: Duration = Duration::from_secs(3);
+/// (4x here, on top of the watchdog's 50 ms re-check floor) is what makes
+/// "it did not exit" mean "it does not exit" rather than "we did not wait".
+const NO_LIFETIME_OBSERVATION: Duration = Duration::from_millis(800);
 
 /// Build a PTY-seeded server config whose seed pane runs `sh -c <script>`.
 /// Mirrors `server_self_exit.rs`'s helper: a real PTY child, because the

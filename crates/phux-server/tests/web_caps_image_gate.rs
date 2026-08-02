@@ -61,7 +61,9 @@ const fn web_profile_caps() -> ClientCapabilities {
 /// replay), then print the three image-protocol escapes bracketed by text
 /// markers, then idle so the pane stays alive through teardown.
 fn image_burst_command() -> CommandBuilder {
-    let script = "sleep 1; \
+    // Attach completes in well under 100 ms; the 0.5 s lead keeps margin
+    // for a loaded 2-core CI runner without stalling every run a full second.
+    let script = "sleep 0.5; \
          printf 'IMG_BEGIN\\r\\n'; \
          printf '\\033_Ga=T,f=100,s=1,v=1;QUJDRA==\\033\\\\'; \
          printf '\\033Pq#0;2;0;0;0#0~~@@~~$\\033\\\\'; \

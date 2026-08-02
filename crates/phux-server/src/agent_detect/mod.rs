@@ -82,7 +82,34 @@ const IDENTIFY_ACQUIRE_POLL: Duration = Duration::from_millis(500);
 /// Anchored at identification rather than at actor construction. A pane's seed
 /// command is a shell; the agent is typed into it later, so an anchor at
 /// construction expires before the agent that needs guarding even exists.
+///
+/// This is the production value; [`startup_grace`] is what `tick` consults,
+/// so the integration tests can shrink the window without waiting out real
+/// seconds of wall clock per positive case.
 const STARTUP_GRACE: Duration = Duration::from_secs(3);
+
+/// Test seam: override [`STARTUP_GRACE`] in milliseconds.
+///
+/// Follows the module's existing env-var idiom (`PHUX_AGENT_DETECT`,
+/// `PHUX_AGENT_RULES_DIR` in `rules`). Integration tests set this to a few
+/// hundred milliseconds so a positive detection does not sit out a real 3 s
+/// splash-screen window per test; production never sets it, so the default
+/// stays exactly [`STARTUP_GRACE`].
+const ENV_STARTUP_GRACE_MS: &str = "PHUX_AGENT_STARTUP_GRACE_MS";
+
+/// The effective startup grace: [`STARTUP_GRACE`] unless
+/// [`ENV_STARTUP_GRACE_MS`] overrides it. Read once per process — the value
+/// is consulted on every detector tick, and the env cannot change under a
+/// running server.
+fn startup_grace() -> Duration {
+    static GRACE: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *GRACE.get_or_init(|| {
+        std::env::var(ENV_STARTUP_GRACE_MS)
+            .ok()
+            .and_then(|ms| ms.parse::<u64>().ok())
+            .map_or(STARTUP_GRACE, Duration::from_millis)
+    })
+}
 /// Consecutive `idle` derivations required to release a `working` badge
 /// absent positive idle evidence.
 const IDLE_CONFIRMATIONS: u8 = 3;
@@ -340,7 +367,7 @@ impl AgentDetector {
         //    so it covers the agent a human typed at a shell prompt — the
         //    common case — and not merely the pane's seed command.
         let anchor = self.identified_at.unwrap_or(self.started);
-        if now < anchor + STARTUP_GRACE {
+        if now < anchor + startup_grace() {
             return DetectOutcome::Quiet;
         }
 

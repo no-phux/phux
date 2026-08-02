@@ -91,12 +91,12 @@ fn live_output_is_delivered_exactly_once() {
 
         // Drain live TERMINAL_OUTPUT for well past many tick intervals
         // (tick = 30ms). A double-emitting tick would re-paint the dirty
-        // grid every 30ms, so over a ~1.5s window a regression yields
-        // dozens of extra marker copies. A correct (gated) build yields
-        // ZERO extra: the broadcast pump emits the PTY bytes once and the
-        // gated tick stays silent.
+        // grid every 30ms, so over a ~0.8s window (~25 ticks) a regression
+        // yields dozens of extra marker copies. A correct (gated) build
+        // yields ZERO extra: the broadcast pump emits the PTY bytes once
+        // and the gated tick stays silent.
         let mut output_acc: Vec<u8> = Vec::new();
-        let drain_deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+        let drain_deadline = tokio::time::Instant::now() + Duration::from_millis(800);
         while tokio::time::Instant::now() < drain_deadline {
             let remaining = drain_deadline - tokio::time::Instant::now();
             match timeout(remaining, recv_typed(&mut stream)).await {

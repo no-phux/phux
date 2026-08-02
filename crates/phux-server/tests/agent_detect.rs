@@ -43,10 +43,36 @@ use crate::common::{
     spawn_server_with_seed_cmd, wait_for_socket,
 };
 
-/// How long to wait for a detector verdict. Generous: the detector holds a
-/// 3 s startup grace (so an agent's splash screen cannot flash `blocked`),
-/// then ticks at 300 ms.
-const DETECT_DEADLINE: Duration = Duration::from_secs(12);
+/// The startup grace these tests run under, via the detector's
+/// `PHUX_AGENT_STARTUP_GRACE_MS` seam (production default: 3 s). The grace
+/// exists so a real agent's splash screen cannot flash `blocked`; the fake
+/// agent here paints its dialog instantly, so a short grace changes nothing
+/// about what is being proven and saves >=3 s of pure waiting per test.
+const TEST_STARTUP_GRACE: Duration = Duration::from_millis(200);
+
+/// The detector's unidentified-pane tick floor (`TICK_UNIDENTIFIED`),
+/// restated for the negative test's window arithmetic.
+const TICK_UNIDENTIFIED: Duration = Duration::from_millis(500);
+
+/// How long to wait for a detector verdict. A failure ceiling, not a timing
+/// gate: with the shortened grace a verdict lands within ~1 s, and this only
+/// elapses in full when the detector never publishes at all.
+const DETECT_DEADLINE: Duration = Duration::from_secs(8);
+
+/// Shrink the detector's startup grace for this test process. Must run
+/// before the server (and therefore any detector) is spawned; the override
+/// is read once per process.
+fn shorten_startup_grace() {
+    // SAFETY-adjacent: `set_var` is unsafe on edition 2024 because of
+    // concurrent env access; nextest runs each test in its own process and
+    // this runs before the server thread exists.
+    unsafe {
+        std::env::set_var(
+            "PHUX_AGENT_STARTUP_GRACE_MS",
+            TEST_STARTUP_GRACE.as_millis().to_string(),
+        );
+    }
+}
 
 /// Write an executable fake agent named `claude` into `dir`, and return its
 /// path.
@@ -144,6 +170,7 @@ async fn collect_agent_record(
 /// `phux agent set`.
 #[test]
 fn detector_publishes_blocked_from_a_live_prompt_box() {
+    shorten_startup_grace();
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
@@ -213,6 +240,7 @@ fn detector_publishes_blocked_from_a_live_prompt_box() {
 /// honest: an unidentified pane is not an idle agent, it is *not an agent*.
 #[test]
 fn a_plain_shell_pane_never_gets_an_agent_record() {
+    shorten_startup_grace();
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
@@ -244,8 +272,11 @@ fn a_plain_shell_pane_never_gets_an_agent_record() {
         )
         .await;
 
-        // Well past the startup grace plus several detector ticks.
-        let record = collect_agent_record(&mut stream, &terminal, Duration::from_secs(6)).await;
+        // Well past the (shortened) startup grace plus two unidentified-pane
+        // detector ticks: had the shell been (wrongly) identified, the grace
+        // would have expired and a publish landed well inside this window.
+        let absence_window = TEST_STARTUP_GRACE + TICK_UNIDENTIFIED * 2;
+        let record = collect_agent_record(&mut stream, &terminal, absence_window).await;
         assert!(
             record.is_none(),
             "a pane with no agent in its foreground process group must never get a \
@@ -273,6 +304,7 @@ fn a_plain_shell_pane_never_gets_an_agent_record() {
 /// Reachable from the shipped CLI: `phux agent clear`.
 #[test]
 fn deleting_the_record_hands_it_back_to_the_detector() {
+    shorten_startup_grace();
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
@@ -350,6 +382,7 @@ fn deleting_the_record_hands_it_back_to_the_detector() {
 /// to work did not.
 #[test]
 fn an_identity_only_set_gets_its_state_filled_in_by_the_detector() {
+    shorten_startup_grace();
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");

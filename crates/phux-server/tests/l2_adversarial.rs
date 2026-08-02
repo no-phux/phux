@@ -317,8 +317,10 @@ fn test_subscribe_events_ordered() {
 
         println!("✓ phase 3 (event subscription): collecting events...");
 
-        // Collect events for 500ms
-        let deadline = Instant::now() + Duration::from_millis(500);
+        // Collect events for a short window. Pure padding, not a race
+        // guard: the ordering assertion below holds for whatever (possibly
+        // zero) events the idle seed shell emits.
+        let deadline = Instant::now() + Duration::from_millis(200);
         let mut events = Vec::new();
         while let Some(evt) = read_event(&mut stream, deadline).await {
             events.push(evt);
@@ -362,7 +364,7 @@ fn test_subscribe_events_ordered() {
 ///
 /// **Scenario:**
 /// 1. Client subscribes
-/// 2. Client collects events with a 2s deadline
+/// 2. Client collects events for a short window
 /// 3. Client asserts no dropped events
 ///
 /// **Assertion:**
@@ -389,7 +391,10 @@ fn test_subscribe_events_no_loss() {
 
         println!("✓ phase 3 (event loss detection): collecting events...");
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // Pure padding, not a race guard: the idle seed shell has no shell
+        // integration, so the pairing assertion below holds for whatever
+        // (possibly zero) events arrive in the window.
+        let deadline = Instant::now() + Duration::from_millis(500);
         let mut events = Vec::new();
         loop {
             if let Some(evt) = read_event(&mut stream, deadline).await {
@@ -472,7 +477,9 @@ fn test_concurrent_subscription_isolation() {
 
         println!("✓ phase 3 (event collection): collecting from both subscriptions...");
 
-        let deadline = Instant::now() + Duration::from_millis(500);
+        // Pure padding, not a race guard: the consistency assertions below
+        // hold for whatever (possibly zero) events arrive in the window.
+        let deadline = Instant::now() + Duration::from_millis(200);
 
         let agent_a = async {
             let mut events = Vec::new();
