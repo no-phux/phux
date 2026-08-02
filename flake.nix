@@ -90,9 +90,16 @@
 
           env.RUST_BACKTRACE = "1";
 
-          shellHook = ''
-            echo "phux dev shell — $(rustc --version)"
-          '';
+          # Ghostty's Darwin build resolves Xcode tools such as `nmedit`
+          # through xcrun. The nix cc hook's SDK-only DEVELOPER_DIR hides the
+          # installed Xcode toolchain, so match Ghostty's dev shell and unset it.
+          shellHook =
+            pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              unset DEVELOPER_DIR
+            ''
+            + ''
+              echo "phux dev shell — $(rustc --version)"
+            '';
         };
 
         formatter = pkgs.nixfmt-rfc-style;
