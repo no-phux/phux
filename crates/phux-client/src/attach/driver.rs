@@ -123,6 +123,13 @@ pub(super) struct PaneSlot {
     /// "the wheel"), or `None` when the pane is `Open`. Compared against the
     /// driver's own `ClientId` to render "you" vs another client.
     pub input_holder: Option<ClientId>,
+    /// phux-i0e8.2.1: `true` once this slot has folded at least one
+    /// `TerminalControl` event. The first one a slot sees is the
+    /// attach-time initial state (the server re-states the lease on
+    /// subscribe) and must NOT raise the input-authority status-bar
+    /// notice; only later holder changes are transitions worth calling
+    /// out.
+    pub control_seen: bool,
     /// `true` while the client-local viewport is (possibly) scrolled up into
     /// scrollback — set by wheel / copy-mode scrolls, cleared when a key press
     /// headed for the pane snaps the viewport back to the live screen (tmux
@@ -206,6 +213,7 @@ impl PaneSlot {
             // these — a pane that exists before its control state is benign.
             lifecycle: TerminalLifecycle::Running,
             input_holder: None,
+            control_seen: false,
             viewport_scrolled: false,
             attention: false,
             sync_output_since: None,
@@ -2728,6 +2736,31 @@ async fn main_loop<W: super::RenderSink>(
                                 repaint.raise_chrome();
                             }
                         }
+                        // phux-i0e8.2.1: drain the frame's transient notices
+                        // into the painter's newest-wins slot; expiry rides
+                        // the 1 s status_tick arm below. With no bar to paint
+                        // on (no painter, an empty bar, or the persistent
+                        // error line holding the row — the painter refuses
+                        // those itself) the notice degrades to a tracing
+                        // line rather than vanishing.
+                        if !outcome.notices.is_empty() {
+                            let now = std::time::Instant::now();
+                            let mut notice_shown = false;
+                            for notice in outcome.notices {
+                                if let Some(sb) = status_bar.as_mut() {
+                                    notice_shown |= sb.set_notice(notice, now);
+                                } else {
+                                    tracing::info!(
+                                        severity = ?notice.severity,
+                                        text = %notice.text,
+                                        "status-bar notice dropped: no status bar configured",
+                                    );
+                                }
+                            }
+                            if notice_shown && !overlays.is_active() {
+                                repaint.raise_chrome();
+                            }
+                        }
                         // phux-3uv / ADR-0018: ack the applied TERMINAL_OUTPUT
                         // so the server's per-consumer SnapshotSynthesizer
                         // clears the dirty bits that produced this frame
@@ -3386,6 +3419,14 @@ async fn main_loop<W: super::RenderSink>(
             // `poll_interval`. Paints in place — no pane re-render, no
             // full-screen redraw.
             () = status_tick => {
+                // phux-i0e8.2.1: expire the transient notice on the tick that
+                // carries the bar's repaint cadence. The clear invalidates the
+                // painter's cache, so the paint below restores the widget row.
+                // Runs even while an overlay is up (the bar repaints on
+                // overlay dismiss, and a stale notice must not resurface).
+                if let Some(sb) = status_bar.as_mut() {
+                    let _ = sb.clear_expired_notice(std::time::Instant::now());
+                }
                 // phux-5ke.4: an overlay above the bar would get
                 // partially overwritten by the bar paint; skip ticks
                 // while a modal is up.

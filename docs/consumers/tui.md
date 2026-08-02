@@ -2032,6 +2032,44 @@ The shared/directed-focus proposals tracked as `phux-oih5.10` and
 `phux-oih5.17` are superseded by accepted ADR-0049: topology may be shared,
 but focus authority and advisory attention navigation remain client-local.
 
+### 8.7 Transient notices
+
+Some lifecycle events deserve a moment of visibility but no persistent
+chrome. The bar has a single **transient notice slot** for them: a
+full-row message (reverse video; warnings additionally bold) that takes
+the bar row over from the widgets for about **7 seconds**, then expires
+on the bar's existing 1-second refresh tick and the widget row returns.
+The slot is **newest-wins** — a fresh notice replaces the current one
+and restarts the clock; nothing queues.
+
+Current producers:
+
+- **Input-authority handovers** (ADR-0033). When the *focused* pane's
+  input lease moves — another client takes or releases the wheel — an
+  info notice calls out the transition (`input: c9 took the wheel`,
+  `input: wheel released`). The persistent `WHEEL:*` badge (same
+  client-id spelling) keeps showing the steady state; the notice marks
+  the moment it changed. The lease state the server re-states at attach
+  time is not a transition and raises no notice, and neither do
+  handovers on unfocused panes.
+- **Degraded federation.** When a hub announces that a satellite became
+  unreachable (a spontaneous, uncorrelated `ERROR
+  { SATELLITE_UNREACHABLE }`), a warn notice reports it (`federation
+  degraded: ...`). This is the in-TUI view of the same state `phux
+  status` reports on the CLI.
+
+Precedence and degradation:
+
+- The persistent **error line** (a `[status]` config that failed to
+  load, §4.2.1) always outranks the slot: while it holds the row, a
+  notice is refused and degrades to a log line.
+- **No bar row, no notice.** An empty `[status]` config reserves no
+  row, so notices degrade to log lines (`tracing`) instead of painting.
+  This is a documented limitation: configure at least one widget to see
+  transient notices.
+- Notices are client-local and never persist: nothing crosses the wire,
+  and a detach/reattach clears the slot.
+
 ---
 
 ## 9. Hooks

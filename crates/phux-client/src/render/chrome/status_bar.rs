@@ -215,6 +215,43 @@ pub fn render_status_bar<W: Write>(
     write_buffer(out, &buffer, row_index, x, cols)
 }
 
+/// phux-9vf: the persistent error strip's style — reverse video + bold,
+/// so the diagnostic reads as an alarm strip rather than blending into
+/// normal chrome.
+fn alarm_style() -> Style {
+    Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+}
+
+/// phux-i0e8.2.1: compose `message` into a fresh 1-row [`Buffer`] of
+/// `cols` cells, every cell styled `style`, the message truncated to the
+/// span and the remainder padded with spaces so the strip covers the
+/// bar's full width.
+///
+/// Shared by the live full-row paint (`paint_full_row_message`) and the
+/// snapshot compose (`compose_buffer`) for both the persistent error line
+/// and the transient notice, so all four sites lay the row identically.
+fn full_row_buffer(message: &str, style: Style, cols: u16) -> Buffer {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
+    let mut tmp = [0u8; 4];
+    let mut col: u16 = 0;
+    for ch in message.chars() {
+        if col >= cols {
+            break;
+        }
+        let cell = &mut buffer[(col, 0)];
+        cell.set_symbol(ch.encode_utf8(&mut tmp));
+        cell.set_style(style);
+        col = col.saturating_add(1);
+    }
+    while col < cols {
+        let cell = &mut buffer[(col, 0)];
+        cell.set_symbol(" ");
+        cell.set_style(style);
+        col = col.saturating_add(1);
+    }
+    buffer
+}
+
 /// Copy a [`StatusBar`] composer row into a ratatui [`Buffer`].
 ///
 /// Blank widget cells map to a literal ASCII space; non-blank cells
@@ -415,6 +452,71 @@ impl BarInset {
     }
 }
 
+/// phux-i0e8.2.1: how long a transient [`Notice`] stays on the bar row.
+///
+/// After this elapses, [`StatusBarPainter::clear_expired_notice`] drops
+/// the notice. Expiry rides the driver's existing 1 s `status_tick`, so
+/// the effective lifetime is this value rounded up to the next tick.
+pub const NOTICE_TTL: Duration = Duration::from_secs(7);
+
+/// phux-i0e8.2.1: severity of a transient status-bar [`Notice`].
+///
+/// Picks the full-row style only; it carries no routing semantics. `Warn`
+/// renders bold (matching the persistent error strip's weight), `Info`
+/// renders plain reverse video.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeSeverity {
+    /// Informational lifecycle event (e.g. an input-lease handover).
+    Info,
+    /// Something is degraded and the user should know (e.g. a federation
+    /// satellite became unreachable).
+    Warn,
+}
+
+impl NoticeSeverity {
+    /// Full-row style for a notice of this severity.
+    fn style(self) -> Style {
+        match self {
+            Self::Info => Style::default().add_modifier(Modifier::REVERSED),
+            Self::Warn => Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        }
+    }
+}
+
+/// phux-i0e8.2.1: a transient, self-expiring status-bar message.
+///
+/// Produced by the server-frame dispatcher (`FrameOutcome::notices`) for
+/// lifecycle events that deserve a moment of visibility but no persistent
+/// chrome — input-authority handovers, degraded federation, pane exits.
+/// One slot, newest-wins: a fresh notice replaces the current one and
+/// restarts the [`NOTICE_TTL`] clock. The persistent error line
+/// ([`StatusBarPainter::error_line`]) always outranks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    /// Render severity; see [`NoticeSeverity`].
+    pub severity: NoticeSeverity,
+    /// The message painted across the bar row (truncated to the span).
+    pub text: String,
+}
+
+impl Notice {
+    /// An [`NoticeSeverity::Info`] notice.
+    pub fn info(text: impl Into<String>) -> Self {
+        Self {
+            severity: NoticeSeverity::Info,
+            text: text.into(),
+        }
+    }
+
+    /// A [`NoticeSeverity::Warn`] notice.
+    pub fn warn(text: impl Into<String>) -> Self {
+        Self {
+            severity: NoticeSeverity::Warn,
+            text: text.into(),
+        }
+    }
+}
+
 /// VT painter for a composed [`StatusBar`].
 ///
 /// Thin stateful wrapper over [`render_status_bar`]: caches the last
@@ -444,6 +546,14 @@ pub struct StatusBarPainter {
     /// visible reason the bar and keybindings are degraded rather than a
     /// silently empty row.
     error: Option<String>,
+    /// phux-i0e8.2.1: the transient notice slot and its expiry deadline.
+    /// One slot, newest-wins; painted full-row (like the error strip, via
+    /// the shared [`Self::paint_full_row_message`]) until
+    /// [`Self::clear_expired_notice`] drops it. Never set while `error`
+    /// is active (the persistent diagnostic outranks it) and never set on
+    /// an empty bar (no row is reserved to paint it on — see
+    /// [`Self::set_notice`]).
+    notice: Option<(Notice, std::time::Instant)>,
     /// ADR-0033: when `Some`, a supervisory badge (e.g. `[ FROZEN ]`,
     /// `[ WHEEL:you ]`) is overlaid right-aligned on the bar row for the
     /// focused pane. Set by the driver from inbound `TerminalControl` state; a
@@ -482,6 +592,7 @@ impl std::fmt::Debug for StatusBarPainter {
             .field("last_viewport", &self.last_viewport)
             .field("windows.len", &self.windows.len())
             .field("error", &self.error)
+            .field("notice", &self.notice)
             .field("supervisory", &self.supervisory)
             .field("attention", &self.attention)
             .field("attention_fg", &self.attention_fg)
@@ -503,6 +614,7 @@ impl StatusBarPainter {
             last_viewport: None,
             windows: Vec::new(),
             error: None,
+            notice: None,
             supervisory: None,
             attention: None,
             attention_fg: Color::Reset,
@@ -531,6 +643,7 @@ impl StatusBarPainter {
             last_viewport: None,
             windows: Vec::new(),
             error: Some(message.into()),
+            notice: None,
             supervisory: None,
             attention: None,
             attention_fg: Color::Reset,
@@ -603,6 +716,58 @@ impl StatusBarPainter {
         self.last_exit = last_exit;
         self.invalidate();
         true
+    }
+
+    /// phux-i0e8.2.1: show a transient notice full-row on the bar for
+    /// [`NOTICE_TTL`] from `now`. Newest-wins: a fresh notice replaces the
+    /// current one (and restarts the clock). Returns `true` when the notice
+    /// was accepted (the caller should repaint the bar).
+    ///
+    /// Refused — degrading to a `tracing` line, so the event is never
+    /// entirely silent — in two cases:
+    ///
+    /// - the persistent error line is active (phux-9vf): the fixed
+    ///   diagnostic outranks any transient message;
+    /// - the configured bar is empty: an empty-bar painter never reserves
+    ///   a row ([`Self::is_empty`] / [`Self::min_poll_interval`] stay
+    ///   unaffected by notices), so there is no row to paint the notice on
+    ///   and no tick to expire it. This is a documented limitation (see
+    ///   `docs/consumers/tui.md` §8.7).
+    pub fn set_notice(&mut self, notice: Notice, now: std::time::Instant) -> bool {
+        if self.error.is_some() {
+            tracing::info!(
+                severity = ?notice.severity,
+                text = %notice.text,
+                "status-bar notice suppressed under the persistent error line",
+            );
+            return false;
+        }
+        if self.bar.is_empty() {
+            tracing::info!(
+                severity = ?notice.severity,
+                text = %notice.text,
+                "status-bar notice dropped: no bar row is reserved (empty [status] config)",
+            );
+            return false;
+        }
+        self.notice = Some((notice, now + NOTICE_TTL));
+        self.invalidate();
+        true
+    }
+
+    /// phux-i0e8.2.1: drop the notice once its deadline passes. Called from
+    /// the driver's existing 1 s `status_tick`; returns `true` when the
+    /// notice was cleared (the cache is invalidated, so the next paint
+    /// restores the normal widget row).
+    pub fn clear_expired_notice(&mut self, now: std::time::Instant) -> bool {
+        match &self.notice {
+            Some((_, deadline)) if now >= *deadline => {
+                self.notice = None;
+                self.invalidate();
+                true
+            }
+            _ => false,
+        }
     }
 
     /// ADR-0033: set (or clear, with `None`) the supervisory badge overlaid on
@@ -719,6 +884,19 @@ impl StatusBarPainter {
         if self.error.is_some() {
             return self.paint_error_line(out, x, cols, rows);
         }
+        // phux-i0e8.2.1: an active transient notice takes the row over from
+        // the widget pipeline until it expires. Full-row like the error
+        // strip; only reachable on a non-empty bar (see `set_notice`).
+        if let Some((notice, _)) = self.notice.clone() {
+            return self.paint_full_row_message(
+                out,
+                &notice.text,
+                notice.severity.style(),
+                x,
+                cols,
+                rows,
+            );
+        }
         // The supervisory badge rides the normal bar row, so it only paints
         // when there is a bar to host it. An empty configured bar with no
         // windows stays a no-op (the badge is suppressed rather than ghosting
@@ -814,28 +992,16 @@ impl StatusBarPainter {
             Position::Top => 0,
         };
         if let Some(message) = &self.error {
-            let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
-            let style = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
-            let mut tmp = [0u8; 4];
-            let mut col: u16 = 0;
-            for ch in message.chars() {
-                if col >= cols {
-                    break;
-                }
-                let cell = &mut buffer[(col, 0)];
-                cell.set_symbol(ch.encode_utf8(&mut tmp));
-                cell.set_style(style);
-                col = col.saturating_add(1);
-            }
-            // Extend the reverse-video strip across the rest of the row so it
-            // spans the bar's full span, matching `paint_error_line`.
-            while col < cols {
-                let cell = &mut buffer[(col, 0)];
-                cell.set_symbol(" ");
-                cell.set_style(style);
-                col = col.saturating_add(1);
-            }
-            return Some((buffer, x, row_index));
+            return Some((full_row_buffer(message, alarm_style(), cols), x, row_index));
+        }
+        // phux-i0e8.2.1: mirror the live paint — an active transient notice
+        // composes full-row into the snapshot, styled by severity.
+        if let Some((notice, _)) = &self.notice {
+            return Some((
+                full_row_buffer(&notice.text, notice.severity.style(), cols),
+                x,
+                row_index,
+            ));
         }
         // Match `paint`: the badge only composes onto a non-empty bar row.
         if self.bar.is_empty() && self.windows.is_empty() {
@@ -882,9 +1048,9 @@ impl StatusBarPainter {
     ///
     /// Bypasses the widget composer entirely: the message is laid into a
     /// reverse-video row (so it reads as an alarm strip rather than blending
-    /// into normal chrome) and truncated to `cols`. Cached on `last_row` /
-    /// `last_viewport` like the normal path so repeated paints with
-    /// unchanged dims are no-ops; a resize forces a repaint.
+    /// into normal chrome) and truncated to `cols`. Delegates to the shared
+    /// [`Self::paint_full_row_message`] (phux-i0e8.2.1), which the transient
+    /// notice path also rides.
     fn paint_error_line<W: Write>(
         &mut self,
         out: &mut W,
@@ -896,8 +1062,27 @@ impl StatusBarPainter {
         // valid (if unusual) diagnostic, so default to "" rather than
         // returning early.
         let message = self.error.clone().unwrap_or_default();
-        // The error row carries no widget cells; we key the cache solely on
-        // the span (the message is fixed for this painter's lifetime).
+        self.paint_full_row_message(out, &message, alarm_style(), x, cols, rows)
+    }
+
+    /// phux-i0e8.2.1: paint `message` full-row onto the bar row in `style`,
+    /// truncated to `cols` and padded to the span's full width.
+    ///
+    /// Shared by the persistent error line and the transient notice. Cached
+    /// on `last_row` / `last_viewport` like the normal path so repeated
+    /// paints with unchanged dims are no-ops; the cache is keyed on the span
+    /// only — every message change goes through a setter that calls
+    /// [`Self::invalidate`] (the error message is fixed for the painter's
+    /// lifetime; a notice change replaces the slot via [`Self::set_notice`]).
+    fn paint_full_row_message<W: Write>(
+        &mut self,
+        out: &mut W,
+        message: &str,
+        style: Style,
+        x: u16,
+        cols: u16,
+        rows: u16,
+    ) -> io::Result<()> {
         let viewport_changed = self.last_viewport != Some((cols, rows));
         let moved = self
             .last_row
@@ -910,27 +1095,7 @@ impl StatusBarPainter {
             Position::Bottom => rows.saturating_sub(1),
             Position::Top => 0,
         };
-        let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
-        let style = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
-        let mut col: u16 = 0;
-        for ch in message.chars() {
-            if col >= cols {
-                break;
-            }
-            let mut tmp = [0u8; 4];
-            let cell = &mut buffer[(col, 0)];
-            cell.set_symbol(ch.encode_utf8(&mut tmp));
-            cell.set_style(style);
-            col = col.saturating_add(1);
-        }
-        // Extend the reverse-video field across the rest of the row so the
-        // alarm strip spans the bar's full span, not just the message.
-        while col < cols {
-            let cell = &mut buffer[(col, 0)];
-            cell.set_symbol(" ");
-            cell.set_style(style);
-            col = col.saturating_add(1);
-        }
+        let buffer = full_row_buffer(message, style, cols);
         write_buffer(out, &buffer, row_index, x, cols)?;
         // Mark the cache populated so the span-only key short-circuits the
         // next repaint; the stored row is empty (we don't compose widgets).
@@ -1198,6 +1363,121 @@ mod tests {
         p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
             .unwrap();
         assert_eq!(buf.len(), first_len, "unchanged dims must be a no-op");
+    }
+
+    /// phux-i0e8.2.1: an accepted notice takes the row over full-row, and a
+    /// newer notice replaces it (newest-wins single slot).
+    #[test]
+    fn notice_paints_full_row_and_newest_wins() {
+        let cfg = StatusCfg {
+            left: vec![Widget::Bare("session-name".into())],
+            ..Default::default()
+        };
+        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
+        let now = std::time::Instant::now();
+        assert!(p.set_notice(Notice::info("first notice"), now));
+        let mut buf = Vec::new();
+        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default("sess"))
+            .unwrap();
+        let printable = strip_csi(&String::from_utf8_lossy(&buf));
+        assert!(
+            printable.contains("first notice"),
+            "notice must paint the bar row: {printable:?}"
+        );
+        assert!(
+            !printable.contains("sess"),
+            "the notice takes the full row over from the widgets: {printable:?}"
+        );
+        assert!(p.set_notice(Notice::warn("second notice"), now));
+        buf.clear();
+        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default("sess"))
+            .unwrap();
+        let printable = strip_csi(&String::from_utf8_lossy(&buf));
+        assert!(
+            printable.contains("second notice") && !printable.contains("first notice"),
+            "newest notice must win the slot: {printable:?}"
+        );
+    }
+
+    /// phux-i0e8.2.1: the persistent error line outranks a transient
+    /// notice — `set_notice` is refused and the diagnostic keeps the row.
+    #[test]
+    fn notice_is_suppressed_under_the_error_line() {
+        let mut p = StatusBarPainter::error_line("config error: boom");
+        assert!(
+            !p.set_notice(
+                Notice::warn("pane 3: exited 137"),
+                std::time::Instant::now()
+            ),
+            "a notice must be refused while the error line is active"
+        );
+        let mut buf = Vec::new();
+        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
+            .unwrap();
+        let printable = strip_csi(&String::from_utf8_lossy(&buf));
+        assert!(
+            printable.contains("config error") && !printable.contains("exited 137"),
+            "the error diagnostic must keep the row: {printable:?}"
+        );
+    }
+
+    /// phux-i0e8.2.1: a notice expires after [`NOTICE_TTL`]; the clear
+    /// invalidates the cache so the next paint restores the widget row.
+    #[test]
+    fn notice_expires_after_ttl_and_restores_the_widget_row() {
+        let cfg = StatusCfg {
+            left: vec![Widget::Bare("session-name".into())],
+            ..Default::default()
+        };
+        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
+        let now = std::time::Instant::now();
+        assert!(p.set_notice(Notice::info("input: wheel released"), now));
+        assert!(
+            !p.clear_expired_notice(now + Duration::from_secs(6)),
+            "a notice must survive until its TTL elapses"
+        );
+        assert!(
+            p.clear_expired_notice(now + NOTICE_TTL),
+            "the notice must clear once the TTL elapses"
+        );
+        assert!(
+            !p.clear_expired_notice(now + NOTICE_TTL),
+            "a second clear is a no-op (slot already empty)"
+        );
+        let mut buf = Vec::new();
+        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default("sess"))
+            .unwrap();
+        let printable = strip_csi(&String::from_utf8_lossy(&buf));
+        assert!(
+            printable.contains("sess") && !printable.contains("wheel released"),
+            "the widget row must return after expiry: {printable:?}"
+        );
+    }
+
+    /// phux-i0e8.2.1: an empty-bar painter never reserves a row for a
+    /// notice — the notice is refused (degrading to tracing), the painter
+    /// stays empty (no row reservation), and no poll interval appears.
+    #[test]
+    fn notice_on_an_empty_bar_never_reserves_a_row() {
+        let mut p = StatusBarPainter::new(build_bar(&StatusCfg::default()), Position::Bottom);
+        assert!(p.is_empty(), "precondition: empty configured bar");
+        assert!(
+            !p.set_notice(
+                Notice::warn("federation degraded"),
+                std::time::Instant::now()
+            ),
+            "a notice on an empty bar must be refused"
+        );
+        assert!(p.is_empty(), "a refused notice must not un-empty the bar");
+        assert_eq!(
+            p.min_poll_interval(),
+            None,
+            "no poll interval may appear (no row is reserved, no tick to expire on)"
+        );
+        let mut buf = Vec::new();
+        p.paint(&mut buf, BarInset::NONE, 80, 24, &ctx_default(""))
+            .unwrap();
+        assert!(buf.is_empty(), "nothing may paint on an empty bar");
     }
 
     #[test]

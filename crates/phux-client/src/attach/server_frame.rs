@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use phux_protocol::ids::{ClientId, SessionId, TerminalId};
 use phux_protocol::wire::frame::{
-    AgentEvent, CONFIG_RELOAD_KEY, FrameKind, Scope, SpawnError, SpawnResult,
+    AgentEvent, CONFIG_RELOAD_KEY, ErrorCode, FrameKind, Scope, SpawnError, SpawnResult,
 };
 use phux_protocol::wire::info::SessionInfo;
 
@@ -19,7 +19,7 @@ use super::paint::{SidebarReservation, content_rect, paint_bar_after_pane, paint
 use crate::agent_meta::{AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
 use crate::layout::{self, LayoutState, Workspace};
 use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell};
-use crate::render::chrome::status_bar::StatusBarPainter;
+use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 
 /// ADR-0040 (`phux-3ert`): the driver-held index of `phux.agent/v1` records.
 ///
@@ -192,6 +192,13 @@ pub(super) struct FrameOutcome {
     /// error. Set ONLY by the `MetadataChanged` arm; tombstones do not
     /// set it.
     pub(super) config_reload: bool,
+    /// phux-i0e8.2.1: transient status-bar notices raised by this frame,
+    /// drained by the driver into the painter's newest-wins notice slot
+    /// (`StatusBarPainter::set_notice`) right after the dispatch returns.
+    /// Producers today: a focused-pane input-authority (`TerminalControl`)
+    /// holder transition, and a degraded-federation push (an uncorrelated
+    /// `ERROR { SATELLITE_UNREACHABLE }`). Empty on every other frame.
+    pub(super) notices: Vec<Notice>,
 }
 
 /// Payload-free label for the inbound `FrameKind` — the `kind` field on
@@ -213,6 +220,19 @@ const fn frame_kind_label(frame: &FrameKind) -> &'static str {
         FrameKind::TerminalClosed { .. } => "terminal_closed",
         _ => "other",
     }
+}
+
+/// phux-i0e8.2.1: text for the focused pane's input-authority notice.
+///
+/// The transient counterpart of the persistent `WHEEL:*` badge
+/// (ADR-0033): the badge shows who holds the wheel; this line calls out
+/// the transition itself. The client-id spelling (`c<N>`) matches the
+/// badge's, so the two surfaces read as one vocabulary.
+fn input_authority_notice(holder: Option<ClientId>) -> String {
+    holder.map_or_else(
+        || "input: wheel released".to_owned(),
+        |id| format!("input: c{} took the wheel", id.get()),
+    )
 }
 
 /// Process one server-to-client frame. Returns a [`FrameOutcome`]
@@ -1259,10 +1279,27 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 },
         } => {
             if let Some(slot) = panes.get_mut(&terminal) {
+                // phux-i0e8.2.1: a holder TRANSITION on the FOCUSED pane also
+                // raises a transient status-bar notice — the badge shows the
+                // steady state; the notice calls out the moment the wheel
+                // moved. The first TerminalControl a slot ever sees is the
+                // attach-time initial state (the server re-states the lease on
+                // subscribe), not a transition, so it stays silent.
+                let initial_state = !slot.control_seen;
+                slot.control_seen = true;
+                let holder_changed = slot.input_holder != input_holder;
                 slot.lifecycle = lifecycle;
                 slot.input_holder = input_holder;
+                let notices =
+                    if holder_changed && !initial_state && focused_pane.as_ref() == Some(&terminal)
+                    {
+                        vec![Notice::info(input_authority_notice(input_holder))]
+                    } else {
+                        Vec::new()
+                    };
                 Ok(FrameOutcome {
                     chrome_dirty: true,
+                    notices,
                     ..FrameOutcome::default()
                 })
             } else {
@@ -1340,6 +1377,26 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             }
             _ => Ok(FrameOutcome::default()),
         },
+        // phux-i0e8.2.1 (second consumer, closing phux-i0e8.2's otherwise
+        // orphaned lifecycle event): a spontaneous, uncorrelated
+        // `ERROR { SATELLITE_UNREACHABLE }` is the hub announcing a
+        // degraded-federation transition — part of the fleet just became
+        // invisible. Surface it as a Warn notice through the same slot
+        // instead of dropping it in the catch-all below. Correlated
+        // satellite errors (`request_id: Some`) stay on their
+        // request/reply paths; `phux status`'s degradation line remains
+        // the CLI view of the same state, not the TUI representation.
+        FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::SatelliteUnreachable,
+            message,
+        } => {
+            tracing::warn!(message = %message, "federation degraded (satellite unreachable)");
+            Ok(FrameOutcome {
+                notices: vec![Notice::warn(format!("federation degraded: {message}"))],
+                ..FrameOutcome::default()
+            })
+        }
         other => {
             // Anything else — `HELLO_OK`, `PONG`, future spec frames — is
             // accepted-but-ignored. The protocol decoder rejects unknown
@@ -3194,6 +3251,181 @@ mod tests {
         );
         assert!(!cwd.chrome_dirty && !exit.chrome_dirty);
         assert!(!panes.contains_key(&unknown));
+    }
+
+    /// phux-i0e8.2.1: a `TerminalControl` event carrying `holder` and a
+    /// running lifecycle.
+    fn control_event(holder: Option<ClientId>) -> phux_protocol::wire::frame::AgentEvent {
+        use phux_protocol::wire::frame::{AgentEvent, ControlAction, TerminalLifecycle};
+        AgentEvent::TerminalControl {
+            lifecycle: TerminalLifecycle::Running,
+            exit_status: None,
+            input_holder: holder,
+            action: match holder {
+                Some(_) => ControlAction::Acquired,
+                None => ControlAction::Released,
+            },
+            actor: holder,
+        }
+    }
+
+    /// phux-i0e8.2.1: drive one frame through [`handle_server_frame`]
+    /// with an explicit focused pane (which `drive_event` pins to the
+    /// event's own terminal), for the input-authority notice tests.
+    fn drive_frame_focused(
+        panes: &mut HashMap<TerminalId, PaneSlot>,
+        focused_id: &TerminalId,
+        frame: FrameKind,
+    ) -> FrameOutcome {
+        let mut layout = Workspace::single(focused_id.clone());
+        let mut focused = Some(focused_id.clone());
+        let mut out: Vec<u8> = Vec::new();
+        let mut session_name = String::new();
+        let mut zoomed: Option<TerminalId> = None;
+        let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
+        let overlay = Overlay;
+        let mut pending_splits = HashMap::new();
+        let mut pending_windows = HashMap::new();
+        let mut agent_meta = AgentMetaIndex::default();
+        handle_server_frame(
+            &mut out,
+            frame,
+            panes,
+            &mut layout,
+            &mut focused,
+            &mut zoomed,
+            &mut session_name,
+            None,
+            None,
+            (80, 24),
+            &mut predict,
+            &overlay,
+            None,
+            &mut pending_splits,
+            &mut pending_windows,
+            &mut agent_meta,
+            false,
+            false,
+        )
+        .expect("handle_server_frame")
+    }
+
+    /// phux-i0e8.2.1 acceptance (a): a focused-pane input-authority holder
+    /// TRANSITION yields the expected notice; the attach-time initial
+    /// state (the first `TerminalControl` a slot sees) yields none.
+    #[test]
+    fn focused_holder_transition_yields_a_notice_and_initial_state_does_not() {
+        use crate::render::chrome::status_bar::NoticeSeverity;
+        let pane = tid(1);
+        let mut panes = panes_for(&[&pane]);
+        let holder = ClientId::new(9);
+
+        // Attach-time initial state: first control event folds silently.
+        let initial = drive_event(&mut panes, &pane, control_event(Some(holder)));
+        assert!(initial.chrome_dirty, "the badge still refreshes");
+        assert!(
+            initial.notices.is_empty(),
+            "the attach-time initial state must not raise a notice"
+        );
+        assert_eq!(panes.get(&pane).expect("slot").input_holder, Some(holder));
+
+        // A later holder change is a transition: notice raised.
+        let released = drive_event(&mut panes, &pane, control_event(None));
+        assert_eq!(released.notices.len(), 1, "one notice per transition");
+        assert_eq!(released.notices[0].severity, NoticeSeverity::Info);
+        assert_eq!(released.notices[0].text, "input: wheel released");
+
+        let seized = drive_event(&mut panes, &pane, control_event(Some(holder)));
+        assert_eq!(seized.notices.len(), 1);
+        assert_eq!(seized.notices[0].text, "input: c9 took the wheel");
+
+        // A control event that does NOT move the holder (e.g. a freeze)
+        // is not an authority transition: no notice.
+        let same = drive_event(&mut panes, &pane, control_event(Some(holder)));
+        assert!(
+            same.notices.is_empty(),
+            "an unchanged holder must not raise a notice"
+        );
+    }
+
+    /// phux-i0e8.2.1: a holder transition on an UNFOCUSED pane refreshes
+    /// the chrome but raises no notice — the transient slot is scoped to
+    /// the pane the user is typing into.
+    #[test]
+    fn unfocused_holder_transition_yields_no_notice() {
+        let focused = tid(1);
+        let background = tid(2);
+        let mut panes = panes_for(&[&focused, &background]);
+        let holder = ClientId::new(4);
+
+        // Seed the background pane's initial control state, then transition.
+        let _ = drive_frame_focused(
+            &mut panes,
+            &focused,
+            FrameKind::Event {
+                terminal: Some(background.clone()),
+                event: control_event(None),
+            },
+        );
+        let outcome = drive_frame_focused(
+            &mut panes,
+            &focused,
+            FrameKind::Event {
+                terminal: Some(background.clone()),
+                event: control_event(Some(holder)),
+            },
+        );
+        assert!(outcome.chrome_dirty, "the badge state still folds");
+        assert!(
+            outcome.notices.is_empty(),
+            "a background pane's handover must not steal the notice slot"
+        );
+        assert_eq!(
+            panes.get(&background).expect("slot").input_holder,
+            Some(holder),
+        );
+    }
+
+    /// phux-i0e8.2.1 acceptance (b): an uncorrelated
+    /// `ERROR { SATELLITE_UNREACHABLE }` — the hub announcing a
+    /// degraded-federation transition — yields a Warn notice; the
+    /// correlated shape stays on its request/reply path (no notice).
+    #[test]
+    fn degraded_federation_transition_yields_a_warn_notice() {
+        use crate::render::chrome::status_bar::NoticeSeverity;
+        use phux_protocol::wire::frame::ErrorCode;
+        let pane = tid(1);
+        let mut panes = panes_for(&[&pane]);
+
+        let outcome = drive_frame_focused(
+            &mut panes,
+            &pane,
+            FrameKind::Error {
+                request_id: None,
+                code: ErrorCode::SatelliteUnreachable,
+                message: "satellite gpubox unreachable".to_owned(),
+            },
+        );
+        assert_eq!(outcome.notices.len(), 1);
+        assert_eq!(outcome.notices[0].severity, NoticeSeverity::Warn);
+        assert_eq!(
+            outcome.notices[0].text,
+            "federation degraded: satellite gpubox unreachable",
+        );
+
+        let correlated = drive_frame_focused(
+            &mut panes,
+            &pane,
+            FrameKind::Error {
+                request_id: Some(7),
+                code: ErrorCode::SatelliteUnreachable,
+                message: "satellite gpubox unreachable".to_owned(),
+            },
+        );
+        assert!(
+            correlated.notices.is_empty(),
+            "a correlated satellite error belongs to its request, not the notice slot"
+        );
     }
 
     /// phux-4r1: closing one of several panes is NOT a detach. The
