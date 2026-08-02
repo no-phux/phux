@@ -2464,7 +2464,12 @@ Beyond that, two client-rendered overlays teach the bindings themselves
   and an overflowing table paints a scrollbar in the right border column
   (the window is counted in wrapped display rows, so long action labels
   that fold onto a second row are budgeted for). Esc (or `?` again)
-  dismisses it.
+  dismisses it. The footer's dismiss hint resolves your `show-help`
+  binding from the global table first, then the prefix table; a
+  prefix-table binding (the shipped default) is echoed — and matched —
+  as its bare key (`Press ? or Esc to close`), because the prefix
+  resolver is bypassed while the modal is up, so the bare key is the
+  literal keystroke that closes it.
 - Press `C-a` and *hesitate*, and the **which-key popup** appears after
   `which-key-delay-ms` (default 600 ms), listing the available prefix
   continuations. Any key dismisses it and executes normally; Esc cancels

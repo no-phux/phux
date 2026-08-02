@@ -97,10 +97,12 @@ pub struct HelpOverlay {
     /// modules (plus the config-resolved panel chords) so the overlay
     /// stays `'static`.
     hardcoded_sections: Vec<(String, Vec<Entry>)>,
-    /// Chord (as authored in cfg) that opens this overlay. Used in
+    /// Chord that dismisses this overlay, resolved from `show-help` in
+    /// `cfg.global` first, then `cfg.prefix_table` (bare key — the
+    /// prefix resolver is bypassed while an overlay is active). Used in
     /// the footer hint so a user who rebound `show-help` to e.g. `?`
     /// sees `Press ? or Esc to close` rather than a stale `F1`.
-    /// `None` when no global binding maps to `show-help`.
+    /// `None` when neither table maps a chord to `show-help`.
     show_help_chord: Option<String>,
     /// Color slots snapshotted from the active [`Theme`] at construction.
     /// Captured (not borrowed) so the overlay stays `'static`.
@@ -155,17 +157,25 @@ impl HelpOverlay {
             })
             .collect();
         let hardcoded_sections = built_in_sections(cfg);
-        // Find the chord (if any) that the user bound to `show-help`
-        // for the footer hint. Scans `cfg.global` only — `show-help`
-        // is a global by default and surfacing a prefix-table entry
-        // would lie about how the dismiss path works (the prefix is
-        // captured by the resolver, but while the overlay is active
-        // the resolver is bypassed — only the overlay's own
-        // `handle_key` runs).
+        // Find the chord (if any) bound to `show-help`, for the footer
+        // hint and the dismiss match. Resolution order: `cfg.global`
+        // first, then `cfg.prefix_table` — a global chord works
+        // verbatim while the overlay is up, so it wins when both are
+        // bound. For a prefix-table binding (the shipped default binds
+        // `?` there) we store the BARE key, not `"<prefix> ?"`: while
+        // an overlay is active the prefix resolver is bypassed — only
+        // the overlay's own `handle_key` runs — so the bare key is the
+        // literal keystroke that dismisses, and echoing the full chord
+        // in the footer would lie about the dismiss path (phux-i0e8.10.4).
         let show_help_chord = cfg
             .global
             .iter()
             .find(|(_, action)| is_show_help(action))
+            .or_else(|| {
+                cfg.prefix_table
+                    .iter()
+                    .find(|(_, action)| is_show_help(action))
+            })
             .map(|(chord, _)| chord.clone());
         Self {
             prefix: if prefix_entries.is_empty() {
@@ -657,6 +667,10 @@ mod tests {
 
     #[test]
     fn no_show_help_binding_falls_back_to_esc_only_footer() {
+        // Neither table binds `show-help`: the base cfg()'s prefix
+        // table carries only detach/kill-pane/split-pane, and the
+        // global table is cleared here (phux-i0e8.10.4: the resolver
+        // scans both).
         let mut c = cfg();
         c.global.clear();
         let overlay = HelpOverlay::from_config(&c, &Theme::default());
@@ -742,6 +756,62 @@ mod tests {
         assert_eq!(
             overlay.handle_key(&key(PhysicalKey::Escape)),
             OverlayCommand::Dismiss
+        );
+    }
+
+    /// phux-i0e8.10.4: under the shipped defaults `show-help` lives in
+    /// the PREFIX table (`C-a ?`), yet the dismiss chord is the bare
+    /// `?` — the prefix resolver is bypassed while the overlay is up,
+    /// so `?` alone is the literal keystroke that closes it. The footer
+    /// echoes that bare key and `handle_key` dismisses on it.
+    #[test]
+    fn default_config_prefix_table_question_mark_footers_and_dismisses() {
+        let cfg = phux_config::parse_str(
+            phux_config::DEFAULT_CONFIG_TOML,
+            std::path::Path::new("default.toml"),
+        )
+        .expect("default config parses");
+        let mut overlay = HelpOverlay::from_config(&cfg.keybindings, &Theme::default());
+        assert_eq!(
+            overlay.show_help_chord.as_deref(),
+            Some("?"),
+            "the prefix-table binding resolves to its BARE key"
+        );
+
+        // The footer echoes the bare key. The default table is long, so
+        // jump to the end (with a paint between, as the driver does) to
+        // bring the footer into the window before asserting on pixels.
+        overlay.handle_key(&key(PhysicalKey::End));
+        let text = render_to_string(&overlay, 110, 80);
+        assert!(
+            text.contains("Press ? or Esc to close"),
+            "footer must echo the bare `?`:\n{text}"
+        );
+
+        // `?` is Shift+/ on US ANSI (the chord parser decomposes it).
+        let mut question = key(PhysicalKey::Slash);
+        question.mods = ModSet::SHIFT;
+        assert_eq!(
+            overlay.handle_key(&question),
+            OverlayCommand::Dismiss,
+            "the bare `?` dismisses under the shipped defaults"
+        );
+    }
+
+    /// phux-i0e8.10.4: when `show-help` is bound in BOTH tables the
+    /// global chord wins — it works verbatim while the overlay is up,
+    /// so it is the least surprising one to advertise and match.
+    #[test]
+    fn global_show_help_wins_over_prefix_table_binding() {
+        let mut c = cfg(); // global already binds F1 = show-help
+        c.prefix_table
+            .insert("?".to_owned(), Action::Bare("show-help".to_owned()));
+        let mut overlay = HelpOverlay::from_config(&c, &Theme::default());
+        assert_eq!(overlay.show_help_chord.as_deref(), Some("F1"));
+        assert_eq!(
+            overlay.handle_key(&key(PhysicalKey::F1)),
+            OverlayCommand::Dismiss,
+            "the winning global chord dismisses"
         );
     }
 
