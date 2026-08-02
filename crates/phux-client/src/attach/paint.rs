@@ -18,6 +18,7 @@ use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_protocol::ids::TerminalId;
 
 use super::driver::PaneSlot;
+use super::driver::{AttachKernel, published_terminal};
 use crate::layout::LayoutState;
 use crate::render::chrome::status_bar::{BarInset, Position, StatusBarPainter, make_context};
 
@@ -31,6 +32,7 @@ const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
 /// pixels: classic Kitty placements without explicit `c/r` dimensions infer
 /// their grid footprint from pixel geometry, and a zero value makes the first
 /// live render skip the placement until a later snapshot supplies `c/r`.
+#[cfg(test)]
 pub(super) const FALLBACK_CELL_PX: (u32, u32) = (8, 16);
 
 /// Resize a libghostty [`GhosttyTerminal`] to `cols`x`rows`, clamping each axis to
@@ -41,6 +43,7 @@ pub(super) const FALLBACK_CELL_PX: (u32, u32) = (8, 16);
 /// The both-axes-shrink overflow in libghostty's `PageList.resizeCols`
 /// (phux-y06) is fixed by the `libghostty-vt` 0.2.0 engine, so a both-shrink
 /// is a single safe `resize()` call — no axis decomposition needed.
+#[cfg(test)]
 pub(super) fn safe_resize(
     terminal: &mut GhosttyTerminal<'_, '_>,
     cols: u16,
@@ -93,6 +96,7 @@ pub(super) fn paint_focused_pane<W: Write>(
     out: &mut W,
     layout_state: &LayoutState,
     panes: &mut HashMap<TerminalId, PaneSlot>,
+    kernel: &AttachKernel,
     focused: &TerminalId,
     viewport_dims: (u16, u16),
     bar: Option<Position>,
@@ -106,21 +110,13 @@ pub(super) fn paint_focused_pane<W: Write>(
         .copied()
         .unwrap_or(content);
     let slot = panes.get_mut(focused)?;
+    let terminal = published_terminal(kernel, focused)?;
     // The mirror grid size is server-authoritative (set only at the
     // snapshot / resize-ack handler); the layout rect clips and positions
-    // the paint but never resizes the pane's libghostty Terminal. Resizing
-    // the alt-screen mirror to a transient client-rect width during a resize
-    // handshake strands previous-screen content in the dropped columns (the
-    // ghost cells — alt screen does not reflow), which `render_at` would then
-    // faithfully paint. Clipping confines the paint to the rect instead.
-    // Letterbox: when the server-authoritative mirror grid is smaller than the
-    // rect, centre it and blank the surrounding margins instead of pinning it
-    // to the rect's top-left (phux-7ubw, ADR-0027 single-view letterbox). When
-    // the mirror is >= the rect this degrades to the existing clamp, so a
-    // mirror that fills the rect is byte-identical to the prior `render_at`.
-    let mirror = mirror_dims(&slot.terminal, rect);
+    // the paint but never resizes the pane's libghostty Terminal.
+    let mirror = mirror_dims(terminal, rect);
     let _ = slot.renderer.render_at_letterboxed(
-        &slot.terminal,
+        terminal,
         out,
         (rect.x, rect.y),
         (rect.w, rect.h),
@@ -185,6 +181,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     out: &mut W,
     layout_state: &LayoutState,
     panes: &mut HashMap<TerminalId, PaneSlot>,
+    kernel: &AttachKernel,
     focused_pane: Option<&TerminalId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&mut StatusBarPainter>,
@@ -221,17 +218,14 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         if Some(id) == focused_pane {
             continue;
         }
-        if let Some(slot) = panes.get_mut(id) {
+        if let (Some(slot), Some(terminal)) =
+            (panes.get_mut(id), published_terminal(kernel, id))
+        {
             // Force a full redraw: the ED2 above cleared the screen, so
-            // an incremental "only dirty rows" paint would leave a pane
-            // whose content is unchanged (the survivor of a split/resize)
-            // blank. The rect clips the paint; it never resizes the
-            // server-authoritative mirror grid. Letterboxed: an undersized
-            // mirror is centred and its margins blanked (phux-7ubw); a mirror
-            // that fills/exceeds the rect degrades to the prior clamp.
-            let mirror = mirror_dims(&slot.terminal, *rect);
+            // unchanged pane content must still be emitted.
+            let mirror = mirror_dims(terminal, *rect);
             let _ = slot.renderer.render_at_letterboxed(
-                &slot.terminal,
+                terminal,
                 out,
                 (rect.x, rect.y),
                 (rect.w, rect.h),
@@ -274,6 +268,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
             out,
             layout_state,
             panes,
+            kernel,
             fid,
             viewport_dims,
             bar,
@@ -633,6 +628,75 @@ pub(super) fn bar_inset(outer: (u16, u16), sidebar: Option<SidebarReservation>) 
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
+    fn published_kernel(
+        terminals: &[TerminalId],
+        cols: u16,
+        rows: u16,
+        replay: &[u8],
+    ) -> AttachKernel {
+        use phux_client_core::session::{
+            EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel,
+        };
+        use phux_protocol::{
+            BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, StreamId,
+        };
+
+        let mut kernel = SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(BootstrapLimits::default()),
+            BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = KernelEffectBuffer::new();
+        kernel
+            .update(
+                KernelInput::AttachStarted {
+                    attach_id: 1,
+                    terminals,
+                },
+                &mut effects,
+            )
+            .expect("attach");
+        for (index, terminal_id) in terminals.iter().enumerate() {
+            let stream_id = StreamId::new(1).expect("stream");
+            let bootstrap_id = BootstrapId::new(index as u64 + 1).expect("bootstrap");
+            kernel
+                .update(
+                    KernelInput::BootstrapBegin {
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                        geometry: phux_client_core::engine::CanonicalGeometry::new(cols, rows)
+                            .expect("geometry"),
+                        base_seq: 0,
+                    },
+                    &mut effects,
+                )
+                .expect("begin");
+            kernel
+                .update(
+                    KernelInput::BootstrapChunk {
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        chunk_seq: 0,
+                        payload: replay,
+                    },
+                    &mut effects,
+                )
+                .expect("chunk");
+            kernel
+                .update(
+                    KernelInput::BootstrapReady {
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                    },
+                    &mut effects,
+                )
+                .expect("ready");
+        }
+        kernel
+    }
 
     /// phux-4h5a: the disabled-path invariant. `content_rect(.., None)` must
     /// yield exactly `Rect { 0, 0, pane_viewport(..).0, pane_viewport(..).1 }`
@@ -891,12 +955,14 @@ mod tests {
         let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
         panes.insert(left.clone(), PaneSlot::new().expect("left slot"));
         panes.insert(right, PaneSlot::new().expect("right slot"));
+        let kernel = published_kernel(&[left.clone(), TerminalId::local(2)], 80, 24, b"");
 
         let mut out: Vec<u8> = Vec::new();
         paint_full_frame(
             &mut out,
             &layout,
             &mut panes,
+            &kernel,
             Some(&left),
             (80, 24),
             None,
@@ -1347,6 +1413,12 @@ mod tests {
             .vt_write(b"ABCDEFGHIJKLMNOPQRST\r\nABCDEFGHIJKLMNOPQRST");
         let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
         panes.insert(id.clone(), slot);
+        let kernel = published_kernel(
+            std::slice::from_ref(&id),
+            mirror_cols,
+            mirror_rows,
+            b"\x1b[?1049hABCDEFGHIJKLMNOPQRST\r\nABCDEFGHIJKLMNOPQRST",
+        );
 
         // Client viewport is far wider/taller than the mirror, so the rect
         // (M) disagrees with the mirror (N). With a bar, pane_dims = (80, 23).
@@ -1356,6 +1428,7 @@ mod tests {
             &mut out,
             &layout,
             &mut panes,
+            &kernel,
             &id,
             viewport,
             Some(Position::Bottom),

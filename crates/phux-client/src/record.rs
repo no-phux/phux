@@ -19,9 +19,8 @@
 //! in. A recorder that attached would therefore silently shrink the user's
 //! live session to 80x24. `ATTACH_TERMINAL` is specified (L1 §5.1) as a
 //! non-resizing observer subscription: it registers the caller as an output
-//! subscriber, primes it with one authoritative `TERMINAL_SNAPSHOT`, streams
-//! `TERMINAL_OUTPUT` deltas, and is idempotent across simultaneous
-//! observers. That is the whole contract this module needs, and the
+//! subscriber, primes it through negotiated `BOOTSTRAP_BEGIN/CHUNK/READY`,
+//! then streams `TERMINAL_OUTPUT` deltas.
 //! `NEVER_SENDS_ATTACH_OR_VIEWPORT_RESIZE` test below is the regression
 //! guard.
 //!
@@ -50,9 +49,10 @@
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use phux_protocol::caps::{ClientCapabilities, ColorSupport};
+use phux_protocol::caps::{BootstrapStreamProfile, ClientCapabilities, ColorSupport};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{AgentEvent, Command, CommandResult, FrameKind};
+use phux_protocol::{BootstrapId, StreamId};
 use phux_record::cast::{CastEvent, EventCode};
 
 use crate::attach::AttachError;
@@ -73,10 +73,8 @@ const UNKNOWN_EXIT_STATUS: &str = "-1";
 
 /// A finished headless capture, ready to be serialized as an asciicast.
 ///
-/// `cols`/`rows` come from the first `TERMINAL_SNAPSHOT` (they are the
-/// dimensions the events must be replayed at, not the caller's terminal
-/// size), and `events` is on `phux-record`'s absolute-millisecond timebase
-/// with `t = 0` pinned to the opening snapshot.
+/// `cols`/`rows` come from the first `BOOTSTRAP_BEGIN`, and `events` use
+/// `phux-record`'s absolute-millisecond timebase with `t = 0` at bootstrap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadlessRecording {
     /// Grid width the recording must be replayed at.
@@ -293,6 +291,8 @@ struct Capture {
     events: Vec<CastEvent>,
     /// Bytes held back because they are an incomplete UTF-8 sequence.
     tail: Vec<u8>,
+    /// Active synthesized bootstrap and next required chunk sequence.
+    bootstrap: Option<(TerminalId, StreamId, BootstrapId, u32)>,
 }
 
 impl Capture {
@@ -303,6 +303,7 @@ impl Capture {
             dims: None,
             events: Vec::new(),
             tail: Vec::new(),
+            bootstrap: None,
         }
     }
 
@@ -311,13 +312,70 @@ impl Capture {
     /// Returns `Ok(true)` when the frame ends the recording.
     fn absorb(&mut self, frame: FrameKind, elapsed: Duration) -> Result<bool, AttachError> {
         match frame {
-            FrameKind::TerminalSnapshot {
+            FrameKind::BootstrapBegin {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
                 cols,
                 rows,
-                vt_replay_bytes,
                 ..
             } => {
-                self.snapshot(cols, rows, &vt_replay_bytes, elapsed);
+                self.snapshot(cols, rows, &[], elapsed);
+                self.bootstrap = Some((terminal_id, stream_id, bootstrap_id, 0));
+                Ok(false)
+            }
+            FrameKind::BootstrapBegin { profile, .. } => Err(AttachError::Protocol(format!(
+                "recorder requires synthesized raw VT bootstrap, got {profile:?}"
+            ))),
+            FrameKind::BootstrapChunk {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
+                payload,
+            } => {
+                let Some((expected_terminal, expected_stream, expected_bootstrap, next_chunk)) =
+                    self.bootstrap.as_mut()
+                else {
+                    return Err(AttachError::Protocol(
+                        "bootstrap chunk arrived before begin".to_owned(),
+                    ));
+                };
+                if terminal_id != *expected_terminal
+                    || stream_id != *expected_stream
+                    || bootstrap_id != *expected_bootstrap
+                    || chunk_seq != *next_chunk
+                {
+                    return Err(AttachError::Protocol(
+                        "bootstrap chunk generation or sequence mismatch".to_owned(),
+                    ));
+                }
+                *next_chunk = next_chunk.saturating_add(1);
+                self.output(&payload, elapsed);
+                Ok(false)
+            }
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            } => {
+                let Some((expected_terminal, expected_stream, expected_bootstrap, _)) =
+                    self.bootstrap.take()
+                else {
+                    return Err(AttachError::Protocol(
+                        "bootstrap ready arrived before begin".to_owned(),
+                    ));
+                };
+                if terminal_id != expected_terminal
+                    || stream_id != expected_stream
+                    || bootstrap_id != expected_bootstrap
+                {
+                    return Err(AttachError::Protocol(
+                        "bootstrap ready generation mismatch".to_owned(),
+                    ));
+                }
                 Ok(false)
             }
             // `seq` is the pump's per-consumer sequence id, not a timebase;
@@ -485,19 +543,40 @@ mod tests {
         TerminalId::local(7)
     }
 
-    fn snapshot(cols: u16, rows: u16, replay: &[u8]) -> FrameKind {
-        FrameKind::TerminalSnapshot {
-            terminal_id: terminal(),
-            cols,
-            rows,
-            vt_replay_bytes: replay.to_vec(),
-            scrollback_bytes: None,
-        }
+    fn snapshot(cols: u16, rows: u16, replay: &[u8]) -> Vec<FrameKind> {
+        let stream_id = StreamId::new(1).expect("stream");
+        let bootstrap_id = BootstrapId::new(2).expect("bootstrap");
+        vec![
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols,
+                rows,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::copy_from_slice(replay),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: terminal(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ]
     }
 
     fn output(seq: u64, bytes: &[u8]) -> FrameKind {
         FrameKind::TerminalOutput {
             terminal_id: terminal(),
+            stream_id: StreamId::new(1).expect("stream"),
+            bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
             seq,
             bytes: bytes::Bytes::copy_from_slice(bytes),
         }
@@ -657,8 +736,7 @@ mod tests {
         // more output, then the pane closing.
         let (recorded, seen) = block_on(run(
             attached(120, 34, b"first")
-                .push(output(1, b"more"))
-                .push(snapshot(100, 30, b"repaint"))
+                .push(output(1, b"more")).extend(snapshot(100, 30, b"repaint"))
                 .push(output(2, b"tail"))
                 .push(pane_closed(Some(0))),
             None,
@@ -704,8 +782,7 @@ mod tests {
     #[test]
     fn second_snapshot_with_new_dims_emits_r_then_o() {
         let (recorded, _seen) = block_on(run(
-            attached(80, 24, b"a")
-                .push(snapshot(100, 30, b"b"))
+            attached(80, 24, b"a").extend(snapshot(100, 30, b"b"))
                 .push(pane_closed(Some(0))),
             None,
         ));
@@ -733,8 +810,7 @@ mod tests {
         // This is the lag-recovery resync the output pump injects. It is a
         // repaint, not a resize.
         let (recorded, _seen) = block_on(run(
-            attached(80, 24, b"a")
-                .push(snapshot(80, 24, b"resync"))
+            attached(80, 24, b"a").extend(snapshot(80, 24, b"resync"))
                 .push(pane_closed(Some(0))),
             None,
         ));

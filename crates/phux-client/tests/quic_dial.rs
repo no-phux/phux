@@ -99,9 +99,11 @@ async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream
     .await;
 }
 
-const fn ack(seq: u64) -> FrameKind {
+fn ack(seq: u64) -> FrameKind {
     FrameKind::FrameAck {
         terminal_id: TerminalId::Local { id: 1 },
+        stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+        bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
         seq,
     }
 }

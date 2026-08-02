@@ -1175,6 +1175,8 @@ mod tests {
         // burst-decode test can assert ordering.
         let frame = FrameKind::FrameAck {
             terminal_id: phux_protocol::ids::TerminalId::Local { id: 1 },
+            stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+            bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
             seq,
         };
         let mut buf = BytesMut::new();
@@ -1192,7 +1194,8 @@ mod tests {
             buf.extend_from_slice(&framed(seq));
         }
         let mut seqs = Vec::new();
-        while let Some(FrameKind::FrameAck { seq, .. }) = decode_buffered(&mut buf).expect("decode")
+        while let Some(FrameKind::FrameAck { seq, .. }) =
+            decode_buffered(&mut buf, BootstrapLimits::default()).expect("decode")
         {
             seqs.push(seq);
         }
@@ -1209,13 +1212,16 @@ mod tests {
         let cut = whole.len() - 2;
         let mut buf = BytesMut::from(&whole[..cut]);
         assert!(
-            decode_buffered(&mut buf).expect("partial").is_none(),
+            decode_buffered(&mut buf, BootstrapLimits::default())
+                .expect("partial")
+                .is_none(),
             "incomplete frame yields None"
         );
         assert_eq!(buf.len(), cut, "partial bytes retained");
         // Deliver the tail; now it decodes and the buffer drains.
         buf.extend_from_slice(&whole[cut..]);
-        let frame = decode_buffered(&mut buf).expect("complete");
+        let frame =
+            decode_buffered(&mut buf, BootstrapLimits::default()).expect("complete");
         assert!(matches!(frame, Some(FrameKind::FrameAck { seq: 7, .. })));
         assert!(buf.is_empty());
     }
@@ -1223,7 +1229,11 @@ mod tests {
     #[test]
     fn decode_buffered_empty_is_none() {
         let mut buf = BytesMut::new();
-        assert!(decode_buffered(&mut buf).expect("empty").is_none());
+        assert!(
+            decode_buffered(&mut buf, BootstrapLimits::default())
+                .expect("empty")
+                .is_none()
+        );
     }
 
     // --- Connection::request -------------------------------------------
@@ -1231,8 +1241,10 @@ mod tests {
     // `Connection` holds `!Send` transport halves, so the scripted server
     // side runs on a `LocalSet` rather than `tokio::spawn`.
 
-    use phux_protocol::ids::TerminalId;
+    use phux_protocol::caps::BootstrapStreamProfile;
+    use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
     use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
+    use bytes::Bytes;
     use tokio::net::UnixStream;
 
     fn block_on<F: std::future::Future>(fut: F) -> F::Output {
@@ -1276,29 +1288,50 @@ mod tests {
         }
     }
 
-    fn snapshot() -> FrameKind {
-        FrameKind::TerminalSnapshot {
-            terminal_id: TerminalId::local(1),
-            cols: 120,
-            rows: 40,
-            vt_replay_bytes: b"opening screen".to_vec(),
-            scrollback_bytes: None,
-        }
+    fn bootstrap() -> Vec<FrameKind> {
+        let terminal_id = TerminalId::local(1);
+        let stream_id = StreamId::new(1).expect("stream");
+        let bootstrap_id = BootstrapId::new(1).expect("bootstrap");
+        vec![
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 120,
+                rows: 40,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: Bytes::from_static(b"opening screen"),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ]
     }
 
     #[test]
-    fn pre_ack_snapshot_is_returned_instead_of_discarded() {
-        // `handle_attach_terminal` pushes TERMINAL_SNAPSHOT before the Ok
-        // reply and never re-sends it. The hand-rolled wait loop this API
-        // replaces dropped it, which is what made every `phux rec` capture a
-        // 0x0 grid with no opening screen.
-        let reply = request_against(vec![snapshot(), ack(7)]);
+    fn pre_ack_bootstrap_is_returned_instead_of_discarded() {
+        let mut script = bootstrap();
+        script.push(ack(7));
+        let reply = request_against(script);
         assert!(matches!(reply.result(), CommandResult::Ok));
-        assert!(
-            matches!(reply.interleaved(), [FrameKind::TerminalSnapshot { .. }]),
-            "the pre-ack snapshot must reach the caller, got {:?}",
-            reply.interleaved()
-        );
+        assert!(matches!(
+            reply.interleaved(),
+            [
+                FrameKind::BootstrapBegin { .. },
+                FrameKind::BootstrapChunk { .. },
+                FrameKind::BootstrapReady { .. }
+            ]
+        ));
     }
 
     #[test]
@@ -1370,15 +1403,14 @@ mod tests {
         let bell = FrameKind::Bell {
             terminal_id: TerminalId::local(1),
         };
-        let reply = request_against(vec![snapshot(), bell, ack(7)]);
-        assert!(
-            matches!(
-                reply.interleaved(),
-                [FrameKind::TerminalSnapshot { .. }, FrameKind::Bell { .. }]
-            ),
-            "got {:?}",
-            reply.interleaved()
-        );
+        let mut script = bootstrap();
+        script.extend([bell, ack(7)]);
+        let reply = request_against(script);
+        assert_eq!(reply.interleaved().len(), 4);
+        assert!(matches!(
+            reply.interleaved().last(),
+            Some(FrameKind::Bell { .. })
+        ));
     }
 
     // --- the non-COMMAND pairs (phux-h5hj.12) --------------------------
@@ -1557,13 +1589,19 @@ mod tests {
             request_id: 7,
             result: SpawnResult::Ok(TerminalId::local(3)),
         };
-        let reply = spawn_against(vec![snapshot(), spawned]);
+        let mut script = bootstrap();
+        script.push(spawned);
+        let reply = spawn_against(script);
         assert!(matches!(reply.result(), Ok(SpawnResult::Ok(_))));
-        assert!(
-            matches!(reply.interleaved(), [FrameKind::TerminalSnapshot { .. }]),
-            "got {:?}",
-            reply.interleaved()
-        );
+        assert_eq!(reply.interleaved().len(), 3);
+        assert!(matches!(
+            reply.interleaved(),
+            [
+                FrameKind::BootstrapBegin { .. },
+                FrameKind::BootstrapChunk { .. },
+                FrameKind::BootstrapReady { .. }
+            ]
+        ));
     }
 
     #[test]

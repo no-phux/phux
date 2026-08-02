@@ -6,10 +6,14 @@
 
 use std::{marker::PhantomData, rc::Rc};
 
-use libghostty_vt::snapshot::incremental::{
-    AfterReadyStep, DecodeProgress, DecodeStep, Decoder, DecoderOptions, Error as SnapshotError,
+use libghostty_vt::{
+    Terminal as GhosttyTerminal, TerminalOptions,
+    snapshot::incremental::{
+        AfterReadyStep, DecodeProgress, DecodeStep, Decoder, DecoderOptions,
+        Error as SnapshotError,
+    },
+    terminal::ScrollViewport,
 };
-use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_protocol::{
     BootstrapCapabilities, BootstrapLimits, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
 };
@@ -150,6 +154,28 @@ impl GhosttyReplica {
             ReplicaState::Synthesized { terminal, .. } => Some(terminal),
             ReplicaState::Native(native) => native.terminal(),
         }
+    }
+
+    /// Apply a client-local viewport scroll without exposing mutable terminal ownership.
+    pub fn scroll_viewport(
+        &mut self,
+        scroll: ScrollViewport,
+    ) -> Result<(), GhosttyEngineError> {
+        match &mut self.state {
+            ReplicaState::Synthesized { terminal, .. } => terminal.scroll_viewport(scroll),
+            ReplicaState::Native(native) => match &mut native.decoder {
+                NativeDecoderState::AfterReady(stream) => stream.scroll_viewport(scroll),
+                NativeDecoderState::Finished(terminal)
+                | NativeDecoderState::Failed(Some(terminal)) => terminal.scroll_viewport(scroll),
+                NativeDecoderState::BeforeReady(_) => {
+                    return Err(GhosttyEngineError::LiveOutputBeforeReady);
+                }
+                NativeDecoderState::Failed(None) => {
+                    return Err(GhosttyEngineError::DecoderFailed);
+                }
+            },
+        }
+        Ok(())
     }
 }
 

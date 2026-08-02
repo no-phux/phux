@@ -77,10 +77,12 @@
 
 use std::fmt;
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::caps::{
+    BootstrapCapabilities, BootstrapStreamProfile, ServerCapabilities, select_bootstrap_profile,
+};
+use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, SpawnResult,
 };
@@ -118,8 +120,8 @@ type MetadataResponder = Box<dyn FnMut(&Scope, &str) -> Option<Vec<u8>> + Send>;
 /// [`ScriptSpec::new`] and the chainable setters.
 #[derive(Default)]
 pub struct ScriptSpec {
-    /// The `TERMINAL_SNAPSHOT` pushed ahead of the `ATTACH_TERMINAL` ack.
-    priming: Option<FrameKind>,
+    /// The negotiated bootstrap transcript pushed ahead of the attach ack.
+    priming: Vec<FrameKind>,
     /// The snapshot a `GET_STATE` ack carries.
     state: Option<SessionSnapshot>,
     /// Frames pushed ahead of the *next* command ack — the hub degradation
@@ -171,12 +173,8 @@ impl ScriptSpec {
         Self::default()
     }
 
-    /// The authoritative `TERMINAL_SNAPSHOT` the server pushes *before* the
-    /// `ATTACH_TERMINAL` ack.
-    ///
-    /// Mandatory for any script whose client attaches a Terminal: the
-    /// reference server always primes, and a harness that let a test opt out
-    /// would be re-offering the exact hole this module closes.
+    /// The synthesized raw-VT bootstrap the server pushes before the
+    /// `ATTACH_TERMINAL` acknowledgement.
     #[must_use]
     pub fn priming_snapshot(
         mut self,
@@ -185,13 +183,32 @@ impl ScriptSpec {
         rows: u16,
         replay: &[u8],
     ) -> Self {
-        self.priming = Some(FrameKind::TerminalSnapshot {
-            terminal_id: terminal.clone(),
-            cols,
-            rows,
-            vt_replay_bytes: replay.to_vec(),
-            scrollback_bytes: None,
-        });
+        let stream_id = StreamId::new(1).expect("non-zero fixture stream");
+        let bootstrap_id = BootstrapId::new(1).expect("non-zero fixture bootstrap");
+        self.priming = vec![
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols,
+                rows,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: Bytes::copy_from_slice(replay),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: terminal.clone(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ];
         self
     }
 
@@ -309,6 +326,7 @@ impl ScriptSpec {
         self.script.push(frame);
         self
     }
+
 
     /// Append several frames to the post-subscription stream.
     #[must_use]
@@ -535,14 +553,12 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
     let mut out = std::mem::take(&mut spec.pre_ack);
     match command {
         Command::AttachTerminal { .. } => {
-            // The ordering this whole module exists for: snapshot, then ack.
-            let priming = spec.priming.clone().expect(
-                "a scripted server whose client sends ATTACH_TERMINAL must declare a \
-                 priming snapshot: handle_attach_terminal pushes TERMINAL_SNAPSHOT \
-                 before the Ok reply and never re-sends it. Call \
-                 ScriptSpec::priming_snapshot.",
+            assert!(
+                !spec.priming.is_empty(),
+                "a scripted server whose client sends ATTACH_TERMINAL must declare \
+                 priming bootstrap frames. Call ScriptSpec::priming_snapshot."
             );
-            out.push(priming);
+            out.extend(spec.priming.clone());
             out.push(FrameKind::CommandResult {
                 request_id,
                 result: CommandResult::Ok,

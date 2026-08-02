@@ -688,6 +688,32 @@ impl<E: EngineAdapter> SessionKernel<E> {
             engine: &replica.engine,
         })
     }
+    /// Borrow the published engine replica directly for frontend projection.
+    #[must_use]
+    pub fn published_engine(&self, terminal_id: &TerminalId) -> Option<&E::Replica> {
+        Some(&self.terminals.get(terminal_id)?.published.as_ref()?.engine)
+    }
+
+
+    /// Mutably borrow a published engine for frontend-local controlled operations.
+    ///
+    /// Wire bootstrap, history, and live bytes must still enter through
+    /// [`Self::update`]. This is only for adapter-owned viewport controls that
+    /// do not alter protocol sequencing.
+    #[must_use]
+    pub fn published_engine_mut(
+        &mut self,
+        terminal_id: &TerminalId,
+    ) -> Option<&mut E::Replica> {
+        Some(
+            &mut self
+                .terminals
+                .get_mut(terminal_id)?
+                .published
+                .as_mut()?
+                .engine,
+        )
+    }
 
     /// Borrow the unpublished staging replica for one terminal.
     #[must_use]
