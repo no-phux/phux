@@ -53,7 +53,9 @@ use super::{OverlayCommand, RenderOverlay};
 use crate::render::Theme;
 
 /// The context-menu gesture table for the help overlay's `Mouse & menus`
-/// section (phux-i0e8.10.3). COLOCATED with the [`ContextMenu`] handlers
+/// section (phux-i0e8.10.3).
+///
+/// COLOCATED with the [`ContextMenu`] handlers
 /// below; the `help_table_matches_handler_arms` adjacency test drives
 /// each in-menu row through the real handler. The `right-click` open
 /// gesture itself is dispatcher-owned (the ADR-0058 arms in

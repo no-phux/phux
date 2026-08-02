@@ -49,7 +49,9 @@ use crate::attach::multi_pane::PaneLayout;
 use crate::render::overlay::help::HardcodedBinding;
 
 /// The divider drag-resize table for the help overlay's `Mouse & menus`
-/// section (phux-i0e8.10.3). COLOCATED with the divider layer: the drag
+/// section (phux-i0e8.10.3).
+///
+/// COLOCATED with the divider layer: the drag
 /// itself is driven by the dispatcher's ADR-0048 grab, whose targets are
 /// the `divider_hits` that `compute_layout` produces alongside the glyph
 /// cells this module paints. The `help_table_targets_exist` adjacency

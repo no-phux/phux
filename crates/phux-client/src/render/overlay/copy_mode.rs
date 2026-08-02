@@ -22,7 +22,9 @@ use super::{
 const WHEEL_SCROLL_LINES: isize = 3;
 
 /// Copy-mode's key table for the help overlay's `Copy mode` section
-/// (phux-i0e8.10.3). COLOCATED with the `handle_key` / `handle_mouse`
+/// (phux-i0e8.10.3).
+///
+/// COLOCATED with the `handle_key` / `handle_mouse`
 /// arms below on purpose: every row must map to a real handler arm, and
 /// the `help_table_matches_handler_arms` adjacency test holds the two in
 /// lockstep — change a key here or there and the other side breaks

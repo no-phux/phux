@@ -73,7 +73,9 @@ pub const AGENTS_EMPTY: &str = "no agents";
 pub const COLLAPSE_GLYPH: &str = "‹";
 
 /// The sidebar's click-target table for the help overlay's
-/// `Mouse & menus` section (phux-i0e8.10.3). COLOCATED with [`hit_test`]
+/// `Mouse & menus` section (phux-i0e8.10.3).
+///
+/// COLOCATED with [`hit_test`]
 /// and the row model it reads, and REUSING the affordance-label consts
 /// above so a rename breaks the help text visibly instead of letting it
 /// rot. The `help_table_matches_hit_targets` adjacency test drives each
