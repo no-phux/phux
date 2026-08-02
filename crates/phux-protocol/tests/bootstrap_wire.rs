@@ -15,8 +15,8 @@ use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
     FrameKind, HistoryRejectionReason, HistoryTombstoneReason, MAX_HISTORY_CURSOR_BYTES,
     MAX_HISTORY_PAGE_ROWS, TYPE_ATTACH_READY, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK,
-    TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED,
-    TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TombstoneReason,
+    TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_HELLO_OK, TYPE_HISTORY_PAGE,
+    TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TombstoneReason,
 };
 
 fn stream(raw: u64) -> StreamId {
@@ -130,6 +130,9 @@ fn protocol_07_discriminants_are_exact_and_snapshot_slot_is_retired() {
     assert_eq!(TYPE_BOOTSTRAP_TOMBSTONE, 0x97);
     assert_eq!(TYPE_HISTORY_TOMBSTONE, 0x98);
     assert_eq!(TYPE_HISTORY_REJECTED, 0x99);
+    assert_eq!(BootstrapProfileKind::NativeState as u8, 0x08);
+    assert_eq!(BootstrapProfile::NATIVE_STATE_TAG, 3);
+    assert_eq!(BootstrapProfileSet::from_wire(0x01).as_wire(), 0);
 
     let retired = [0, 0, 0, 1, 0x91];
     assert_eq!(
@@ -923,6 +926,70 @@ fn every_native_required_feature_is_strict() {
             "partial native features must reject when no synthesis profile is common"
         );
     }
+}
+
+#[test]
+fn versioned_native_offer_forces_mixed_peers_to_synthesis_or_rejection() {
+    const LEGACY_NATIVE_BIT: u8 = 0x01;
+    const SYNTHESIZED_RAW_BIT: u8 = 0x02;
+    const LEGACY_PROFILE_MASK: u8 = 0x07;
+
+    let new_server = BootstrapCapabilities::new().with_native(
+        EngineCodec::LibghosttyCheckpointV2,
+        EngineFeatureSet::required_native(),
+    );
+    let new_offer_as_seen_by_old_server = new_server.profiles.as_wire() & LEGACY_PROFILE_MASK;
+    let old_server_selection = if new_offer_as_seen_by_old_server & LEGACY_NATIVE_BIT != 0 {
+        LEGACY_NATIVE_BIT
+    } else if new_offer_as_seen_by_old_server & SYNTHESIZED_RAW_BIT != 0 {
+        SYNTHESIZED_RAW_BIT
+    } else {
+        0
+    };
+    assert_eq!(
+        old_server_selection, SYNTHESIZED_RAW_BIT,
+        "an old server must not mistake the versioned native offer for legacy native"
+    );
+
+    let mut legacy_hello_ok = Vec::new();
+    tlv_field(&mut legacy_hello_ok, 1, &0_u16.to_be_bytes());
+    tlv_field(&mut legacy_hello_ok, 2, &7_u16.to_be_bytes());
+    tlv_field(&mut legacy_hello_ok, 3, &0_u16.to_be_bytes());
+    tlv_field(&mut legacy_hello_ok, 4, &[1, 0, 0, 0, 0]);
+    tlv_field(&mut legacy_hello_ok, 5, b"legacy-server");
+    tlv_field(
+        &mut legacy_hello_ok,
+        6,
+        &[0, EngineCodec::LibghosttyCheckpointV2.as_wire(), 0, 0, 0, 7],
+    );
+    assert_eq!(
+        FrameKind::decode(&framed(TYPE_HELLO_OK, &legacy_hello_ok)).unwrap_err(),
+        DecodeError::UnknownEnumValue {
+            field: "BootstrapProfile",
+            value: 0,
+        },
+        "a new client must never accept the retired selected-profile tag"
+    );
+
+    let old_client_profiles =
+        BootstrapProfileSet::from_wire(LEGACY_NATIVE_BIT | SYNTHESIZED_RAW_BIT);
+    let old_client = ClientCapabilities::new().with_bootstrap(
+        BootstrapCapabilities::new().with_profiles(old_client_profiles),
+    );
+    assert_eq!(
+        select_bootstrap_profile(&old_client, &new_server).unwrap().0,
+        BootstrapProfile::SynthesizedVtRaw,
+        "a new server must ignore the retired legacy native bit"
+    );
+
+    let old_native_only = ClientCapabilities::new().with_bootstrap(
+        BootstrapCapabilities::new()
+            .with_profiles(BootstrapProfileSet::from_wire(LEGACY_NATIVE_BIT)),
+    );
+    assert!(
+        select_bootstrap_profile(&old_native_only, &new_server).is_err(),
+        "legacy native without a shared synthesized profile must fail before attach"
+    );
 }
 
 #[test]

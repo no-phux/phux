@@ -1988,7 +1988,10 @@ mod tests {
             &mut effects,
         );
         assert!(!rejected.resync_required);
-        assert!(rejected.history_request.is_some());
+        assert!(
+            rejected.history_request.is_none(),
+            "requirements above the negotiated row cap stay idle"
+        );
         let tombstoned = route_engine_frame(
             &FrameKind::HistoryTombstone {
                 terminal_id: terminal_id.clone(),

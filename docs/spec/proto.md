@@ -272,9 +272,10 @@ OutputMode = enum (u8) {
 }
 
 BootstrapProfileKind = bitset (u8) {
-    NativeState             = 0x01,
     SynthesizedVtRaw        = 0x02,
     SynthesizedVtStateSync  = 0x04,
+    NativeState             = 0x08,
+    // 0x01 is permanently retired: incomplete pre-bounded-history NativeState.
 }
 
 EngineCodecSet = bitset (u64) {
@@ -289,12 +290,13 @@ EngineFeatureSet = bitset (u32) {
 }
 
 BootstrapProfile = tagged_union {
-    NativeState {                          // tag 0
+    SynthesizedVtRaw,                      // tag 1
+    SynthesizedVtStateSync,                // tag 2
+    NativeState {                          // tag 3
         codec: EngineCodec,                // exact u8 version: v2 = 2
         features: EngineFeatureSet,
     },
-    SynthesizedVtRaw,                      // tag 1
-    SynthesizedVtStateSync,                // tag 2
+    // tag 0 is permanently retired: incomplete pre-bounded-history NativeState.
 }
 ```
 
@@ -303,9 +305,12 @@ exact checkpoint plus byte-identical raw PTY continuation; there is no native
 StateSync value to encode. `OutputMode` chooses a preferred synthesized profile
 only. Native is selected first when both peers advertise it, share an exact
 codec, and the feature intersection contains all four required v2 features,
-including `BOUNDED_HISTORY_CONTROL`. Otherwise the selected synthesized variant
-must be in both advertised sets.
-No fallback occurs after HELLO_OK.
+including `BOUNDED_HISTORY_CONTROL`. The current native offer bit/tag are
+`0x08`/`3`; legacy native bit/tag `0x01`/`0` are permanently retired and ignored,
+so mixed old/new 0.7 peers fall back to a commonly advertised synthesized
+profile or fail with `CODEC_UNAVAILABLE` before attach. Otherwise the selected
+synthesized variant must be in both advertised sets. No fallback occurs after
+HELLO_OK.
 
 `ClientCapabilities` is one positional sub-record inside HELLO field 5. Protocol
 0.7 fixes this exact order:

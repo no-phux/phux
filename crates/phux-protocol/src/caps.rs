@@ -220,7 +220,11 @@ impl Default for BootstrapLimits {
 #[non_exhaustive]
 pub enum BootstrapProfileKind {
     /// Exact libghostty checkpoint state followed by byte-identical raw PTY output.
-    NativeState = 1 << 0,
+    ///
+    /// Wire bit `0x01` is permanently retired: pre-bounded-history 0.7 peers
+    /// used it for an incomplete native contract. The versioned `0x08` offer
+    /// makes mixed peers select synthesized VT or fail before attach.
+    NativeState = 1 << 3,
     /// Server-synthesized VT bootstrap followed by raw compatibility output.
     SynthesizedVtRaw = 1 << 1,
     /// Server-synthesized VT bootstrap followed by StateSync output.
@@ -590,8 +594,11 @@ pub enum BootstrapProfile {
 }
 
 impl BootstrapProfile {
-    /// Wire tag for `NativeState`.
-    pub const NATIVE_STATE_TAG: u8 = 0;
+    /// Wire tag for bounded-history `NativeState`.
+    ///
+    /// Tag `0` is permanently retired with the incomplete legacy native
+    /// profile; a current peer never decodes it as native.
+    pub const NATIVE_STATE_TAG: u8 = 3;
     /// Wire tag for `SynthesizedVtRaw`.
     pub const SYNTHESIZED_VT_RAW_TAG: u8 = 1;
     /// Wire tag for `SynthesizedVtStateSync`.
