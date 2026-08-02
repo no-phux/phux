@@ -9,6 +9,41 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.8.0](https://github.com/phall1/phux/compare/v0.7.0...v0.8.0) (2026-08-02)
+
+
+### Features
+
+* **agent:** restore native sessions across pane restarts ([d491dbe](https://github.com/phall1/phux/commit/d491dbe74eb33de078f6d9942be29254b6b0e8fe))
+* **agents:** append cache-preserving fleet context ([#336](https://github.com/phall1/phux/issues/336)) ([3e7807c](https://github.com/phall1/phux/commit/3e7807c3f8e45e16fe9506616e8caeaaf185548c))
+* **client:** populate the help overlay hardcoded section from colocated tables ([4a8c198](https://github.com/phall1/phux/commit/4a8c1984e925f32105c7abe289d245aecc707ed2))
+* **cli:** error-remedy pass salvage -- explain helper, no_server and attach remedy bars ([5ec6581](https://github.com/phall1/phux/commit/5ec6581f6970abb6b17d39867ade2a7806d1ff18))
+* **cli:** every error names its remedy -- no-server bar, doctor pointers, no debug leaks ([d47b1f8](https://github.com/phall1/phux/commit/d47b1f81b883e112165e610d6fcc84a3edcb3b4e))
+* **cli:** make --socket a root global with teaching errors, add ADR-0065 ([bb259fc](https://github.com/phall1/phux/commit/bb259fc5100120b1baa68b1feda92db27b1b8470))
+* **config:** close the widget opts surface; universal style; session-name format ([adbc8fb](https://github.com/phall1/phux/commit/adbc8fbc9a07fdc609f270e50eadff8039d42c13))
+* **doctor:** report log and state paths; surface doctor and logs in README and QUICKSTART ([a62a997](https://github.com/phall1/phux/commit/a62a9978e7f884fa9388fb826fc72a048b1f6e3b))
+* **protocol,server,cli:** cross-session pane moves via MOVE_TERMINAL (phux-p39) ([c2e003e](https://github.com/phall1/phux/commit/c2e003e172ae6d905aa245c18a0efe0de7d62a79))
+
+
+### Bug Fixes
+
+* **client:** track pane size in copy-mode across a resize (phux-d26y) ([2b4eadc](https://github.com/phall1/phux/commit/2b4eadcbb2bdfe166ec65f543a5f02b966fe5093))
+* **cli:** settle clap's stdout writes so --help/--version survive a closed reader under dhat-heap ([8d9eb6c](https://github.com/phall1/phux/commit/8d9eb6c4002ae992dddf81b3ebc5d144dd82dc9a))
+* **move-pane:** harden cross-session transaction ([b26a0d0](https://github.com/phall1/phux/commit/b26a0d0b6084d572e7ae831a7433fd2f5eb4e731))
+* **pi:** arbitrate global and project package copies ([#334](https://github.com/phall1/phux/issues/334)) ([d68e3a1](https://github.com/phall1/phux/commit/d68e3a1df9b6a2136d1cdb45d3dc32b19bd0cc1f))
+
+
+### Refactors
+
+* cull -4,865 lines, test suite 135s -&gt; 54s, zero coverage loss ([#339](https://github.com/phall1/phux/issues/339)) ([4278179](https://github.com/phall1/phux/commit/42781794f1b09cf6c1bd71afe2ff60c0d7ac4582))
+
+
+### Documentation
+
+* **adr:** renumber native agent-session restore to 0067, fixing the 0066 collision ([#337](https://github.com/phall1/phux/issues/337)) ([b5b037a](https://github.com/phall1/phux/commit/b5b037af24326ef49826f76ee81337abfaaea0a5))
+* **adr:** renumber native agent-session restore to 0068, repairing the index ([e36c1c8](https://github.com/phall1/phux/commit/e36c1c8954968d7d8f1d129fd84e89b3a5065e68))
+* **readme:** explain what phux is in plain language, diagram the wire ([#333](https://github.com/phall1/phux/issues/333)) ([a045b25](https://github.com/phall1/phux/commit/a045b25eda95dd43651a4965801cd715eb3ba3c0))
+
 ## [0.7.0](https://github.com/phall1/phux/compare/v0.6.0...v0.7.0) (2026-08-02)
 
 
