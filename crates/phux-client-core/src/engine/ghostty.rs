@@ -31,7 +31,7 @@ use super::{
     EngineHistoryProjection, EngineProjectionOrigin, EngineProjectionRow, EngineSearchMatch,
     EngineSend, HistoryApplyOutcome,
 };
-use crate::history::DocumentAnchorId;
+use crate::history::{DocumentAnchorId, MAX_HISTORY_PAGE_ROWS};
 
 const CHECKPOINT_VERSION: u16 = EngineCodec::LibghosttyCheckpointV2 as u8 as u16;
 const CHECKPOINT_IDENTITY: &str = "ghostty.snapshot.v1-v2.incremental.v1";
@@ -414,13 +414,6 @@ impl EngineAdapter for GhosttyAdapter {
         replica.set_scrollback_max_bytes(replica.history_max_bytes)?;
         replica.set_scrollback_max_lines(replica.history_max_lines)?;
         Ok(())
-    }
-
-    fn total_rows(&self, replica: &Self::Replica) -> Result<u64, Self::Error> {
-        let Some(terminal) = replica.terminal() else {
-            return Ok(0);
-        };
-        Ok(u64::try_from(terminal.total_rows()?).unwrap_or(u64::MAX))
     }
 
     fn clear_document_state(&mut self, replica: &mut Self::Replica) {
@@ -1663,7 +1656,7 @@ mod tests {
     }
 
     #[test]
-    fn native_history_enforces_cumulative_byte_and_line_limits() {
+    fn native_history_bounds_every_projection_under_page_granular_storage() {
         let records = capture_records();
         let ready = records
             .iter()
@@ -1687,23 +1680,24 @@ mod tests {
         adapter
             .configure_history_budget(&mut replica, 64 * 1024, 2)
             .expect("engine history limits");
+        let mut physical_high_water = 0;
         for (_, record) in &records[ready + 1..] {
             adapter
                 .apply_history_page(&mut replica, record, &mut effects)
                 .expect("bounded history unit");
-            assert!(
+            physical_high_water = physical_high_water.max(
                 replica
                     .terminal()
                     .expect("live terminal")
                     .scrollback_rows()
-                    .expect("scrollback rows")
-                    <= 2
+                    .expect("scrollback rows"),
             );
+            let projection = adapter
+                .project_history(&mut replica, 80, EngineProjectionOrigin::Tail, 2)
+                .expect("bounded projection");
+            assert!(projection.rows.len() <= 2);
         }
-        let projection = adapter
-            .project_history(&mut replica, 80, EngineProjectionOrigin::Tail, 100)
-            .expect("bounded projection");
-        assert!(projection.rows.len() <= 2);
+        assert!(physical_high_water <= MAX_HISTORY_PAGE_ROWS as usize);
     }
 
     #[test]

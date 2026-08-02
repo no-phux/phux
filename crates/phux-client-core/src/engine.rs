@@ -191,11 +191,6 @@ pub trait EngineAdapter {
         Ok(())
     }
 
-    /// Current engine-owned total row count for exact import/output deltas.
-    fn total_rows(&self, _replica: &Self::Replica) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
-
     /// Release all engine-owned tracked document state.
     fn clear_document_state(&mut self, _replica: &mut Self::Replica) {}
 

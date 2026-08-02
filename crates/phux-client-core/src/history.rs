@@ -441,6 +441,19 @@ impl HistoryCache {
             }
             return Err(HistoryCacheError::DuplicateConflict);
         }
+        if self.state != HistoryLoadState::Loading || self.next_cursor.as_ref() != Some(cursor) {
+            return Err(HistoryCacheError::Gap);
+        }
+        let expected = self.next_page_seq.unwrap_or(1);
+        if page_seq == 0 || page_seq != expected {
+            return Err(HistoryCacheError::SequenceGap {
+                expected,
+                actual: page_seq,
+            });
+        }
+        if next_cursor == Some(cursor) && page_seq == u64::MAX {
+            return Err(HistoryCacheError::SequenceExhausted);
+        }
         if payload.is_empty() {
             return Err(HistoryCacheError::EmptyPayload);
         }
@@ -456,19 +469,6 @@ impl HistoryCache {
                 required: declared_rows as usize,
                 budget: self.request_max_rows as usize,
             });
-        }
-        if self.state != HistoryLoadState::Loading || self.next_cursor.as_ref() != Some(cursor) {
-            return Err(HistoryCacheError::Gap);
-        }
-        let expected = self.next_page_seq.unwrap_or(1);
-        if page_seq == 0 || page_seq != expected {
-            return Err(HistoryCacheError::SequenceGap {
-                expected,
-                actual: page_seq,
-            });
-        }
-        if next_cursor == Some(cursor) && page_seq == u64::MAX {
-            return Err(HistoryCacheError::SequenceExhausted);
         }
         let required_bytes = self.pinned_bytes.saturating_add(payload.len());
         if required_bytes > self.config.max_bytes {
