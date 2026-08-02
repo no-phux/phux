@@ -2487,6 +2487,7 @@ mod tests {
                                 history_cursor: None,
                             },
                         ],
+                        retained_bytes: b"opaque-checkpoint".len(),
                         base_seq: 0,
                     }))
                     .expect("initial native reply");

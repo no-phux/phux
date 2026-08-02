@@ -358,6 +358,11 @@ pub struct SnapshotRequest {
 pub struct NativeBootstrapReply {
     /// Bounded BEGIN/CHUNK/READY sequence for the per-client pump to publish.
     pub frames: Vec<FrameKind>,
+    /// Aggregate heap capacity retained by opaque frame payloads.
+    ///
+    /// This may exceed their wire lengths and must be charged to the
+    /// connection-wide bootstrap staging budget.
+    pub retained_bytes: usize,
     /// Actor-global raw output cut included by the checkpoint.
     pub base_seq: u64,
 }

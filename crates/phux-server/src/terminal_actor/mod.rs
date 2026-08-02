@@ -2896,6 +2896,9 @@ impl TerminalActor {
             let mut capture = manager.capture_bounded(limits, capture_bytes, max_chunks)?;
             let mut chunk_seq = 0_u32;
             let mut retained_bytes = 0_usize;
+            let scratch_bytes = native_step_bytes(capture_bytes, 0, chunk_bytes)?;
+            let mut scratch = reserve_native_bytes(scratch_bytes)?;
+            scratch.resize(scratch_bytes, 0);
             loop {
                 if frames.len() == max_frames - 1 {
                     return Err(crate::native_state::NativeStateError::LimitExceeded);
@@ -2903,11 +2906,10 @@ impl TerminalActor {
                 frames
                     .try_reserve(1)
                     .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
-                let step_bytes = native_step_bytes(capture_bytes, retained_bytes, chunk_bytes)?;
-                let mut payload = reserve_native_bytes(step_bytes)?;
-                payload.resize(step_bytes, 0);
+                let step_bytes = native_step_bytes(capture_bytes, retained_bytes, chunk_bytes)?
+                    .min(scratch.len());
                 let (ready, payload_len) = {
-                    let event = capture.step(&mut payload)?;
+                    let event = capture.step(&mut scratch[..step_bytes])?;
                     (
                         matches!(
                             event.kind,
@@ -2916,11 +2918,12 @@ impl TerminalActor {
                         event.bytes.len(),
                     )
                 };
+                let mut payload = reserve_native_bytes(payload_len)?;
+                payload.extend_from_slice(&scratch[..payload_len]);
                 retained_bytes = retained_bytes
-                    .checked_add(payload_len)
+                    .checked_add(payload.capacity())
                     .filter(|bytes| *bytes <= capture_bytes)
                     .ok_or(crate::native_state::NativeStateError::LimitExceeded)?;
-                payload.truncate(payload_len);
                 frames.push(FrameKind::BootstrapChunk {
                     terminal_id: terminal_id.clone(),
                     stream_id,
@@ -2940,12 +2943,12 @@ impl TerminalActor {
             frames
                 .try_reserve(1)
                 .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
+            cursor_bytes.extend_from_slice(&cursor);
             let total_retained_bytes = retained_bytes
-                .checked_add(cursor.len())
+                .checked_add(cursor_bytes.capacity())
                 .filter(|bytes| *bytes <= max_bytes)
                 .ok_or(crate::native_state::NativeStateError::LimitExceeded)?;
             manager.retain(owner, cursor, continuation)?;
-            cursor_bytes.extend_from_slice(&cursor);
             debug_assert!(total_retained_bytes <= max_bytes);
             frames.push(FrameKind::BootstrapReady {
                 terminal_id: terminal_id.clone(),
@@ -2953,11 +2956,11 @@ impl TerminalActor {
                 bootstrap_id,
                 history_cursor: Some(Bytes::from(cursor_bytes)),
             });
-            Ok((frames, cursor))
+            Ok((frames, cursor, total_retained_bytes))
         })();
 
         let mut retained_cursor = None;
-        let result = result.map(|(frames, cursor)| {
+        let result = result.map(|(frames, cursor, retained_bytes)| {
             retained_cursor = Some(cursor);
             self.native_cursor_owners.insert(
                 (owner, cursor),
@@ -2969,7 +2972,11 @@ impl TerminalActor {
                     bootstrap_id,
                 },
             );
-            NativeBootstrapReply { frames, base_seq }
+            NativeBootstrapReply {
+                frames,
+                retained_bytes,
+                base_seq,
+            }
         });
         if reply.send(result).is_err()
             && let Some(cursor) = retained_cursor
@@ -5052,6 +5059,28 @@ mod tests {
                     capture.base_seq, 1,
                     "native request must run after one bounded ready PTY turn"
                 );
+                let retained_capacity = capture
+                    .frames
+                    .into_iter()
+                    .try_fold(0_usize, |total, frame| {
+                        let capacity = match frame {
+                            FrameKind::BootstrapChunk { payload, .. } => payload
+                                .try_into_mut()
+                                .expect("actor owns compact chunk allocation")
+                                .capacity(),
+                            FrameKind::BootstrapReady {
+                                history_cursor: Some(cursor),
+                                ..
+                            } => cursor
+                                .try_into_mut()
+                                .expect("actor owns compact cursor allocation")
+                                .capacity(),
+                            _ => 0,
+                        };
+                        total.checked_add(capacity)
+                    })
+                    .expect("retained capacity sum");
+                assert_eq!(capture.retained_bytes, retained_capacity);
 
                 let mut expected_seq = 1_u64;
                 let mut raw_bytes = 0_usize;

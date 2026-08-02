@@ -58,6 +58,7 @@ fn bootstrap_source_ceiling(
 #[derive(Debug)]
 struct AdaptedBootstrap {
     payloads: Vec<bytes::Bytes>,
+    retained_bytes: usize,
     peak_bytes: usize,
 }
 
@@ -113,6 +114,7 @@ fn adapt_bootstrap_snapshot(
     }
     Ok(AdaptedBootstrap {
         payloads,
+        retained_bytes: retained_output,
         peak_bytes,
     })
 }
@@ -191,12 +193,12 @@ impl BootstrapStagingBudget {
         self.max_frames.saturating_sub(self.staged_frames)
     }
 
+    #[cfg(test)]
     fn append(
         &mut self,
         staged: &mut Vec<FrameKind>,
         incoming: &mut Vec<FrameKind>,
     ) -> Result<(), ()> {
-        let incoming_frames = incoming.len();
         let incoming_bytes = incoming
             .iter()
             .try_fold(0_usize, |total, frame| {
@@ -209,6 +211,16 @@ impl BootstrapStagingBudget {
                 })
             })
             .ok_or(())?;
+        self.append_accounted(staged, incoming, incoming_bytes)
+    }
+
+    fn append_accounted(
+        &mut self,
+        staged: &mut Vec<FrameKind>,
+        incoming: &mut Vec<FrameKind>,
+        incoming_bytes: usize,
+    ) -> Result<(), ()> {
+        let incoming_frames = incoming.len();
         let next_frames = self.staged_frames.checked_add(incoming_frames).ok_or(())?;
         let next_bytes = self.staged_bytes.checked_add(incoming_bytes).ok_or(())?;
         if next_frames > self.max_frames || next_bytes > self.max_bytes {
@@ -2246,6 +2258,7 @@ pub(crate) async fn handle_attach(
                 fail_prepublication!("state-sync bootstrap adaptation exceeded source budget");
             };
             debug_assert!(adapted.peak_bytes <= staging_budget.remaining_bytes());
+            let retained_bytes = adapted.retained_bytes;
             let payloads = adapted.payloads;
             let Ok(mut frames) = synthesized_bootstrap_frames(
                 wire_terminal_id,
@@ -2261,7 +2274,7 @@ pub(crate) async fn handle_attach(
                 fail_prepublication!("state-sync bootstrap exceeded negotiated bounds");
             };
             if staging_budget
-                .append(&mut bootstrap_frames, &mut frames)
+                .append_accounted(&mut bootstrap_frames, &mut frames, retained_bytes)
                 .is_err()
             {
                 fail_prepublication!("aggregate bootstrap staging budget exceeded");
@@ -2299,7 +2312,11 @@ pub(crate) async fn handle_attach(
                 Ok(Ok(mut reply)) => {
                     let cut = reply.base_seq;
                     if staging_budget
-                        .append(&mut bootstrap_frames, &mut reply.frames)
+                        .append_accounted(
+                            &mut bootstrap_frames,
+                            &mut reply.frames,
+                            reply.retained_bytes,
+                        )
                         .is_err()
                     {
                         fail_prepublication!("aggregate bootstrap staging budget exceeded");
@@ -2364,6 +2381,7 @@ pub(crate) async fn handle_attach(
             fail_prepublication!("synthesized bootstrap adaptation exceeded source budget");
         };
         debug_assert!(adapted.peak_bytes <= staging_budget.remaining_bytes());
+        let retained_bytes = adapted.retained_bytes;
         let payloads = adapted.payloads;
         let Ok(mut frames) = synthesized_bootstrap_frames(
             wire_terminal_id,
@@ -2379,7 +2397,7 @@ pub(crate) async fn handle_attach(
             fail_prepublication!("synthesized bootstrap exceeded negotiated bounds");
         };
         if staging_budget
-            .append(&mut bootstrap_frames, &mut frames)
+            .append_accounted(&mut bootstrap_frames, &mut frames, retained_bytes)
             .is_err()
         {
             fail_prepublication!("aggregate bootstrap staging budget exceeded");
@@ -2620,7 +2638,127 @@ mod tests {
                 .sum::<usize>(),
             source_capacity,
         );
+        assert_eq!(adapted.retained_bytes, source_capacity);
         assert!(adapted.peak_bytes <= peak_budget);
+    }
+
+    #[test]
+    fn aggregate_staging_charges_many_tiny_native_records_by_capacity() {
+        const RECORDS: usize = 64;
+        const RECORD_CAPACITY: usize = 1_024;
+        let retained_per_pane = RECORDS * RECORD_CAPACITY;
+        let mut budget = BootstrapStagingBudget::with_limits(retained_per_pane * 3, usize::MAX);
+        let mut staged = Vec::new();
+
+        for pane in 0..4_u32 {
+            let terminal_id = phux_protocol::ids::TerminalId::local(pane + 1);
+            let stream_id = StreamId::new(u64::from(pane) + 1).expect("stream id");
+            let bootstrap_id = BootstrapId::new(u64::from(pane) + 1).expect("bootstrap id");
+            let mut frames = Vec::new();
+            frames.push(FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::NativeState {
+                    codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+                },
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            });
+            let mut retained_bytes = 0_usize;
+            for chunk_seq in 0..RECORDS {
+                let mut record = Vec::with_capacity(RECORD_CAPACITY);
+                record.push(b'x');
+                retained_bytes += record.capacity();
+                frames.push(FrameKind::BootstrapChunk {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq: u32::try_from(chunk_seq).expect("chunk sequence"),
+                    payload: bytes::Bytes::from(record),
+                });
+            }
+            frames.push(FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            });
+            let wire_bytes = frames
+                .iter()
+                .map(|frame| match frame {
+                    FrameKind::BootstrapChunk { payload, .. } => payload.len(),
+                    _ => 0,
+                })
+                .sum::<usize>();
+            assert_eq!(retained_bytes, retained_per_pane);
+            assert!(retained_bytes > wire_bytes);
+
+            let result = budget.append_accounted(&mut staged, &mut frames, retained_bytes);
+            assert_eq!(result.is_ok(), pane < 3);
+        }
+        assert_eq!(budget.staged_bytes, retained_per_pane * 3);
+    }
+
+    #[test]
+    fn aggregate_staging_charges_tiny_rewrites_by_retained_capacity() {
+        fn kitty_snapshot() -> crate::grid::SnapshotBytes {
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(64 * 1024).expect("kitty reserve");
+            bytes.extend_from_slice(b"\x1b_Gf=100,a=T;");
+            bytes.resize((64 * 1024) - 2, b'A');
+            bytes.extend_from_slice(b"\x1b\\");
+            crate::grid::SnapshotBytes {
+                cols: 80,
+                rows: 24,
+                bytes,
+                scrollback: Vec::new(),
+            }
+        }
+        let caps = ClientCapabilities::default()
+            .with_color_support(phux_protocol::caps::ColorSupport::Indexed256)
+            .with_image_protocols(phux_protocol::caps::ImageProtocolSet::new());
+        let sample =
+            adapt_bootstrap_snapshot(kitty_snapshot(), caps, 2 * 64 * 1024).expect("rewrite");
+        let retained_per_pane = sample.retained_bytes;
+        let wire_per_pane = sample.payloads.iter().map(bytes::Bytes::len).sum::<usize>();
+        assert!(
+            retained_per_pane > wire_per_pane,
+            "dropped Kitty payload retains rewrite allocation capacity"
+        );
+        drop(sample);
+
+        let mut budget = BootstrapStagingBudget::with_limits(retained_per_pane * 3, usize::MAX);
+        let mut staged = Vec::new();
+        for pane in 0..4_u32 {
+            let adapted = adapt_bootstrap_snapshot(
+                kitty_snapshot(),
+                caps,
+                retained_per_pane.checked_mul(2).expect("peak budget"),
+            )
+            .expect("bounded pane rewrite");
+            let retained_bytes = adapted.retained_bytes;
+            let mut frames = synthesized_bootstrap_frames(
+                phux_protocol::ids::TerminalId::local(pane + 1),
+                StreamId::new(u64::from(pane) + 1).expect("stream id"),
+                BootstrapId::new(u64::from(pane) + 1).expect("bootstrap id"),
+                BootstrapStreamProfile::SynthesizedVtRaw,
+                BootstrapLimits::new(
+                    phux_protocol::MAX_BOOTSTRAP_CHUNK_BYTES,
+                    phux_protocol::DEFAULT_HISTORY_PAGE_BYTES,
+                )
+                .expect("limits"),
+                80,
+                24,
+                0,
+                adapted.payloads,
+            )
+            .expect("bootstrap frames");
+            let result = budget.append_accounted(&mut staged, &mut frames, retained_bytes);
+            assert_eq!(result.is_ok(), pane < 3);
+        }
+        assert_eq!(budget.staged_bytes, retained_per_pane * 3);
     }
 
     #[test]
@@ -2844,6 +2982,7 @@ mod tests {
                         history_cursor: None,
                     },
                 ],
+                retained_bytes: b"opaque".len(),
                 base_seq: 0,
             }))
             .expect("native success reply");
