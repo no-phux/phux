@@ -187,7 +187,7 @@ rustix = { version = "0.38", default-features = false, features = ["std", "fs"] 
 tempfile.workspace = true
 
 # libghostty-vt is workspace-pinned (see workspace Cargo.toml). Build
-# requires zig 0.15.x on PATH; the nix dev shell provides it.
+# requires zig 0.16.x on PATH; the nix dev shell provides it.
 libghostty-vt.workspace = true
 
 # `defaults.cwd-inheritance = inherit-focused` (phux-cs6) opens a new pane

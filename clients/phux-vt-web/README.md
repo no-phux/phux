@@ -55,7 +55,7 @@ This crate `include_bytes!`s `vendor/ghostty-vt.wasm` at compile time. **That
 file is a gitignored build artifact** — you must generate it before building:
 
 ```sh
-# from the phux repo root, inside the nix devshell (provides zig 0.15.x):
+# from the phux repo root, inside the nix devshell (provides zig 0.16.x):
 scripts/build-vt-wasm.sh        # zig build -Demit-lib-vt -Dtarget=wasm32-freestanding
                                 # → clients/phux-vt-web/vendor/ghostty-vt.wasm
 ```

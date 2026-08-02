@@ -6,7 +6,7 @@
 # is self-contained (only import: env.log) and ships its own allocator; the
 # Rust driver in clients/phux-vt-web loads + drives it via the WebAssembly API.
 #
-# Requires zig 0.15.x (the phux nix devshell provides it). Point GHOSTTY_SRC at
+# Requires zig 0.16.x (the phux nix devshell provides it). Point GHOSTTY_SRC at
 # a ghostty checkout (default ../ghostty). Ideally pin it to the same rev
 # libghostty-vt-sys uses; see crates Cargo.toml.
 set -euo pipefail

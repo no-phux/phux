@@ -145,7 +145,7 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-          ZIG_VERSION: 0.15.2
+          ZIG_VERSION: 0.16.0
         run: |
           set -euo pipefail
           case "$TARGET" in
