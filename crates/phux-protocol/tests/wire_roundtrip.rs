@@ -434,6 +434,8 @@ proptest! {
         rows in 1_u16..=u16::MAX,
         base_seq in any::<u64>(),
         chunk_seq in any::<u32>(),
+        page_seq in 1_u64..=u64::MAX,
+        history_rows in 0_u32..=4096,
         checkpoint in proptest::collection::vec(any::<u8>(), 0..4096),
         cursor in proptest::collection::vec(any::<u8>(), 0..4096),
         next_cursor in proptest::option::of(proptest::collection::vec(any::<u8>(), 0..4096)),
@@ -472,14 +474,17 @@ proptest! {
                 bootstrap_id,
                 cursor: cursor.clone().into(),
                 max_bytes: 4096,
+                max_rows: 4096,
             },
             FrameKind::HistoryPage {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
+                page_seq,
                 cursor: cursor.into(),
                 next_cursor: next_cursor.map(Into::into),
                 payload: history.into(),
+                rows: history_rows,
             },
         ];
 

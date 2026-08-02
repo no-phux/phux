@@ -139,27 +139,39 @@ for a pane after its READY; metadata/history work never blocks its live writes.
 
 ### History, resume, and tombstones
 
-After READY, retained history is client-pull, newest-to-oldest, and lower
-priority than live output. A stream has at most one `HISTORY_REQUEST`
-outstanding. Explicit scroll demand outranks prefetch; cancel is accomplished
-by replacing/tombstoning the generation. `HISTORY_PAGE.cursor` echoes the
-request cursor; `next_cursor` is the next older opaque cursor. Absent
-`next_cursor` means the payload contains the selected codec's FINISH and reaches
-the beginning of retained history. A page is generation-bound and loading it
-must not mutate active screen, parser continuation, cursor, modes, or live
-sequence. Cursor bytes and payload validity remain engine-owned.
+After READY, retained history is client-pull, NativeState-only,
+newest-to-oldest, and lower priority than live output. A stream has at most one
+`HISTORY_REQUEST` outstanding. Each request carries required byte and row
+budgets; the server clamps them to negotiated, 4,096-row, engine, and resource
+limits before engine work.
+
+The opaque cursor is a stable engine-owned lease capability, not page identity.
+`HISTORY_PAGE.page_seq` supplies that identity: it starts at 1 per
+`(terminal, stream, bootstrap, cursor)`, advances with checked addition, and
+makes byte-identical duplicates idempotent. A conflicting duplicate, gap, or
+exhaustion invalidates only that progressive cursor. Each page carries an
+engine-authenticated row count; zero rows is legal only for non-row
+`HISTORY_BEGIN`/`FINISH` records. The terminal page has `next_cursor = None`
+and an engine-authenticated FINISH payload. Loading history must not mutate
+active screen, parser continuation, cursor, modes, live sequence, or input.
+
+`HISTORY_REJECTED` is nonterminal and preserves the cursor. Zero budgets,
+Ghostty `OutOfSpace`/a too-small budget, and temporary capture contention map
+to `ZeroLimit`, `TooSmall`, or `Busy` plus nonzero required byte/row budgets;
+the client may clamp and retry. `HISTORY_TOMBSTONE` invalidates only the exact
+cursor and derived history cache for `Stale`, `Pruned`, `Reset`, `Resize`,
+`Expired`, `Released`, `Limit`, or history `CodecFailure`. Neither status can
+retire the live BootstrapId, raw continuation, or input.
 
 Reconnect/resume is legal only when authenticated server incarnation,
 TerminalId, profile, StreamId mapping, BootstrapId, and last contiguous live
 sequence all prove continuity. Otherwise a fresh stream/cut is required.
-Stale generation, evicted cursor, codec failure, resize, relay reconnect,
-sequence gap, bounded queue overflow, or explicit reattach invalidates the old
+Stale generation, live codec failure, authoritative resize, relay reconnect,
+sequence gap, bounded raw queue overflow, or explicit reattach invalidates the
 generation with `BOOTSTRAP_TOMBSTONE` before a replacement
-`BOOTSTRAP_BEGIN`. Reasons are `RawReplayOverflow`, `OutboundGap`, `Resize`,
-`RelayReconnect`, `ExplicitReattach`, `CodecFailure`, and `Other`. After a
-tombstone, no chunk, page, output, READY, or ACK carrying that BootstrapId is
-legal; the client keeps its last published terminal until a replacement
-reaches READY.
+`BOOTSTRAP_BEGIN`. After a bootstrap tombstone, no chunk, page, output, READY,
+or ACK carrying that BootstrapId is legal; the client keeps its last published
+terminal until a replacement reaches READY.
 
 ### Geometry, resource fairness, and federation
 

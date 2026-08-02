@@ -8,22 +8,23 @@ use super::error::DecodeError;
 use super::field;
 use super::frame::Scope;
 use super::frame::{
-    ErrorCode, FrameKind, MAX_FRAME_LEN, MAX_HISTORY_CURSOR_BYTES,
-    MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL,
-    TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE,
-    TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR,
-    TYPE_EVENT, TYPE_FRAME_ACK, TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE,
-    TYPE_HISTORY_REQUEST, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
-    TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS,
-    TYPE_METADATA_VALUE, TYPE_PING, TYPE_PONG, TYPE_SET_METADATA, TYPE_SPAWN_TERMINAL,
-    TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT,
-    TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SPAWNED, TYPE_VIEWPORT_RESIZE,
-    TombstoneReason, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
-    decode_bootstrap_id, decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
-    decode_command_result, decode_env, decode_focus_event, decode_key_event,
-    decode_metadata_scope_key, decode_mouse_event, decode_paste_event, decode_scope,
-    decode_spawn_result, decode_stream_id, decode_string_list, decode_terminal_id,
-    decode_viewport_info,
+    ErrorCode, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN,
+    MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS, MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_ATTACH,
+    TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK,
+    TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND, TYPE_COMMAND_RESULT,
+    TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK,
+    TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED,
+    TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
+    TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_METADATA,
+    TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_PING, TYPE_PONG,
+    TYPE_SET_METADATA, TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
+    TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SPAWNED,
+    TYPE_VIEWPORT_RESIZE, TombstoneReason, decode_agent_event,
+    decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
+    decode_bootstrap_stream_profile, decode_command, decode_command_result, decode_env,
+    decode_focus_event, decode_key_event, decode_metadata_scope_key, decode_mouse_event,
+    decode_paste_event, decode_scope, decode_spawn_result, decode_stream_id, decode_string_list,
+    decode_terminal_id, decode_viewport_info,
 };
 use super::info::{decode_client_id, decode_session_snapshot};
 use crate::caps::{
@@ -915,6 +916,7 @@ impl<'a> Decoder<'a> {
                 let mut bootstrap_id = None;
                 let mut cursor = None;
                 let mut max_bytes = None;
+                let mut max_rows = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::history_request::TERMINAL_ID => {
@@ -935,28 +937,32 @@ impl<'a> Decoder<'a> {
                         field::history_request::MAX_BYTES => {
                             max_bytes = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
                         }
+                        field::history_request::MAX_ROWS => {
+                            max_rows = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
                         _ => {}
                     }
                 }
                 let max_bytes = max_bytes.ok_or(DecodeError::UnexpectedEof)?;
-                if max_bytes == 0 || max_bytes > self.max_history_page_bytes {
-                    return Err(DecodeError::BootstrapLimitExceeded);
-                }
+                let max_rows = max_rows.ok_or(DecodeError::UnexpectedEof)?;
                 FrameKind::HistoryRequest {
                     terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
                     stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
                     bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
                     cursor: cursor.ok_or(DecodeError::UnexpectedEof)?,
                     max_bytes,
+                    max_rows,
                 }
             }
             TYPE_HISTORY_PAGE => {
                 let mut terminal_id = None;
                 let mut stream_id = None;
                 let mut bootstrap_id = None;
+                let mut page_seq = None;
                 let mut cursor = None;
                 let mut next_cursor = None;
                 let mut payload = None;
+                let mut rows = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::history_page::TERMINAL_ID => {
@@ -967,6 +973,13 @@ impl<'a> Decoder<'a> {
                         }
                         field::history_page::BOOTSTRAP_ID => {
                             bootstrap_id = Some(sub!(value, decode_bootstrap_id));
+                        }
+                        field::history_page::PAGE_SEQ => {
+                            let seq = sub!(value, |d: &mut Decoder<'_>| d.read_u64_be());
+                            if seq == 0 {
+                                return Err(DecodeError::InvalidHistoryPageSequence);
+                            }
+                            page_seq = Some(seq);
                         }
                         field::history_page::CURSOR => {
                             if value.len() > MAX_HISTORY_CURSOR_BYTES {
@@ -986,6 +999,13 @@ impl<'a> Decoder<'a> {
                             }
                             payload = Some(bytes::Bytes::copy_from_slice(value));
                         }
+                        field::history_page::ROWS => {
+                            let value = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                            if value > MAX_HISTORY_PAGE_ROWS {
+                                return Err(DecodeError::HistoryRowLimitExceeded);
+                            }
+                            rows = Some(value);
+                        }
                         _ => {}
                     }
                 }
@@ -993,9 +1013,11 @@ impl<'a> Decoder<'a> {
                     terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
                     stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
                     bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    page_seq: page_seq.ok_or(DecodeError::UnexpectedEof)?,
                     cursor: cursor.ok_or(DecodeError::UnexpectedEof)?,
                     next_cursor,
                     payload: payload.ok_or(DecodeError::UnexpectedEof)?,
+                    rows: rows.ok_or(DecodeError::UnexpectedEof)?,
                 }
             }
             TYPE_BOOTSTRAP_TOMBSTONE => {
@@ -1037,6 +1059,112 @@ impl<'a> Decoder<'a> {
                     bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
                     reason: reason.ok_or(DecodeError::UnexpectedEof)?,
                     last_valid_seq: last_valid_seq.ok_or(DecodeError::UnexpectedEof)?,
+                }
+            }
+            TYPE_HISTORY_TOMBSTONE => {
+                let mut terminal_id = None;
+                let mut stream_id = None;
+                let mut bootstrap_id = None;
+                let mut cursor = None;
+                let mut reason = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::history_tombstone::TERMINAL_ID => {
+                            terminal_id = Some(sub!(value, decode_terminal_id));
+                        }
+                        field::history_tombstone::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
+                        }
+                        field::history_tombstone::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
+                        }
+                        field::history_tombstone::CURSOR => {
+                            if value.len() > MAX_HISTORY_CURSOR_BYTES {
+                                return Err(DecodeError::BootstrapLimitExceeded);
+                            }
+                            cursor = Some(bytes::Bytes::copy_from_slice(value));
+                        }
+                        field::history_tombstone::REASON => {
+                            let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                            reason = Some(HistoryTombstoneReason::from_wire(value).ok_or(
+                                DecodeError::UnknownEnumValue {
+                                    field: "HistoryTombstoneReason",
+                                    value: u32::from(value),
+                                },
+                            )?);
+                        }
+                        _ => {}
+                    }
+                }
+                FrameKind::HistoryTombstone {
+                    terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    cursor: cursor.ok_or(DecodeError::UnexpectedEof)?,
+                    reason: reason.ok_or(DecodeError::UnexpectedEof)?,
+                }
+            }
+            TYPE_HISTORY_REJECTED => {
+                let mut terminal_id = None;
+                let mut stream_id = None;
+                let mut bootstrap_id = None;
+                let mut cursor = None;
+                let mut reason = None;
+                let mut required_bytes = None;
+                let mut required_rows = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::history_rejected::TERMINAL_ID => {
+                            terminal_id = Some(sub!(value, decode_terminal_id));
+                        }
+                        field::history_rejected::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
+                        }
+                        field::history_rejected::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
+                        }
+                        field::history_rejected::CURSOR => {
+                            if value.len() > MAX_HISTORY_CURSOR_BYTES {
+                                return Err(DecodeError::BootstrapLimitExceeded);
+                            }
+                            cursor = Some(bytes::Bytes::copy_from_slice(value));
+                        }
+                        field::history_rejected::REASON => {
+                            let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                            reason = Some(HistoryRejectionReason::from_wire(value).ok_or(
+                                DecodeError::UnknownEnumValue {
+                                    field: "HistoryRejectionReason",
+                                    value: u32::from(value),
+                                },
+                            )?);
+                        }
+                        field::history_rejected::REQUIRED_BYTES => {
+                            required_bytes =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
+                        field::history_rejected::REQUIRED_ROWS => {
+                            required_rows =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
+                        _ => {}
+                    }
+                }
+                let required_bytes = required_bytes.ok_or(DecodeError::UnexpectedEof)?;
+                if required_bytes == 0 || required_bytes > self.max_history_page_bytes {
+                    return Err(DecodeError::BootstrapLimitExceeded);
+                }
+                let required_rows = required_rows.ok_or(DecodeError::UnexpectedEof)?;
+                if required_rows == 0 || required_rows > MAX_HISTORY_PAGE_ROWS {
+                    return Err(DecodeError::HistoryRowLimitExceeded);
+                }
+                FrameKind::HistoryRejected {
+                    terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    cursor: cursor.ok_or(DecodeError::UnexpectedEof)?,
+                    reason: reason.ok_or(DecodeError::UnexpectedEof)?,
+                    required_bytes,
+                    required_rows,
                 }
             }
             TYPE_DETACHED => {

@@ -183,8 +183,10 @@ pub mod history_request {
     pub const BOOTSTRAP_ID: u32 = 3;
     /// Opaque current cursor.
     pub const CURSOR: u32 = 4;
-    /// Non-zero requested maximum page bytes (`u32`).
+    /// Requested maximum page bytes (`u32`); zero is retryably rejected.
     pub const MAX_BYTES: u32 = 5;
+    /// Requested maximum page rows (`u32`); zero is retryably rejected.
+    pub const MAX_ROWS: u32 = 6;
 }
 
 /// `BOOTSTRAP_BEGIN` body fields (`docs/spec/L1.md` §4.3).
@@ -247,6 +249,10 @@ pub mod history_page {
     pub const NEXT_CURSOR: u32 = 5;
     /// Opaque selected-codec page bytes.
     pub const PAYLOAD: u32 = 6;
+    /// Non-zero page sequence within one generation-bound cursor lineage.
+    pub const PAGE_SEQ: u32 = 7;
+    /// Number of native history rows encoded by the payload (`u32`).
+    pub const ROWS: u32 = 8;
 }
 
 /// `BOOTSTRAP_TOMBSTONE` body fields (`docs/spec/L1.md` §4.6).
@@ -261,6 +267,38 @@ pub mod bootstrap_tombstone {
     pub const REASON: u32 = 4;
     /// Highest valid live sequence (`u64`).
     pub const LAST_VALID_SEQ: u32 = 5;
+}
+
+/// `HISTORY_TOMBSTONE` body fields (`docs/spec/L1.md` §4.5).
+pub mod history_tombstone {
+    /// Target `TerminalId`.
+    pub const TERMINAL_ID: u32 = 1;
+    /// Logical `StreamId`.
+    pub const STREAM_ID: u32 = 2;
+    /// Replica `BootstrapId`.
+    pub const BOOTSTRAP_ID: u32 = 3;
+    /// Opaque invalidated history cursor.
+    pub const CURSOR: u32 = 4;
+    /// `HistoryTombstoneReason` tag (`u8`).
+    pub const REASON: u32 = 5;
+}
+
+/// `HISTORY_REJECTED` body fields (`docs/spec/L1.md` §4.5).
+pub mod history_rejected {
+    /// Target `TerminalId`.
+    pub const TERMINAL_ID: u32 = 1;
+    /// Logical `StreamId`.
+    pub const STREAM_ID: u32 = 2;
+    /// Replica `BootstrapId`.
+    pub const BOOTSTRAP_ID: u32 = 3;
+    /// Opaque history cursor that was not advanced.
+    pub const CURSOR: u32 = 4;
+    /// `HistoryRejectionReason` tag (`u8`).
+    pub const REASON: u32 = 5;
+    /// Non-zero required retry byte limit (`u32`).
+    pub const REQUIRED_BYTES: u32 = 6;
+    /// Non-zero required retry row limit (`u32`).
+    pub const REQUIRED_ROWS: u32 = 7;
 }
 
 /// `BELL` body fields (`docs/spec/L1.md` §1.2).

@@ -53,6 +53,8 @@ use super::info::{
 pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
 /// Maximum bytes in one opaque engine-owned history cursor.
 pub const MAX_HISTORY_CURSOR_BYTES: usize = 4 * 1024;
+/// Hard upper bound for rows requested or reported in one native history page.
+pub const MAX_HISTORY_PAGE_ROWS: u32 = 4 * 1024;
 /// Maximum bytes in one opaque client terminal-emulator PTY reply.
 ///
 /// This matches the existing 64 KiB input-command bound and keeps a stateful
@@ -143,6 +145,12 @@ pub const TYPE_BOOTSTRAP_READY: u8 = 0x95;
 pub const TYPE_HISTORY_PAGE: u8 = 0x96;
 /// Discriminant for `BOOTSTRAP_TOMBSTONE` (server to client, `docs/spec/L1.md` §4.6).
 pub const TYPE_BOOTSTRAP_TOMBSTONE: u8 = 0x97;
+/// Discriminant for cursor-scoped `HISTORY_TOMBSTONE` (server to client,
+/// `docs/spec/L1.md` §4.5).
+pub const TYPE_HISTORY_TOMBSTONE: u8 = 0x98;
+/// Discriminant for retryable cursor-scoped `HISTORY_REJECTED` (server to
+/// client, `docs/spec/L1.md` §4.5).
+pub const TYPE_HISTORY_REJECTED: u8 = 0x99;
 
 // -----------------------------------------------------------------------------
 // L3 metadata frame discriminants — SPEC §7.4 (phux-4li.2).
@@ -784,6 +792,85 @@ impl TombstoneReason {
             4 => Self::ExplicitReattach,
             5 => Self::CodecFailure,
             6 => Self::Other,
+            _ => return None,
+        })
+    }
+}
+
+/// Why one progressive history cursor can no longer be consumed.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum HistoryTombstoneReason {
+    /// The cursor is no longer current for its history lease.
+    Stale = 0,
+    /// The referenced retained rows were pruned.
+    Pruned = 1,
+    /// History capture state was reset without invalidating live state.
+    Reset = 2,
+    /// A resize invalidated historical reflow for this cursor.
+    Resize = 3,
+    /// The cursor lease expired.
+    Expired = 4,
+    /// The cursor lease was explicitly released.
+    Released = 5,
+    /// A history byte or row resource limit was reached.
+    Limit = 6,
+    /// The selected native codec rejected history capture or import.
+    CodecFailure = 7,
+}
+
+impl HistoryTombstoneReason {
+    /// Stable wire discriminant.
+    #[must_use]
+    pub const fn as_wire(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode a known history-tombstone reason.
+    #[must_use]
+    pub const fn from_wire(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::Stale,
+            1 => Self::Pruned,
+            2 => Self::Reset,
+            3 => Self::Resize,
+            4 => Self::Expired,
+            5 => Self::Released,
+            6 => Self::Limit,
+            7 => Self::CodecFailure,
+            _ => return None,
+        })
+    }
+}
+
+/// Why one history request was rejected without advancing its cursor.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum HistoryRejectionReason {
+    /// A required byte or row request limit was zero.
+    ZeroLimit = 0,
+    /// The requested limits cannot fit the next independently decodable unit.
+    TooSmall = 1,
+    /// Capture is temporarily busy; retrying the same cursor is permitted.
+    Busy = 2,
+}
+
+impl HistoryRejectionReason {
+    /// Stable wire discriminant.
+    #[must_use]
+    pub const fn as_wire(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode a known history-rejection reason.
+    #[must_use]
+    pub const fn from_wire(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::ZeroLimit,
+            1 => Self::TooSmall,
+            2 => Self::Busy,
             _ => return None,
         })
     }
@@ -1916,8 +2003,10 @@ pub enum FrameKind {
         bootstrap_id: BootstrapId,
         /// Opaque cursor returned by READY or a previous page.
         cursor: bytes::Bytes,
-        /// Non-zero requested response bound, capped by negotiated limits.
+        /// Requested response byte budget; zero receives `HISTORY_REJECTED`.
         max_bytes: u32,
+        /// Requested row budget; zero receives `HISTORY_REJECTED`.
+        max_rows: u32,
     },
     /// `HISTORY_PAGE` — one independently decodable opaque history page.
     HistoryPage {
@@ -1927,12 +2016,16 @@ pub enum FrameKind {
         stream_id: StreamId,
         /// Replica generation that issued the cursor.
         bootstrap_id: BootstrapId,
+        /// Non-zero page sequence within this generation-bound cursor lineage.
+        page_seq: u64,
         /// Opaque cursor consumed by this response.
         cursor: bytes::Bytes,
         /// Cursor for the next older page; absence means this payload ends in FINISH.
         next_cursor: Option<bytes::Bytes>,
         /// Opaque selected-codec page bytes.
         payload: bytes::Bytes,
+        /// Number of history rows encoded by this payload.
+        rows: u32,
     },
     /// `BOOTSTRAP_TOMBSTONE` — permanently invalidates one generation.
     BootstrapTombstone {
@@ -1946,6 +2039,36 @@ pub enum FrameKind {
         reason: TombstoneReason,
         /// Highest live sequence known valid for this generation.
         last_valid_seq: u64,
+    },
+    /// `HISTORY_TOMBSTONE` — invalidates one progressive history cursor only.
+    HistoryTombstone {
+        /// Target terminal.
+        terminal_id: TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Replica generation that issued the cursor.
+        bootstrap_id: BootstrapId,
+        /// Opaque invalidated history cursor.
+        cursor: bytes::Bytes,
+        /// Why progressive history for the cursor ended.
+        reason: HistoryTombstoneReason,
+    },
+    /// `HISTORY_REJECTED` — retryable refusal that preserves cursor continuity.
+    HistoryRejected {
+        /// Target terminal.
+        terminal_id: TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Replica generation that issued the cursor.
+        bootstrap_id: BootstrapId,
+        /// Opaque history cursor that was not advanced.
+        cursor: bytes::Bytes,
+        /// Why the request did not begin.
+        reason: HistoryRejectionReason,
+        /// Non-zero byte limit required for a retry.
+        required_bytes: u32,
+        /// Non-zero row limit required for a retry.
+        required_rows: u32,
     },
 
     /// `BELL` — terminal received a bell character (`docs/spec/L1.md` §1.2).
@@ -2347,6 +2470,8 @@ impl FrameKind {
             Self::BootstrapReady { .. } => TYPE_BOOTSTRAP_READY,
             Self::HistoryPage { .. } => TYPE_HISTORY_PAGE,
             Self::BootstrapTombstone { .. } => TYPE_BOOTSTRAP_TOMBSTONE,
+            Self::HistoryTombstone { .. } => TYPE_HISTORY_TOMBSTONE,
+            Self::HistoryRejected { .. } => TYPE_HISTORY_REJECTED,
             Self::Bell { .. } => TYPE_BELL,
             Self::Error { .. } => TYPE_ERROR,
             Self::GetMetadata { .. } => TYPE_GET_METADATA,
@@ -2680,6 +2805,7 @@ impl FrameKind {
                 bootstrap_id,
                 cursor,
                 max_bytes,
+                max_rows,
             } => {
                 enc.write_field_with(field::history_request::TERMINAL_ID, |e| {
                     encode_terminal_id(terminal_id, e);
@@ -2694,14 +2820,19 @@ impl FrameKind {
                 enc.write_field_with(field::history_request::MAX_BYTES, |e| {
                     e.write_u32_be(*max_bytes);
                 });
+                enc.write_field_with(field::history_request::MAX_ROWS, |e| {
+                    e.write_u32_be(*max_rows);
+                });
             }
             Self::HistoryPage {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
+                page_seq,
                 cursor,
                 next_cursor,
                 payload,
+                rows,
             } => {
                 enc.write_field_with(field::history_page::TERMINAL_ID, |e| {
                     encode_terminal_id(terminal_id, e);
@@ -2717,6 +2848,12 @@ impl FrameKind {
                     enc.write_field(field::history_page::NEXT_CURSOR, next);
                 }
                 enc.write_field(field::history_page::PAYLOAD, payload);
+                enc.write_field_with(field::history_page::PAGE_SEQ, |e| {
+                    e.write_u64_be(*page_seq);
+                });
+                enc.write_field_with(field::history_page::ROWS, |e| {
+                    e.write_u32_be(*rows);
+                });
             }
             Self::BootstrapTombstone {
                 terminal_id,
@@ -2739,6 +2876,56 @@ impl FrameKind {
                 });
                 enc.write_field_with(field::bootstrap_tombstone::LAST_VALID_SEQ, |e| {
                     e.write_u64_be(*last_valid_seq);
+                });
+            }
+            Self::HistoryTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+            } => {
+                enc.write_field_with(field::history_tombstone::TERMINAL_ID, |e| {
+                    encode_terminal_id(terminal_id, e);
+                });
+                enc.write_field_with(field::history_tombstone::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::history_tombstone::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
+                enc.write_field(field::history_tombstone::CURSOR, cursor);
+                enc.write_field_with(field::history_tombstone::REASON, |e| {
+                    e.write_u8(reason.as_wire());
+                });
+            }
+            Self::HistoryRejected {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+                required_bytes,
+                required_rows,
+            } => {
+                enc.write_field_with(field::history_rejected::TERMINAL_ID, |e| {
+                    encode_terminal_id(terminal_id, e);
+                });
+                enc.write_field_with(field::history_rejected::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::history_rejected::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
+                enc.write_field(field::history_rejected::CURSOR, cursor);
+                enc.write_field_with(field::history_rejected::REASON, |e| {
+                    e.write_u8(reason.as_wire());
+                });
+                enc.write_field_with(field::history_rejected::REQUIRED_BYTES, |e| {
+                    e.write_u32_be(*required_bytes);
+                });
+                enc.write_field_with(field::history_rejected::REQUIRED_ROWS, |e| {
+                    e.write_u32_be(*required_rows);
                 });
             }
             Self::Bell { terminal_id } => {

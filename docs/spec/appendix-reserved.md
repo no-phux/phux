@@ -24,8 +24,9 @@ For implementers extending the protocol:
 - `0x14` is allocated, `0x15` is retired, `HISTORY_REQUEST = 0x16` and
   `INPUT_TERMINAL_REPLY = 0x17` are allocated, and `0x18..=0x1F` remain open.
   `0x91` is permanently retired.
-  `BOOTSTRAP_BEGIN..BOOTSTRAP_TOMBSTONE = 0x93..=0x97` are allocated and
-  `0x98..=0x9F` remain open for hot-path messages.
+  `BOOTSTRAP_BEGIN..BOOTSTRAP_TOMBSTONE = 0x93..=0x97`,
+  `HISTORY_TOMBSTONE = 0x98`, and `HISTORY_REJECTED = 0x99` are allocated;
+  `0x9A..=0x9F` remain open for hot-path messages.
 - Message IDs `0x24..=0x2F` and `0xA3..=0xAF`: reserved for further L1
   Terminal lifecycle / per-pane control frames (phux-4li.10 allocated
   `0x22..=0x23` C→S and `0xA1..=0xA2` S→C from these ranges).

@@ -85,6 +85,13 @@ pub enum DecodeError {
     /// A bootstrap id used the reserved all-zero value.
     #[error("bootstrap id must not be zero")]
     InvalidBootstrapId,
+    /// A history page used the reserved all-zero sequence value.
+    #[error("history page sequence must not be zero")]
+    InvalidHistoryPageSequence,
+    /// A native history status used zero rows where forbidden or exceeded the
+    /// protocol row bound.
+    #[error("history page rows violate protocol limits")]
+    HistoryRowLimitExceeded,
 
     /// Bootstrap/history negotiation or payload exceeded protocol hard bounds.
     #[error("bootstrap or history payload exceeds protocol limits")]

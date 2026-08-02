@@ -22,8 +22,8 @@ use std::cell::Cell;
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
-    FrameKind, MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_BOOTSTRAP_CHUNK,
-    TYPE_INPUT_TERMINAL_REPLY,
+    FrameKind, MAX_HISTORY_CURSOR_BYTES, MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_BOOTSTRAP_CHUNK,
+    TYPE_HISTORY_REJECTED, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_TERMINAL_REPLY,
 };
 
 std::thread_local! {
@@ -237,4 +237,29 @@ fn oversized_terminal_reply_rejects_before_owned_bytes_allocation() {
         max, 0,
         "oversized terminal reply must fail before Bytes allocation"
     );
+}
+
+#[test]
+fn oversized_history_status_cursors_reject_before_owned_copy() {
+    let mut terminal = [0_u8; 5];
+    terminal[1..].copy_from_slice(&1_u32.to_be_bytes());
+    let cursor = vec![0xA5; MAX_HISTORY_CURSOR_BYTES + 1];
+    for type_byte in [TYPE_HISTORY_TOMBSTONE, TYPE_HISTORY_REJECTED] {
+        let mut body = vec![type_byte];
+        tlv_field(&mut body, 1, &terminal);
+        tlv_field(&mut body, 2, &1_u64.to_be_bytes());
+        tlv_field(&mut body, 3, &1_u64.to_be_bytes());
+        tlv_field(&mut body, 4, &cursor);
+        tlv_field(&mut body, 5, &[0]);
+        if type_byte == TYPE_HISTORY_REJECTED {
+            tlv_field(&mut body, 6, &4096_u32.to_be_bytes());
+            tlv_field(&mut body, 7, &256_u32.to_be_bytes());
+        }
+        let frame = framed(&body);
+
+        let (result, max) =
+            largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
+        assert_eq!(result.unwrap_err(), DecodeError::BootstrapLimitExceeded);
+        assert_eq!(max, 0, "oversized cursor must fail before Bytes allocation");
+    }
 }

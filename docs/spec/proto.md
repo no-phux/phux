@@ -729,8 +729,8 @@ Every conforming consumer additionally implements:
 
 - **Terminal content:** generation-bound `TERMINAL_OUTPUT`,
   `BOOTSTRAP_BEGIN`, `BOOTSTRAP_CHUNK`, `BOOTSTRAP_READY`,
-  `BOOTSTRAP_TOMBSTONE`, `HISTORY_REQUEST`, `HISTORY_PAGE`, and StateSync-only
-  `FRAME_ACK`.
+  `BOOTSTRAP_TOMBSTONE`, NativeState-only `HISTORY_REQUEST`, `HISTORY_PAGE`,
+  `HISTORY_TOMBSTONE`, `HISTORY_REJECTED`, and StateSync-only `FRAME_ACK`.
 - **Terminal lifecycle:** `TERMINAL_OPENED`, `TERMINAL_CLOSED`.
 - **Structured events:** `TERMINAL_EVENT`, `BELL`; `ALERT` is recommended.
 - **Input:** `INPUT_KEY`, `INPUT_PASTE`, `VIEWPORT_RESIZE`;
