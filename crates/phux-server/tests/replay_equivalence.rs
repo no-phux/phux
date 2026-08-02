@@ -123,7 +123,9 @@ async fn collect_until(rx: &mut Receiver<PaneOutput>, needle: &[u8]) -> Vec<u8> 
         let mut acc: Vec<u8> = Vec::new();
         loop {
             match rx.recv().await {
-                Ok(PaneOutput::Live { bytes: chunk, .. } | PaneOutput::Resync { bytes: chunk, .. }) => {
+                Ok(
+                    PaneOutput::Live { bytes: chunk, .. } | PaneOutput::Resync { bytes: chunk, .. },
+                ) => {
                     acc.extend_from_slice(&chunk);
                     if acc.windows(needle.len()).any(|w| w == needle) {
                         return acc;

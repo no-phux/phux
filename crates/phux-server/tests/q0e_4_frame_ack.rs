@@ -138,7 +138,18 @@ async fn ack_round_trip_emits_post_ack_tick() {
             let (reply_tx, reply_rx) = oneshot::channel();
             handle
                 .consumer_attach
-                .send(ConsumerAttachRequest { client_id: client, outbound: out_tx, wire_terminal_id: WIRE_TID, stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"), bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"), wants_state_sync: false, loss_tolerant: false, live_gate: tokio::sync::watch::channel(true).1, reply: reply_tx })
+                .send(ConsumerAttachRequest {
+                    client_id: client,
+                    outbound: out_tx,
+                    wire_terminal_id: WIRE_TID,
+                    stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                    bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                        .expect("test bootstrap id"),
+                    wants_state_sync: false,
+                    loss_tolerant: false,
+                    live_gate: tokio::sync::watch::channel(true).1,
+                    reply: reply_tx,
+                })
                 .await
                 .expect("send attach");
             reply_rx
@@ -163,7 +174,13 @@ async fn ack_round_trip_emits_post_ack_tick() {
             // path and must be a clean no-op.
             handle
                 .consumer_ack
-                .send(ConsumerAckRequest { client_id: client, stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"), bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"), seq: ack_seq })
+                .send(ConsumerAckRequest {
+                    client_id: client,
+                    stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                    bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                        .expect("test bootstrap id"),
+                    seq: ack_seq,
+                })
                 .await
                 .expect("send ack");
             settle().await;
@@ -204,7 +221,18 @@ async fn older_and_duplicate_acks_do_not_crash_the_actor() {
             let (reply_tx, reply_rx) = oneshot::channel();
             handle
                 .consumer_attach
-                .send(ConsumerAttachRequest { client_id: client, outbound: out_tx, wire_terminal_id: WIRE_TID, stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"), bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"), wants_state_sync: false, loss_tolerant: false, live_gate: tokio::sync::watch::channel(true).1, reply: reply_tx })
+                .send(ConsumerAttachRequest {
+                    client_id: client,
+                    outbound: out_tx,
+                    wire_terminal_id: WIRE_TID,
+                    stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                    bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                        .expect("test bootstrap id"),
+                    wants_state_sync: false,
+                    loss_tolerant: false,
+                    live_gate: tokio::sync::watch::channel(true).1,
+                    reply: reply_tx,
+                })
                 .await
                 .expect("send attach");
             reply_rx
@@ -219,8 +247,7 @@ async fn older_and_duplicate_acks_do_not_crash_the_actor() {
                     .consumer_ack
                     .send(ConsumerAckRequest {
                         client_id: client,
-                        stream_id: phux_protocol::ids::StreamId::new(1)
-                            .expect("test stream id"),
+                        stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
                         bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                             .expect("test bootstrap id"),
                         seq,
@@ -265,7 +292,18 @@ async fn ack_for_unregistered_consumer_is_silent_noop() {
             let (reply_tx, reply_rx) = oneshot::channel();
             handle
                 .consumer_attach
-                .send(ConsumerAttachRequest { client_id: real, outbound: out_tx, wire_terminal_id: WIRE_TID, stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"), bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"), wants_state_sync: false, loss_tolerant: false, live_gate: tokio::sync::watch::channel(true).1, reply: reply_tx })
+                .send(ConsumerAttachRequest {
+                    client_id: real,
+                    outbound: out_tx,
+                    wire_terminal_id: WIRE_TID,
+                    stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                    bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                        .expect("test bootstrap id"),
+                    wants_state_sync: false,
+                    loss_tolerant: false,
+                    live_gate: tokio::sync::watch::channel(true).1,
+                    reply: reply_tx,
+                })
                 .await
                 .expect("send attach");
             reply_rx
@@ -276,7 +314,13 @@ async fn ack_for_unregistered_consumer_is_silent_noop() {
             // Stray ack for a client_id that was never attached.
             handle
                 .consumer_ack
-                .send(ConsumerAckRequest { client_id: stranger, stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"), bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"), seq: 42 })
+                .send(ConsumerAckRequest {
+                    client_id: stranger,
+                    stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                    bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                        .expect("test bootstrap id"),
+                    seq: 42,
+                })
                 .await
                 .expect("send ack");
             settle().await;
@@ -319,7 +363,18 @@ async fn ack_after_detach_is_silent_noop() {
             let (reply_tx, reply_rx) = oneshot::channel();
             handle
                 .consumer_attach
-                .send(ConsumerAttachRequest { client_id: client, outbound: out_tx, wire_terminal_id: WIRE_TID, stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"), bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"), wants_state_sync: false, loss_tolerant: false, live_gate: tokio::sync::watch::channel(true).1, reply: reply_tx })
+                .send(ConsumerAttachRequest {
+                    client_id: client,
+                    outbound: out_tx,
+                    wire_terminal_id: WIRE_TID,
+                    stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                    bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                        .expect("test bootstrap id"),
+                    wants_state_sync: false,
+                    loss_tolerant: false,
+                    live_gate: tokio::sync::watch::channel(true).1,
+                    reply: reply_tx,
+                })
                 .await
                 .expect("send attach");
             reply_rx
@@ -342,7 +397,13 @@ async fn ack_after_detach_is_silent_noop() {
             // Now ack for the just-detached id. Must be a no-op.
             handle
                 .consumer_ack
-                .send(ConsumerAckRequest { client_id: client, stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"), bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"), seq: 5 })
+                .send(ConsumerAckRequest {
+                    client_id: client,
+                    stream_id: phux_protocol::ids::StreamId::new(1).expect("test stream id"),
+                    bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                        .expect("test bootstrap id"),
+                    seq: 5,
+                })
                 .await
                 .expect("send ack");
             settle().await;

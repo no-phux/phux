@@ -228,10 +228,7 @@ impl EncodedInputRequest {
         }
     }
 
-    pub(crate) fn acknowledged(
-        bytes: Vec<u8>,
-        completion: std::sync::mpsc::Sender<bool>,
-    ) -> Self {
+    pub(crate) fn acknowledged(bytes: Vec<u8>, completion: std::sync::mpsc::Sender<bool>) -> Self {
         Self {
             bytes: Bytes::from(bytes),
             completion: Some(completion),

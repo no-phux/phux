@@ -320,20 +320,17 @@ thread_local! {
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-fn reserve_native_bytes(
-    capacity: usize,
-) -> Result<bytes::BytesMut, crate::native_state::NativeStateError> {
+fn reserve_native_bytes(capacity: usize) -> Result<Vec<u8>, crate::native_state::NativeStateError> {
     #[cfg(test)]
     if FAIL_NEXT_NATIVE_HOST_ALLOC.with(|fail| fail.replace(false)) {
         return Err(crate::native_state::NativeStateError::OutOfMemory);
     }
-    let mut bytes = bytes::BytesMut::new();
+    let mut bytes = Vec::new();
     bytes
-        .try_reserve(capacity)
+        .try_reserve_exact(capacity)
         .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
     Ok(bytes)
 }
-
 
 #[derive(Debug)]
 enum CanonicalTerminal {
@@ -451,6 +448,14 @@ impl NativeRequestReceivers {
             std::future::pending::<Option<NativeActorRequest>>().await
         }
     }
+
+    async fn recv_or_pending(&mut self, enabled: bool) -> Option<NativeActorRequest> {
+        if enabled {
+            self.recv().await
+        } else {
+            std::future::pending().await
+        }
+    }
 }
 
 /// Per-pane actor. Owns the `Terminal`, the PTY master, the per-pane
@@ -505,8 +510,7 @@ pub struct TerminalActor {
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
     native_requests: NativeRequestReceivers,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_cursor_owners:
-        HashMap<crate::native_state::OpaqueHistoryCursor, NativeCursorOwner>,
+    native_cursor_owners: HashMap<crate::native_state::OpaqueHistoryCursor, NativeCursorOwner>,
     set_default_colors_rx: mpsc::Receiver<SetDefaultColorsRequest>,
     screen_rx: mpsc::Receiver<ScreenRequest>,
     upgrade_rx: mpsc::Receiver<UpgradeHandleRequest>,
@@ -2360,9 +2364,7 @@ impl TerminalActor {
             (term.cols().unwrap_or(cols), term.rows().unwrap_or(rows))
         };
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        self.invalidate_all_native_cursors(
-            phux_protocol::wire::frame::TombstoneReason::Resize,
-        );
+        self.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
         self.cols = applied.0;
         self.rows = applied.1;
         self.size_report.set(SizeReportSize {
@@ -2760,24 +2762,22 @@ impl TerminalActor {
                             terminal_id: terminal_id.clone(),
                             stream_id,
                             bootstrap_id,
-                            reason:
-                                phux_protocol::wire::frame::TombstoneReason::CodecFailure,
+                            reason: phux_protocol::wire::frame::TombstoneReason::CodecFailure,
                             last_valid_seq: base_seq,
                         }));
                         return Err(error);
                     }
                 };
-                let mut cursor_bytes = match reserve_native_bytes(
-                    std::mem::size_of::<crate::native_state::OpaqueHistoryCursor>(),
-                ) {
+                let mut cursor_bytes = match reserve_native_bytes(std::mem::size_of::<
+                    crate::native_state::OpaqueHistoryCursor,
+                >()) {
                     Ok(bytes) => bytes,
                     Err(error) => {
                         permit.send(Outbound::Frame(FrameKind::BootstrapTombstone {
                             terminal_id: terminal_id.clone(),
                             stream_id,
                             bootstrap_id,
-                            reason:
-                                phux_protocol::wire::frame::TombstoneReason::CodecFailure,
+                            reason: phux_protocol::wire::frame::TombstoneReason::CodecFailure,
                             last_valid_seq: base_seq,
                         }));
                         return Err(error);
@@ -2791,8 +2791,7 @@ impl TerminalActor {
                             terminal_id: frame_terminal_id,
                             stream_id,
                             bootstrap_id,
-                            reason:
-                                phux_protocol::wire::frame::TombstoneReason::CodecFailure,
+                            reason: phux_protocol::wire::frame::TombstoneReason::CodecFailure,
                             last_valid_seq: base_seq,
                         }));
                         return Err(crate::native_state::NativeStateError::LimitExceeded);
@@ -2805,8 +2804,7 @@ impl TerminalActor {
                             terminal_id: frame_terminal_id,
                             stream_id,
                             bootstrap_id,
-                            reason:
-                                phux_protocol::wire::frame::TombstoneReason::CodecFailure,
+                            reason: phux_protocol::wire::frame::TombstoneReason::CodecFailure,
                             last_valid_seq: base_seq,
                         }));
                         return Err(error);
@@ -2823,7 +2821,7 @@ impl TerminalActor {
                     stream_id,
                     bootstrap_id,
                     chunk_seq,
-                    payload: payload.freeze(),
+                    payload: Bytes::from(payload),
                 }));
                 chunk_seq = next_chunk_seq;
                 if ready {
@@ -2843,7 +2841,7 @@ impl TerminalActor {
                         terminal_id: terminal_id.clone(),
                         stream_id,
                         bootstrap_id,
-                        history_cursor: Some(cursor_bytes.freeze()),
+                        history_cursor: Some(Bytes::from(cursor_bytes)),
                     }));
                     return Ok(cursor);
                 }
@@ -2970,9 +2968,9 @@ impl TerminalActor {
                         terminal_id: frame_terminal_id,
                         stream_id,
                         bootstrap_id,
-                        cursor: cursor_bytes.freeze(),
-                        next_cursor: Some(next_cursor_bytes.freeze()),
-                        payload: payload.freeze(),
+                        cursor: Bytes::from(cursor_bytes),
+                        next_cursor: Some(Bytes::from(next_cursor_bytes)),
+                        payload: Bytes::from(payload),
                     }));
                     Ok(false)
                 }
@@ -2981,7 +2979,7 @@ impl TerminalActor {
                         terminal_id: frame_terminal_id,
                         stream_id,
                         bootstrap_id,
-                        cursor: cursor_bytes.freeze(),
+                        cursor: Bytes::from(cursor_bytes),
                         next_cursor: None,
                         payload: Bytes::new(),
                     }));
@@ -3067,7 +3065,6 @@ impl TerminalActor {
         }
     }
 
-
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn release_native_owner(&mut self, owner: u64) {
         let cursors: Vec<_> = self
@@ -3123,7 +3120,6 @@ impl TerminalActor {
             NativeActorRequest::Disabled => unreachable!("disabled native receiver"),
         }
     }
-
 
     /// Run the actor's event loop until shutdown.
     ///
@@ -3211,6 +3207,7 @@ impl TerminalActor {
             // `recv_or_pending`: when the receiver is `Some`, it polls
             // it; when `None`, it parks forever (so the select! arm
             // never fires and the other arms are the only ones live).
+            let native_enabled = native_turn || self.pty_rx.is_none();
             tokio::select! {
                 biased;
 
@@ -3256,7 +3253,7 @@ impl TerminalActor {
                     }
                 }
 
-                Some(req) = self.native_requests.recv(), if native_turn => {
+                Some(req) = self.native_requests.recv_or_pending(native_enabled) => {
                     native_turn = false;
                     self.handle_native_actor_request(req).await;
                 }
@@ -3386,10 +3383,6 @@ impl TerminalActor {
                     }
                 }
 
-                Some(req) = self.native_requests.recv(), if !native_turn => {
-                    native_turn = false;
-                    self.handle_native_actor_request(req).await;
-                }
 
 
                 Some(req) = self.snapshot_rx.recv() => {
@@ -4331,7 +4324,7 @@ mod tests {
                 })
                 .await
                 .expect("send snapshot");
-            String::from_utf8_lossy(&rx.await.expect("snapshot reply").bytes).into_owned()
+            String::from_utf8_lossy(&rx.await.expect("snapshot reply").0.bytes).into_owned()
         }
 
         let local = tokio::task::LocalSet::new();
@@ -4732,9 +4725,10 @@ mod tests {
                 let got = tokio::time::timeout(ACTOR_EXIT_DEADLINE, writer_rx.recv())
                     .await
                     .expect("input must be serviced mid-burst, not after it");
+                let got_bytes = got.map(|request| request.bytes);
                 assert_eq!(
-                    got.map(|request| request.bytes),
-                    Some(Bytes::from_static(b"x")),
+                    got_bytes.as_deref(),
+                    Some(b"x".as_ref()),
                     "queued keystroke should reach the PTY writer while the burst drains",
                 );
 
@@ -4836,7 +4830,6 @@ mod tests {
             .await;
     }
 
-
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     #[tokio::test(flavor = "current_thread")]
     async fn history_host_allocation_failure_does_not_advance_cursor() {
@@ -4924,9 +4917,8 @@ mod tests {
                     .await
                     .expect("retry reply")
                     .expect("same cursor remains valid after host OOM");
-                let Outbound::Frame(FrameKind::HistoryPage {
-                    cursor: echoed, ..
-                }) = outbound_rx.recv().await.expect("history page")
+                let Outbound::Frame(FrameKind::HistoryPage { cursor: echoed, .. }) =
+                    outbound_rx.recv().await.expect("history page")
                 else {
                     panic!("expected history page");
                 };
@@ -5179,7 +5171,10 @@ mod tests {
         );
         let state = actor.consumer_state(client).expect("consumer state");
         assert_eq!(state.next_seq, 1, "suppression must not advance sequence");
-        assert!(state.needs_initial_emit, "suppression must not consume the diff");
+        assert!(
+            state.needs_initial_emit,
+            "suppression must not consume the diff"
+        );
 
         gate_tx.send(true).expect("activate live output");
         actor.tick_emit();
