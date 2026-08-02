@@ -55,8 +55,7 @@ pub const HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 /// validate `[[hooks.<event>]]` names; these re-exports keep the
 /// server-side paths working.
 pub use phux_config::vocab::{
-    AFTER_NEW_PANE, AGENT_STATE_CHANGED, CLIENT_ATTACHED, CLIENT_DETACHED, FOCUS_CHANGED,
-    PANE_EXIT,
+    AFTER_NEW_PANE, AGENT_STATE_CHANGED, CLIENT_ATTACHED, CLIENT_DETACHED, FOCUS_CHANGED, PANE_EXIT,
 };
 
 /// The `to` value the agent hook reports when the detector withdraws a
