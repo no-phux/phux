@@ -1,25 +1,23 @@
-//! Native libghostty checkpoint capability probing and bounded capture.
+//! Native libghostty checkpoint capability probing and bounded state hosts.
 //!
-//! This module is compiled only for native builds with the `native-engine`
-//! feature. Opaque checkpoint bytes and authenticated tokens remain owned by
-//! libghostty's safe API; this host only applies protocol-negotiated bounds and
-//! translates event metadata into protocol-facing names.
+//! Native bootstrap publishes only the checkpoint prefix through the codec's
+//! authenticated READY record. Retained history is a separate, client-pulled
+//! stream backed by an owned live cursor, so ordinary PTY output can continue
+//! while older history is paged. All codec records and tokens remain opaque.
 
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
     snapshot::incremental::{
-        self, Capture, CaptureEventKind, CaptureOptions, CheckpointToken, ScreenKey,
+        self, Capture, CaptureEventKind, CaptureOptions, HistoryEvent, HistoryOptions,
+        LiveHistoryCursor, ScreenKey, TOKEN_LEN,
     },
 };
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet,
 };
 
-/// Exact incremental ABI version hosted by this protocol integration.
 const INCREMENTAL_ABI_VERSION: u32 = 1;
-/// Exact immutable checkpoint envelope version selected by protocol 0.7.
 const CHECKPOINT_VERSION: u16 = EngineCodec::LibghosttyCheckpointV2 as u16;
-/// Stable identity reported by the owned libghostty checkpoint implementation.
 const CHECKPOINT_CODEC_IDENTITY: &str = "ghostty.snapshot.v1-v2.incremental.v1";
 
 /// Exact status reported by libghostty's incremental checkpoint API.
@@ -29,12 +27,17 @@ const CHECKPOINT_CODEC_IDENTITY: &str = "ghostty.snapshot.v1-v2.incremental.v1";
 /// `Reset`, `Resize`, and every other native status without parsing a string.
 pub use incremental::Error as NativeStateError;
 
+/// One authenticated engine token carried opaquely by protocol 0.7.
+///
+/// Phux may compare or route these bytes as an identity but never parses,
+/// normalizes, or reconstructs the native token.
+pub type OpaqueHistoryCursor = [u8; TOKEN_LEN];
+
 /// Probe the linked engine and advertise native checkpoint v2 only when its
 /// complete protocol-0.7 contract is present.
 ///
 /// A failed or incomplete probe leaves both synthesized VT profiles available
-/// and advertises no native codec or native feature subset. Payload limits are
-/// intersected with the engine's strict record and history-unit maxima.
+/// and advertises no native codec or partial native feature set.
 #[must_use]
 pub fn native_bootstrap_capabilities() -> BootstrapCapabilities {
     let requested = BootstrapLimits::default();
@@ -57,34 +60,16 @@ pub fn native_bootstrap_capabilities() -> BootstrapCapabilities {
         )
 }
 
-/// Typed metadata for one complete opaque native checkpoint record.
+/// Typed metadata for one complete bootstrap-prefix record.
 #[derive(Debug)]
 pub enum NativeCheckpointChunkKind {
-    /// Envelope or non-boundary state record.
+    /// Envelope or non-boundary active-state record.
     Record,
-    /// Authenticated renderable boundary.
+    /// Authenticated renderable boundary and final bootstrap record.
     Ready {
-        /// Opaque authenticated checkpoint capability for the READY prefix.
-        checkpoint: CheckpointToken,
+        /// Opaque digest authenticating the exact terminal cut through READY.
+        checkpoint: OpaqueHistoryCursor,
     },
-    /// Start of one screen's history page sequence.
-    HistoryBegin {
-        /// Engine-owned screen generation key.
-        screen: ScreenKey,
-        /// Total history pages declared for this screen.
-        page_count: u32,
-    },
-    /// One complete independently framed history page.
-    HistoryPage {
-        /// Engine-owned screen generation key.
-        screen: ScreenKey,
-        /// Zero-based page index.
-        index: u32,
-        /// Total history pages declared for this screen.
-        page_count: u32,
-    },
-    /// Authenticated end of exactly one checkpoint.
-    Finish,
 }
 
 /// One complete native checkpoint record written into a caller-owned buffer.
@@ -98,53 +83,38 @@ pub struct NativeCheckpointChunk<'buffer> {
     pub bytes: &'buffer [u8],
 }
 
-/// RAII host for one bounded incremental checkpoint capture.
+/// RAII host for the bounded checkpoint prefix ending at READY.
 ///
 /// Construction mutably borrows the canonical terminal and asks libghostty to
 /// validate all terminal-owned semantic state before returning. A caller may
-/// therefore publish `BOOTSTRAP_BEGIN` only after `new` succeeds. Dropping this
-/// value aborts the native capture and releases every engine allocation.
+/// therefore publish `BOOTSTRAP_BEGIN` only after `new` succeeds. Once `step`
+/// returns READY, no history or FINISH record can be emitted by this host.
 #[derive(Debug)]
 pub struct NativeCheckpointCapture<'terminal> {
     capture: Option<Capture<'terminal, 'static>>,
     max_record_bytes: usize,
-    finished: bool,
+    ready: bool,
 }
 
 impl<'terminal> NativeCheckpointCapture<'terminal> {
     /// Preflight and begin a checkpoint using negotiated payload limits.
     ///
-    /// Both negotiated axes constrain capture because active-state records and
-    /// post-READY page records share libghostty's one strict record bound. The
-    /// engine's own maxima are intersected as a final bound. No output is
-    /// emitted during construction.
+    /// No output is emitted during construction. Kitty graphics, glyph
+    /// glossary state, continuation failures, limits, and OOM all fail before
+    /// the caller can publish BEGIN.
     pub fn new(
         terminal: &'terminal mut GhosttyTerminal<'_, '_>,
         limits: BootstrapLimits,
     ) -> Result<Self, NativeStateError> {
-        let engine = incremental::capabilities()?;
-        if !supports_protocol_07_native(&engine) {
-            return Err(NativeStateError::UnsupportedFeature);
-        }
-
-        let chunk_bytes = usize::try_from(limits.max_chunk_bytes())
-            .map_err(|_| NativeStateError::LimitExceeded)?;
-        let history_bytes = usize::try_from(limits.max_history_page_bytes())
-            .map_err(|_| NativeStateError::LimitExceeded)?;
-        let max_record_bytes = chunk_bytes
-            .min(history_bytes)
+        let engine = require_protocol_07_native()?;
+        let max_record_bytes = usize::try_from(limits.max_chunk_bytes())
+            .map_err(|_| NativeStateError::LimitExceeded)?
             .min(engine.max_record_bytes);
-        if max_record_bytes == 0 {
-            return Err(NativeStateError::LimitExceeded);
-        }
         let max_pages = CaptureOptions::default().max_pages.min(engine.max_pages);
-        if max_pages == 0 {
+        if max_record_bytes == 0 || max_pages == 0 {
             return Err(NativeStateError::LimitExceeded);
         }
 
-        // `capture` performs the load-bearing semantic-state preflight before
-        // it returns: Kitty graphics, glyph glossary state, continuation
-        // failures, limits, and OOM all fail before the host can publish BEGIN.
         let capture = terminal.capture(CaptureOptions {
             max_record_bytes,
             max_pages,
@@ -152,21 +122,21 @@ impl<'terminal> NativeCheckpointCapture<'terminal> {
         Ok(Self {
             capture: Some(capture),
             max_record_bytes,
-            finished: false,
+            ready: false,
         })
     }
 
-    /// Emit one complete opaque record directly into `buffer`.
+    /// Emit one complete opaque prefix record directly into `buffer`.
     ///
     /// A zero or short buffer returns libghostty's exact `OutOfSpace` status,
-    /// including `required_bytes`, without advancing. The buffer is never grown
-    /// or retained by this host. Calling `step` after FINISH is an exact
-    /// `InvalidState` error.
+    /// including `required_bytes`, without advancing. READY is returned exactly
+    /// once and exhausts this bootstrap host; later calls return `InvalidState`
+    /// rather than leaking native HISTORY or FINISH records into bootstrap.
     pub fn step<'buffer>(
         &mut self,
         buffer: &'buffer mut [u8],
     ) -> Result<NativeCheckpointChunk<'buffer>, NativeStateError> {
-        if self.finished {
+        if self.ready {
             return Err(NativeStateError::InvalidState);
         }
         let capture = self
@@ -184,27 +154,14 @@ impl<'terminal> NativeCheckpointCapture<'terminal> {
         let kind = match event.kind {
             CaptureEventKind::Record => NativeCheckpointChunkKind::Record,
             CaptureEventKind::Ready { checkpoint } => {
-                NativeCheckpointChunkKind::Ready { checkpoint }
-            }
-            CaptureEventKind::HistoryBegin { screen, count } => {
-                NativeCheckpointChunkKind::HistoryBegin {
-                    screen,
-                    page_count: count,
+                self.ready = true;
+                NativeCheckpointChunkKind::Ready {
+                    checkpoint: *checkpoint.as_bytes(),
                 }
             }
-            CaptureEventKind::HistoryPage {
-                screen,
-                index,
-                count,
-            } => NativeCheckpointChunkKind::HistoryPage {
-                screen,
-                index,
-                page_count: count,
-            },
-            CaptureEventKind::Finish => {
-                self.finished = true;
-                NativeCheckpointChunkKind::Finish
-            }
+            CaptureEventKind::HistoryBegin { .. }
+            | CaptureEventKind::HistoryPage { .. }
+            | CaptureEventKind::Finish => return Err(NativeStateError::InvalidState),
         };
         Ok(NativeCheckpointChunk {
             kind,
@@ -213,15 +170,169 @@ impl<'terminal> NativeCheckpointCapture<'terminal> {
         })
     }
 
+    /// Whether this host has emitted its final READY record.
+    #[must_use]
+    pub const fn is_ready(&self) -> bool {
+        self.ready
+    }
+
     /// Abort explicitly, releasing the terminal borrow and native resources.
     ///
-    /// Dropping the capture provides the same cleanup when explicit status is
-    /// not needed.
+    /// The caller performs this immediately after READY, then transfers the
+    /// unchanged terminal into [`NativeHistoryCursor`] before publishing READY.
     pub fn abort(mut self) -> Result<(), NativeStateError> {
         self.capture
             .take()
             .ok_or(NativeStateError::InvalidState)?
             .abort()
+    }
+}
+
+/// One bounded result from a retained-history cursor.
+#[derive(Debug)]
+pub enum NativeHistoryEvent<'buffer> {
+    /// One complete authenticated engine history unit.
+    Page {
+        /// Opaque unit bytes written directly into the caller's buffer.
+        bytes: &'buffer [u8],
+        /// Number of terminal rows represented by this unit.
+        rows: usize,
+        /// Whether this unit completes its native source page.
+        page_complete: bool,
+        /// Same-generation opaque capability for the next request.
+        next_cursor: OpaqueHistoryCursor,
+    },
+    /// No older units remain; the protocol history stream is finished.
+    End,
+}
+
+/// Owned canonical terminal plus its live, newest-first history cursor.
+///
+/// The engine's copy-on-write cut keeps older history stable while
+/// [`Self::vt_write`] accepts serialized live PTY output. Reset, resize,
+/// pruning, stale generations, bounds, and OOM remain exact typed engine errors.
+#[derive(Debug)]
+pub struct NativeHistoryCursor<'terminal_alloc: 'cb, 'cb> {
+    inner: LiveHistoryCursor<'terminal_alloc, 'cb, 'static>,
+    max_unit_bytes: usize,
+    max_rows: usize,
+    max_units: usize,
+}
+
+impl<'terminal_alloc: 'cb, 'cb> NativeHistoryCursor<'terminal_alloc, 'cb> {
+    /// Consume the canonical terminal and acquire its primary retained-history
+    /// cut before the caller publishes `BOOTSTRAP_READY`.
+    pub fn new(
+        terminal: GhosttyTerminal<'terminal_alloc, 'cb>,
+        limits: BootstrapLimits,
+    ) -> Result<Self, NativeStateError> {
+        let engine = require_protocol_07_native()?;
+        let max_unit_bytes = usize::try_from(limits.max_history_page_bytes())
+            .map_err(|_| NativeStateError::LimitExceeded)?
+            .min(engine.max_unit_bytes);
+        let defaults = HistoryOptions::default();
+        let max_rows = defaults.max_rows.min(engine.max_rows);
+        let max_units = defaults.max_units.min(engine.max_pages);
+        if max_unit_bytes == 0 || max_rows == 0 || max_units == 0 {
+            return Err(NativeStateError::LimitExceeded);
+        }
+
+        let inner = terminal.into_live_history_cursor(ScreenKey::PRIMARY)?;
+        Ok(Self {
+            inner,
+            max_unit_bytes,
+            max_rows,
+            max_units,
+        })
+    }
+
+    /// Opaque checkpoint authenticating this cursor's exact terminal cut.
+    #[must_use]
+    pub fn checkpoint(&self) -> &OpaqueHistoryCursor {
+        self.inner.checkpoint().as_bytes()
+    }
+
+    /// Opaque capability advertised as `BOOTSTRAP_READY.history_cursor`.
+    #[must_use]
+    pub fn cursor(&self) -> &OpaqueHistoryCursor {
+        self.inner.capability().as_bytes()
+    }
+
+    /// Borrow the live canonical terminal for read-only engine queries.
+    #[must_use]
+    pub fn terminal(&self) -> &GhosttyTerminal<'terminal_alloc, 'cb> {
+        self.inner.terminal()
+    }
+
+    /// Feed serialized raw PTY bytes to the live canonical terminal.
+    pub fn vt_write(&mut self, data: &[u8]) {
+        self.inner.vt_write(data);
+    }
+
+    /// Reset the live terminal and invalidate this retained-history generation.
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    /// Resize the live terminal and invalidate this retained-history generation.
+    pub fn resize(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        cell_width_px: u32,
+        cell_height_px: u32,
+    ) -> libghostty_vt::error::Result<()> {
+        self.inner.resize(cols, rows, cell_width_px, cell_height_px)
+    }
+
+    /// Emit one authenticated history unit within both negotiated bounds and
+    /// the request's non-zero `max_bytes` bound.
+    ///
+    /// Short buffers return exact `OutOfSpace` without advancing. The returned
+    /// cursor bytes are copied from the engine capability without parsing or
+    /// rewriting them.
+    pub fn next<'buffer>(
+        &mut self,
+        max_bytes: u32,
+        buffer: &'buffer mut [u8],
+    ) -> Result<NativeHistoryEvent<'buffer>, NativeStateError> {
+        let requested = usize::try_from(max_bytes).map_err(|_| NativeStateError::LimitExceeded)?;
+        if requested == 0 {
+            return Err(NativeStateError::LimitExceeded);
+        }
+        let options = HistoryOptions {
+            max_unit_bytes: requested.min(self.max_unit_bytes),
+            max_rows: self.max_rows,
+            max_units: self.max_units,
+        };
+        match self.inner.next(options, buffer)? {
+            HistoryEvent::Unit {
+                unit,
+                rows,
+                page_complete,
+            } => Ok(NativeHistoryEvent::Page {
+                bytes: unit,
+                rows,
+                page_complete,
+                next_cursor: *self.inner.capability().as_bytes(),
+            }),
+            HistoryEvent::End => Ok(NativeHistoryEvent::End),
+        }
+    }
+
+    /// Release cursor and lease state before returning the live terminal.
+    #[must_use]
+    pub fn into_terminal(self) -> GhosttyTerminal<'terminal_alloc, 'cb> {
+        self.inner.into_terminal()
+    }
+}
+
+fn require_protocol_07_native() -> Result<incremental::Capabilities, NativeStateError> {
+    let engine = incremental::capabilities()?;
+    if supports_protocol_07_native(&engine) {
+        Ok(engine)
+    } else {
+        Err(NativeStateError::UnsupportedFeature)
     }
 }
 
@@ -252,10 +363,7 @@ fn intersect_engine_limits(
     let unit_max = u32::try_from(engine.max_unit_bytes).unwrap_or(u32::MAX);
     BootstrapLimits::new(
         requested.max_chunk_bytes().min(record_max),
-        requested
-            .max_history_page_bytes()
-            .min(record_max)
-            .min(unit_max),
+        requested.max_history_page_bytes().min(unit_max),
     )
 }
 
@@ -274,6 +382,54 @@ mod tests {
         .expect("canonical terminal")
     }
 
+    fn history_terminal() -> GhosttyTerminal<'static, 'static> {
+        let mut terminal = terminal(20, 4);
+        for row in 0..300 {
+            terminal.vt_write(format!("history-{row:03}\r\n").as_bytes());
+        }
+        terminal
+    }
+
+    fn capture_to_ready(
+        terminal: &mut GhosttyTerminal<'static, 'static>,
+        limits: BootstrapLimits,
+    ) -> OpaqueHistoryCursor {
+        let mut capture = NativeCheckpointCapture::new(terminal, limits).expect("capture preflight");
+        loop {
+            let required = match capture.step(&mut []) {
+                Err(NativeStateError::OutOfSpace {
+                    required_bytes,
+                    required_rows: 0,
+                }) => required_bytes,
+                other => panic!("zero-buffer bootstrap probe: {other:?}"),
+            };
+            assert!(required > 0);
+            if required > 1 {
+                let mut short = vec![0; required - 1];
+                assert_eq!(
+                    capture.step(&mut short).unwrap_err(),
+                    NativeStateError::OutOfSpace {
+                        required_bytes: required,
+                        required_rows: 0,
+                    }
+                );
+            }
+            let mut exact = vec![0; required];
+            let event = capture.step(&mut exact).expect("exact bootstrap record");
+            assert_eq!(event.bytes.len(), required);
+            if let NativeCheckpointChunkKind::Ready { checkpoint } = event.kind {
+                assert!(capture.is_ready());
+                assert_eq!(
+                    capture.step(&mut []).unwrap_err(),
+                    NativeStateError::InvalidState,
+                    "bootstrap host must never expose HISTORY or FINISH"
+                );
+                capture.abort().expect("release terminal after READY");
+                return checkpoint;
+            }
+        }
+    }
+
     #[test]
     fn advertises_exact_checkpoint_v2_with_indivisible_features() {
         let engine = incremental::capabilities().expect("incremental capability probe");
@@ -282,16 +438,8 @@ mod tests {
         assert_eq!(engine.codec_identity, CHECKPOINT_CODEC_IDENTITY);
 
         let advertised = native_bootstrap_capabilities();
-        assert!(
-            advertised
-                .profiles
-                .contains(BootstrapProfileKind::NativeState)
-        );
-        assert!(
-            advertised
-                .profiles
-                .contains(BootstrapProfileKind::SynthesizedVtRaw)
-        );
+        assert!(advertised.profiles.contains(BootstrapProfileKind::NativeState));
+        assert!(advertised.profiles.contains(BootstrapProfileKind::SynthesizedVtRaw));
         assert!(
             advertised
                 .profiles
@@ -302,10 +450,7 @@ mod tests {
                 .native_codecs
                 .contains(EngineCodec::LibghosttyCheckpointV2)
         );
-        assert_eq!(
-            advertised.native_features,
-            EngineFeatureSet::required_native()
-        );
+        assert_eq!(advertised.native_features, EngineFeatureSet::required_native());
     }
 
     #[test]
@@ -313,9 +458,7 @@ mod tests {
         let mut kitty = terminal(10, 5);
         phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut kitty)
             .expect("kitty configuration");
-        kitty
-            .resize(10, 5, 8, 16)
-            .expect("nonzero cell geometry");
+        kitty.resize(10, 5, 8, 16).expect("cell geometry");
         kitty.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,i=9,q=2;AAECAw==\x1b\\");
         assert!(matches!(
             NativeCheckpointCapture::new(&mut kitty, BootstrapLimits::default()),
@@ -331,129 +474,79 @@ mod tests {
     }
 
     #[test]
-    fn retries_short_buffers_without_advancing_and_orders_ready_before_history() {
-        let mut source = terminal(20, 4);
-        for row in 0..300 {
-            source.vt_write(format!("history-{row:03}\r\n").as_bytes());
-        }
+    fn ready_handoff_pages_bounded_history_while_live_output_continues() {
         let limits = BootstrapLimits::new(64 * 1024, 64 * 1024).expect("test limits");
-        let mut capture =
-            NativeCheckpointCapture::new(&mut source, limits).expect("capture preflight");
-        let mut ready = false;
-        let mut history_pages = 0usize;
+        let mut source = history_terminal();
+        let ready_checkpoint = capture_to_ready(&mut source, limits);
+        let mut history = NativeHistoryCursor::new(source, limits).expect("owned history cursor");
+        assert_eq!(history.checkpoint(), &ready_checkpoint, "same terminal cut");
+        let capability = *history.cursor();
+        history.vt_write(b"live raw PTY bytes after READY\r\n");
 
+        let mut pages = 0usize;
         loop {
-            let required = match capture.step(&mut []) {
+            let required = match history.next(limits.max_history_page_bytes(), &mut []) {
+                Ok(NativeHistoryEvent::End) => break,
                 Err(NativeStateError::OutOfSpace {
                     required_bytes,
                     required_rows: 0,
                 }) => required_bytes,
-                other => panic!("zero-buffer probe did not report exact size: {other:?}"),
+                other => panic!("zero-buffer history probe: {other:?}"),
             };
             assert!(required > 0);
             if required > 1 {
                 let mut short = vec![0; required - 1];
                 assert_eq!(
-                    capture.step(&mut short).unwrap_err(),
+                    history
+                        .next(limits.max_history_page_bytes(), &mut short)
+                        .unwrap_err(),
                     NativeStateError::OutOfSpace {
                         required_bytes: required,
                         required_rows: 0,
                     }
                 );
             }
-
             let mut exact = vec![0; required];
-            let event = capture.step(&mut exact).expect("exact record buffer");
-            assert_eq!(event.bytes.len(), required);
-            let finished = match event.kind {
-                NativeCheckpointChunkKind::Ready { .. } => {
-                    assert!(!ready, "READY is unique");
-                    ready = true;
-                    false
-                }
-                NativeCheckpointChunkKind::HistoryBegin { .. } => {
-                    assert!(ready, "history begins only after READY");
-                    false
-                }
-                NativeCheckpointChunkKind::HistoryPage { .. } => {
-                    assert!(ready, "history pages follow READY");
-                    assert!(
-                        event.bytes.len()
-                            <= usize::try_from(limits.max_history_page_bytes())
-                                .expect("native usize")
-                    );
-                    history_pages += 1;
-                    false
-                }
-                NativeCheckpointChunkKind::Finish => true,
-                NativeCheckpointChunkKind::Record => false,
+            let event = history
+                .next(limits.max_history_page_bytes(), &mut exact)
+                .expect("bounded history page");
+            let NativeHistoryEvent::Page {
+                bytes,
+                next_cursor,
+                ..
+            } = event
+            else {
+                panic!("probe promised a history page");
             };
-            if finished {
-                break;
-            }
+            assert_eq!(bytes.len(), required);
+            assert!(
+                bytes.len()
+                    <= usize::try_from(limits.max_history_page_bytes()).expect("native usize")
+            );
+            assert_eq!(next_cursor, capability);
+            pages += 1;
         }
+        assert!(pages > 0);
 
-        assert!(ready);
-        assert!(history_pages > 0);
-        assert_eq!(
-            capture.step(&mut []).unwrap_err(),
-            NativeStateError::InvalidState
-        );
+        let mut source = history.into_terminal();
+        source.vt_write(b"still raw after history end");
+        NativeCheckpointCapture::new(&mut source, limits)
+            .expect("history cursor released canonical terminal");
     }
 
     #[test]
-    fn live_output_stays_raw_after_capture_and_abort_releases_terminal() {
+    fn abort_failed_construction_and_oom_status_preserve_cleanup_contract() {
         let mut source = terminal(20, 4);
         source.vt_write(b"checkpoint-state");
-        let mut snapshot = Vec::new();
-        {
-            let mut capture = NativeCheckpointCapture::new(
-                &mut source,
-                BootstrapLimits::default(),
-            )
-            .expect("capture preflight");
-            loop {
-                let required = match capture.step(&mut []) {
-                    Err(NativeStateError::OutOfSpace { required_bytes, .. }) => required_bytes,
-                    other => panic!("record size probe: {other:?}"),
-                };
-                let mut record = vec![0; required];
-                let event = capture.step(&mut record).expect("capture record");
-                let finished = matches!(event.kind, NativeCheckpointChunkKind::Finish);
-                snapshot.extend_from_slice(event.bytes);
-                if finished {
-                    break;
-                }
-            }
-        }
-
-        let raw = b"\r\nraw-after-finish";
-        source.vt_write(raw);
-        let mut replica = GhosttyTerminal::decode_snapshot(&snapshot)
-            .expect("captured checkpoint")
-            .terminal;
-        replica.vt_write(raw);
-        assert_eq!(
-            source.encode_snapshot().expect("source state").as_ref(),
-            replica.encode_snapshot().expect("replica state").as_ref()
-        );
-
-        let mut aborted = NativeCheckpointCapture::new(
+        let mut capture = NativeCheckpointCapture::new(
             &mut source,
             BootstrapLimits::default(),
         )
-        .expect("second capture");
-        let _ = aborted.step(&mut []);
-        aborted.abort().expect("explicit abort");
+        .expect("capture");
+        let _ = capture.step(&mut []);
+        capture.abort().expect("explicit abort");
         source.vt_write(b"-after-abort");
-        NativeCheckpointCapture::new(&mut source, BootstrapLimits::default())
-            .expect("abort released canonical terminal");
-    }
 
-    #[test]
-    fn failed_bounded_construction_cleans_up_and_preserves_native_status() {
-        let mut source = terminal(20, 4);
-        source.vt_write(b"\x1b[31mcontinuation and terminal state");
         let tiny = BootstrapLimits::new(1, 1).expect("protocol-valid tiny bounds");
         assert!(matches!(
             NativeCheckpointCapture::new(&mut source, tiny),
@@ -461,11 +554,40 @@ mod tests {
         ));
         source.vt_write(b"-still-live");
         NativeCheckpointCapture::new(&mut source, BootstrapLimits::default())
-            .expect("failed native construction released all resources");
+            .expect("failed construction released resources");
+        assert_eq!(NativeStateError::OutOfMemory, incremental::Error::OutOfMemory);
+    }
+
+    #[test]
+    fn history_stale_reset_and_resize_remain_distinct_native_errors() {
+        let limits = BootstrapLimits::default();
+        let size = usize::try_from(limits.max_history_page_bytes()).expect("native usize");
+        let mut buffer = vec![0; size];
+
+        let mut stale = NativeHistoryCursor::new(history_terminal(), limits).expect("stale cursor");
+        stale.vt_write(b"\x1b[3J");
         assert_eq!(
-            NativeStateError::OutOfMemory,
-            incremental::Error::OutOfMemory,
-            "OOM remains the engine's typed status"
+            stale.next(limits.max_history_page_bytes(), &mut buffer)
+                .unwrap_err(),
+            NativeStateError::Stale
+        );
+
+        let mut reset = NativeHistoryCursor::new(history_terminal(), limits).expect("reset cursor");
+        reset.reset();
+        assert_eq!(
+            reset.next(limits.max_history_page_bytes(), &mut buffer)
+                .unwrap_err(),
+            NativeStateError::Reset
+        );
+
+        let mut resized =
+            NativeHistoryCursor::new(history_terminal(), limits).expect("resize cursor");
+        resized.resize(21, 4, 8, 16).expect("resize live source");
+        assert_eq!(
+            resized
+                .next(limits.max_history_page_bytes(), &mut buffer)
+                .unwrap_err(),
+            NativeStateError::Resize
         );
     }
 }
