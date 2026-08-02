@@ -1953,7 +1953,7 @@ architectural revision to grow a status bar plugin story.
 
 | Kind            | Parameters                                                   |
 |-----------------|--------------------------------------------------------------|
-| `session-name`  | `format?` (default: `"{name}"`) — **implemented**           |
+| `session-name`  | `format?` (default: `"{name}"`; `{name}` is the truncated session name), `prefix?` (literal, prepended), `max-len?` (chars, `> 0`) — **implemented** |
 | `time`          | `format` (strftime) — **implemented**                       |
 | `windows`       | `active?`/`inactive?` (style tables), `separator?`, `format?` (`{index}`/`{name}`) — **implemented**; tabs are click targets (`select-window`, phux-foz.12) wherever the widget sits (any slot, top or bottom bar) |
 | `help-hints`    | prefix-aware help / palette / copy affordances — **implemented** |
@@ -1970,8 +1970,23 @@ architectural revision to grow a status bar plugin story.
 
 Every widget kind accepts a `style` table with optional `fg`, `bg`
 (color strings: names, `#rrggbb`, or palette indices), and the boolean
-attributes `bold`, `dim`, `italic`, `underline`, `reverse`. The
-implemented built-ins today are `session-name`, `time`, `windows`,
+attributes `bold`, `dim`, `italic`, `underline`, `reverse`. The registry
+applies it uniformly, so no widget can opt out. Precedence: cells the
+widget styles itself keep their own style — `windows`' `active`/
+`inactive` segments, `exec`'s SGR-parsed output, `help-hints`' dim base
+all win — and only cells the widget left plain inherit the widget-level
+`style`. A `style` value that is not a table, or a table with an unknown
+field, fails the bar build and is flagged by `phux config check`.
+
+Widget options are a **closed surface**: every factory rejects an
+option outside its documented set, naming the widget and suggesting the
+nearest valid spelling ("unknown option `formt` (did you mean
+`format`?)"). `phux config check` runs the same build path over
+`[status]`, so a typo'd kind, a typo'd option, or a bad style table
+surfaces as a located finding instead of parsing clean and doing
+nothing.
+
+The implemented built-ins today are `session-name`, `time`, `windows`,
 `help-hints`, `cwd`, `exit`, and `exec` (the others above are design
 intent); `windows` takes its `active` and `inactive` segments as such
 style tables. Plugin manifests can contribute additional widget entries

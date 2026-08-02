@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use crate::widget::{
     Cell, CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError,
+    reject_unknown_opts, style_opt,
 };
 
 /// Widget kind, used in error messages.
@@ -113,14 +114,15 @@ impl StatusWidget for WindowsWidget {
 ///
 /// # Errors
 ///
-/// Returns [`WidgetError::InvalidOption`] if a value is the wrong type or
-/// a style table has an unknown field.
+/// Returns [`WidgetError::InvalidOption`] on an unknown option, a value
+/// of the wrong type, or a style table with an unknown field.
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
+    reject_unknown_opts(KIND, opts, &["active", "inactive", "separator", "format"])?;
     let defaults = WindowsWidget::default();
-    let active = style_opt(opts, "active")?.unwrap_or(defaults.active);
-    let inactive = style_opt(opts, "inactive")?.unwrap_or(defaults.inactive);
+    let active = style_opt(KIND, opts, "active")?.unwrap_or(defaults.active);
+    let inactive = style_opt(KIND, opts, "inactive")?.unwrap_or(defaults.inactive);
     let separator = string_opt(opts, "separator")?.unwrap_or(defaults.separator);
     let format = string_opt(opts, "format")?.unwrap_or(defaults.format);
     Ok(Box::new(WindowsWidget {
@@ -129,23 +131,6 @@ pub(in crate::widget) fn factory(
         separator,
         format,
     }))
-}
-
-/// Parse an optional [`CellStyle`] from an inline-table option.
-fn style_opt(
-    opts: &BTreeMap<String, toml::Value>,
-    key: &str,
-) -> Result<Option<CellStyle>, WidgetError> {
-    opts.get(key).map_or(Ok(None), |value| {
-        value
-            .clone()
-            .try_into::<CellStyle>()
-            .map(Some)
-            .map_err(|e| WidgetError::InvalidOption {
-                kind: KIND.to_owned(),
-                message: format!("`{key}` must be a style table: {e}"),
-            })
-    })
 }
 
 /// Parse an optional string option.

@@ -6,7 +6,7 @@ use std::time::Duration;
 use chrono::format::{Item, StrftimeItems};
 use chrono::{DateTime, Local};
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError};
+use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, reject_unknown_opts};
 
 /// Default strftime format if none is supplied.
 const DEFAULT_FORMAT: &str = "%H:%M";
@@ -69,11 +69,12 @@ impl StatusWidget for TimeWidget {
 ///
 /// # Errors
 ///
-/// Returns [`WidgetError::InvalidOption`] if `format` is the wrong type
-/// or contains an invalid strftime directive.
+/// Returns [`WidgetError::InvalidOption`] on an unknown option, a
+/// wrong-typed `format`, or an invalid strftime directive.
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
+    reject_unknown_opts(KIND, opts, &["format"])?;
     let format = match opts.get("format") {
         None => DEFAULT_FORMAT.to_owned(),
         Some(toml::Value::String(s)) => s.clone(),
