@@ -515,13 +515,23 @@ fn route_engine_frame(
                 )
             )
         });
+    let recovered_history_failure = result.is_err()
+        && matches!(frame, FrameKind::HistoryPage { .. })
+        && effects.as_slice().iter().any(|effect| {
+            matches!(
+                effect,
+                KernelEffect::Status(
+                    phux_client_core::session::KernelStatus::HistoryUnavailable { .. }
+                )
+            )
+        });
     let ignored = matches!(
         &result,
         Err(phux_client_core::session::KernelError::RetiredGeneration { .. })
     );
     let failed = match result {
         Ok(()) => None,
-        Err(_) if resync_required || ignored => None,
+        Err(_) if resync_required || ignored || recovered_history_failure => None,
         Err(error) => Some(error.to_string()),
     };
     let mut route = KernelRoute {
@@ -1569,6 +1579,13 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 ..FrameOutcome::default()
             })
         }
+        // Request-correlated errors are normally consumed by `Connection`'s
+        // request table. A raced reply that reaches the attached dispatcher is
+        // still direction-valid and must not mutate or retire terminal state.
+        FrameKind::Error {
+            request_id: Some(_),
+            ..
+        } => Ok(FrameOutcome::default()),
         other => Err(AttachError::Protocol(format!(
             "frame is not valid from a server in the attached phase: {other:?}",
         ))),
@@ -1990,9 +2007,17 @@ mod tests {
             &mut effects,
         );
         assert!(!rejected.resync_required);
-        assert!(
-            rejected.history_request.is_none(),
-            "requirements above the negotiated row cap stay idle"
+        assert_eq!(
+            rejected.history_request,
+            Some((
+                terminal_id.clone(),
+                stream(),
+                bootstrap(),
+                bytes::Bytes::from_static(b"opaque-cursor"),
+                1024 * 1024,
+                2048,
+            )),
+            "a valid larger row requirement retries within the client hard cap"
         );
         let tombstoned = route_engine_frame(
             &FrameKind::HistoryTombstone {
@@ -2248,7 +2273,7 @@ mod tests {
         assert_eq!(panes[&ready_terminal].last_title, "vim");
     }
     #[test]
-    fn malformed_history_requests_resync_and_replacement_publishes_atomically() {
+    fn malformed_history_tombstones_only_history_and_replacement_publishes_atomically() {
         let terminal_id = tid(96);
         let replacement = phux_protocol::BootstrapId::new(2).expect("replacement");
         let mut kernel = phux_client_core::session::SessionKernel::new(
@@ -2299,7 +2324,33 @@ mod tests {
                 payload: bytes::Bytes::from_static(b"malformed-history"),
             },
         );
-        assert!(rejected.resync_required);
+        assert!(!rejected.resync_required);
+        assert!(effects.as_slice().iter().any(|effect| matches!(
+            effect,
+            phux_client_core::session::KernelEffect::Status(
+                phux_client_core::session::KernelStatus::HistoryUnavailable { .. }
+            )
+        )));
+        assert_eq!(
+            kernel
+                .history_cache(&terminal_id)
+                .expect("published history")
+                .status()
+                .state,
+            phux_client_core::history::HistoryLoadState::Tombstoned
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::TerminalOutput {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                seq: 1,
+                bytes: bytes::Bytes::from_static(b"\x1b]2;old-live\x07"),
+            },
+        );
         assert_eq!(
             kernel
                 .published_engine(&terminal_id)
@@ -2308,7 +2359,8 @@ mod tests {
                 .unwrap()
                 .title()
                 .unwrap(),
-            "old"
+            "old-live",
+            "history failure must not stop live terminal output"
         );
         let stale = dispatch_engine_frame(
             &mut kernel,
@@ -2370,7 +2422,7 @@ mod tests {
                 .unwrap()
                 .title()
                 .unwrap(),
-            "old",
+            "old-live",
             "replacement remains staged until READY"
         );
         let replacement_ready = dispatch_engine_frame(

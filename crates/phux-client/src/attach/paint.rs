@@ -35,24 +35,6 @@ const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
 #[cfg(test)]
 pub(super) const FALLBACK_CELL_PX: (u32, u32) = (8, 16);
 
-/// Resize a libghostty [`GhosttyTerminal`] to `cols`x`rows`, clamping each axis to
-/// a 1-cell minimum (libghostty has no concept of a zero-dimension grid, so
-/// a `0`-col or `0`-row request fails with `InvalidValue` and leaves the
-/// grid unchanged).
-///
-/// The both-axes-shrink overflow in libghostty's `PageList.resizeCols`
-/// (phux-y06) is fixed by the `libghostty-vt` 0.2.0 engine, so a both-shrink
-/// is a single safe `resize()` call — no axis decomposition needed.
-#[cfg(test)]
-pub(super) fn safe_resize(
-    terminal: &mut GhosttyTerminal<'_, '_>,
-    cols: u16,
-    rows: u16,
-) -> libghostty_vt::error::Result<()> {
-    let cols = cols.max(1);
-    let rows = rows.max(1);
-    terminal.resize(cols, rows, FALLBACK_CELL_PX.0, FALLBACK_CELL_PX.1)
-}
 
 /// The server-authoritative mirror grid `(cols, rows)` used to letterbox a
 /// pane within its render rect (phux-7ubw).

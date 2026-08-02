@@ -1789,16 +1789,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }
             Ok(HistoryPageCheck::New) => {}
             Err(error) => {
-                if matches!(
-                    error,
-                    HistoryCacheError::Gap
-                        | HistoryCacheError::SequenceGap { .. }
-                        | HistoryCacheError::SequenceExhausted
-                ) {
-                    replica.history.mark_gap();
-                } else {
-                    replica.history.tombstone();
-                }
+                // Cursor/sequence failures invalidate only progressive history.
+                // The published live replica remains authoritative and usable.
+                replica.history.tombstone();
                 self.adapter.clear_document_state(&mut replica.engine);
                 effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
                     key: replica.key.clone(),

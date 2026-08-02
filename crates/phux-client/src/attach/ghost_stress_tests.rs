@@ -183,10 +183,10 @@ impl Rig {
 
     /// Run one inbound server frame through the REAL dispatcher and parse
     /// whatever it painted into the glass.
-    fn drive(&mut self, frame: FrameKind) {
+    fn drive(&mut self, frame: FrameKind) -> super::server_frame::FrameOutcome {
         let mut out: Vec<u8> = Vec::new();
         let overlay = Overlay;
-        let _ = handle_server_frame(
+        let outcome = handle_server_frame(
             &mut self.kernel,
             &mut self.kernel_effects,
             &mut out,
@@ -211,6 +211,7 @@ impl Rig {
         )
         .expect("handle_server_frame");
         self.glass.vt_write(&out);
+        outcome
     }
 
     /// `TERMINAL_OUTPUT` for `pane` — the hot path.
@@ -249,12 +250,15 @@ impl Rig {
             chunk_seq: 0,
             payload: bytes::Bytes::copy_from_slice(replay),
         });
-        self.drive(FrameKind::BootstrapReady {
+        let outcome = self.drive(FrameKind::BootstrapReady {
             terminal_id: pane.clone(),
             stream_id,
             bootstrap_id,
             history_cursor: None,
         });
+        if outcome.layout_replaced {
+            self.full_repaint();
+        }
         self.bootstraps.insert(pane.clone(), bootstrap_id);
     }
 

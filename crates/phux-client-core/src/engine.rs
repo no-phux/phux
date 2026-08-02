@@ -137,7 +137,7 @@ impl EngineEffectBuffer {
         self.effects.drain(..)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native-engine"))]
     pub(crate) fn as_slice(&self) -> &[EngineEffect] {
         &self.effects
     }

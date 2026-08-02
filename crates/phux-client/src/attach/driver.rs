@@ -5882,6 +5882,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn output_honors_coalescing_decision() {
         let output = FrameKind::TerminalOutput {
             terminal_id: TerminalId::Local { id: 1 },

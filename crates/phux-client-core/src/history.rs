@@ -646,10 +646,6 @@ impl HistoryCache {
             self.unread_rows = self.unread_rows.saturating_add(rows);
         }
     }
-    /// Mark cursor continuity broken and prevent further fetches.
-    pub(crate) fn mark_gap(&mut self) {
-        self.invalidate(HistoryLoadState::Gap);
-    }
 
     /// Whether scrolling this close to the oldest loaded row should prefetch.
     #[must_use]
