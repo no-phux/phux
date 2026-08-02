@@ -323,9 +323,10 @@ thread_local! {
 fn reserve_native_bytes(capacity: usize) -> Result<Vec<u8>, crate::native_state::NativeStateError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         #[cfg(test)]
-        if PANIC_NEXT_NATIVE_HOST_ALLOC.with(|panic| panic.replace(false)) {
-            panic!("injected native host allocation panic");
-        }
+        assert!(
+            !PANIC_NEXT_NATIVE_HOST_ALLOC.with(|panic| panic.replace(false)),
+            "injected native host allocation panic"
+        );
         #[cfg(test)]
         if FAIL_NEXT_NATIVE_HOST_ALLOC.with(|fail| fail.replace(false)) {
             return Err(crate::native_state::NativeStateError::OutOfMemory);
@@ -360,7 +361,11 @@ enum CanonicalTerminal {
 }
 
 impl CanonicalTerminal {
-    fn terminal(&self) -> &GhosttyTerminal<'static, 'static> {
+    #[allow(
+        clippy::expect_used,
+        reason = "Plain is temporarily None only while native_manager holds the actor-local mutable borrow"
+    )]
+    const fn terminal(&self) -> &GhosttyTerminal<'static, 'static> {
         match self {
             Self::Plain(terminal) => terminal
                 .as_ref()
@@ -370,6 +375,10 @@ impl CanonicalTerminal {
         }
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "Plain is temporarily None only while native_manager holds the actor-local mutable borrow"
+    )]
     fn vt_write(&mut self, bytes: &[u8]) {
         match self {
             Self::Plain(terminal) => terminal
@@ -381,6 +390,10 @@ impl CanonicalTerminal {
         }
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "Plain is temporarily None only while native_manager holds the actor-local mutable borrow"
+    )]
     fn resize(
         &mut self,
         cols: u16,
@@ -1312,6 +1325,10 @@ impl TerminalActor {
     ///
     /// Idempotent: re-attaching the same `client_id` (e.g. on a runtime
     /// bug) overwrites the prior entry.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the arguments are the complete consumer generation identity and synchronization cut"
+    )]
     fn register_consumer_generation(
         &mut self,
         client_id: ClientId,
@@ -2836,6 +2853,10 @@ impl TerminalActor {
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "bootstrap capture, retention, and reply publication form one actor-local atomic transaction"
+    )]
     fn handle_native_bootstrap(&mut self, req: NativeBootstrapRequest) {
         let NativeBootstrapRequest {
             owner,
@@ -2989,6 +3010,10 @@ impl TerminalActor {
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "history validation, cursor advancement, and reply publication form one actor-local transaction"
+    )]
     fn handle_native_history(&mut self, req: NativeHistoryRequest) {
         let NativeHistoryRequest {
             permit,
@@ -3002,16 +3027,14 @@ impl TerminalActor {
             limits,
             reply,
         } = req;
-        let cursor: crate::native_state::OpaqueHistoryCursor = match wire_cursor.as_ref().try_into()
-        {
-            Ok(cursor) => cursor,
-            Err(_) => {
-                let _ = reply.send(NativeHistoryReply {
-                    permit,
-                    result: Err(crate::native_state::NativeStateError::InvalidHandle),
-                });
-                return;
-            }
+        let Ok(cursor): Result<crate::native_state::OpaqueHistoryCursor, _> =
+            wire_cursor.as_ref().try_into()
+        else {
+            let _ = reply.send(NativeHistoryReply {
+                permit,
+                result: Err(crate::native_state::NativeStateError::InvalidHandle),
+            });
+            return;
         };
         let Some(binding) = self.native_cursor_owners.get(&(owner, cursor)) else {
             let _ = reply.send(NativeHistoryReply {
@@ -3047,15 +3070,12 @@ impl TerminalActor {
             });
             return;
         }
-        let size = match usize::try_from(bound) {
-            Ok(size) => size,
-            Err(_) => {
-                let _ = reply.send(NativeHistoryReply {
-                    permit,
-                    result: Err(crate::native_state::NativeStateError::LimitExceeded),
-                });
-                return;
-            }
+        let Ok(size) = usize::try_from(bound) else {
+            let _ = reply.send(NativeHistoryReply {
+                permit,
+                result: Err(crate::native_state::NativeStateError::LimitExceeded),
+            });
+            return;
         };
         let mut payload = match reserve_native_bytes(size) {
             Ok(mut payload) => {
@@ -3379,7 +3399,7 @@ impl TerminalActor {
             }
         }
     }
-    async fn handle_native_actor_request(&mut self, req: NativeActorRequest) {
+    fn handle_native_actor_request(&mut self, req: NativeActorRequest) {
         match req {
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             NativeActorRequest::Bootstrap(req) => self.handle_native_bootstrap(req),
@@ -3527,7 +3547,7 @@ impl TerminalActor {
                     match ingress {
                         NativeOrPty::Native(req) => {
                             prefer_native = false;
-                            self.handle_native_actor_request(req).await;
+                            self.handle_native_actor_request(req);
                         }
                         NativeOrPty::Pty(evt) => {
                             prefer_native = true;
@@ -5211,6 +5231,10 @@ mod tests {
     }
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     #[tokio::test(flavor = "current_thread")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the test keeps fault injection and the full cursor-continuation proof in one LocalSet lifecycle"
+    )]
     async fn history_host_allocation_failure_does_not_advance_cursor() {
         let local = tokio::task::LocalSet::new();
         local
@@ -7054,9 +7078,8 @@ mod tests {
                         Ok(Ok(PaneOutput::Resync { bytes, .. })) => {
                             acc.extend_from_slice(&bytes);
                         }
-                        Ok(Ok(PaneOutput::Control { .. })) => {}
+                        Ok(Ok(PaneOutput::Control { .. })) | Err(_) => {}
                         Ok(Err(_)) => break, // channel closed
-                        Err(_) => {}         // poll tick; retry
                     }
                     if seen(&acc, b"4;720;900t") && seen(&acc, b"8;40;100t") {
                         found = true;

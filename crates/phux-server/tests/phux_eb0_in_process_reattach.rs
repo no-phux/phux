@@ -29,15 +29,16 @@ mod common;
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED,
-    TYPE_TERMINAL_OUTPUT, ViewportInfo,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
+    ViewportInfo,
 };
 use tempfile::TempDir;
 use tokio::time::timeout;
 
 use crate::common::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, spawn_server,
-    spawn_server_seed_pty_no_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, attach_by_name_with_id, recv_typed,
+    recv_until_detached, run_local, send_frame, spawn_server, spawn_server_seed_pty_no_cmd,
+    wait_for_socket,
 };
 
 /// `ATTACH { CreateIfMissing { name } }` at the canonical 80x24 viewport.
@@ -85,8 +86,8 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
             // Detach cleanly so the server frees the seed connection's
             // consumer state before we drop the socket.
             send_frame(&mut seed, &FrameKind::Detach).await;
-            let (type_byte, _detached) = recv_typed(&mut seed).await;
-            assert_eq!(type_byte, TYPE_DETACHED, "seed: DETACHED");
+            let detached = recv_until_detached(&mut seed).await;
+            assert!(matches!(detached, FrameKind::Detached));
             drop(seed);
         }
 
@@ -123,15 +124,11 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
         // when the user picks "beta" from the `<leader> a` picker.
         // ------------------------------------------------------------
         send_frame(&mut client, &FrameKind::Detach).await;
-        let (type_byte, detached) = recv_typed(&mut client).await;
-        assert_eq!(type_byte, TYPE_DETACHED, "switch: server replies DETACHED");
-        assert!(
-            matches!(detached, FrameKind::Detached),
-            "switch: payload is Detached",
-        );
+        let detached = recv_until_detached(&mut client).await;
+        assert!(matches!(detached, FrameKind::Detached));
 
         // Same connection, new target.
-        send_frame(&mut client, &attach_by_name("beta")).await;
+        send_frame(&mut client, &attach_by_name_with_id("beta", 2)).await;
         let (type_byte, attached_b) = recv_typed(&mut client).await;
         assert_eq!(
             type_byte, TYPE_ATTACHED,
@@ -220,15 +217,8 @@ fn reattach_to_other_session_does_not_forward_old_session_output() {
             let (type_byte, _snap) = recv_typed(&mut seed).await;
             assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN, "seed {name}: snapshot");
             send_frame(&mut seed, &FrameKind::Detach).await;
-            loop {
-                let (type_byte, frame) = recv_typed(&mut seed).await;
-                if type_byte == TYPE_TERMINAL_OUTPUT {
-                    continue;
-                }
-                assert_eq!(type_byte, TYPE_DETACHED, "seed {name}: DETACHED");
-                assert!(matches!(frame, FrameKind::Detached));
-                break;
-            }
+            let detached = recv_until_detached(&mut seed).await;
+            assert!(matches!(detached, FrameKind::Detached));
         }
 
         let mut client = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
@@ -253,17 +243,10 @@ fn reattach_to_other_session_does_not_forward_old_session_output() {
         assert!(saw_alpha, "A: expected live ALPHA output before detach");
 
         send_frame(&mut client, &FrameKind::Detach).await;
-        loop {
-            let (type_byte, frame) = recv_typed(&mut client).await;
-            if type_byte == TYPE_TERMINAL_OUTPUT {
-                continue;
-            }
-            assert_eq!(type_byte, TYPE_DETACHED, "switch: DETACHED");
-            assert!(matches!(frame, FrameKind::Detached));
-            break;
-        }
+        let detached = recv_until_detached(&mut client).await;
+        assert!(matches!(detached, FrameKind::Detached));
 
-        send_frame(&mut client, &attach_by_name("beta")).await;
+        send_frame(&mut client, &attach_by_name_with_id("beta", 2)).await;
         let (type_byte, _attached_b) = recv_typed(&mut client).await;
         assert_eq!(type_byte, TYPE_ATTACHED, "B: ATTACHED");
         let (type_byte, _snap_b) = recv_typed(&mut client).await;

@@ -1553,7 +1553,7 @@ impl RelaySession {
             None => None,
         }
     }
-    fn expected_stream_profile(&self) -> Option<BootstrapStreamProfile> {
+    const fn expected_stream_profile(&self) -> Option<BootstrapStreamProfile> {
         match self.bootstrap_profile {
             BootstrapProfile::NativeState { codec, .. } => {
                 Some(BootstrapStreamProfile::NativeState { codec })

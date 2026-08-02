@@ -33,7 +33,7 @@ use tokio::time::timeout;
 
 use common::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 /// Kitty graphics transmit-and-display, base64 payload (`ESC _ G ... ESC \`).
@@ -86,7 +86,7 @@ async fn attach_with_caps(
     client_name: &str,
     caps: ClientCapabilities,
 ) -> UnixStream {
-    let mut stream = wait_for_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
+    let mut stream = wait_for_raw_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
     send_frame(
         &mut stream,
         &FrameKind::Hello {

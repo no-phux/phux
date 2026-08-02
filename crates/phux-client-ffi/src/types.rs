@@ -284,7 +284,8 @@ pub struct OwnedEffect {
 }
 
 impl OwnedEffect {
-    pub fn simple(kind: u32, detail: u32, terminal_id: TerminalId) -> Self {
+    #[must_use]
+    pub const fn simple(kind: u32, detail: u32, terminal_id: TerminalId) -> Self {
         Self {
             kind,
             detail,
@@ -300,7 +301,8 @@ impl OwnedEffect {
     }
 }
 
-pub fn bytes_out(data: &[u8]) -> PhuxBytes {
+#[must_use]
+pub const fn bytes_out(data: &[u8]) -> PhuxBytes {
     PhuxBytes {
         data: if data.is_empty() {
             ptr::null()
@@ -311,6 +313,7 @@ pub fn bytes_out(data: &[u8]) -> PhuxBytes {
     }
 }
 
+#[must_use]
 pub fn terminal_id_out(value: &TerminalId) -> PhuxTerminalId {
     match value {
         TerminalId::Local { id } => PhuxTerminalId {

@@ -63,7 +63,7 @@ where
     .await;
 }
 
-fn ack(seq: u64) -> FrameKind {
+const fn ack(seq: u64) -> FrameKind {
     FrameKind::FrameAck {
         terminal_id: TerminalId::Local { id: 1 },
         stream_id: phux_protocol::StreamId::new(1).expect("stream"),

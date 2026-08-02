@@ -134,17 +134,29 @@ pub(crate) const fn bootstrap_stream_profile(
     }
 }
 
-pub(crate) fn stream_id_from(raw: u64) -> StreamId {
-    StreamId::new(raw.saturating_add(1)).expect("derived stream id is non-zero")
+pub(crate) const fn stream_id_from(raw: u64) -> StreamId {
+    match StreamId::new(raw.saturating_add(1)) {
+        Some(id) => id,
+        None => unreachable!(),
+    }
 }
 
-pub(crate) fn initial_bootstrap_id() -> BootstrapId {
-    BootstrapId::new(1).expect("initial bootstrap generation is non-zero")
+pub(crate) const fn initial_bootstrap_id() -> BootstrapId {
+    match BootstrapId::new(1) {
+        Some(id) => id,
+        None => unreachable!(),
+    }
 }
 
-pub(crate) fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
-    BootstrapId::new(id.get().checked_add(1).unwrap_or(1))
-        .expect("wrapped bootstrap generation is non-zero")
+pub(crate) const fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
+    let raw = match id.get().checked_add(1) {
+        Some(raw) => raw,
+        None => 1,
+    };
+    match BootstrapId::new(raw) {
+        Some(next) => next,
+        None => unreachable!(),
+    }
 }
 
 /// Connection-wide retention ceiling for an aggregate ATTACH preflight.
@@ -185,11 +197,11 @@ impl BootstrapStagingBudget {
         }
     }
 
-    fn remaining_bytes(&self) -> usize {
+    const fn remaining_bytes(&self) -> usize {
         self.max_bytes.saturating_sub(self.staged_bytes)
     }
 
-    fn remaining_frames(&self) -> usize {
+    const fn remaining_frames(&self) -> usize {
         self.max_frames.saturating_sub(self.staged_frames)
     }
 
@@ -352,6 +364,10 @@ pub(crate) async fn enqueue_output_resync(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "single rollback boundary deliberately receives every staged and committed resource so cancellation, producer detach, pump abortion, and the fatal sentinel remain strictly ordered"
+)]
 async fn fail_aggregate_attach_prepublication(
     state: &SharedState,
     client_id: ClientId,
@@ -962,9 +978,10 @@ async fn relay_spawn_to_satellite(
 /// satellite fails fast with [`SpawnError::SatelliteUnreachable`]
 /// (L1 §3.1 / §9.1).
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::cognitive_complexity,
-    reason = "linear orchestration: route satellite spawns → validate group → build CommandBuilder from wire frame → resolve hosting session → spawn PTY-backed pane into its window → auto-subscribe spawning client + spawn output pump → reply on the wire. Each step is small; splitting them scatters the SPAWN_TERMINAL contract without simplifying the logic."
+    reason = "linear orchestration: route satellite spawns → validate group → build CommandBuilder from wire frame → resolve hosting session → spawn PTY-backed pane into its window → auto-subscribe spawning client + spawn output pump → reply on the wire. The explicit context arguments preserve cancellation and output-pump ownership; splitting the flow would scatter the SPAWN_TERMINAL contract without simplifying it."
 )]
 pub(crate) async fn handle_spawn_terminal(
     state: &SharedState,
@@ -975,7 +992,7 @@ pub(crate) async fn handle_spawn_terminal(
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
-    _connection_token: &CancellationToken,
+    connection_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
 ) {
     let Some(profile) = bootstrap_stream_profile(bootstrap_profile) else {
@@ -1247,7 +1264,7 @@ pub(crate) async fn handle_spawn_terminal(
         let stream_id = stream_id_from(u64::from(request_id));
         let pump_resize = handle.resize.clone();
         let pump_state = state.clone();
-        let pump_connection_token = _connection_token.clone();
+        let pump_connection_token = connection_token.clone();
         let pump_core_terminal_id = core_terminal_id;
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_native_bootstrap = handle.native_bootstrap.clone();
@@ -1256,7 +1273,7 @@ pub(crate) async fn handle_spawn_terminal(
             let Ok(mut published_cut) = bootstrap_gate_rx.await else {
                 return;
             };
-            let mut _last_forwarded_seq = published_cut;
+            let mut last_forwarded_seq = published_cut;
             let mut bootstrap_id = initial_bootstrap_id();
             let mut generation_active = true;
             loop {
@@ -1275,7 +1292,7 @@ pub(crate) async fn handle_spawn_terminal(
                         if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                             break;
                         }
-                        _last_forwarded_seq = seq;
+                        last_forwarded_seq = seq;
                     }
                     Ok(PaneOutput::Control { owner, frame }) => {
                         if owner != client_id.0 {
@@ -1320,7 +1337,7 @@ pub(crate) async fn handle_spawn_terminal(
                         cols,
                         rows,
                         bytes,
-                        reason: _reason,
+                        reason: tombstone_reason,
                         base_seq,
                     }) => {
                         // Resync is a control event, not replayable live data:
@@ -1342,7 +1359,7 @@ pub(crate) async fn handle_spawn_terminal(
                                     terminal_id: pump_wire_terminal_id.clone(),
                                     stream_id,
                                     bootstrap_id: prior_bootstrap_id,
-                                    reason: match _reason {
+                                    reason: match tombstone_reason {
                                         crate::terminal_actor::ResyncReason::Resize => {
                                             phux_protocol::wire::frame::TombstoneReason::Resize
                                         }
@@ -1350,7 +1367,7 @@ pub(crate) async fn handle_spawn_terminal(
                                             phux_protocol::wire::frame::TombstoneReason::OutboundGap
                                         }
                                     },
-                                    last_valid_seq: _last_forwarded_seq,
+                                    last_valid_seq: last_forwarded_seq,
                                 }))
                                 .await
                                 .is_err()
@@ -1401,7 +1418,7 @@ pub(crate) async fn handle_spawn_terminal(
                                 break;
                             };
                             published_cut = cut;
-                            _last_forwarded_seq = cut;
+                            last_forwarded_seq = cut;
                             generation_active = true;
                             continue;
                         }
@@ -1424,7 +1441,7 @@ pub(crate) async fn handle_spawn_terminal(
                             break;
                         }
                         published_cut = base_seq;
-                        _last_forwarded_seq = base_seq;
+                        last_forwarded_seq = base_seq;
                         generation_active = true;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -1703,7 +1720,7 @@ pub(crate) async fn handle_attach(
     bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
-    _connection_token: &CancellationToken,
+    connection_token: &CancellationToken,
 ) {
     let Some(stream_profile) = bootstrap_stream_profile(negotiated_profile) else {
         send_error(
@@ -1874,7 +1891,7 @@ pub(crate) async fn handle_attach(
                 client_id,
                 attach_id,
                 out_tx,
-                _connection_token,
+                connection_token,
                 &staged_handles,
                 &mut staged_output_pumps,
                 output_pumps,
@@ -2029,7 +2046,7 @@ pub(crate) async fn handle_attach(
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             let pump_native_bootstrap = handle.native_bootstrap.clone();
             let pump_state = state.clone();
-            let pump_connection_token = _connection_token.clone();
+            let pump_connection_token = connection_token.clone();
             // phux-7w1j: hold this pump's first forward until the pane's
             // snapshot has been sent (the drain loop fires `gate_tx`).
             let (gate_tx, gate_rx) = oneshot::channel::<u64>();
@@ -2038,7 +2055,7 @@ pub(crate) async fn handle_attach(
                 let Ok(mut published_cut) = gate_rx.await else {
                     return;
                 };
-                let mut _last_forwarded_seq = published_cut;
+                let mut last_forwarded_seq = published_cut;
                 let mut bootstrap_id = bootstrap_id;
                 let mut generation_active = true;
                 loop {
@@ -2057,7 +2074,7 @@ pub(crate) async fn handle_attach(
                             if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                                 break;
                             }
-                            _last_forwarded_seq = seq;
+                            last_forwarded_seq = seq;
                         }
                         Ok(PaneOutput::Control { owner, frame }) => {
                             if owner != client_id.0 {
@@ -2102,7 +2119,7 @@ pub(crate) async fn handle_attach(
                             cols,
                             rows,
                             bytes,
-                            reason: _reason,
+                            reason: tombstone_reason,
                             base_seq,
                         }) => {
                             // Resync is control, so an unchanged cut still
@@ -2123,7 +2140,7 @@ pub(crate) async fn handle_attach(
                                         terminal_id: pump_wire_terminal_id.clone(),
                                         stream_id,
                                         bootstrap_id: prior_bootstrap_id,
-                                        reason: match _reason {
+                                        reason: match tombstone_reason {
                                             crate::terminal_actor::ResyncReason::Resize => {
                                                 phux_protocol::wire::frame::TombstoneReason::Resize
                                             }
@@ -2131,7 +2148,7 @@ pub(crate) async fn handle_attach(
                                                 phux_protocol::wire::frame::TombstoneReason::OutboundGap
                                             }
                                         },
-                                        last_valid_seq: _last_forwarded_seq,
+                                        last_valid_seq: last_forwarded_seq,
                                     }))
                                     .await
                                     .is_err()
@@ -2192,7 +2209,7 @@ pub(crate) async fn handle_attach(
                                     break;
                                 };
                                 published_cut = cut;
-                                _last_forwarded_seq = cut;
+                                last_forwarded_seq = cut;
                                 generation_active = true;
                                 continue;
                             }
@@ -2215,7 +2232,7 @@ pub(crate) async fn handle_attach(
                                 break;
                             }
                             published_cut = base_seq;
-                            _last_forwarded_seq = base_seq;
+                            last_forwarded_seq = base_seq;
                             generation_active = true;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

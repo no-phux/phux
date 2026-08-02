@@ -449,7 +449,7 @@ impl NativeTerminalManager {
         })
     }
 
-    pub(crate) fn terminal(&self) -> &GhosttyTerminal<'static, 'static> {
+    pub(crate) const fn terminal(&self) -> &GhosttyTerminal<'static, 'static> {
         &self.terminal
     }
 

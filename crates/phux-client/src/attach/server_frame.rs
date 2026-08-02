@@ -154,7 +154,7 @@ pub(super) struct FrameOutcome {
     /// `layout_replaced` reconcile/broadcast paths (which already sized
     /// their panes and would otherwise thrash on attach).
     pub(super) reflow_panes: bool,
-    /// Exact cumulative StateSync acknowledgement emitted by the session kernel.
+    /// Exact cumulative `StateSync` acknowledgement emitted by the session kernel.
     pub(super) ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
     /// The engine rejected a generation after emitting a typed resync status.
     ///
@@ -283,18 +283,6 @@ fn pane_label(id: &TerminalId) -> String {
     }
 }
 
-/// Process one server-to-client frame. Returns a [`FrameOutcome`]
-/// describing any follow-up the async driver needs to perform.
-///
-/// `status_bar` is `Option<&mut StatusBarPainter>` so an attach with no
-/// configured widgets pays nothing for the chrome path. `viewport_dims`
-/// is `(cols, rows)` of the outer terminal — used by the painter to
-/// pick the bottom row.
-#[allow(clippy::too_many_arguments)] // arg list bundles status-bar + predict state; follow-up to refactor into a context struct
-#[allow(
-    clippy::too_many_lines,
-    reason = "phux-4li.5 added L3 reconcile branches; refactor with the status-bar arg-list cleanup"
-)]
 #[derive(Default)]
 struct KernelRoute {
     ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
@@ -311,7 +299,9 @@ impl KernelRoute {
     }
 }
 
-fn history_unavailable_reason(reason: HistoryTombstoneReason) -> Option<HistoryUnavailableReason> {
+const fn history_unavailable_reason(
+    reason: HistoryTombstoneReason,
+) -> Option<HistoryUnavailableReason> {
     Some(match reason {
         HistoryTombstoneReason::Stale => HistoryUnavailableReason::Stale,
         HistoryTombstoneReason::Pruned => HistoryUnavailableReason::Pruned,
@@ -325,7 +315,7 @@ fn history_unavailable_reason(reason: HistoryTombstoneReason) -> Option<HistoryU
     })
 }
 
-fn history_rejection_reason(
+const fn history_rejection_reason(
     reason: HistoryRejectionReason,
 ) -> Option<KernelHistoryRejectionReason> {
     Some(match reason {
@@ -336,6 +326,10 @@ fn history_rejection_reason(
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive translation of ordered wire-frame variants into session-kernel inputs and effects"
+)]
 fn route_engine_frame(
     frame: &FrameKind,
     kernel: &mut super::driver::AttachKernel,
@@ -585,9 +579,19 @@ fn route_engine_frame(
     route
 }
 
+/// Process one server-to-client frame. Returns a [`FrameOutcome`]
+/// describing any follow-up the async driver needs to perform.
+///
+/// `status_bar` is `Option<&mut StatusBarPainter>` so an attach with no
+/// configured widgets pays nothing for the chrome path. `viewport_dims`
+/// is `(cols, rows)` of the outer terminal — used by the painter to
+/// pick the bottom row.
 #[allow(
     clippy::cognitive_complexity,
-    reason = "phux-4li.12 adds TerminalSpawned/TerminalClosed branches with full SpawnError matching; per-frame dispatcher is intentionally flat"
+    clippy::match_same_arms,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "cohesive ordered protocol dispatcher; keeping tombstones and request errors in their semantic groups preserves routing precedence"
 )]
 pub(super) fn handle_server_frame<W: super::RenderSink>(
     engine_kernel: &mut super::driver::AttachKernel,
@@ -2272,6 +2276,7 @@ mod tests {
         assert!(released.layout_replaced);
         assert_eq!(panes[&ready_terminal].last_title, "vim");
     }
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn malformed_history_tombstones_only_history_and_replacement_publishes_atomically() {
         let terminal_id = tid(96);
@@ -2969,6 +2974,7 @@ mod tests {
 
     /// Like [`drive_output`] but stamps an explicit `seq` and returns the
     /// [`FrameOutcome`] so ack-emission tests can inspect `outcome.ack`.
+    #[allow(clippy::too_many_arguments)]
     fn drive_output_seq(
         engine: &mut EngineFixture,
         out: &mut Vec<u8>,
@@ -3474,55 +3480,56 @@ mod tests {
         let mut pending_windows = HashMap::new();
         let mut expected_closes = HashSet::new();
         let mut agent_meta = AgentMetaIndex::default();
-        let mut dispatch = |frame| {
-            handle_server_frame_with_kernel(
-                &mut engine.kernel,
-                &mut engine.effects,
-                out,
-                frame,
-                panes,
-                layout,
-                focused,
-                &mut zoomed,
-                &mut session_name,
-                None,
-                None,
-                viewport_dims,
-                &mut predict,
-                &overlay,
-                None,
-                &mut pending_splits,
-                &mut pending_windows,
-                &mut expected_closes,
-                &mut agent_meta,
-                false,
-                false,
-            )
-            .expect("handle bootstrap frame")
+        let outcome = {
+            let mut dispatch = |frame| {
+                handle_server_frame_with_kernel(
+                    &mut engine.kernel,
+                    &mut engine.effects,
+                    out,
+                    frame,
+                    panes,
+                    layout,
+                    focused,
+                    &mut zoomed,
+                    &mut session_name,
+                    None,
+                    None,
+                    viewport_dims,
+                    &mut predict,
+                    &overlay,
+                    None,
+                    &mut pending_splits,
+                    &mut pending_windows,
+                    &mut expected_closes,
+                    &mut agent_meta,
+                    false,
+                    false,
+                )
+                .expect("handle bootstrap frame")
+            };
+            dispatch(FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+                cols,
+                rows,
+                base_seq,
+            });
+            dispatch(FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::copy_from_slice(vt_replay_bytes),
+            });
+            dispatch(FrameKind::BootstrapReady {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            })
         };
-        dispatch(FrameKind::BootstrapBegin {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
-            cols,
-            rows,
-            base_seq,
-        });
-        dispatch(FrameKind::BootstrapChunk {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: bytes::Bytes::copy_from_slice(vt_replay_bytes),
-        });
-        let outcome = dispatch(FrameKind::BootstrapReady {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        });
-        drop(dispatch);
         if outcome.layout_replaced
             && let Some(active) = layout.render_window(zoomed.as_ref())
         {

@@ -81,7 +81,7 @@ use tokio::time::timeout;
 
 use crate::common::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, encode_frame, run_local,
-    spawn_server, spawn_server_with_seed_cmd, wait_for_socket,
+    spawn_server, spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 /// The connector leg's dedicated ALPN (ADR-0051 Decision 2). Reserved
@@ -517,7 +517,7 @@ fn spawn_connector(
             // stdio-bridge shape: one finished direction ends the bridge.
             let socket_path = socket_path.clone();
             tokio::task::spawn_local(async move {
-                let uds = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+                let uds = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
                 let (mut from_server, mut to_server) = uds.into_split();
                 tokio::select! {
                     _ = tokio::io::copy(&mut tun_recv, &mut to_server) => {}

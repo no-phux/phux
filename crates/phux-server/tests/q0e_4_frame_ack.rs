@@ -89,7 +89,7 @@ fn terminal_outputs(items: &[Outbound]) -> Vec<(u32, u64, usize)> {
                 *seq,
                 bytes.len(),
             )),
-            Outbound::Frame(_) => None,
+            Outbound::Frame(_) | Outbound::TerminalError { .. } => None,
         })
         .collect()
 }
@@ -149,6 +149,9 @@ async fn ack_round_trip_emits_post_ack_tick() {
                     state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
+                    bootstrap_max_bytes: usize::MAX,
+                    bootstrap_max_frames: usize::MAX,
+                    bootstrap_chunk_bytes: 1,
                     reply: reply_tx,
                 })
                 .await
@@ -233,6 +236,9 @@ async fn older_and_duplicate_acks_do_not_crash_the_actor() {
                     state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
+                    bootstrap_max_bytes: usize::MAX,
+                    bootstrap_max_frames: usize::MAX,
+                    bootstrap_chunk_bytes: 1,
                     reply: reply_tx,
                 })
                 .await
@@ -305,6 +311,9 @@ async fn ack_for_unregistered_consumer_is_silent_noop() {
                     state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
+                    bootstrap_max_bytes: usize::MAX,
+                    bootstrap_max_frames: usize::MAX,
+                    bootstrap_chunk_bytes: 1,
                     reply: reply_tx,
                 })
                 .await
@@ -377,6 +386,9 @@ async fn ack_after_detach_is_silent_noop() {
                     state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
+                    bootstrap_max_bytes: usize::MAX,
+                    bootstrap_max_frames: usize::MAX,
+                    bootstrap_chunk_bytes: 1,
                     reply: reply_tx,
                 })
                 .await

@@ -177,6 +177,9 @@ async fn snapshot(snap_tx: &mpsc::Sender<SnapshotRequest>) -> SnapshotBytes {
     snap_tx
         .send(SnapshotRequest {
             scrollback: None,
+            max_bytes: usize::MAX,
+            max_frames: usize::MAX,
+            chunk_bytes: 1,
             reply: tx,
         })
         .await
@@ -185,6 +188,7 @@ async fn snapshot(snap_tx: &mpsc::Sender<SnapshotRequest>) -> SnapshotBytes {
         .await
         .expect("snapshot timed out")
         .expect("snapshot reply dropped")
+        .expect("snapshot synthesis")
         .0
 }
 

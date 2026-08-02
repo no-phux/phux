@@ -35,8 +35,10 @@ mod common;
 
 use std::time::Duration;
 
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, ErrorCode, FrameKind, TYPE_ATTACHED,
+    AgentEvent, Command, CommandResult, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_HELLO_OK,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -45,8 +47,26 @@ use tokio::time::timeout;
 
 use crate::common::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
+async fn negotiate(stream: &mut UnixStream) {
+    send_frame(
+        stream,
+        &FrameKind::Hello {
+            client_name: "phux-agent-asked-test".to_owned(),
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            client_caps: ClientCapabilities::new()
+                .with_color_support(ColorSupport::TrueColor)
+                .with_layers(LayerSet::all()),
+        },
+    )
+    .await;
+    let (type_byte, frame) = recv_typed(stream).await;
+    assert_eq!(type_byte, TYPE_HELLO_OK);
+    assert!(matches!(frame, FrameKind::HelloOk { .. }));
+}
 
 /// A shell that defers its observable output so the test client wins the
 /// race to `SUBSCRIBE_EVENTS` before the marker fires. After ~250ms it sets
@@ -150,7 +170,8 @@ fn subscribed_client_receives_asked_event_from_ask_title() {
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
 
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        negotiate(&mut stream).await;
 
         // ---- ATTACH ---- (so the client has an `attached` mailbox the
         // event fanout can target).
@@ -214,7 +235,8 @@ fn report_asked_command_emits_asked_event() {
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
 
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        negotiate(&mut stream).await;
         send_frame(&mut stream, &attach_by_name("demo")).await;
         let (type_byte, attached) = recv_typed(&mut stream).await;
         assert_eq!(type_byte, TYPE_ATTACHED);
@@ -275,7 +297,8 @@ fn report_asked_rejects_empty_question() {
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
 
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        negotiate(&mut stream).await;
         send_frame(&mut stream, &attach_by_name("demo")).await;
         let (_type_byte, attached) = recv_typed(&mut stream).await;
         let FrameKind::Attached { snapshot, .. } = attached else {

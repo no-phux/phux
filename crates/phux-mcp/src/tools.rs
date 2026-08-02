@@ -1067,15 +1067,21 @@ mod tests {
         // fifth (satellite-scoped) lookup was answered by a transport EOF
         // rather than by the server — `fetch_tag_index`'s best-effort
         // degradation was masking the gap instead of the test covering it.
+        assert!(
+            matches!(seen.first(), Some(FrameKind::Hello { .. })),
+            "the client must negotiate before metadata lookup; got {seen:?}"
+        );
+        let metadata = &seen[1..];
         assert_eq!(
-            seen.len(),
+            metadata.len(),
             fixture().panes.len(),
             "one GET_METADATA per pane in the snapshot, pipelined; got {seen:?}"
         );
         assert!(
-            seen.iter()
+            metadata
+                .iter()
                 .all(|frame| matches!(frame, FrameKind::GetMetadata { .. })),
-            "the tag lookup sends nothing but GET_METADATA; got {seen:?}"
+            "HELLO must be followed only by GET_METADATA; got {seen:?}"
         );
     }
 

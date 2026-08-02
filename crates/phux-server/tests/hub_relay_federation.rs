@@ -57,7 +57,7 @@ mod common;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use common::{encode_frame, recv_typed, send_frame, wait_for_socket};
+use common::{encode_frame, recv_typed, send_frame, wait_for_raw_socket, wait_for_socket};
 use futures_util::{SinkExt, StreamExt};
 use phux_config::SatelliteConfigEntry;
 use phux_protocol::PROTOCOL_VERSION;
@@ -817,7 +817,7 @@ async fn run_stub_bridge(c2s: PathBuf, s2c: PathBuf, sat_sock: PathBuf) {
             Err(err) => panic!("ssh stub never opened its stdout FIFO: {err}"),
         }
     };
-    let satellite = wait_for_socket(&sat_sock, STEP_DEADLINE).await;
+    let satellite = wait_for_raw_socket(&sat_sock, STEP_DEADLINE).await;
     let (mut sat_rd, mut sat_wr) = satellite.into_split();
     // One finished direction ends the bridge, mirroring `phux
     // stdio-bridge`: the transport is gone either way and the hub's

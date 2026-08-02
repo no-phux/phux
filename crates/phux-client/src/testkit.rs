@@ -92,6 +92,10 @@ use tokio::net::{UnixListener, UnixStream};
 
 /// Number of bytes in the SPEC §5 length prefix.
 const LENGTH_PREFIX: usize = 4;
+const FIXTURE_STREAM_ID: StreamId =
+    StreamId::new(1).expect("fixture stream identifier is non-zero");
+const FIXTURE_BOOTSTRAP_ID: BootstrapId =
+    BootstrapId::new(1).expect("fixture bootstrap identifier is non-zero");
 
 /// What the scripted server does once it has played its script.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -183,8 +187,8 @@ impl ScriptSpec {
         rows: u16,
         replay: &[u8],
     ) -> Self {
-        let stream_id = StreamId::new(1).expect("non-zero fixture stream");
-        let bootstrap_id = BootstrapId::new(1).expect("non-zero fixture bootstrap");
+        let stream_id = FIXTURE_STREAM_ID;
+        let bootstrap_id = FIXTURE_BOOTSTRAP_ID;
         self.priming = vec![
             FrameKind::BootstrapBegin {
                 terminal_id: terminal.clone(),

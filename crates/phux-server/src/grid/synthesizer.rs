@@ -99,14 +99,14 @@ impl BoundedSnapshotBytes {
         Ok(Self { bytes, max_bytes })
     }
 
-    fn check(&self) -> Result<(), SynthesisError> {
+    const fn check(&self) -> Result<(), SynthesisError> {
         if self.bytes.len() <= self.max_bytes {
             Ok(())
         } else {
             Err(SynthesisError::LimitExceeded)
         }
     }
-    fn remaining(&self) -> usize {
+    const fn remaining(&self) -> usize {
         self.max_bytes.saturating_sub(self.bytes.len())
     }
 
@@ -231,12 +231,11 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
     ) -> Result<SnapshotBytes, SynthesisError> {
-        self.synthesize_bounded(terminal, usize::MAX)
+        Self::synthesize_bounded(terminal, usize::MAX)
     }
 
     /// Synthesize without allowing the output buffer to exceed `max_bytes`.
     pub fn synthesize_bounded(
-        &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
         max_bytes: usize,
     ) -> Result<SnapshotBytes, SynthesisError> {
@@ -323,13 +322,17 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     }
 
     /// Synthesize viewport and scrollback within one aggregate byte ceiling.
+    #[allow(
+        clippy::unused_self,
+        reason = "the public receiver is retained for semver compatibility; bounded full snapshots are stateless"
+    )]
     pub fn synthesize_with_scrollback_bounded(
         &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
         scrollback: Option<u32>,
         max_bytes: usize,
     ) -> Result<SnapshotBytes, SynthesisError> {
-        let mut snap = self.synthesize_bounded(terminal, max_bytes)?;
+        let mut snap = Self::synthesize_bounded(terminal, max_bytes)?;
         let Some(want) = scrollback else {
             return Ok(snap);
         };
@@ -1126,6 +1129,11 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     /// `synthesize_against_reference` only reports deltas that occur
     /// *after* attach (the `TERMINAL_SNAPSHOT` already brought the
     /// consumer's mirror to this same reference point).
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        clippy::unused_self,
+        reason = "`&mut self` is retained for semver compatibility of this externally visible method"
+    )]
     pub fn prime_reference(
         &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
@@ -1653,9 +1661,8 @@ mod tests {
     #[test]
     fn bounded_synthesis_rejects_tiny_source_budget() {
         let terminal = fresh(80, 24);
-        let synth = SnapshotSynthesizer::new().expect("synth");
         assert!(matches!(
-            synth.synthesize_bounded(&terminal, 4),
+            SnapshotSynthesizer::synthesize_bounded(&terminal, 4),
             Err(SynthesisError::LimitExceeded)
         ));
     }

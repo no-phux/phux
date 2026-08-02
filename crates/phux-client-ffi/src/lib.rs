@@ -236,6 +236,12 @@ fn history_rejection_reason(
     })
 }
 
+/// Creates a client owned by the calling thread.
+///
+/// # Safety
+///
+/// When non-null, `options` must be readable and `out_client` must be valid for
+/// writes for the duration of the call. The two pointees must not overlap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_new(
     options: *const PhuxClientOptions,
@@ -300,6 +306,14 @@ pub unsafe extern "C" fn phux_client_new(
     }
 }
 
+/// Replaces the client's lifecycle callbacks, or clears them when `callbacks` is null.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. `callbacks` may be null to clear callbacks;
+/// otherwise it must be readable for the call. Configured callback functions
+/// and their `userdata` must remain valid whenever the callbacks can run.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_set_callbacks(
     client: *mut PhuxClient,
@@ -321,6 +335,13 @@ pub unsafe extern "C" fn phux_client_set_callbacks(
     })
 }
 
+/// Destroys a client.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live pointer returned by
+/// `phux_client_new`, uniquely owned by the caller, on its owning thread, and
+/// not previously freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_free(client: *mut PhuxClient) {
     if unsafe { client.as_ref() }.is_some_and(|client| client.inner.in_callback) {
@@ -334,6 +355,12 @@ pub unsafe extern "C" fn phux_client_free(client: *mut PhuxClient) {
     }
 }
 
+/// Returns the client's lifecycle state.
+///
+/// # Safety
+///
+/// When non-null, `client` must point to a live client on its owning thread and
+/// remain valid and unmodified for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_state(client: *const PhuxClient) -> PhuxClientState {
     unsafe { client.as_ref() }.map_or(PhuxClientState::Failed, |client| {
@@ -345,6 +372,14 @@ pub unsafe extern "C" fn phux_client_state(client: *const PhuxClient) -> PhuxCli
     })
 }
 
+/// Returns the client's most recent error message.
+///
+/// # Safety
+///
+/// When non-null, `client` must point to a live client on its owning thread and
+/// remain valid and unmodified for the call. When non-null, `out_error` must be
+/// valid writable storage. The returned bytes remain valid until the next
+/// mutable call using `client`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_last_error(
     client: *const PhuxClient,
@@ -366,6 +401,13 @@ pub unsafe extern "C" fn phux_client_last_error(
     }
 }
 
+/// Queues the initial protocol greeting.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When `client_name.len` is nonzero,
+/// `client_name.data` must be readable for that many bytes for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_queue_hello(
     client: *mut PhuxClient,
@@ -386,7 +428,7 @@ pub unsafe extern "C" fn phux_client_queue_hello(
                 .ok_or_else(|| BridgeError::state("stored bootstrap limits are invalid"))?;
         let caps = phux_protocol::ClientCapabilities::new()
             .with_bootstrap(native_bootstrap_capabilities(limits));
-        client.queue_frame(FrameKind::Hello {
+        client.queue_frame(&FrameKind::Hello {
             client_name: name.to_owned(),
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
@@ -398,6 +440,14 @@ pub unsafe extern "C" fn phux_client_queue_hello(
     })
 }
 
+/// Queues an attach request.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. `options` may be null and is rejected;
+/// otherwise it must be a readable, valid `PhuxAttachOptions`, and any
+/// non-empty `options.name` span must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_queue_attach(
     client: *mut PhuxClient,
@@ -456,7 +506,7 @@ pub unsafe extern "C" fn phux_client_queue_attach(
             .then_some((options.pixel_width, options.pixel_height));
         let viewport = ViewportInfo::new(options.cols, options.rows)
             .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1));
-        client.queue_frame(FrameKind::Attach {
+        client.queue_frame(&FrameKind::Attach {
             attach_id: options.attach_id,
             target,
             viewport,
@@ -469,6 +519,17 @@ pub unsafe extern "C" fn phux_client_queue_attach(
     })
 }
 
+/// Processes one complete server frame.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When `len` is nonzero, `data` must be
+/// readable for `len` bytes for the call.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the frame dispatcher keeps ordered protocol validation and effects in one auditable transaction"
+)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_feed_frame(
     client: *mut PhuxClient,
@@ -545,7 +606,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                     .contains(phux_protocol::ServerFeature::TerminalReply);
                 client.protocol_ready = true;
             }
-            FrameKind::Ping { nonce } => client.queue_frame(FrameKind::Pong { nonce })?,
+            FrameKind::Ping { nonce } => client.queue_frame(&FrameKind::Pong { nonce })?,
             FrameKind::Attached {
                 attach_id,
                 snapshot,
@@ -844,6 +905,12 @@ pub unsafe extern "C" fn phux_client_feed_frame(
     }
 }
 
+/// Returns the number of queued outgoing frames.
+///
+/// # Safety
+///
+/// When non-null, `client` must point to a live client on its owning thread and
+/// remain valid and unmodified for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_outgoing_count(client: *const PhuxClient) -> usize {
     unsafe { client.as_ref() }.map_or(0, |client| {
@@ -855,6 +922,14 @@ pub unsafe extern "C" fn phux_client_outgoing_count(client: *const PhuxClient) -
     })
 }
 
+/// Returns a borrowed queued outgoing frame.
+///
+/// # Safety
+///
+/// When non-null, `client` must point to a live client on its owning thread and
+/// remain valid and unmodified for the call. When non-null, `out_frame` must be
+/// valid writable storage. The returned bytes remain valid until the next
+/// mutable call using `client`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_outgoing_get(
     client: *const PhuxClient,
@@ -882,6 +957,12 @@ pub unsafe extern "C" fn phux_client_outgoing_get(
     }
 }
 
+/// Clears all queued outgoing frames.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_outgoing_clear(client: *mut PhuxClient) -> PhuxClientResult {
     with_client_mut(client, |client| {
@@ -890,6 +971,12 @@ pub unsafe extern "C" fn phux_client_outgoing_clear(client: *mut PhuxClient) -> 
     })
 }
 
+/// Returns the number of staged effects.
+///
+/// # Safety
+///
+/// When non-null, `client` must point to a live client on its owning thread and
+/// remain valid and unmodified for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_effect_count(client: *const PhuxClient) -> usize {
     unsafe { client.as_ref() }.map_or(0, |client| {
@@ -901,6 +988,14 @@ pub unsafe extern "C" fn phux_client_effect_count(client: *const PhuxClient) -> 
     })
 }
 
+/// Returns a borrowed staged effect.
+///
+/// # Safety
+///
+/// When non-null, `client` must point to a live client on its owning thread and
+/// remain valid and unmodified for the call. When non-null, `out_effect` must
+/// be valid writable storage. Pointers in the returned effect remain valid
+/// until the next mutable call using `client`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_effect_get(
     client: *const PhuxClient,
@@ -927,6 +1022,12 @@ pub unsafe extern "C" fn phux_client_effect_get(
     }
 }
 
+/// Clears all staged effects.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_effect_clear(client: *mut PhuxClient) -> PhuxClientResult {
     with_client_mut(client, |client| {
@@ -936,6 +1037,15 @@ pub unsafe extern "C" fn phux_client_effect_clear(client: *mut PhuxClient) -> Ph
     })
 }
 
+/// Builds and returns the terminal's borrowed grid view.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable, and `out_view` must be valid
+/// writable storage. Pointers in the returned view remain valid until the next
+/// mutable call using `client`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_terminal_grid(
     client: *mut PhuxClient,
@@ -954,6 +1064,14 @@ pub unsafe extern "C" fn phux_client_terminal_grid(
     })
 }
 
+/// Reports whether the terminal has a published DEC mouse-tracking mode.
+///
+/// # Safety
+///
+/// When non-null, `client` must point to a live client on its owning thread and
+/// remain valid and unmodified for the call. When non-null, `terminal_id` and
+/// any non-empty satellite host span must be readable, and `out_enabled` must
+/// be valid writable storage.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_terminal_mouse_tracking(
     client: *const PhuxClient,
@@ -970,6 +1088,14 @@ pub unsafe extern "C" fn phux_client_terminal_mouse_tracking(
     })
 }
 
+/// Sends a key event to a terminal.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and `event`
+/// must be readable. Any non-empty satellite host span and any non-empty
+/// `event.text` span selected by `event.has_text` must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_send_key(
     client: *mut PhuxClient,
@@ -1038,6 +1164,13 @@ pub unsafe extern "C" fn phux_client_send_key(
     })
 }
 
+/// Sends a mouse event to a terminal.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id`, `event`, and
+/// any non-empty satellite host span must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_send_mouse(
     client: *mut PhuxClient,
@@ -1068,6 +1201,13 @@ pub unsafe extern "C" fn phux_client_send_mouse(
     })
 }
 
+/// Sends a focus event to a terminal.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_send_focus(
     client: *mut PhuxClient,
@@ -1088,6 +1228,14 @@ pub unsafe extern "C" fn phux_client_send_focus(
     })
 }
 
+/// Sends pasted bytes to a terminal.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable. When `len` is nonzero,
+/// `data` must be readable for `len` bytes for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_send_paste(
     client: *mut PhuxClient,
@@ -1114,6 +1262,13 @@ pub unsafe extern "C" fn phux_client_send_paste(
     })
 }
 
+/// Queues a terminal resize.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_terminal_resize(
     client: *mut PhuxClient,
@@ -1134,7 +1289,7 @@ pub unsafe extern "C" fn phux_client_terminal_resize(
         }
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         let _ = client.terminal_key(&terminal_id)?;
-        client.queue_frame(FrameKind::TerminalResize {
+        client.queue_frame(&FrameKind::TerminalResize {
             terminal_id,
             cols,
             rows,
@@ -1143,6 +1298,12 @@ pub unsafe extern "C" fn phux_client_terminal_resize(
     })
 }
 
+/// Queues a viewport resize.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_viewport_resize(
     client: *mut PhuxClient,
@@ -1175,7 +1336,7 @@ pub unsafe extern "C" fn phux_client_viewport_resize(
             ));
         }
         let pixels = has_pixel_size.then_some((pixel_width, pixel_height));
-        client.queue_frame(FrameKind::ViewportResize {
+        client.queue_frame(&FrameKind::ViewportResize {
             viewport: ViewportInfo::new(cols, rows)
                 .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1)),
         })?;
@@ -1183,6 +1344,13 @@ pub unsafe extern "C" fn phux_client_viewport_resize(
     })
 }
 
+/// Scrolls a terminal's history viewport.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_scroll_viewport(
     client: *mut PhuxClient,
@@ -1196,6 +1364,14 @@ pub unsafe extern "C" fn phux_client_scroll_viewport(
     })
 }
 
+/// Creates an engine-tracked document anchor.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable, and `out_anchor` must be
+/// valid writable storage.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_anchor_create(
     client: *mut PhuxClient,
@@ -1213,6 +1389,13 @@ pub unsafe extern "C" fn phux_client_anchor_create(
     })
 }
 
+/// Releases an engine-tracked document anchor.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_anchor_release(
     client: *mut PhuxClient,
@@ -1225,6 +1408,13 @@ pub unsafe extern "C" fn phux_client_anchor_release(
     })
 }
 
+/// Pins the history viewport to an engine-tracked anchor.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_history_viewport_pin(
     client: *mut PhuxClient,
@@ -1237,6 +1427,13 @@ pub unsafe extern "C" fn phux_client_history_viewport_pin(
     })
 }
 
+/// Returns the history viewport to the live terminal bottom.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_history_follow_live(
     client: *mut PhuxClient,
@@ -1248,6 +1445,13 @@ pub unsafe extern "C" fn phux_client_history_follow_live(
     })
 }
 
+/// Sets the terminal's selected document range.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_selection_set(
     client: *mut PhuxClient,
@@ -1262,6 +1466,13 @@ pub unsafe extern "C" fn phux_client_selection_set(
     })
 }
 
+/// Clears the terminal's selected document range.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_selection_clear(
     client: *mut PhuxClient,
@@ -1273,6 +1484,15 @@ pub unsafe extern "C" fn phux_client_selection_clear(
     })
 }
 
+/// Returns the selected terminal text.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id` and any
+/// non-empty satellite host span must be readable, and `out_text` must be valid
+/// writable storage. The returned bytes remain valid until the next mutable
+/// call using `client`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_selection_text(
     client: *mut PhuxClient,
@@ -1290,6 +1510,15 @@ pub unsafe extern "C" fn phux_client_selection_text(
     })
 }
 
+/// Searches the terminal document and returns borrowed results.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call. When non-null, `terminal_id`, any non-empty
+/// satellite host span, and any non-empty `query_utf8` span must be readable.
+/// When non-null, `out_results` and `out_count` must be valid writable storage.
+/// The returned result array remains valid until the next mutable call using `client`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_search(
     client: *mut PhuxClient,
@@ -1531,7 +1760,7 @@ mod tests {
             len: usize::MAX,
         };
         assert_eq!(
-            unsafe { phux_client_outgoing_get(client, 0, &mut frame) },
+            unsafe { phux_client_outgoing_get(client, 0, &raw mut frame) },
             PhuxClientResult::NoValue
         );
         assert!(frame.data.is_null());
@@ -1539,7 +1768,7 @@ mod tests {
         unsafe { phux_client_free(client) };
     }
 
-    fn feed_kind(client: *mut PhuxClient, frame: FrameKind) -> PhuxClientResult {
+    fn feed_kind(client: *mut PhuxClient, frame: &FrameKind) -> PhuxClientResult {
         let mut encoded = bytes::BytesMut::new();
         frame.encode(&mut encoded);
         unsafe { phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) }
@@ -1565,7 +1794,7 @@ mod tests {
             scrollback_limit_lines: 1_000,
         };
         assert_eq!(
-            unsafe { phux_client_queue_attach(client, &options) },
+            unsafe { phux_client_queue_attach(client, &raw const options) },
             PhuxClientResult::InvalidArgument
         );
         let client_ref = unsafe { &*client };
@@ -1608,7 +1837,7 @@ mod tests {
         assert_eq!(
             feed_kind(
                 client,
-                FrameKind::BootstrapChunk {
+                &FrameKind::BootstrapChunk {
                     terminal_id: phux_protocol::TerminalId::local(7),
                     stream_id: phux_protocol::StreamId::new(1).expect("stream"),
                     bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
@@ -1645,11 +1874,11 @@ mod tests {
             rows: 24,
             base_seq: 0,
         };
-        assert_eq!(feed_kind(client, begin), PhuxClientResult::ProtocolError);
+        assert_eq!(feed_kind(client, &begin), PhuxClientResult::ProtocolError);
         assert_eq!(
             feed_kind(
                 client,
-                FrameKind::TerminalClosed {
+                &FrameKind::TerminalClosed {
                     terminal_id: terminal_id.clone(),
                     exit_status: None,
                 },
@@ -1673,7 +1902,7 @@ mod tests {
         assert_eq!(
             feed_kind(
                 client,
-                FrameKind::BootstrapBegin {
+                &FrameKind::BootstrapBegin {
                     terminal_id: phux_protocol::TerminalId::local(8),
                     stream_id: phux_protocol::StreamId::new(2).expect("stream"),
                     bootstrap_id: phux_protocol::BootstrapId::new(2).expect("bootstrap"),
@@ -1695,12 +1924,12 @@ mod tests {
             (*client).inner.protocol_ready = true;
         }
         assert_eq!(
-            feed_kind(client, FrameKind::Detached),
+            feed_kind(client, &FrameKind::Detached),
             PhuxClientResult::ProtocolError
         );
         assert!(!unsafe { (*client).inner.detached });
         assert_eq!(
-            feed_kind(client, FrameKind::Ping { nonce: 7 }),
+            feed_kind(client, &FrameKind::Ping { nonce: 7 }),
             PhuxClientResult::Ok
         );
         let client_ref = unsafe { &*client };
@@ -1725,7 +1954,10 @@ mod tests {
             },
         )
         .expect("seed active ATTACH inventory");
-        assert_eq!(feed_kind(client, FrameKind::Detached), PhuxClientResult::Ok);
+        assert_eq!(
+            feed_kind(client, &FrameKind::Detached),
+            PhuxClientResult::Ok
+        );
         let client_ref = unsafe { &*client };
         assert!(
             !client_ref
@@ -1737,7 +1969,7 @@ mod tests {
         assert_eq!(
             feed_kind(
                 client,
-                FrameKind::TerminalOutput {
+                &FrameKind::TerminalOutput {
                     terminal_id,
                     stream_id: phux_protocol::StreamId::new(1).expect("stream"),
                     bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
@@ -1753,6 +1985,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn mouse_tracking_getter_uses_published_dec_modes_and_preserves_borrows() {
         let terminal_id = phux_protocol::TerminalId::local(7);
         let c_terminal_id = PhuxTerminalId {
@@ -1815,7 +2048,13 @@ mod tests {
 
         let mut enabled = false;
         assert_eq!(
-            unsafe { phux_client_terminal_mouse_tracking(client, &c_terminal_id, &mut enabled) },
+            unsafe {
+                phux_client_terminal_mouse_tracking(
+                    client,
+                    &raw const c_terminal_id,
+                    &raw mut enabled,
+                )
+            },
             PhuxClientResult::Ok
         );
         assert!(enabled);
@@ -1833,17 +2072,29 @@ mod tests {
         )
         .expect("reset DEC mouse mode");
         assert_eq!(
-            unsafe { phux_client_terminal_mouse_tracking(client, &c_terminal_id, &mut enabled) },
+            unsafe {
+                phux_client_terminal_mouse_tracking(
+                    client,
+                    &raw const c_terminal_id,
+                    &raw mut enabled,
+                )
+            },
             PhuxClientResult::Ok
         );
         assert!(!enabled);
 
         assert_eq!(
-            unsafe { phux_client_terminal_mouse_tracking(client, &c_terminal_id, ptr::null_mut()) },
+            unsafe {
+                phux_client_terminal_mouse_tracking(
+                    client,
+                    &raw const c_terminal_id,
+                    ptr::null_mut(),
+                )
+            },
             PhuxClientResult::InvalidArgument
         );
         assert_eq!(
-            unsafe { phux_client_terminal_mouse_tracking(client, ptr::null(), &mut enabled,) },
+            unsafe { phux_client_terminal_mouse_tracking(client, ptr::null(), &raw mut enabled) },
             PhuxClientResult::InvalidArgument
         );
         let unknown_id = PhuxTerminalId {
@@ -1851,26 +2102,44 @@ mod tests {
             ..c_terminal_id
         };
         assert_eq!(
-            unsafe { phux_client_terminal_mouse_tracking(client, &unknown_id, &mut enabled) },
+            unsafe {
+                phux_client_terminal_mouse_tracking(client, &raw const unknown_id, &raw mut enabled)
+            },
             PhuxClientResult::InvalidState
         );
         assert_eq!(
             unsafe {
-                phux_client_terminal_mouse_tracking(ptr::null(), &c_terminal_id, &mut enabled)
+                phux_client_terminal_mouse_tracking(
+                    ptr::null(),
+                    &raw const c_terminal_id,
+                    &raw mut enabled,
+                )
             },
             PhuxClientResult::InvalidArgument
         );
         unsafe { &mut *client }.inner.in_callback = true;
         enabled = true;
         assert_eq!(
-            unsafe { phux_client_terminal_mouse_tracking(client, &c_terminal_id, &mut enabled) },
+            unsafe {
+                phux_client_terminal_mouse_tracking(
+                    client,
+                    &raw const c_terminal_id,
+                    &raw mut enabled,
+                )
+            },
             PhuxClientResult::InvalidState
         );
         assert!(enabled);
         unsafe { &mut *client }.inner.in_callback = false;
         unsafe { &mut *client }.inner.detached = true;
         assert_eq!(
-            unsafe { phux_client_terminal_mouse_tracking(client, &c_terminal_id, &mut enabled) },
+            unsafe {
+                phux_client_terminal_mouse_tracking(
+                    client,
+                    &raw const c_terminal_id,
+                    &raw mut enabled,
+                )
+            },
             PhuxClientResult::InvalidState
         );
         assert!(enabled);

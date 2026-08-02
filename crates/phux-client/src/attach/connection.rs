@@ -58,9 +58,11 @@ impl Dial {
 }
 
 /// Production construction connects (UDS, QUIC, or WebSocket) and completes
-/// protocol negotiation before returning. The two halves are independent
-/// after that. All transports carry identical SPEC §5 frames; the variant only
-/// changes the byte plumbing underneath.
+/// protocol negotiation before returning.
+///
+/// The two halves are independent after negotiation. All transports carry
+/// identical SPEC §5 frames; the variant only changes the byte plumbing
+/// underneath.
 ///
 /// # The COMMAND interleave contract
 ///
@@ -492,7 +494,7 @@ impl Connection {
     ///
     /// IDs are connection-local. Wrapping skips zero so every emitted request
     /// remains wire-valid.
-    pub(crate) fn next_attach_id(&mut self) -> u32 {
+    pub(crate) const fn next_attach_id(&mut self) -> u32 {
         let id = self.next_attach_id;
         self.next_attach_id = self.next_attach_id.wrapping_add(1);
         if self.next_attach_id == 0 {
@@ -943,7 +945,7 @@ impl FrameReader {
         }
     }
 
-    fn set_bootstrap_limits(&mut self, limits: BootstrapLimits) {
+    const fn set_bootstrap_limits(&mut self, limits: BootstrapLimits) {
         match self {
             Self::Uds(reader) => reader.bootstrap_limits = limits,
             Self::Quic(reader) => reader.bootstrap_limits = limits,

@@ -970,11 +970,10 @@ where
             },
         };
 
-        let decoded = if let Some(selection) = negotiated {
-            FrameKind::decode_with_limits(&framed, selection.limits)
-        } else {
-            FrameKind::decode(&framed)
-        };
+        let decoded = negotiated.as_ref().map_or_else(
+            || FrameKind::decode(&framed),
+            |selection| FrameKind::decode_with_limits(&framed, selection.limits),
+        );
         let frame = match decoded {
             Ok((frame, _rest)) => frame,
             Err(err) => {
@@ -1115,33 +1114,29 @@ where
                 let server_bootstrap = crate::native_state::native_bootstrap_capabilities();
                 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
                 let server_bootstrap = BootstrapCapabilities::new();
-                let (selected_profile, bootstrap_limits) = match select_bootstrap_profile(
-                    &client_caps,
-                    &server_bootstrap,
-                ) {
-                    Ok(selection) => selection,
-                    Err(_) => {
-                        let message = format!(
-                            "no common protocol-0.7 bootstrap profile: client profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}; server profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}. NativeState requires an exact common codec and every required engine feature; advertise SynthesizedVtRaw/SynthesizedVtStateSync or update the incompatible peer",
-                            client_caps.bootstrap.profiles.as_wire(),
-                            client_caps.bootstrap.native_codecs.as_wire(),
-                            client_caps.bootstrap.native_features.as_wire(),
-                            server_bootstrap.profiles.as_wire(),
-                            server_bootstrap.native_codecs.as_wire(),
-                            server_bootstrap.native_features.as_wire(),
-                        );
-                        warn!(?client_id, %message, "HELLO codec unavailable");
-                        let _ = out_tx
-                            .send(Outbound::Frame(FrameKind::Error {
-                                request_id: None,
-                                code: ErrorCode::CodecUnavailable,
-                                message,
-                            }))
-                            .await;
-                        drop(out_tx);
-                        let _ = sibling_tasks.join_next().await;
-                        return Ok(());
-                    }
+                let Ok((selected_profile, bootstrap_limits)) =
+                    select_bootstrap_profile(&client_caps, &server_bootstrap)
+                else {
+                    let message = format!(
+                        "no common protocol-0.7 bootstrap profile: client profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}; server profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}. NativeState requires an exact common codec and every required engine feature; advertise SynthesizedVtRaw/SynthesizedVtStateSync or update the incompatible peer",
+                        client_caps.bootstrap.profiles.as_wire(),
+                        client_caps.bootstrap.native_codecs.as_wire(),
+                        client_caps.bootstrap.native_features.as_wire(),
+                        server_bootstrap.profiles.as_wire(),
+                        server_bootstrap.native_codecs.as_wire(),
+                        server_bootstrap.native_features.as_wire(),
+                    );
+                    warn!(?client_id, %message, "HELLO codec unavailable");
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::CodecUnavailable,
+                            message,
+                        }))
+                        .await;
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
+                    return Ok(());
                 };
                 let mut effective_client_caps = client_caps;
                 effective_client_caps.output_mode =
@@ -1230,8 +1225,9 @@ where
                         .await;
                     continue;
                 }
-                let selection =
-                    negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
+                let Some(selection) = negotiated.as_ref() else {
+                    continue;
+                };
                 debug!(
                     ?client_id,
                     attach_id,
@@ -1331,8 +1327,9 @@ where
                 );
             }
             FrameKind::InputTerminalReply { terminal_id, bytes } => {
-                let selection =
-                    negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
+                let Some(selection) = negotiated.as_ref() else {
+                    continue;
+                };
                 if !selection.accepts_terminal_reply() {
                     let _ = out_tx
                         .send(Outbound::Frame(FrameKind::Error {
@@ -1373,8 +1370,9 @@ where
                 max_bytes,
                 max_rows,
             } => {
-                let selection =
-                    negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
+                let Some(selection) = negotiated.as_ref() else {
+                    continue;
+                };
                 if !matches!(
                     selection.profile,
                     BootstrapProfile::NativeState {
@@ -1504,8 +1502,9 @@ where
                 owner_terminal,
                 agent_session,
             } => {
-                let selection =
-                    negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
+                let Some(selection) = negotiated.as_ref() else {
+                    continue;
+                };
                 handle_spawn_terminal(
                     &state,
                     client_id,
@@ -1540,8 +1539,9 @@ where
                 request_id,
                 command,
             } => {
-                let selection =
-                    negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
+                let Some(selection) = negotiated.as_ref() else {
+                    continue;
+                };
                 handle_command(
                     &state,
                     client_id,
@@ -2438,6 +2438,7 @@ mod fatal_preflight_close_tests {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test(flavor = "current_thread")]
     async fn native_preflight_failure_flushes_error_then_duplex_eof() {
         let local = LocalSet::new();
@@ -2487,10 +2488,10 @@ mod fatal_preflight_close_tests {
                         scrollback_limit_lines: 0,
                     },
                 ]);
-                let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+                let (server_io, peer_io) = tokio::io::duplex(64 * 1024);
                 let (server_read, server_write) = tokio::io::split(server_io);
                 drop(server_read);
-                let (mut client_read, client_write) = tokio::io::split(client_io);
+                let (mut client_read, client_write) = tokio::io::split(peer_io);
                 drop(client_write);
                 let connection_token = CancellationToken::new();
                 let task = tokio::task::spawn_local(handle_client(

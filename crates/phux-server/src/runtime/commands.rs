@@ -603,8 +603,9 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
     fields(?client_id, request_id, kind = command_kind(&command)),
 )]
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "one flat dispatch arm per wire command keeps the catalog auditable"
+    reason = "one flat dispatch arm per wire command keeps the catalog and negotiated connection context auditable"
 )]
 pub(crate) async fn handle_command(
     state: &SharedState,
@@ -868,8 +869,10 @@ fn handle_kill_terminal(
 /// Deliberately does NOT resize the Terminal (no viewport rides the
 /// command); interactive callers follow with `TERMINAL_RESIZE`.
 #[allow(
+    clippy::cognitive_complexity,
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "linear per-terminal attach orchestration: resolve -> subscribe -> register consumer -> pump -> snapshot; mirrors handle_attach's shape for one pane"
+    reason = "linear per-terminal attach orchestration keeps negotiated context and resolve -> subscribe -> register -> pump -> snapshot ordering explicit"
 )]
 async fn handle_attach_terminal(
     state: &SharedState,
@@ -879,7 +882,7 @@ async fn handle_attach_terminal(
     client_caps: ClientCapabilities,
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
-    _connection_token: &CancellationToken,
+    connection_token: &CancellationToken,
 ) -> CommandResult {
     use crate::terminal_actor::{
         ConsumerAttachRequest, ConsumerDetachRequest, PaneOutput, SnapshotRequest,
@@ -1002,8 +1005,8 @@ async fn handle_attach_terminal(
         // waiting on a task that will never exist.
         drop(pump_done_guard.take());
     }
-    if let Some((prior_bootstrap_id, _, prior_last_seq)) = prior {
-        if out_tx
+    if let Some((prior_bootstrap_id, _, prior_last_seq)) = prior
+        && out_tx
             .send(Outbound::Frame(FrameKind::BootstrapTombstone {
                 terminal_id: terminal_id.clone(),
                 stream_id,
@@ -1013,13 +1016,12 @@ async fn handle_attach_terminal(
             }))
             .await
             .is_err()
-        {
-            rollback();
-            return CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: "consumer went away during ATTACH_TERMINAL replacement".to_owned(),
-            };
-        }
+    {
+        rollback();
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "consumer went away during ATTACH_TERMINAL replacement".to_owned(),
+        };
     }
 
     let mut snapshot_gate: Option<oneshot::Sender<u64>> = None;
@@ -1030,13 +1032,17 @@ async fn handle_attach_terminal(
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_native_bootstrap = handle.native_bootstrap.clone();
         let pump_state = state.clone();
-        let pump_connection_token = _connection_token.clone();
+        let pump_connection_token = connection_token.clone();
         let (gate_tx, gate_rx) = oneshot::channel::<u64>();
         snapshot_gate = Some(gate_tx);
         let pump_generation_last_seq = std::sync::Arc::clone(&generation_last_seq);
-        let pump_done_guard = pump_done_guard
-            .take()
-            .expect("non-tick-managed generation owns its completion guard");
+        let Some(pump_done_guard) = pump_done_guard.take() else {
+            rollback();
+            return CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: "ATTACH_TERMINAL pump generation lost its completion guard".to_owned(),
+            };
+        };
         tokio::task::spawn_local(async move {
             let _done_guard = pump_done_guard;
             let mut published_cut = tokio::select! {
@@ -1047,7 +1053,7 @@ async fn handle_attach_terminal(
                 }
             };
             pump_generation_last_seq.store(published_cut, std::sync::atomic::Ordering::Release);
-            let mut _last_forwarded_seq = published_cut;
+            let mut last_forwarded_seq = published_cut;
             let mut bootstrap_id = bootstrap_id;
             let mut generation_active = true;
             loop {
@@ -1070,7 +1076,7 @@ async fn handle_attach_terminal(
                         if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                             break;
                         }
-                        _last_forwarded_seq = seq;
+                        last_forwarded_seq = seq;
                         pump_generation_last_seq.store(seq, std::sync::atomic::Ordering::Release);
                     }
                     Ok(PaneOutput::Control { owner, frame }) => {
@@ -1116,7 +1122,7 @@ async fn handle_attach_terminal(
                         cols,
                         rows,
                         bytes,
-                        reason: _reason,
+                        reason,
                         base_seq,
                     }) => {
                         // Resync is control, so an unchanged cut still
@@ -1137,7 +1143,7 @@ async fn handle_attach_terminal(
                                     terminal_id: pump_wire_terminal_id.clone(),
                                     stream_id,
                                     bootstrap_id: prior_bootstrap_id,
-                                    reason: match _reason {
+                                    reason: match reason {
                                         crate::terminal_actor::ResyncReason::Resize => {
                                             phux_protocol::wire::frame::TombstoneReason::Resize
                                         }
@@ -1145,7 +1151,7 @@ async fn handle_attach_terminal(
                                             phux_protocol::wire::frame::TombstoneReason::OutboundGap
                                         }
                                     },
-                                    last_valid_seq: _last_forwarded_seq,
+                                    last_valid_seq: last_forwarded_seq,
                                 }))
                                 .await
                                 .is_err()
@@ -1208,7 +1214,7 @@ async fn handle_attach_terminal(
                                 break;
                             };
                             published_cut = cut;
-                            _last_forwarded_seq = cut;
+                            last_forwarded_seq = cut;
                             pump_generation_last_seq
                                 .store(cut, std::sync::atomic::Ordering::Release);
                             generation_active = true;
@@ -1234,7 +1240,7 @@ async fn handle_attach_terminal(
                             break;
                         }
                         published_cut = base_seq;
-                        _last_forwarded_seq = base_seq;
+                        last_forwarded_seq = base_seq;
                         pump_generation_last_seq
                             .store(base_seq, std::sync::atomic::Ordering::Release);
                         generation_active = true;
@@ -1544,8 +1550,10 @@ async fn handle_upgrade(
 /// `InputLeaseHeld`. The relayed lease (held by the link identity) still
 /// excludes the satellite's own local clients.
 #[allow(
+    clippy::cognitive_complexity,
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "one linear relay dispatch: route -> lease gate -> atomic subscribe -> relay -> ledger update; splitting scatters the two-hop contract"
+    reason = "cohesive satellite relay state machine: routing, lease ownership, subscription profile, and reply correlation must remain one ordered operation"
 )]
 async fn handle_satellite_command(
     state: &SharedState,

@@ -380,7 +380,7 @@ mod tests {
     use phux_client::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::PROTOCOL_VERSION;
     use phux_protocol::caps::{
-        BootstrapLimits, BootstrapProfile, EngineCodec, EngineFeatureSet, ServerCapabilities,
+        BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile,
     };
     use phux_protocol::wire::frame::{CommandValue, ErrorCode};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
@@ -437,18 +437,20 @@ mod tests {
     async fn accept(listener: &tokio::net::UnixListener) -> MockConnection {
         let (stream, _) = listener.accept().await.expect("accept mock client");
         let mut conn = MockConnection(stream);
-        assert!(matches!(conn.recv().await, FrameKind::Hello { .. }));
+        let FrameKind::Hello { client_caps, .. } = conn.recv().await else {
+            panic!("expected HELLO");
+        };
+        let (selected_profile, bootstrap_limits) =
+            select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new())
+                .expect("fixture profiles intersect");
         conn.send(&FrameKind::HelloOk {
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
             protocol_patch: PROTOCOL_VERSION.patch,
             server_caps: ServerCapabilities::new(),
             server_id: Vec::new(),
-            selected_profile: BootstrapProfile::NativeState {
-                codec: EngineCodec::LibghosttyCheckpointV2,
-                features: EngineFeatureSet::required_native(),
-            },
-            bootstrap_limits: BootstrapLimits::default(),
+            selected_profile,
+            bootstrap_limits,
         })
         .await;
         conn

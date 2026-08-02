@@ -23,6 +23,15 @@ use crate::agent_asked::{AskedPayload, AskedSource, AskedTransition};
 use crate::id_bridge::IdBridge;
 use crate::terminal_actor::TerminalHandle;
 
+type LastValidAttachSequence = Arc<std::sync::atomic::AtomicU64>;
+type PriorAttachTerminalPump = (BootstrapId, CancellationToken, LastValidAttachSequence);
+type AttachTerminalPumpReplacement = (
+    CancellationToken,
+    CancellationToken,
+    LastValidAttachSequence,
+    Option<PriorAttachTerminalPump>,
+);
+
 /// Derive the per-cell pixel size implied by one client's viewport report:
 /// `pixel / cells`, floored. `None` when the report carries no pixel metrics
 /// or they are degenerate — zero cells, or a pixel field smaller than the
@@ -1420,16 +1429,7 @@ impl ServerState {
         client: ClientId,
         terminal: TerminalId,
         bootstrap_id: BootstrapId,
-    ) -> (
-        CancellationToken,
-        CancellationToken,
-        Arc<std::sync::atomic::AtomicU64>,
-        Option<(
-            BootstrapId,
-            CancellationToken,
-            Arc<std::sync::atomic::AtomicU64>,
-        )>,
-    ) {
+    ) -> AttachTerminalPumpReplacement {
         let cancel = CancellationToken::new();
         let done = CancellationToken::new();
         let last_valid_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));

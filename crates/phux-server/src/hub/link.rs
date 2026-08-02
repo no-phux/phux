@@ -630,10 +630,16 @@ pub(crate) trait LinkConn {
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String>;
 
     /// Exact bounds selected before this connection was returned.
-    fn bootstrap_limits(&self) -> BootstrapLimits;
+    ///
+    /// Returns an error if a transport violates the connection-construction
+    /// contract and returns before installing its negotiated selection.
+    fn bootstrap_limits(&self) -> Result<BootstrapLimits, String>;
 
     /// Exact synchronization profile selected before this connection returned.
-    fn bootstrap_profile(&self) -> BootstrapProfile;
+    ///
+    /// Returns an error if a transport violates the connection-construction
+    /// contract and returns before installing its negotiated selection.
+    fn bootstrap_profile(&self) -> Result<BootstrapProfile, String>;
 
     /// Transport-level liveness probe, driven by the supervisor's
     /// [`LINK_KEEPALIVE_INTERVAL`] tick while the link is up. WS links
@@ -808,10 +814,16 @@ async fn run_relay_session<C: LinkConn>(
     unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<super::relay::Unsubscribe>,
     cancel: &CancellationToken,
 ) -> Option<String> {
-    let profile = conn.bootstrap_profile();
+    let profile = match conn.bootstrap_profile() {
+        Ok(profile) => profile,
+        Err(error) => return Some(error),
+    };
+    let limits = match conn.bootstrap_limits() {
+        Ok(limits) => limits,
+        Err(error) => return Some(error),
+    };
     info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
-    let mut session =
-        super::relay::RelaySession::new_negotiated(host.clone(), conn.bootstrap_limits(), profile);
+    let mut session = super::relay::RelaySession::new_negotiated(host.clone(), limits, profile);
     // Housekeeping tick: transport keepalive + pending-map pruning. First
     // tick one interval out — the connection was live zero seconds ago.
     let mut keepalive = tokio::time::interval_at(
@@ -1137,13 +1149,13 @@ impl NetLinkConn {
         Ok(())
     }
 
-    fn negotiated(&self) -> NegotiatedBootstrap {
+    fn negotiated(&self) -> Result<NegotiatedBootstrap, String> {
         match self {
             Self::Quic { negotiated, .. }
             | Self::Ws { negotiated, .. }
-            | Self::Ssh { negotiated, .. } => {
-                negotiated.expect("production link constructors negotiate before returning")
-            }
+            | Self::Ssh { negotiated, .. } => negotiated.ok_or_else(|| {
+                "satellite connection returned before HELLO negotiation completed".to_owned()
+            }),
         }
     }
 }
@@ -1278,12 +1290,12 @@ impl LinkConn for NetLinkConn {
         }
     }
 
-    fn bootstrap_limits(&self) -> BootstrapLimits {
-        self.negotiated().limits
+    fn bootstrap_limits(&self) -> Result<BootstrapLimits, String> {
+        self.negotiated().map(|selection| selection.limits)
     }
 
-    fn bootstrap_profile(&self) -> BootstrapProfile {
-        self.negotiated().profile
+    fn bootstrap_profile(&self) -> Result<BootstrapProfile, String> {
+        self.negotiated().map(|selection| selection.profile)
     }
 
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
@@ -1914,12 +1926,12 @@ mod tests {
             Ok(())
         }
 
-        fn bootstrap_limits(&self) -> BootstrapLimits {
-            BootstrapLimits::default()
+        fn bootstrap_limits(&self) -> Result<BootstrapLimits, String> {
+            Ok(BootstrapLimits::default())
         }
 
-        fn bootstrap_profile(&self) -> BootstrapProfile {
-            BootstrapProfile::SynthesizedVtRaw
+        fn bootstrap_profile(&self) -> Result<BootstrapProfile, String> {
+            Ok(BootstrapProfile::SynthesizedVtRaw)
         }
 
         async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {

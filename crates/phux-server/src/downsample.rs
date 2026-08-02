@@ -310,13 +310,12 @@ fn rewrite_sgr(params: &[u8], support: ColorSupport, out: &mut Vec<u8>) {
 
 fn sgr_group(params: &[u8], start: usize) -> (&[u8], Option<usize>) {
     let tail = &params[start..];
-    match tail.iter().position(|byte| *byte == b';') {
-        Some(relative_end) => {
+    tail.iter()
+        .position(|byte| *byte == b';')
+        .map_or((tail, None), |relative_end| {
             let end = start + relative_end;
             (&params[start..end], Some(end + 1))
-        }
-        None => (tail, None),
-    }
+        })
 }
 
 fn classic_truecolor(

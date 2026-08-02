@@ -193,7 +193,7 @@ fn recorder_client_name() -> String {
     format!("phux-rec/{}", env!("CARGO_PKG_VERSION"))
 }
 
-fn recorder_client_caps() -> ClientCapabilities {
+const fn recorder_client_caps() -> ClientCapabilities {
     ClientCapabilities::new().with_color_support(ColorSupport::TrueColor)
 }
 

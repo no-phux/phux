@@ -92,7 +92,7 @@ fn terminal_outputs(items: &[Outbound]) -> Vec<(u32, u64, &[u8])> {
                 *seq,
                 bytes.as_ref(),
             )),
-            Outbound::Frame(_) => None,
+            Outbound::Frame(_) | Outbound::TerminalError { .. } => None,
         })
         .collect()
 }
@@ -176,6 +176,9 @@ async fn single_consumer_tick_keeps_actor_healthy() {
                     state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
+                    bootstrap_max_bytes: usize::MAX,
+                    bootstrap_max_frames: usize::MAX,
+                    bootstrap_chunk_bytes: 1,
                     reply: reply_tx,
                 })
                 .await
@@ -237,6 +240,9 @@ async fn multiple_consumers_get_independent_per_consumer_seq() {
                         state_sync_scrollback: None,
                         loss_tolerant: false,
                         live_gate: tokio::sync::watch::channel(true).1,
+                        bootstrap_max_bytes: usize::MAX,
+                        bootstrap_max_frames: usize::MAX,
+                        bootstrap_chunk_bytes: 1,
                         reply: reply_tx,
                     })
                     .await
@@ -308,6 +314,9 @@ async fn detached_consumer_receives_no_emission() {
                     state_sync_scrollback: None,
                     loss_tolerant: false,
                     live_gate: tokio::sync::watch::channel(true).1,
+                    bootstrap_max_bytes: usize::MAX,
+                    bootstrap_max_frames: usize::MAX,
+                    bootstrap_chunk_bytes: 1,
                     reply: reply_tx,
                 })
                 .await

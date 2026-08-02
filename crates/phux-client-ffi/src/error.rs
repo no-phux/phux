@@ -2,9 +2,17 @@ use phux_protocol::{SatelliteHost, TerminalId};
 
 use crate::types::{ABI_VERSION, PhuxClientResult, PhuxTerminalId};
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private error module serves the crate-root C exports"
+)]
 pub(crate) const MAX_OUTBOUND_BYTES: usize =
     phux_protocol::wire::frame::MAX_INPUT_TERMINAL_REPLY_BYTES;
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private error module serves the crate-root C exports"
+)]
 #[derive(Debug)]
 pub(crate) struct BridgeError {
     pub result: PhuxClientResult,
@@ -53,6 +61,10 @@ impl BridgeError {
     }
 }
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private error module serves the crate-root C exports"
+)]
 pub(crate) fn check_struct(
     actual: usize,
     required: usize,
@@ -67,6 +79,10 @@ pub(crate) fn check_struct(
     Ok(())
 }
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private error module serves the crate-root C exports"
+)]
 pub(crate) unsafe fn bytes_in<'a>(data: *const u8, len: usize) -> Result<&'a [u8], BridgeError> {
     if len == 0 {
         return Ok(&[]);
@@ -80,6 +96,10 @@ pub(crate) unsafe fn bytes_in<'a>(data: *const u8, len: usize) -> Result<&'a [u8
     Ok(unsafe { std::slice::from_raw_parts(data, len) })
 }
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private error module serves the crate-root C exports"
+)]
 pub(crate) unsafe fn outbound_bytes_in<'a>(
     data: *const u8,
     len: usize,
@@ -94,6 +114,10 @@ pub(crate) unsafe fn outbound_bytes_in<'a>(
     unsafe { bytes_in(data, len) }
 }
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private error module serves the crate-root C exports"
+)]
 pub(crate) unsafe fn terminal_id_in(
     value: *const PhuxTerminalId,
 ) -> Result<TerminalId, BridgeError> {

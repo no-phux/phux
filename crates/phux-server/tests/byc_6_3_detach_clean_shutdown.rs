@@ -41,12 +41,12 @@
 
 mod common;
 
-use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED};
+use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
 use tempfile::TempDir;
 
 use crate::common::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, spawn_server,
-    wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, recv_until_detached, run_local,
+    send_frame, spawn_server, wait_for_socket,
 };
 
 #[test]
@@ -93,15 +93,8 @@ fn byc_6_3_detach_releases_state_and_allows_fresh_reattach() {
         // Phase 2: Client A sends DETACH; server replies with DETACHED.
         // ============================================================
         send_frame(&mut client_a, &FrameKind::Detach).await;
-        let (type_byte, detached) = recv_typed(&mut client_a).await;
-        assert_eq!(
-            type_byte, TYPE_DETACHED,
-            "client A: server must reply DETACHED",
-        );
-        assert!(
-            matches!(detached, FrameKind::Detached),
-            "client A: payload must decode as Detached (got {detached:?})",
-        );
+        let detached = recv_until_detached(&mut client_a).await;
+        assert!(matches!(detached, FrameKind::Detached));
 
         // ============================================================
         // Phase 3: Drop client A's socket. The server's read loop

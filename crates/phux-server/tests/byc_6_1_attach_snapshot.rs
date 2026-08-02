@@ -75,6 +75,7 @@ fn fresh_terminal(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
     .expect("Terminal::new")
 }
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn byc_6_1_attach_returns_session_id_and_round_trip_snapshot() {
     run_local(async {

@@ -68,6 +68,7 @@ fn encode(frame: &FrameKind) -> Vec<u8> {
     buf.to_vec()
 }
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn ws_hello_attach_receives_attached_and_snapshot() {
     let port = free_port();
@@ -149,8 +150,8 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
 
         // A fresh web connection must reject the reserved zero correlation id
         // before creating any attached consumer state.
-        let tcp = TcpStream::connect(&addr).await.unwrap();
-        let (mut bad_ws, _) = tokio_tungstenite::client_async(&url, tcp).await.unwrap();
+        let socket = TcpStream::connect(&addr).await.unwrap();
+        let (mut bad_ws, _) = tokio_tungstenite::client_async(&url, socket).await.unwrap();
         bad_ws
             .send(Message::Binary(encode(&FrameKind::Hello {
                 client_name: "ws-zero-attach-test".to_owned(),

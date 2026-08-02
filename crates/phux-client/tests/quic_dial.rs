@@ -77,6 +77,10 @@ async fn write_frame(send: &mut quinn::SendStream, frame: &FrameKind) {
     send.write_all(&out).await.unwrap();
 }
 
+#[allow(
+    clippy::panic,
+    reason = "the fixture must reject a non-HELLO first frame"
+)]
 async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream) {
     let FrameKind::Hello { client_caps, .. } = read_frame(recv).await else {
         panic!("expected HELLO");
@@ -99,7 +103,7 @@ async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream
     .await;
 }
 
-fn ack(seq: u64) -> FrameKind {
+const fn ack(seq: u64) -> FrameKind {
     FrameKind::FrameAck {
         terminal_id: TerminalId::Local { id: 1 },
         stream_id: phux_protocol::StreamId::new(1).expect("stream"),

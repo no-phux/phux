@@ -239,7 +239,7 @@ impl EncodedInputRequest {
         }
     }
 
-    pub(crate) fn opaque(bytes: Bytes) -> Self {
+    pub(crate) const fn opaque(bytes: Bytes) -> Self {
         Self {
             bytes,
             completion: None,

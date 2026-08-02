@@ -2171,6 +2171,7 @@ mod tests {
     /// Input authority routes opaque emulator replies byte-for-byte while
     /// rejecting an unsubscribed client. The same gate still fires the
     /// focus-changed hook only for an authorized focus-gained event.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn input_authority_routes_terminal_replies_and_focus_hooks() {
         use phux_protocol::input::focus::FocusEvent;

@@ -195,7 +195,7 @@ fn peer_identity_from_uds(stream: &tokio::net::UnixStream) -> io::Result<PeerIde
     let mut gid: libc::gid_t = 0;
     // SAFETY: both output pointers are valid for writes for the duration of
     // the call, and `stream` owns a live Unix-domain socket descriptor.
-    let status = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    let status = unsafe { libc::getpeereid(stream.as_raw_fd(), &raw mut uid, &raw mut gid) };
     if status != 0 {
         return Err(io::Error::last_os_error());
     }

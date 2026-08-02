@@ -8,7 +8,9 @@ use libghostty_vt::style::{RgbColor, StyleColor};
 use libghostty_vt::terminal::{Mode, Point, PointCoordinate, ScrollViewport};
 use phux_client_core::engine::ghostty::{GhosttyAdapter, GhosttyReplica};
 use phux_client_core::engine::{DocumentPoint, DocumentSpace, EngineDocumentSelection};
-use phux_client_core::history::{DocumentAnchorId, HistoryCacheConfig, HistoryLoadState};
+use phux_client_core::history::{
+    DocumentAnchorId, HistoryCache, HistoryCacheConfig, HistoryLoadState,
+};
 use phux_client_core::session::{
     EffectBuffer, KernelDamageKind, KernelEffect, KernelSend, KernelStatus, ReplicaKey,
     SessionKernel,
@@ -18,8 +20,20 @@ use phux_protocol::TerminalId;
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::error::BridgeError;
-use crate::types::*;
+use crate::types::{
+    CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_HYPERLINK, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC,
+    CELL_OVERLINE, CELL_PROTECTED, CELL_SELECTED, CELL_STRIKETHROUGH, OwnedEffect, PhuxBytes,
+    PhuxClientCallbacks, PhuxClientEffect, PhuxClientState, PhuxDocumentAnchor, PhuxDocumentPoint,
+    PhuxSearchResult, PhuxTerminalCell, PhuxTerminalGridView, PhuxTerminalId, bytes_out,
+    terminal_id_out,
+};
 
+const NO_HYPERLINK: (u32, u32) = (0, 0);
+
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private module's bridge types are shared with the crate-root C exports"
+)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Limits {
     pub bootstrap_chunk: u32,
@@ -30,6 +44,10 @@ pub(crate) struct Limits {
     pub history_prefetch_rows: usize,
 }
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private module's render cache is shared with the crate-root C exports"
+)]
 pub(crate) struct RenderCache {
     state: RenderState<'static>,
     rows: RowIterator<'static>,
@@ -54,6 +72,14 @@ impl RenderCache {
     }
 }
 
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private module's client state is shared with the crate-root C exports"
+)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the booleans mirror independent negotiated protocol and callback states"
+)]
 pub(crate) struct Client {
     pub session: SessionKernel<GhosttyAdapter>,
     pub effects: EffectBuffer,
@@ -153,7 +179,7 @@ impl Client {
         self.search_results.clear();
     }
 
-    pub(crate) fn state(&self) -> PhuxClientState {
+    pub(crate) const fn state(&self) -> PhuxClientState {
         if self.detached {
             PhuxClientState::Detached
         } else if self.attached {
@@ -361,8 +387,9 @@ impl Client {
 
     pub(crate) fn process_effects(&mut self) -> Result<(), BridgeError> {
         let mut effects = self.effects.take();
+        effects.reverse();
         let result: Result<(), BridgeError> = (|| {
-            for effect in effects.drain(..) {
+            while let Some(effect) = effects.pop() {
                 match effect {
                     KernelEffect::Send(send) => self.process_send(send)?,
                     KernelEffect::Damage(damage) => {
@@ -384,8 +411,8 @@ impl Client {
                             phux_client_core::engine::EngineJob::Wakeup => 1,
                         };
                         let mut out = OwnedEffect::simple(3, detail, job.key.terminal_id);
-                        out.stream_id = u64::from(job.key.stream_id.get());
-                        out.bootstrap_id = u64::from(job.key.bootstrap_id.get());
+                        out.stream_id = job.key.stream_id.get();
+                        out.bootstrap_id = job.key.bootstrap_id.get();
                         self.owned_effects.push(out);
                     }
                 }
@@ -421,7 +448,7 @@ impl Client {
                         ));
                     }
                 };
-                self.queue_frame(frame)?;
+                self.queue_frame(&frame)?;
             }
             KernelSend::PtyWrite { terminal_id, bytes } => {
                 if !self.terminal_reply {
@@ -436,7 +463,7 @@ impl Client {
                         "terminal reply is empty or exceeds the protocol byte limit",
                     ));
                 }
-                self.queue_frame(FrameKind::InputTerminalReply {
+                self.queue_frame(&FrameKind::InputTerminalReply {
                     terminal_id,
                     bytes: bytes.into(),
                 })?;
@@ -447,7 +474,7 @@ impl Client {
                 bootstrap_id,
                 seq,
             } => {
-                self.queue_frame(FrameKind::FrameAck {
+                self.queue_frame(&FrameKind::FrameAck {
                     terminal_id,
                     stream_id,
                     bootstrap_id,
@@ -460,7 +487,7 @@ impl Client {
                 max_bytes,
                 max_rows,
             } => {
-                self.queue_frame(FrameKind::HistoryRequest {
+                self.queue_frame(&FrameKind::HistoryRequest {
                     terminal_id: key.terminal_id,
                     stream_id: key.stream_id,
                     bootstrap_id: key.bootstrap_id,
@@ -477,8 +504,8 @@ impl Client {
         match status {
             KernelStatus::Engine { key, status } => {
                 let mut out = OwnedEffect::simple(2, 0, key.terminal_id);
-                out.stream_id = u64::from(key.stream_id.get());
-                out.bootstrap_id = u64::from(key.bootstrap_id.get());
+                out.stream_id = key.stream_id.get();
+                out.bootstrap_id = key.bootstrap_id.get();
                 match status {
                     phux_client_core::engine::EngineStatus::Bell => out.detail = 1,
                     phux_client_core::engine::EngineStatus::Title(title) => {
@@ -495,15 +522,15 @@ impl Client {
                 reason,
             } => {
                 let mut out = OwnedEffect::simple(2, 3, terminal_id);
-                out.stream_id = u64::from(stream_id.get());
-                out.bootstrap_id = u64::from(bootstrap_id.get());
+                out.stream_id = stream_id.get();
+                out.bootstrap_id = bootstrap_id.get();
                 out.status_code = u32::from(reason.as_wire());
                 self.owned_effects.push(out);
             }
             KernelStatus::History { key, status } => {
                 let mut out = OwnedEffect::simple(2, 6, key.terminal_id);
-                out.stream_id = u64::from(key.stream_id.get());
-                out.bootstrap_id = u64::from(key.bootstrap_id.get());
+                out.stream_id = key.stream_id.get();
+                out.bootstrap_id = key.bootstrap_id.get();
                 out.status_code = match status.state {
                     HistoryLoadState::Idle => 0,
                     HistoryLoadState::Loading => 1,
@@ -517,8 +544,8 @@ impl Client {
             }
             KernelStatus::HistoryUnavailable { key, reason } => {
                 let mut out = OwnedEffect::simple(2, 7, key.terminal_id);
-                out.stream_id = u64::from(key.stream_id.get());
-                out.bootstrap_id = u64::from(key.bootstrap_id.get());
+                out.stream_id = key.stream_id.get();
+                out.bootstrap_id = key.bootstrap_id.get();
                 out.status_code = match reason {
                     phux_client_core::session::HistoryUnavailableReason::Stale => 0,
                     phux_client_core::session::HistoryUnavailableReason::Pruned => 1,
@@ -534,7 +561,7 @@ impl Client {
         }
     }
 
-    pub(crate) fn queue_frame(&mut self, kind: FrameKind) -> Result<(), BridgeError> {
+    pub(crate) fn queue_frame(&mut self, kind: &FrameKind) -> Result<(), BridgeError> {
         let mut encoded = bytes::BytesMut::new();
         kind.encode(&mut encoded);
         let body_len = encoded
@@ -567,6 +594,10 @@ impl Client {
             }));
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "rendering one snapshot atomically keeps its borrowed libghostty state cohesive"
+    )]
     pub(crate) fn build_grid(
         &mut self,
         terminal_id: &TerminalId,
@@ -576,7 +607,7 @@ impl Client {
         let history = self
             .session
             .history_cache(terminal_id)
-            .map(|cache| cache.status());
+            .map(HistoryCache::status);
         let top_anchor = self.track_anchor(
             terminal_id,
             PhuxDocumentPoint {
@@ -639,7 +670,6 @@ impl Client {
                         CellContentTag::BgColorPalette | CellContentTag::BgColorRgb => {}
                     }
                     let cell_utf8_len = cache.utf8.len() - start;
-                    const NO_HYPERLINK: (u32, u32) = (0, 0);
                     let has_hyperlink = raw.has_hyperlink().map_err(BridgeError::ghostty)?;
                     let (hyperlink_offset, hyperlink_len) = if has_hyperlink {
                         let reference = terminal
@@ -790,8 +820,8 @@ impl Client {
             };
             cache.view = PhuxTerminalGridView {
                 terminal_id: view_terminal_id,
-                stream_id: u64::from(key.stream_id.get()),
-                bootstrap_id: u64::from(key.bootstrap_id.get()),
+                stream_id: key.stream_id.get(),
+                bootstrap_id: key.bootstrap_id.get(),
                 last_seq: self
                     .session
                     .published(terminal_id)
@@ -1008,7 +1038,11 @@ impl Client {
     }
 }
 
-fn engine_limits(limits: Limits) -> BootstrapLimits {
+#[allow(
+    clippy::expect_used,
+    reason = "Limits originate from the validated FFI constructor"
+)]
+const fn engine_limits(limits: Limits) -> BootstrapLimits {
     BootstrapLimits::new(limits.bootstrap_chunk, limits.history_page)
         .expect("client limits were validated at construction")
 }
@@ -1032,9 +1066,8 @@ fn terminal_wants_mouse_tracking(terminal: &libghostty_vt::Terminal<'_, '_>) -> 
     .any(|mode| terminal.mode(mode).unwrap_or(false))
 }
 
-fn cursor_style(style: CursorVisualStyle) -> u32 {
+const fn cursor_style(style: CursorVisualStyle) -> u32 {
     match style {
-        CursorVisualStyle::Bar => 0,
         CursorVisualStyle::Block => 1,
         CursorVisualStyle::Underline => 2,
         CursorVisualStyle::BlockHollow => 3,
@@ -1045,6 +1078,7 @@ fn cursor_style(style: CursorVisualStyle) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::PhuxClientResult;
 
     #[test]
     fn terminal_reply_requires_explicit_hello_ok_feature() {

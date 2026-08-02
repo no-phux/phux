@@ -172,7 +172,7 @@ pub struct ConsumerSyncState {
     pub stream_id: StreamId,
     /// Replica generation currently receiving live output.
     pub bootstrap_id: BootstrapId,
-    /// Aggregate-attach gate; false suppresses live output until ATTACH_READY.
+    /// Aggregate-attach gate; false suppresses live output until `ATTACH_READY`.
     pub live_gate: watch::Receiver<bool>,
     /// Per-consumer monotonic sequence id for `TERMINAL_OUTPUT`
     /// (`docs/spec/L1.md` §2.1, §12). Starts at `1` and increments on each

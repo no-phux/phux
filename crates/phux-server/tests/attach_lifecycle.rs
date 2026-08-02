@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::{
     AttachTarget, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_ERROR,
     ViewportInfo,
@@ -119,6 +121,19 @@ fn encode_frame(frame: &FrameKind) -> BytesMut {
     frame.encode(&mut buf);
     buf
 }
+async fn negotiate(stream: &mut UnixStream) {
+    let hello = FrameKind::Hello {
+        client_name: "attach-lifecycle-test".to_owned(),
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        client_caps: ClientCapabilities::new(),
+    };
+    stream.write_all(&encode_frame(&hello)).await.unwrap();
+    stream.flush().await.unwrap();
+    let (_, reply) = read_typed_frame(stream).await;
+    assert!(matches!(reply, FrameKind::HelloOk { .. }));
+}
 
 fn attach_by_name(name: &str) -> FrameKind {
     FrameKind::Attach {
@@ -152,6 +167,7 @@ fn attach_returns_attached_and_pane_snapshot() {
             spawn_server_with_seeded_session(socket_path.clone(), Some("default"));
 
         let mut stream = wait_for_socket(&socket_path, Duration::from_secs(2)).await;
+        negotiate(&mut stream).await;
         stream
             .write_all(&encode_frame(&attach_by_name("default")))
             .await
@@ -239,6 +255,7 @@ fn attach_unknown_session_returns_error() {
             spawn_server_with_seeded_session(socket_path.clone(), None);
 
         let mut stream = wait_for_socket(&socket_path, Duration::from_secs(2)).await;
+        negotiate(&mut stream).await;
         stream
             .write_all(&encode_frame(&attach_by_name("ghost")))
             .await

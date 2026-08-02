@@ -257,7 +257,7 @@ impl PaneSlot {
         if self.last_title == current {
             return false;
         }
-        self.last_title = current.to_owned();
+        current.clone_into(&mut self.last_title);
         true
     }
 
@@ -282,7 +282,7 @@ impl PaneSlot {
 /// Build a protocol-0.7 test session with atomically published synthesized replicas.
 ///
 /// Test helpers must seed terminal state through the same ATTACHED,
-/// BEGIN/CHUNK/READY, and ATTACH_READY transitions as production rather than
+/// BEGIN/CHUNK/READY, and `ATTACH_READY` transitions as production rather than
 /// mutating the test-only [`PaneSlot::terminal`] compatibility field.
 #[cfg(test)]
 pub(super) fn published_test_state(
@@ -1123,11 +1123,8 @@ impl HeadlessCompletion {
                 bootstrap_id,
                 next_cursor: None,
                 ..
-            } => {
-                self.pending_history
-                    .remove(&(terminal_id.clone(), *stream_id, *bootstrap_id));
             }
-            FrameKind::HistoryTombstone {
+            | FrameKind::HistoryTombstone {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
@@ -1219,8 +1216,10 @@ pub async fn run_headless_rendered(
     let terminal_reply_supported = negotiated
         .server_features
         .contains(ServerFeature::TerminalReply);
-    let mut history_config = HistoryCacheConfig::default();
-    history_config.request_max_bytes = negotiated.limits.max_history_page_bytes();
+    let history_config = HistoryCacheConfig {
+        request_max_bytes: negotiated.limits.max_history_page_bytes(),
+        ..HistoryCacheConfig::default()
+    };
     let mut engine_kernel = SessionKernel::with_history_config(
         GhosttyAdapter::new(negotiated.limits),
         negotiated.profile,
@@ -1498,10 +1497,13 @@ async fn attach_session<W: super::RenderSink>(
         let client_caps = attach_client_caps(default_colors);
         let conn =
             Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await?;
+        let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
+            AttachError::Protocol(
+                "production connection returned before bootstrap negotiation".to_owned(),
+            )
+        })?;
         let output_mode = if matches!(
-            conn.negotiated_bootstrap()
-                .expect("production connection returns only after HELLO_OK")
-                .profile,
+            negotiated.profile,
             phux_protocol::BootstrapProfile::SynthesizedVtStateSync
         ) {
             OutputMode::StateSync
@@ -1960,8 +1962,10 @@ async fn main_loop<W: super::RenderSink>(
     let terminal_reply_supported = negotiated
         .server_features
         .contains(ServerFeature::TerminalReply);
-    let mut history_config = HistoryCacheConfig::default();
-    history_config.request_max_bytes = negotiated.limits.max_history_page_bytes();
+    let history_config = HistoryCacheConfig {
+        request_max_bytes: negotiated.limits.max_history_page_bytes(),
+        ..HistoryCacheConfig::default()
+    };
     let mut engine_kernel = SessionKernel::with_history_config(
         GhosttyAdapter::new(negotiated.limits),
         negotiated.profile,
