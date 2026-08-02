@@ -27,8 +27,7 @@ use bytes::BytesMut;
 
 use crate::caps::{
     BootstrapCodec, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,
-    EngineCodec, EngineFeatureSet, MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, OutputMode,
-    ServerCapabilities,
+    EngineCodec, EngineFeatureSet, OutputMode, ServerCapabilities,
 };
 use crate::ids::{
     BootstrapId, ClientId, FileUploadId, GroupId, InputOperationId, SatelliteHost, SessionId,
