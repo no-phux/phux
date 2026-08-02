@@ -27,9 +27,17 @@
 # built on one runner can SIGILL on another in the hosted fleet. Keeping
 # build+run on the same runner sidesteps that (see CPU_KEY below).
 #
-# Runners: ubuntu-latest only for now. macOS can be added to a matrix later
-# when a contributor needs it (the devshell already supports darwin systems
-# via flake-utils.lib.eachDefaultSystem).
+# Runners: the compile lanes run on `ubuntu-24.04-arm` — free for public
+# repos at the same 4 vCPU as the x64 standard runner, but the arm fleet is
+# homogeneous (Cobalt 100), so the CPU_KEY cache fingerprint stops
+# fragmenting across CPU generations. On the mixed x64 fleet that
+# fragmentation held the rust-cache hit rate to ~40%: each CPU generation
+# needed its own warm cache entry, and the 10 GB LRU evicted the cold ones.
+# (GitHub's LARGER runners are org-only — Team/Enterprise — and cannot be
+# attached to a personal account at any price; this is the biggest free
+# upgrade available.) The cheap `changes` gate stays on ubuntu-latest.
+# macOS can be added to a matrix later when a contributor needs it (the
+# devshell already supports darwin systems via eachDefaultSystem).
 #
 # Caching, two layers:
 #   * Nix store — Cachix persists the realized devshell (rustc, zig, nextest,
@@ -173,7 +181,7 @@ jobs:
   # allocator would measure dhat, not phux.
   check:
     name: check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     needs: changes
     env:
       # sccache experiment (see the caching header): wrap rustc so unchanged
@@ -195,8 +203,11 @@ jobs:
           df -h / | tail -1
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
           df -h / | tail -1
+      # Covers both cpuinfo dialects: flags/model name/vendor_id on x86,
+      # Features/CPU implementer/CPU part on aarch64 (which has none of the
+      # x86 field names — without these the arm key would hash empty input).
       - name: CPU fingerprint
-        run: echo "CPU_KEY=$(grep -E '^(flags|model name|vendor_id)' /proc/cpuinfo | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
+        run: echo "CPU_KEY=$(grep -E '^(flags|model name|vendor_id|Features|CPU implementer|CPU part)' /proc/cpuinfo | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: cachix/cachix-action@v17
         with:
@@ -279,12 +290,14 @@ jobs:
   # surface (e.g. a ROUTE_INPUT gate rejecting `phux run`) would ship green.
   #
   # The heavy stress storms (`stress_*`) are NOT here — they are CPU-starved
-  # on this 2-core runner (a sub-second test grinds for minutes) and run in
+  # on small hosted runners (a sub-second test grinds for minutes) and run in
   # the separate `stress` workflow (post-merge on main + nightly), off the
-  # PR critical path. See `just e2e` / `just stress`.
+  # PR critical path. So is `perf_bursty_output`: not starvation-sensitive,
+  # just ~110s of CPU-bound full-churn synthesis that was the single longest
+  # test in this unit pool. See `just e2e` / `just stress`.
   test:
     name: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     needs: changes
     env:
       # sccache experiment — same rationale as the check job (see the
@@ -305,8 +318,11 @@ jobs:
           df -h / | tail -1
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
           df -h / | tail -1
+      # Covers both cpuinfo dialects: flags/model name/vendor_id on x86,
+      # Features/CPU implementer/CPU part on aarch64 (which has none of the
+      # x86 field names — without these the arm key would hash empty input).
       - name: CPU fingerprint
-        run: echo "CPU_KEY=$(grep -E '^(flags|model name|vendor_id)' /proc/cpuinfo | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
+        run: echo "CPU_KEY=$(grep -E '^(flags|model name|vendor_id|Features|CPU implementer|CPU part)' /proc/cpuinfo | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: cachix/cachix-action@v17
         with:

@@ -23,6 +23,13 @@
 //! microbenchmark: the bound has generous headroom over the measured
 //! steady-state (~48 allocs/tick for 40 rows) so it is not flaky across
 //! allocator/std differences.
+//!
+//! It runs `#[ignore]`d out of the default pool, in the stress lane
+//! (`just stress`, post-merge + nightly): 200 full-churn ticks are ~110s
+//! of pure CPU on a hosted runner — the single longest test in the PR
+//! unit pool before it was evicted. It is not starvation-sensitive (the
+//! gate counts allocations, not wall time), so the stress lane's shared
+//! runner is a safe home.
 
 #![allow(
     clippy::print_stderr,
@@ -72,6 +79,7 @@ const MAX_ALLOCS_PER_TICK: usize = 250;
 /// bounded. This is the headless stand-in for the interactive repro
 /// (zsh completion menu / syntax-highlighted scroll).
 #[test]
+#[ignore = "runs in the stress lane (`just stress`): ~110s of CPU-bound churn, too heavy for the PR unit pool"]
 fn synthesize_against_reference_alloc_bounded_under_full_churn() {
     let mut t = GhosttyTerminal::new(TerminalOptions {
         cols: COLS,

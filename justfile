@@ -132,13 +132,20 @@ e2e:
 # never as a `just ci` gate. Run locally any time (one binary at a time,
 # they pass reliably).
 
+# The lane also hosts `perf_bursty_output`: NOT starvation-sensitive (it
+# gates an allocation count, not wall time), just ~110s of CPU-bound
+# full-churn synthesis that was the single longest test in the PR unit
+# pool. Off the PR path it costs nothing; a regression still trips
+# post-merge/nightly.
+
 # Heavy stress storms — off the PR path (post-merge + nightly stress.yml).
 stress:
     cargo nextest run -p phux-server --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
       --test stress_resize_storm --test stress_resize_extremes \
       --test stress_attach_churn --test stress_lifecycle_churn \
-      --test stress_output_extremes --test stress_spawn_kill
+      --test stress_output_extremes --test stress_spawn_kill \
+      --test perf_bursty_output
 
 # Spins a real `phux` server + session, drives a scripted scenario (heavy
 # colored output, a 2nd client attach, a resize storm, an input line) and
