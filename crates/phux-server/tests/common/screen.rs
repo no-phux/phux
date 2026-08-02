@@ -214,62 +214,8 @@ impl std::fmt::Debug for Screen {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn write_ascii_then_read_row_zero() {
-        let mut s = Screen::new(20, 3).unwrap();
-        s.write(b"hello");
-        assert_eq!(s.row(0), "hello");
-    }
-
-    #[test]
-    fn contains_finds_text_anywhere() {
-        let mut s = Screen::new(20, 3).unwrap();
-        s.write(b"line one\r\nline two");
-        assert!(s.contains("two"));
-        assert!(!s.contains("three"));
-    }
-
-    #[test]
-    fn snapshot_text_joins_rows_with_newlines() {
-        let mut s = Screen::new(10, 3).unwrap();
-        s.write(b"ab\r\ncd");
-        let text = s.snapshot_text();
-        let lines: Vec<&str> = text.split('\n').collect();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "ab");
-        assert_eq!(lines[1], "cd");
-    }
-
-    #[test]
-    fn cursor_advances_after_write() {
-        let mut s = Screen::new(20, 3).unwrap();
-        s.write(b"abc");
-        let (col, row) = s.cursor();
-        // `cursor_viewport()` may degrade to (0, 0) when libghostty
-        // can't resolve the cursor; accept either the precise answer
-        // or the safe default. The important invariant for the harness
-        // is "doesn't panic".
-        assert!(row <= 2);
-        assert!(col <= 20);
-    }
-
-    #[test]
-    fn out_of_range_row_is_empty() {
-        let mut s = Screen::new(10, 2).unwrap();
-        s.write(b"hi");
-        assert_eq!(s.row(99), "");
-    }
-
-    #[test]
-    fn sgr_escapes_are_stripped_in_text_output() {
-        let mut s = Screen::new(20, 3).unwrap();
-        // Bold + red + "ok" + reset. The libghostty parser must absorb
-        // the SGR so only "ok" lands in the grid.
-        s.write(b"\x1b[1;31mok\x1b[0m");
-        assert_eq!(s.row(0), "ok");
-    }
-}
+// This helper's unit tests live in `tests/screen_harness_demo.rs`
+// (`mod screen_oracle_tests`), not here: a `#[cfg(test)] mod tests` in this
+// file compiles and re-runs in every integration binary that declares
+// `mod common` (~50 of them), each execution occupying the serialized
+// pty-serial slot.
