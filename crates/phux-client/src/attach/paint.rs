@@ -218,9 +218,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         if Some(id) == focused_pane {
             continue;
         }
-        if let (Some(slot), Some(terminal)) =
-            (panes.get_mut(id), published_terminal(kernel, id))
-        {
+        if let (Some(slot), Some(terminal)) = (panes.get_mut(id), published_terminal(kernel, id)) {
             // Force a full redraw: the ED2 above cleared the screen, so
             // unchanged pane content must still be emitted.
             let mirror = mirror_dims(terminal, *rect);
@@ -690,6 +688,7 @@ mod tests {
                         terminal_id,
                         stream_id,
                         bootstrap_id,
+                        history_cursor: None,
                     },
                     &mut effects,
                 )

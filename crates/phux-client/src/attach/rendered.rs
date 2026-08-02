@@ -84,12 +84,10 @@ pub(super) fn compose_full_frame_cells(
         };
         // A render error on one pane shouldn't sink the whole introspection
         // query; leave that pane's cells blank and move on.
-        let Ok(cursor) = slot.renderer.render_at_cells(
-            terminal,
-            &mut frame,
-            (rect.x, rect.y),
-            (rect.w, rect.h),
-        ) else {
+        let Ok(cursor) =
+            slot.renderer
+                .render_at_cells(terminal, &mut frame, (rect.x, rect.y), (rect.w, rect.h))
+        else {
             continue;
         };
         if Some(id) == focused_pane {
@@ -288,6 +286,7 @@ mod tests {
                         terminal_id,
                         stream_id,
                         bootstrap_id,
+                        history_cursor: None,
                     },
                     &mut effects,
                 )

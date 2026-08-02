@@ -5259,6 +5259,7 @@ mod tests {
                     terminal_id,
                     stream_id,
                     bootstrap_id,
+                    history_cursor: None,
                 },
                 &mut effects,
             )
@@ -6370,7 +6371,10 @@ mod tests {
             pty_writes: vec![reply.clone()],
             ..FrameOutcome::default()
         };
-        assert_eq!(take_terminal_replies(&mut supported, true), vec![reply.clone()]);
+        assert_eq!(
+            take_terminal_replies(&mut supported, true),
+            vec![reply.clone()]
+        );
         assert!(supported.notices.is_empty());
 
         let mut old_server = FrameOutcome {
