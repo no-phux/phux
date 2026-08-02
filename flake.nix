@@ -39,8 +39,8 @@
         devShells.default = pkgs.mkShell {
           packages = [
             toolchain
-            # libghostty-vt-sys builds the C library via Zig at build time.
-            pkgs.zig_0_15
+            # libghostty-vt-sys requires the exact Zig 0.16.0 toolchain.
+            pkgs.zig_0_16
             pkgs.pkg-config
             # Developer ergonomics.
             pkgs.just
