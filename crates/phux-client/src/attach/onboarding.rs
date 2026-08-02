@@ -25,9 +25,10 @@
 //!   exists, every attach shows the hint once; creating one silences it
 //!   permanently.
 //!
-//! The hint hardcodes the `C-a ?` chord deliberately: it only ever shows
-//! when no config file exists, which is precisely when the embedded
-//! defaults (prefix `C-a`, `?` = `show-help`) are guaranteed to apply.
+//! The hint hardcodes the `C-a ?` and `C-a d` chords deliberately: it only
+//! ever shows when no config file exists, which is precisely when the
+//! embedded defaults (prefix `C-a`, `?` = `show-help`, `d` = `detach`) are
+//! guaranteed to apply.
 
 use std::path::Path;
 
@@ -47,18 +48,23 @@ pub(super) fn should_show(config_path: &Path) -> bool {
 
 /// The hint body handed to [`ToastOverlay`].
 ///
-/// Mentions the two discovery affordances the bead names: `phux config
-/// init` (scaffolds a commented starter config at `config_path`) and
-/// `C-a ?` (the default help binding — guaranteed active, since the hint
-/// only shows when no config overrides the defaults).
+/// Teaches the two most load-bearing multiplexer facts first — how to
+/// leave (`C-a d` detaches; the session keeps running) and that a naked
+/// `phux` comes back to it — then the two discovery affordances: `phux
+/// config init` (scaffolds a commented starter config at `config_path`)
+/// and `C-a ?` (the default help binding). Every hardcoded chord is
+/// guaranteed active, since the hint only shows when no config overrides
+/// the embedded defaults.
 pub(super) fn hint_lines(config_path: &Path) -> Vec<String> {
     vec![
         "No config file found - phux is running on its built-in defaults.".to_owned(),
-        "That works fine; when you want to customize it:".to_owned(),
+        "That works fine; the essentials:".to_owned(),
         String::new(),
+        "  C-a d              detach - your session keeps running".to_owned(),
+        "  phux               re-attach to it from any shell".to_owned(),
+        "  C-a ?              show the keybindings help".to_owned(),
         "  phux config init   write a commented starter config to".to_owned(),
         format!("                     {}", config_path.display()),
-        "  C-a ?              show the keybindings help".to_owned(),
         String::new(),
         "This hint appears on attach only while no config file exists.".to_owned(),
     ]
@@ -136,6 +142,28 @@ mod tests {
         assert!(
             body.contains("/home/u/.config/phux/config.toml"),
             "must show where the config will land:\n{body}"
+        );
+    }
+
+    #[test]
+    fn hint_teaches_detach_and_reattach() {
+        let lines = hint_lines(Path::new("/home/u/.config/phux/config.toml"));
+        let body = lines.join("\n");
+        assert!(
+            body.contains("C-a d"),
+            "must teach the detach chord:\n{body}"
+        );
+        assert!(
+            body.contains("detach"),
+            "must name the detach action:\n{body}"
+        );
+        assert!(
+            body.contains("keeps running"),
+            "must reassure that the session survives detach:\n{body}"
+        );
+        assert!(
+            body.contains("re-attach"),
+            "must mention re-attaching (naked `phux`):\n{body}"
         );
     }
 }

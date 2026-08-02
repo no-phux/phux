@@ -264,9 +264,12 @@ fn plan_rec(opts: &commands::RecOpts) -> Result<Option<commands::rec::RecordSpec
 
 /// Print the one-line build banner to stderr.
 ///
-/// Reserved for the two long-running, human-watched entry points: a
-/// foreground `phux server` and the naked-`phux` auto-spawn. It is
-/// deliberately NOT printed before a one-shot control verb (`ls`,
+/// Reserved for the long-running, human-watched foreground entry points
+/// whose stderr stays visible: `phux server` and `phux relay run`. It is
+/// deliberately NOT printed on any attach path (naked `phux`,
+/// `phux attach`, `phux new`) — those raise the alt screen almost
+/// immediately, wiping the line before a human can read it
+/// (phux-i0e8.10.1) — and NOT before a one-shot control verb (`ls`,
 /// `snapshot`, `send-keys`, `run`, `wait`, `new`, `kill`, `config`) so
 /// those leave stderr clean for scripts and agents, and never before a
 /// `--json` path. `phux --version` reports the version on stdout.

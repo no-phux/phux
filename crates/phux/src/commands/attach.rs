@@ -17,7 +17,6 @@ use phux_server::runtime::default_socket_path;
 use crate::commands::rec::RecordSpec;
 use crate::commands::remote::{self, Endpoint, RemoteEntry};
 use crate::commands::{DEFAULT_SESSION_NAME, print_attach_error, server::maybe_auto_spawn_server};
-use crate::print_banner;
 
 /// A live `--rec` recorder, shared between reconnect attempts.
 ///
@@ -79,10 +78,11 @@ fn finalize_recording(rec: Option<&RecordSpec>) {
 ///
 /// The shared cascade lives in [`attach_default_with_fallback`].
 pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> ExitCode {
-    // The naked invocation is a human launching their session and
-    // watching it come up (possibly auto-spawning a server). One line of
-    // build identity is welcome here; one-shot verbs stay silent.
-    print_banner();
+    // No build banner on any attach path (phux-i0e8.10.1): the TUI
+    // raises the alt screen almost immediately, wiping the line before a
+    // human can read it. The banner stays on the long-running foreground
+    // entry points (`phux server`, `phux relay run`), whose stderr
+    // remains visible.
 
     let socket_path = socket.unwrap_or_else(default_socket_path);
     // phux-iwuc: a socket path over the platform's sockaddr_un limit can
@@ -915,8 +915,6 @@ pub(crate) fn run_attach_quic(
     server_name: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
-    print_banner();
-
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1017,8 +1015,6 @@ pub(crate) fn run_attach_ws(
     tls_server_name: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
-    print_banner();
-
     let target = match attach::ws::WsTarget::parse(&url) {
         Ok(target) => target,
         Err(err) => {

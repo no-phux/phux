@@ -515,8 +515,10 @@ to exercise the result.
 
 On attach, when **nothing exists at the resolved config path** (the path
 `phux config path` prints), the TUI shows a small dismissible overlay
-pointing at `phux config init` and the `C-a ?` help binding — the two
-affordances that answer "now what?" on a fresh install. The exact rules:
+teaching the two most load-bearing multiplexer facts — `C-a d` detaches
+(the session keeps running) and a naked `phux` re-attaches — plus the two
+discovery affordances that answer "now what?" on a fresh install:
+`phux config init` and the `C-a ?` help binding. The exact rules:
 
 * **Decided once per `phux attach` invocation**, by a single existence
   check at attach time. Switching sessions inside the same invocation
@@ -537,9 +539,10 @@ affordances that answer "now what?" on a fresh install. The exact rules:
   `phux config init` (or writing any config file) silences it
   permanently.
 
-The hint hardcodes `C-a ?` deliberately — it only ever shows when no
-config file exists, which is exactly when the embedded defaults (prefix
-`C-a`, `?` = `show-help`, section 5.3) are guaranteed to be active.
+The hint hardcodes `C-a ?` and `C-a d` deliberately — it only ever shows
+when no config file exists, which is exactly when the embedded defaults
+(prefix `C-a`, `?` = `show-help`, `d` = `detach`, section 5.3) are
+guaranteed to be active.
 
 ### 4.1 File location
 
