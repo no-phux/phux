@@ -661,7 +661,9 @@ mod tests {
         c.global.clear();
         let overlay = HelpOverlay::from_config(&c, &Theme::default());
         assert_eq!(overlay.show_help_chord, None);
-        let text = render_to_string(&overlay, 80, 24);
+        // Tall viewport: the built-in sections (phux-i0e8.10.3) overflow
+        // an 80x24 modal, which would push the footer beyond the fold.
+        let text = render_to_string(&overlay, 110, 80);
         assert!(text.contains("Press Esc to close"), "text was:\n{text}");
     }
 
@@ -849,7 +851,9 @@ mod tests {
         // painted. Covers the regression that motivated phux-i08:
         // configured prefix/global chords were missing from the overlay.
         let overlay = HelpOverlay::from_config(&cfg(), &Theme::default());
-        let text = render_to_string(&overlay, 80, 24);
+        // Tall viewport: the built-in sections (phux-i0e8.10.3) overflow
+        // an 80x24 modal, which would push the footer beyond the fold.
+        let text = render_to_string(&overlay, 110, 80);
         // Section headers.
         assert!(
             text.contains("Prefix bindings (C-a)"),
