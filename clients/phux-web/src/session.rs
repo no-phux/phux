@@ -12,8 +12,8 @@ use phux_client_core::engine::{
     EngineEffectBuffer,
 };
 use phux_client_core::session::{
-    EffectBuffer, InputEligibility, KernelAction, KernelDamageKind, KernelEffect, KernelInput,
-    KernelSend, SessionKernel,
+    EffectBuffer, InputEligibility, KernelAction, KernelEffect, KernelInput, KernelSend,
+    SessionKernel,
 };
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
@@ -496,6 +496,9 @@ impl Session {
     /// Encode an eligible structured key event for the focused published pane.
     #[must_use]
     pub fn key_frame(&mut self, event: KeyEvent) -> Option<Vec<u8>> {
+        if self.failed {
+            return None;
+        }
         let terminal_id = self.first_published_terminal()?;
         let kernel = self.kernel.as_ref()?;
         if !matches!(
@@ -608,8 +611,7 @@ impl Session {
                 })),
                 KernelEffect::Send(KernelSend::PtyWrite { .. }) => {}
                 KernelEffect::Damage(damage) => {
-                    if focused == Some(&damage.terminal_id)
-                        || (focused.is_none() && damage.kind != KernelDamageKind::Removed)
+                    if focused == Some(&damage.terminal_id) || focused.is_none()
                     {
                         outcome.render = true;
                     }

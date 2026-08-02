@@ -372,6 +372,63 @@ async fn replacement_stages_without_touching_published_grid() {
 }
 
 #[wasm_bindgen_test]
+async fn attach_barrier_close_repaints_the_prior_visible_terminal_to_blank() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 10, 2);
+    let terminal_id = TerminalId::local(6);
+    let stream_id = stream(6);
+    let bootstrap_id = bootstrap(7);
+    session.on_frame(hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    ));
+    session.on_frame(attached(terminal_id.clone(), 10, 2));
+    session.on_frame(begin(
+        terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+        10,
+        2,
+        0,
+    ));
+    session.on_frame(FrameKind::BootstrapChunk {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        chunk_seq: 0,
+        payload: Bytes::from_static(b"visible"),
+    });
+    session.on_frame(FrameKind::BootstrapReady {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        history_cursor: None,
+    });
+    assert!(session
+        .on_frame(FrameKind::AttachReady { attach_id: 1 })
+        .render);
+    assert!(session.render_visible());
+
+    session.on_frame(attached(terminal_id.clone(), 10, 2));
+    assert!(!session.render_visible());
+    let closed = session.on_frame(FrameKind::TerminalClosed {
+        terminal_id,
+        exit_status: None,
+    });
+    assert!(!closed.render);
+    assert!(!session.render_visible());
+
+    let released = session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    assert!(released.render);
+    assert!(session.render_visible());
+    assert!(
+        session.grid().cells.iter().all(|cell| cell.ch == ' ' || cell.ch == '\0'),
+        "released Removed damage must clear the prior visible canvas",
+    );
+}
+
+#[wasm_bindgen_test]
 async fn hello_ok_rejects_version_profile_and_oversized_limits() {
     let vt = Vt::load().await.expect("load engine");
 
