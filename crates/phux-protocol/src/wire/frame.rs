@@ -2955,7 +2955,6 @@ pub(super) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut Encoder<'_
             enc.write_u8(BootstrapCodec::SYNTHESIZED_VT_V1_TAG);
         }
         BootstrapCodec::Native(version) => {
-
             enc.write_u8(BootstrapCodec::NATIVE_TAG);
             enc.write_u8(version.as_wire());
         }

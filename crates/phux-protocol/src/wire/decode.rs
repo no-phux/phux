@@ -83,10 +83,7 @@ impl<'a> Decoder<'a> {
     /// The decoder checks a payload's borrowed TLV slice length against these
     /// limits before copying it into owned [`bytes::Bytes`].
     #[must_use]
-    pub const fn with_bootstrap_limits(
-        input: &'a [u8],
-        limits: BootstrapLimits,
-    ) -> Self {
+    pub const fn with_bootstrap_limits(input: &'a [u8], limits: BootstrapLimits) -> Self {
         Self {
             input,
             pos: 0,
