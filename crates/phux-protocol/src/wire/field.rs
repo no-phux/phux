@@ -57,6 +57,12 @@ pub mod hello_ok {
     pub const SERVER_CAPS: u32 = 4;
     /// Opaque server identity bytes.
     pub const SERVER_ID: u32 = 5;
+    /// Selected explicit `BootstrapProfile` sub-record.
+    pub const SELECTED_PROFILE: u32 = 6;
+    /// Negotiated maximum `BOOTSTRAP_CHUNK.payload` bytes (`u32`).
+    pub const MAX_CHUNK_BYTES: u32 = 7;
+    /// Negotiated maximum `HISTORY_PAGE.payload` bytes (`u32`).
+    pub const MAX_HISTORY_PAGE_BYTES: u32 = 8;
 }
 
 /// `PING` / `PONG` body fields (`docs/spec/proto.md` §7.4).
@@ -73,6 +79,10 @@ pub mod terminal_output {
     pub const SEQ: u32 = 2;
     /// VT bytes from the PTY.
     pub const BYTES: u32 = 3;
+    /// Logical `StreamId` (`u64`, non-zero).
+    pub const STREAM_ID: u32 = 4;
+    /// Replica `BootstrapId` (`u64`, non-zero).
+    pub const BOOTSTRAP_ID: u32 = 5;
 }
 
 /// `ATTACH` body fields (`docs/spec/proto.md` §7.1 / §13).
@@ -85,6 +95,8 @@ pub mod attach {
     pub const REQUEST_SCROLLBACK: u32 = 3;
     /// `scrollback_limit_lines: u32`.
     pub const SCROLLBACK_LIMIT_LINES: u32 = 4;
+    /// Client-chosen attach correlation id (`u32`).
+    pub const ATTACH_ID: u32 = 5;
 }
 
 /// `INPUT_KEY` body fields (`docs/spec/input.md` §2).
@@ -125,6 +137,10 @@ pub mod frame_ack {
     pub const TERMINAL_ID: u32 = 1;
     /// Acked sequence id (`u64`).
     pub const SEQ: u32 = 2;
+    /// Logical `StreamId` (`u64`, non-zero).
+    pub const STREAM_ID: u32 = 3;
+    /// Replica `BootstrapId` (`u64`, non-zero).
+    pub const BOOTSTRAP_ID: u32 = 4;
 }
 
 /// `VIEWPORT_RESIZE` body fields (`docs/spec/proto.md` §7.1 / §10.5).
@@ -133,26 +149,110 @@ pub mod viewport_resize {
     pub const VIEWPORT: u32 = 1;
 }
 
-/// `ATTACHED` body fields (`docs/spec/L1.md` §1 / §13).
+/// `ATTACHED` body fields (`docs/spec/L1.md` §8).
 pub mod attached {
     /// Full `SessionSnapshot` (positional sub-record).
     pub const SNAPSHOT: u32 = 1;
     /// Server-allocated `ClientId` for this attachment (`u32`).
     pub const INITIAL_CLIENT_ID: u32 = 2;
+    /// Client-chosen attach correlation id (`u32`).
+    pub const ATTACH_ID: u32 = 3;
 }
 
-/// `TERMINAL_SNAPSHOT` body fields (`docs/spec/L1.md` §8.4).
-pub mod terminal_snapshot {
-    /// Target `TerminalId` (positional tagged union).
+/// `ATTACH_READY` body fields (`docs/spec/L1.md` §8).
+pub mod attach_ready {
+    /// Client-chosen attach correlation id (`u32`).
+    pub const ATTACH_ID: u32 = 1;
+}
+
+/// `HISTORY_REQUEST` body fields (`docs/spec/L1.md` §4.5).
+pub mod history_request {
+    /// Target `TerminalId`.
     pub const TERMINAL_ID: u32 = 1;
-    /// Grid columns (`u16`).
-    pub const COLS: u32 = 2;
-    /// Grid rows (`u16`).
-    pub const ROWS: u32 = 3;
-    /// VT replay byte sequence.
-    pub const VT_REPLAY_BYTES: u32 = 4;
-    /// Optional scrollback bytes (absent field = `None`).
-    pub const SCROLLBACK_BYTES: u32 = 5;
+    /// Logical `StreamId`.
+    pub const STREAM_ID: u32 = 2;
+    /// Replica `BootstrapId`.
+    pub const BOOTSTRAP_ID: u32 = 3;
+    /// Opaque current cursor.
+    pub const CURSOR: u32 = 4;
+    /// Non-zero requested maximum page bytes (`u32`).
+    pub const MAX_BYTES: u32 = 5;
+}
+
+/// `BOOTSTRAP_BEGIN` body fields (`docs/spec/L1.md` §4.3).
+pub mod bootstrap_begin {
+    /// Target `TerminalId`.
+    pub const TERMINAL_ID: u32 = 1;
+    /// Logical `StreamId`.
+    pub const STREAM_ID: u32 = 2;
+    /// Replica `BootstrapId`.
+    pub const BOOTSTRAP_ID: u32 = 3;
+    /// Concrete bootstrap codec.
+    pub const CODEC: u32 = 4;
+    /// Authoritative columns (`u16`).
+    pub const COLS: u32 = 5;
+    /// Authoritative rows (`u16`).
+    pub const ROWS: u32 = 6;
+    /// Live emitter (`OutputMode`).
+    pub const OUTPUT_MODE: u32 = 7;
+    /// Actor cut sequence (`u64`).
+    pub const BASE_SEQ: u32 = 8;
+}
+
+/// `BOOTSTRAP_CHUNK` body fields (`docs/spec/L1.md` §4.3).
+pub mod bootstrap_chunk {
+    /// Target `TerminalId`.
+    pub const TERMINAL_ID: u32 = 1;
+    /// Logical `StreamId`.
+    pub const STREAM_ID: u32 = 2;
+    /// Replica `BootstrapId`.
+    pub const BOOTSTRAP_ID: u32 = 3;
+    /// Zero-based contiguous chunk sequence (`u32`).
+    pub const CHUNK_SEQ: u32 = 4;
+    /// Opaque checkpoint bytes.
+    pub const PAYLOAD: u32 = 5;
+}
+
+/// `BOOTSTRAP_READY` body fields (`docs/spec/L1.md` §4.3).
+pub mod bootstrap_ready {
+    /// Target `TerminalId`.
+    pub const TERMINAL_ID: u32 = 1;
+    /// Logical `StreamId`.
+    pub const STREAM_ID: u32 = 2;
+    /// Replica `BootstrapId`.
+    pub const BOOTSTRAP_ID: u32 = 3;
+    /// Optional opaque history cursor.
+    pub const HISTORY_CURSOR: u32 = 4;
+}
+
+/// `HISTORY_PAGE` body fields (`docs/spec/L1.md` §4.5).
+pub mod history_page {
+    /// Target `TerminalId`.
+    pub const TERMINAL_ID: u32 = 1;
+    /// Logical `StreamId`.
+    pub const STREAM_ID: u32 = 2;
+    /// Replica `BootstrapId`.
+    pub const BOOTSTRAP_ID: u32 = 3;
+    /// Opaque cursor consumed by this page.
+    pub const CURSOR: u32 = 4;
+    /// Optional cursor for the next older page.
+    pub const NEXT_CURSOR: u32 = 5;
+    /// Opaque selected-codec page bytes.
+    pub const PAYLOAD: u32 = 6;
+}
+
+/// `BOOTSTRAP_TOMBSTONE` body fields (`docs/spec/L1.md` §4.6).
+pub mod bootstrap_tombstone {
+    /// Target `TerminalId`.
+    pub const TERMINAL_ID: u32 = 1;
+    /// Logical `StreamId`.
+    pub const STREAM_ID: u32 = 2;
+    /// Replica `BootstrapId`.
+    pub const BOOTSTRAP_ID: u32 = 3;
+    /// `TombstoneReason` tag (`u8`).
+    pub const REASON: u32 = 4;
+    /// Highest valid live sequence (`u64`).
+    pub const LAST_VALID_SEQ: u32 = 5;
 }
 
 /// `BELL` body fields (`docs/spec/L1.md` §1.2).

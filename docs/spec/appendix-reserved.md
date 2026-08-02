@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-06-06
+last-reviewed: 2026-08-02
 ---
 
 # Appendix B — Reserved ranges
@@ -19,10 +19,12 @@ Implementers extending the protocol pick from these ranges via PR.
 
 For implementers extending the protocol:
 
-- Message IDs `0x04..=0x0F` and `0x83..=0x8F`: reserved for connection-
-  lifecycle messages.
-- Message IDs `0x14..=0x1F` and `0x93..=0x9F`: reserved for hot-path
-  messages.
+- Message IDs `0x04..=0x0F` and `0x84..=0x8F` remain open for connection
+  lifecycle; `ATTACH_READY = 0x83` is allocated.
+- `0x14` is allocated, `0x15` is retired, `HISTORY_REQUEST = 0x16` is
+  allocated, and `0x17..=0x1F` remain open. `0x91` is permanently retired.
+  `BOOTSTRAP_BEGIN..BOOTSTRAP_TOMBSTONE = 0x93..=0x97` are allocated and
+  `0x98..=0x9F` remain open for hot-path messages.
 - Message IDs `0x24..=0x2F` and `0xA3..=0xAF`: reserved for further L1
   Terminal lifecycle / per-pane control frames (phux-4li.10 allocated
   `0x22..=0x23` C→S and `0xA1..=0xA2` S→C from these ranges).
@@ -75,6 +77,9 @@ fails loudly rather than invoking new behavior.
 `PhysicalKey` enum values and `ErrorCode` enum values are allocated
 sequentially. Implementers proposing new values open a PR against
 this document.
+
+`ErrorCode = 5` is permanently reserved for the withdrawn `OUT_OF_TIER`
+proposal and is never reused. `CODEC_UNAVAILABLE = 6` is allocated by ADR-0067.
 
 (Earlier drafts of the SPEC reserved a `DiffOp` tag range here; per
 [ADR-0013](../../ADR/0013-libghostty-bytes-on-wire.md), Terminal

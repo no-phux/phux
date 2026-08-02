@@ -4,20 +4,21 @@
 //! values. Hand-rolled cases cover known-bad inputs and confirm the decoder
 //! returns `DecodeError` rather than panicking.
 //!
-//! Under ADR-0013 the structured-diff codec is gone; the strategies here
-//! cover `TerminalOutput` (raw VT bytes) and the new `TerminalSnapshot` (bytes
-//! body) in place of the deleted `PaneDiff` strategies.
+//! Protocol 0.7 binds `TerminalOutput` to non-zero stream/bootstrap ids; native
+//! checkpoint and history frames have focused semantic tests in
+//! `bootstrap_wire.rs`.
 
 #![allow(clippy::unwrap_used)]
 
 use bytes::BytesMut;
 use phux_protocol::caps::{
-    ClientCapabilities, ColorSupport, ImageProtocol, ImageProtocolSet, KeyboardProtocol,
-    KeyboardProtocolSet, Layer, LayerSet, OutputMode, ServerCapabilities, ServerFeature,
-    ServerFeatureSet, TerminalColor, TerminalDefaultColors,
+    BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, ImageProtocol,
+    ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet, OutputMode,
+    ServerCapabilities, ServerFeature, ServerFeatureSet, TerminalColor, TerminalDefaultColors,
 };
 use phux_protocol::ids::{
-    ClientId, FileUploadId, GroupId, InputOperationId, SessionId, TerminalId, WindowId,
+    BootstrapId, ClientId, FileUploadId, GroupId, InputOperationId, SessionId, StreamId,
+    TerminalId, WindowId,
 };
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
@@ -209,9 +210,9 @@ fn arb_session_snapshot() -> impl Strategy<Value = SessionSnapshot> {
         })
 }
 
-/// Strategy producing one of the simple-payload `FrameKind` variants. The
-/// structured variants (`ATTACH`, `ATTACHED`, `TERMINAL_SNAPSHOT`, `TERMINAL_OUTPUT`,
-/// input frames) have dedicated proptests below.
+/// Strategy producing one of the simple-payload `FrameKind` variants. Structured
+/// attach, bootstrap/history, generation-bound output, and input frames have
+/// dedicated property or focused semantic tests below.
 fn arb_color_support() -> impl Strategy<Value = ColorSupport> {
     prop_oneof![
         Just(ColorSupport::TrueColor),
@@ -409,28 +410,12 @@ proptest! {
         seq in any::<u64>(),
         bytes in arb_vt_bytes(),
     ) {
-        let frame = FrameKind::TerminalOutput { terminal_id, seq, bytes: bytes.into() };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
-    }
-
-    #[test]
-    fn roundtrip_pane_snapshot(
-        terminal_id in arb_terminal_id(),
-        cols in any::<u16>(),
-        rows in any::<u16>(),
-        vt_replay_bytes in arb_vt_bytes(),
-        scrollback_bytes in proptest::option::of(arb_vt_bytes()),
-    ) {
-        let frame = FrameKind::TerminalSnapshot {
+        let frame = FrameKind::TerminalOutput {
             terminal_id,
-            cols,
-            rows,
-            vt_replay_bytes,
-            scrollback_bytes,
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq,
+            bytes: bytes.into(),
         };
         let mut buf = BytesMut::new();
         frame.encode(&mut buf);
@@ -438,6 +423,7 @@ proptest! {
         prop_assert_eq!(decoded, frame);
         prop_assert!(tail.is_empty());
     }
+
 }
 
 #[test]
@@ -464,6 +450,8 @@ fn hello_ok_round_trip() {
         protocol_patch: 0,
         server_caps: ServerCapabilities::new().with_layers(LayerSet::all()),
         server_id: vec![0xDE, 0xAD, 0xBE, 0xEF],
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::default(),
     };
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
@@ -472,33 +460,18 @@ fn hello_ok_round_trip() {
     assert!(tail.is_empty());
 }
 
-/// A truncated `HELLO_OK` (version only, no trailing caps / `server_id` —
-/// the shape a pre-capabilities server might emit) must still decode,
-/// falling back to `ServerCapabilities::default()` (L1) and an empty
-/// `server_id` per the SPEC §6 "skip them by length" rule.
+/// Protocol 0.7 requires an explicit selected profile and negotiated bounds.
 #[test]
-fn hello_ok_round_trip_version_only_trailing_defaults() {
-    // Forward-compat under TLV: a HELLO_OK carrying only the version-triple
-    // fields (SERVER_CAPS and SERVER_ID fields absent) decodes with
-    // ServerCapabilities::default() and an empty server_id.
+fn hello_ok_without_profile_is_rejected() {
     let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &0u16.to_be_bytes()); // PROTOCOL_MAJOR
-    tlv_field(&mut fields, 2, &2u16.to_be_bytes()); // PROTOCOL_MINOR
-    tlv_field(&mut fields, 3, &0u16.to_be_bytes()); // PROTOCOL_PATCH
+    tlv_field(&mut fields, 1, &0u16.to_be_bytes());
+    tlv_field(&mut fields, 2, &7u16.to_be_bytes());
+    tlv_field(&mut fields, 3, &0u16.to_be_bytes());
     let framed = framed_tlv(0x80, &fields);
-
-    let (decoded, tail) = FrameKind::decode(&framed).unwrap();
     assert_eq!(
-        decoded,
-        FrameKind::HelloOk {
-            protocol_major: 0,
-            protocol_minor: 2,
-            protocol_patch: 0,
-            server_caps: ServerCapabilities::default(),
-            server_id: Vec::new(),
-        }
+        FrameKind::decode(&framed).unwrap_err(),
+        DecodeError::UnexpectedEof
     );
-    assert!(tail.is_empty());
 }
 #[test]
 fn hello_round_trip_each_color_support() {
@@ -595,81 +568,54 @@ fn hello_round_trip_outer_terminal_default_colors() {
 }
 
 #[test]
-fn hello_decoder_defaults_output_mode_raw_when_absent() {
-    // A CLIENT_CAPS field (id 5) whose blob stops before the output_mode byte
-    // (a pre-fseo client encodes only the first five caps bytes) decodes to the
-    // safe interactive default, OutputMode::Raw.
+fn hello_decoder_rejects_truncated_legacy_caps() {
     let caps_blob = [
         ColorSupport::TrueColor.as_wire(),
         LayerSet::new().as_wire(),
         ImageProtocolSet::default().as_wire(),
         KeyboardProtocolSet::default().as_wire(),
-        1u8, // hyperlinks = true (ClientCapabilities::new default)
-             // no output_mode byte
+        1u8,
     ];
     let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, b"x"); // CLIENT_NAME
+    tlv_field(&mut fields, 1, b"x");
     tlv_field(&mut fields, 2, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 3, &2u16.to_be_bytes());
+    tlv_field(&mut fields, 3, &7u16.to_be_bytes());
     tlv_field(&mut fields, 4, &0u16.to_be_bytes());
     tlv_field(&mut fields, 5, &caps_blob);
-    let buf = framed_tlv(0x01, &fields);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert!(tail.is_empty());
-    let FrameKind::Hello { client_caps, .. } = decoded else {
-        panic!("expected Hello");
-    };
-    assert_eq!(client_caps.output_mode, OutputMode::Raw);
-    assert_eq!(client_caps.default_colors, None);
+    assert_eq!(
+        FrameKind::decode(&framed_tlv(0x01, &fields)).unwrap_err(),
+        DecodeError::UnexpectedEof
+    );
 }
 
 #[test]
-fn hello_decoder_accepts_legacy_body_without_caps() {
-    // Forward-compat under TLV: a HELLO whose CLIENT_CAPS field (id 5) is
-    // simply absent decodes with ClientCapabilities::default() — the
-    // field-tagged counterpart of the old "shorter positional body, trailing
-    // caps default" rule. Only the version-triple fields plus client_name are
-    // present.
+fn hello_decoder_rejects_legacy_body_without_caps() {
     let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, b"x"); // CLIENT_NAME
-    tlv_field(&mut fields, 2, &0u16.to_be_bytes()); // PROTOCOL_MAJOR
-    tlv_field(&mut fields, 3, &1u16.to_be_bytes()); // PROTOCOL_MINOR
-    tlv_field(&mut fields, 4, &0u16.to_be_bytes()); // PROTOCOL_PATCH
-    let framed = framed_tlv(0x01, &fields);
-    let (decoded, tail) = FrameKind::decode(&framed).unwrap();
-    assert!(tail.is_empty());
-    match decoded {
-        FrameKind::Hello {
-            client_caps,
-            client_name,
-            ..
-        } => {
-            assert_eq!(client_name, "x");
-            // Absent caps field defaults to TrueColor.
-            assert_eq!(client_caps.color_support, ColorSupport::TrueColor);
-        }
-        other => panic!("expected Hello, got {other:?}"),
-    }
+    tlv_field(&mut fields, 1, b"x");
+    tlv_field(&mut fields, 2, &0u16.to_be_bytes());
+    tlv_field(&mut fields, 3, &7u16.to_be_bytes());
+    tlv_field(&mut fields, 4, &0u16.to_be_bytes());
+    assert_eq!(
+        FrameKind::decode(&framed_tlv(0x01, &fields)).unwrap_err(),
+        DecodeError::UnexpectedEof
+    );
 }
 
 #[test]
-fn hello_decoder_treats_unknown_color_support_tag_as_truecolor() {
-    // A CLIENT_CAPS field (id 5) whose first (color_support) byte is an unknown
-    // tag (0xFF) maps to TrueColor per the `#[non_exhaustive]` contract.
+fn hello_decoder_rejects_unknown_color_support_tag() {
     let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, b"x"); // CLIENT_NAME
-    tlv_field(&mut fields, 2, &0u16.to_be_bytes()); // PROTOCOL_MAJOR
-    tlv_field(&mut fields, 3, &1u16.to_be_bytes()); // PROTOCOL_MINOR
-    tlv_field(&mut fields, 4, &0u16.to_be_bytes()); // PROTOCOL_PATCH
-    tlv_field(&mut fields, 5, &[0xFF]); // CLIENT_CAPS: unknown color_support tag
-    let framed = framed_tlv(0x01, &fields);
-    let (decoded, _) = FrameKind::decode(&framed).unwrap();
-    match decoded {
-        FrameKind::Hello { client_caps, .. } => {
-            assert_eq!(client_caps.color_support, ColorSupport::TrueColor);
+    tlv_field(&mut fields, 1, b"x");
+    tlv_field(&mut fields, 2, &0u16.to_be_bytes());
+    tlv_field(&mut fields, 3, &7u16.to_be_bytes());
+    tlv_field(&mut fields, 4, &0u16.to_be_bytes());
+    tlv_field(&mut fields, 5, &[0xFF]);
+    assert_eq!(
+        FrameKind::decode(&framed_tlv(0x01, &fields)).unwrap_err(),
+        DecodeError::UnknownEnumValue {
+            field: "ColorSupport",
+            value: 0xFF,
         }
-        other => panic!("expected Hello, got {other:?}"),
-    }
+    );
 }
 
 #[test]
@@ -686,6 +632,8 @@ fn ping_round_trip() {
 #[test]
 fn pane_output_round_trip_hello_world() {
     let frame = FrameKind::TerminalOutput {
+        stream_id: StreamId::new(1).unwrap(),
+        bootstrap_id: BootstrapId::new(1).unwrap(),
         terminal_id: TerminalId::local(1),
         seq: 0,
         bytes: bytes::Bytes::from_static(b"hello world\r\n"),
@@ -697,37 +645,6 @@ fn pane_output_round_trip_hello_world() {
     assert!(tail.is_empty());
 }
 
-#[test]
-fn pane_snapshot_round_trip_minimal() {
-    let frame = FrameKind::TerminalSnapshot {
-        terminal_id: TerminalId::new(100),
-        cols: 80,
-        rows: 24,
-        vt_replay_bytes: b"\x1b[!p\x1b[2J\x1b[H".to_vec(),
-        scrollback_bytes: None,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn pane_snapshot_round_trip_with_scrollback() {
-    let frame = FrameKind::TerminalSnapshot {
-        terminal_id: TerminalId::new(100),
-        cols: 80,
-        rows: 24,
-        vt_replay_bytes: b"vt".to_vec(),
-        scrollback_bytes: Some(b"sb".to_vec()),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
 
 #[test]
 fn truncated_length_header_is_eof() {
@@ -883,13 +800,14 @@ fn tail_is_returned_after_single_frame() {
 }
 
 // -----------------------------------------------------------------------------
-// SPEC §13 conformance: ATTACH / ATTACHED / TERMINAL_SNAPSHOT envelope.
+// ATTACH / ATTACHED generation correlation.
 // -----------------------------------------------------------------------------
 
 proptest! {
     #[test]
     fn roundtrip_attach_target(target in arb_attach_target()) {
         let frame = FrameKind::Attach {
+            attach_id: 1,
             target,
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,
@@ -910,6 +828,7 @@ proptest! {
         scrollback_limit_lines in any::<u32>(),
     ) {
         let frame = FrameKind::Attach {
+            attach_id: 1,
             target,
             viewport,
             request_scrollback,
@@ -966,7 +885,11 @@ proptest! {
     fn roundtrip_session_info(info in arb_session_info()) {
         let snap = SessionSnapshot::new(info.id, WindowId::new(0), TerminalId::new(0))
             .with_sessions(vec![info]);
-        let frame = FrameKind::Attached { snapshot: snap, initial_client_id: ClientId::new(0) };
+        let frame = FrameKind::Attached {
+            attach_id: 1,
+            snapshot: snap,
+            initial_client_id: ClientId::new(0),
+        };
         let mut buf = BytesMut::new();
         frame.encode(&mut buf);
         let (decoded, tail) = FrameKind::decode(&buf).unwrap();
@@ -978,7 +901,11 @@ proptest! {
     fn roundtrip_window_info(info in arb_window_info()) {
         let snap = SessionSnapshot::new(info.session_id, info.id, TerminalId::new(0))
             .with_windows(vec![info]);
-        let frame = FrameKind::Attached { snapshot: snap, initial_client_id: ClientId::new(0) };
+        let frame = FrameKind::Attached {
+            attach_id: 1,
+            snapshot: snap,
+            initial_client_id: ClientId::new(0),
+        };
         let mut buf = BytesMut::new();
         frame.encode(&mut buf);
         let (decoded, tail) = FrameKind::decode(&buf).unwrap();
@@ -990,7 +917,11 @@ proptest! {
     fn roundtrip_pane_info(info in arb_pane_info()) {
         let snap = SessionSnapshot::new(SessionId::new(0), info.window_id, info.id.clone())
             .with_panes(vec![info]);
-        let frame = FrameKind::Attached { snapshot: snap, initial_client_id: ClientId::new(0) };
+        let frame = FrameKind::Attached {
+            attach_id: 1,
+            snapshot: snap,
+            initial_client_id: ClientId::new(0),
+        };
         let mut buf = BytesMut::new();
         frame.encode(&mut buf);
         let (decoded, tail) = FrameKind::decode(&buf).unwrap();
@@ -1004,7 +935,11 @@ proptest! {
             .with_layout(Some(layout));
         let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), TerminalId::new(0))
             .with_windows(vec![win]);
-        let frame = FrameKind::Attached { snapshot: snap, initial_client_id: ClientId::new(0) };
+        let frame = FrameKind::Attached {
+            attach_id: 1,
+            snapshot: snap,
+            initial_client_id: ClientId::new(0),
+        };
         let mut buf = BytesMut::new();
         frame.encode(&mut buf);
         let (decoded, tail) = FrameKind::decode(&buf).unwrap();
@@ -1018,6 +953,7 @@ proptest! {
         client_id in any::<u32>(),
     ) {
         let frame = FrameKind::Attached {
+            attach_id: 1,
             snapshot,
             initial_client_id: ClientId::new(client_id),
         };
@@ -1064,7 +1000,12 @@ proptest! {
 
     #[test]
     fn roundtrip_frame_ack(terminal_id in arb_terminal_id(), seq in any::<u64>()) {
-        let frame = FrameKind::FrameAck { terminal_id, seq };
+        let frame = FrameKind::FrameAck {
+            terminal_id,
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq,
+        };
         let mut buf = BytesMut::new();
         frame.encode(&mut buf);
         let (decoded, tail) = FrameKind::decode(&buf).unwrap();
@@ -2190,6 +2131,8 @@ fn hello_ok_server_feature_round_trips_and_old_caps_default_empty() {
             .with_layers(LayerSet::all())
             .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
         server_id: vec![],
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::default(),
     };
     let mut encoded = BytesMut::new();
     frame.encode(&mut encoded);

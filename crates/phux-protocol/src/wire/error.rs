@@ -74,6 +74,22 @@ pub enum DecodeError {
     /// A `PUT_FILE` command exceeded its per-chunk or whole-file limit.
     #[error("PUT_FILE chunk exceeds protocol limits")]
     FileUploadLimitExceeded,
+    /// A stream id used the reserved all-zero value.
+    #[error("stream id must not be zero")]
+    InvalidStreamId,
+
+    /// A bootstrap id used the reserved all-zero value.
+    #[error("bootstrap id must not be zero")]
+    InvalidBootstrapId,
+
+    /// Bootstrap/history negotiation or payload exceeded protocol hard bounds.
+    #[error("bootstrap or history payload exceeds protocol limits")]
+    BootstrapLimitExceeded,
+
+    /// A native/compatibility profile sub-record used an invalid combination.
+    #[error("invalid bootstrap profile")]
+    InvalidBootstrapProfile,
+
 
     /// A [`crate::wire::info::LayoutNode`] tree nested deeper than the
     /// decoder's recursion bound (see

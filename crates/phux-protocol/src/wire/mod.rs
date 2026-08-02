@@ -3,11 +3,10 @@
 //! All multi-byte integers are big-endian. Frames are length-prefixed.
 //! Field IDs and message types match SPEC §7's catalog.
 //!
-//! Under [ADR-0013] terminal content rides as raw VT bytes on the wire (the
-//! hot path `TERMINAL_OUTPUT` frame and the attach-time `TERMINAL_SNAPSHOT`
-//! frame). There is no structured cell-level diff codec in this crate.
-//!
-//! [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
+//! Under ADR-0013 and ADR-0067, live terminal content is VT bytes in
+//! `TERMINAL_OUTPUT`; initial native state and history are opaque,
+//! profile-negotiated bootstrap payloads. No cell-level diff or engine record
+//! parser exists in this crate.
 
 pub mod decode;
 pub mod encode;

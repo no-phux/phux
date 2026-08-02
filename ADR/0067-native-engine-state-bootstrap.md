@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-01
+last-reviewed: 2026-08-02
 ---
 
 # 0067 — Native engine-state bootstrap and client-owned history
@@ -36,101 +36,154 @@ one real PTY winsize, and engine delegation
 
 ## Decision
 
-### Explicit profiles and versions
+### Protocol 0.7 clean cutover
 
-HELLO selects exactly one synchronization profile:
+This is a `0.7.0` clean cutover. `TERMINAL_SNAPSHOT = 0x91` is permanently
+retired and never reassigned. Protocol `0.6.x` and `0.7.x` peers reject each
+other at HELLO; no alias, old discriminant, or implicit same-UID path bypasses
+the handshake. `PING` is the only frame permitted before HELLO.
 
-- **`NativeState`**: exact libghostty checkpoint bootstrap, raw PTY live output,
-  and engine-owned history pages.
-- **`SynthesizedVtV1`**: existing synthesized snapshot and StateSync/downsampled
-  behavior for legacy, constrained, and temporarily non-native clients.
+The old snapshot-first ordering in ADR-0013, ADR-0015, ADR-0018, ADR-0025,
+ADR-0034, ADR-0043, and ADR-0060 is superseded by this decision. Their raw
+live-byte, client-owned projection, StateSync compatibility, image opacity,
+federation identity, and one-PTY-geometry conclusions remain in force subject
+to the profile and generation rules below. ADR-0061's additive-change default is
+intentionally overridden because removing the old attach ordering is wire
+breaking.
 
-A server never silently falls back after selecting `NativeState`. If the peers
-share no native codec, they explicitly select `SynthesizedVtV1` or fail. The
-browser uses compatibility mode until it can run the same decoder through WASM;
-WebSocket is transport, not a third state model.
+### Three explicit profiles
 
-This is a `0.7.0` clean cutover. `TERMINAL_SNAPSHOT = 0x91` is retired and never
-reassigned. ADR-0061 normally favors additive capabilities, but the old attach
-ordering must be removed, so `0.6.x` and `0.7.x` peers reject each other. Every
-stateful connection performs HELLO, including same-UID Unix-socket clients;
-`PING` alone may remain stateless.
+HELLO advertises a set and HELLO_OK selects exactly one of three profiles for
+the connection:
 
-The phux version and libghostty codec version are independent. HELLO advertises
-an engine codec range and feature mask; HELLO_OK selects one exact immutable
-codec version and usable feature intersection. Missing required engine features
-reject native negotiation.
+| Profile | Bootstrap | Live bytes | `FRAME_ACK` | Color rewrite |
+|---------|-----------|------------|-------------|---------------|
+| `NativeState` | exact libghostty checkpoint | raw PTY | forbidden | forbidden |
+| `SynthesizedVtRaw` | synthesized VT v1 | raw compatibility VT | forbidden | permitted by client caps |
+| `SynthesizedVtStateSync` | synthesized VT v1 | synthesized per-consumer VT | cumulative | permitted by client caps |
 
-### Opaque engine bytes
+The enum contains these three combinations rather than a free
+`codec × OutputMode` product, so `NativeState + StateSync` is unrepresentable.
+`OutputMode` remains the compatibility preference only. Native is preferred
+when usable; otherwise a synthesized profile is selected only if both peers
+advertised that exact combination. There is no silent fallback after
+HELLO_OK. No shared usable profile produces fatal
+`ERROR { code: CODEC_UNAVAILABLE = 6 }`.
 
-libghostty alone produces and consumes native state. phux frames only identity,
-selected codec, generation, live watermark, bounded chunks and integrity,
-checkpoint id, opaque history cursors, acknowledgements, limits, and tombstones.
-It never parses an engine record, depends on `Page` layout, or synthesizes codec
-bytes. Compressed pages may stay compressed; allocator metadata, pointers,
-virtual mappings, padding, and native alignment never enter the portable codec.
+Native codec/version negotiation is orthogonal to profile negotiation.
+`NativeState` requires an exact codec intersection, not an inferred range.
+Protocol 0.7 allocates `LibghosttyCheckpointV2` and requires the
+`CONTINUATION`, `READY_BOUNDARY`, and `HISTORY_PAGES` engine feature bits.
+HELLO advertises exact codec and feature sets; HELLO_OK names the exact selected
+codec and negotiated feature intersection. Future checkpoint versions receive
+new set bits and are never assumed compatible.
 
-### READY-fenced attach
+Each HELLO also advertises nonzero `max_chunk_bytes` and
+`max_history_page_bytes`; HELLO_OK selects the per-axis minimum. Both are hard
+capped at 8 MiB, with reference advertisements of 256 KiB and 1 MiB
+respectively. Zero or a value over its hard cap is malformed. The negotiated
+bound applies before allocation, in addition to the 16 MiB outer frame cap.
+Opaque history cursors are capped at 4 KiB.
 
-A native attach has one actor-owned ordering:
+### Opaque records and identities
 
-1. After HELLO and `ATTACH_TERMINAL`, the Terminal actor applies all prior PTY
-   bytes, increments the generation, records the next live sequence, begins an
-   engine checkpoint capture, and queues later bytes for that consumer.
-2. The server streams bounded opaque chunks through libghostty's `READY` record.
-3. The client incrementally decodes into staging. Nothing partially decoded is
-   visible to the frontend.
-4. At engine `READY`, the client atomically publishes the live terminal. It may
-   render, accept input, and use cached history immediately.
-5. The client acknowledges checkpoint, generation, and live watermark. Only
-   then does the server release queued `TERMINAL_OUTPUT`; history may continue
-   concurrently on its own stream.
+`StreamId` is a nonzero `u64` naming one logical terminal subscription on one
+connection. `BootstrapId` is a nonzero `u64` naming one replaceable replica
+generation within that stream. Zero is reserved; ids are never inferred from a
+TerminalId or transport. Every bootstrap, history, live output, and StateSync
+ack frame carries `TerminalId + StreamId + BootstrapId`.
 
-The PTY is not paused for network delivery. Only the in-actor cut is
-pause-sensitive. Capture holds a bounded immutable lease, pin, or copy-on-write
-view so later output/compression cannot mutate bytes in flight. A transport
-that subscribes first and requests a snapshot from another task has a gap and
-is invalid; UDS, WebSocket, relay, and future QUIC consume the same actor stream.
+Ghostty alone produces, validates, and consumes native checkpoint records.
+phux owns only framing, profile/version negotiation, identities, actor cut
+sequence, bounds, opaque cursors, and lifecycle. phux never scans checkpoint
+magic, record tags, READY, FINISH, Page layout, allocator metadata, pointers,
+padding, or native alignment; it never synthesizes native records. Native
+`BOOTSTRAP_CHUNK`, `HISTORY_PAGE`, and subsequent raw
+`TERMINAL_OUTPUT.bytes` pass byte-for-byte through every transport and relay.
+In particular native raw bytes are never SGR/color/image rewritten.
 
-The post-cut queue is bounded by bytes and age and never silently drops. Queue
-overflow, bad integrity, wrong-generation ACK, sequence gap, or stale cursor
-produces an explicit tombstone/resync requirement. The client keeps its last
-published terminal until a replacement reaches READY. Reconnect resumes only
-when server incarnation, TerminalId, checkpoint/generation, and last contiguous
-sequence prove continuity; otherwise it takes a fresh cut.
+### Inclusive actor cut and READY fence
 
-Federation forwards opaque chunks and logical stream identities, and proxies
-ACK/history demand to the origin. It never decodes engine state. Native and
-compatibility profiles are separate upstream subscriptions.
+The Terminal actor owns one checked, non-wrapping, actor-global `u64` stream
+sequence stamped before broadcast. A new bootstrap is cut in one actor turn:
 
-### Durable server history, client-owned projection
+1. Drain the subscription receiver, then ask the actor for an inclusive cut.
+2. The actor applies all PTY bytes through `base_seq`, increments the replica
+   generation, captures authoritative `(cols, rows)`, and starts an immutable
+   codec capture covering exactly `seq <= base_seq`.
+3. The coordinator discards drained/subscribed duplicates `seq <= base_seq` and
+   queues only contiguous `seq > base_seq`, bounded by bytes and age.
+4. Send `BOOTSTRAP_BEGIN`, contiguous zero-based `BOOTSTRAP_CHUNK`s, then
+   `BOOTSTRAP_READY` only after all engine bytes through the engine READY record
+   have been emitted.
+5. Reliable transport order is the publication acknowledgement: the client
+   incrementally decodes into staging, atomically publishes when it consumes
+   protocol `BOOTSTRAP_READY`, and the next frame is raw
+   `TERMINAL_OUTPUT { seq: base_seq + 1 }`. There is no client bootstrap ACK and
+   no extra RTT gate.
 
-The server retains canonical bounded history so detach, late join, recording,
-and recovery work with no connected client. Each client owns a local, initially
-incomplete replica plus its viewport, cache, selection, and search state.
+This fifth step refines and supersedes the earlier accepted wording that
+required a client checkpoint ACK before releasing raw bytes. The dual engine
+READY/protocol `BOOTSTRAP_READY` fence on a reliable ordered stream is
+sufficient. `FRAME_ACK` remains cumulative only for
+`SynthesizedVtStateSync`, scoped to `(terminal, stream, bootstrap)`, and is sent
+after the acknowledged bytes have been applied to the published compatibility
+terminal. Raw profiles never send it.
 
-After READY, history moves newest-to-oldest in bounded, independently verified
-engine pages. Clients request, pause, or cancel by opaque cursor; explicit
-scroll demand outranks prefetch. Servers return explicit beginning,
-evicted-cursor, or stale-generation results, never a substituted range. Pages
-are generation-bound and loading them cannot mutate the active area, cursor,
-parser continuation, or live sequence.
+For session attach the server sends `ATTACHED`, then `BOOTSTRAP_BEGIN` for all
+panes in stable snapshot traversal order, then emits bounded chunks round-robin
+across panes. A pane's `BOOTSTRAP_READY` immediately opens that pane's live
+queue; it does not wait for slower panes or history. `ATTACH_READY` echoes
+`attach_id` once every pane in that attach is READY or closed. Input may flow
+for a pane after its READY; metadata/history work never blocks its live writes.
 
-Client caches are bounded by bytes. Selection/search use semantic engine anchors,
-not viewport row offsets, so page insertion and eviction do not invalidate them.
-Unlimited disk retention and deferred soft-wrap reflow remain libghostty work;
-phux supplies demand, cancellation, priority, and resource budgets.
+### History, resume, and tombstones
 
-### One PTY geometry, many projections
+After READY, retained history is client-pull, newest-to-oldest, and lower
+priority than live output. A stream has at most one `HISTORY_REQUEST`
+outstanding. Explicit scroll demand outranks prefetch; cancel is accomplished
+by replacing/tombstoning the generation. `HISTORY_PAGE.cursor` echoes the
+request cursor; `next_cursor` is the next older opaque cursor. Absent
+`next_cursor` means the payload contains the selected codec's FINISH and reaches
+the beginning of retained history. A page is generation-bound and loading it
+must not mutate active screen, parser continuation, cursor, modes, or live
+sequence. Cursor bytes and payload validity remain engine-owned.
 
-One process and PTY retain one authoritative `(cols, rows)`, chosen by existing
-server resize policy ([ADR-0027](./0027-terminal-references-and-l3-links.md),
-[ADR-0062](./0062-headless-resize-and-window-size-policy.md)). Every native
-client reconstructs that active grid. Clients independently choose physical
-window size, zoom, crop/letterbox, layout, local scroll offset, and how much
-history to show. When supported by libghostty, clients may reflow finalized
-history locally. None of this changes the child process's winsize.
+Reconnect/resume is legal only when authenticated server incarnation,
+TerminalId, profile, StreamId mapping, BootstrapId, and last contiguous live
+sequence all prove continuity. Otherwise a fresh stream/cut is required.
+Stale generation, evicted cursor, codec failure, resize, relay reconnect,
+sequence gap, bounded queue overflow, or explicit reattach invalidates the old
+generation with `BOOTSTRAP_TOMBSTONE` before a replacement
+`BOOTSTRAP_BEGIN`. Reasons are `RawReplayOverflow`, `OutboundGap`, `Resize`,
+`RelayReconnect`, `ExplicitReattach`, `CodecFailure`, and `Other`. After a
+tombstone, no chunk, page, output, READY, or ACK carrying that BootstrapId is
+legal; the client keeps its last published terminal until a replacement
+reaches READY.
 
+### Geometry, resource fairness, and federation
+
+One PTY retains one authoritative `(cols, rows)` under ADR-0027 and ADR-0062.
+Every bootstrap records that geometry. A viewport change that does not alter
+authoritative PTY geometry leaves the generation intact. An authoritative resize
+takes a fresh actor cut and tombstones affected generations with `Resize`;
+clients keep the old published terminal until the replacement reaches READY.
+Client window size, zoom, crop/letterbox, local scroll, selection, search, cached history, and
+historical reflow remain local projections and never change child winsize.
+
+Implementations bound capture leases, post-cut raw queues by bytes and age,
+outbound frame queues, history work, cursor size, and client history caches.
+Live writes outrank bootstrap chunks; READY-prefix chunks outrank history;
+explicit history demand outranks prefetch. Multi-pane attach uses bounded
+round-robin chunk turns so a large pane cannot head-of-line block a small pane's
+READY. Overflow is a tombstone, never silent `try_send` loss.
+
+Federation negotiates one profile per logical stream and maintains a bijection
+`(downstream client, downstream StreamId) ↔ (upstream link, upstream StreamId)`.
+Native and compatibility profiles use distinct upstream subscriptions. A hub
+rewrites only phux TerminalId/StreamId/BootstrapId envelopes, proxies
+StateSync ACK and history demand, and preserves order and bounds; checkpoint,
+history, cursor, and native raw bytes remain opaque and byte-identical.
 ## Why
 
 First render becomes proportional to the active prefix rather than all retained
@@ -151,7 +204,7 @@ prevents live bytes overtaking the state they extend.
   tombstoned rather than allowed to pressure the Terminal actor.
 - Server and client duplicate cached history to buy detach durability and local
   interaction.
-- Two profiles increase conformance surface but make fidelity loss explicit.
+- Three profiles increase conformance surface but make fidelity loss explicit.
 - Independent live grids remain impossible for one PTY; historical reflow does
   not make cursor-addressed TUIs responsive to two logical winsizes.
 

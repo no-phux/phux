@@ -74,6 +74,73 @@ id_type!(
     /// inner `u32`.
     GroupId
 );
+/// Non-zero identifier for one logical terminal subscription.
+///
+/// A `StreamId` is allocated by the endpoint that originates the stream and is
+/// scoped to that connection. Federation relays maintain an explicit
+/// downstream-to-upstream bijection rather than reusing either side's value.
+/// Zero is reserved so an absent/uninitialized stream cannot be serialized.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub struct StreamId(core::num::NonZeroU64);
+
+impl StreamId {
+    /// Construct a stream identifier, returning `None` for the reserved zero value.
+    #[must_use]
+    pub const fn new(raw: u64) -> Option<Self> {
+        match core::num::NonZeroU64::new(raw) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Return the non-zero wire value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl core::fmt::Display for StreamId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "StreamId({})", self.get())
+    }
+}
+
+/// Non-zero identifier for one replaceable terminal replica generation.
+///
+/// A new bootstrap for an existing [`StreamId`] always receives a new
+/// `BootstrapId`. Once that generation is tombstoned, no frame carrying its id
+/// is legal. Zero is reserved so stale/default state cannot name a generation.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub struct BootstrapId(core::num::NonZeroU64);
+
+impl BootstrapId {
+    /// Construct a bootstrap identifier, returning `None` for the reserved zero value.
+    #[must_use]
+    pub const fn new(raw: u64) -> Option<Self> {
+        match core::num::NonZeroU64::new(raw) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Return the non-zero wire value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl core::fmt::Display for BootstrapId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "BootstrapId({})", self.get())
+    }
+}
+
 
 /// Opaque client-generated identifier for one acknowledged input operation.
 ///
