@@ -1,5 +1,6 @@
 //! Submodule for runtime internals.
 
+use std::collections::HashSet;
 use std::io;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
@@ -827,6 +828,10 @@ where
     // without killing the writer, because the writer still needs to emit
     // DETACHED and may serve a later ATTACH on the same connection.
     let mut output_pumps: JoinSet<()> = JoinSet::new();
+    // An attach id names one immutable aggregate generation for the life of
+    // this connection. Reuse would collide with a completed stream/bootstrap
+    // key even when the replacement otherwise followed the right barriers.
+    let mut used_attach_ids = HashSet::new();
 
     // Exact per-connection bootstrap state selected by HELLO. `None` is the
     // pre-negotiation state; successful selection writes it exactly once and
@@ -1097,6 +1102,18 @@ where
                     let _ = sibling_tasks.join_next().await;
                     return Ok(());
                 }
+                if !used_attach_ids.insert(attach_id) {
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::MalformedMessage,
+                            message: format!(
+                                "ATTACH attach_id {attach_id} was already used on this connection"
+                            ),
+                        }))
+                        .await;
+                    continue;
+                }
                 let selection =
                     negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
                 debug!(
@@ -1237,6 +1254,7 @@ where
                 bootstrap_id,
                 cursor,
                 max_bytes,
+                max_rows,
             } => {
                 let selection =
                     negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
@@ -1272,17 +1290,21 @@ where
                         .await;
                     continue;
                 };
+                let Ok(permit) = out_tx.clone().reserve_owned().await else {
+                    continue;
+                };
                 let (reply_tx, reply_rx) = oneshot::channel();
                 if handle
                     .native_history
                     .send(crate::terminal_actor::NativeHistoryRequest {
-                        outbound: out_tx.clone(),
+                        permit,
                         owner: client_id.0,
                         terminal_id,
                         stream_id,
                         bootstrap_id,
                         cursor,
                         max_bytes,
+                        max_rows,
                         limits: selection.limits,
                         reply: reply_tx,
                     })
@@ -1291,22 +1313,28 @@ where
                 {
                     continue;
                 }
-                if let Ok(Err(error)) = reply_rx.await {
-                    let code = match error {
-                        crate::native_state::NativeStateError::OutOfMemory
-                        | crate::native_state::NativeStateError::OutOfSpace { .. }
-                        | crate::native_state::NativeStateError::LimitExceeded => {
-                            ErrorCode::ResourceExhausted
-                        }
-                        _ => ErrorCode::InternalError,
-                    };
-                    let _ = out_tx
-                        .send(Outbound::Frame(FrameKind::Error {
+                let Ok(reply) = reply_rx.await else {
+                    continue;
+                };
+                match reply.result {
+                    Ok(frame) => {
+                        reply.permit.send(Outbound::Frame(frame));
+                    }
+                    Err(error) => {
+                        let code = match error {
+                            crate::native_state::NativeStateError::OutOfMemory
+                            | crate::native_state::NativeStateError::OutOfSpace { .. }
+                            | crate::native_state::NativeStateError::LimitExceeded => {
+                                ErrorCode::ResourceExhausted
+                            }
+                            _ => ErrorCode::InternalError,
+                        };
+                        reply.permit.send(Outbound::Frame(FrameKind::Error {
                             request_id: None,
                             code,
                             message: format!("native history request failed: {error}"),
-                        }))
-                        .await;
+                        }));
+                    }
                 }
             }
             FrameKind::GetMetadata {

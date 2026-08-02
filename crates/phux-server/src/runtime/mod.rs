@@ -1845,7 +1845,7 @@ mod tests {
                     state.with_mut(|s| s.seed_session("lifecycle"));
 
                 let (input_tx, _input_rx) = mpsc::channel(8);
-                let (snapshot_tx, mut snapshot_rx) = mpsc::channel::<SnapshotRequest>(8);
+                let (snapshot_tx, _snapshot_rx) = mpsc::channel::<SnapshotRequest>(8);
                 let (screen_tx, _screen_rx) = mpsc::channel(8);
                 let (pwd_tx, _pwd_rx) = mpsc::channel(8);
                 let (output_tx, _output_rx_seed) =
@@ -1954,26 +1954,19 @@ mod tests {
                     .reply
                     .send(Ok(crate::terminal_actor::ConsumerAttachOutcome {
                         tick_managed: true,
+                        state_sync_bootstrap: Some(
+                            crate::terminal_actor::StateSyncBootstrap {
+                                snapshot: SnapshotBytes {
+                                    cols: 80,
+                                    rows: 24,
+                                    bytes: b"snap".to_vec(),
+                                    scrollback: Vec::new(),
+                                },
+                                base_seq: 0,
+                            },
+                        ),
                     }))
                     .expect("send attach reply");
-
-                // Service the snapshot request so the attach task completes.
-                let snap_req = tokio::time::timeout(MAILBOX_DEADLINE, snapshot_rx.recv())
-                    .await
-                    .expect("snapshot request did not arrive")
-                    .expect("snapshot channel closed");
-                snap_req
-                    .reply
-                    .send((
-                        SnapshotBytes {
-                            cols: 80,
-                            rows: 24,
-                            bytes: b"snap".to_vec(),
-                            scrollback: Vec::new(),
-                        },
-                        0,
-                    ))
-                    .expect("send snapshot reply");
 
                 attach_task.await.expect("attach task panicked");
                 for expected in [
@@ -2053,25 +2046,19 @@ mod tests {
                     .reply
                     .send(Ok(crate::terminal_actor::ConsumerAttachOutcome {
                         tick_managed: true,
+                        state_sync_bootstrap: Some(
+                            crate::terminal_actor::StateSyncBootstrap {
+                                snapshot: SnapshotBytes {
+                                    cols: 80,
+                                    rows: 24,
+                                    bytes: b"replacement".to_vec(),
+                                    scrollback: Vec::new(),
+                                },
+                                base_seq: 0,
+                            },
+                        ),
                     }))
                     .expect("ack replacement consumer");
-                let replacement_snapshot =
-                    tokio::time::timeout(MAILBOX_DEADLINE, snapshot_rx.recv())
-                        .await
-                        .expect("replacement snapshot request did not arrive")
-                        .expect("snapshot channel closed");
-                replacement_snapshot
-                    .reply
-                    .send((
-                        SnapshotBytes {
-                            cols: 80,
-                            rows: 24,
-                            bytes: b"replacement".to_vec(),
-                            scrollback: Vec::new(),
-                        },
-                        0,
-                    ))
-                    .expect("send replacement snapshot");
                 for expected in [
                     "BOOTSTRAP_BEGIN",
                     "BOOTSTRAP_CHUNK",

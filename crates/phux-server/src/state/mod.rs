@@ -33,7 +33,7 @@
 //! every section in this module is sync and finite — we never `.await`
 //! while holding it.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -44,7 +44,9 @@ use crate::terminal_actor::TerminalHandle;
 use phux_core::ids::{SessionId, TerminalId, WindowId};
 use phux_core::registry::Registry;
 use phux_protocol::caps::LayerSet;
-use phux_protocol::ids::{GroupId, TerminalId as WireTerminalId, WindowId as WireWindowId};
+use phux_protocol::ids::{
+    BootstrapId, GroupId, TerminalId as WireTerminalId, WindowId as WireWindowId,
+};
 use portable_pty::CommandBuilder;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -119,6 +121,14 @@ pub(crate) struct SatelliteLease {
     /// The holder's outbound mailbox, for the eviction notification.
     pub(crate) out_tx: tokio::sync::mpsc::Sender<Outbound>,
 }
+#[derive(Debug)]
+struct AttachTerminalGeneration {
+    cancel: CancellationToken,
+    done: CancellationToken,
+    last_valid_seq: Arc<std::sync::atomic::AtomicU64>,
+    bootstrap_id: BootstrapId,
+}
+
 
 /// Single owner of all server-side state.
 ///
@@ -161,13 +171,16 @@ pub struct ServerState {
     /// L1 §9.1.
     satellite_leases:
         std::collections::BTreeMap<(phux_protocol::ids::SatelliteHost, u32), SatelliteLease>,
-    /// Per-`(client, terminal)` cancellation for `ATTACH_TERMINAL` output
-    /// pumps (phux-v45.7). `DETACH_TERMINAL` cancels one entry; client
-    /// detach / disconnect cancels all of the client's entries; pane reap
-    /// cancels the pane's entries. Without the token the pump task (which
-    /// holds the client's outbound sender) would keep streaming until the
-    /// connection died.
-    attach_terminal_pumps: HashMap<(ClientId, TerminalId), tokio_util::sync::CancellationToken>,
+    /// Successful satellite `ATTACH_TERMINAL` proxy ownership mirrored at the
+    /// hub authority boundary. Opaque reply/input frames must name one of
+    /// these exact `(client, host, terminal)` registrations before relay.
+    satellite_proxy_attaches:
+        HashSet<(ClientId, phux_protocol::ids::SatelliteHost, u32)>,
+    /// Per-`(client, terminal)` `ATTACH_TERMINAL` generation. Replacement
+    /// cancels and joins the prior pump before tombstoning its bootstrap id.
+    attach_terminal_pumps: HashMap<(ClientId, TerminalId), AttachTerminalGeneration>,
+    /// Next connection-global bootstrap id for per-terminal attaches.
+    attach_terminal_next_bootstrap: HashMap<ClientId, u64>,
     /// Bridge between core slotmap [`SessionId`]s and wire-level
     /// `phux_protocol::ids::SessionId` (u32). Lives in this crate (and only
     /// this crate) because `phux-core` and `phux-protocol` must not depend
@@ -764,14 +777,28 @@ mod tests {
     #[test]
     fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
         let mut s = ServerState::new();
-        let (default, _, _) = s.seed_session("default");
+        let (default, window, original) = s.seed_session("default");
         let _ = s.seed_session("other");
         let cid = s.new_client_id();
         s.attach_default_caps(cid, "default", mk_tx()).unwrap();
+        let added = s
+            .registry
+            .new_terminal(window)
+            .expect("pane added after initial attach");
         assert_eq!(
             s.attach_default_caps(cid, "default", mk_tx()).unwrap(),
             default,
             "same-connection recovery reuses the live session identity"
+        );
+        assert_eq!(
+            s.subscribers_for_terminal(original),
+            &[cid],
+            "reattach must not duplicate an existing subscription",
+        );
+        assert_eq!(
+            s.subscribers_for_terminal(added),
+            &[cid],
+            "reattach must subscribe panes created after the first attach",
         );
         let err = s.attach_default_caps(cid, "other", mk_tx()).unwrap_err();
         assert_eq!(err, AttachError::AlreadyAttached(cid));

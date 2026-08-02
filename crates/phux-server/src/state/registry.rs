@@ -1,12 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use phux_core::ids::{SessionId, TerminalId, WindowId};
 use phux_core::registry::Registry;
 use phux_core::session::Session;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities, Layer, LayerSet};
-use phux_protocol::ids::{TerminalId as WireTerminalId, WindowId as WireWindowId};
+use phux_protocol::ids::{
+    BootstrapId, TerminalId as WireTerminalId, WindowId as WireWindowId,
+};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use portable_pty::CommandBuilder;
 use tokio::sync::mpsc;
@@ -14,8 +17,9 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    AttachError, AttachSnapshotPane, AttachedClient, ClientId, EventScope, EventSubscription,
-    MetadataStore, Outbound, RenameOutcome, SatelliteLease, ServerState,
+    AttachError, AttachSnapshotPane, AttachTerminalGeneration, AttachedClient, ClientId,
+    EventScope, EventSubscription, MetadataStore, Outbound, RenameOutcome, SatelliteLease,
+    ServerState,
 };
 use crate::agent_asked::{AskedPayload, AskedSource, AskedTransition};
 use crate::id_bridge::IdBridge;
@@ -46,7 +50,9 @@ impl ServerState {
             terminal_subscribers: HashMap::new(),
             input_leases: HashMap::new(),
             satellite_leases: std::collections::BTreeMap::new(),
+            satellite_proxy_attaches: HashSet::new(),
             attach_terminal_pumps: HashMap::new(),
+            attach_terminal_next_bootstrap: HashMap::new(),
             session_id_bridge: IdBridge::new(),
             terminals: HashMap::new(),
             terminal_tokens: HashMap::new(),
@@ -690,27 +696,26 @@ impl ServerState {
             .find_session_by_name(session_name)
             .ok_or_else(|| AttachError::UnknownSession(session_name.to_owned()))?;
         if let Some(existing) = self.attached.get(&client_id) {
-            if existing.session == session_id {
-                return Ok(session_id);
+            if existing.session != session_id {
+                return Err(AttachError::AlreadyAttached(client_id));
             }
-            return Err(AttachError::AlreadyAttached(client_id));
+        } else {
+            self.attached.insert(
+                client_id,
+                AttachedClient {
+                    id: client_id,
+                    session: session_id,
+                    tx,
+                    client_caps,
+                    bootstrap_profile,
+                    bootstrap_limits,
+                    viewport: None,
+                    viewport_seq: 0,
+                },
+            );
+            // Attaching arms tmux-model last-session self-exit (phux-60s).
+            self.arm_self_exit();
         }
-
-        self.attached.insert(
-            client_id,
-            AttachedClient {
-                id: client_id,
-                session: session_id,
-                tx,
-                client_caps,
-                bootstrap_profile,
-                bootstrap_limits,
-                viewport: None,
-                viewport_seq: 0,
-            },
-        );
-        // Attaching arms tmux-model last-session self-exit (phux-60s).
-        self.arm_self_exit();
 
         // Subscribe to EVERY pane in the session, across all its windows —
         // not just the active one (phux-fysb.2). A multi-pane client renders
@@ -783,16 +788,19 @@ impl ServerState {
         // this clears the ledger regardless of that path running.
         self.satellite_leases
             .retain(|_, lease| lease.holder != client_id);
+        self.satellite_proxy_attaches
+            .retain(|(owner, _, _)| *owner != client_id);
         // Cancel every ATTACH_TERMINAL output pump this client owns
         // (phux-v45.7) so no task keeps streaming into a dead mailbox.
-        self.attach_terminal_pumps.retain(|(owner, _), token| {
+        self.attach_terminal_pumps.retain(|(owner, _), generation| {
             if *owner == client_id {
-                token.cancel();
+                generation.cancel.cancel();
                 false
             } else {
                 true
             }
         });
+        self.attach_terminal_next_bootstrap.remove(&client_id);
         for subs in self.terminal_subscribers.values_mut() {
             subs.retain(|c| *c != client_id);
         }
@@ -995,14 +1003,15 @@ impl ServerState {
         // Cancel the pane's ATTACH_TERMINAL pumps (phux-v45.7): the
         // broadcast channel is closing anyway, but the cancel keeps the
         // token map bounded and the teardown prompt.
-        self.attach_terminal_pumps.retain(|(_, terminal), token| {
-            if *terminal == pane {
-                token.cancel();
-                false
-            } else {
-                true
-            }
-        });
+        self.attach_terminal_pumps
+            .retain(|(_, terminal), generation| {
+                if *terminal == pane {
+                    generation.cancel.cancel();
+                    false
+                } else {
+                    true
+                }
+            });
         self.agent_asked.clear_terminal(pane);
         if let Some(wire) = self.terminal_wire_forward.remove(&pane) {
             self.terminal_wire_reverse.remove(&wire);
@@ -1361,31 +1370,92 @@ impl ServerState {
             .collect()
     }
 
-    /// Register (and return the token for) an `ATTACH_TERMINAL` output
-    /// pump for `(client, terminal)` (phux-v45.7). Returns `None` when a
-    /// pump is already live for the pair — the idempotent re-attach must
-    /// not double-stream.
-    pub fn register_attach_terminal_pump(
+    /// Record a successful satellite `ATTACH_TERMINAL` proxy registration.
+    pub fn register_satellite_proxy_attach(
+        &mut self,
+        client: ClientId,
+        host: phux_protocol::ids::SatelliteHost,
+        terminal: u32,
+    ) {
+        self.satellite_proxy_attaches
+            .insert((client, host, terminal));
+    }
+    /// Forget one satellite `ATTACH_TERMINAL` proxy registration.
+    pub fn unregister_satellite_proxy_attach(
+        &mut self,
+        client: ClientId,
+        host: &phux_protocol::ids::SatelliteHost,
+        terminal: u32,
+    ) {
+        self.satellite_proxy_attaches
+            .remove(&(client, host.clone(), terminal));
+    }
+
+    /// Whether `client` owns the exact satellite terminal proxy attachment.
+    #[must_use]
+    pub fn has_satellite_proxy_attach(
+        &self,
+        client: ClientId,
+        host: &phux_protocol::ids::SatelliteHost,
+        terminal: u32,
+    ) -> bool {
+        self.satellite_proxy_attaches
+            .contains(&(client, host.clone(), terminal))
+    }
+
+
+    /// Allocate one connection-global, never-reused bootstrap id for
+    /// `ATTACH_TERMINAL`. Exhaustion is reported instead of wrapping.
+    pub fn next_attach_terminal_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {
+        let next = self.attach_terminal_next_bootstrap.entry(client).or_insert(1);
+        let raw = *next;
+        *next = raw.checked_add(1)?;
+        BootstrapId::new(raw)
+    }
+
+    /// Replace a per-terminal attach generation, cancelling the old pump and
+    /// returning its identity/completion signal for ordered tombstoning.
+    pub fn replace_attach_terminal_pump(
         &mut self,
         client: ClientId,
         terminal: TerminalId,
-    ) -> Option<tokio_util::sync::CancellationToken> {
-        use std::collections::hash_map::Entry;
-        match self.attach_terminal_pumps.entry((client, terminal)) {
-            Entry::Occupied(_) => None,
-            Entry::Vacant(slot) => {
-                let token = tokio_util::sync::CancellationToken::new();
-                slot.insert(token.clone());
-                Some(token)
-            }
-        }
+        bootstrap_id: BootstrapId,
+    ) -> (
+        CancellationToken,
+        CancellationToken,
+        Arc<std::sync::atomic::AtomicU64>,
+        Option<(
+            BootstrapId,
+            CancellationToken,
+            Arc<std::sync::atomic::AtomicU64>,
+        )>,
+    ) {
+        let cancel = CancellationToken::new();
+        let done = CancellationToken::new();
+        let last_valid_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let prior = self
+            .attach_terminal_pumps
+            .insert(
+                (client, terminal),
+                AttachTerminalGeneration {
+                    cancel: cancel.clone(),
+                    done: done.clone(),
+                    last_valid_seq: Arc::clone(&last_valid_seq),
+                    bootstrap_id,
+                },
+            )
+            .map(|prior| {
+                prior.cancel.cancel();
+                (prior.bootstrap_id, prior.done, prior.last_valid_seq)
+            });
+        (cancel, done, last_valid_seq, prior)
     }
 
-    /// Cancel and forget the `ATTACH_TERMINAL` pump for `(client,
+    /// Cancel and forget the `ATTACH_TERMINAL` generation for `(client,
     /// terminal)`, if one is live. Idempotent.
     pub fn cancel_attach_terminal_pump(&mut self, client: ClientId, terminal: TerminalId) {
-        if let Some(token) = self.attach_terminal_pumps.remove(&(client, terminal)) {
-            token.cancel();
+        if let Some(generation) = self.attach_terminal_pumps.remove(&(client, terminal)) {
+            generation.cancel.cancel();
         }
     }
 

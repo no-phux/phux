@@ -894,10 +894,27 @@ async fn handle_attach_terminal(
     // handle_attach registration; a failure degrades to the broadcast
     // path, never fails the attach.
     let mut tick_managed = false;
+    let mut state_sync_bootstrap = None;
     let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
-    let bootstrap_id = crate::runtime::attach::initial_bootstrap_id();
-    // `stream_profile` was validated before registering the subscription, so
-    // an unknown future profile cannot expose a partial bootstrap generation.
+    let Some(bootstrap_id) =
+        state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
+    else {
+        return CommandResult::Error {
+            code: ErrorCode::ResourceExhausted,
+            message: "ATTACH_TERMINAL bootstrap id space exhausted".to_owned(),
+        };
+    };
+    // Subscribe before stopping the old pump so replacement never loses a
+    // byte emitted in the handoff window. The new receiver remains gated
+    // until this generation reaches READY.
+    let mut output_rx = handle.output.subscribe();
+    let (token, pump_done, generation_last_seq, prior) = state.with_mut(|s| {
+        s.replace_attach_terminal_pump(client_id, core, bootstrap_id)
+    });
+    let mut pump_done_guard = Some(pump_done.drop_guard());
+    if let Some((_, prior_done, _)) = &prior {
+        prior_done.cancelled().await;
+    }
     let (live_gate_tx, live_gate_rx) = tokio::sync::watch::channel(false);
     if let Some(wire_id) = terminal_id.local_id() {
         let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
@@ -914,6 +931,7 @@ async fn handle_attach_terminal(
                     phux_protocol::caps::OutputMode::StateSync
                 ),
                 live_gate: live_gate_rx.clone(),
+                state_sync_scrollback: None,
                 // phux-v45.8: `ATTACH_TERMINAL` over a reliable transport; the
                 // emit-once model is correct. Forwarded-leg loss-tolerance is
                 // the deferred activation (ADR-0042).
@@ -925,24 +943,35 @@ async fn handle_attach_terminal(
             && let Ok(Ok(outcome)) = attach_reply_rx.await
         {
             tick_managed = outcome.tick_managed;
+            state_sync_bootstrap = outcome.state_sync_bootstrap;
+        }
+    }
+    if tick_managed {
+        // No raw pump owns this generation; replacement may proceed without
+        // waiting on a task that will never exist.
+        drop(pump_done_guard.take());
+    }
+    if let Some((prior_bootstrap_id, _, prior_last_seq)) = prior {
+        if out_tx
+            .send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id: prior_bootstrap_id,
+                reason: phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
+                last_valid_seq: prior_last_seq.load(std::sync::atomic::Ordering::Acquire),
+            }))
+            .await
+            .is_err()
+        {
+            return CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: "consumer went away during ATTACH_TERMINAL replacement".to_owned(),
+            };
         }
     }
 
-    // Spawn the output pump — unless one is already live for this
-    // (client, terminal) pair (idempotent re-attach) or the actor's tick
-    // is this consumer's emitter (state-sync consumers, phux-3uv).
-    // Subscribing to the broadcast BEFORE the snapshot request and gating
-    // the pump's first forward on the snapshot send preserves the
-    // snapshot-then-deltas order (phux-7w1j).
-    let pump_token = state.with_mut(|s| s.register_attach_terminal_pump(client_id, core));
     let mut snapshot_gate: Option<oneshot::Sender<u64>> = None;
-    // When the actor's tick manages this consumer (state-sync mode) no
-    // pump is spawned, but the token stays registered so DETACH_TERMINAL
-    // bookkeeping is uniform (cancelling a pump-less token is a no-op).
-    if let Some(token) = pump_token
-        && !tick_managed
-    {
-        let mut output_rx = handle.output.subscribe();
+    if !tick_managed {
         let pump_out_tx = out_tx.clone();
         let pump_wire_terminal_id = terminal_id.clone();
         let pump_resize = handle.resize.clone();
@@ -950,10 +979,20 @@ async fn handle_attach_terminal(
         let pump_native_bootstrap = handle.native_bootstrap.clone();
         let (gate_tx, gate_rx) = oneshot::channel::<u64>();
         snapshot_gate = Some(gate_tx);
+        let pump_generation_last_seq = std::sync::Arc::clone(&generation_last_seq);
+        let pump_done_guard = pump_done_guard
+            .take()
+            .expect("non-tick-managed generation owns its completion guard");
         tokio::task::spawn_local(async move {
-            let Ok(mut published_cut) = gate_rx.await else {
-                return;
+            let _done_guard = pump_done_guard;
+            let mut published_cut = tokio::select! {
+                () = token.cancelled() => return,
+                result = gate_rx => {
+                    let Ok(cut) = result else { return };
+                    cut
+                }
             };
+            pump_generation_last_seq.store(published_cut, std::sync::atomic::Ordering::Release);
             let mut last_forwarded_seq = published_cut;
             let mut bootstrap_id = bootstrap_id;
             loop {
@@ -977,6 +1016,46 @@ async fn handle_attach_terminal(
                             break;
                         }
                         last_forwarded_seq = seq;
+                        pump_generation_last_seq
+                            .store(seq, std::sync::atomic::Ordering::Release);
+                    }
+                    Ok(PaneOutput::Control { owner, frame }) => {
+                        if owner != client_id.0 {
+                            continue;
+                        }
+                        let (targets_pump, ends_generation) = match &frame {
+                            FrameKind::BootstrapTombstone {
+                                terminal_id,
+                                stream_id: control_stream_id,
+                                bootstrap_id: control_bootstrap_id,
+                                ..
+                            } => (
+                                terminal_id == &pump_wire_terminal_id
+                                    && *control_stream_id == stream_id
+                                    && *control_bootstrap_id == bootstrap_id,
+                                true,
+                            ),
+                            FrameKind::HistoryTombstone {
+                                terminal_id,
+                                stream_id: control_stream_id,
+                                bootstrap_id: control_bootstrap_id,
+                                ..
+                            } => (
+                                terminal_id == &pump_wire_terminal_id
+                                    && *control_stream_id == stream_id
+                                    && *control_bootstrap_id == bootstrap_id,
+                                false,
+                            ),
+                            _ => (false, false),
+                        };
+                        if !targets_pump {
+                            continue;
+                        }
+                        if pump_out_tx.send(Outbound::Frame(frame)).await.is_err()
+                            || ends_generation
+                        {
+                            break;
+                        }
                     }
                     Ok(PaneOutput::Resync {
                         cols,
@@ -985,9 +1064,8 @@ async fn handle_attach_terminal(
                         reason,
                         base_seq,
                     }) => {
-                        if base_seq <= published_cut {
-                            continue;
-                        }
+                        // Resync is control, so an unchanged cut still
+                        // tombstones and replaces the published generation.
                         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                         let prior_bootstrap_id = bootstrap_id;
                         bootstrap_id = crate::runtime::attach::next_bootstrap_id(bootstrap_id);
@@ -1021,7 +1099,6 @@ async fn handle_attach_terminal(
                             let (reply_tx, reply_rx) = oneshot::channel();
                             if pump_native_bootstrap
                                 .send(crate::terminal_actor::NativeBootstrapRequest {
-                                    outbound: pump_out_tx.clone(),
                                     owner: client_id.0,
                                     terminal_id: pump_wire_terminal_id.clone(),
                                     stream_id,
@@ -1034,7 +1111,7 @@ async fn handle_attach_terminal(
                             {
                                 break;
                             }
-                            let Ok(Ok(cut)) = reply_rx.await else {
+                            let Ok(Ok(reply)) = reply_rx.await else {
                                 let _ = pump_out_tx
                                     .send(Outbound::Frame(FrameKind::Error {
                                         request_id: None,
@@ -1044,8 +1121,19 @@ async fn handle_attach_terminal(
                                     .await;
                                 break;
                             };
+                            let Ok(cut) =
+                                crate::runtime::attach::publish_native_bootstrap(
+                                    &pump_out_tx,
+                                    reply,
+                                )
+                                .await
+                            else {
+                                break;
+                            };
                             published_cut = cut;
                             last_forwarded_seq = cut;
+                            pump_generation_last_seq
+                                .store(cut, std::sync::atomic::Ordering::Release);
                             continue;
                         }
                         let payload =
@@ -1069,6 +1157,8 @@ async fn handle_attach_terminal(
                         }
                         published_cut = base_seq;
                         last_forwarded_seq = base_seq;
+                        pump_generation_last_seq
+                            .store(base_seq, std::sync::atomic::Ordering::Release);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!(
@@ -1089,6 +1179,43 @@ async fn handle_attach_terminal(
             }
         });
     }
+    if let Some(state_sync) = state_sync_bootstrap {
+        let snap = state_sync.snapshot;
+        let replay =
+            crate::runtime::attach::downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps);
+        let mut payloads = Vec::with_capacity(2);
+        if !snap.scrollback.is_empty() {
+            payloads.push(bytes::Bytes::from(snap.scrollback));
+        }
+        payloads.push(replay);
+        if crate::runtime::attach::send_synthesized_bootstrap(
+            out_tx,
+            terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            stream_profile,
+            bootstrap_limits,
+            snap.cols,
+            snap.rows,
+            state_sync.base_seq,
+            payloads,
+        )
+        .await
+        .is_err()
+        {
+            return CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: "consumer went away during state-sync ATTACH_TERMINAL".to_owned(),
+            };
+        }
+        generation_last_seq.store(
+            state_sync.base_seq,
+            std::sync::atomic::Ordering::Release,
+        );
+        let _ = live_gate_tx.send(true);
+        return CommandResult::Ok;
+    }
+
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     if matches!(
@@ -1101,7 +1228,6 @@ async fn handle_attach_terminal(
         if handle
             .native_bootstrap
             .send(crate::terminal_actor::NativeBootstrapRequest {
-                outbound: out_tx.clone(),
                 owner: client_id.0,
                 terminal_id: terminal_id.clone(),
                 stream_id,
@@ -1118,7 +1244,16 @@ async fn handle_attach_terminal(
             };
         }
         match reply_rx.await {
-            Ok(Ok(cut)) => {
+            Ok(Ok(reply)) => {
+                let Ok(cut) =
+                    crate::runtime::attach::publish_native_bootstrap(out_tx, reply).await
+                else {
+                    return CommandResult::Error {
+                        code: ErrorCode::InternalError,
+                        message: "consumer went away during native ATTACH_TERMINAL".to_owned(),
+                    };
+                };
+                generation_last_seq.store(cut, std::sync::atomic::Ordering::Release);
                 let _ = live_gate_tx.send(true);
                 if let Some(gate) = snapshot_gate {
                     let _ = gate.send(cut);
@@ -1191,6 +1326,7 @@ async fn handle_attach_terminal(
         };
     }
     let _ = live_gate_tx.send(true);
+    generation_last_seq.store(cut, std::sync::atomic::Ordering::Release);
     if let Some(gate) = snapshot_gate {
         let _ = gate.send(cut);
     }
@@ -1361,6 +1497,9 @@ async fn handle_satellite_command(
                 // terminal. Idempotent Ok, matching the local semantics.
                 if let Some(id) = terminal_id.local_id() {
                     relay.unsubscribe_terminal(client_id, id);
+                    state.with_mut(|s| {
+                        s.unregister_satellite_proxy_attach(client_id, host, id);
+                    });
                 }
                 CommandResult::Ok
             }
@@ -1433,6 +1572,14 @@ async fn handle_satellite_command(
             _ => relay.command(command.clone()).await,
         },
     };
+    if !matches!(result, CommandResult::Error { .. })
+        && let Command::AttachTerminal { terminal_id } = &command
+        && let Some(id) = terminal_id.local_id()
+    {
+        state.with_mut(|s| {
+            s.register_satellite_proxy_attach(client_id, host.clone(), id);
+        });
+    }
     debug!(
         ?client_id,
         request_id,
@@ -2788,6 +2935,24 @@ fn relay_satellite_input(
     input: TerminalInput,
     frame_label: &'static str,
 ) {
+    let Some((proxy_host, proxy_id)) = crate::hub::relay::satellite_route(wire_terminal_id) else {
+        warn!(
+            ?client_id,
+            ?wire_terminal_id,
+            frame_label,
+            "satellite-routed input has no relay route; dropping",
+        );
+        return;
+    };
+    if !state.with(|s| s.has_satellite_proxy_attach(client_id, &proxy_host, proxy_id)) {
+        warn!(
+            ?client_id,
+            ?wire_terminal_id,
+            frame_label,
+            "satellite-routed input requires this client's ATTACH_TERMINAL proxy; dropping",
+        );
+        return;
+    }
     // Hub-side lease gate (phux-v45.7, L1 §9.1): the satellite cannot
     // distinguish hub consumers (they share the link identity), so the
     // ADR-0033 "another client holds the wheel" drop must happen here.
@@ -2985,12 +3150,26 @@ pub(crate) fn handle_terminal_reply(
     const FRAME_LABEL: &str = "INPUT_TERMINAL_REPLY";
 
     if !wire_terminal_id.is_local() {
-        if let Some((host, id)) = crate::hub::relay::satellite_route(wire_terminal_id)
-            && state.with(|s| {
-                s.satellite_lease_holder(&host, id)
-                    .is_some_and(|holder| holder != client_id)
-            })
-        {
+        let Some((host, id)) = crate::hub::relay::satellite_route(wire_terminal_id) else {
+            warn!(
+                ?client_id,
+                ?wire_terminal_id,
+                "terminal reply carried an unroutable satellite terminal id; dropping",
+            );
+            return;
+        };
+        if !state.with(|s| s.has_satellite_proxy_attach(client_id, &host, id)) {
+            warn!(
+                ?client_id,
+                ?wire_terminal_id,
+                "satellite terminal reply requires this client's ATTACH_TERMINAL proxy; dropping",
+            );
+            return;
+        }
+        if state.with(|s| {
+            s.satellite_lease_holder(&host, id)
+                .is_some_and(|holder| holder != client_id)
+        }) {
             trace!(
                 ?client_id,
                 ?wire_terminal_id,

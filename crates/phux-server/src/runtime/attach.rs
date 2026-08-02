@@ -76,6 +76,20 @@ pub(crate) fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
         .expect("wrapped bootstrap generation is non-zero")
 }
 
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+pub(crate) async fn publish_native_bootstrap(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    reply: crate::terminal_actor::NativeBootstrapReply,
+) -> Result<u64, ()> {
+    for frame in reply.frames {
+        out_tx
+            .send(Outbound::Frame(frame))
+            .await
+            .map_err(|_| ())?;
+    }
+    Ok(reply.base_seq)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_synthesized_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
@@ -983,6 +997,44 @@ pub(crate) async fn handle_spawn_terminal(
                         }
                         last_forwarded_seq = seq;
                     }
+                    Ok(PaneOutput::Control { owner, frame }) => {
+                        if owner != client_id.0 {
+                            continue;
+                        }
+                        let (targets_pump, ends_generation) = match &frame {
+                            FrameKind::BootstrapTombstone {
+                                terminal_id,
+                                stream_id: control_stream_id,
+                                bootstrap_id: control_bootstrap_id,
+                                ..
+                            } => (
+                                terminal_id == &pump_wire_terminal_id
+                                    && *control_stream_id == stream_id
+                                    && *control_bootstrap_id == bootstrap_id,
+                                true,
+                            ),
+                            FrameKind::HistoryTombstone {
+                                terminal_id,
+                                stream_id: control_stream_id,
+                                bootstrap_id: control_bootstrap_id,
+                                ..
+                            } => (
+                                terminal_id == &pump_wire_terminal_id
+                                    && *control_stream_id == stream_id
+                                    && *control_bootstrap_id == bootstrap_id,
+                                false,
+                            ),
+                            _ => (false, false),
+                        };
+                        if !targets_pump {
+                            continue;
+                        }
+                        if pump_out_tx.send(Outbound::Frame(frame)).await.is_err()
+                            || ends_generation
+                        {
+                            break;
+                        }
+                    }
                     Ok(PaneOutput::Resync {
                         cols,
                         rows,
@@ -990,9 +1042,9 @@ pub(crate) async fn handle_spawn_terminal(
                         reason,
                         base_seq,
                     }) => {
-                        if base_seq <= published_cut {
-                            continue;
-                        }
+                        // Resync is a control event, not replayable live data:
+                        // even an unchanged cut (for example resize directly
+                        // after READY) invalidates and replaces the generation.
                         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                         let prior_bootstrap_id = bootstrap_id;
                         bootstrap_id = next_bootstrap_id(bootstrap_id);
@@ -1026,7 +1078,6 @@ pub(crate) async fn handle_spawn_terminal(
                             let (reply_tx, reply_rx) = oneshot::channel();
                             if pump_native_bootstrap
                                 .send(crate::terminal_actor::NativeBootstrapRequest {
-                                    outbound: pump_out_tx.clone(),
                                     owner: client_id.0,
                                     terminal_id: pump_wire_terminal_id.clone(),
                                     stream_id,
@@ -1039,7 +1090,7 @@ pub(crate) async fn handle_spawn_terminal(
                             {
                                 break;
                             }
-                            let Ok(Ok(cut)) = reply_rx.await else {
+                            let Ok(Ok(reply)) = reply_rx.await else {
                                 let _ = pump_out_tx
                                     .send(Outbound::Frame(FrameKind::Error {
                                         request_id: None,
@@ -1047,6 +1098,9 @@ pub(crate) async fn handle_spawn_terminal(
                                         message: "native checkpoint resync failed".to_owned(),
                                     }))
                                     .await;
+                                break;
+                            };
+                            let Ok(cut) = publish_native_bootstrap(&pump_out_tx, reply).await else {
                                 break;
                             };
                             published_cut = cut;
@@ -1103,7 +1157,6 @@ pub(crate) async fn handle_spawn_terminal(
             let sent = handle
                 .native_bootstrap
                 .send(crate::terminal_actor::NativeBootstrapRequest {
-                    outbound: out_tx.clone(),
                     owner: client_id.0,
                     terminal_id: wire_terminal_id.clone(),
                     stream_id,
@@ -1115,7 +1168,7 @@ pub(crate) async fn handle_spawn_terminal(
                 .is_ok();
             let cut = if sent {
                 match reply_rx.await {
-                    Ok(Ok(cut)) => Some(cut),
+                    Ok(Ok(reply)) => publish_native_bootstrap(out_tx, reply).await.ok(),
                     Ok(Err(_)) | Err(_) => None,
                 }
             } else {
@@ -1456,6 +1509,7 @@ pub(crate) async fn handle_attach(
         // pump starts streaming deltas; a dropped reply or actor-gone is
         // logged and we fall back to the broadcast path.
         let mut tick_managed = false;
+        let mut state_sync_bootstrap = None;
         if let Some(wire_id) = wire_terminal_id.local_id() {
             let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
             if handle
@@ -1474,6 +1528,7 @@ pub(crate) async fn handle_attach(
                         client_caps.output_mode,
                         phux_protocol::caps::OutputMode::StateSync
                     ),
+                    state_sync_scrollback: scrollback_req,
                     // phux-v45.8: a directly-attached consumer rides a reliable,
                     // ordered transport (UDS / SSH stdio / WebSocket / QUIC
                     // stream), so the emit-once model is correct and cheapest —
@@ -1493,6 +1548,7 @@ pub(crate) async fn handle_attach(
                 match attach_reply_rx.await {
                     Ok(Ok(outcome)) => {
                         tick_managed = outcome.tick_managed;
+                        state_sync_bootstrap = outcome.state_sync_bootstrap;
                         trace!(
                             ?terminal_id,
                             tick_managed, "per-consumer state-sync entry registered",
@@ -1568,6 +1624,44 @@ pub(crate) async fn handle_attach(
                             }
                             last_forwarded_seq = seq;
                         }
+                        Ok(PaneOutput::Control { owner, frame }) => {
+                            if owner != client_id.0 {
+                                continue;
+                            }
+                            let (targets_pump, ends_generation) = match &frame {
+                                FrameKind::BootstrapTombstone {
+                                    terminal_id,
+                                    stream_id: control_stream_id,
+                                    bootstrap_id: control_bootstrap_id,
+                                    ..
+                                } => (
+                                    terminal_id == &pump_wire_terminal_id
+                                        && *control_stream_id == stream_id
+                                        && *control_bootstrap_id == bootstrap_id,
+                                    true,
+                                ),
+                                FrameKind::HistoryTombstone {
+                                    terminal_id,
+                                    stream_id: control_stream_id,
+                                    bootstrap_id: control_bootstrap_id,
+                                    ..
+                                } => (
+                                    terminal_id == &pump_wire_terminal_id
+                                        && *control_stream_id == stream_id
+                                        && *control_bootstrap_id == bootstrap_id,
+                                    false,
+                                ),
+                                _ => (false, false),
+                            };
+                            if !targets_pump {
+                                continue;
+                            }
+                            if pump_out_tx.send(Outbound::Frame(frame)).await.is_err()
+                                || ends_generation
+                            {
+                                break;
+                            }
+                        }
                         Ok(PaneOutput::Resync {
                             cols,
                             rows,
@@ -1575,9 +1669,8 @@ pub(crate) async fn handle_attach(
                             reason,
                             base_seq,
                         }) => {
-                            if base_seq <= published_cut {
-                                continue;
-                            }
+                            // Resync is control, so an unchanged cut still
+                            // tombstones and replaces the published generation.
                             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                             let prior_bootstrap_id = bootstrap_id;
                             bootstrap_id = next_bootstrap_id(bootstrap_id);
@@ -1611,7 +1704,6 @@ pub(crate) async fn handle_attach(
                                 let (reply_tx, reply_rx) = oneshot::channel();
                                 if pump_native_bootstrap
                                     .send(crate::terminal_actor::NativeBootstrapRequest {
-                                        outbound: pump_out_tx.clone(),
                                         owner: client_id.0,
                                         terminal_id: pump_wire_terminal_id.clone(),
                                         stream_id,
@@ -1624,7 +1716,7 @@ pub(crate) async fn handle_attach(
                                 {
                                     break;
                                 }
-                                let Ok(Ok(cut)) = reply_rx.await else {
+                                let Ok(Ok(reply)) = reply_rx.await else {
                                     let _ = pump_out_tx
                                         .send(Outbound::Frame(FrameKind::Error {
                                             request_id: None,
@@ -1632,6 +1724,11 @@ pub(crate) async fn handle_attach(
                                             message: "native checkpoint resync failed".to_owned(),
                                         }))
                                         .await;
+                                    break;
+                                };
+                                let Ok(cut) =
+                                    publish_native_bootstrap(&pump_out_tx, reply).await
+                                else {
                                     break;
                                 };
                                 published_cut = cut;
@@ -1678,6 +1775,33 @@ pub(crate) async fn handle_attach(
                 }
             });
         }
+        if let Some(state_sync) = state_sync_bootstrap {
+            let snap = state_sync.snapshot;
+            let replay = downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps);
+            let mut payloads = Vec::with_capacity(2);
+            if !snap.scrollback.is_empty() {
+                payloads.push(bytes::Bytes::from(snap.scrollback));
+            }
+            payloads.push(replay);
+            if send_synthesized_bootstrap(
+                out_tx,
+                wire_terminal_id,
+                stream_id,
+                bootstrap_id,
+                stream_profile,
+                bootstrap_limits,
+                snap.cols,
+                snap.rows,
+                state_sync.base_seq,
+                payloads,
+            )
+            .await
+            .is_err()
+            {
+                return;
+            }
+            continue;
+        }
 
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if matches!(
@@ -1690,7 +1814,6 @@ pub(crate) async fn handle_attach(
             if handle
                 .native_bootstrap
                 .send(crate::terminal_actor::NativeBootstrapRequest {
-                    outbound: out_tx.clone(),
                     owner: client_id.0,
                     terminal_id: wire_terminal_id.clone(),
                     stream_id,
@@ -1762,7 +1885,10 @@ pub(crate) async fn handle_attach(
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     while let Some((terminal_id, wire_terminal_id, reply)) = native_pending.next().await {
         match reply {
-            Ok(Ok(cut)) => {
+            Ok(Ok(reply)) => {
+                let Ok(cut) = publish_native_bootstrap(out_tx, reply).await else {
+                    return;
+                };
                 if let Some((_, _, gate_cut)) = snapshot_gates
                     .iter_mut()
                     .find(|(tid, _, _)| *tid == terminal_id)
