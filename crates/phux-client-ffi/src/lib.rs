@@ -1090,6 +1090,7 @@ pub unsafe extern "C" fn phux_client_terminal_resize(
             cols,
             rows,
         })?;
+        Ok(())
     })
 }
 
@@ -1129,6 +1130,7 @@ pub unsafe extern "C" fn phux_client_viewport_resize(
             viewport: ViewportInfo::new(cols, rows)
                 .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1)),
         })?;
+        Ok(())
     })
 }
 
