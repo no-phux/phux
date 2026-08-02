@@ -894,6 +894,48 @@ mod tests {
     }
 
     #[test]
+    fn same_cursor_pages_require_strict_nonzero_sequence() {
+        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        let first = cache
+            .accept_page(cursor(1), 1, Some(cursor(1)), 1, 1, b"one")
+            .unwrap();
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        assert_eq!(
+            cache.check_page(&cursor(1), 3, Some(&cursor(1)), 1, b"two"),
+            Err(HistoryCacheError::SequenceGap {
+                expected: 2,
+                actual: 3,
+            })
+        );
+        assert_eq!(
+            cache.check_page(&cursor(1), 0, None, 1, b"two"),
+            Err(HistoryCacheError::SequenceGap {
+                expected: 2,
+                actual: 0,
+            })
+        );
+        cache.accept_page(cursor(1), 2, None, 1, 1, b"two").unwrap();
+        assert!(cache.payload(&first).is_some());
+        assert_eq!(cache.status().next_page_seq, None);
+    }
+
+    #[test]
+    fn declared_page_rows_are_bounded_before_import() {
+        let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
+        assert_eq!(
+            cache.check_page(&cursor(1), 1, None, 65, b"opaque"),
+            Err(HistoryCacheError::ProjectionTooLarge {
+                required: 65,
+                budget: 8,
+            })
+        );
+        assert_eq!(cache.status().next_cursor, Some(cursor(1)));
+        assert_eq!(cache.status().state, HistoryLoadState::Loading);
+    }
+
+    #[test]
     fn oversized_page_is_rejected_without_advancing_cursor() {
         let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));

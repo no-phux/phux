@@ -7,9 +7,9 @@ use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId, TerminalId};
 
 use super::{
-    EffectBuffer, InputBlockReason, InputEligibility, KernelAction, KernelDamage, KernelDamageKind,
-    KernelEffect, KernelError, KernelInput, KernelJob, KernelSend, KernelStatus, SessionKernel,
-    TombstoneRecord,
+    EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason, InputBlockReason,
+    InputEligibility, KernelAction, KernelDamage, KernelDamageKind, KernelEffect, KernelError,
+    KernelInput, KernelJob, KernelSend, KernelStatus, SessionKernel, TombstoneRecord,
 };
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
@@ -952,6 +952,94 @@ fn history_engine_failure_invalidates_only_history_and_live_output_continues() {
             .transcript
             .ends_with(b"live-after-history-error")
     );
+}
+
+#[test]
+fn history_rejection_and_tombstone_never_retire_live_generation() {
+    let terminal_id = terminal(32);
+    let stream_id = stream(132);
+    let bootstrap_id = bootstrap(232);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    publish_direct_with_history(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        80,
+        b"cursor-0",
+        &mut effects,
+    );
+
+    effects.clear();
+    kernel
+        .update(
+            KernelInput::HistoryRejected {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor: b"cursor-0",
+                reason: HistoryRejectionReason::TooSmall,
+                required_bytes: u32::MAX,
+                required_rows: 1,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Status(KernelStatus::History { status, .. })
+            if status.state == HistoryLoadState::Idle
+                && status.next_cursor.as_ref().is_some_and(|cursor| cursor.as_bytes() == b"cursor-0")
+    )));
+    assert!(effects.as_slice().iter().all(|effect| !matches!(
+        effect,
+        KernelEffect::Send(KernelSend::HistoryRequest { .. })
+    )));
+
+    effects.clear();
+    kernel
+        .update(
+            KernelInput::HistoryTombstone {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor: b"cursor-0",
+                reason: HistoryUnavailableReason::Pruned,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(
+        kernel
+            .tombstone(&terminal_id, stream_id, bootstrap_id)
+            .is_none()
+    );
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Status(KernelStatus::HistoryUnavailable {
+            reason: HistoryUnavailableReason::Pruned,
+            ..
+        })
+    )));
+    assert_eq!(
+        kernel.history_cache(&terminal_id).unwrap().status().state,
+        HistoryLoadState::Pruned
+    );
+
+    kernel
+        .update(
+            KernelInput::TerminalOutput {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq: 81,
+                payload: b"live-after-prune",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert_eq!(kernel.published(&terminal_id).unwrap().last_seq(), 81);
 }
 
 #[test]
