@@ -109,6 +109,7 @@ phux give
 phux insert-pane
 phux kill
 phux launch
+phux logs
 phux ls
 phux move-pane
 phux new

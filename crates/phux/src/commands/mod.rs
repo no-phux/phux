@@ -125,6 +125,7 @@ pub(crate) mod doctor;
 pub(crate) mod enroll;
 pub(crate) mod kill;
 pub(crate) mod launch;
+pub(crate) mod logs;
 pub(crate) mod ls;
 pub(crate) mod new;
 pub(crate) mod overlay;
@@ -1424,6 +1425,44 @@ pub(crate) enum Command {
     /// stale — phux stores no worktree state and the server knows no git.
     #[command(subcommand)]
     Worktree(WorktreeAction),
+
+    /// Show where phux's logs live, or tail one of them.
+    ///
+    /// Bare `phux logs` prints the inventory: the canonical server log
+    /// (every spawn path writes it), the per-pid client logs, and the state
+    /// dir that holds them — with existence, size, and age, so a fresh
+    /// machine reads "not created yet" instead of an error. `--server`
+    /// tails the server log and `--client` the newest client log (`--pid`
+    /// picks a specific one); `-f` follows and `-n` sets the tail length.
+    /// `--json` emits the inventory as a stable document.
+    #[command(group = clap::ArgGroup::new("which").args(["server", "client"]).multiple(false))]
+    Logs {
+        /// Tail the canonical server log.
+        #[arg(long)]
+        server: bool,
+
+        /// Tail the newest per-pid client log (or the one `--pid` names).
+        #[arg(long)]
+        client: bool,
+
+        /// With --client: the client pid whose log to tail, instead of the
+        /// newest.
+        #[arg(long, value_name = "PID", requires = "client")]
+        pid: Option<u32>,
+
+        /// Follow the tailed log as it grows (needs --server or --client).
+        #[arg(short, long, requires = "which")]
+        follow: bool,
+
+        /// How many trailing lines to show (needs --server or --client).
+        #[arg(short = 'n', long, default_value_t = 200, requires = "which")]
+        lines: u32,
+
+        /// Emit the path inventory as a stable JSON document instead of
+        /// human text. Inventory only — it cannot combine with a tail.
+        #[arg(long, conflicts_with_all = ["server", "client", "pid", "follow", "lines"])]
+        json: bool,
+    },
 }
 
 /// `phux remote <action>` — CRUD over the client-side server registry.

@@ -705,28 +705,17 @@ pub(crate) fn run_status() -> ExitCode {
 /// also captures to the journal, but the unit appends to the same file, so
 /// one implementation covers both. The auto-spawn path redirects its
 /// daemon's stderr to the same canonical file (phux-i0e8.5.1), so this
-/// verb works even when no service unit was ever installed.
+/// verb works even when no service unit was ever installed. Delegates to
+/// the shared tail in `logs` — the same code path as `phux logs --server`,
+/// so the two verbs can never show a log differently.
 pub(crate) fn run_logs(follow: bool, lines: u32) -> ExitCode {
     let log = phux_server::telemetry::server_log_path();
-    if !log.exists() {
-        eprintln!("phux service: no log at {} yet.", log.display());
-        return ExitCode::FAILURE;
-    }
-
-    let mut command = std::process::Command::new("tail");
-    command.arg("-n").arg(lines.to_string());
-    if follow {
-        command.arg("-f");
-    }
-    command.arg(&log);
-
-    match command.status() {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(_) | Err(_) => {
-            eprintln!("phux service: could not read {}", log.display());
-            ExitCode::FAILURE
-        }
-    }
+    let missing = format!(
+        "phux service: no log at {} yet.\n\
+         A server writes it when it next starts; `phux logs` lists every log path.",
+        log.display()
+    );
+    super::logs::tail_file(&log, follow, lines, &missing)
 }
 
 /// `phux service prune-logs` — delete the per-pid client logs.
@@ -737,7 +726,7 @@ pub(crate) fn run_logs(follow: bool, lines: u32) -> ExitCode {
 /// operator is mid-investigation on is not phux's to remove.
 pub(crate) fn run_prune_logs(dry_run: bool) -> ExitCode {
     let dir = phux_server::telemetry::state_dir();
-    let entries = match client_log_paths(&dir) {
+    let entries = match super::logs::client_log_paths(&dir) {
         Ok(entries) => entries,
         Err(err) => {
             eprintln!("phux service: could not read {}: {err}", dir.display());
@@ -776,39 +765,11 @@ pub(crate) fn run_prune_logs(dry_run: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Every `client-*.log` in the state dir.
-fn client_log_paths(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut paths = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if is_client_log(&path) {
-            paths.push(path);
-        }
-    }
-    Ok(paths)
-}
-
-/// Whether a path is one of the per-pid client logs, by the naming
-/// convention `telemetry::default_client_log_path` writes.
-fn is_client_log(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            // Matching exactly the name `telemetry::default_client_log_path`
-            // writes — phux's own output, never operator input, so a
-            // case-insensitive match would only widen this to files phux
-            // did not create.
-            name.starts_with("client-")
-                && std::path::Path::new(name)
-                    .extension()
-                    .is_some_and(|ext| ext == "log")
-        })
-}
-
 /// How many client logs are sitting in the state dir, for the install
 /// report. Errors are not worth surfacing here — the count is advisory.
+/// The scan itself lives in `logs`, beside the verb that reports them.
 fn count_client_logs() -> std::io::Result<usize> {
-    client_log_paths(&phux_server::telemetry::state_dir()).map(|paths| paths.len())
+    super::logs::client_log_paths(&phux_server::telemetry::state_dir()).map(|paths| paths.len())
 }
 
 /// Escape the five XML metacharacters. A plist value is arbitrary operator

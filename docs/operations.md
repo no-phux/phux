@@ -60,6 +60,13 @@ Both fmt layers emit span-close timing (`FmtSpan::CLOSE`), so any `#[instrument]
 | `PHUX_LOG=<path>` | Write logs to `<path>` via non-blocking file writer. Server tees to this file *in addition to* stderr; client writes here *instead of* its per-pid default. Parent directory created if missing. |
 | `PHUX_LOG_FORMAT=text\|json` | `text` (default): human single-line layer. `json`: one JSON object per line for `jq`/`grep`. Applies to both stderr and file sinks. |
 
+The **canonical server log** is `$XDG_STATE_HOME/phux/server.log` (falls back
+to `$HOME/.local/state/phux/`). Every spawn path writes the same file: the
+auto-spawned daemon redirects its stderr there, and the `phux service` unit
+points its log capture at it. Both resolve the path through
+`phux_server::telemetry::server_log_path`, so the writers and every reader
+(`phux logs`, `phux service logs`) can never disagree about where it is.
+
 The **client default log path** (when `PHUX_LOG` is unset) is `$XDG_STATE_HOME/phux/client-<pid>.log` (falls back to `$HOME/.local/state/phux/`). The pid scope keeps concurrent clients from interleaving. Level defaults to `phux=info,warn`, so crashes and warnings are always captured without flooding the file.
 
 The non-blocking file writer offloads I/O to a background thread; its `WorkerGuard` is held for the lifetime of `main` and flushes on exit.
@@ -87,10 +94,23 @@ PHUX_LOG=/tmp/phux.jsonl PHUX_LOG_FORMAT=json RUST_LOG=phux=debug \
 
 Two spans carry most of the signal. On the server, `synthesize_against_reference` (fields `changed_row_count`, `out_bytes`) is the per-tick CPU cost of diffing engine state for one consumer. On the client, `handle_server_frame` (grep `kind=terminal_output`) is the per-frame apply-and-paint cost; its children `vt_apply` (libghostty parse) and `paint_trigger` (render) let you attribute a client stall to parse versus paint by comparing their `time.busy`. Narrow a JSON capture to timed events with `jq -c 'select(.fields.message=="close")'`. Finer per-PTY-chunk and per-frame-emit detail is at **trace**; a wedged or leaked consumer shows as `consumer mailbox full` / `consumer mailbox closed` at debug.
 
-There is no `phux server status`, Prometheus/OpenTelemetry exporter, runtime
-per-target log-level control, or `phux logs` discovery verb today. Use `phux
-ls --json` for the published session/pane view and the environment-controlled
-tracing sinks above for diagnosis. [ADR-0028](../ADR/0028-runtime-log-control.md)
+### Finding and tailing the logs
+
+`phux logs` is the discovery verb. Bare invocation prints the inventory —
+the canonical server log, the per-pid client logs (newest first), and the
+state dir that holds them — with existence, size, and age; a file that
+does not exist yet is reported as "not created yet", never as an error.
+`phux logs --server` tails the server log and `phux logs --client` the
+newest client log (`--pid PID` picks a specific one); `-f` follows and
+`-n NUM` sets the tail length. `phux logs --json` emits the inventory as
+a stable `schema_version` 1 document on stdout. `phux service logs` is
+the same tail over the same server log, kept for symmetry with the other
+`service` verbs.
+
+There is still no `phux server status`, Prometheus/OpenTelemetry exporter,
+or runtime per-target log-level control. Use `phux ls --json` for the
+published session/pane view and the environment-controlled tracing sinks
+above for diagnosis. [ADR-0028](../ADR/0028-runtime-log-control.md)
 records the remaining operator surface.
 
 ## Agent-state detection
