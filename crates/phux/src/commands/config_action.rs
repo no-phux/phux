@@ -83,12 +83,6 @@ pub(crate) enum ConfigAction {
         /// Emit a stable JSON document instead of human text.
         #[arg(long)]
         json: bool,
-
-        /// Server socket to read live agent state from. Defaults to the
-        /// per-user socket; no reachable server means declared manifest
-        /// values are reported.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Re-read the layered config and apply it to running clients in
@@ -102,12 +96,7 @@ pub(crate) enum ConfigAction {
     /// fails keep their previous config. Deliberately explicit — the
     /// config file is never watched (see docs/consumers/tui.md section
     /// 4.3).
-    Reload {
-        /// UDS path of the server to signal (default: the per-user
-        /// socket, or `$PHUX_SOCKET`).
-        #[arg(long, value_name = "PATH")]
-        socket: Option<std::path::PathBuf>,
-    },
+    Reload,
 
     /// Execute one action declared by a configured plugin manifest.
     Run {

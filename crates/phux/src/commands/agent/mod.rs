@@ -30,24 +30,18 @@ pub(crate) enum AgentAction {
     List {
         #[arg(long)]
         json: bool,
-        #[arg(long)]
-        socket: Option<PathBuf>,
     },
     #[command(about = "Show inferred state for one pane")]
     Show {
         target: Option<String>,
         #[arg(long)]
         json: bool,
-        #[arg(long)]
-        socket: Option<PathBuf>,
     },
     #[command(about = "Explain the evidence behind one pane's state")]
     Explain {
         target: Option<String>,
         #[arg(long)]
         json: bool,
-        #[arg(long)]
-        socket: Option<PathBuf>,
     },
     #[command(about = "Declare a pane's agent identity (writes the phux.agent/v1 L3 record)")]
     Set {
@@ -67,15 +61,9 @@ pub(crate) enum AgentAction {
         /// Free-form association label (fleet/job name).
         #[arg(long)]
         session: Option<String>,
-        #[arg(long)]
-        socket: Option<PathBuf>,
     },
     #[command(about = "Clear a pane's declared agent identity (deletes phux.agent/v1)")]
-    Clear {
-        target: Option<String>,
-        #[arg(long)]
-        socket: Option<PathBuf>,
-    },
+    Clear { target: Option<String> },
     #[command(about = "Make plain `claude` launch inside phux and publish lifecycle state")]
     InstallClaude {
         /// Shell rc file to activate (auto-detected from SHELL).
@@ -89,19 +77,12 @@ pub(crate) enum AgentAction {
     UninstallClaude,
 }
 
-pub(crate) fn run_agent(action: &AgentAction) -> ExitCode {
+pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
-        AgentAction::List { json, socket } => run_agent_list(*json, socket.clone()),
-        AgentAction::Show {
-            target: _,
-            json: _,
-            socket: _,
+        AgentAction::List { json } => run_agent_list(*json, socket),
+        AgentAction::Show { target: _, json: _ } | AgentAction::Explain { target: _, json: _ } => {
+            run_agent_one(action, socket)
         }
-        | AgentAction::Explain {
-            target: _,
-            json: _,
-            socket: _,
-        } => run_agent_one(action),
         AgentAction::Set {
             target,
             name,
@@ -109,7 +90,6 @@ pub(crate) fn run_agent(action: &AgentAction) -> ExitCode {
             state,
             attention,
             session,
-            socket,
         } => run_agent_set(
             target.as_deref(),
             name,
@@ -117,9 +97,9 @@ pub(crate) fn run_agent(action: &AgentAction) -> ExitCode {
             state.as_deref(),
             attention.as_deref(),
             session.as_deref(),
-            socket.clone(),
+            socket,
         ),
-        AgentAction::Clear { target, socket } => run_agent_clear(target.as_deref(), socket.clone()),
+        AgentAction::Clear { target } => run_agent_clear(target.as_deref(), socket),
         AgentAction::InstallClaude { shell, real } => {
             shim::run_install_claude(shell.as_deref(), real.as_deref())
         }
@@ -154,18 +134,10 @@ fn run_agent_list(json: bool, socket: Option<PathBuf>) -> ExitCode {
     })
 }
 
-fn run_agent_one(action: &AgentAction) -> ExitCode {
-    let (target, json, socket, view) = match action {
-        AgentAction::Show {
-            target,
-            json,
-            socket,
-        } => (target.as_deref(), *json, socket.clone(), AgentView::Show),
-        AgentAction::Explain {
-            target,
-            json,
-            socket,
-        } => (target.as_deref(), *json, socket.clone(), AgentView::Explain),
+fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
+    let (target, json, view) = match action {
+        AgentAction::Show { target, json } => (target.as_deref(), *json, AgentView::Show),
+        AgentAction::Explain { target, json } => (target.as_deref(), *json, AgentView::Explain),
         AgentAction::List { .. }
         | AgentAction::Set { .. }
         | AgentAction::Clear { .. }

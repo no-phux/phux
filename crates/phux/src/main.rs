@@ -57,13 +57,12 @@ mod help_inventory;
 #[derive(Debug, Parser)]
 #[command(
     version,
-    // The root command's only args are the `--rec` pair, and they belong to
-    // the naked `phux` attach alone. Letting clap reject `phux --rec X <verb>`
-    // outright is what makes deleting the old hand-rolled scope check safe:
-    // `phux attach --rec X` has its own copy of the flag, and everything else
-    // wants `phux rec <target> -o X`, so a root `--rec` in front of a verb is
-    // always a mistake and now says so instead of being silently dropped.
-    args_conflicts_with_subcommands = true,
+    // NOTE: the root deliberately does NOT set `args_conflicts_with_subcommands`.
+    // That setting would also refuse `phux --socket X ls` — clap 4.5 rejects
+    // ANY matched root arg followed by a subcommand, with no exemption for
+    // `global = true` args (clap_builder parser.rs, subcommand_conflict). The
+    // `--rec`-belongs-to-naked-`phux` rule that setting used to enforce is a
+    // post-parse check instead: see `root_rec_before_verb` below (ADR-0065).
     about = "A terminal multiplexer you can drive by hand or script.",
     long_about = "phux — a libghostty-backed terminal multiplexer and control plane.\n\n\
         Run `phux` with no arguments to attach to your session (auto-starting a\n\
@@ -149,9 +148,82 @@ struct Cli {
     #[command(flatten)]
     rec: commands::RecOpts,
 
+    /// Override the UDS path of the server to dial. Defaults to
+    /// `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or
+    /// `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set).
+    // ONE declaration, `global = true`, replacing 36 hand-copied per-verb
+    // fields (ADR-0065): `phux --socket X ls` and `phux ls --socket X` are
+    // the same invocation. Verbs that never dial a server refuse a provided
+    // `--socket` with a teaching error instead of silently ignoring it —
+    // see `commands::socketless_verb`.
+    #[arg(long, global = true, value_name = "PATH")]
+    socket: Option<std::path::PathBuf>,
+
     /// Subcommand. Defaults to attaching to the last session if omitted.
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+/// The teaching error for a root `--rec` in front of a verb.
+///
+/// The naked `phux` attach owns the root `--rec` pair; `phux attach` carries
+/// its own copy, and every other verb records through `phux rec`. The root
+/// used to enforce this with `args_conflicts_with_subcommands`, which had to
+/// go when `--socket` became a root global (clap rejects a matched root arg
+/// before ANY subcommand, global or not) — so the scope rule is this explicit
+/// post-parse check now, same refusal, better words.
+const fn root_rec_before_verb(cli: &Cli) -> Option<&'static str> {
+    if cli.command.is_some() && (cli.rec.rec.is_some() || cli.rec.rec_format.is_some()) {
+        Some(
+            "phux: a root `--rec` belongs to the naked `phux` attach alone; \
+             use `phux attach --rec PATH` to record an attach, or \
+             `phux rec TARGET -o PATH` for headless capture",
+        )
+    } else {
+        None
+    }
+}
+
+/// Whether any verb in `cmd`'s subtree declares a long flag named `long`.
+fn any_verb_has_long(cmd: &clap::Command, long: &str) -> bool {
+    cmd.get_subcommands().any(|sub| {
+        sub.get_arguments().any(|arg| arg.get_long() == Some(long)) || any_verb_has_long(sub, long)
+    })
+}
+
+/// If `err` is clap refusing an unknown root flag that actually exists on
+/// one of the verbs (`phux --json ls`), name the flag so the error can teach
+/// "place it after the verb" instead of leaving a dead end.
+fn misplaced_scoped_flag(err: &clap::Error) -> Option<String> {
+    use clap::CommandFactory;
+
+    if err.kind() != clap::error::ErrorKind::UnknownArgument {
+        return None;
+    }
+    let invalid = err
+        .get(clap::error::ContextKind::InvalidArg)
+        .map(std::string::ToString::to_string)?;
+    // `--flag=value` reports the whole token; the flag alone is the id.
+    let flag = invalid.split('=').next().unwrap_or(&invalid);
+    let long = flag.strip_prefix("--")?;
+    any_verb_has_long(&Cli::command(), long).then(|| flag.to_owned())
+}
+
+/// Print a clap parse failure, appending the scoped-flag teaching hint when
+/// it applies, and map it to the exit code clap itself would use (0 for
+/// `--help`/`--version`, 2 for a usage error).
+fn report_parse_error(err: &clap::Error) -> ExitCode {
+    let _ = err.print();
+    if let Some(flag) = misplaced_scoped_flag(err) {
+        eprintln!(
+            "hint: `{flag}` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> {flag} ...`"
+        );
+    }
+    if err.use_stderr() {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// Resolve `--rec` into a full recording plan, or report why it cannot be.
@@ -207,7 +279,27 @@ fn main() -> ExitCode {
     #[cfg(feature = "dhat-heap")]
     let _dhat = dhat::Profiler::new_heap();
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => return report_parse_error(&err),
+    };
+
+    // Usage errors caught after clap: the `--rec` scope rule (see
+    // `root_rec_before_verb`) and a `--socket` handed to a verb that never
+    // dials a server. Both are refusals with the remedy named, and both use
+    // clap's usage-error exit code.
+    if let Some(message) = root_rec_before_verb(&cli) {
+        eprintln!("{message}");
+        return ExitCode::from(2);
+    }
+    if cli.socket.is_some()
+        && let Some(verb) = cli.command.as_ref().and_then(commands::socketless_verb)
+    {
+        eprintln!(
+            "phux: `phux {verb}` never dials a server, so --socket has no effect here; drop it"
+        );
+        return ExitCode::from(2);
+    }
 
     // Install the process-global tracing subscriber once, before any
     // runtime spins up. Without this, every `tracing::{info,debug,...}`
@@ -245,10 +337,17 @@ fn main() -> ExitCode {
         }
     };
 
-    match cli.command {
+    // `command` is moved into the match; `socket` is the root global every
+    // arm shares (each arm consumes it at most once, and only one arm runs).
+    let Cli {
+        rec: root_rec,
+        socket,
+        command,
+    } = cli;
+
+    match command {
         Some(Command::Attach {
             session,
-            socket,
             quic,
             ws,
             token,
@@ -263,6 +362,17 @@ fn main() -> ExitCode {
                 Err(code) => return code,
             };
             let rec_spec = rec_spec.as_ref();
+            // `--socket` is a local UDS path; the remote transports do not
+            // read it. The old per-verb clap conflict could not survive the
+            // move to a root global (clap validates conflicts per parser, so
+            // `phux --socket X attach --quic Y` would slip through), so the
+            // refusal is explicit here and covers both flag positions.
+            if socket.is_some() && (quic.is_some() || ws.is_some()) {
+                eprintln!(
+                    "phux: --socket dials a local UDS and cannot combine with --quic/--ws; drop one"
+                );
+                return ExitCode::from(2);
+            }
             match (quic, ws) {
                 (Some(addr), None) => commands::attach::run_attach_quic(
                     session,
@@ -289,7 +399,6 @@ fn main() -> ExitCode {
         }
         Some(Command::Server {
             session,
-            socket,
             listen,
             quic,
             webtransport,
@@ -312,12 +421,11 @@ fn main() -> ExitCode {
             seed_command.as_deref(),
             resume,
         ),
-        Some(Command::Ls { json, socket }) => commands::ls::run_ls(json, socket),
+        Some(Command::Ls { json }) => commands::ls::run_ls(json, socket),
         Some(Command::New {
             name,
             session,
             cwd,
-            socket,
             json,
             env,
             command,
@@ -329,7 +437,6 @@ fn main() -> ExitCode {
             ratio,
             cwd,
             json,
-            socket,
             command,
         }) => {
             commands::spawn::run_spawn(satellite, target, split, ratio, cwd, json, socket, command)
@@ -343,7 +450,6 @@ fn main() -> ExitCode {
             split,
             ratio,
             cwd,
-            socket,
             extra,
         }) => commands::launch::run_launch(
             integration,
@@ -357,8 +463,8 @@ fn main() -> ExitCode {
             socket,
             &extra,
         ),
-        Some(Command::Kill { target, socket }) => commands::kill::run_kill(&target, socket),
-        Some(Command::Detach { session, socket }) => commands::detach::run_detach(session, socket),
+        Some(Command::Kill { target }) => commands::kill::run_kill(&target, socket),
+        Some(Command::Detach { session }) => commands::detach::run_detach(session, socket),
         Some(Command::InsertPane {
             target,
             new_pane,
@@ -366,7 +472,6 @@ fn main() -> ExitCode {
             vertical,
             ratio,
             json,
-            socket,
         }) => commands::spatial::run_insert_pane(&target, &new_pane, vertical, ratio, json, socket),
         Some(Command::MovePane {
             source,
@@ -375,33 +480,26 @@ fn main() -> ExitCode {
             vertical,
             ratio,
             json,
-            socket,
         }) => commands::spatial::run_move_pane(&source, &target, vertical, ratio, json, socket),
         Some(Command::SwapPane {
             first,
             second,
             json,
-            socket,
         }) => commands::spatial::run_swap_pane(&first, &second, json, socket),
         Some(Command::Resize {
             target,
             geometry,
             json,
-            socket,
         }) => commands::resize::run_resize(&target, geometry, json, socket),
-        Some(Command::Take { target, socket }) => commands::supervise::run_take(&target, socket),
-        Some(Command::Give { target, socket }) => commands::supervise::run_give(&target, socket),
-        Some(Command::Signal {
-            target,
-            signal,
-            socket,
-        }) => commands::supervise::run_signal(&target, signal, socket),
-        Some(Command::Upgrade { socket }) => commands::upgrade::run_upgrade(socket),
-        Some(Command::Rename {
-            session,
-            new_name,
-            socket,
-        }) => commands::rename::run_rename(&session, &new_name, socket),
+        Some(Command::Take { target }) => commands::supervise::run_take(&target, socket),
+        Some(Command::Give { target }) => commands::supervise::run_give(&target, socket),
+        Some(Command::Signal { target, signal }) => {
+            commands::supervise::run_signal(&target, signal, socket)
+        }
+        Some(Command::Upgrade {}) => commands::upgrade::run_upgrade(socket),
+        Some(Command::Rename { session, new_name }) => {
+            commands::rename::run_rename(&session, &new_name, socket)
+        }
         Some(Command::Snapshot {
             session,
             json,
@@ -410,7 +508,6 @@ fn main() -> ExitCode {
             rendered,
             cols,
             rows,
-            socket,
         }) => commands::snapshot::run_snapshot(
             session.as_deref(),
             json,
@@ -423,16 +520,13 @@ fn main() -> ExitCode {
             },
             socket,
         ),
-        Some(Command::SendKeys {
-            target,
-            keys,
-            socket,
-        }) => commands::send_keys::run_send_keys(&target, &keys, socket),
+        Some(Command::SendKeys { target, keys }) => {
+            commands::send_keys::run_send_keys(&target, &keys, socket)
+        }
         Some(Command::Paste {
             target,
             text,
             untrusted,
-            socket,
         }) => commands::paste::run_paste(&target, text, untrusted, socket),
         Some(Command::Wait {
             session,
@@ -440,13 +534,10 @@ fn main() -> ExitCode {
             idle,
             timeout,
             json,
-            socket,
         }) => commands::wait::run_wait(session.as_deref(), until, idle, timeout, json, socket),
-        Some(Command::Watch {
-            session,
-            json,
-            socket,
-        }) => commands::watch::run_watch(session.as_deref(), json, socket),
+        Some(Command::Watch { session, json }) => {
+            commands::watch::run_watch(session.as_deref(), json, socket)
+        }
         Some(Command::Rec {
             target,
             out,
@@ -458,7 +549,6 @@ fn main() -> ExitCode {
             max_bytes,
             cast_version,
             json,
-            socket,
         }) => commands::rec::run_rec(commands::rec::RecArgs {
             target: target.as_deref(),
             out: &out,
@@ -483,7 +573,6 @@ fn main() -> ExitCode {
             no_fit,
             close,
             json,
-            socket,
             pty_writer,
         }) => commands::play::run_play(&commands::play::PlayArgs {
             file: &file,
@@ -513,7 +602,6 @@ fn main() -> ExitCode {
             elapsed_seconds,
             json,
             question,
-            socket,
         }) => commands::ask::run_ask(
             &target,
             id,
@@ -523,20 +611,19 @@ fn main() -> ExitCode {
             question,
             socket,
         ),
-        Some(Command::Agent { action }) => commands::agent::run_agent(&action),
+        Some(Command::Agent { action }) => commands::agent::run_agent(&action, socket),
         Some(Command::Run {
             target,
             command,
             timeout,
             json,
-            socket,
         }) => commands::run::run_run(&target, &command, timeout, json, socket),
-        Some(Command::Config { action }) => commands::config::run_config(&action),
+        Some(Command::Config { action }) => commands::config::run_config(&action, socket),
         Some(Command::Plugin { action }) => commands::plugin::run_plugin(&action),
-        Some(Command::Workspace { action }) => commands::workspace::run_workspace(&action),
+        Some(Command::Workspace { action }) => commands::workspace::run_workspace(&action, socket),
         Some(Command::Satellite { action }) => commands::satellite::run_satellite(&action),
-        Some(Command::Tag { socket, action }) => commands::tag::run_tag(&action, socket),
-        Some(Command::StdioBridge { socket }) => commands::stdio_bridge::run_stdio_bridge(socket),
+        Some(Command::Tag { action }) => commands::tag::run_tag(&action, socket),
+        Some(Command::StdioBridge {}) => commands::stdio_bridge::run_stdio_bridge(socket),
         Some(Command::Relay { action }) => commands::relay::run_relay(action),
         Some(Command::Pair {
             tokens,
@@ -547,8 +634,8 @@ fn main() -> ExitCode {
             json,
         }) => commands::pair::run_pair(tokens, cert, qr, host, name, json),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell),
-        Some(Command::Worktree(action)) => commands::worktree::run_worktree(&action),
-        Some(Command::Doctor { json, socket }) => commands::doctor::run_doctor(json, socket),
+        Some(Command::Worktree(action)) => commands::worktree::run_worktree(&action, socket),
+        Some(Command::Doctor { json }) => commands::doctor::run_doctor(json, socket),
         Some(Command::Logs {
             server,
             client,
@@ -596,7 +683,6 @@ fn main() -> ExitCode {
                 quic,
                 listen,
                 restore,
-                socket,
                 hub,
                 print,
             } => commands::service::run_install(quic, listen, restore, socket, hub, print),
@@ -610,11 +696,11 @@ fn main() -> ExitCode {
             }
         },
         None => {
-            let rec_spec = match plan_rec(&cli.rec) {
+            let rec_spec = match plan_rec(&root_rec) {
                 Ok(spec) => spec,
                 Err(code) => return code,
             };
-            commands::attach::run_naked(rec_spec.as_ref())
+            commands::attach::run_naked(socket, rec_spec.as_ref())
         }
     }
 }
@@ -761,11 +847,11 @@ mod tests {
         // Explicit TEXT argument.
         let cli = Cli::try_parse_from(["phux", "paste", "work", "hello world"])
             .expect("`phux paste work TEXT` parses");
+        assert_eq!(cli.socket, None);
         let Some(Command::Paste {
             target,
             text,
             untrusted,
-            socket,
         }) = cli.command
         else {
             panic!("expected Paste");
@@ -773,7 +859,6 @@ mod tests {
         assert_eq!(target, "work");
         assert_eq!(text.as_deref(), Some("hello world"));
         assert!(!untrusted, "trusted is the default");
-        assert_eq!(socket, None);
 
         // TEXT omitted ⇒ the payload comes from stdin.
         let cli = Cli::try_parse_from(["phux", "paste", "work:1.0"])
@@ -784,7 +869,7 @@ mod tests {
         assert_eq!(target, "work:1.0");
         assert_eq!(text, None, "omitted TEXT means stdin");
 
-        // `--untrusted` and `--socket` parse alongside both forms.
+        // `--untrusted` and the global `--socket` parse alongside both forms.
         let cli = Cli::try_parse_from([
             "phux",
             "paste",
@@ -795,17 +880,15 @@ mod tests {
             "payload",
         ])
         .expect("flags parse");
-        let Some(Command::Paste {
-            untrusted, socket, ..
-        }) = cli.command
-        else {
+        assert_eq!(
+            cli.socket.as_deref(),
+            Some(std::path::Path::new("/tmp/phux.sock")),
+            "a post-verb --socket lands on the root global"
+        );
+        let Some(Command::Paste { untrusted, .. }) = cli.command else {
             panic!("expected Paste");
         };
         assert!(untrusted);
-        assert_eq!(
-            socket.as_deref(),
-            Some(std::path::Path::new("/tmp/phux.sock"))
-        );
 
         // A target is required.
         assert!(Cli::try_parse_from(["phux", "paste"]).is_err());
@@ -915,10 +998,6 @@ mod tests {
         for argv in [
             ["phux", "ls", "--rec", "demo.gif"].as_slice(),
             ["phux", "snapshot", "--rec", "demo.gif"].as_slice(),
-            // A root `--rec` in front of any verb: `phux rec` is the headless
-            // capture, so this is always a mistake.
-            ["phux", "--rec", "demo.gif", "ls"].as_slice(),
-            ["phux", "--rec", "demo.gif", "attach", "work"].as_slice(),
             // --rec-format is meaningless without a destination.
             ["phux", "--rec-format", "gif"].as_slice(),
             ["phux", "attach", "--rec-format", "gif"].as_slice(),
@@ -930,30 +1009,159 @@ mod tests {
         }
     }
 
+    /// Regression pin for the `args_conflicts_with_subcommands` replacement
+    /// (ADR-0065): a root `--rec` in front of any verb — `phux rec` is the
+    /// headless capture, so this is always a mistake — now PARSES (the root
+    /// setting had to go so the global `--socket` could precede a verb) and
+    /// is refused by the explicit post-parse check instead.
+    #[test]
+    fn root_rec_before_a_verb_is_refused_post_parse() {
+        for argv in [
+            ["phux", "--rec", "demo.gif", "ls"].as_slice(),
+            ["phux", "--rec", "demo.gif", "attach", "work"].as_slice(),
+        ] {
+            let cli = Cli::try_parse_from(argv)
+                .expect("root --rec before a verb parses; the refusal is post-parse");
+            let message = super::root_rec_before_verb(&cli)
+                .expect("a root --rec in front of a verb must be refused");
+            assert!(
+                message.contains("--rec") && message.contains("phux attach --rec"),
+                "the refusal must teach the two correct spellings; got {message:?}"
+            );
+        }
+
+        // The two legitimate homes stay untouched by the check.
+        let cli = Cli::try_parse_from(["phux", "--rec", "demo.gif"]).expect("naked form");
+        assert!(super::root_rec_before_verb(&cli).is_none());
+        let cli = Cli::try_parse_from(["phux", "attach", "--rec", "demo.gif"]).expect("attach");
+        assert!(super::root_rec_before_verb(&cli).is_none());
+    }
+
+    /// The global `--socket` parses in both positions and lands on the same
+    /// root field either way; the two spellings are one invocation.
+    #[test]
+    fn socket_parses_before_and_after_the_verb() {
+        let before = Cli::try_parse_from(["phux", "--socket", "/tmp/x.sock", "ls"])
+            .expect("`phux --socket X ls` parses");
+        let after = Cli::try_parse_from(["phux", "ls", "--socket", "/tmp/x.sock"])
+            .expect("`phux ls --socket X` parses");
+        for cli in [before, after] {
+            assert!(matches!(cli.command, Some(Command::Ls { .. })));
+            assert_eq!(
+                cli.socket.as_deref(),
+                Some(std::path::Path::new("/tmp/x.sock"))
+            );
+        }
+    }
+
+    /// A `--socket` handed to a verb that never dials a server is refused
+    /// (via `socketless_verb`), not silently ignored.
+    #[test]
+    fn socketless_verbs_are_named_and_socket_consumers_are_not() {
+        for argv in [
+            ["phux", "pair", "--socket", "/tmp/x.sock"].as_slice(),
+            ["phux", "--socket", "/tmp/x.sock", "config", "path"].as_slice(),
+            ["phux", "plugin", "list", "--socket", "/tmp/x.sock"].as_slice(),
+            ["phux", "logs", "--socket", "/tmp/x.sock"].as_slice(),
+            ["phux", "completion", "zsh", "--socket", "/tmp/x.sock"].as_slice(),
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("the global --socket always parses");
+            let command = cli.command.as_ref().expect("a verb was given");
+            assert!(
+                crate::commands::socketless_verb(command).is_some(),
+                "{argv:?} names a socketless verb and must be refused"
+            );
+        }
+
+        for argv in [
+            ["phux", "ls", "--socket", "/tmp/x.sock"].as_slice(),
+            ["phux", "config", "reload", "--socket", "/tmp/x.sock"].as_slice(),
+            ["phux", "tag", "ls", "work", "--socket", "/tmp/x.sock"].as_slice(),
+            ["phux", "service", "install", "--socket", "/tmp/x.sock"].as_slice(),
+            ["phux", "worktree", "list", "--socket", "/tmp/x.sock"].as_slice(),
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("consumer verbs parse");
+            let command = cli.command.as_ref().expect("a verb was given");
+            assert!(
+                crate::commands::socketless_verb(command).is_none(),
+                "{argv:?} consumes --socket and must not be refused"
+            );
+        }
+    }
+
+    /// A scoped flag given before the verb gets the teaching hint: the
+    /// interception recognizes `--json` (and any other per-verb long flag)
+    /// in clap's unknown-argument refusal.
+    #[test]
+    fn misplaced_scoped_flag_is_recognized_for_the_hint() {
+        let err = Cli::try_parse_from(["phux", "--json", "ls"])
+            .expect_err("`--json` is per-verb; the root must refuse it");
+        assert_eq!(
+            super::misplaced_scoped_flag(&err).as_deref(),
+            Some("--json"),
+            "the hint must name the misplaced flag"
+        );
+
+        // A flag that exists nowhere in the tree gets no hint — the plain
+        // clap error already says everything true about it.
+        let err = Cli::try_parse_from(["phux", "--no-such-flag", "ls"])
+            .expect_err("unknown flags are refused");
+        assert_eq!(super::misplaced_scoped_flag(&err), None);
+    }
+
+    /// The clap tree is internally consistent (conflicts, requires, groups,
+    /// and the propagated global all resolve). `debug_assert` is clap's own
+    /// full-tree validation pass; it must survive the root-settings rework.
+    #[test]
+    fn clap_tree_debug_assert_holds() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    /// The generated completions are built from the same clap tree, so the
+    /// single global `--socket` declaration must still reach them.
+    #[test]
+    fn completions_still_carry_socket() {
+        use clap::CommandFactory;
+        let mut buf = Vec::new();
+        clap_complete::generate(
+            clap_complete::Shell::Bash,
+            &mut Cli::command(),
+            "phux",
+            &mut buf,
+        );
+        let script = String::from_utf8(buf).expect("completion script is UTF-8");
+        assert!(
+            script.contains("--socket"),
+            "bash completions lost --socket after the root-settings rework"
+        );
+    }
+
     #[test]
     fn config_reload_parses_with_optional_socket() {
         use crate::commands::config_action::ConfigAction;
 
         let cli =
             Cli::try_parse_from(["phux", "config", "reload"]).expect("`config reload` parses");
-        let Some(Command::Config {
-            action: ConfigAction::Reload { socket },
-        }) = cli.command
-        else {
-            panic!("expected Config Reload");
-        };
-        assert_eq!(socket, None);
+        assert_eq!(cli.socket, None);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                action: ConfigAction::Reload,
+            })
+        ));
 
+        // The global `--socket` is accepted even two subcommand levels deep.
         let cli = Cli::try_parse_from(["phux", "config", "reload", "--socket", "/tmp/phux.sock"])
             .expect("`config reload --socket` parses");
-        let Some(Command::Config {
-            action: ConfigAction::Reload { socket },
-        }) = cli.command
-        else {
-            panic!("expected Config Reload");
-        };
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                action: ConfigAction::Reload,
+            })
+        ));
         assert_eq!(
-            socket.as_deref(),
+            cli.socket.as_deref(),
             Some(std::path::Path::new("/tmp/phux.sock"))
         );
     }

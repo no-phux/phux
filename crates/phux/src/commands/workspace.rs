@@ -46,15 +46,11 @@ struct WorktreeBuilder {
     locked: bool,
 }
 
-pub(crate) fn run_workspace(action: &WorkspaceAction) -> ExitCode {
+pub(crate) fn run_workspace(action: &WorkspaceAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
         WorkspaceAction::Inspect { path, json } => run_inspect(path, *json),
-        WorkspaceAction::Save { socket, output } => {
-            archive::run_save(socket.clone(), output.as_ref())
-        }
-        WorkspaceAction::Restore { archive, socket } => {
-            archive::run_restore(archive, socket.clone())
-        }
+        WorkspaceAction::Save { output } => archive::run_save(socket, output.as_ref()),
+        WorkspaceAction::Restore { archive } => archive::run_restore(archive, socket),
     }
 }
 

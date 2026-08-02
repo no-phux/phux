@@ -137,6 +137,81 @@ fn snapshot_json_no_server_is_silent_stdout_and_banner_free() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// One grammar: the global `--socket` (ADR-0065)
+// ---------------------------------------------------------------------------
+
+/// `phux --socket X ls` and `phux ls --socket X` are the same invocation:
+/// same exit code, same stdout, same stderr. Pointed at a dead socket so
+/// both take the identical "no server" path.
+#[test]
+fn socket_before_and_after_the_verb_behave_identically() {
+    let sock = dead_socket();
+    let before = run(&["--socket", &sock, "ls"]);
+    let after = run(&["ls", "--socket", &sock]);
+    assert_eq!(
+        before, after,
+        "the two --socket positions must be indistinguishable"
+    );
+    assert_ne!(before.0, 0, "no server means a nonzero exit");
+    assert!(
+        before.2.contains("no server"),
+        "the shared failure names the missing server; got {:?}",
+        before.2
+    );
+}
+
+/// A verb that never dials a server refuses a provided `--socket` with a
+/// one-line teaching error instead of silently ignoring it.
+#[test]
+fn socketless_verb_rejects_socket_with_teaching_error() {
+    let sock = dead_socket();
+    for args in [
+        vec!["config", "path", "--socket", sock.as_str()],
+        vec!["pair", "--socket", sock.as_str()],
+        vec!["--socket", sock.as_str(), "plugin", "list"],
+    ] {
+        let (code, stdout, stderr) = run(&args);
+        assert_eq!(
+            code,
+            2,
+            "`phux {}` must refuse --socket as a usage error; stderr={stderr}",
+            args.join(" ")
+        );
+        assert!(stdout.is_empty(), "refusals leave stdout empty");
+        assert!(
+            stderr.contains("--socket") && stderr.contains("never dials a server"),
+            "the refusal must teach why; got {stderr:?}"
+        );
+    }
+}
+
+/// A scoped flag placed before the verb gets clap's refusal PLUS the
+/// teaching hint naming the fix.
+#[test]
+fn misplaced_json_before_verb_teaches_placement() {
+    let (code, stdout, stderr) = run(&["--json", "ls"]);
+    assert_eq!(code, 2, "a misplaced --json is a usage error");
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.contains("hint:") && stderr.contains("--json") && stderr.contains("after the verb"),
+        "the refusal must carry the placement hint; got {stderr:?}"
+    );
+}
+
+/// A root `--rec` in front of a verb is refused with the two correct
+/// spellings named (the `args_conflicts_with_subcommands` replacement).
+#[test]
+fn root_rec_before_verb_teaches_the_two_spellings() {
+    let (code, stdout, stderr) = run(&["--rec", "demo.gif", "ls"]);
+    assert_eq!(code, 2, "a root --rec before a verb is a usage error");
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.contains("phux attach --rec") && stderr.contains("phux rec"),
+        "the refusal must name the attach and headless spellings; got {stderr:?}"
+    );
+}
+
 #[test]
 fn config_path_is_clean_stdout_with_no_banner() {
     // `config` never contacts a server, so it always runs. Its stdout must

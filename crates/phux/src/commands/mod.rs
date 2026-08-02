@@ -163,6 +163,64 @@ pub(crate) mod worktree;
 /// "`phux` with no arguments after a fresh boot" Just Works.
 pub(crate) const DEFAULT_SESSION_NAME: &str = "default";
 
+/// The verb's display name when the resolved (sub)command never dials a
+/// server socket, or `None` when it consumes the root `--socket` global.
+///
+/// `--socket` is declared once, `global = true`, on the root `Cli`
+/// (ADR-0065), so clap accepts it on every invocation path — including the
+/// verbs that are pure local operations (config scaffolding, registry
+/// edits, completions). Those must refuse a provided `--socket` rather
+/// than silently ignore it: a user who typed `phux pair --socket X`
+/// believes the flag did something. `main` turns a `Some` from here into
+/// a one-line teaching error.
+#[allow(
+    clippy::match_same_arms,
+    reason = "one arm per verb, grouped by namespace; merging arms across namespaces would hide which verbs are listed"
+)]
+pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
+    match command {
+        Command::Agent { action } => match action {
+            agent::AgentAction::InstallClaude { .. } => Some("agent install-claude"),
+            agent::AgentAction::UninstallClaude => Some("agent uninstall-claude"),
+            _ => None,
+        },
+        Command::Config { action } => match action {
+            config_action::ConfigAction::Init { .. } => Some("config init"),
+            config_action::ConfigAction::Path => Some("config path"),
+            config_action::ConfigAction::Check { .. } => Some("config check"),
+            config_action::ConfigAction::Show { .. } => Some("config show"),
+            config_action::ConfigAction::Plugins { .. } => Some("config plugins"),
+            config_action::ConfigAction::Run { .. } => Some("config run"),
+            // `agents` best-effort reads live state; `reload` rings the
+            // server doorbell.
+            config_action::ConfigAction::Agents { .. } | config_action::ConfigAction::Reload => {
+                None
+            }
+        },
+        Command::Workspace { action } => match action {
+            WorkspaceAction::Inspect { .. } => Some("workspace inspect"),
+            WorkspaceAction::Save { .. } | WorkspaceAction::Restore { .. } => None,
+        },
+        Command::Service { action } => match action {
+            // `install` bakes the socket into the generated unit.
+            ServiceAction::Install { .. } => None,
+            ServiceAction::Uninstall => Some("service uninstall"),
+            ServiceAction::Status => Some("service status"),
+            ServiceAction::Logs { .. } => Some("service logs"),
+            ServiceAction::PruneLogs { .. } => Some("service prune-logs"),
+        },
+        Command::Plugin { .. } => Some("plugin"),
+        Command::Satellite { .. } => Some("satellite"),
+        Command::Remote { .. } => Some("remote"),
+        Command::Relay { .. } => Some("relay"),
+        Command::Pair { .. } => Some("pair"),
+        Command::Enroll { .. } => Some("enroll"),
+        Command::Completion { .. } => Some("completion"),
+        Command::Logs { .. } => Some("logs"),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Attach to a session (interactive).
@@ -177,11 +235,6 @@ pub(crate) enum Command {
         /// Omit to attach to the most-recently-focused session.
         session: Option<String>,
 
-        /// Override the UDS path. Defaults to `$XDG_RUNTIME_DIR/phux/phux.sock`
-        /// (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set).
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
-
         /// Attach over QUIC to a remote `phux server --quic` listener at this
         /// `HOST:PORT` instead of the local Unix socket. HOST may be an IP
         /// literal or a DNS name (e.g. a Tailscale `MagicDNS` name), resolved
@@ -189,14 +242,14 @@ pub(crate) enum Command {
         /// resolving to loopback trusts the server's self-signed cert for
         /// local dev; any routable address requires `--cert-fingerprint`
         /// (the value `phux pair` prints on the server host).
-        #[arg(long, value_name = "HOST:PORT", conflicts_with = "socket")]
+        #[arg(long, value_name = "HOST:PORT")]
         quic: Option<String>,
 
         /// Attach over WebSocket to a `phux server --listen` endpoint. Use
         /// `ws://HOST:PORT` for loopback dev, or `wss://HOST:PORT` with
         /// `--token` and `--cert-fingerprint` for routable remote attach. This
         /// is the TCP fallback when UDP/QUIC is blocked.
-        #[arg(long, value_name = "URL", conflicts_with = "socket")]
+        #[arg(long, value_name = "URL")]
         ws: Option<String>,
 
         /// Bearer pairing token (hex) for an authenticated QUIC listener, as
@@ -235,12 +288,6 @@ pub(crate) enum Command {
         /// `phux attach <name>` will request.
         #[arg(long, default_value = DEFAULT_SESSION_NAME)]
         session: String,
-
-        /// Override the UDS path. Defaults to `$PHUX_SOCKET`, else
-        /// `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock`
-        /// if `XDG_RUNTIME_DIR` isn't set).
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
 
         /// Also accept WebSocket clients on this `HOST:PORT` (the UDS stays
         /// on). Loopback (e.g. `127.0.0.1:8787`) is plaintext for local
@@ -336,10 +383,6 @@ pub(crate) enum Command {
         /// human text.
         #[arg(long)]
         json: bool,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Create a new session and attach to it.
@@ -370,10 +413,6 @@ pub(crate) enum Command {
         /// Working directory for the seed pane.
         #[arg(short = 'c', long = "cwd")]
         cwd: Option<std::path::PathBuf>,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
 
         /// Create without attaching and print the seed pane's id as JSON.
         /// Requires `-s NAME`.
@@ -433,10 +472,6 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
 
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
-
         /// Command (and arguments) to run instead of the default shell.
         /// Must follow `--`: `phux spawn -- htop`.
         #[arg(last = true)]
@@ -491,10 +526,6 @@ pub(crate) enum Command {
         #[arg(short = 'c', long = "cwd", value_name = "DIR")]
         cwd: Option<std::path::PathBuf>,
 
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
-
         /// Extra arguments appended to the agent command, after `--`.
         #[arg(last = true)]
         extra: Vec<String>,
@@ -509,10 +540,6 @@ pub(crate) enum Command {
     Kill {
         /// What to kill (selector).
         target: String,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Insert an already-created pane into a session layout.
@@ -538,9 +565,6 @@ pub(crate) enum Command {
         /// Emit a schema-versioned JSON result or error.
         #[arg(long)]
         json: bool,
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Move one existing pane beside another in the same session.
@@ -565,9 +589,6 @@ pub(crate) enum Command {
         /// Emit a schema-versioned JSON result or error.
         #[arg(long)]
         json: bool,
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Swap two existing pane leaves in the same session layout.
@@ -583,9 +604,6 @@ pub(crate) enum Command {
         /// Emit a schema-versioned JSON result or error.
         #[arg(long)]
         json: bool,
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Set a pane's grid size, with no TTY.
@@ -622,10 +640,6 @@ pub(crate) enum Command {
         /// applied geometry.
         #[arg(long)]
         json: bool,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Detach clients from a session, from outside the attach UI.
@@ -639,10 +653,6 @@ pub(crate) enum Command {
         /// Session to detach clients from. Omit to detach every attached
         /// client on the server.
         session: Option<String>,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Take the input wheel of a pane.
@@ -655,10 +665,6 @@ pub(crate) enum Command {
     Take {
         /// Target selector (resolves to one pane).
         target: String,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Give back the input wheel of a pane.
@@ -668,10 +674,6 @@ pub(crate) enum Command {
     Give {
         /// Target selector (resolves to one pane).
         target: String,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Signal a pane's process group.
@@ -690,10 +692,6 @@ pub(crate) enum Command {
 
         /// Which signal to deliver.
         signal: SignalArg,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Graceful-upgrade the running server in place.
@@ -702,11 +700,7 @@ pub(crate) enum Command {
     /// re-adopt the live PTYs, so the shells / editors / agents in every
     /// session survive a binary update (e.g. after `cargo install` /
     /// `brew upgrade`). Clients briefly disconnect and reconnect.
-    Upgrade {
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
-    },
+    Upgrade {},
 
     /// Rename a session.
     ///
@@ -720,10 +714,6 @@ pub(crate) enum Command {
 
         /// New session name.
         new_name: String,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Capture a pane's screen as JSON or a boxed text view.
@@ -776,10 +766,6 @@ pub(crate) enum Command {
         /// Composited viewport height for `--rendered`.
         #[arg(long, value_name = "ROWS", default_value_t = 24)]
         rows: u16,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Send keys to a pane.
@@ -805,10 +791,6 @@ pub(crate) enum Command {
         /// Keys to send: named keys and/or literal strings, in order.
         #[arg(trailing_var_arg = true, required = true)]
         keys: Vec<String>,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Paste text into a pane.
@@ -846,10 +828,6 @@ pub(crate) enum Command {
         /// flag the paste is trusted and forwarded verbatim.
         #[arg(long)]
         untrusted: bool,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Block until a pane meets a condition.
@@ -888,10 +866,6 @@ pub(crate) enum Command {
         /// Emit the final screen as JSON instead of staying silent.
         #[arg(long)]
         json: bool,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Stream a pane's live events (the push half of the agent surface).
@@ -921,10 +895,6 @@ pub(crate) enum Command {
         /// stays pure JSON (diagnostics go to stderr).
         #[arg(long)]
         json: bool,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Record a pane and export it as an asciinema cast, an animated GIF, or
@@ -991,10 +961,6 @@ pub(crate) enum Command {
         /// Emit one JSON result object on stdout.
         #[arg(long)]
         json: bool,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Play a recording back as a live pane.
@@ -1072,10 +1038,6 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
 
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
-
         /// Internal: this process IS the pane, so write the recording to
         /// stdout rather than spawning one. Hidden because it is an
         /// implementation detail of the pane this verb creates, not a
@@ -1114,10 +1076,6 @@ pub(crate) enum Command {
         /// Emit the reported event as JSON.
         #[arg(long)]
         json: bool,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
 
         /// Human-facing question text.
         question: String,
@@ -1166,10 +1124,6 @@ pub(crate) enum Command {
         /// Emit the result as JSON instead of the human view.
         #[arg(long)]
         json: bool,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Inspect, scaffold, and reload the phux config file.
@@ -1220,12 +1174,6 @@ pub(crate) enum Command {
     /// `#tag` selector addresses every Terminal carrying that tag — e.g.
     /// `phux kill #build`, `phux snapshot #web`.
     Tag {
-        /// Override the UDS path. Global so it may precede or follow the
-        /// action (`phux tag --socket … add` and `phux tag add … --socket`
-        /// both parse).
-        #[arg(long, global = true)]
-        socket: Option<std::path::PathBuf>,
-
         #[command(subcommand)]
         action: TagAction,
     },
@@ -1239,11 +1187,7 @@ pub(crate) enum Command {
     /// parses nor injects bytes; stdout is protocol-only and diagnostics
     /// go to stderr. Exits when either side closes.
     #[command(name = "stdio-bridge")]
-    StdioBridge {
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
-    },
+    StdioBridge {},
 
     /// Run a standalone relay, or enroll a route with it.
     ///
@@ -1411,10 +1355,6 @@ pub(crate) enum Command {
         /// Emit a stable JSON document instead of human text.
         #[arg(long)]
         json: bool,
-
-        /// Override the UDS path probed for a running server.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Manage git worktrees and the sessions bound to them.
@@ -1536,10 +1476,6 @@ pub(crate) enum ServiceAction {
         #[arg(long)]
         restore: bool,
 
-        /// Override the UDS path the supervised server binds.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
-
         /// Run the supervised server as a federation hub. The service loads
         /// enabled `[[satellites]]` entries and keeps their links connected
         /// across login, logout, and reboot.
@@ -1594,10 +1530,6 @@ pub(crate) enum WorktreeAction {
         /// Emit a stable JSON document instead of human text.
         #[arg(long)]
         json: bool,
-
-        /// Override the UDS path consulted for the `bound` column.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 
     /// Create a worktree and a session rooted in it.
@@ -1626,10 +1558,6 @@ pub(crate) enum WorktreeAction {
         #[arg(long, default_value = ".", value_name = "PATH")]
         repo: std::path::PathBuf,
 
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
-
         /// Attach to the new session instead of creating it headlessly.
         #[arg(long)]
         attach: bool,
@@ -1650,10 +1578,6 @@ pub(crate) enum WorktreeAction {
         /// Path inside the repository the worktree belongs to.
         #[arg(long, default_value = ".", value_name = "PATH")]
         repo: std::path::PathBuf,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
 
         /// Attach to the session instead of only reporting its name.
         #[arg(long)]
@@ -1676,10 +1600,6 @@ pub(crate) enum WorktreeAction {
         /// Path inside the repository the worktree belongs to.
         #[arg(long, default_value = ".", value_name = "PATH")]
         repo: std::path::PathBuf,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 }
 
@@ -1840,10 +1760,6 @@ pub(crate) enum WorkspaceAction {
 
     /// Save the running phux workspace as a JSON archive.
     Save {
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
-
         /// Write the archive to a path instead of stdout.
         #[arg(long, short = 'o', value_name = "PATH")]
         output: Option<std::path::PathBuf>,
@@ -1853,10 +1769,6 @@ pub(crate) enum WorkspaceAction {
     Restore {
         /// JSON archive path, or '-' to read from stdin.
         archive: std::path::PathBuf,
-
-        /// Override the UDS path.
-        #[arg(long)]
-        socket: Option<std::path::PathBuf>,
     },
 }
 
