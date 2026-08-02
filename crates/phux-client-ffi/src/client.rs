@@ -21,7 +21,7 @@ use crate::error::BridgeError;
 use crate::types::*;
 
 #[derive(Debug, Clone, Copy)]
-pub struct Limits {
+pub(crate) struct Limits {
     pub bootstrap_chunk: u32,
     pub history_page: u32,
     pub history_page_rows: u32,
@@ -30,7 +30,7 @@ pub struct Limits {
     pub history_prefetch_rows: usize,
 }
 
-pub struct RenderCache {
+pub(crate) struct RenderCache {
     state: RenderState<'static>,
     rows: RowIterator<'static>,
     cells: CellIterator<'static>,
@@ -54,7 +54,7 @@ impl RenderCache {
     }
 }
 
-pub struct Client {
+pub(crate) struct Client {
     pub session: SessionKernel<GhosttyAdapter>,
     pub effects: EffectBuffer,
     pub outgoing: Vec<Vec<u8>>,
@@ -85,7 +85,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(limits: Limits) -> Self {
+    pub(crate) fn new(limits: Limits) -> Self {
         let history_config = HistoryCacheConfig {
             max_bytes: limits.history_cache_bytes,
             max_materialized_rows: limits.history_materialized_rows,
@@ -127,7 +127,7 @@ impl Client {
             detached: false,
         }
     }
-    pub fn install_profile(
+    pub(crate) fn install_profile(
         &mut self,
         profile: phux_protocol::BootstrapProfile,
         negotiated_limits: BootstrapLimits,
@@ -148,12 +148,12 @@ impl Client {
         );
     }
 
-    pub fn reset_borrows(&mut self) {
+    pub(crate) fn reset_borrows(&mut self) {
         self.selection_buf.clear();
         self.search_results.clear();
     }
 
-    pub fn state(&self) -> PhuxClientState {
+    pub(crate) fn state(&self) -> PhuxClientState {
         if self.detached {
             PhuxClientState::Detached
         } else if self.attached {
@@ -167,13 +167,13 @@ impl Client {
         }
     }
 
-    pub fn set_error(&mut self, message: impl AsRef<str>) {
+    pub(crate) fn set_error(&mut self, message: impl AsRef<str>) {
         self.last_error.clear();
         self.last_error
             .extend_from_slice(message.as_ref().as_bytes());
     }
 
-    pub fn ensure_attached(&self) -> Result<(), BridgeError> {
+    pub(crate) fn ensure_attached(&self) -> Result<(), BridgeError> {
         if self.attached && !self.detached {
             Ok(())
         } else {
@@ -181,7 +181,12 @@ impl Client {
         }
     }
 
-    pub fn ensure_participant(&self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    pub(crate) fn ensure_participant(&self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+        if self.detached || (!self.attach_queued && !self.attached) {
+            return Err(BridgeError::protocol(
+                "terminal state frame arrived outside an active ATTACH phase",
+            ));
+        }
         if self.session.active_attach_contains(terminal_id) {
             Ok(())
         } else {
@@ -191,7 +196,21 @@ impl Client {
         }
     }
 
-    pub fn terminal_key(&self, id: &TerminalId) -> Result<ReplicaKey, BridgeError> {
+    pub(crate) fn detach(&mut self) {
+        self.session.release_active_attach();
+        self.effects.clear();
+        self.render.clear();
+        self.document_revisions.clear();
+        self.anchors.clear();
+        self.selections.clear();
+        self.viewport_anchors.clear();
+        self.attach_queued = false;
+        self.expected_attach_id = None;
+        self.attached = false;
+        self.detached = true;
+    }
+
+    pub(crate) fn terminal_key(&self, id: &TerminalId) -> Result<ReplicaKey, BridgeError> {
         self.ensure_attached()?;
         self.session
             .published(id)
@@ -199,7 +218,10 @@ impl Client {
             .ok_or_else(|| BridgeError::state("terminal has no published READY generation"))
     }
 
-    pub fn bump_document_revision(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    pub(crate) fn bump_document_revision(
+        &mut self,
+        terminal_id: &TerminalId,
+    ) -> Result<(), BridgeError> {
         let revision = self.next_document_revision;
         self.next_document_revision = self
             .next_document_revision
@@ -240,7 +262,7 @@ impl Client {
         Ok(*engine_anchor)
     }
 
-    pub fn track_anchor(
+    pub(crate) fn track_anchor(
         &mut self,
         terminal_id: &TerminalId,
         point: PhuxDocumentPoint,
@@ -271,7 +293,7 @@ impl Client {
         self.register_anchor(terminal_id, anchor)
     }
 
-    pub fn release_anchor(
+    pub(crate) fn release_anchor(
         &mut self,
         terminal_id: &TerminalId,
         anchor: PhuxDocumentAnchor,
@@ -285,7 +307,7 @@ impl Client {
         Ok(())
     }
 
-    pub fn pin_viewport(
+    pub(crate) fn pin_viewport(
         &mut self,
         terminal_id: &TerminalId,
         anchor: PhuxDocumentAnchor,
@@ -297,7 +319,7 @@ impl Client {
             .map_err(|error| BridgeError::engine(error.to_string()))
     }
 
-    pub fn follow_live(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    pub(crate) fn follow_live(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
         self.ensure_attached()?;
         self.session
             .follow_history_tail(terminal_id)
@@ -310,7 +332,7 @@ impl Client {
         Ok(())
     }
 
-    pub fn invalidate_terminal_handles(&mut self, terminal_id: &TerminalId) {
+    pub(crate) fn invalidate_terminal_handles(&mut self, terminal_id: &TerminalId) {
         self.anchors.retain(|_, (owner, _)| owner != terminal_id);
         self.selections.remove(terminal_id);
         self.viewport_anchors.remove(terminal_id);
@@ -322,7 +344,7 @@ impl Client {
             .ok_or_else(|| BridgeError::state("terminal has no published document revision"))
     }
 
-    pub fn terminal(
+    pub(crate) fn terminal(
         &self,
         id: &TerminalId,
     ) -> Result<&libghostty_vt::Terminal<'static, 'static>, BridgeError> {
@@ -333,7 +355,7 @@ impl Client {
             .ok_or_else(|| BridgeError::state("terminal has no renderable engine"))
     }
 
-    pub fn process_effects(&mut self) -> Result<(), BridgeError> {
+    pub(crate) fn process_effects(&mut self) -> Result<(), BridgeError> {
         let mut effects = self.effects.take();
         let result: Result<(), BridgeError> = (|| {
             for effect in effects.drain(..) {
@@ -401,6 +423,13 @@ impl Client {
                 if !self.terminal_reply {
                     return Err(BridgeError::engine(
                         "terminal generated a PTY reply but HELLO_OK did not advertise TERMINAL_REPLY",
+                    ));
+                }
+                if bytes.is_empty()
+                    || bytes.len() > phux_protocol::wire::frame::MAX_INPUT_TERMINAL_REPLY_BYTES
+                {
+                    return Err(BridgeError::engine(
+                        "terminal reply is empty or exceeds the protocol byte limit",
                     ));
                 }
                 self.queue_frame(FrameKind::InputTerminalReply {
@@ -501,7 +530,7 @@ impl Client {
         }
     }
 
-    pub fn queue_frame(&mut self, kind: FrameKind) -> Result<(), BridgeError> {
+    pub(crate) fn queue_frame(&mut self, kind: FrameKind) -> Result<(), BridgeError> {
         let mut encoded = bytes::BytesMut::new();
         kind.encode(&mut encoded);
         let body_len = encoded
@@ -517,7 +546,7 @@ impl Client {
         Ok(())
     }
 
-    pub fn rebuild_effect_views(&mut self) {
+    pub(crate) fn rebuild_effect_views(&mut self) {
         self.effect_views.clear();
         self.effect_views
             .extend(self.owned_effects.iter().map(|effect| PhuxClientEffect {
@@ -534,7 +563,7 @@ impl Client {
             }));
     }
 
-    pub fn build_grid(
+    pub(crate) fn build_grid(
         &mut self,
         terminal_id: &TerminalId,
     ) -> Result<*const PhuxTerminalGridView, BridgeError> {
@@ -800,7 +829,7 @@ impl Client {
         result
     }
 
-    pub fn scroll(
+    pub(crate) fn scroll(
         &mut self,
         terminal_id: &TerminalId,
         kind: u32,
@@ -872,7 +901,7 @@ impl Client {
         Ok(())
     }
 
-    pub fn set_selection(
+    pub(crate) fn set_selection(
         &mut self,
         terminal_id: &TerminalId,
         start: PhuxDocumentAnchor,
@@ -919,7 +948,7 @@ impl Client {
         Ok(())
     }
 
-    pub fn clear_selection(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    pub(crate) fn clear_selection(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
         self.terminal(terminal_id)?
             .set_selection(None)
             .map_err(BridgeError::ghostty)?;
@@ -927,7 +956,7 @@ impl Client {
         Ok(())
     }
 
-    pub fn selection_text(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+    pub(crate) fn selection_text(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
         self.ensure_attached()?;
         let selection = self
             .selections
@@ -943,7 +972,7 @@ impl Client {
         Ok(())
     }
 
-    pub fn search(
+    pub(crate) fn search(
         &mut self,
         terminal_id: &TerminalId,
         query: &[u8],
@@ -1050,6 +1079,46 @@ mod tests {
                 bytes,
             } if terminal_id == TerminalId::local(7) && bytes.as_ref() == b"\x1b[1;1R"
         ));
+    }
+
+    #[test]
+    fn terminal_reply_enforces_exact_payload_bounds_before_queueing() {
+        let limits = Limits {
+            bootstrap_chunk: 1024,
+            history_page: 1024,
+            history_page_rows: 128,
+            history_cache_bytes: 4096,
+            history_materialized_rows: 1024,
+            history_prefetch_rows: 64,
+        };
+        let mut client = Client::new(limits);
+        client.terminal_reply = true;
+        let cap = phux_protocol::wire::frame::MAX_INPUT_TERMINAL_REPLY_BYTES;
+        client
+            .process_send(KernelSend::PtyWrite {
+                terminal_id: TerminalId::local(7),
+                bytes: vec![b'x'; cap],
+            })
+            .expect("exact-cap terminal reply");
+        let (decoded, remaining) =
+            FrameKind::decode(&client.outgoing[0]).expect("exact-cap reply decodes");
+        assert!(remaining.is_empty());
+        assert!(matches!(
+            decoded,
+            FrameKind::InputTerminalReply { bytes, .. } if bytes.len() == cap
+        ));
+
+        client.outgoing.clear();
+        for bytes in [Vec::new(), vec![b'x'; cap + 1]] {
+            let error = client
+                .process_send(KernelSend::PtyWrite {
+                    terminal_id: TerminalId::local(7),
+                    bytes,
+                })
+                .expect_err("invalid terminal reply payload");
+            assert_eq!(error.result, PhuxClientResult::EngineError);
+            assert!(client.outgoing.is_empty());
+        }
     }
 
     #[test]

@@ -2,44 +2,45 @@ use phux_protocol::{SatelliteHost, TerminalId};
 
 use crate::types::{ABI_VERSION, PhuxClientResult, PhuxTerminalId};
 
-pub const MAX_OUTBOUND_BYTES: usize = phux_protocol::wire::frame::MAX_INPUT_TERMINAL_REPLY_BYTES;
+pub(crate) const MAX_OUTBOUND_BYTES: usize =
+    phux_protocol::wire::frame::MAX_INPUT_TERMINAL_REPLY_BYTES;
 
 #[derive(Debug)]
-pub struct BridgeError {
+pub(crate) struct BridgeError {
     pub result: PhuxClientResult,
     pub message: String,
 }
 
 impl BridgeError {
-    pub fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self {
             result: PhuxClientResult::InvalidArgument,
             message: message.into(),
         }
     }
 
-    pub fn state(message: impl Into<String>) -> Self {
+    pub(crate) fn state(message: impl Into<String>) -> Self {
         Self {
             result: PhuxClientResult::InvalidState,
             message: message.into(),
         }
     }
 
-    pub fn protocol(message: impl Into<String>) -> Self {
+    pub(crate) fn protocol(message: impl Into<String>) -> Self {
         Self {
             result: PhuxClientResult::ProtocolError,
             message: message.into(),
         }
     }
 
-    pub fn engine(message: impl Into<String>) -> Self {
+    pub(crate) fn engine(message: impl Into<String>) -> Self {
         Self {
             result: PhuxClientResult::EngineError,
             message: message.into(),
         }
     }
 
-    pub fn ghostty(error: libghostty_vt::Error) -> Self {
+    pub(crate) fn ghostty(error: libghostty_vt::Error) -> Self {
         let result = if matches!(error, libghostty_vt::Error::OutOfMemory) {
             PhuxClientResult::OutOfMemory
         } else {
@@ -52,7 +53,11 @@ impl BridgeError {
     }
 }
 
-pub fn check_struct(actual: usize, required: usize, version: u32) -> Result<(), BridgeError> {
+pub(crate) fn check_struct(
+    actual: usize,
+    required: usize,
+    version: u32,
+) -> Result<(), BridgeError> {
     if version != ABI_VERSION {
         return Err(BridgeError::invalid("unsupported FFI struct version"));
     }

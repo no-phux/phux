@@ -838,15 +838,21 @@ impl<E: EngineAdapter> SessionKernel<E> {
         &mut self.adapter
     }
 
-    /// Whether the active ATTACH inventory authorizes one terminal.
+    /// Whether the active ATTACH inventory authorizes one open terminal.
     #[must_use]
     pub fn active_attach_contains(&self, terminal_id: &TerminalId) -> bool {
-        self.attach.as_ref().is_some_and(|attach| {
-            attach
-                .terminals
-                .iter()
-                .any(|participant| &participant.terminal_id == terminal_id)
-        })
+        !self.closed.contains(terminal_id)
+            && self.attach.as_ref().is_some_and(|attach| {
+                attach
+                    .terminals
+                    .iter()
+                    .any(|participant| &participant.terminal_id == terminal_id)
+            })
+    }
+
+    /// Release the active ATTACH inventory after the connection is detached.
+    pub fn release_active_attach(&mut self) {
+        self.attach = None;
     }
 
     /// Borrow the published replica for one terminal.

@@ -35,6 +35,15 @@ pub struct PhuxClient {
     _not_send_sync: std::marker::PhantomData<*mut ()>,
 }
 
+impl std::fmt::Debug for PhuxClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PhuxClient")
+            .field("state", &self.inner.state())
+            .finish_non_exhaustive()
+    }
+}
+
 fn with_client_mut(
     client: *mut PhuxClient,
     f: impl FnOnce(&mut Client) -> Result<(), BridgeError>,
@@ -465,6 +474,9 @@ pub unsafe extern "C" fn phux_client_feed_frame(
         if !client.protocol_ready && !matches!(&frame, FrameKind::HelloOk { .. }) {
             return Err(BridgeError::state("server frame arrived before HELLO_OK"));
         }
+        if client.detached {
+            return Err(BridgeError::protocol("server frame arrived after DETACHED"));
+        }
         match frame {
             FrameKind::HelloOk {
                 protocol_major,
@@ -787,8 +799,12 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 client.rebuild_effect_views();
             }
             FrameKind::Detached => {
-                client.detached = true;
-                client.expected_attach_id = None;
+                if !client.attach_queued && !client.attached {
+                    return Err(BridgeError::protocol(
+                        "DETACHED arrived outside an active ATTACH phase",
+                    ));
+                }
+                client.detach();
                 client.owned_effects.push(OwnedEffect::simple(
                     2,
                     5,
@@ -1519,7 +1535,8 @@ mod tests {
             unsafe { phux_client_queue_attach(client, &options) },
             PhuxClientResult::InvalidArgument
         );
-        assert!(unsafe { (*client).inner.outgoing.is_empty() });
+        let client_ref = unsafe { &*client };
+        assert!(client_ref.inner.outgoing.is_empty());
         unsafe { phux_client_free(client) };
     }
 
@@ -1531,7 +1548,8 @@ mod tests {
             unsafe { phux_client_queue_hello(rejected, bytes_out(&too_large)) },
             PhuxClientResult::InvalidArgument
         );
-        assert!(unsafe { (*rejected).inner.outgoing.is_empty() });
+        let rejected_client = unsafe { &*rejected };
+        assert!(rejected_client.inner.outgoing.is_empty());
         unsafe { phux_client_free(rejected) };
 
         let boundary = vec![b'a'; crate::error::MAX_OUTBOUND_BYTES];
@@ -1540,8 +1558,9 @@ mod tests {
             unsafe { phux_client_queue_hello(accepted, bytes_out(&boundary)) },
             PhuxClientResult::Ok
         );
-        let (decoded, remaining) = FrameKind::decode(&unsafe { &(*accepted).inner.outgoing[0] })
-            .expect("boundary HELLO decodes");
+        let accepted_client = unsafe { &*accepted };
+        let (decoded, remaining) =
+            FrameKind::decode(&accepted_client.inner.outgoing[0]).expect("boundary HELLO decodes");
         assert!(remaining.is_empty());
         assert!(
             matches!(decoded, FrameKind::Hello { client_name, .. } if client_name.len() == boundary.len())
@@ -1605,6 +1624,9 @@ mod tests {
             PhuxClientResult::ProtocolError
         );
         assert!(!unsafe { (*client).inner.session.active_attach_contains(&terminal_id) });
+        unsafe {
+            (*client).inner.attach_queued = true;
+        }
         let authorized = [terminal_id.clone()];
         apply_kernel_input(
             unsafe { &mut (*client).inner },
@@ -1630,6 +1652,70 @@ mod tests {
             ),
             PhuxClientResult::ProtocolError
         );
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
+    fn detached_before_attach_rejects_without_poisoning_connection_state() {
+        let client = boxed_client();
+        unsafe {
+            (*client).inner.protocol_ready = true;
+        }
+        assert_eq!(
+            feed_kind(client, FrameKind::Detached),
+            PhuxClientResult::ProtocolError
+        );
+        assert!(!unsafe { (*client).inner.detached });
+        assert_eq!(
+            feed_kind(client, FrameKind::Ping { nonce: 7 }),
+            PhuxClientResult::Ok
+        );
+        let client_ref = unsafe { &*client };
+        assert_eq!(client_ref.inner.outgoing.len(), 1);
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
+    fn detached_releases_attach_and_rejects_subsequent_output_transactionally() {
+        let terminal_id = phux_protocol::TerminalId::local(7);
+        let authorized = [terminal_id.clone()];
+        let client = boxed_client();
+        unsafe {
+            (*client).inner.protocol_ready = true;
+            (*client).inner.attach_queued = true;
+        }
+        apply_kernel_input(
+            unsafe { &mut (*client).inner },
+            KernelInput::AttachStarted {
+                attach_id: 7,
+                terminals: &authorized,
+            },
+        )
+        .expect("seed active ATTACH inventory");
+        assert_eq!(feed_kind(client, FrameKind::Detached), PhuxClientResult::Ok);
+        let client_ref = unsafe { &*client };
+        assert!(
+            !client_ref
+                .inner
+                .session
+                .active_attach_contains(&terminal_id)
+        );
+        let effects_before = client_ref.inner.owned_effects.len();
+        assert_eq!(
+            feed_kind(
+                client,
+                FrameKind::TerminalOutput {
+                    terminal_id,
+                    stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+                    bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
+                    seq: 1,
+                    bytes: bytes::Bytes::from_static(b"late"),
+                },
+            ),
+            PhuxClientResult::ProtocolError
+        );
+        let client_ref = unsafe { &*client };
+        assert_eq!(client_ref.inner.owned_effects.len(), effects_before);
         unsafe { phux_client_free(client) };
     }
 }
