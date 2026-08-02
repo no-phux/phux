@@ -265,8 +265,6 @@ pub struct HistoryCache {
     consumed: VecDeque<ConsumedPage>,
     consumed_bytes: usize,
     anchor_pages: HashMap<DocumentAnchorId, HashSet<HistoryPageId>>,
-    visible: HashSet<HistoryPageId>,
-    selection: HashSet<HistoryPageId>,
     next_cursor: Option<HistoryCursor>,
     next_page_seq: Option<u64>,
     request_max_bytes: u32,
@@ -304,8 +302,6 @@ impl HistoryCache {
             consumed: VecDeque::new(),
             consumed_bytes: 0,
             anchor_pages: HashMap::new(),
-            visible: HashSet::new(),
-            selection: HashSet::new(),
             next_cursor: newest_cursor,
             next_page_seq,
             request_max_bytes: 0,
@@ -565,88 +561,6 @@ impl HistoryCache {
         Ok(id)
     }
 
-    /// Borrow immutable opaque bytes for engine import or diagnostics.
-    #[must_use]
-    pub(crate) fn payload(&self, page: &HistoryPageId) -> Option<&[u8]> {
-        Some(&self.pages.get(page)?.payload)
-    }
-
-    /// Record adapter-owned projection materialization accounting for one page.
-    pub(crate) fn set_materialized_rows(
-        &mut self,
-        page: &HistoryPageId,
-        rows: usize,
-    ) -> Result<(), HistoryCacheError> {
-        let existing = self
-            .pages
-            .get(page)
-            .ok_or(HistoryCacheError::PageUnavailable)?;
-        let old = existing.materialized_rows;
-        let pinned = existing.pin_count > 0;
-        let old_pinned_rows = self.pinned_materialized_rows;
-        if pinned {
-            let required = self
-                .pinned_materialized_rows
-                .saturating_sub(old)
-                .saturating_add(rows);
-            if required > self.config.max_materialized_rows {
-                return Err(HistoryCacheError::PinnedProjectionBudget {
-                    required,
-                    budget: self.config.max_materialized_rows,
-                });
-            }
-            self.pinned_materialized_rows = required;
-        }
-        self.materialized_rows = self
-            .materialized_rows
-            .saturating_sub(old)
-            .saturating_add(rows);
-        self.pages
-            .get_mut(page)
-            .expect("page checked above")
-            .materialized_rows = rows;
-        self.evict_materializations();
-        if self.materialized_rows > self.config.max_materialized_rows {
-            let required = self.materialized_rows;
-            self.materialized_rows = self
-                .materialized_rows
-                .saturating_sub(rows)
-                .saturating_add(old);
-            self.pages
-                .get_mut(page)
-                .expect("page checked above")
-                .materialized_rows = old;
-            self.pinned_materialized_rows = old_pinned_rows;
-            return Err(HistoryCacheError::ProjectionTooLarge {
-                required,
-                budget: self.config.max_materialized_rows,
-            });
-        }
-        Ok(())
-    }
-
-    /// Replace the pages protected by the visible adapter projection.
-    pub(crate) fn set_visible_pages(
-        &mut self,
-        pages: impl IntoIterator<Item = HistoryPageId>,
-    ) -> Result<(), HistoryCacheError> {
-        let next: HashSet<_> = pages.into_iter().collect();
-        if next.iter().any(|page| !self.pages.contains_key(page)) {
-            return Err(HistoryCacheError::PageUnavailable);
-        }
-        let removed: Vec<_> = self.visible.difference(&next).cloned().collect();
-        let added: Vec<_> = next.difference(&self.visible).cloned().collect();
-        for page in &removed {
-            self.unpin(page);
-        }
-        for page in &added {
-            self.pin(page);
-        }
-        self.visible = next;
-        self.evict_to_budget();
-        Ok(())
-    }
-
     /// Remaining bounded engine-anchor registrations.
     pub(crate) fn remaining_anchor_capacity(&self) -> usize {
         self.config
@@ -736,28 +650,6 @@ impl HistoryCache {
         self.invalidate(HistoryLoadState::Gap);
     }
 
-    /// Protect every loaded page touched by an engine-owned selection.
-    pub(crate) fn set_selection_pages(
-        &mut self,
-        pages: impl IntoIterator<Item = HistoryPageId>,
-    ) -> Result<(), HistoryCacheError> {
-        let next: HashSet<_> = pages.into_iter().collect();
-        if next.iter().any(|page| !self.pages.contains_key(page)) {
-            return Err(HistoryCacheError::PageUnavailable);
-        }
-        let removed: Vec<_> = self.selection.difference(&next).cloned().collect();
-        let added: Vec<_> = next.difference(&self.selection).cloned().collect();
-        for page in &removed {
-            self.unpin(page);
-        }
-        for page in &added {
-            self.pin(page);
-        }
-        self.selection = next;
-        self.evict_to_budget();
-        Ok(())
-    }
-
     /// Whether scrolling this close to the oldest loaded row should prefetch.
     #[must_use]
     pub(crate) fn should_prefetch(&self, rows_from_oldest: usize) -> bool {
@@ -770,14 +662,6 @@ impl HistoryCache {
         self.next_cursor.is_some()
     }
 
-    pub(crate) fn all_page_ids(&self) -> Vec<HistoryPageId> {
-        self.page_order
-            .iter()
-            .filter(|id| self.pages.contains_key(*id))
-            .cloned()
-            .collect()
-    }
-
     pub(crate) fn invalidate_cursor(
         &mut self,
         cursor: &HistoryCursor,
@@ -788,11 +672,6 @@ impl HistoryCache {
         }
         self.invalidate(state);
         true
-    }
-
-    /// Mark the generation stale and deterministically drop all pages and pins.
-    pub(crate) fn mark_stale(&mut self) {
-        self.invalidate(HistoryLoadState::Stale);
     }
 
     /// Mark the requested boundary pruned and deterministically drop all pages and pins.
@@ -844,8 +723,6 @@ impl HistoryCache {
             self.materialized_rows = self
                 .materialized_rows
                 .saturating_sub(removed.materialized_rows);
-            self.visible.remove(&id);
-            self.selection.remove(&id);
             for pages in self.anchor_pages.values_mut() {
                 pages.remove(&id);
             }
@@ -878,8 +755,6 @@ impl HistoryCache {
         self.page_order.clear();
         self.evictable.clear();
         self.anchor_pages.clear();
-        self.visible.clear();
-        self.selection.clear();
         self.next_cursor = None;
         self.next_page_seq = None;
         self.consumed.clear();
@@ -963,42 +838,6 @@ mod tests {
     }
 
     #[test]
-    fn budget_evicts_unpinned_oldest_never_visible_or_selected() {
-        let mut cache = HistoryCache::new(config(8, 8), Some(cursor(1)), 80);
-        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
-        let newest = cache
-            .accept_page(cursor(1), 1, Some(cursor(2)), 0, 0, b"1111")
-            .unwrap();
-        assert_eq!(cache.begin_fetch(), Some(cursor(2)));
-        let oldest = cache
-            .accept_page(cursor(2), 1, Some(cursor(3)), 0, 0, b"2222")
-            .unwrap();
-        cache.set_visible_pages([oldest.clone()]).unwrap();
-        cache.set_selection_pages([oldest.clone()]).unwrap();
-        assert_eq!(cache.begin_fetch(), Some(cursor(3)));
-        cache
-            .accept_page(cursor(3), 1, None, 0, 0, b"3333")
-            .unwrap();
-        assert!(cache.payload(&oldest).is_some());
-        assert!(cache.payload(&newest).is_none());
-    }
-
-    #[test]
-    fn materialization_budget_drops_only_unpinned_adapter_projection() {
-        let mut cache = HistoryCache::new(config(64, 2), Some(cursor(1)), 80);
-        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
-        let first = cache
-            .accept_page(cursor(1), 1, Some(cursor(2)), 0, 0, b"one")
-            .unwrap();
-        assert_eq!(cache.begin_fetch(), Some(cursor(2)));
-        let second = cache.accept_page(cursor(2), 1, None, 0, 0, b"two").unwrap();
-        cache.set_visible_pages([second.clone()]).unwrap();
-        cache.set_materialized_rows(&second, 2).unwrap();
-        cache.set_materialized_rows(&first, 2).unwrap();
-        assert_eq!(cache.status().materialized_rows, 2);
-    }
-
-    #[test]
     fn invalidation_and_prefetch_are_explicit() {
         let mut cache = HistoryCache::new(config(64, 64), Some(cursor(1)), 80);
         assert!(cache.should_prefetch(2));
@@ -1007,24 +846,6 @@ mod tests {
         assert!(!cache.should_prefetch(0));
         cache.tombstone();
         assert_eq!(cache.status().state, HistoryLoadState::Tombstoned);
-    }
-
-    #[test]
-    fn pinned_projection_cannot_overrun_row_budget() {
-        let mut cache = HistoryCache::new(config(64, 2), Some(cursor(1)), 80);
-        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
-        let page = cache
-            .accept_page(cursor(1), 1, None, 0, 0, b"opaque")
-            .unwrap();
-        cache.set_visible_pages([page.clone()]).unwrap();
-        assert_eq!(
-            cache.set_materialized_rows(&page, 3),
-            Err(HistoryCacheError::PinnedProjectionBudget {
-                required: 3,
-                budget: 2,
-            })
-        );
-        assert_eq!(cache.status().materialized_rows, 0);
     }
 
     #[test]
@@ -1050,7 +871,7 @@ mod tests {
             })
         );
         cache.accept_page(cursor(1), 2, None, 1, 1, b"two").unwrap();
-        assert!(cache.payload(&first).is_some());
+        assert!(cache.pages.contains_key(&first));
         assert_eq!(cache.status().next_page_seq, None);
     }
 
@@ -1135,7 +956,7 @@ mod tests {
         cache
             .accept_page(cursor(1), 2, None, 1, 1, b"bbbb")
             .unwrap();
-        assert!(cache.payload(&first).is_none());
+        assert!(!cache.pages.contains_key(&first));
         assert_eq!(
             cache.check_page(&cursor(1), 1, Some(&cursor(1)), 1, b"aaaa"),
             Ok(HistoryPageCheck::Duplicate(first))
