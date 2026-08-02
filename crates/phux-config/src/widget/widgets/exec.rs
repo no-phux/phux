@@ -19,7 +19,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::widget::{Cell, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError};
+use crate::widget::{
+    Cell, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, reject_unknown_opts,
+};
 
 /// Widget kind, used in error messages.
 const KIND: &str = "exec";
@@ -137,11 +139,17 @@ impl StatusWidget for ExecWidget {
 ///
 /// # Errors
 ///
-/// Returns [`WidgetError::InvalidOption`] when `command` is missing,
-/// empty, or wrong-typed, or when `interval` / `parse-ansi` do not parse.
+/// Returns [`WidgetError::InvalidOption`] on an unknown option, when
+/// `command` is missing, empty, or wrong-typed, or when `interval` /
+/// `parse-ansi` do not parse.
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
+    reject_unknown_opts(
+        KIND,
+        opts,
+        &["command", "interval", "parse-ansi", "parse_ansi"],
+    )?;
     let argv = match opts.get("command") {
         Some(toml::Value::String(s)) if !s.trim().is_empty() => {
             vec!["/bin/sh".to_owned(), "-c".to_owned(), s.clone()]

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::widget::{CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError};
+use crate::widget::{
+    CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, reject_unknown_opts,
+};
 
 const KIND: &str = "help-hints";
 
@@ -30,11 +32,6 @@ impl StatusWidget for HelpHintsWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    if let Some(key) = opts.keys().next() {
-        return Err(WidgetError::InvalidOption {
-            kind: KIND.to_owned(),
-            message: format!("unknown option `{key}`"),
-        });
-    }
+    reject_unknown_opts(KIND, opts, &[])?;
     Ok(Box::new(HelpHintsWidget))
 }

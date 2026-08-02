@@ -712,6 +712,9 @@ mod tests {
         );
 
         let cli = crate::Cli::try_parse_from(&argv).expect("the writer argv must parse");
+        // `--socket` is the root global now, so the writer's copy lands on
+        // the top-level field rather than inside the Play variant.
+        assert_eq!(cli.socket.as_deref(), Some(Path::new("/tmp/phux.sock")));
         let Some(crate::Command::Play {
             file: parsed_file,
             speed,
@@ -720,7 +723,6 @@ mod tests {
             no_fit,
             close,
             pty_writer,
-            socket,
             ..
         }) = cli.command
         else {
@@ -733,7 +735,6 @@ mod tests {
         assert_eq!(loops, Some(3));
         assert!(no_fit);
         assert!(close);
-        assert_eq!(socket.as_deref(), Some(Path::new("/tmp/phux.sock")));
     }
 
     #[test]

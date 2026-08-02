@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError};
+use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, reject_unknown_opts};
 
 /// Widget kind, used in error messages.
 const KIND: &str = "cwd";
@@ -99,11 +99,12 @@ impl StatusWidget for CwdWidget {
 ///
 /// # Errors
 ///
-/// Returns [`WidgetError::InvalidOption`] on a wrong-typed value or a
-/// non-positive `truncate`.
+/// Returns [`WidgetError::InvalidOption`] on an unknown option, a
+/// wrong-typed value, or a non-positive `truncate`.
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
+    reject_unknown_opts(KIND, opts, &["format", "truncate"])?;
     let format = match opts.get("format") {
         None => DEFAULT_FORMAT.to_owned(),
         Some(toml::Value::String(s)) => s.clone(),

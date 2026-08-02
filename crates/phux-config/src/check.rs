@@ -43,6 +43,8 @@ use std::path::Path;
 use serde_path_to_error::Segment;
 
 use crate::keybind::{KeybindError, Resolver, parse_chord, parse_chord_sequence};
+use crate::schema::{Widget, WidgetSpec};
+use crate::widget::{WidgetError, WidgetRegistry};
 use crate::{
     Action, Config, ConfigError, HookEntry, KeybindingsCfg, LayerSource,
     merged_config_with_provenance, vocab,
@@ -233,8 +235,8 @@ pub fn check(user_input: &str, path: &Path) -> Result<CheckReport, ConfigError> 
 }
 
 /// Validators that need the typed, merged-and-pruned [`Config`] rather
-/// than the raw TOML table: keybindings (phux-i0e8.3.2) and hooks
-/// (phux-i0e8.3.3).
+/// than the raw TOML table: keybindings (phux-i0e8.3.2), hooks
+/// (phux-i0e8.3.3), and status-bar widgets (phux-i0e8.4.2).
 fn semantic_pass(
     config: &Config,
     provenance: &crate::ConfigProvenance,
@@ -242,6 +244,7 @@ fn semantic_pass(
 ) {
     keybinding_findings(&config.keybindings, provenance, findings);
     hook_findings(&config.hooks, provenance, findings);
+    status_widget_findings(&config.status, provenance, findings);
 }
 
 /// Semantic keybinding validation (phux-i0e8.3.2), catching the two
@@ -364,7 +367,7 @@ fn hook_findings(
 
         for (index, entry) in entries.iter().enumerate() {
             let entry_path = format!("{table_path}[{index}]");
-            let source = hook_entry_source(provenance, &table_path, index);
+            let source = array_entry_source(provenance, &table_path, index);
 
             for key in entry.when.keys() {
                 let base = key.strip_suffix("-startswith").unwrap_or(key);
@@ -409,15 +412,76 @@ fn hook_findings(
     }
 }
 
-/// Resolve the layer that contributed hook entry `index` of the array at
-/// `table_path`.
+/// Semantic status-bar widget validation (phux-i0e8.4.2). Widget specs
+/// are an open `kind` + `opts` map at the schema level, so a typo'd
+/// kind, a typo'd option, or a bad `style` table parses clean and only
+/// fails when the TUI builds the bar. The check runs the same build
+/// path — [`crate::widget::WidgetRegistry::build`] per widget, exactly
+/// what [`crate::widget::StatusBar::build`] does slot by slot — and
+/// converts each [`WidgetError`] into a located finding, so `phux
+/// config check` says ok only for a bar that will actually compose.
 ///
-/// Hook entries live in an array-of-tables, and provenance records
-/// arrays as a single leaf with per-element contributor indices
+/// Building per widget (rather than one `StatusBar::build` call, which
+/// stops at the first error) reports every bad widget in one pass,
+/// matching this module's ethos.
+fn status_widget_findings(
+    status: &crate::StatusCfg,
+    provenance: &crate::ConfigProvenance,
+    findings: &mut Vec<Finding>,
+) {
+    let registry = WidgetRegistry::with_builtins();
+    let kinds = registry.kinds();
+    for (slot, widgets) in [
+        ("left", &status.left),
+        ("center", &status.center),
+        ("right", &status.right),
+    ] {
+        let table_path = format!("status.{slot}");
+        for (index, entry) in widgets.iter().enumerate() {
+            let spec = match entry {
+                Widget::Bare(kind) => WidgetSpec {
+                    kind: kind.clone(),
+                    opts: BTreeMap::new(),
+                },
+                Widget::Spec(spec) => spec.clone(),
+            };
+            let Err(error) = registry.build(&spec) else {
+                continue;
+            };
+            let entry_path = format!("{table_path}[{index}]");
+            let (fault, message) = match error {
+                WidgetError::UnknownKind(kind) => {
+                    let suggestion = vocab::did_you_mean(&kind, &kinds)
+                        .map(|hit| format!(" (did you mean `{hit}`?)"))
+                        .unwrap_or_default();
+                    (
+                        Fault::UnknownName,
+                        format!("unknown widget kind `{kind}`{suggestion}"),
+                    )
+                }
+                invalid @ WidgetError::InvalidOption { .. } => {
+                    (Fault::BadValue, invalid.to_string())
+                }
+            };
+            findings.push(Finding {
+                path: entry_path,
+                fault,
+                message,
+                source: array_entry_source(provenance, &table_path, index),
+            });
+        }
+    }
+}
+
+/// Resolve the layer that contributed element `index` of the array at
+/// `table_path` (hook entries, status-bar slots).
+///
+/// These entries live in TOML arrays, and provenance records arrays as
+/// a single leaf with per-element contributor indices
 /// ([`crate::KeyOrigin::elements`]) — with `-append` layering, entry 0
-/// and entry 1 of the same event can come from different files. Falls
+/// and entry 1 of the same array can come from different files. Falls
 /// back to the array's own layer when the element index is out of range.
-fn hook_entry_source(
+fn array_entry_source(
     provenance: &crate::ConfigProvenance,
     table_path: &str,
     index: usize,
@@ -897,6 +961,97 @@ mod tests {
              [[hooks.agent-state-changed]]\nwhen = { to = \"blocked\" }\naction = { kind = \"run\", command = [\"afplay\", \"/tmp/x.aiff\"] }\n",
         );
         assert!(report.is_ok(), "false positives: {:?}", report.findings);
+    }
+
+    // -- semantic pass: status-bar widgets (phux-i0e8.4.2) -----------------
+
+    /// A typo'd widget kind parses (the spec is an open `kind` string) and
+    /// then fails the bar build at TUI startup. The check flags it first,
+    /// locating the slot entry and suggesting the real kind.
+    #[test]
+    fn an_unknown_widget_kind_is_flagged_with_a_suggestion() {
+        let report = run("[status]\nleft = [\"windws\"]\n");
+        assert_eq!(paths(&report), vec!["status.left[0]"]);
+        let finding = &report.findings[0];
+        assert_eq!(finding.fault, Fault::UnknownName);
+        assert!(
+            finding
+                .message
+                .contains("unknown widget kind `windws` (did you mean `windows`?)"),
+            "no suggestion in: {}",
+            finding.message
+        );
+    }
+
+    /// An unknown widget option is rejected by the factory's closed opts
+    /// surface and surfaces as a located finding, suggestion included.
+    #[test]
+    fn an_unknown_widget_opt_is_a_located_finding() {
+        let report = run("[status]\nright = [{ kind = \"time\", formt = \"%H\" }]\n");
+        assert_eq!(paths(&report), vec!["status.right[0]"]);
+        let finding = &report.findings[0];
+        assert_eq!(finding.fault, Fault::BadValue);
+        assert!(
+            finding.message.contains("widget time")
+                && finding.message.contains("unknown option `formt`")
+                && finding.message.contains("did you mean `format`?"),
+            "wrong message: {}",
+            finding.message
+        );
+    }
+
+    /// The bead's motivating trap: a bad `style` table must fail the check,
+    /// not parse clean and render unstyled.
+    #[test]
+    fn a_bad_style_table_is_a_located_finding() {
+        let report =
+            run("[status]\ncenter = [{ kind = \"session-name\", style = { colour = \"red\" } }]\n");
+        assert_eq!(paths(&report), vec!["status.center[0]"]);
+        let finding = &report.findings[0];
+        assert_eq!(finding.fault, Fault::BadValue);
+        assert!(
+            finding.message.contains("`style` must be a style table"),
+            "wrong message: {}",
+            finding.message
+        );
+    }
+
+    /// Every bad widget is reported in one pass — the check builds per
+    /// widget rather than stopping at `StatusBar::build`'s first error.
+    #[test]
+    fn every_bad_widget_is_reported_in_one_pass() {
+        let report = run(
+            "[status]\nleft = [\"windws\", { kind = \"time\", formt = \"%H\" }]\nright = [\"not-even-close\"]\n",
+        );
+        assert_eq!(
+            paths(&report),
+            vec!["status.left[0]", "status.left[1]", "status.right[0]"]
+        );
+    }
+
+    /// A valid `[status]` — including a widget-level `style` table — is
+    /// clean; the check must not cry wolf on the shipped surface.
+    #[test]
+    fn a_valid_status_bar_with_styles_checks_clean() {
+        let report = run(
+            "[status]\nleft = [{ kind = \"windows\", separator = \" | \" }]\n\
+             center = [\"help-hints\"]\n\
+             right = [{ kind = \"session-name\", format = \"[{name}]\", style = { fg = \"red\", bold = true } }, { kind = \"time\", format = \" %H:%M\" }]\n",
+        );
+        assert!(report.is_ok(), "false positives: {:?}", report.findings);
+    }
+
+    /// Widget findings carry layer attribution like every other finding.
+    #[test]
+    fn a_widget_finding_is_attributed_to_the_user_file() {
+        let path = Path::new("/nonexistent/config.toml");
+        let report = check("[status]\nleft = [\"windws\"]\n", path).expect("check runs");
+        assert_eq!(
+            report.findings[0].source,
+            Some(LayerSource::User(path.to_path_buf())),
+            "origin was {}",
+            report.findings[0].origin()
+        );
     }
 
     /// Hook findings carry layer attribution like every other finding:

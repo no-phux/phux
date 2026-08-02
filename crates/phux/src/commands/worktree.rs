@@ -78,16 +78,15 @@ struct BoundWorktree {
     bound: Option<bool>,
 }
 
-pub(crate) fn run_worktree(action: &WorktreeAction) -> ExitCode {
+pub(crate) fn run_worktree(action: &WorktreeAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
-        WorktreeAction::List { path, json, socket } => run_list(path, *json, socket.as_deref()),
+        WorktreeAction::List { path, json } => run_list(path, *json, socket.as_deref()),
         WorktreeAction::New {
             branch,
             path,
             from,
             session,
             repo,
-            socket,
             attach,
             command,
         } => run_new(NewRequest {
@@ -96,21 +95,19 @@ pub(crate) fn run_worktree(action: &WorktreeAction) -> ExitCode {
             from: from.as_deref(),
             session: session.as_deref(),
             repo,
-            socket: socket.clone(),
+            socket,
             attach: *attach,
             command: command.clone(),
         }),
         WorktreeAction::Open {
             target,
             repo,
-            socket,
             attach,
-        } => run_open(target, repo, socket.clone(), *attach),
+        } => run_open(target, repo, socket, *attach),
         WorktreeAction::Remove {
             target,
             force,
             repo,
-            socket,
         } => run_remove(target, *force, repo, socket.as_deref()),
     }
 }

@@ -49,7 +49,7 @@ use super::connection::{Connection, Dial};
 use super::exec_widgets::spawn_exec_feed_runners;
 use super::input::StdinParser;
 use super::input_dispatch::{
-    DispatchCtx, ReattachTarget, dispatch_input_events, encode_layout_or_log,
+    DispatchCtx, ReattachTarget, dispatch_input_events, encode_layout_or_log, focused_pane_rect_for,
 };
 use super::paint::{
     SidebarEdge, SidebarReservation, content_rect, paint_bar_after_pane, paint_chrome_in_place,
@@ -3470,6 +3470,26 @@ async fn main_loop<W: super::RenderSink>(
                     tracing::debug!("resize: dropped a pinned overlay whose geometry went stale");
                 }
                 if overlays.is_active() {
+                    // phux-d26y: the survivors keep their state but must adopt
+                    // the focused pane's NEW size before they are painted.
+                    // Copy-mode is the one that cares: it clamps its cursor and
+                    // picks Line mode's right edge from pane dimensions
+                    // captured when it opened, so without this a copy after a
+                    // resize either resolves to nothing (a stale-large corner
+                    // the engine cannot address) or stops at the old edge
+                    // (stale-small). Runs after the stale sweep above, so an
+                    // overlay about to be dropped is never handed geometry it
+                    // will not use.
+                    let bar = status_bar.as_ref().map(StatusBarPainter::position);
+                    let pane = focused_pane_rect_for(
+                        &workspace,
+                        zoomed.as_ref(),
+                        focused_pane.as_ref(),
+                        viewport_dims,
+                        bar,
+                        sidebar,
+                    );
+                    overlays.on_viewport_resize(pane.w, pane.h);
                     paint_active_overlay(
                         out,
                         &overlays,

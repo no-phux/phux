@@ -77,13 +77,13 @@ fn finalize_recording(rec: Option<&RecordSpec>) {
 ///    surfacing a dead-end "no session" error.
 ///
 /// The shared cascade lives in [`attach_default_with_fallback`].
-pub(crate) fn run_naked(rec: Option<&RecordSpec>) -> ExitCode {
+pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> ExitCode {
     // The naked invocation is a human launching their session and
     // watching it come up (possibly auto-spawning a server). One line of
     // build identity is welcome here; one-shot verbs stay silent.
     print_banner();
 
-    let socket_path = default_socket_path();
+    let socket_path = socket.unwrap_or_else(default_socket_path);
     // phux-iwuc: a socket path over the platform's sockaddr_un limit can
     // never bind or connect — fail with the limit named, before the
     // auto-spawn below can turn it into a 2s timeout.

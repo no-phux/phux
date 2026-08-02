@@ -248,6 +248,38 @@ impl RenderOverlay for CopyModeOverlay {
     /// otherwise untouched. So this `render` is intentionally empty.
     fn render(&self, _area: Rect, _buf: &mut Buffer) {}
 
+    /// phux-d26y: adopt the focused pane's new size and pull the selection
+    /// back inside it.
+    ///
+    /// Copy-mode is not a pinned box — it is a selection over the live pane,
+    /// so unlike the context menu it *survives* a resize
+    /// ([`RenderOverlay::survives_resize`] stays `true`): dropping it would
+    /// discard an in-progress selection the user is still building. What it
+    /// cannot do is keep clamping against dimensions the pane no longer has.
+    /// Stale-large strands the cursor outside the grid, and the copy path
+    /// resolves that corner through `terminal.grid_ref(..).ok()?` — so the
+    /// extraction returns `None` and Enter dismisses copy-mode having
+    /// silently copied nothing. Stale-small does the mirror thing: the newly
+    /// revealed columns and rows are unreachable, and a Line-mode copy stops
+    /// at the old right edge.
+    ///
+    /// Both corners are clamped, not just the cursor. Clamping the anchor
+    /// keeps a smaller selection alive across a shrink, which is the
+    /// friendlier of the two options — the alternative (collapsing to a
+    /// cursor-only state) throws away a selection the user may have spent
+    /// several keystrokes building, and a partially-preserved selection is
+    /// still visible and still correct about the cells it names.
+    fn on_viewport_resize(&mut self, pane_cols: u16, pane_rows: u16) {
+        self.pane_cols = pane_cols;
+        self.pane_rows = pane_rows;
+        let max_row = self.pane_rows.saturating_sub(1);
+        let max_col = self.pane_cols.saturating_sub(1);
+        self.cursor_row = self.cursor_row.min(max_row);
+        self.cursor_col = self.cursor_col.min(max_col);
+        self.anchor_row = self.anchor_row.min(max_row);
+        self.anchor_col = self.anchor_col.min(max_col);
+    }
+
     fn copy_selection(&self) -> Option<SelectionRect> {
         // `effective_range` applies the Line-mode whole-line expansion, and
         // `from_range` sets the block/linear flag from the mode, so the renderer
@@ -743,5 +775,103 @@ mod tests {
             3.0,
         ));
         assert_eq!(grab_of(&cmd), SelectionGrab::Rect);
+    }
+
+    // ---------- phux-d26y: pane dims must track a resize ----------
+
+    /// Shrink: the clamp must follow the pane down, or the overlay keeps
+    /// permitting a cursor past the new edge. The copy path resolves that
+    /// point with `terminal.grid_ref(...).ok()?`, so an out-of-range corner
+    /// makes `extract_selection_text` return `None` — Enter dismisses
+    /// copy-mode having silently copied nothing.
+    #[test]
+    fn a_shrink_reclamps_the_cursor_and_the_anchor() {
+        let mut overlay = CopyModeOverlay::new(20, 70, 80, 24);
+        // Drag out a selection that fills the old pane.
+        overlay.move_cursor(3, 9); // cursor -> (23, 79), the old bottom-right
+        assert_eq!((overlay.cursor_row, overlay.cursor_col), (23, 79));
+
+        overlay.on_viewport_resize(60, 18);
+
+        assert_eq!(
+            (overlay.cursor_row, overlay.cursor_col),
+            (17, 59),
+            "the cursor must be pulled inside the new pane",
+        );
+        assert_eq!(
+            (overlay.anchor_row, overlay.anchor_col),
+            (17, 59),
+            "the anchor is clamped too — a corner left outside the pane is the \
+             one that makes the copy resolve to nothing",
+        );
+        // And the request it would commit now names only real cells.
+        let req = overlay.copy_request();
+        assert!(
+            req.end_row < 18 && req.end_col < 60 && req.start_row < 18 && req.start_col < 60,
+            "every corner of the committed request is inside the pane: {req:?}",
+        );
+    }
+
+    /// Grow: the clamp must follow the pane up, or the cursor stops at the
+    /// old edge and the newly revealed region is unreachable.
+    #[test]
+    fn a_grow_lets_the_cursor_reach_the_new_edges() {
+        let mut overlay = CopyModeOverlay::new(0, 0, 60, 20);
+        overlay.on_viewport_resize(100, 30);
+        // Walk hard into the bottom-right; `move_cursor` saturates at the clamp.
+        overlay.move_cursor(i16::MAX, i16::MAX);
+        assert_eq!(
+            (overlay.cursor_row, overlay.cursor_col),
+            (29, 99),
+            "the cursor must reach the corner of the grown pane",
+        );
+    }
+
+    /// Line mode takes its right edge from `pane_cols`, so a stale value
+    /// silently truncates a whole-line copy at the old width.
+    #[test]
+    fn line_mode_spans_the_new_width_after_a_grow() {
+        let mut overlay = CopyModeOverlay::new(1, 0, 60, 20);
+        overlay.cycle_mode(); // Char -> Line
+        assert_eq!(overlay.mode(), SelectionMode::Line);
+        assert_eq!(
+            overlay.copy_request().end_col,
+            59,
+            "precondition: the line ends at the old right edge",
+        );
+
+        overlay.on_viewport_resize(100, 30);
+
+        assert_eq!(
+            overlay.copy_request().end_col,
+            99,
+            "a whole-line copy must reach the new right edge, not the old one",
+        );
+    }
+
+    /// A resize that does not move the cursor leaves the selection alone —
+    /// growing must not disturb an in-progress selection.
+    #[test]
+    fn a_grow_preserves_an_in_bounds_selection() {
+        let mut overlay = CopyModeOverlay::new(2, 3, 60, 20);
+        overlay.move_cursor(1, 2); // cursor -> (3, 5), anchor stays (2, 3)
+        overlay.on_viewport_resize(100, 30);
+        let sel = overlay
+            .copy_selection()
+            .expect("copy-mode always has a selection");
+        assert_eq!(
+            (sel.start_row, sel.start_col, sel.end_row, sel.end_col),
+            (2, 3, 3, 5),
+            "an in-bounds selection survives the resize untouched",
+        );
+    }
+
+    /// Page scrolling reads `pane_rows`; it must follow the resize too.
+    #[test]
+    fn the_page_span_follows_the_resize() {
+        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
+        assert_eq!(overlay.page_scroll_delta(), 23);
+        overlay.on_viewport_resize(80, 40);
+        assert_eq!(overlay.page_scroll_delta(), 39);
     }
 }

@@ -22,6 +22,7 @@ use std::time::{Duration, SystemTime};
 use smallvec::SmallVec;
 
 use crate::schema::WidgetSpec;
+use crate::vocab;
 
 mod status_bar;
 mod widgets;
@@ -268,8 +269,100 @@ pub trait StatusWidget: Send + Sync + fmt::Debug + 'static {
 }
 
 /// Factory function: builds a widget from a TOML `opts` map.
+///
+/// The universal `style` option is *not* part of a factory's surface:
+/// [`WidgetRegistry::build`] extracts and applies it before the factory
+/// runs, so factories only ever see their own kind-specific options.
 pub type WidgetFactory =
     fn(&BTreeMap<String, toml::Value>) -> Result<Box<dyn StatusWidget>, WidgetError>;
+
+/// The universal widget option every kind accepts (phux-i0e8.4.2):
+/// a [`CellStyle`] table applied by the registry, not by factories.
+const STYLE_OPT: &str = "style";
+
+/// Parse an optional [`CellStyle`] from an inline-table option.
+///
+/// Shared by the registry (the universal `style` option) and by widgets
+/// with their own style-table options (`windows`' `active`/`inactive`).
+pub(crate) fn style_opt(
+    kind: &str,
+    opts: &BTreeMap<String, toml::Value>,
+    key: &str,
+) -> Result<Option<CellStyle>, WidgetError> {
+    opts.get(key).map_or(Ok(None), |value| {
+        value
+            .clone()
+            .try_into::<CellStyle>()
+            .map(Some)
+            .map_err(|e| WidgetError::InvalidOption {
+                kind: kind.to_owned(),
+                message: format!("`{key}` must be a style table: {e}"),
+            })
+    })
+}
+
+/// Reject any option key outside `allowed`, naming the widget and
+/// suggesting the nearest valid option (phux-i0e8.4.2).
+///
+/// Every factory calls this first, so a typo'd option fails the build
+/// loudly instead of parsing into an open `BTreeMap` and doing nothing.
+/// The universal `style` key is always accepted: [`WidgetRegistry::build`]
+/// extracts and applies it before the factory runs, so factories never
+/// see it — but it is a valid spelling and belongs in the suggestions.
+pub(crate) fn reject_unknown_opts(
+    kind: &str,
+    opts: &BTreeMap<String, toml::Value>,
+    allowed: &[&str],
+) -> Result<(), WidgetError> {
+    for key in opts.keys() {
+        if key == STYLE_OPT || allowed.contains(&key.as_str()) {
+            continue;
+        }
+        let mut candidates: Vec<&str> = allowed.to_vec();
+        candidates.push(STYLE_OPT);
+        let suggestion = vocab::did_you_mean(key, &candidates)
+            .map(|hit| format!(" (did you mean `{hit}`?)"))
+            .unwrap_or_default();
+        return Err(WidgetError::InvalidOption {
+            kind: kind.to_owned(),
+            message: format!("unknown option `{key}`{suggestion}"),
+        });
+    }
+    Ok(())
+}
+
+/// Decorator applying a widget-level [`CellStyle`] to the wrapped
+/// widget's *unstyled* cells (phux-i0e8.4.2).
+///
+/// Precedence: a cell that already carries a style keeps it — the
+/// `windows` widget's `active`/`inactive` segments, `exec`'s SGR-parsed
+/// output, and `help-hints`' dim base all win over the widget-level
+/// `style` table. Only cells the widget left plain inherit it.
+#[derive(Debug)]
+struct Styled {
+    inner: Box<dyn StatusWidget>,
+    style: CellStyle,
+}
+
+impl StatusWidget for Styled {
+    fn render(&self, ctx: &WidgetContext<'_>) -> WidgetCells {
+        let mut cells = self.inner.render(ctx);
+        for cell in &mut cells.cells {
+            if cell.style.is_none() {
+                cell.style = Some(self.style.clone());
+            }
+        }
+        cells
+    }
+
+    fn poll_interval(&self) -> Option<Duration> {
+        self.inner.poll_interval()
+    }
+
+    fn exec_feed(&self) -> Option<ExecFeed> {
+        self.inner.exec_feed()
+    }
+}
 
 /// Registry of widget kinds → factories.
 ///
@@ -320,17 +413,38 @@ impl WidgetRegistry {
 
     /// Look up a kind and invoke its factory.
     ///
+    /// The universal `style` option (phux-i0e8.4.2) is handled here, not
+    /// per factory: it is parsed and removed from the opts before the
+    /// factory runs, and a non-plain style wraps the built widget in a
+    /// decorator that styles its unstyled cells (per-cell styles win —
+    /// see `docs/consumers/tui.md` §8.3 for the precedence contract).
+    ///
     /// # Errors
     ///
     /// Returns [`WidgetError::UnknownKind`] if `spec.kind` is not
-    /// registered, or forwards [`WidgetError::InvalidOption`] from the
-    /// factory.
+    /// registered, [`WidgetError::InvalidOption`] if `style` is not a
+    /// valid style table, or forwards [`WidgetError::InvalidOption`]
+    /// from the factory.
     pub fn build(&self, spec: &WidgetSpec) -> Result<Box<dyn StatusWidget>, WidgetError> {
         let factory = self
             .factories
             .get(spec.kind.as_str())
             .ok_or_else(|| WidgetError::UnknownKind(spec.kind.clone()))?;
-        factory(&spec.opts)
+        let style = style_opt(&spec.kind, &spec.opts, STYLE_OPT)?;
+        let widget = if spec.opts.contains_key(STYLE_OPT) {
+            let mut opts = spec.opts.clone();
+            opts.remove(STYLE_OPT);
+            factory(&opts)?
+        } else {
+            factory(&spec.opts)?
+        };
+        Ok(match style.filter(|s| !s.is_plain()) {
+            Some(style) => Box::new(Styled {
+                inner: widget,
+                style,
+            }),
+            None => widget,
+        })
     }
 
     /// Registered widget kinds, in ASCII order (handy for tests).

@@ -495,6 +495,270 @@ fn windows_widget_empty_list_renders_nothing() {
     assert!(cells.is_empty());
 }
 
+// ---------------------------------------------------------------------------
+// Closed opts surface (phux-i0e8.4.2): every factory rejects unknown
+// options, naming the widget and suggesting the nearest valid opt.
+// ---------------------------------------------------------------------------
+
+fn build_spec(
+    kind: &str,
+    opts: &[(&str, toml::Value)],
+) -> Result<Box<dyn StatusWidget>, WidgetError> {
+    let spec = WidgetSpec {
+        kind: kind.to_owned(),
+        opts: opts_with(opts),
+    };
+    WidgetRegistry::with_builtins().build(&spec)
+}
+
+/// One rejection case: widget kind, opts, expected suggestion.
+type RejectionCase<'a> = (&'a str, Vec<(&'a str, toml::Value)>, &'a str);
+
+#[test]
+fn every_factory_rejects_unknown_opts_with_a_suggestion() {
+    // One near-miss typo per kind; each must be rejected by *its* factory
+    // (kind named in the error) with a did-you-mean for the real opt.
+    let cases: &[RejectionCase<'_>] = &[
+        (
+            "time",
+            vec![("formt", toml::Value::String("%H".to_owned()))],
+            "format",
+        ),
+        (
+            "session-name",
+            vec![("prefx", toml::Value::String("s:".to_owned()))],
+            "prefix",
+        ),
+        (
+            "cwd",
+            vec![("truncat", toml::Value::Integer(8))],
+            "truncate",
+        ),
+        (
+            "exit",
+            vec![("forma", toml::Value::String("{code}".to_owned()))],
+            "format",
+        ),
+        (
+            "windows",
+            vec![("separater", toml::Value::String("|".to_owned()))],
+            "separator",
+        ),
+        (
+            "exec",
+            vec![
+                ("command", toml::Value::String("true".to_owned())),
+                ("intervall", toml::Value::String("5s".to_owned())),
+            ],
+            "interval",
+        ),
+    ];
+    for (kind, opts, want_suggestion) in cases {
+        match build_spec(kind, opts) {
+            Err(WidgetError::InvalidOption { kind: k, message }) => {
+                assert_eq!(&k, kind, "error names the wrong widget: {message}");
+                assert!(
+                    message.contains("unknown option"),
+                    "{kind}: wrong message: {message}"
+                );
+                assert!(
+                    message.contains(&format!("did you mean `{want_suggestion}`?")),
+                    "{kind}: no suggestion in: {message}"
+                );
+            }
+            other => panic!("{kind}: expected InvalidOption, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn help_hints_rejects_any_opt() {
+    let err = build_spec("help-hints", &[("anything", toml::Value::Boolean(true))])
+        .expect_err("help-hints takes no options");
+    match err {
+        WidgetError::InvalidOption { kind, message } => {
+            assert_eq!(kind, "help-hints");
+            assert!(message.contains("unknown option `anything`"), "{message}");
+        }
+        other @ WidgetError::UnknownKind(_) => panic!("expected InvalidOption, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_typoed_style_key_is_rejected_and_suggests_style() {
+    // `style` is consumed by the registry, but it is still a valid
+    // spelling — a near-miss must point at it.
+    let err = build_spec(
+        "time",
+        &[(
+            "styel",
+            style_table(&[("bold", toml::Value::Boolean(true))]),
+        )],
+    )
+    .expect_err("typo'd style rejected");
+    match err {
+        WidgetError::InvalidOption { message, .. } => {
+            assert!(message.contains("did you mean `style`?"), "{message}");
+        }
+        other @ WidgetError::UnknownKind(_) => panic!("expected InvalidOption, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Universal widget-level `style` (phux-i0e8.4.2)
+// ---------------------------------------------------------------------------
+
+fn red_bold() -> toml::Value {
+    style_table(&[
+        ("fg", toml::Value::String("red".to_owned())),
+        ("bold", toml::Value::Boolean(true)),
+    ])
+}
+
+#[test]
+fn style_opt_styles_time_session_name_cwd_and_exit_cells() {
+    let want = CellStyle {
+        fg: Some("red".to_owned()),
+        bold: true,
+        ..CellStyle::default()
+    };
+    // (kind, extra opts) — each renders at least one cell in the fixture
+    // context below and every cell must carry the widget-level style.
+    let cases: &[(&str, Vec<(&str, toml::Value)>)] = &[
+        // Literal format keeps the time widget deterministic.
+        (
+            "time",
+            vec![("format", toml::Value::String("T".to_owned()))],
+        ),
+        ("session-name", vec![]),
+        ("cwd", vec![]),
+        ("exit", vec![]),
+    ];
+    for (kind, extra) in cases {
+        let mut opts = extra.clone();
+        opts.push(("style", red_bold()));
+        let w = build_spec(kind, &opts).unwrap_or_else(|e| panic!("{kind} builds: {e}"));
+        let ctx = WidgetContext {
+            cwd: "/tmp",
+            last_exit: Some(0),
+            ..WidgetContext::new(fixed_time(), "main", "C-a", &[])
+        };
+        let cells = w.render(&ctx);
+        assert!(!cells.is_empty(), "{kind} rendered nothing");
+        for cell in &cells.cells {
+            assert_eq!(
+                cell.style.as_ref(),
+                Some(&want),
+                "{kind}: cell {:?} not styled",
+                cell.text
+            );
+        }
+    }
+}
+
+#[test]
+fn per_cell_styles_win_over_the_widget_style() {
+    // The windows widget styles its segments itself (active bold+reverse,
+    // inactive dim); only the unstyled separator inherits the widget-level
+    // style. That is the documented precedence (tui.md §8.3).
+    let cells = render_windows(&[("style", red_bold())], &[win("a", true), win("b", false)]);
+    assert_eq!(text_of(&cells), "0:a 1:b");
+    let active = cells.cells[0].style.clone().expect("active styled");
+    assert!(active.bold && active.reverse, "active keeps its own style");
+    assert_eq!(active.fg, None, "widget style must not leak into active");
+    let separator = &cells.cells[3];
+    let sep_style = separator.style.clone().expect("separator inherits");
+    assert_eq!(sep_style.fg.as_deref(), Some("red"));
+    assert!(sep_style.bold && !sep_style.reverse);
+}
+
+#[test]
+fn a_plain_style_table_is_a_no_op() {
+    let w = build_spec("session-name", &[("style", style_table(&[]))]).unwrap();
+    let cells = w.render(&WidgetContext::new(fixed_time(), "main", "C-a", &[]));
+    assert!(cells.cells.iter().all(|c| c.style.is_none()));
+}
+
+#[test]
+fn a_bad_style_table_is_rejected_naming_the_widget() {
+    for bad in [
+        toml::Value::String("red".to_owned()),
+        style_table(&[("colour", toml::Value::String("red".to_owned()))]),
+    ] {
+        match build_spec("time", &[("style", bad.clone())]) {
+            Err(WidgetError::InvalidOption { kind, message }) => {
+                assert_eq!(kind, "time");
+                assert!(
+                    message.contains("`style` must be a style table"),
+                    "{message}"
+                );
+            }
+            other => panic!("style {bad:?}: expected InvalidOption, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn styled_wrapper_forwards_poll_interval_and_exec_feed() {
+    let time = build_spec("time", &[("style", red_bold())]).unwrap();
+    assert_eq!(time.poll_interval(), Some(Duration::from_secs(1)));
+    let exec = build_spec(
+        "exec",
+        &[
+            ("command", toml::Value::String("true".to_owned())),
+            ("style", red_bold()),
+        ],
+    )
+    .unwrap();
+    assert!(exec.exec_feed().is_some(), "exec feed lost behind Styled");
+}
+
+// ---------------------------------------------------------------------------
+// session-name `format` (phux-i0e8.4.2; tui.md §8.3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn session_name_format_substitutes_name_placeholder() {
+    let w = build_spec(
+        "session-name",
+        &[("format", toml::Value::String("[{name}]".to_owned()))],
+    )
+    .unwrap();
+    let cells = w.render(&WidgetContext::new(fixed_time(), "main", "C-a", &[]));
+    assert_eq!(text_of(&cells), "[main]");
+}
+
+#[test]
+fn session_name_format_composes_with_prefix_and_max_len() {
+    let w = build_spec(
+        "session-name",
+        &[
+            ("format", toml::Value::String("<{name}>".to_owned())),
+            ("prefix", toml::Value::String("s:".to_owned())),
+            ("max-len", toml::Value::Integer(4)),
+        ],
+    )
+    .unwrap();
+    let cells = w.render(&WidgetContext::new(fixed_time(), "very-long", "C-a", &[]));
+    assert_eq!(text_of(&cells), "s:<very>");
+}
+
+#[test]
+fn session_name_default_format_is_unchanged_behavior() {
+    // No `format` ⇒ exactly the historical output (prefix + name).
+    let w = build_spec("session-name", &[]).unwrap();
+    let cells = w.render(&WidgetContext::new(fixed_time(), "main", "C-a", &[]));
+    assert_eq!(text_of(&cells), "main");
+}
+
+#[test]
+fn session_name_rejects_non_string_format() {
+    assert!(matches!(
+        build_spec("session-name", &[("format", toml::Value::Integer(1))]),
+        Err(WidgetError::InvalidOption { .. })
+    ));
+}
+
 #[test]
 fn cell_style_is_plain_detects_default() {
     assert!(CellStyle::default().is_plain());

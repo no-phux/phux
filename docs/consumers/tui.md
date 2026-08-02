@@ -1543,6 +1543,13 @@ exits, so a mouse-initiated entry can never trap the keyboard. See §11 for the
 scope boundary — phux does not reimplement selection boundaries or a clipboard
 format path; it delegates both to libghostty and the host terminal.
 
+Resizing the terminal **keeps** copy-mode open — it is a selection over the
+live pane, not a box pinned to the screen, so a resize must not discard a
+selection you are still building (the context menu is the opposite case, §7.1).
+The selection adopts the pane's new size instead: a shrink pulls both corners
+back inside the pane, a grow makes the newly revealed rows and columns
+reachable, and a Line-mode selection re-spans to the new width (phux-d26y).
+
 ---
 
 ## 6. Layout
@@ -1953,7 +1960,7 @@ architectural revision to grow a status bar plugin story.
 
 | Kind            | Parameters                                                   |
 |-----------------|--------------------------------------------------------------|
-| `session-name`  | `format?` (default: `"{name}"`) — **implemented**           |
+| `session-name`  | `format?` (default: `"{name}"`; `{name}` is the truncated session name), `prefix?` (literal, prepended), `max-len?` (chars, `> 0`) — **implemented** |
 | `time`          | `format` (strftime) — **implemented**                       |
 | `windows`       | `active?`/`inactive?` (style tables), `separator?`, `format?` (`{index}`/`{name}`) — **implemented**; tabs are click targets (`select-window`, phux-foz.12) wherever the widget sits (any slot, top or bottom bar) |
 | `help-hints`    | prefix-aware help / palette / copy affordances — **implemented** |
@@ -1970,8 +1977,23 @@ architectural revision to grow a status bar plugin story.
 
 Every widget kind accepts a `style` table with optional `fg`, `bg`
 (color strings: names, `#rrggbb`, or palette indices), and the boolean
-attributes `bold`, `dim`, `italic`, `underline`, `reverse`. The
-implemented built-ins today are `session-name`, `time`, `windows`,
+attributes `bold`, `dim`, `italic`, `underline`, `reverse`. The registry
+applies it uniformly, so no widget can opt out. Precedence: cells the
+widget styles itself keep their own style — `windows`' `active`/
+`inactive` segments, `exec`'s SGR-parsed output, `help-hints`' dim base
+all win — and only cells the widget left plain inherit the widget-level
+`style`. A `style` value that is not a table, or a table with an unknown
+field, fails the bar build and is flagged by `phux config check`.
+
+Widget options are a **closed surface**: every factory rejects an
+option outside its documented set, naming the widget and suggesting the
+nearest valid spelling ("unknown option `formt` (did you mean
+`format`?)"). `phux config check` runs the same build path over
+`[status]`, so a typo'd kind, a typo'd option, or a bad style table
+surfaces as a located finding instead of parsing clean and doing
+nothing.
+
+The implemented built-ins today are `session-name`, `time`, `windows`,
 `help-hints`, `cwd`, `exit`, and `exec` (the others above are design
 intent); `windows` takes its `active` and `inactive` segments as such
 style tables. Plugin manifests can contribute additional widget entries

@@ -15,6 +15,15 @@ last-reviewed: 2026-08-02
 [![CI](https://github.com/phall1/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/phall1/phux/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
+[Install](#install-and-run) |
+[Keys](#keys-you-need-first) |
+[Config](#settings-and-config) |
+[Headless](#headless-and-agent-control) |
+[Agent Workbench](#agent-workbench) |
+[Troubleshooting](#troubleshooting) |
+[Status](#status) |
+[Docs](#where-to-go-from-here)
+
 </div>
 
 ![phux recording a terminal session and rendering it to a GIF, with no external tools](docs/assets/recording-demo.gif)

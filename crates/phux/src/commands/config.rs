@@ -23,7 +23,7 @@ use live_feed::{
 /// to the declared manifest values when none answers, and `reload`
 /// (phux-foz.5), which rings
 /// the server-relayed reload doorbell for attached clients.
-pub(crate) fn run_config(action: &ConfigAction) -> ExitCode {
+pub(crate) fn run_config(action: &ConfigAction, socket: Option<std::path::PathBuf>) -> ExitCode {
     match action {
         ConfigAction::Path => {
             outln!("{}", config_loader::config_path().display());
@@ -37,8 +37,8 @@ pub(crate) fn run_config(action: &ConfigAction) -> ExitCode {
             json,
         } => run_config_show(*default, *layers, *json),
         ConfigAction::Plugins { json } => run_config_plugins(*json),
-        ConfigAction::Agents { json, socket } => run_config_agents(*json, socket.clone()),
-        ConfigAction::Reload { socket } => run_config_reload(socket.clone()),
+        ConfigAction::Agents { json } => run_config_agents(*json, socket),
+        ConfigAction::Reload => run_config_reload(socket),
         ConfigAction::Run {
             plugin,
             action,

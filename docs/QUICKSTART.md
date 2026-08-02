@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-07-09
+last-reviewed: 2026-08-02
 ---
 
 # Quickstart
@@ -122,6 +122,22 @@ echo is implemented as an opt-in `[experimental]` setting and remains off by
 default. The exact line between shipped behavior and design intent lives in
 [`CONCEPTS.md`](./CONCEPTS.md); suitability by workflow lives in
 [`when-to-use.md`](./when-to-use.md).
+
+## When something misbehaves
+
+Two commands are the starting point for any debugging session:
+
+```sh
+phux doctor
+phux logs
+```
+
+`phux doctor` checks the install end to end -- config validity, socket path,
+server reachability, plugin manifests, and where the logs live -- and prints
+one verdict per line, with a hint for anything that is not a pass. `phux logs`
+names every log file phux writes (the canonical server log and the per-client
+logs), says whether each exists yet, and tails them: `phux logs --server -f`
+follows the server log, `phux logs --client` shows the newest client log.
 
 ## Next steps
 
