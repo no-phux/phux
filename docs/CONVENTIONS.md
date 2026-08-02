@@ -31,6 +31,7 @@ Reference (one source of truth per concept, addressable)
   docs/architecture/ ────► process model, threading, transport, etc.
   docs/consumers/ ───────► tui.md, sdk.md (per consumer surface)
   docs/operations.md ────► errors, logging, telemetry, security
+  docs/reference/ ───────► GENERATED from the binary (just docs-gen; no hand edits)
 
 Decision (one decision per file, strict)
   ADR/ ──────────────────► Nygard template, ~150 line cap
@@ -386,6 +387,43 @@ The discipline layer is mechanically checked. See
 All run under `just docs-check`, which is in `just ci`. Adding a check
 is welcome — open a PR against `scripts/check-docs.sh` and reference
 this file.
+
+---
+
+## Generated reference docs
+
+`docs/reference/` is rendered from the compiled binary, not written by
+hand. The registry lives in `crates/phux/src/refdocs/`: each page is a
+renderer over one of the binary's own inventories (the clap command
+tree today; config schema, actions, widgets, and hooks as they
+register), and the hidden `phux gen-reference-docs` subcommand writes
+the tree:
+
+```sh
+just docs-gen        # regenerate docs/reference/ in place
+```
+
+The rules:
+
+- **Never edit a file under `docs/reference/` by hand.** A unit test in
+  `crates/phux/src/refdocs/` re-renders every page and byte-compares it
+  against the checkout on every `just test` run. Any drift — a hand
+  edit, or a surface change without a regeneration — fails with
+  `just docs-gen` named as the remedy. There is no separate CI wiring:
+  the test is the gate.
+- **Every file under `docs/reference/` must come from the registry.**
+  The same test fails on an unregistered file, so the directory holds
+  no hand-authored exemptions.
+- **Change the surface, regenerate in the same PR.** Any change to the
+  clap tree (or a future registered inventory) reruns `just docs-gen`
+  and commits the result alongside the code.
+- Generated pages carry the standard frontmatter and TL;DR, so
+  `just docs-check` gates them with no carve-outs, plus a GENERATED
+  FILE marker. The `last-reviewed` date is a constant owned by the
+  generator: regeneration is byte-idempotent and does not churn dates.
+
+Rationale — why a hidden subcommand and not an xtask or build script —
+in [ADR-0069](../ADR/0069-generated-reference-docs.md).
 
 ---
 

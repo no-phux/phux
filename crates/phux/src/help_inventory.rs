@@ -108,6 +108,7 @@ phux config show
 phux detach
 phux doctor
 phux enroll
+phux gen-reference-docs
 phux give
 phux insert-pane
 phux kill
@@ -192,7 +193,9 @@ fn top_level_help_lists_every_subcommand() {
     let long = root.render_long_help().to_string();
     for sub in Cli::command().get_subcommands() {
         let name = sub.get_name();
-        if name == "help" {
+        // Hidden subcommands (internal tooling like `gen-reference-docs`)
+        // are deliberately absent from the curated help.
+        if name == "help" || sub.is_hide_set() {
             continue;
         }
         assert!(

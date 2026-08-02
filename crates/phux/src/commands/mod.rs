@@ -147,6 +147,7 @@ pub(crate) mod config_action;
 pub(crate) mod detach;
 pub(crate) mod doctor;
 pub(crate) mod enroll;
+pub(crate) mod gen_reference_docs;
 pub(crate) mod json_err;
 pub(crate) mod kill;
 pub(crate) mod launch;
@@ -242,6 +243,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Enroll { .. } => Some("enroll"),
         Command::Completion { .. } => Some("completion"),
         Command::Logs { .. } => Some("logs"),
+        Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
         _ => None,
     }
 }
@@ -1455,6 +1457,21 @@ pub(crate) enum Command {
         /// human text. Inventory only — it cannot combine with a tail.
         #[arg(long, conflicts_with_all = ["server", "client", "pid", "follow", "lines"])]
         json: bool,
+    },
+
+    /// Regenerate the repository's generated reference pages (internal).
+    ///
+    /// Hidden developer tooling behind `just docs-gen`, not part of the
+    /// user-facing surface: renders the reference pages from this binary's
+    /// own inventories and writes them into the checkout. A unit test
+    /// byte-compares the checked-in pages against this generator, so the
+    /// published reference can never drift from the compiled binary.
+    #[command(name = "gen-reference-docs", hide = true)]
+    GenReferenceDocs {
+        /// Directory to write the pages into. Defaults to the checkout's
+        /// generated-reference tree; run from the repository root.
+        #[arg(long, value_name = "DIR")]
+        out: Option<std::path::PathBuf>,
     },
 }
 

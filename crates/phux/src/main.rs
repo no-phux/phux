@@ -48,6 +48,7 @@ use commands::Command;
 mod output;
 
 mod commands;
+mod refdocs;
 mod selector;
 
 #[cfg(test)]
@@ -757,6 +758,9 @@ fn main() -> ExitCode {
                 commands::service::run_prune_logs(dry_run)
             }
         },
+        Some(Command::GenReferenceDocs { out }) => {
+            commands::gen_reference_docs::run_gen_reference_docs(out)
+        }
         None => {
             let rec_spec = match plan_rec(&root_rec) {
                 Ok(spec) => spec,

@@ -259,6 +259,14 @@ watch:
 docs-check:
     bash scripts/check-docs.sh
 
+# Regenerate the generated reference docs (docs/reference/) from the compiled
+# binary. Run after any change to the CLI surface: a freshness unit test in
+# crates/phux/src/refdocs/ byte-compares the tree against this generator's
+# output on every `just test`, so a stale tree fails CI with this recipe as
+# the remedy. Idempotent. See docs/CONVENTIONS.md §"Generated reference docs".
+docs-gen:
+    cargo run -q -p phux -- gen-reference-docs
+
 # Homebrew formula generator vs the shapes release.yml's matrix can produce.
 formula-check:
     bash scripts/check-formula.sh

@@ -100,6 +100,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0066](./0066-host-namespace.md) | One `phux host` namespace over the split machine registries | Accepted |
 | [0068](./0068-native-agent-session-restore.md) | Native agent-session restore | Accepted (bridges [0040](./0040-agent-identity-metadata.md), [0042](./0042-launch-executor.md), and workspace archives through bounded L3 provenance; adds no wire under [0061](./0061-capabilities-add-versions-break.md)) |
 | [0067](./0067-cache-preserving-agent-fleet-context.md) | Cache-preserving agent fleet context | Accepted (projects [0040](./0040-agent-identity-metadata.md)/[0046](./0046-server-side-agent-state-detection.md) into agent-host context without changing the wire) |
+| [0069](./0069-generated-reference-docs.md) | Generated reference docs from the compiled binary | Accepted |
 
 ## When to write an ADR
 
