@@ -7,7 +7,7 @@ use crate::state::{Outbound, TerminalInput};
 use bytes::Bytes;
 use phux_protocol::ClientId;
 use phux_protocol::ids::{BootstrapId, StreamId};
-use phux_protocol::wire::frame::{ControlAction, TerminalEventType, TerminalSignal};
+use phux_protocol::wire::frame::{ControlAction, FrameKind, TerminalEventType, TerminalSignal};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 /// A supervisory control request delivered to a [`super::TerminalActor`] over
@@ -272,6 +272,8 @@ pub enum ResyncReason {
 /// * [`PaneOutput::Resync`] → `TERMINAL_SNAPSHOT` — the full post-reflow
 ///   grid, carrying the new `(cols, rows)` so the client mirror RESIZES to
 ///   them and repaints from authoritative state.
+/// * [`PaneOutput::Control`] → an ordered generation/history control frame
+///   routed only by the pump whose server-local owner matches.
 ///
 /// Routing the resize-resync as a `TERMINAL_SNAPSHOT` (rather than raw
 /// output) is load-bearing. The client resizes its libghostty mirror ONLY
@@ -308,6 +310,15 @@ pub enum PaneOutput {
         base_seq: u64,
         /// Synthesized grid replay (with reset preamble) for `vt_write`.
         bytes: Bytes,
+    },
+    /// Ordered native control. It shares the broadcast sequence with
+    /// [`Self::Live`] so a pump observes every prior raw sequence before
+    /// invalidating the matching generation or history cursor.
+    Control {
+        /// Server-local pump owner; other subscribers ignore this control.
+        owner: u64,
+        /// Fully-owned tombstone/control frame for the matching pump.
+        frame: FrameKind,
     },
 }
 

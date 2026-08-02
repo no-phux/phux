@@ -68,6 +68,7 @@ async fn collect_until(
                         return acc;
                     }
                 }
+                Ok(PaneOutput::Control { .. }) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     // Slow subscriber; resume rather than fail.
                 }

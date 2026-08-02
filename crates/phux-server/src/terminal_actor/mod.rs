@@ -310,7 +310,6 @@ struct NativeCursorOwner {
     terminal_id: phux_protocol::ids::TerminalId,
     stream_id: phux_protocol::ids::StreamId,
     bootstrap_id: phux_protocol::ids::BootstrapId,
-    outbound: mpsc::Sender<Outbound>,
 }
 
 #[cfg(test)]
@@ -2944,7 +2943,6 @@ impl TerminalActor {
                     terminal_id,
                     stream_id,
                     bootstrap_id,
-                    outbound,
                 },
             );
         }
@@ -3101,26 +3099,36 @@ impl TerminalActor {
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn publish_native_control(&self, owner: u64, frame: FrameKind) {
+        // This is the same ordered broadcast used by raw Live output. The
+        // matching pump therefore observes every sequence through the
+        // control frame's cut before invalidating its generation/cursor.
+        let _ = self.output_tx.send(PaneOutput::Control { owner, frame });
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn invalidate_all_native_cursors(
         &mut self,
         reason: phux_protocol::wire::frame::TombstoneReason,
     ) {
         let bindings: Vec<_> = self.native_cursor_owners.drain().collect();
-        if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
-            for (cursor, binding) in bindings {
-                let _ = binding
-                    .outbound
-                    .try_send(Outbound::Frame(FrameKind::BootstrapTombstone {
-                        terminal_id: binding.terminal_id,
-                        stream_id: binding.stream_id,
-                        bootstrap_id: binding.bootstrap_id,
-                        reason,
-                        last_valid_seq: binding.last_valid_seq,
-                    }));
+        for (cursor, binding) in bindings {
+            self.publish_native_control(
+                binding.owner,
+                FrameKind::BootstrapTombstone {
+                    terminal_id: binding.terminal_id,
+                    stream_id: binding.stream_id,
+                    bootstrap_id: binding.bootstrap_id,
+                    reason,
+                    last_valid_seq: binding.last_valid_seq,
+                },
+            );
+            if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
                 let _ = manager.release(&cursor);
             }
         }
     }
+
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn invalidate_native_owner(
         &mut self,
@@ -3136,15 +3144,16 @@ impl TerminalActor {
             let Some(binding) = self.native_cursor_owners.remove(&cursor) else {
                 continue;
             };
-            let _ = binding
-                .outbound
-                .try_send(Outbound::Frame(FrameKind::BootstrapTombstone {
+            self.publish_native_control(
+                binding.owner,
+                FrameKind::BootstrapTombstone {
                     terminal_id: binding.terminal_id,
                     stream_id: binding.stream_id,
                     bootstrap_id: binding.bootstrap_id,
                     reason,
                     last_valid_seq: binding.last_valid_seq,
-                }));
+                },
+            );
             if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
                 let _ = manager.release(&cursor);
             }
@@ -3180,15 +3189,16 @@ impl TerminalActor {
             let Some(binding) = self.native_cursor_owners.remove(&cursor) else {
                 continue;
             };
-            let _ = binding
-                .outbound
-                .try_send(Outbound::Frame(FrameKind::BootstrapTombstone {
+            self.publish_native_control(
+                binding.owner,
+                FrameKind::HistoryTombstone {
                     terminal_id: binding.terminal_id,
                     stream_id: binding.stream_id,
                     bootstrap_id: binding.bootstrap_id,
-                    reason: phux_protocol::wire::frame::TombstoneReason::Other,
-                    last_valid_seq: binding.last_valid_seq,
-                }));
+                    cursor: Bytes::copy_from_slice(&cursor),
+                    reason: phux_protocol::wire::frame::HistoryTombstoneReason::Expired,
+                },
+            );
             if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
                 let _ = manager.release(&cursor);
             }
@@ -4774,6 +4784,7 @@ mod tests {
                         Ok(PaneOutput::Live { bytes, .. } | PaneOutput::Resync { bytes, .. }) => {
                             emitted += bytes.len();
                         }
+                        Ok(PaneOutput::Control { .. }) => {}
                         Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
                             // Each lagged frame is one coalesced payload of
                             // at most MAX_PTY_COALESCE_BYTES; bound the
@@ -4916,6 +4927,58 @@ mod tests {
         ));
     }
 
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[test]
+    fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
+        let bundle = TerminalActor::new(20, 5).expect("new actor");
+        let mut actor = bundle.actor;
+        let mut output = bundle.handle.output.subscribe();
+        let terminal_id = phux_protocol::ids::TerminalId::local(1);
+        let stream_id = phux_protocol::ids::StreamId::new(1).expect("stream id");
+        let bootstrap_id = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id");
+        let cursor: crate::native_state::OpaqueHistoryCursor =
+            [1; libghostty_vt::snapshot::incremental::TOKEN_LEN];
+        actor.native_cursor_owners.insert(
+            cursor,
+            NativeCursorOwner {
+                owner: 7,
+                touched: tokio::time::Instant::now(),
+                last_valid_seq: 5,
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+            },
+        );
+
+        actor
+            .output_tx
+            .send(PaneOutput::Live {
+                seq: 5,
+                bytes: Bytes::from_static(b"prior"),
+            })
+            .expect("queue prior live output");
+        actor.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
+
+        assert!(matches!(
+            output.try_recv(),
+            Ok(PaneOutput::Live { seq: 5, .. })
+        ));
+        let Ok(PaneOutput::Control { owner: 7, frame }) = output.try_recv() else {
+            panic!("ordered generation tombstone");
+        };
+        assert!(matches!(
+            frame,
+            FrameKind::BootstrapTombstone {
+                terminal_id: actual_terminal,
+                stream_id: actual_stream,
+                bootstrap_id: actual_bootstrap,
+                reason: phux_protocol::wire::frame::TombstoneReason::Resize,
+                last_valid_seq: 5,
+            } if actual_terminal == terminal_id
+                && actual_stream == stream_id
+                && actual_bootstrap == bootstrap_id
+        ));
+    }
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     #[tokio::test(flavor = "current_thread")]
     async fn history_host_allocation_failure_does_not_advance_cursor() {
@@ -6632,6 +6695,7 @@ mod tests {
                         Ok(Ok(PaneOutput::Resync { bytes, .. })) => {
                             acc.extend_from_slice(&bytes);
                         }
+                        Ok(Ok(PaneOutput::Control { .. })) => {}
                         Ok(Err(_)) => break, // channel closed
                         Err(_) => {}         // poll tick; retry
                     }
@@ -6714,6 +6778,7 @@ mod tests {
                             }
                         }
                         Ok(Ok(PaneOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
+                        Ok(Ok(PaneOutput::Control { .. })) => {}
                         Ok(Err(_)) => break, // channel closed
                         Err(_) => tokio::task::yield_now().await, // poll tick
                     }
@@ -6793,6 +6858,7 @@ mod tests {
                             }
                         }
                         Ok(Ok(PaneOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
+                        Ok(Ok(PaneOutput::Control { .. })) => {}
                         Ok(Err(_)) => break,
                         Err(_) => tokio::task::yield_now().await,
                     }
@@ -6875,7 +6941,7 @@ mod tests {
                         }
                         // Live output and a lagged drop are both "not a
                         // resync" — skip and keep draining.
-                        Ok(PaneOutput::Live { .. })
+                        Ok(PaneOutput::Live { .. } | PaneOutput::Control { .. })
                         | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
                         Err(_) => break,
                     }
