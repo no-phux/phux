@@ -98,9 +98,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0064](./0064-playback-as-a-pane.md) | Playback as a pane | Accepted (supersedes the "shipping a player" rejection in [0060](./0060-self-contained-session-recording.md) for the pane-shaped case only; takes no wire under [0061](./0061-capabilities-add-versions-break.md) and fits the pane with [0062](./0062-headless-resize-and-window-size-policy.md)) |
 | [0065](./0065-one-cli-grammar.md) | One CLI grammar | Accepted |
 | [0066](./0066-host-namespace.md) | One `phux host` namespace over the split machine registries | Accepted |
-| [0067](./0067-native-agent-session-restore.md) | Native agent-session restore | Accepted (bridges [0040](./0040-agent-identity-metadata.md), [0042](./0042-launch-executor.md), and workspace archives through bounded L3 provenance; adds no wire under [0061](./0061-capabilities-add-versions-break.md)) |
-| [0066](./0066-host-namespace.md) | One host namespace over the split machine registries | Accepted |
-| [0066](./0066-native-agent-session-restore.md) | Native agent-session restore | Accepted (bridges [0040](./0040-agent-identity-metadata.md), [0042](./0042-launch-executor.md), and workspace archives through bounded L3 provenance; adds no wire under [0061](./0061-capabilities-add-versions-break.md)) |
+| [0068](./0068-native-agent-session-restore.md) | Native agent-session restore | Accepted (bridges [0040](./0040-agent-identity-metadata.md), [0042](./0042-launch-executor.md), and workspace archives through bounded L3 provenance; adds no wire under [0061](./0061-capabilities-add-versions-break.md)) |
 | [0067](./0067-cache-preserving-agent-fleet-context.md) | Cache-preserving agent fleet context | Accepted (projects [0040](./0040-agent-identity-metadata.md)/[0046](./0046-server-side-agent-state-detection.md) into agent-host context without changing the wire) |
 
 ## When to write an ADR
