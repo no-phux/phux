@@ -36,6 +36,7 @@ use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::TerminalOptions;
 use libghostty_vt::terminal::Mode;
 use phux_client_core::engine::ghostty::GhosttyAdapter;
+use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKernel};
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
 use phux_protocol::caps::BootstrapCapabilities;
@@ -1035,6 +1036,21 @@ impl HeadlessCompletion {
                 self.pending_history
                     .remove(&(terminal_id.clone(), *stream_id, *bootstrap_id));
             }
+            FrameKind::HistoryTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::HistoryRejected {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            } => {
+                self.pending_history
+                    .remove(&(terminal_id.clone(), *stream_id, *bootstrap_id));
+            }
             FrameKind::MetadataValue { request_id, .. }
                 if self.pending_layout == Some(*request_id) =>
             {
@@ -1112,8 +1128,13 @@ pub async fn run_headless_rendered(
     let terminal_reply_supported = negotiated
         .server_features
         .contains(ServerFeature::TerminalReply);
-    let mut engine_kernel =
-        SessionKernel::new(GhosttyAdapter::new(negotiated.limits), negotiated.profile);
+    let mut history_config = HistoryCacheConfig::default();
+    history_config.request_max_bytes = negotiated.limits.max_history_page_bytes();
+    let mut engine_kernel = SessionKernel::with_history_config(
+        GhosttyAdapter::new(negotiated.limits),
+        negotiated.profile,
+        history_config,
+    );
     let mut kernel_effects = KernelEffectBuffer::new();
     let mut attach_id = send_attach(&mut conn, target).await?;
     let attached = wait_for_attached(&mut conn, attach_id).await?;
@@ -1274,8 +1295,14 @@ pub async fn run_headless_rendered(
                 completion.restart_attach();
                 continue;
             }
-            if let Some((terminal_id, stream_id, bootstrap_id, cursor)) =
-                outcome.history_request
+            if let Some((
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                max_bytes,
+                max_rows,
+            )) = outcome.history_request
             {
                 completion.note_history_request(&terminal_id, stream_id, bootstrap_id);
                 conn.send(&FrameKind::HistoryRequest {
@@ -1283,7 +1310,8 @@ pub async fn run_headless_rendered(
                     stream_id,
                     bootstrap_id,
                     cursor,
-                    max_bytes: engine_kernel.adapter().limits().max_history_page_bytes(),
+                    max_bytes,
+                    max_rows,
                 })
                 .await?;
             }
@@ -1841,8 +1869,13 @@ async fn main_loop<W: super::RenderSink>(
     let terminal_reply_supported = negotiated
         .server_features
         .contains(ServerFeature::TerminalReply);
-    let mut engine_kernel =
-        SessionKernel::new(GhosttyAdapter::new(negotiated.limits), negotiated.profile);
+    let mut history_config = HistoryCacheConfig::default();
+    history_config.request_max_bytes = negotiated.limits.max_history_page_bytes();
+    let mut engine_kernel = SessionKernel::with_history_config(
+        GhosttyAdapter::new(negotiated.limits),
+        negotiated.profile,
+        history_config,
+    );
     let mut kernel_effects = KernelEffectBuffer::new();
     // `Workspace` mirror (initialized as a single window holding one
     // pane when `ATTACHED` lands; see `handle_server_frame`) is the
@@ -3023,18 +3056,22 @@ async fn main_loop<W: super::RenderSink>(
                             })
                             .await?;
                         }
-                        if let Some((terminal_id, stream_id, bootstrap_id, cursor)) =
-                            outcome.history_request
+                        if let Some((
+                            terminal_id,
+                            stream_id,
+                            bootstrap_id,
+                            cursor,
+                            max_bytes,
+                            max_rows,
+                        )) = outcome.history_request
                         {
                             conn.send(&FrameKind::HistoryRequest {
                                 terminal_id,
                                 stream_id,
                                 bootstrap_id,
                                 cursor,
-                                max_bytes: engine_kernel
-                                    .adapter()
-                                    .limits()
-                                    .max_history_page_bytes(),
+                                max_bytes,
+                                max_rows,
                             })
                             .await?;
                         }
@@ -6374,6 +6411,7 @@ mod tests {
                 terminal_id: terminal_id.clone(),
                 stream_id,
                 bootstrap_id,
+                rows: 0,
                 page_seq: 1,
                 cursor: bytes::Bytes::from_static(b"newest"),
                 next_cursor: Some(bytes::Bytes::from_static(b"older")),
@@ -6390,6 +6428,7 @@ mod tests {
             &FrameKind::HistoryPage {
                 terminal_id,
                 stream_id,
+                rows: 0,
                 bootstrap_id,
                 page_seq: 1,
                 cursor: bytes::Bytes::from_static(b"older"),
@@ -6399,6 +6438,38 @@ mod tests {
             7,
         );
         assert!(completion.is_complete(true));
+    }
+
+    #[test]
+    fn headless_history_control_responses_clear_outstanding_request() {
+        let terminal_id = TerminalId::local(8);
+        let stream_id = phux_protocol::StreamId::new(1).expect("stream");
+        let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
+        let terminal_frames = [
+            FrameKind::HistoryTombstone {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                cursor: bytes::Bytes::from_static(b"cursor"),
+                reason: phux_protocol::wire::frame::HistoryTombstoneReason::Pruned,
+            },
+            FrameKind::HistoryRejected {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                cursor: bytes::Bytes::from_static(b"cursor"),
+                reason: phux_protocol::wire::frame::HistoryRejectionReason::TooSmall,
+                required_bytes: 128,
+                required_rows: 1,
+            },
+        ];
+        for frame in terminal_frames {
+            let mut completion = HeadlessCompletion::new(None);
+            completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
+            completion.note_history_request(&terminal_id, stream_id, bootstrap_id);
+            completion.observe_frame(&frame, 7);
+            assert!(completion.is_complete(true));
+        }
     }
 
     /// ADR-0060 guard: the `rec: None` arm of `run_buffered` must behave

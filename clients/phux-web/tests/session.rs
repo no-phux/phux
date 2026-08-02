@@ -262,6 +262,7 @@ async fn history_cursor_chain_is_echoed_and_bounded_after_ready() {
             bootstrap_id,
             cursor: Bytes::from_static(b"cursor-1"),
             max_bytes: 77,
+            max_rows: 1024,
         }
     );
 
@@ -270,6 +271,7 @@ async fn history_cursor_chain_is_echoed_and_bounded_after_ready() {
         stream_id,
         bootstrap_id,
         page_seq: 1,
+        rows: 1,
         cursor: Bytes::from_static(b"cursor-1"),
         next_cursor: Some(Bytes::from_static(b"cursor-2")),
         payload: Bytes::from_static(b"opaque-history-1"),
@@ -284,6 +286,7 @@ async fn history_cursor_chain_is_echoed_and_bounded_after_ready() {
             bootstrap_id,
             cursor: Bytes::from_static(b"cursor-2"),
             max_bytes: 77,
+            max_rows: 1024,
         }
     );
 
@@ -292,6 +295,7 @@ async fn history_cursor_chain_is_echoed_and_bounded_after_ready() {
         stream_id,
         bootstrap_id,
         page_seq: 1,
+        rows: 1,
         cursor: Bytes::from_static(b"cursor-2"),
         next_cursor: None,
         payload: Bytes::from_static(b"opaque-history-2"),

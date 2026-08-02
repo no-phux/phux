@@ -10,9 +10,11 @@ use phux_client_core::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
     EngineEffectBuffer,
 };
+use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::{
-    EffectBuffer, InputEligibility, KernelAction, KernelEffect, KernelInput, KernelSend,
-    SessionKernel,
+    EffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason,
+    HistoryUnavailableReason, InputEligibility, KernelAction, KernelEffect, KernelInput,
+    KernelSend, SessionKernel,
 };
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
@@ -23,12 +25,39 @@ use phux_protocol::caps::{
 use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
+use phux_protocol::wire::frame::{
+    AttachTarget, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, ViewportInfo,
+};
 use phux_vt_web::{Grid, Terminal, Vt};
 
 const ATTACH_ID: u32 = 1;
 const HISTORY_LINES: u32 = 5_000;
 
+
+fn history_unavailable_reason(reason: HistoryTombstoneReason) -> Option<HistoryUnavailableReason> {
+    Some(match reason {
+        HistoryTombstoneReason::Stale => HistoryUnavailableReason::Stale,
+        HistoryTombstoneReason::Pruned => HistoryUnavailableReason::Pruned,
+        HistoryTombstoneReason::Reset => HistoryUnavailableReason::Reset,
+        HistoryTombstoneReason::Resize => HistoryUnavailableReason::Resize,
+        HistoryTombstoneReason::Expired => HistoryUnavailableReason::Expired,
+        HistoryTombstoneReason::Released => HistoryUnavailableReason::Released,
+        HistoryTombstoneReason::Limit => HistoryUnavailableReason::Limit,
+        HistoryTombstoneReason::CodecFailure => HistoryUnavailableReason::CodecFailure,
+        _ => return None,
+    })
+}
+
+fn history_rejection_reason(
+    reason: HistoryRejectionReason,
+) -> Option<KernelHistoryRejectionReason> {
+    Some(match reason {
+        HistoryRejectionReason::ZeroLimit => KernelHistoryRejectionReason::ZeroLimit,
+        HistoryRejectionReason::TooSmall => KernelHistoryRejectionReason::TooSmall,
+        HistoryRejectionReason::Busy => KernelHistoryRejectionReason::Busy,
+        _ => return None,
+    })
+}
 /// The capability set phux-web advertises in `HELLO`.
 ///
 /// The browser engine consumes only synthesized VT profiles. It never
@@ -275,11 +304,14 @@ impl Session {
                 self.terminal_reply_supported = server_caps
                     .features
                     .contains(ServerFeature::TerminalReply);
-                self.kernel = Some(SessionKernel::new(
+                let mut history_config = HistoryCacheConfig::default();
+                history_config.request_max_bytes = bootstrap_limits.max_history_page_bytes();
+                self.kernel = Some(SessionKernel::with_history_config(
                     WebEngine {
                         vt: Rc::clone(&self.vt),
                     },
                     selected_profile,
+                    history_config,
                 ));
                 Outcome {
                     send: vec![encode(&FrameKind::Attach {
@@ -377,6 +409,7 @@ impl Session {
                 stream_id,
                 bootstrap_id,
                 page_seq,
+                rows,
                 cursor,
                 next_cursor,
                 payload,
@@ -386,9 +419,52 @@ impl Session {
                     stream_id,
                     bootstrap_id,
                     page_seq,
+                    rows,
                     payload: &payload,
                     cursor: &cursor,
                     next_cursor: next_cursor.as_deref(),
+                })
+                .0
+            }
+            FrameKind::HistoryTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+            } => {
+                let Some(reason) = history_unavailable_reason(reason) else {
+                    return self.protocol_failure("unsupported history tombstone reason");
+                };
+                self.apply_kernel(KernelInput::HistoryTombstone {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    cursor: &cursor,
+                    reason,
+                })
+                .0
+            }
+            FrameKind::HistoryRejected {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+                required_bytes,
+                required_rows,
+            } => {
+                let Some(reason) = history_rejection_reason(reason) else {
+                    return self.protocol_failure("unsupported history rejection reason");
+                };
+                self.apply_kernel(KernelInput::HistoryRejected {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    cursor: &cursor,
+                    reason,
+                    required_bytes,
+                    required_rows,
                 })
                 .0
             }
@@ -518,13 +594,19 @@ impl Session {
                     bootstrap_id: *bootstrap_id,
                     seq: *seq,
                 })),
-                KernelEffect::Send(KernelSend::HistoryRequest { key, cursor, max_bytes }) => {
+                KernelEffect::Send(KernelSend::HistoryRequest {
+                    key,
+                    cursor,
+                    max_bytes,
+                    max_rows,
+                }) => {
                     outcome.send.push(encode(&FrameKind::HistoryRequest {
                         terminal_id: key.terminal_id.clone(),
                         stream_id: key.stream_id,
                         bootstrap_id: key.bootstrap_id,
                         cursor: Bytes::copy_from_slice(cursor),
                         max_bytes: *max_bytes,
+                        max_rows: *max_rows,
                     }));
                 }
                 KernelEffect::Send(KernelSend::PtyWrite { terminal_id, bytes }) => {

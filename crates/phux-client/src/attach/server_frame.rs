@@ -9,11 +9,13 @@ use std::collections::{HashMap, HashSet};
 
 use phux_client_core::engine::CanonicalGeometry;
 use phux_client_core::session::{
-    EffectBuffer as KernelEffectBuffer, KernelEffect, KernelInput, KernelSend,
+    EffectBuffer as KernelEffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason,
+    HistoryUnavailableReason, KernelEffect, KernelInput, KernelSend,
 };
 use phux_protocol::ids::{ClientId, SessionId, TerminalId};
 use phux_protocol::wire::frame::{
-    AgentEvent, CONFIG_RELOAD_KEY, ErrorCode, FrameKind, Scope, SpawnError, SpawnResult,
+    AgentEvent, CONFIG_RELOAD_KEY, ErrorCode, FrameKind, HistoryRejectionReason,
+    HistoryTombstoneReason, Scope, SpawnError, SpawnResult,
 };
 use phux_protocol::wire::info::SessionInfo;
 use phux_protocol::{BootstrapId, StreamId};
@@ -160,7 +162,8 @@ pub(super) struct FrameOutcome {
     /// the frozen published replica visible.
     pub(super) resync_required: bool,
     /// Pull the next opaque native history page after READY or a prior page.
-    pub(super) history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes)>,
+    pub(super) history_request:
+        Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
     /// Exact terminal-engine response writes to forward on the ordered PTY lane.
     pub(super) pty_writes: Vec<(TerminalId, Vec<u8>)>,
     /// phux-4li.20: `Some((sessions, focused))` ⇒ ATTACHED just landed
@@ -228,6 +231,8 @@ const fn frame_kind_label(frame: &FrameKind) -> &'static str {
         FrameKind::BootstrapChunk { .. } => "bootstrap_chunk",
         FrameKind::BootstrapReady { .. } => "bootstrap_ready",
         FrameKind::HistoryPage { .. } => "history_page",
+        FrameKind::HistoryTombstone { .. } => "history_tombstone",
+        FrameKind::HistoryRejected { .. } => "history_rejected",
         FrameKind::BootstrapTombstone { .. } => "bootstrap_tombstone",
         FrameKind::AttachReady { .. } => "attach_ready",
         FrameKind::TerminalOutput { .. } => "terminal_output",
@@ -294,7 +299,7 @@ fn pane_label(id: &TerminalId) -> String {
 #[derive(Default)]
 struct KernelRoute {
     ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
-    history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes)>,
+    history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
     pty_writes: Vec<(TerminalId, Vec<u8>)>,
     damaged: HashSet<TerminalId>,
     resync_required: bool,
@@ -305,6 +310,31 @@ impl KernelRoute {
     fn damaged(&self, terminal_id: &TerminalId) -> bool {
         self.damaged.contains(terminal_id)
     }
+}
+
+fn history_unavailable_reason(reason: HistoryTombstoneReason) -> Option<HistoryUnavailableReason> {
+    Some(match reason {
+        HistoryTombstoneReason::Stale => HistoryUnavailableReason::Stale,
+        HistoryTombstoneReason::Pruned => HistoryUnavailableReason::Pruned,
+        HistoryTombstoneReason::Reset => HistoryUnavailableReason::Reset,
+        HistoryTombstoneReason::Resize => HistoryUnavailableReason::Resize,
+        HistoryTombstoneReason::Expired => HistoryUnavailableReason::Expired,
+        HistoryTombstoneReason::Released => HistoryUnavailableReason::Released,
+        HistoryTombstoneReason::Limit => HistoryUnavailableReason::Limit,
+        HistoryTombstoneReason::CodecFailure => HistoryUnavailableReason::CodecFailure,
+        _ => return None,
+    })
+}
+
+fn history_rejection_reason(
+    reason: HistoryRejectionReason,
+) -> Option<KernelHistoryRejectionReason> {
+    Some(match reason {
+        HistoryRejectionReason::ZeroLimit => KernelHistoryRejectionReason::ZeroLimit,
+        HistoryRejectionReason::TooSmall => KernelHistoryRejectionReason::TooSmall,
+        HistoryRejectionReason::Busy => KernelHistoryRejectionReason::Busy,
+        _ => return None,
+    })
 }
 
 fn route_engine_frame(
@@ -379,6 +409,7 @@ fn route_engine_frame(
             terminal_id,
             stream_id,
             bootstrap_id,
+            rows,
             page_seq,
             cursor,
             next_cursor,
@@ -387,10 +418,57 @@ fn route_engine_frame(
             terminal_id,
             stream_id: *stream_id,
             bootstrap_id: *bootstrap_id,
+            rows: *rows,
             page_seq: *page_seq,
             payload,
             cursor,
             next_cursor: next_cursor.as_deref(),
+        }),
+        FrameKind::HistoryTombstone {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor,
+            reason,
+        } => Some(KernelInput::HistoryTombstone {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            cursor,
+            reason: match history_unavailable_reason(*reason) {
+                Some(reason) => reason,
+                None => {
+                    return KernelRoute {
+                        failed: Some("unsupported history tombstone reason".to_owned()),
+                        ..KernelRoute::default()
+                    };
+                }
+            },
+        }),
+        FrameKind::HistoryRejected {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor,
+            reason,
+            required_bytes,
+            required_rows,
+        } => Some(KernelInput::HistoryRejected {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            cursor,
+            reason: match history_rejection_reason(*reason) {
+                Some(reason) => reason,
+                None => {
+                    return KernelRoute {
+                        failed: Some("unsupported history rejection reason".to_owned()),
+                        ..KernelRoute::default()
+                    };
+                }
+            },
+            required_bytes: *required_bytes,
+            required_rows: *required_rows,
         }),
         FrameKind::TerminalOutput {
             terminal_id,
@@ -463,12 +541,19 @@ fn route_engine_frame(
             }) => {
                 route.ack = Some((terminal_id.clone(), *stream_id, *bootstrap_id, *seq));
             }
-            KernelEffect::Send(KernelSend::HistoryRequest { key, cursor, .. }) => {
+            KernelEffect::Send(KernelSend::HistoryRequest {
+                key,
+                cursor,
+                max_bytes,
+                max_rows,
+            }) => {
                 route.history_request = Some((
                     key.terminal_id.clone(),
                     key.stream_id,
                     key.bootstrap_id,
                     bytes::Bytes::from(cursor.clone()),
+                    *max_bytes,
+                    *max_rows,
                 ));
             }
             KernelEffect::Send(KernelSend::PtyWrite { terminal_id, bytes }) => {
@@ -711,7 +796,9 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 ..FrameOutcome::default()
             })
         }
-        FrameKind::HistoryPage { .. } => Ok(FrameOutcome {
+        FrameKind::HistoryPage { .. }
+        | FrameKind::HistoryTombstone { .. }
+        | FrameKind::HistoryRejected { .. } => Ok(FrameOutcome {
             history_request: kernel_route.history_request,
             pty_writes: kernel_route.pty_writes,
             ..FrameOutcome::default()
@@ -1879,11 +1966,44 @@ mod tests {
         assert_eq!(
             routed.history_request,
             Some((
-                terminal_id,
+                terminal_id.clone(),
                 stream(),
                 bootstrap(),
                 bytes::Bytes::from_static(b"opaque-cursor"),
+                1024 * 1024,
+                1024,
             ))
+        );
+        let rejected = route_engine_frame(
+            &FrameKind::HistoryRejected {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                cursor: bytes::Bytes::from_static(b"opaque-cursor"),
+                reason: phux_protocol::wire::frame::HistoryRejectionReason::TooSmall,
+                required_bytes: 1024 * 1024,
+                required_rows: 2048,
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(!rejected.resync_required);
+        assert!(rejected.history_request.is_some());
+        let tombstoned = route_engine_frame(
+            &FrameKind::HistoryTombstone {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                cursor: bytes::Bytes::from_static(b"opaque-cursor"),
+                reason: phux_protocol::wire::frame::HistoryTombstoneReason::Pruned,
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(!tombstoned.resync_required);
+        assert!(
+            kernel.published_engine(&terminal_id).is_some(),
+            "history-only invalidation preserves the live replica"
         );
     }
 
@@ -2167,6 +2287,7 @@ mod tests {
                 terminal_id: terminal_id.clone(),
                 stream_id: stream(),
                 bootstrap_id: bootstrap(),
+                rows: 1,
                 page_seq: 1,
                 cursor: bytes::Bytes::from_static(b"cursor"),
                 next_cursor: None,
@@ -2192,6 +2313,7 @@ mod tests {
                 terminal_id: terminal_id.clone(),
                 stream_id: stream(),
                 bootstrap_id: bootstrap(),
+                rows: 1,
                 page_seq: 1,
                 cursor: bytes::Bytes::from_static(b"stale"),
                 next_cursor: None,
