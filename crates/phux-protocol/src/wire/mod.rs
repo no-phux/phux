@@ -15,9 +15,5 @@ pub mod error;
 pub mod field;
 pub mod frame;
 pub mod info;
-pub mod l2_agent;
 
 pub use error::DecodeError;
-pub use l2_agent::{
-    TYPE_GET_TERMINAL_STATE, TYPE_L2_EVENT, TYPE_L2_RESPONSE, TYPE_SUBSCRIBE_TERMINAL_EVENTS,
-};

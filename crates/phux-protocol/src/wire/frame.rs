@@ -534,7 +534,8 @@ pub(crate) const COMMAND_TAG_KILL_TERMINALS: u8 = 0x09;
 /// L2 Collection-aware query (ADR-0015 L2) that returns a comprehensive
 /// snapshot of a Terminal's full state: grid, scrollback, cursor, shell
 /// metadata, sequence number, and timestamp as a structured JSON
-/// `phux_client::l2::state::TerminalState`. Unlike `GET_SCREEN` (L1 raw
+/// object (built server-side; see `handle_get_terminal_state` in
+/// phux-server). Unlike `GET_SCREEN` (L1 raw
 /// grid), this returns structured state suitable for agent polling and
 /// change detection. The reply rides `COMMAND_RESULT { Ok_With(Json(..)) }`.
 pub(crate) const COMMAND_TAG_GET_TERMINAL_STATE: u8 = 0x0c;
@@ -1283,7 +1284,7 @@ pub enum Command {
     /// Request a comprehensive snapshot of a terminal's full state: grid,
     /// scrollback, shell metadata, cursor, and sequence number (L2 Collection-aware
     /// agent interface). The reply rides `COMMAND_RESULT { Ok_With(Json(..)) }`
-    /// carrying a serialized `phux_client::l2::state::TerminalState`. Backs
+    /// carrying a JSON object built server-side. Backs
     /// agent polling and state inspection (ADR-0015 L2, `phux-y2t`).
     GetTerminalState {
         /// The Terminal whose state to snapshot.
