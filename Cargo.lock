@@ -1633,7 +1633,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=19d5e74648a81ecd5d4acbbc2a5605007b7db6b3#19d5e74648a81ecd5d4acbbc2a5605007b7db6b3"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=562e000e1ce8e623286b1be1fb1136bd43ff0040#562e000e1ce8e623286b1be1fb1136bd43ff0040"
 dependencies = [
  "allocator-api2 0.4.0",
  "bitflags 2.13.0",
@@ -1645,7 +1645,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=19d5e74648a81ecd5d4acbbc2a5605007b7db6b3#19d5e74648a81ecd5d4acbbc2a5605007b7db6b3"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=562e000e1ce8e623286b1be1fb1136bd43ff0040#562e000e1ce8e623286b1be1fb1136bd43ff0040"
 
 [[package]]
 name = "libm"
