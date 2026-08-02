@@ -231,7 +231,7 @@ impl GhosttyReplica {
 type PtyResponses = Rc<RefCell<Vec<Vec<u8>>>>;
 
 fn drain_pty_responses(responses: &PtyResponses, effects: &mut EngineEffectBuffer) {
-    for bytes in responses.borrow_mut().drain(..) {
+    for bytes in responses.take() {
         effects.push(EngineEffect::Send(EngineSend::PtyWrite(bytes)));
     }
 }
@@ -347,7 +347,7 @@ pub enum GhosttyEngineError {
 }
 
 impl GhosttyEngineError {
-    fn checkpoint(source: SnapshotError, consumed: usize) -> Self {
+    const fn checkpoint(source: SnapshotError, consumed: usize) -> Self {
         Self::Checkpoint { source, consumed }
     }
 }
@@ -704,10 +704,10 @@ impl EngineDocumentAdapter for GhosttyAdapter {
                     .map(|(value, _)| *value)
                     .eq(needle.iter().copied())
             {
-                ranges.push((
-                    window.front().expect("non-empty search").1,
-                    window.back().expect("non-empty search").1,
-                ));
+                let (Some((_, start)), Some((_, end))) = (window.front(), window.back()) else {
+                    unreachable!("a matched search window is non-empty");
+                };
+                ranges.push((*start, *end));
             }
             ranges.len() == max_matches
         };
@@ -762,7 +762,7 @@ impl EngineDocumentAdapter for GhosttyAdapter {
             let start = match self.track_document_anchor(replica, start) {
                 Ok(anchor) => anchor,
                 Err(error) => {
-                    for found in matches.drain(..) {
+                    for found in std::mem::take(&mut matches) {
                         self.release_document_anchor(replica, found.start);
                         self.release_document_anchor(replica, found.end);
                     }
@@ -773,7 +773,7 @@ impl EngineDocumentAdapter for GhosttyAdapter {
                 Ok(anchor) => anchor,
                 Err(error) => {
                     self.release_document_anchor(replica, start);
-                    for found in matches.drain(..) {
+                    for found in std::mem::take(&mut matches) {
                         self.release_document_anchor(replica, found.start);
                         self.release_document_anchor(replica, found.end);
                     }
@@ -822,7 +822,7 @@ fn enforce_history_budget(replica: &mut GhosttyReplica) -> Result<(), GhosttyEng
     Ok(())
 }
 
-fn to_ghostty_point(point: DocumentPoint) -> Point {
+const fn to_ghostty_point(point: DocumentPoint) -> Point {
     let coordinate = PointCoordinate {
         x: point.x,
         y: point.y,
@@ -834,7 +834,7 @@ fn to_ghostty_point(point: DocumentPoint) -> Point {
     }
 }
 
-fn to_ghostty_space(space: DocumentSpace) -> PointSpace {
+const fn to_ghostty_space(space: DocumentSpace) -> PointSpace {
     match space {
         DocumentSpace::History => PointSpace::History,
         DocumentSpace::Viewport => PointSpace::Viewport,
@@ -945,7 +945,7 @@ fn append_rewrapped_line(
     }
     let mut text = String::new();
     let mut cells: usize = 0;
-    for cell in logical.drain(..) {
+    for cell in std::mem::take(logical) {
         if cells > 0 && cells.saturating_add(cell.width) > width {
             result.push(EngineProjectionRow {
                 text: std::mem::take(&mut text),
@@ -994,8 +994,10 @@ fn push_native(
                         failure.consumed,
                     ));
                 }
-                Ok(DecodeStep::NeedInput { decoder, progress })
-                | Ok(DecodeStep::Progress { decoder, progress }) => {
+                Ok(
+                    DecodeStep::NeedInput { decoder, progress }
+                    | DecodeStep::Progress { decoder, progress },
+                ) => {
                     check_version(progress)?;
                     native.decoder = NativeDecoderState::BeforeReady(decoder);
                     input = remaining(input, progress)?;
@@ -1015,10 +1017,9 @@ fn push_native(
                         let pty_responses = Rc::clone(&native.pty_responses);
                         move |_terminal, bytes| pty_responses.borrow_mut().push(bytes.to_vec())
                     })?;
-                    let trailing_result =
-                        remaining(input, progress).map(|remaining| remaining.len());
+                    let trailing_result = remaining(input, progress);
                     native.decoder = NativeDecoderState::AfterReady(stream);
-                    let trailing = trailing_result?;
+                    let trailing = trailing_result?.len();
                     if trailing != 0 {
                         return Err(GhosttyEngineError::TrailingAfterReady { trailing });
                     }
@@ -1118,11 +1119,13 @@ fn push_history(
                     failure.consumed,
                 ));
             }
-            Ok(AfterReadyStep::NeedInput { decoder, progress })
-            | Ok(AfterReadyStep::Progress { decoder, progress })
-            | Ok(AfterReadyStep::HistoryBegin {
-                decoder, progress, ..
-            }) => {
+            Ok(
+                AfterReadyStep::NeedInput { decoder, progress }
+                | AfterReadyStep::Progress { decoder, progress }
+                | AfterReadyStep::HistoryBegin {
+                    decoder, progress, ..
+                },
+            ) => {
                 let version = check_version(progress);
                 native.decoder = NativeDecoderState::AfterReady(decoder);
                 version?;
@@ -1155,8 +1158,7 @@ fn push_history(
             Ok(AfterReadyStep::Finish(finished)) => {
                 let version = check_version(finished.progress);
                 let codec_version = finished.codec_version;
-                let trailing_result =
-                    remaining(input, finished.progress).map(|remaining| remaining.len());
+                let trailing_result = remaining(input, finished.progress);
                 native.decoder = NativeDecoderState::Finished(finished.terminal);
                 version?;
                 if codec_version != CHECKPOINT_VERSION {
@@ -1165,7 +1167,7 @@ fn push_history(
                         actual: codec_version,
                     });
                 }
-                let trailing = trailing_result?;
+                let trailing = trailing_result?.len();
                 if trailing != 0 {
                     return Err(GhosttyEngineError::TrailingAfterFinish { trailing });
                 }
@@ -1178,7 +1180,7 @@ fn push_history(
     }
 }
 
-fn check_version(progress: DecodeProgress) -> Result<(), GhosttyEngineError> {
+const fn check_version(progress: DecodeProgress) -> Result<(), GhosttyEngineError> {
     if progress.codec_version != 0 && progress.codec_version != CHECKPOINT_VERSION {
         return Err(GhosttyEngineError::WrongCodecVersion {
             expected: CHECKPOINT_VERSION,
@@ -1188,10 +1190,7 @@ fn check_version(progress: DecodeProgress) -> Result<(), GhosttyEngineError> {
     Ok(())
 }
 
-fn remaining<'a>(
-    input: &'a [u8],
-    progress: DecodeProgress,
-) -> Result<&'a [u8], GhosttyEngineError> {
+fn remaining(input: &[u8], progress: DecodeProgress) -> Result<&[u8], GhosttyEngineError> {
     if progress.consumed == 0 || progress.consumed > input.len() {
         return Err(GhosttyEngineError::InvalidProgress {
             consumed: progress.consumed,
@@ -1557,8 +1556,8 @@ mod tests {
             .expect("native replica");
         assert!(matches!(
             adapter.apply_bootstrap_chunk(&mut replica, &corrupt, &mut effects),
-            Err(GhosttyEngineError::Checkpoint { .. })
-                | Err(GhosttyEngineError::WrongCodecVersion { .. })
+            Err(GhosttyEngineError::Checkpoint { .. }
+                | GhosttyEngineError::WrongCodecVersion { .. })
         ));
 
         let tiny = BootstrapLimits::new(1, 1).expect("tiny valid limits");
@@ -1701,6 +1700,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn native_projection_search_and_anchors_remain_engine_owned() {
         let records = capture_records();
         let (bootstrap, history) = split_capture(&records);

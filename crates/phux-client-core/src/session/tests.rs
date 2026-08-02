@@ -274,24 +274,24 @@ fn terminal(raw: u32) -> TerminalId {
 }
 
 fn stream(raw: u64) -> StreamId {
-    match StreamId::new(raw) {
-        Some(id) => id,
-        None => panic!("test stream id must be non-zero"),
-    }
+    let Some(id) = StreamId::new(raw) else {
+        panic!("test stream id must be non-zero");
+    };
+    id
 }
 
 fn bootstrap(raw: u64) -> BootstrapId {
-    match BootstrapId::new(raw) {
-        Some(id) => id,
-        None => panic!("test bootstrap id must be non-zero"),
-    }
+    let Some(id) = BootstrapId::new(raw) else {
+        panic!("test bootstrap id must be non-zero");
+    };
+    id
 }
 
 fn geometry() -> CanonicalGeometry {
-    match CanonicalGeometry::new(80, 24) {
-        Some(geometry) => geometry,
-        None => panic!("test geometry must be non-empty"),
-    }
+    let Some(geometry) = CanonicalGeometry::new(80, 24) else {
+        panic!("test geometry must be non-empty");
+    };
+    geometry
 }
 
 fn kernel(mode: ReadyMode) -> SessionKernel<FakeAdapter> {
@@ -570,6 +570,7 @@ fn chunk_sequence_rejects_duplicates_and_gaps_without_applying() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn raw_sequence_ids_and_tombstones_are_exact() {
     let terminal_id = terminal(3);
     let stream_id = stream(13);
@@ -1103,6 +1104,7 @@ fn oversized_history_rejection_ends_history_without_retiring_live_generation() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn replacement_is_atomic_and_old_view_remains_live_until_swap() {
     let terminal_id = terminal(4);
     let stream_id = stream(14);
@@ -1396,6 +1398,7 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     let advertised = BootstrapCapabilities::new().with_native(
         EngineCodec::LibghosttyCheckpointV2,
@@ -1970,6 +1973,7 @@ fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn mutating_adapter_errors_retire_staging_and_published_replicas() {
     let mut kernel = kernel(ReadyMode::ProtocolFirst);
     let mut effects = EffectBuffer::new();
@@ -2284,6 +2288,7 @@ fn replacement_attach_close_flushes_pending_removal_at_barrier() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn replacement_effects_are_hidden_until_swap_and_discarded_on_retirement() {
     let terminal_id = terminal(18);
     let stream_id = stream(27);

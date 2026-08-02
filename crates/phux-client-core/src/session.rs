@@ -257,11 +257,11 @@ pub enum KernelSend {
         /// One response payload; batching and encoding remain outside.
         bytes: Vec<u8>,
     },
-    /// Acknowledge one successfully applied StateSync live frame.
+    /// Acknowledge one successfully applied `StateSync` live frame.
     FrameAck {
         /// Terminal whose reference advanced.
         terminal_id: TerminalId,
-        /// Logical StateSync subscription.
+        /// Logical `StateSync` subscription.
         stream_id: StreamId,
         /// Published replica generation.
         bootstrap_id: BootstrapId,
@@ -394,19 +394,19 @@ impl EffectBuffer {
 
     /// Number of effects produced by the last update.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.effects.len()
     }
 
     /// Whether the last update produced no effects.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.effects.is_empty()
     }
 
     /// Current reusable allocation capacity.
     #[must_use]
-    pub fn capacity(&self) -> usize {
+    pub const fn capacity(&self) -> usize {
         self.effects.capacity()
     }
 
@@ -468,7 +468,7 @@ impl<E: EngineAdapter> std::fmt::Debug for PublishedReplica<'_, E> {
     }
 }
 
-impl<'a, E: EngineAdapter> PublishedReplica<'a, E> {
+impl<E: EngineAdapter> PublishedReplica<'_, E> {
     /// Exact protocol identity and profile.
     #[must_use]
     pub const fn key(&self) -> &ReplicaKey {
@@ -520,7 +520,7 @@ impl<E: EngineAdapter> std::fmt::Debug for StagingReplica<'_, E> {
     }
 }
 
-impl<'a, E: EngineAdapter> StagingReplica<'a, E> {
+impl<E: EngineAdapter> StagingReplica<'_, E> {
     /// Exact protocol identity and profile.
     #[must_use]
     pub const fn key(&self) -> &ReplicaKey {
@@ -554,7 +554,7 @@ impl<'a, E: EngineAdapter> StagingReplica<'a, E> {
 
 /// A deterministic protocol or adapter failure.
 #[derive(Debug, thiserror::Error)]
-pub enum KernelError<E: std::error::Error + 'static> {
+pub enum KernelError<E> {
     /// The stream profile differs from the profile selected by `HELLO_OK`.
     #[error("bootstrap profile {incoming:?} does not match selected profile {selected:?}")]
     ProfileMismatch {
@@ -995,6 +995,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// returning and leaves a [`KernelStatus::ResyncRequired`] effect in the
     /// buffer. The host must execute effects even when this method returns an
     /// error.
+    #[allow(clippy::too_many_lines)]
     pub fn update(
         &mut self,
         input: KernelInput<'_>,
@@ -1123,7 +1124,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
                         reason,
                         last_valid_seq,
                     },
-                    effects,
                 );
                 Ok(())
             }
@@ -1131,7 +1131,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 self.terminal_closed(terminal_id, effects);
                 Ok(())
             }
-            KernelInput::Action(action) => self.action(action, effects),
+            KernelInput::Action(action) => self.action(&action, effects),
         }
     }
 
@@ -1140,12 +1140,12 @@ impl<E: EngineAdapter> SessionKernel<E> {
         attach_id: u32,
         terminal_ids: &[TerminalId],
     ) -> Result<(), KernelError<E::Error>> {
-        if let Some(attach) = self.attach.as_ref() {
-            if !attach.released {
-                return Err(KernelError::AttachInProgress {
-                    active_attach_id: attach.attach_id,
-                });
-            }
+        if let Some(attach) = self.attach.as_ref()
+            && !attach.released
+        {
+            return Err(KernelError::AttachInProgress {
+                active_attach_id: attach.attach_id,
+            });
         }
         for (index, terminal_id) in terminal_ids.iter().enumerate() {
             if self.closed.contains(terminal_id) {
@@ -1241,6 +1241,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn bootstrap_begin(
         &mut self,
         terminal_id: &TerminalId,
@@ -1518,22 +1519,24 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 .terminals
                 .get_mut(terminal_id)
                 .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-            let staging = state
-                .staging
-                .as_mut()
-                .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
-            debug_assert!(staging.engine_ready && staging.protocol_ready);
-            self.adapter
-                .configure_history_budget(
-                    &mut staging.engine,
-                    history_config.max_bytes,
-                    history_config.max_materialized_rows,
-                )
-                .map_err(KernelError::Engine)?;
+            {
+                let staging = state
+                    .staging
+                    .as_mut()
+                    .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
+                debug_assert!(staging.engine_ready && staging.protocol_ready);
+                self.adapter
+                    .configure_history_budget(
+                        &mut staging.engine,
+                        history_config.max_bytes,
+                        history_config.max_materialized_rows,
+                    )
+                    .map_err(KernelError::Engine)?;
+            }
             let mut staging = state
                 .staging
                 .take()
-                .expect("staging checked before publication");
+                .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
             let replica_key = staging.key.clone();
             let pending_effects = std::mem::take(&mut staging.pending_effects);
             let mut history = HistoryCache::new(
@@ -1550,6 +1553,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 engine: staging.engine,
                 history,
             };
+            let history_status = replacement.history.status();
             if let Some(old) = state.published.replace(replacement) {
                 state
                     .retired
@@ -1559,12 +1563,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
                         last_valid_seq: old.last_seq,
                     });
             }
-            let history_status = state
-                .published
-                .as_ref()
-                .expect("published replacement")
-                .history
-                .status();
             (
                 replica_key,
                 pending_effects,
@@ -1576,7 +1574,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.mark_attach_resolved(terminal_id);
         let damage_allowed = !self.attach_blocks(terminal_id);
         for effect in pending_effects {
-            self.translate_engine_effect(&replica_key, effect, damage_allowed, effects);
+            Self::translate_engine_effect(&replica_key, effect, damage_allowed, effects);
         }
         if let Some(cursor) = initial_history_cursor {
             effects.push(KernelEffect::Send(KernelSend::HistoryRequest {
@@ -1599,6 +1597,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn terminal_output(
         &mut self,
         terminal_id: &TerminalId,
@@ -1731,7 +1730,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         let damage_allowed = !self.attach_blocks(terminal_id);
         let mut captured = std::mem::take(&mut self.engine_effects);
         for effect in captured.drain() {
-            self.translate_engine_effect(&replica_key, effect, damage_allowed, effects);
+            Self::translate_engine_effect(&replica_key, effect, damage_allowed, effects);
         }
         self.engine_effects = captured;
         if acknowledge {
@@ -1745,6 +1744,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn history_page(
         &mut self,
         terminal_id: &TerminalId,
@@ -1833,10 +1833,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
             replica.key.profile,
             BootstrapStreamProfile::NativeState { .. }
         );
-        if outcome.retained
-            && native
-            && (matches!(outcome.progress, BootstrapProgress::Finished) != !has_more)
-        {
+        let finished = matches!(outcome.progress, BootstrapProgress::Finished);
+        if outcome.retained && native && finished == has_more {
             replica.history.tombstone();
             self.adapter.clear_document_state(&mut replica.engine);
             self.engine_effects.clear();
@@ -1869,11 +1867,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
             return Ok(());
         }
 
-        if let Err(error) =
-            replica
-                .history
-                .accept_page(cursor, page_seq, next_cursor, rows, rows as usize, payload)
-        {
+        if let Err(error) = replica.history.accept_page(
+            &cursor,
+            page_seq,
+            next_cursor,
+            rows,
+            rows as usize,
+            payload,
+        ) {
             replica.history.tombstone();
             self.adapter.clear_document_state(&mut replica.engine);
             self.engine_effects.clear();
@@ -1898,7 +1899,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         let damage_allowed = !self.attach_blocks(terminal_id);
         let mut captured = std::mem::take(&mut self.engine_effects);
         for effect in captured.drain() {
-            self.translate_engine_effect(&replica_key, effect, damage_allowed, effects);
+            Self::translate_engine_effect(&replica_key, effect, damage_allowed, effects);
         }
         self.engine_effects = captured;
         effects.push(KernelEffect::Status(KernelStatus::History {
@@ -1968,6 +1969,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn history_rejected(
         &mut self,
         terminal_id: &TerminalId,
@@ -2057,7 +2059,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
     }
 
     fn translate_engine_effect(
-        &mut self,
         key: &ReplicaKey,
         effect: EngineEffect,
         damage_allowed: bool,
@@ -2103,7 +2104,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         record: TombstoneRecord,
-        _effects: &mut EffectBuffer,
     ) {
         let generation = GenerationId {
             stream_id,
@@ -2144,11 +2144,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
     }
 
     fn action(
-        &mut self,
-        action: KernelAction<'_>,
+        &self,
+        action: &KernelAction<'_>,
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
-        match action {
+        match *action {
             KernelAction::Input { terminal_id, event } => {
                 let eligibility = self.input_eligibility(terminal_id);
                 if let InputEligibility::Ineligible(reason) = eligibility {
@@ -2424,10 +2424,7 @@ const fn generation_of(key: &ReplicaKey) -> GenerationId {
     }
 }
 
-fn mismatch_error<E: std::error::Error + 'static>(
-    terminal_id: &TerminalId,
-    generation: GenerationId,
-) -> KernelError<E> {
+fn mismatch_error<E>(terminal_id: &TerminalId, generation: GenerationId) -> KernelError<E> {
     KernelError::GenerationMismatch {
         terminal_id: terminal_id.clone(),
         stream_id: generation.stream_id,
@@ -2435,10 +2432,7 @@ fn mismatch_error<E: std::error::Error + 'static>(
     }
 }
 
-fn retired_error<E: std::error::Error + 'static>(
-    terminal_id: &TerminalId,
-    generation: GenerationId,
-) -> KernelError<E> {
+fn retired_error<E>(terminal_id: &TerminalId, generation: GenerationId) -> KernelError<E> {
     KernelError::RetiredGeneration {
         terminal_id: terminal_id.clone(),
         stream_id: generation.stream_id,

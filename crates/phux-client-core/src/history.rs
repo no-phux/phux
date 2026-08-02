@@ -45,13 +45,12 @@ impl HistoryCacheConfig {
         self.max_materialized_rows = self.max_materialized_rows.max(1);
         self.request_max_bytes = self
             .request_max_bytes
-            .max(1)
-            .min(u32::try_from(self.max_bytes).unwrap_or(u32::MAX));
-        self.request_max_rows = self
-            .request_max_rows
-            .max(1)
-            .min(MAX_HISTORY_PAGE_ROWS)
-            .min(u32::try_from(self.max_materialized_rows).unwrap_or(u32::MAX));
+            .clamp(1, u32::try_from(self.max_bytes).unwrap_or(u32::MAX));
+        self.request_max_rows = self.request_max_rows.clamp(
+            1,
+            MAX_HISTORY_PAGE_ROWS
+                .min(u32::try_from(self.max_materialized_rows).unwrap_or(u32::MAX)),
+        );
         self
     }
 }
@@ -489,7 +488,7 @@ impl HistoryCache {
     /// Insert one engine-accepted response in exact cursor-local sequence.
     pub(crate) fn accept_page(
         &mut self,
-        cursor: HistoryCursor,
+        cursor: &HistoryCursor,
         page_seq: u64,
         next_cursor: Option<HistoryCursor>,
         declared_rows: u32,
@@ -497,7 +496,7 @@ impl HistoryCache {
         payload: &[u8],
     ) -> Result<HistoryPageId, HistoryCacheError> {
         if let HistoryPageCheck::Duplicate(id) = self.check_page(
-            &cursor,
+            cursor,
             page_seq,
             next_cursor.as_ref(),
             declared_rows,
@@ -544,12 +543,14 @@ impl HistoryCache {
         });
         self.consumed_bytes = self.consumed_bytes.saturating_add(accounted_bytes);
         while self.consumed.len() > 64 {
-            let removed = self.consumed.pop_front().expect("ledger is nonempty");
+            let Some(removed) = self.consumed.pop_front() else {
+                break;
+            };
             self.consumed_bytes = self.consumed_bytes.saturating_sub(removed.accounted_bytes);
         }
         self.next_page_seq = next_cursor
             .as_ref()
-            .map(|next| if next == &cursor { page_seq + 1 } else { 1 });
+            .map(|next| if next == cursor { page_seq + 1 } else { 1 });
         self.next_cursor = next_cursor;
         self.request_max_bytes = 0;
         self.request_max_rows = 0;
@@ -635,13 +636,13 @@ impl HistoryCache {
     }
 
     /// Resume following the live tail and clear unread output.
-    pub(crate) fn follow_tail(&mut self) {
+    pub(crate) const fn follow_tail(&mut self) {
         self.viewport = ViewportAnchor::Tail;
         self.unread_rows = 0;
     }
 
     /// Account live output without changing a pinned document location.
-    pub(crate) fn note_live_output(&mut self, rows: u64) {
+    pub(crate) const fn note_live_output(&mut self, rows: u64) {
         if matches!(self.viewport, ViewportAnchor::Pinned(_)) {
             self.unread_rows = self.unread_rows.saturating_add(rows);
         }
@@ -655,7 +656,7 @@ impl HistoryCache {
             && rows_from_oldest <= self.config.prefetch_rows
     }
 
-    pub(crate) fn has_continuation(&self) -> bool {
+    pub(crate) const fn has_continuation(&self) -> bool {
         self.next_cursor.is_some()
     }
 
@@ -715,7 +716,9 @@ impl HistoryCache {
             if !removable {
                 continue;
             }
-            let removed = self.pages.remove(&id).expect("evictable page exists");
+            let Some(removed) = self.pages.remove(&id) else {
+                continue;
+            };
             self.loaded_bytes = self.loaded_bytes.saturating_sub(removed.payload.len());
             self.materialized_rows = self
                 .materialized_rows
@@ -739,7 +742,9 @@ impl HistoryCache {
             }) else {
                 break;
             };
-            let page = self.pages.get_mut(id).expect("ordered page exists");
+            let Some(page) = self.pages.get_mut(id) else {
+                continue;
+            };
             self.materialized_rows = self
                 .materialized_rows
                 .saturating_sub(page.materialized_rows);
@@ -796,15 +801,15 @@ mod tests {
         let mut cache = HistoryCache::new(config(32, 32), Some(cursor(1)), 80);
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         let page = cache
-            .accept_page(cursor(1), 1, Some(cursor(2)), 0, 0, b"opaque-newest")
+            .accept_page(&cursor(1), 1, Some(cursor(2)), 0, 0, b"opaque-newest")
             .unwrap();
         assert_eq!(
-            cache.accept_page(cursor(1), 1, Some(cursor(2)), 0, 0, b"opaque-newest"),
+            cache.accept_page(&cursor(1), 1, Some(cursor(2)), 0, 0, b"opaque-newest"),
             Ok(page)
         );
         assert_eq!(cache.status().loaded_pages, 1);
         assert_eq!(
-            cache.accept_page(cursor(9), 1, None, 0, 0, b"opaque-gap"),
+            cache.accept_page(&cursor(9), 1, None, 0, 0, b"opaque-gap"),
             Err(HistoryCacheError::Gap)
         );
     }
@@ -816,10 +821,10 @@ mod tests {
         assert_eq!(first.begin_fetch(), Some(cursor(1)));
         assert_eq!(second.begin_fetch(), Some(cursor(1)));
         let page = first
-            .accept_page(cursor(1), 1, None, 0, 0, b"opaque")
+            .accept_page(&cursor(1), 1, None, 0, 0, b"opaque")
             .unwrap();
         second
-            .accept_page(cursor(1), 1, None, 0, 0, b"opaque")
+            .accept_page(&cursor(1), 1, None, 0, 0, b"opaque")
             .unwrap();
         let anchor = DocumentAnchorId::from_raw(7);
         first.register_anchor_pages(anchor, [page]).unwrap();
@@ -850,7 +855,7 @@ mod tests {
         let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         let first = cache
-            .accept_page(cursor(1), 1, Some(cursor(1)), 1, 1, b"one")
+            .accept_page(&cursor(1), 1, Some(cursor(1)), 1, 1, b"one")
             .unwrap();
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         assert_eq!(
@@ -867,7 +872,9 @@ mod tests {
                 actual: 0,
             })
         );
-        cache.accept_page(cursor(1), 2, None, 1, 1, b"two").unwrap();
+        cache
+            .accept_page(&cursor(1), 2, None, 1, 1, b"two")
+            .unwrap();
         assert!(cache.pages.contains_key(&first));
         assert_eq!(cache.status().next_page_seq, None);
     }
@@ -924,14 +931,14 @@ mod tests {
         let mut cache = HistoryCache::new(config(4, 1), Some(cursor(1)), 80);
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         cache
-            .accept_page(cursor(1), 1, Some(cursor(1)), 0, 0, b"aaaa")
+            .accept_page(&cursor(1), 1, Some(cursor(1)), 0, 0, b"aaaa")
             .unwrap();
         cache
             .register_anchor_pages(DocumentAnchorId::from_raw(1), std::iter::empty())
             .unwrap();
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         cache
-            .accept_page(cursor(1), 2, None, 0, 0, b"bbbb")
+            .accept_page(&cursor(1), 2, None, 0, 0, b"bbbb")
             .unwrap();
         assert_eq!(
             cache.register_anchor_pages(DocumentAnchorId::from_raw(2), std::iter::empty()),
@@ -947,11 +954,11 @@ mod tests {
         let mut cache = HistoryCache::new(config(4, 4), Some(cursor(1)), 80);
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         let first = cache
-            .accept_page(cursor(1), 1, Some(cursor(1)), 1, 1, b"aaaa")
+            .accept_page(&cursor(1), 1, Some(cursor(1)), 1, 1, b"aaaa")
             .unwrap();
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         cache
-            .accept_page(cursor(1), 2, None, 1, 1, b"bbbb")
+            .accept_page(&cursor(1), 2, None, 1, 1, b"bbbb")
             .unwrap();
         assert!(!cache.pages.contains_key(&first));
         assert_eq!(
@@ -981,12 +988,12 @@ mod tests {
             assert_eq!(cache.begin_fetch(), Some(cursor(1)));
             cache
                 .accept_page(
-                    cursor(1),
+                    &cursor(1),
                     page_seq,
                     Some(cursor(1)),
                     0,
                     0,
-                    &[page_seq as u8],
+                    &[page_seq.to_le_bytes()[0]],
                 )
                 .unwrap();
         }
