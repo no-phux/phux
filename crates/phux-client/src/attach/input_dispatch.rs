@@ -1150,7 +1150,7 @@ fn focused_pane_rect(
     )
 }
 
-fn focused_pane_rect_for(
+pub(super) fn focused_pane_rect_for(
     workspace: &Workspace,
     zoomed: Option<&TerminalId>,
     focused_pane: Option<&TerminalId>,

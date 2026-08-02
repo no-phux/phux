@@ -168,6 +168,19 @@ pub trait RenderOverlay {
         true
     }
 
+    /// phux-d26y: re-derive geometry from the focused pane's new size after
+    /// a viewport resize. `pane_cols` / `pane_rows` are the focused pane's
+    /// dimensions in the *new* layout.
+    ///
+    /// The companion to [`RenderOverlay::survives_resize`]: an overlay that
+    /// survives a resize still has to be *told* about it if it cached
+    /// anything derived from the old size. Copy-mode is the one that does —
+    /// it clamps its cursor, quantizes mouse positions, sizes a page scroll,
+    /// and picks Line mode's right edge from pane dimensions captured at
+    /// construction. Everything else recomputes from the render `area` and
+    /// ignores this (the default no-op).
+    fn on_viewport_resize(&mut self, _pane_cols: u16, _pane_rows: u16) {}
+
     /// phux-foz.7: offer this overlay a freshly rebuilt row set tagged
     /// `key`. A *live* overlay whose data projects shared client state —
     /// the agent-fleet dashboard — replaces its rows in place (preserving
@@ -308,6 +321,20 @@ impl OverlayState {
         let before = self.stack.len();
         self.stack.retain(|overlay| overlay.survives_resize());
         self.stack.len() != before
+    }
+
+    /// phux-d26y: hand every surviving overlay the focused pane's new size
+    /// ([`RenderOverlay::on_viewport_resize`]).
+    ///
+    /// Runs *after* [`Self::dismiss_stale_on_resize`] on the same SIGWINCH
+    /// edge, so the overlays that are about to be dropped are never asked to
+    /// re-derive geometry they will not use. Most overlays ignore it; the
+    /// one that does not is copy-mode, whose clamp is otherwise still
+    /// talking about the pane size that existed when it opened.
+    pub fn on_viewport_resize(&mut self, pane_cols: u16, pane_rows: u16) {
+        for overlay in &mut self.stack {
+            overlay.on_viewport_resize(pane_cols, pane_rows);
+        }
     }
 
     /// Push `overlay` onto the top of the stack. It becomes the input
@@ -1044,5 +1071,41 @@ mod tests {
         let mut s = OverlayState::new();
         assert!(!s.dismiss_stale_on_resize());
         assert!(!s.is_active());
+    }
+
+    // ---------- phux-d26y: survivors adopt the new pane size ----------
+
+    /// The fan-out reaches copy-mode through the stack, which is what the
+    /// driver relies on — the overlay is behind a `Box<dyn RenderOverlay>`
+    /// there, so a method that only existed on the concrete type would
+    /// never be called.
+    #[test]
+    fn a_resize_hands_the_new_pane_size_to_a_surviving_overlay() {
+        let mut s = OverlayState::new();
+        s.push(Box::new(CopyModeOverlay::new(20, 70, 80, 24)));
+        // Selection cursor sits at the old bottom-right region.
+        s.on_viewport_resize(60, 18);
+        let sel = s.copy_selection().expect("copy-mode has a selection");
+        assert!(
+            sel.end_row < 18 && sel.end_col < 60,
+            "the surviving overlay clamped into the new pane: {sel:?}",
+        );
+    }
+
+    /// Ordering: the sweep runs first, so an overlay that is about to be
+    /// dropped is never handed geometry it will not use. Both calls are
+    /// safe in either order, but the driver's sequence is the contract.
+    #[test]
+    fn the_sweep_runs_before_the_resize_fan_out() {
+        let mut s = OverlayState::new();
+        s.push(Box::new(pinned_menu()));
+        s.push(Box::new(CopyModeOverlay::new(20, 70, 80, 24)));
+
+        assert!(s.dismiss_stale_on_resize(), "the menu is dropped");
+        s.on_viewport_resize(60, 18);
+
+        assert_eq!(s.depth(), 1, "only copy-mode survives");
+        let sel = s.copy_selection().expect("copy-mode survived");
+        assert!(sel.end_row < 18 && sel.end_col < 60);
     }
 }

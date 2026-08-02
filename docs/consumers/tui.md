@@ -1543,6 +1543,13 @@ exits, so a mouse-initiated entry can never trap the keyboard. See §11 for the
 scope boundary — phux does not reimplement selection boundaries or a clipboard
 format path; it delegates both to libghostty and the host terminal.
 
+Resizing the terminal **keeps** copy-mode open — it is a selection over the
+live pane, not a box pinned to the screen, so a resize must not discard a
+selection you are still building (the context menu is the opposite case, §7.1).
+The selection adopts the pane's new size instead: a shrink pulls both corners
+back inside the pane, a grow makes the newly revealed rows and columns
+reachable, and a Line-mode selection re-spans to the new width (phux-d26y).
+
 ---
 
 ## 6. Layout
