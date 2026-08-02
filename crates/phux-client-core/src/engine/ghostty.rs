@@ -29,7 +29,7 @@ use super::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
     EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
     EngineHistoryProjection, EngineProjectionOrigin, EngineProjectionRow, EngineSearchMatch,
-    EngineSend,
+    EngineSend, HistoryApplyOutcome,
 };
 use crate::history::DocumentAnchorId;
 
@@ -147,6 +147,7 @@ pub struct GhosttyReplica {
     anchors: HashMap<DocumentAnchorId, TrackedGridRef>,
     state: ReplicaState,
     history_max_bytes: Option<usize>,
+    history_max_lines: Option<usize>,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -181,6 +182,25 @@ impl GhosttyReplica {
                 NativeDecoderState::Finished(terminal)
                 | NativeDecoderState::Failed(Some(terminal)) => {
                     terminal.set_scrollback_max_bytes(max)?;
+                }
+                NativeDecoderState::BeforeReady(_) | NativeDecoderState::Failed(None) => {}
+            },
+        }
+        Ok(())
+    }
+
+    fn set_scrollback_max_lines(&mut self, max: Option<usize>) -> Result<(), GhosttyEngineError> {
+        match &mut self.state {
+            ReplicaState::Synthesized { terminal, .. } => {
+                terminal.set_scrollback_max_lines(max)?;
+            }
+            ReplicaState::Native(native) => match &mut native.decoder {
+                NativeDecoderState::AfterReady(stream) => {
+                    stream.set_scrollback_max_lines(max)?;
+                }
+                NativeDecoderState::Finished(terminal)
+                | NativeDecoderState::Failed(Some(terminal)) => {
+                    terminal.set_scrollback_max_lines(max)?;
                 }
                 NativeDecoderState::BeforeReady(_) | NativeDecoderState::Failed(None) => {}
             },
@@ -378,6 +398,7 @@ impl EngineAdapter for GhosttyAdapter {
             state,
             anchors: HashMap::new(),
             history_max_bytes: None,
+            history_max_lines: None,
             _not_send_or_sync: PhantomData,
         })
     }
@@ -386,10 +407,12 @@ impl EngineAdapter for GhosttyAdapter {
         &mut self,
         replica: &mut Self::Replica,
         max_bytes: usize,
+        max_rows: usize,
     ) -> Result<(), Self::Error> {
         replica.history_max_bytes = Some(max_bytes.max(1));
-        let history_max_bytes = replica.history_max_bytes;
-        replica.set_scrollback_max_bytes(history_max_bytes)?;
+        replica.history_max_lines = Some(max_rows.max(1));
+        replica.set_scrollback_max_bytes(replica.history_max_bytes)?;
+        replica.set_scrollback_max_lines(replica.history_max_lines)?;
         Ok(())
     }
 
@@ -470,7 +493,7 @@ impl EngineAdapter for GhosttyAdapter {
         replica: &mut Self::Replica,
         payload: &[u8],
         effects: &mut EngineEffectBuffer,
-    ) -> Result<BootstrapProgress, Self::Error> {
+    ) -> Result<HistoryApplyOutcome, Self::Error> {
         let limit = self.limits.max_history_page_bytes() as usize;
         if payload.len() > limit {
             return Err(GhosttyEngineError::PayloadLimitExceeded {
@@ -484,8 +507,8 @@ impl EngineAdapter for GhosttyAdapter {
                 return Err(GhosttyEngineError::HistoryUnsupported(profile));
             }
             ReplicaState::Native(native) => {
-                let progress = push_history(native, payload)?;
-                (progress, &native.pty_responses)
+                let outcome = push_history(native, payload)?;
+                (outcome, &native.pty_responses)
             }
         };
         drain_pty_responses(pty_responses, effects);
@@ -1012,19 +1035,23 @@ fn finish_native(native: &mut NativeReplica) -> Result<BootstrapProgress, Ghostt
 fn push_history(
     native: &mut NativeReplica,
     mut input: &[u8],
-) -> Result<BootstrapProgress, GhosttyEngineError> {
+    ) -> Result<HistoryApplyOutcome, GhosttyEngineError> {
     if !native.protocol_finished {
         return Err(GhosttyEngineError::HistoryBeforePublication);
     }
     if input.is_empty() {
         return match native.decoder {
-            NativeDecoderState::AfterReady(_) => Ok(BootstrapProgress::Ready),
+            NativeDecoderState::AfterReady(_) => Ok(HistoryApplyOutcome {
+                progress: BootstrapProgress::Ready,
+                retained: true,
+            }),
             NativeDecoderState::Finished(_) => Err(GhosttyEngineError::InputAfterFinish),
             NativeDecoderState::BeforeReady(_) => Err(GhosttyEngineError::HistoryBeforePublication),
             NativeDecoderState::Failed(_) => Err(GhosttyEngineError::DecoderFailed),
         };
     }
 
+    let mut retained = true;
     loop {
         let state = std::mem::replace(&mut native.decoder, NativeDecoderState::Failed(None));
         let stream = match state {
@@ -1054,16 +1081,33 @@ fn push_history(
             | Ok(AfterReadyStep::Progress { decoder, progress })
             | Ok(AfterReadyStep::HistoryBegin {
                 decoder, progress, ..
-            })
-            | Ok(AfterReadyStep::HistoryPage {
-                decoder, progress, ..
             }) => {
                 let version = check_version(progress);
                 native.decoder = NativeDecoderState::AfterReady(decoder);
                 version?;
                 input = remaining(input, progress)?;
                 if input.is_empty() {
-                    return Ok(BootstrapProgress::Ready);
+                    return Ok(HistoryApplyOutcome {
+                        progress: BootstrapProgress::Ready,
+                        retained,
+                    });
+                }
+            }
+            Ok(AfterReadyStep::HistoryPage {
+                decoder,
+                progress,
+                retained: page_retained,
+            }) => {
+                retained &= page_retained;
+                let version = check_version(progress);
+                native.decoder = NativeDecoderState::AfterReady(decoder);
+                version?;
+                input = remaining(input, progress)?;
+                if input.is_empty() {
+                    return Ok(HistoryApplyOutcome {
+                        progress: BootstrapProgress::Ready,
+                        retained,
+                    });
                 }
             }
             Ok(AfterReadyStep::Finish(finished)) => {
@@ -1083,7 +1127,10 @@ fn push_history(
                 if trailing != 0 {
                     return Err(GhosttyEngineError::TrailingAfterFinish { trailing });
                 }
-                return Ok(BootstrapProgress::Finished);
+                return Ok(HistoryApplyOutcome {
+                    progress: BootstrapProgress::Finished,
+                    retained,
+                });
             }
         }
     }

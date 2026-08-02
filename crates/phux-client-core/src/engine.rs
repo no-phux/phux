@@ -47,6 +47,15 @@ impl BootstrapProgress {
     }
 }
 
+/// Outcome of one authenticated post-READY history unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryApplyOutcome {
+    /// Decoder continuation state after consuming the unit.
+    pub progress: BootstrapProgress,
+    /// Whether the engine retained the imported page under its local limits.
+    pub retained: bool,
+}
+
 /// A terminal-engine request to write bytes back to its PTY.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineSend {
@@ -177,6 +186,7 @@ pub trait EngineAdapter {
         &mut self,
         _replica: &mut Self::Replica,
         _max_bytes: usize,
+        _max_rows: usize,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
@@ -188,6 +198,17 @@ pub trait EngineAdapter {
 
     /// Release all engine-owned tracked document state.
     fn clear_document_state(&mut self, _replica: &mut Self::Replica) {}
+
+    /// Resolve an engine-owned history anchor to its current distance from tail.
+    ///
+    /// `None` means the anchor was pruned or otherwise became invalid.
+    fn history_anchor_tail_distance(
+        &self,
+        _replica: &Self::Replica,
+        _anchor: DocumentAnchorId,
+    ) -> Result<Option<u64>, Self::Error> {
+        Ok(None)
+    }
 
     /// Finish the bootstrap transcript at the protocol READY boundary.
     fn finish_bootstrap(
@@ -208,7 +229,7 @@ pub trait EngineAdapter {
         replica: &mut Self::Replica,
         payload: &[u8],
         effects: &mut EngineEffectBuffer,
-    ) -> Result<BootstrapProgress, Self::Error>;
+    ) -> Result<HistoryApplyOutcome, Self::Error>;
 
     /// Apply one borrowed, exactly sequenced live payload.
     fn apply_output(

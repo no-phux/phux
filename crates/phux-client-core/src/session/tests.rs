@@ -13,7 +13,7 @@ use super::{
 };
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
-    EngineEffectBuffer, EngineJob, EngineSend, EngineStatus,
+    EngineEffectBuffer, EngineJob, EngineSend, EngineStatus, HistoryApplyOutcome,
 };
 use crate::history::HistoryLoadState;
 
@@ -132,7 +132,7 @@ impl EngineAdapter for FakeAdapter {
         replica: &mut Self::Replica,
         payload: &[u8],
         effects: &mut EngineEffectBuffer,
-    ) -> Result<BootstrapProgress, Self::Error> {
+    ) -> Result<HistoryApplyOutcome, Self::Error> {
         if payload == b"history-error" {
             effects.push(EngineEffect::Damage(EngineDamage::Full));
             return Err(FakeError::MutatedThenFailed);
@@ -143,7 +143,10 @@ impl EngineAdapter for FakeAdapter {
                 "history-imported".to_owned(),
             )));
         }
-        Ok(BootstrapProgress::Ready)
+        Ok(HistoryApplyOutcome {
+            progress: BootstrapProgress::Ready,
+            retained: payload != b"history-not-retained",
+        })
     }
 
     fn apply_output(
@@ -241,14 +244,17 @@ impl EngineAdapter for RecordingNativeAdapter {
         replica: &mut Self::Replica,
         payload: &[u8],
         _effects: &mut EngineEffectBuffer,
-    ) -> Result<BootstrapProgress, Self::Error> {
+    ) -> Result<HistoryApplyOutcome, Self::Error> {
         replica
             .records
             .push(NativeRecord::History(payload.to_vec()));
-        Ok(if payload == b"finish" {
-            BootstrapProgress::Finished
-        } else {
-            BootstrapProgress::Ready
+        Ok(HistoryApplyOutcome {
+            progress: if payload == b"finish" {
+                BootstrapProgress::Finished
+            } else {
+                BootstrapProgress::Ready
+            },
+            retained: true,
         })
     }
 

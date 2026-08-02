@@ -257,6 +257,8 @@ pub struct HistoryCache {
     selection: HashSet<HistoryPageId>,
     next_cursor: Option<HistoryCursor>,
     next_page_seq: Option<u64>,
+    request_max_bytes: u32,
+    request_max_rows: u32,
     state: HistoryLoadState,
     loaded_bytes: usize,
     materialized_rows: usize,
@@ -291,6 +293,8 @@ impl HistoryCache {
             selection: HashSet::new(),
             next_cursor: newest_cursor,
             next_page_seq,
+            request_max_bytes: 0,
+            request_max_rows: 0,
             state,
             loaded_bytes: 0,
             materialized_rows: 0,
@@ -335,11 +339,24 @@ impl HistoryCache {
 
     /// Mark the exact next cursor as requested and return it once.
     pub(crate) fn begin_fetch(&mut self) -> Option<HistoryCursor> {
-        if self.state != HistoryLoadState::Idle {
+        self.begin_fetch_with_limits(
+            self.config.request_max_bytes,
+            self.config.request_max_rows,
+        )
+    }
+
+    pub(crate) fn begin_fetch_with_limits(
+        &mut self,
+        max_bytes: u32,
+        max_rows: u32,
+    ) -> Option<HistoryCursor> {
+        if self.state != HistoryLoadState::Idle || max_bytes == 0 || max_rows == 0 {
             return None;
         }
         let cursor = self.next_cursor.clone()?;
         self.state = HistoryLoadState::Loading;
+        self.request_max_bytes = max_bytes;
+        self.request_max_rows = max_rows;
         Some(cursor)
     }
 
@@ -349,14 +366,38 @@ impl HistoryCache {
             return false;
         }
         self.state = HistoryLoadState::Idle;
+        self.request_max_bytes = 0;
+        self.request_max_rows = 0;
         true
     }
 
-    pub(crate) fn can_retry(&self, required_bytes: u32, required_rows: u32) -> bool {
-        required_bytes > 0
-            && required_rows > 0
-            && required_bytes <= self.config.request_max_bytes
-            && required_rows <= self.config.request_max_rows
+    pub(crate) fn retry_limits(
+        &self,
+        required_bytes: u32,
+        required_rows: u32,
+    ) -> Option<(u32, u32)> {
+        if required_bytes == 0
+            || required_rows == 0
+            || (required_bytes <= self.request_max_bytes
+                && required_rows <= self.request_max_rows)
+            || required_bytes > u32::try_from(self.config.max_bytes).unwrap_or(u32::MAX)
+            || required_rows > MAX_HISTORY_PAGE_ROWS
+            || required_rows
+                > u32::try_from(self.config.max_materialized_rows).unwrap_or(u32::MAX)
+        {
+            return None;
+        }
+        Some((
+            self.request_max_bytes.max(required_bytes),
+            self.request_max_rows.max(required_rows),
+        ))
+    }
+
+    pub(crate) fn should_auto_continue(&self) -> bool {
+        self.state == HistoryLoadState::Idle
+            && self.next_cursor.is_some()
+            && (self.materialized_rows < self.config.prefetch_rows
+                || matches!(self.viewport, ViewportAnchor::Pinned(_)))
     }
 
     /// Validate ordering and duplicate identity without mutating the cache.
@@ -386,20 +427,20 @@ impl HistoryCache {
             return Err(HistoryCacheError::EmptyPayload);
         }
         if payload.len() > self.config.max_bytes
-            || payload.len() > self.config.request_max_bytes as usize
+            || payload.len() > self.request_max_bytes as usize
         {
             return Err(HistoryCacheError::PageTooLarge {
                 required: payload.len(),
                 budget: self
                     .config
                     .max_bytes
-                    .min(self.config.request_max_bytes as usize),
+                    .min(self.request_max_bytes as usize),
             });
         }
-        if declared_rows > self.config.request_max_rows || declared_rows > MAX_HISTORY_PAGE_ROWS {
+        if declared_rows > self.request_max_rows || declared_rows > MAX_HISTORY_PAGE_ROWS {
             return Err(HistoryCacheError::ProjectionTooLarge {
                 required: declared_rows as usize,
-                budget: self.config.request_max_rows as usize,
+                budget: self.request_max_rows as usize,
             });
         }
         if self.state != HistoryLoadState::Loading || self.next_cursor.as_ref() != Some(cursor) {
@@ -475,6 +516,8 @@ impl HistoryCache {
             .as_ref()
             .map(|next| if next == &cursor { page_seq + 1 } else { 1 });
         self.next_cursor = next_cursor;
+        self.request_max_bytes = 0;
+        self.request_max_rows = 0;
         self.state = if self.next_cursor.is_some() {
             HistoryLoadState::Idle
         } else {
@@ -806,6 +849,8 @@ impl HistoryCache {
         self.selection.clear();
         self.next_cursor = None;
         self.next_page_seq = None;
+        self.request_max_bytes = 0;
+        self.request_max_rows = 0;
         self.loaded_bytes = 0;
         self.materialized_rows = 0;
         self.pinned_bytes = 0;

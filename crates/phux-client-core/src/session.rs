@@ -1493,7 +1493,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 .ok_or_else(|| KernelError::MissingStaging(terminal_id.clone()))?;
             debug_assert!(staging.engine_ready && staging.protocol_ready);
             self.adapter
-                .configure_history_budget(&mut staging.engine, history_config.max_bytes)
+                .configure_history_budget(
+                    &mut staging.engine,
+                    history_config.max_bytes,
+                    history_config.max_materialized_rows,
+                )
                 .map_err(KernelError::Engine)?;
             let mut staging = state
                 .staging
@@ -1740,17 +1744,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }
         }
 
-        let rows_before = self
-            .adapter
-            .total_rows(&replica.engine)
-            .map_err(KernelError::Engine)?;
         self.engine_effects.clear();
-        let progress = match self.adapter.apply_history_page(
+        let outcome = match self.adapter.apply_history_page(
             &mut replica.engine,
             payload,
             &mut self.engine_effects,
         ) {
-            Ok(progress) => progress,
+            Ok(outcome) => outcome,
             Err(error) => {
                 replica.history.tombstone();
                 self.adapter.clear_document_state(&mut replica.engine);
@@ -1772,7 +1772,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
             replica.key.profile,
             BootstrapStreamProfile::NativeState { .. }
         );
-        if native && (matches!(progress, BootstrapProgress::Finished) != !has_more) {
+        if outcome.retained
+            && native
+            && (matches!(outcome.progress, BootstrapProgress::Finished) != !has_more)
+        {
             replica.history.tombstone();
             self.adapter.clear_document_state(&mut replica.engine);
             self.engine_effects.clear();
@@ -1784,30 +1787,25 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 key: replica.key.clone(),
                 status: replica.history.status(),
             }));
-            return Err(KernelError::HistoryCompletionMismatch { progress, has_more });
+            return Err(KernelError::HistoryCompletionMismatch {
+                progress: outcome.progress,
+                has_more,
+            });
         }
 
-        let rows_after = self
-            .adapter
-            .total_rows(&replica.engine)
-            .map_err(KernelError::Engine)?;
-        let actual_rows = rows_after.saturating_sub(rows_before);
-        if actual_rows != u64::from(rows) {
+        if !outcome.retained {
             replica.history.tombstone();
             self.adapter.clear_document_state(&mut replica.engine);
             self.engine_effects.clear();
             effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
                 key: replica.key.clone(),
-                reason: HistoryUnavailableReason::CodecFailure,
+                reason: HistoryUnavailableReason::Limit,
             }));
             effects.push(KernelEffect::Status(KernelStatus::History {
                 key: replica.key.clone(),
                 status: replica.history.status(),
             }));
-            return Err(KernelError::HistoryRowCountMismatch {
-                declared: rows,
-                actual: actual_rows,
-            });
+            return Ok(());
         }
 
         if let Err(error) = replica.history.accept_page(
@@ -1815,7 +1813,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             page_seq,
             next_cursor,
             rows,
-            usize::try_from(actual_rows).unwrap_or(usize::MAX),
+            rows as usize,
             payload,
         ) {
             replica.history.tombstone();
@@ -1832,7 +1830,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
             return Err(KernelError::HistoryCache(error));
         }
 
-        let next_request = replica.history.begin_fetch();
+        let next_request = replica
+            .history
+            .should_auto_continue()
+            .then(|| replica.history.begin_fetch())
+            .flatten();
         let replica_key = replica.key.clone();
         let history_status = replica.history.status();
         let damage_allowed = !self.attach_blocks(terminal_id);
