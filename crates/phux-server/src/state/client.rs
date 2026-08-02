@@ -84,4 +84,7 @@ pub enum AttachError {
     /// The given [`ClientId`] is already attached.
     #[error("client {0:?} is already attached")]
     AlreadyAttached(ClientId),
+    /// The session cannot fit the bounded aggregate attach preflight.
+    #[error("session exceeds aggregate attach resource limits")]
+    ResourceLimit,
 }

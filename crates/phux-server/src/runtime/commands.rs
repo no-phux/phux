@@ -520,6 +520,19 @@ pub(crate) fn prepare_attach(
     bootstrap_limits: BootstrapLimits,
 ) -> Result<AttachPrepared, crate::state::AttachError> {
     state.with_mut(|s| {
+        let pane_count = s
+            .session_by_name(session_name)
+            .ok_or_else(|| crate::state::AttachError::UnknownSession(session_name.to_owned()))?
+            .windows
+            .iter()
+            .filter_map(|window_id| s.registry.window(*window_id))
+            .try_fold(0_usize, |count, window| {
+                count.checked_add(window.panes.len())
+            })
+            .ok_or(crate::state::AttachError::ResourceLimit)?;
+        if pane_count > crate::runtime::attach::MAX_AGGREGATE_BOOTSTRAP_PANES {
+            return Err(crate::state::AttachError::ResourceLimit);
+        }
         let sid = s.attach(
             client_id,
             session_name,
@@ -955,6 +968,9 @@ async fn handle_attach_terminal(
                 ),
                 live_gate: live_gate_rx.clone(),
                 state_sync_scrollback: None,
+                bootstrap_max_bytes: usize::MAX,
+                bootstrap_max_frames: usize::MAX,
+                bootstrap_chunk_bytes: 1,
                 // phux-v45.8: `ATTACH_TERMINAL` over a reliable transport; the
                 // emit-once model is correct. Forwarded-leg loss-tolerance is
                 // the deferred activation (ADR-0042).
@@ -1149,6 +1165,8 @@ async fn handle_attach_terminal(
                                     stream_id,
                                     bootstrap_id,
                                     limits: bootstrap_limits,
+                                    max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+                                    max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
                                     reply: reply_tx,
                                 })
                                 .await
@@ -1304,6 +1322,8 @@ async fn handle_attach_terminal(
                 stream_id,
                 bootstrap_id,
                 limits: bootstrap_limits,
+                max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+                max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
                 reply: reply_tx,
             })
             .await
@@ -1361,6 +1381,9 @@ async fn handle_attach_terminal(
         .snapshot
         .send(SnapshotRequest {
             scrollback: None,
+            max_bytes: usize::MAX,
+            max_frames: usize::MAX,
+            chunk_bytes: 1,
             reply: reply_tx,
         })
         .await
@@ -1372,7 +1395,7 @@ async fn handle_attach_terminal(
             message: "pane actor unavailable for ATTACH_TERMINAL".to_owned(),
         };
     }
-    let Ok((snap, cut)) = reply_rx.await else {
+    let Ok(Ok((snap, cut))) = reply_rx.await else {
         rollback();
         return CommandResult::Error {
             code: ErrorCode::InternalError,

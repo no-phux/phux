@@ -1613,24 +1613,20 @@ mod tests {
         );
     }
 
-    /// Concurrency proof for the ATTACH per-pane snapshot fan-out.
+    /// Source-allocation proof for the ATTACH per-pane snapshot sequence.
     ///
-    /// Builds N hand-crafted `TerminalHandle`s (no real `TerminalActor`) whose
-    /// `snapshot_rx` ends the test holds. Registers them against a
-    /// session, then drives `handle_attach`. With the sequential loop
-    /// the test would deadlock: the handler would `await` pane 0's
-    /// reply, but the test only replies after observing all N requests
-    /// land on their receivers. The `FuturesUnordered` fan-out unsticks
-    /// it by sending all N requests up front, then awaiting replies as
-    /// they arrive in any order.
+    /// Builds N hand-crafted `TerminalHandle`s and verifies each snapshot
+    /// request is completed before the next one arrives. That ordering lets
+    /// the aggregate host charge retained bytes and pass only the remaining
+    /// connection-wide allocation ceiling to the next actor.
     #[tokio::test(flavor = "current_thread")]
     #[allow(
         clippy::too_many_lines,
-        reason = "linear setup-then-act-then-assert test body; splitting would obscure the concurrency proof"
+        reason = "linear setup-then-act-then-assert test body; splitting would obscure the allocation proof"
     )]
-    async fn handle_attach_fans_out_snapshot_requests_concurrently() {
+    async fn handle_attach_bounds_snapshot_sources_sequentially() {
         use phux_core::ids::TerminalId as CoreTerminalId;
-        use tokio::sync::{broadcast, mpsc, oneshot};
+        use tokio::sync::{broadcast, mpsc};
         use tokio::task::LocalSet;
 
         use crate::grid::SnapshotBytes;
@@ -1743,33 +1739,26 @@ mod tests {
                     .await;
                 });
 
-                // Now collect all N SnapshotRequests BEFORE replying to
-                // any of them. Under the old sequential loop the
-                // handler would block on pane 0's reply forever (we
-                // haven't replied yet), so only the first request
-                // would land. With the concurrent fan-out all N land
-                // up front.
-                let mut replies: Vec<oneshot::Sender<(SnapshotBytes, u64)>> = Vec::with_capacity(N);
+                // Each request must be completed before the next pane is
+                // asked to allocate its source snapshot. Its byte ceiling can
+                // therefore only shrink as retained aggregate state grows.
+                let mut previous_max_bytes = usize::MAX;
                 for (i, rx) in snapshot_rxs.iter_mut().enumerate() {
                     let req = tokio::time::timeout(MAILBOX_DEADLINE, rx.recv())
                         .await
-                        .unwrap_or_else(|_| {
-                            panic!("snapshot request {i} never arrived — sequential loop?")
-                        })
+                        .unwrap_or_else(|_| panic!("snapshot request {i} never arrived"))
                         .expect("snapshot channel closed");
-                    replies.push(req.reply);
-                }
-
-                // Reply on all N oneshots. Order should not matter to the
-                // fan-out; deliberately reply in reverse to underscore that.
-                for (i, reply) in replies.into_iter().enumerate().rev() {
+                    assert!(req.max_bytes <= previous_max_bytes);
+                    previous_max_bytes = req.max_bytes;
                     let payload = SnapshotBytes {
                         cols: 80,
                         rows: 24,
                         bytes: format!("snap-{i}").into_bytes(),
                         scrollback: Vec::new(),
                     };
-                    let _ = reply.send((payload, u64::try_from(i).unwrap()));
+                    req.reply
+                        .send(Ok((payload, u64::try_from(i).unwrap())))
+                        .expect("attach still waiting for snapshot");
                 }
                 // First the writer should see ATTACHED.
                 let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())

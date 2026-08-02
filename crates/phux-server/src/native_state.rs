@@ -469,14 +469,39 @@ impl NativeTerminalManager {
             .resize(cols, rows, cell_width_px, cell_height_px)
     }
 
+    #[cfg(test)]
     pub(crate) fn capture(
         &mut self,
         limits: BootstrapLimits,
     ) -> Result<NativeManagedCapture<'_>, NativeStateError> {
+        self.capture_bounded(
+            limits,
+            MAX_NATIVE_PREFIX_BYTES,
+            MAX_NATIVE_PREFIX_CHUNKS,
+        )
+    }
+
+    pub(crate) fn capture_bounded(
+        &mut self,
+        limits: BootstrapLimits,
+        max_prefix_bytes: usize,
+        max_prefix_chunks: usize,
+    ) -> Result<NativeManagedCapture<'_>, NativeStateError> {
         if self.continuations.len() == self.capacity {
             return Err(NativeStateError::LimitExceeded);
         }
-        let options = bounded_capture_options(limits, &self.engine)?;
+        let mut options = bounded_capture_options(limits, &self.engine)?;
+        options.max_record_bytes = options.max_record_bytes.min(max_prefix_bytes);
+        options.max_pages = options.max_pages.min(max_prefix_chunks);
+        if options.max_record_bytes == 0 || options.max_pages == 0 {
+            return Err(NativeStateError::LimitExceeded);
+        }
+        options.max_pages = options
+            .max_pages
+            .min(max_prefix_bytes / options.max_record_bytes);
+        if options.max_pages == 0 {
+            return Err(NativeStateError::LimitExceeded);
+        }
         let max_record_bytes = options.max_record_bytes;
         let max_pages = options.max_pages;
         let max_unit_bytes = usize::try_from(limits.max_history_page_bytes())

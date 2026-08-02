@@ -857,8 +857,13 @@ const WRITER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 async fn close_client_writer(
     out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    writer_close: &tokio::sync::watch::Sender<bool>,
     sibling_tasks: &mut JoinSet<()>,
 ) {
+    // The close command is independent of sender liveness. The writer closes
+    // its receiver, drains every frame already ordered before this command,
+    // then calls FrameWriter::close.
+    let _ = writer_close.send(true);
     drop(out_tx);
     if tokio::time::timeout(WRITER_DRAIN_TIMEOUT, async {
         while sibling_tasks.join_next().await.is_some() {}
@@ -915,12 +920,13 @@ where
     // The writer drains one `Outbound` channel; closure of this one
     // channel is the unambiguous signal for the writer to exit.
     let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
+    let (writer_close_tx, writer_close_rx) = tokio::sync::watch::channel(false);
     // Per-client `JoinSet` for sibling tasks (today: just the writer).
     // Held in this scope so it drops with `handle_client` and the
     // writer aborts if it hasn't already exited via its own
     // close-on-EOF path. Keeps lifecycle plumbing local.
     let mut sibling_tasks: JoinSet<()> = JoinSet::new();
-    sibling_tasks.spawn_local(writer_task(writer, out_rx, client_id));
+    sibling_tasks.spawn_local(writer_task(writer, out_rx, writer_close_rx, client_id));
 
     // Per-attach raw-output pumps. These are deliberately separate from
     // `sibling_tasks`: DETACH/session switch must abort pane output pumps
@@ -948,7 +954,7 @@ where
                 debug!(?client_id, "client task cancelled");
                 abort_output_pumps(&mut output_pumps, client_id, "connection cancellation").await;
                 detach_and_release_consumer_state(&state, client_id);
-                close_client_writer(out_tx, &mut sibling_tasks).await;
+                close_client_writer(out_tx, &writer_close_tx, &mut sibling_tasks).await;
                 return Ok(());
             }
             res = reader.read_frame() => match res {
@@ -2182,13 +2188,34 @@ pub(crate) fn broadcast_event(
 /// sender.
 pub(crate) async fn writer_task<W: FrameWriter>(
     mut writer: W,
-
     mut rx: tokio::sync::mpsc::Receiver<Outbound>,
+    mut close: tokio::sync::watch::Receiver<bool>,
     client_id: ClientId,
 ) {
     let mut buf = BytesMut::with_capacity(1024);
-    while let Some(msg) = rx.recv().await {
-        let Outbound::Frame(frame) = msg;
+    let mut close_control_open = true;
+    loop {
+        let message = if close_control_open {
+            tokio::select! {
+                biased;
+                changed = close.changed() => {
+                    match changed {
+                        Ok(()) if *close.borrow_and_update() => {
+                            rx.close();
+                            close_control_open = false;
+                        }
+                        _ => close_control_open = false,
+                    }
+                    continue;
+                }
+                message = rx.recv() => message,
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(Outbound::Frame(frame)) = message else {
+            break;
+        };
         buf.clear();
         frame.encode(&mut buf);
         if let Err(err) = writer.write_frame(&buf).await {
@@ -2253,7 +2280,8 @@ mod writer_close_tests {
         .expect("queue terminal error");
         drop(tx);
 
-        writer_task(writer, rx, ClientId(7)).await;
+        let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
+        writer_task(writer, rx, close_rx, ClientId(7)).await;
         assert_eq!(
             events.borrow().as_slice(),
             [WriterEvent::Error, WriterEvent::Close]
@@ -2279,7 +2307,7 @@ mod fatal_preflight_close_tests {
     use tokio_util::sync::CancellationToken;
 
     use super::handle_client;
-    use crate::state::{ClientId, SharedState};
+    use crate::state::SharedState;
     use crate::terminal_actor::{ConsumerAttachOutcome, PaneOutput, TerminalHandle};
     use crate::transport::{FrameReader, FrameWriter};
 

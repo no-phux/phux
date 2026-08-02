@@ -77,6 +77,60 @@ pub enum SynthesisError {
     /// Kitty graphics replay failed while projecting libghostty image state.
     #[error("kitty replay: {0}")]
     KittyReplay(#[from] kitty_replay::KittyReplayError),
+    /// Caller-owned aggregate bootstrap byte budget was exhausted.
+    #[error("snapshot byte limit exceeded")]
+    LimitExceeded,
+    /// Host allocation failed while reserving bounded synthesis storage.
+    #[error("snapshot allocation failed")]
+    OutOfMemory,
+}
+
+struct BoundedSnapshotBytes {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+}
+
+impl BoundedSnapshotBytes {
+    fn with_capacity(max_bytes: usize, requested: usize) -> Result<Self, SynthesisError> {
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(requested.min(max_bytes))
+            .map_err(|_| SynthesisError::OutOfMemory)?;
+        Ok(Self { bytes, max_bytes })
+    }
+
+    fn check(&self) -> Result<(), SynthesisError> {
+        if self.bytes.len() <= self.max_bytes {
+            Ok(())
+        } else {
+            Err(SynthesisError::LimitExceeded)
+        }
+    }
+    fn remaining(&self) -> usize {
+        self.max_bytes.saturating_sub(self.bytes.len())
+    }
+
+    fn into_inner(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl std::io::Write for BoundedSnapshotBytes {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let remaining = self.max_bytes.saturating_sub(self.bytes.len());
+        if buf.len() > remaining {
+            return Err(std::io::Error::other("snapshot byte limit exceeded"));
+        }
+        self.bytes.try_reserve(buf.len()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::OutOfMemory, "snapshot allocation failed")
+        })?;
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Pooled per-pane snapshot scaffolding.
@@ -174,20 +228,18 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
     ) -> Result<SnapshotBytes, SynthesisError> {
+        self.synthesize_bounded(terminal, usize::MAX)
+    }
+
+    /// Synthesize without allowing the output buffer to exceed `max_bytes`.
+    pub fn synthesize_bounded(
+        &self,
+        terminal: &GhosttyTerminal<'alloc, '_>,
+        max_bytes: usize,
+    ) -> Result<SnapshotBytes, SynthesisError> {
         // phux-uow0: a full snapshot must observe the LIVE grid in its
         // entirety, so it uses a FRESH `RenderState` + iterators rather than
-        // the synthesizer's reused `self.render_state`. libghostty's per-row
-        // dirty bits live on the `Terminal` and are CONSUMED by
-        // `RenderState::update`; the server runs several `RenderState`
-        // consumers against one `Terminal` (this shared snapshot path plus the
-        // per-consumer state-sync references primed in `register_consumer`). On
-        // the reused render state, a row whose dirty bit was already consumed by
-        // another consumer reads back as clean — yielding that row's STALE
-        // cached body (e.g. the blank grid captured at a prior attach) instead
-        // of the current content. A re-attaching client then got a blank
-        // snapshot and waited forever for live output that never came (the
-        // attach_detach_churn / both_axes flakes). A fresh render state has no
-        // prior cache, so its first `update` observes every row as it is now.
+        // the synthesizer's reused state.
         let mut render_state = RenderState::new()?;
         let mut rows = RowIterator::new()?;
         let mut cells = CellIterator::new()?;
@@ -195,21 +247,17 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         let snapshot = render_state.update(terminal)?;
         let cols = snapshot.cols()?;
         let rows_n = snapshot.rows()?;
+        let requested = usize::from(cols)
+            .checked_mul(usize::from(rows_n))
+            .and_then(|cells| cells.checked_mul(2))
+            .unwrap_or(max_bytes);
+        let mut out = BoundedSnapshotBytes::with_capacity(max_bytes, requested)?;
 
-        let mut out: Vec<u8> = Vec::with_capacity(usize::from(cols) * usize::from(rows_n) * 2);
+        out.write_all(b"\x1b[!p\x1b[2J\x1b[H")
+            .map_err(|_| SynthesisError::LimitExceeded)?;
+        emit_screen_mode(&mut out.bytes, terminal)?;
+        out.check()?;
 
-        // 1. Reset target: DECSTR (soft reset) + ED 2 (clear screen) + CUP home.
-        out.extend_from_slice(b"\x1b[!p\x1b[2J\x1b[H");
-
-        // 1b. Select the screen buffer BEFORE painting (phux-99n). If the
-        //     terminal is on the alt screen, entering it now (esp. 1049,
-        //     which clears the alt buffer) means the row paint below lands
-        //     on the correct buffer instead of the primary screen.
-        emit_screen_mode(&mut out, terminal)?;
-
-        // 2. Walk every row + cell, emitting SGR deltas and graphemes. The
-        //    fresh render state above guarantees a full observation; the inner
-        //    cell loop is shared via [`emit_cell`].
         let mut prev_style: Option<Pen> = None;
         let mut row_iter = rows.update(&snapshot)?;
         let mut row_index: u16 = 0;
@@ -217,16 +265,17 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             if row_index >= rows_n {
                 break;
             }
-            // Position to the start of the row. CUP is 1-based.
-            write_cup(&mut out, row_index, 0);
+            write_cup(&mut out.bytes, row_index, 0);
+            out.check()?;
             let mut cell_iter = cells.update(row)?;
             while let Some(cell) = cell_iter.next() {
-                emit_cell(cell, &mut out, &mut prev_style)?;
+                emit_cell_bounded(cell, &mut out, &mut prev_style)?;
             }
             row_index += 1;
         }
 
-        emit_epilogue(&mut out, &snapshot, terminal)?;
+        emit_epilogue(&mut out.bytes, &snapshot, terminal)?;
+        out.check()?;
         let mut kitty_placements = libghostty_vt::kitty::graphics::PlacementIterator::new()?;
         let _ = kitty_replay::emit_kitty_graphics_replay(
             terminal,
@@ -239,7 +288,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         Ok(SnapshotBytes {
             cols,
             rows: rows_n,
-            bytes: out,
+            bytes: out.into_inner(),
             scrollback: Vec::new(),
         })
     }
@@ -267,16 +316,25 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         terminal: &GhosttyTerminal<'alloc, '_>,
         scrollback: Option<u32>,
     ) -> Result<SnapshotBytes, SynthesisError> {
-        let mut snap = self.synthesize(terminal)?;
+        self.synthesize_with_scrollback_bounded(terminal, scrollback, usize::MAX)
+    }
+
+    /// Synthesize viewport and scrollback within one aggregate byte ceiling.
+    pub fn synthesize_with_scrollback_bounded(
+        &self,
+        terminal: &GhosttyTerminal<'alloc, '_>,
+        scrollback: Option<u32>,
+        max_bytes: usize,
+    ) -> Result<SnapshotBytes, SynthesisError> {
+        let mut snap = self.synthesize_bounded(terminal, max_bytes)?;
         let Some(want) = scrollback else {
             return Ok(snap);
         };
-        // phux-q0x7: reproduce the history rows WITH their per-cell SGR styling
-        // (palette stays palette via `write_reset_and_sgr_unresolved`), so
-        // scrolled-back content matches its original colors instead of the
-        // plain-text v1 (phux-9q5f). The viewport `bytes` replay already
-        // carries full SGR; this brings history to parity.
-        snap.scrollback = Self::scrollback_styled_bytes(terminal, want, snap.rows)?;
+        let remaining = max_bytes
+            .checked_sub(snap.bytes.len())
+            .ok_or(SynthesisError::LimitExceeded)?;
+        snap.scrollback =
+            Self::scrollback_styled_bytes_bounded(terminal, want, snap.rows, remaining)?;
         Ok(snap)
     }
 
@@ -288,10 +346,11 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     /// `bytes` replay). Empty when the pane has no history (alt-screen panes
     /// retain none). Side-effect-free: reads via `grid_ref(Point::History)`
     /// which neither scrolls nor mutates the canonical Terminal (phux-q0x7).
-    fn scrollback_styled_bytes(
+    fn scrollback_styled_bytes_bounded(
         terminal: &GhosttyTerminal<'alloc, '_>,
         want: u32,
         viewport_rows: u16,
+        max_bytes: usize,
     ) -> Result<Vec<u8>, SynthesisError> {
         let total = terminal.scrollback_rows()?;
         if total == 0 {
@@ -303,40 +362,49 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         } else {
             total.saturating_sub(usize::try_from(want).unwrap_or(usize::MAX))
         };
-
-        let mut out: Vec<u8> = Vec::with_capacity((total - start) * usize::from(cols));
+        let requested = (total - start)
+            .checked_mul(usize::from(cols))
+            .unwrap_or(max_bytes);
+        let mut out = BoundedSnapshotBytes::with_capacity(max_bytes, requested)?;
         let mut row_count: usize = 0;
         for y in start..total {
             if row_count > 0 {
-                out.extend_from_slice(b"\r\n");
+                out.write_all(b"\r\n")
+                    .map_err(|_| SynthesisError::LimitExceeded)?;
             }
             let y = u32::try_from(y).unwrap_or(u32::MAX);
-            // Fresh pen per row so the row's byte sequence is self-contained.
             let mut prev_style: Option<Style> = None;
             for x in 0..cols {
                 let point = Point::History(PointCoordinate { x, y });
                 let grid_ref = terminal.grid_ref(point)?;
                 if matches!(grid_ref.cell()?.wide()?, CellWide::SpacerTail) {
-                    // Right half of a wide glyph: the base cell already
-                    // advanced both columns; emitting here would clobber it.
                     continue;
                 }
                 let style = grid_ref.style()?;
                 if prev_style.as_ref() != Some(&style) {
-                    write_reset_and_sgr_unresolved(&mut out, &style);
+                    write_reset_and_sgr_unresolved(&mut out.bytes, &style);
+                    out.check()?;
                     prev_style = Some(style);
                 }
-                // Read the grapheme cluster; an empty cluster is a blank cell
-                // (advances one column with a space — which carries the bg set
-                // above, matching the viewport `emit_cell` blank-cell handling).
                 let mut inline = [char::from(0u8); GRAPHEME_INLINE];
                 match grid_ref.graphemes(&mut inline) {
-                    Ok(0) => out.push(b' '),
-                    Ok(n) => encode_graphemes(&mut out, &inline[..n]),
+                    Ok(0) => out
+                        .write_all(b" ")
+                        .map_err(|_| SynthesisError::LimitExceeded)?,
+                    Ok(n) => encode_graphemes_bounded(&mut out, &inline[..n])?,
                     Err(libghostty_vt::Error::OutOfSpace { required }) => {
-                        let mut heap = vec![char::from(0u8); required];
+                        let allocation_bytes = required
+                            .checked_mul(std::mem::size_of::<char>())
+                            .ok_or(SynthesisError::LimitExceeded)?;
+                        if allocation_bytes > out.remaining() {
+                            return Err(SynthesisError::LimitExceeded);
+                        }
+                        let mut heap = Vec::new();
+                        heap.try_reserve_exact(required)
+                            .map_err(|_| SynthesisError::OutOfMemory)?;
+                        heap.resize(required, char::from(0_u8));
                         let n = grid_ref.graphemes(&mut heap)?;
-                        encode_graphemes(&mut out, &heap[..n]);
+                        encode_graphemes_bounded(&mut out, &heap[..n])?;
                     }
                     Err(err) => return Err(err.into()),
                 }
@@ -346,15 +414,15 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         if row_count == 0 {
             return Ok(Vec::new());
         }
-        // Reset the pen, then SU the still-visible history off the top.
-        out.extend_from_slice(b"\x1b[0m");
+        out.write_all(b"\x1b[0m")
+            .map_err(|_| SynthesisError::LimitExceeded)?;
         let visible = u16::try_from(row_count)
             .unwrap_or(viewport_rows)
             .min(viewport_rows);
         if visible > 0 {
-            let _ = write!(out, "\x1b[{visible}S");
+            write!(out, "\x1b[{visible}S").map_err(|_| SynthesisError::LimitExceeded)?;
         }
-        Ok(out)
+        Ok(out.into_inner())
     }
 
     /// Walk `terminal`'s viewport into a structured [`ScreenState`] — the
@@ -1135,11 +1203,67 @@ type Pen = (Style, Option<RgbColor>, Option<RgbColor>);
 /// Tracks the active SGR pen via `prev` (see [`Pen`]), skips wide-cell tails
 /// (`CellWide::SpacerTail`, see the comment in the body), and emits the
 /// cell's grapheme cluster (or a space for genuinely-blank cells).
+fn emit_cell_bounded(
+    cell: &CellIteration<'_, '_>,
+    out: &mut BoundedSnapshotBytes,
+    prev: &mut Option<Pen>,
+) -> Result<(), SynthesisError> {
+    if matches!(cell.raw_cell()?.wide()?, CellWide::SpacerTail) {
+        return Ok(());
+    }
+    let len = cell.graphemes_len()?;
+    let style = cell.style()?;
+    let fg = cell.fg_color()?;
+    let bg = cell.bg_color()?;
+    let pen = (style, fg, bg);
+    if prev.as_ref() != Some(&pen) {
+        write_reset_and_sgr(&mut out.bytes, &style, fg, bg);
+        out.check()?;
+        *prev = Some(pen);
+    }
+    if len == 0 {
+        out.write_all(b" ")
+            .map_err(|_| SynthesisError::LimitExceeded)?;
+        return Ok(());
+    }
+    let allocation_bytes = len
+        .checked_mul(std::mem::size_of::<char>())
+        .ok_or(SynthesisError::LimitExceeded)?;
+    if allocation_bytes > out.remaining() {
+        return Err(SynthesisError::LimitExceeded);
+    }
+    let mut inline = [char::from(0u8); GRAPHEME_INLINE];
+    if len <= GRAPHEME_INLINE {
+        cell.graphemes_buf(&mut inline[..len])?;
+        encode_graphemes_bounded(out, &inline[..len])?;
+    } else {
+        let mut heap = Vec::new();
+        heap.try_reserve_exact(len)
+            .map_err(|_| SynthesisError::OutOfMemory)?;
+        heap.resize(len, char::from(0_u8));
+        cell.graphemes_buf(&mut heap)?;
+        encode_graphemes_bounded(out, &heap)?;
+    }
+    Ok(())
+}
+
+fn encode_graphemes_bounded(
+    out: &mut BoundedSnapshotBytes,
+    graphemes: &[char],
+) -> Result<(), SynthesisError> {
+    for ch in graphemes {
+        let mut buf = [0_u8; 4];
+        out.write_all(ch.encode_utf8(&mut buf).as_bytes())
+            .map_err(|_| SynthesisError::LimitExceeded)?;
+    }
+    Ok(())
+}
 fn emit_cell(
     cell: &CellIteration<'_, '_>,
     out: &mut Vec<u8>,
     prev: &mut Option<Pen>,
 ) -> Result<(), SynthesisError> {
+
     // Discriminate wide-cell tails (the right half of a double-width
     // glyph) from genuinely-blank cells. The base grapheme on the wide
     // cell already advanced the cursor across both columns, so the tail
@@ -1522,6 +1646,16 @@ mod tests {
         assert!(snap.bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"));
         // No scrollback requested ⇒ no scrollback-priming bytes.
         assert!(snap.scrollback.is_empty());
+    }
+
+    #[test]
+    fn bounded_synthesis_rejects_tiny_source_budget() {
+        let terminal = fresh(80, 24);
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
+        assert!(matches!(
+            synth.synthesize_bounded(&terminal, 4),
+            Err(SynthesisError::LimitExceeded)
+        ));
     }
 
     #[test]

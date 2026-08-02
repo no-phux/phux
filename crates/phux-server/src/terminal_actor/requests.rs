@@ -101,6 +101,12 @@ pub struct ConsumerAttachRequest {
     /// Ignored when [`Self::wants_state_sync`] is false. `None` means the
     /// state-sync snapshot contains only the active screen.
     pub state_sync_scrollback: Option<u32>,
+    /// Maximum snapshot bytes this registration may allocate before replying.
+    pub bootstrap_max_bytes: usize,
+    /// Maximum bootstrap frames the caller can still retain.
+    pub bootstrap_max_frames: usize,
+    /// Negotiated maximum bytes per synthesized bootstrap chunk.
+    pub bootstrap_chunk_bytes: usize,
     /// Whether this consumer is on a lossy/forwarded leg and should use the
     /// advance-on-ack loss-tolerant emission model (phux-v45.8, ADR-0042).
     ///
@@ -335,9 +341,16 @@ pub struct SnapshotRequest {
     /// the most-recent `n` rows. The actor primes
     /// [`SnapshotBytes::scrollback`] accordingly.
     pub scrollback: Option<u32>,
+    /// Maximum aggregate snapshot bytes the actor may allocate.
+    pub max_bytes: usize,
+    /// Maximum frames the caller can still retain for this snapshot.
+    pub max_frames: usize,
+    /// Negotiated maximum bytes per synthesized bootstrap chunk.
+    pub chunk_bytes: usize,
     /// Channel receiving the snapshot and actor-global raw cut.
     /// Dropping the receiver is benign; the actor discards the reply.
-    pub reply: oneshot::Sender<(SnapshotBytes, u64)>,
+    pub reply:
+        oneshot::Sender<Result<(SnapshotBytes, u64), crate::grid::SynthesisError>>,
 }
 
 /// Fully-owned native prefix captured atomically by the terminal actor.
@@ -364,6 +377,10 @@ pub struct NativeBootstrapRequest {
     pub bootstrap_id: BootstrapId,
     /// Negotiated payload limits.
     pub limits: phux_protocol::caps::BootstrapLimits,
+    /// Remaining connection-wide opaque byte budget.
+    pub max_bytes: usize,
+    /// Remaining connection-wide frame budget.
+    pub max_frames: usize,
     /// Atomic capture result. The pump alone publishes the returned frames.
     pub reply: oneshot::Sender<Result<NativeBootstrapReply, crate::native_state::NativeStateError>>,
 }

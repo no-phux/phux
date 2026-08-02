@@ -1401,6 +1401,17 @@ impl TerminalActor {
         )
     }
     fn handle_consumer_attach(&mut self, req: ConsumerAttachRequest) {
+        fn byte_ceiling(
+            max_bytes: usize,
+            max_frames: usize,
+            chunk_bytes: usize,
+        ) -> Result<usize, ConsumerAttachError> {
+            let chunk_frames = max_frames
+                .checked_sub(2)
+                .ok_or(crate::grid::SynthesisError::LimitExceeded)?;
+            let frame_bytes = chunk_frames.saturating_mul(chunk_bytes);
+            Ok(max_bytes.min(frame_bytes))
+        }
         let ConsumerAttachRequest {
             client_id,
             outbound,
@@ -1409,6 +1420,9 @@ impl TerminalActor {
             bootstrap_id,
             wants_state_sync,
             state_sync_scrollback,
+            bootstrap_max_bytes,
+            bootstrap_max_frames,
+            bootstrap_chunk_bytes,
             loss_tolerant,
             live_gate,
             reply,
@@ -1427,8 +1441,16 @@ impl TerminalActor {
                 1
             };
             let state_sync_bootstrap = if wants_state_sync {
+                let max_bytes = byte_ceiling(
+                    bootstrap_max_bytes,
+                    bootstrap_max_frames,
+                    bootstrap_chunk_bytes,
+                )?;
                 Some(StateSyncBootstrap {
-                    snapshot: self.synthesize_with_scrollback(state_sync_scrollback)?,
+                    snapshot: self.synthesize_with_scrollback_bounded(
+                        state_sync_scrollback,
+                        max_bytes,
+                    )?,
                     base_seq,
                 })
             } else {
@@ -2290,11 +2312,19 @@ impl TerminalActor {
     ) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
         let terminal = self.terminal.borrow();
         // phux-uow0: the full snapshot uses a fresh RenderState internally, so
-        // it needs only a shared borrow — taking `&mut` here would falsely
-        // serialize it against the per-consumer tick path that also reads
-        // `self.synth`.
+        // it needs only a shared borrow.
         let synth = self.synth.borrow();
         synth.synthesize_with_scrollback(&terminal, scrollback)
+    }
+
+    fn synthesize_with_scrollback_bounded(
+        &self,
+        scrollback: Option<u32>,
+        max_bytes: usize,
+    ) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
+        let terminal = self.terminal.borrow();
+        let synth = self.synth.borrow();
+        synth.synthesize_with_scrollback_bounded(&terminal, scrollback, max_bytes)
     }
 
     /// Project the current `Terminal` grid into a structured
@@ -2796,7 +2826,6 @@ impl TerminalActor {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn handle_native_bootstrap(&mut self, req: NativeBootstrapRequest) {
-        const MAX_NATIVE_PREFIX_FRAMES: usize = crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2;
 
         let NativeBootstrapRequest {
             owner,
@@ -2804,15 +2833,27 @@ impl TerminalActor {
             stream_id,
             bootstrap_id,
             limits,
+            max_bytes,
+            max_frames,
             reply,
         } = req;
         let base_seq = self.raw_seq;
-        let max_bytes = match usize::try_from(limits.max_chunk_bytes()) {
-            Ok(size) if size != 0 => size,
+        let chunk_bytes = match usize::try_from(limits.max_chunk_bytes()) {
+            Ok(size) if size != 0 => size.min(max_bytes),
             _ => {
                 let _ = reply.send(Err(crate::native_state::NativeStateError::LimitExceeded));
                 return;
             }
+        };
+        let Some(max_chunks) = max_frames.checked_sub(2) else {
+            let _ = reply.send(Err(crate::native_state::NativeStateError::LimitExceeded));
+            return;
+        };
+        let Some(capture_bytes) =
+            max_bytes.checked_sub(phux_protocol::wire::frame::MAX_HISTORY_CURSOR_BYTES)
+        else {
+            let _ = reply.send(Err(crate::native_state::NativeStateError::LimitExceeded));
+            return;
         };
         self.invalidate_native_owner(
             owner,
@@ -2842,18 +2883,18 @@ impl TerminalActor {
 
             let mut host = self.terminal.borrow_mut();
             let manager = host.native_manager()?;
-            let mut capture = manager.capture(limits)?;
+            let mut capture = manager.capture_bounded(limits, capture_bytes, max_chunks)?;
             let mut chunk_seq = 0_u32;
             let mut retained_bytes = 0_usize;
             loop {
-                if frames.len() == MAX_NATIVE_PREFIX_FRAMES - 1 {
+                if frames.len() == max_frames - 1 {
                     return Err(crate::native_state::NativeStateError::LimitExceeded);
                 }
                 frames
                     .try_reserve(1)
                     .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
-                let mut payload = reserve_native_bytes(max_bytes)?;
-                payload.resize(max_bytes, 0);
+                let mut payload = reserve_native_bytes(chunk_bytes)?;
+                payload.resize(chunk_bytes, 0);
                 let (ready, payload_len) = {
                     let event = capture.step(&mut payload)?;
                     (
@@ -2866,7 +2907,7 @@ impl TerminalActor {
                 };
                 retained_bytes = retained_bytes
                     .checked_add(payload_len)
-                    .filter(|bytes| *bytes <= crate::native_state::MAX_NATIVE_PREFIX_BYTES)
+                    .filter(|bytes| *bytes <= capture_bytes)
                     .ok_or(crate::native_state::NativeStateError::LimitExceeded)?;
                 payload.truncate(payload_len);
                 frames.push(FrameKind::BootstrapChunk {
@@ -2888,8 +2929,13 @@ impl TerminalActor {
             frames
                 .try_reserve(1)
                 .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
+            let total_retained_bytes = retained_bytes
+                .checked_add(cursor.len())
+                .filter(|bytes| *bytes <= max_bytes)
+                .ok_or(crate::native_state::NativeStateError::LimitExceeded)?;
             manager.retain(owner, cursor, continuation)?;
             cursor_bytes.extend_from_slice(&cursor);
+            debug_assert!(total_retained_bytes <= max_bytes);
             frames.push(FrameKind::BootstrapReady {
                 terminal_id: terminal_id.clone(),
                 stream_id,
@@ -3590,19 +3636,18 @@ impl TerminalActor {
 
 
                 Some(req) = self.snapshot_rx.recv() => {
-                    let snap = match self.synthesize_with_scrollback(req.scrollback) {
-                        Ok(s) => s,
-                        Err(err) => {
-                            warn!(error = %err, "snapshot synthesis failed; replying with empty");
-                            SnapshotBytes {
-                                cols: self.cols,
-                                rows: self.rows,
-                                bytes: Vec::new(),
-                                scrollback: Vec::new(),
-                            }
-                        }
-                    };
-                    let _ = req.reply.send((snap, self.raw_seq));
+                    let byte_limit = req
+                        .max_frames
+                        .checked_sub(2)
+                        .map(|chunks| chunks.saturating_mul(req.chunk_bytes).min(req.max_bytes))
+                        .ok_or(crate::grid::SynthesisError::LimitExceeded);
+                    let snap = byte_limit.and_then(|max_bytes| {
+                        self.synthesize_with_scrollback_bounded(req.scrollback, max_bytes)
+                    });
+                    if let Err(err) = &snap {
+                        warn!(error = %err, "bounded snapshot synthesis failed");
+                    }
+                    let _ = req.reply.send(snap.map(|snapshot| (snapshot, self.raw_seq)));
                 }
 
                 Some(req) = self.set_default_colors_rx.recv() => {
@@ -4373,11 +4418,17 @@ mod tests {
                     .snapshot
                     .send(SnapshotRequest {
                         scrollback: None,
+                        max_bytes: usize::MAX,
+                        max_frames: usize::MAX,
+                        chunk_bytes: 1,
                         reply: reply_tx,
                     })
                     .await
                     .expect("send snapshot request");
-                let (snap, base_seq) = reply_rx.await.expect("snapshot reply");
+                let (snap, base_seq) = reply_rx
+                    .await
+                    .expect("snapshot reply")
+                    .expect("snapshot synthesis");
                 assert_eq!(snap.cols, 20);
                 assert_eq!(snap.rows, 5);
                 assert_eq!(base_seq, 0);
@@ -4472,11 +4523,21 @@ mod tests {
                 .snapshot
                 .send(SnapshotRequest {
                     scrollback: None,
+                    max_bytes: usize::MAX,
+                    max_frames: usize::MAX,
+                    chunk_bytes: 1,
                     reply,
                 })
                 .await
                 .expect("send snapshot");
-            String::from_utf8_lossy(&rx.await.expect("snapshot reply").0.bytes).into_owned()
+            String::from_utf8_lossy(
+                &rx.await
+                    .expect("snapshot reply")
+                    .expect("snapshot synthesis")
+                    .0
+                    .bytes,
+            )
+            .into_owned()
         }
 
         let local = tokio::task::LocalSet::new();
@@ -4950,6 +5011,8 @@ mod tests {
                             phux_protocol::DEFAULT_HISTORY_PAGE_BYTES,
                         )
                         .expect("wide negotiated bootstrap bound"),
+                        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+                        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
                         reply,
                     })
                     .await
@@ -5112,6 +5175,8 @@ mod tests {
                         bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
                             .expect("bootstrap id"),
                         limits: phux_protocol::caps::BootstrapLimits::default(),
+                        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+                        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
                         reply,
                     })
                     .await
@@ -5395,6 +5460,9 @@ mod tests {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 let _ = handle.snapshot.try_send(SnapshotRequest {
                     scrollback: None,
+                    max_bytes: usize::MAX,
+                    max_frames: usize::MAX,
+                    chunk_bytes: 1,
                     reply: reply_tx,
                 });
                 drop(reply_rx);
@@ -5602,6 +5670,9 @@ mod tests {
                             .expect("test bootstrap id"),
                         wants_state_sync: false,
                         state_sync_scrollback: None,
+                        bootstrap_max_bytes: usize::MAX,
+                        bootstrap_max_frames: usize::MAX,
+                        bootstrap_chunk_bytes: 1,
                         loss_tolerant: false,
                         live_gate: watch::channel(true).1,
                         reply: tx_a,
@@ -5817,6 +5888,9 @@ mod tests {
             bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
             wants_state_sync: true,
             state_sync_scrollback: None,
+            bootstrap_max_bytes: usize::MAX,
+            bootstrap_max_frames: usize::MAX,
+            bootstrap_chunk_bytes: 1,
             loss_tolerant: false,
             live_gate,
             reply,
