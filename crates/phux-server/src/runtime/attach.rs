@@ -69,6 +69,68 @@ pub(crate) fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
         .expect("wrapped bootstrap generation is non-zero")
 }
 
+/// Connection-wide retention ceiling for an aggregate ATTACH preflight.
+///
+/// A session can contain many panes, but the server must hold every pane's
+/// complete bootstrap until the atomic publication cut. Keep that aggregate no
+/// larger than one maximally bounded native prefix rather than multiplying the
+/// per-pane allowance by the pane count.
+const MAX_STAGED_BOOTSTRAP_BYTES: usize = 64 * 1024 * 1024;
+const MAX_STAGED_BOOTSTRAP_FRAMES: usize = 4_096 + 2;
+
+#[derive(Debug)]
+struct BootstrapStagingBudget {
+    max_bytes: usize,
+    max_frames: usize,
+    staged_bytes: usize,
+    staged_frames: usize,
+}
+
+impl BootstrapStagingBudget {
+    const fn new() -> Self {
+        Self::with_limits(MAX_STAGED_BOOTSTRAP_BYTES, MAX_STAGED_BOOTSTRAP_FRAMES)
+    }
+
+    const fn with_limits(max_bytes: usize, max_frames: usize) -> Self {
+        Self {
+            max_bytes,
+            max_frames,
+            staged_bytes: 0,
+            staged_frames: 0,
+        }
+    }
+
+    fn append(
+        &mut self,
+        staged: &mut Vec<FrameKind>,
+        incoming: &mut Vec<FrameKind>,
+    ) -> Result<(), ()> {
+        let incoming_frames = incoming.len();
+        let incoming_bytes = incoming
+            .iter()
+            .try_fold(0_usize, |total, frame| {
+                total.checked_add(match frame {
+                    FrameKind::BootstrapChunk { payload, .. } => payload.len(),
+                    FrameKind::BootstrapReady { history_cursor, .. } => {
+                        history_cursor.as_ref().map_or(0, bytes::Bytes::len)
+                    }
+                    _ => 0,
+                })
+            })
+            .ok_or(())?;
+        let next_frames = self.staged_frames.checked_add(incoming_frames).ok_or(())?;
+        let next_bytes = self.staged_bytes.checked_add(incoming_bytes).ok_or(())?;
+        if next_frames > self.max_frames || next_bytes > self.max_bytes {
+            return Err(());
+        }
+        staged.try_reserve(incoming_frames).map_err(|_| ())?;
+        staged.append(incoming);
+        self.staged_frames = next_frames;
+        self.staged_bytes = next_bytes;
+        Ok(())
+    }
+}
+
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) async fn publish_native_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
@@ -1687,6 +1749,7 @@ pub(crate) async fn handle_attach(
 
     let mut pending: FuturesUnordered<_> = FuturesUnordered::new();
     let mut bootstrap_frames = Vec::new();
+    let mut staging_budget = BootstrapStagingBudget::new();
     let (live_gate_tx, live_gate_rx) = tokio::sync::watch::channel(false);
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let mut native_pending: FuturesUnordered<_> = FuturesUnordered::new();
@@ -2054,10 +2117,12 @@ pub(crate) async fn handle_attach(
             ) else {
                 fail_prepublication!("state-sync bootstrap exceeded negotiated bounds");
             };
-            if bootstrap_frames.try_reserve(frames.len()).is_err() {
-                fail_prepublication!("state-sync bootstrap allocation failed");
+            if staging_budget
+                .append(&mut bootstrap_frames, &mut frames)
+                .is_err()
+            {
+                fail_prepublication!("aggregate bootstrap staging budget exceeded");
             }
-            bootstrap_frames.append(&mut frames);
             continue;
         }
 
@@ -2117,12 +2182,14 @@ pub(crate) async fn handle_attach(
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     while let Some((terminal_id, reply)) = native_pending.next().await {
         match reply {
-            Ok(Ok(reply)) => {
+            Ok(Ok(mut reply)) => {
                 let cut = reply.base_seq;
-                if bootstrap_frames.try_reserve(reply.frames.len()).is_err() {
-                    fail_prepublication!("native bootstrap retention allocation failed");
+                if staging_budget
+                    .append(&mut bootstrap_frames, &mut reply.frames)
+                    .is_err()
+                {
+                    fail_prepublication!("aggregate bootstrap staging budget exceeded");
                 }
-                bootstrap_frames.extend(reply.frames);
                 if let Some((_, _, gate_cut)) = snapshot_gates
                     .iter_mut()
                     .find(|(tid, _, _)| *tid == terminal_id)
@@ -2168,10 +2235,12 @@ pub(crate) async fn handle_attach(
         ) else {
             fail_prepublication!("synthesized bootstrap exceeded negotiated bounds");
         };
-        if bootstrap_frames.try_reserve(frames.len()).is_err() {
-            fail_prepublication!("synthesized bootstrap retention allocation failed");
+        if staging_budget
+            .append(&mut bootstrap_frames, &mut frames)
+            .is_err()
+        {
+            fail_prepublication!("aggregate bootstrap staging budget exceeded");
         }
-        bootstrap_frames.append(&mut frames);
         if let Some((_, _, gate_cut)) = snapshot_gates
             .iter_mut()
             .find(|(tid, _, _)| *tid == terminal_id)
@@ -2319,6 +2388,58 @@ pub(crate) fn apply_attach_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tiny_staged_pane(pane: u32) -> Vec<FrameKind> {
+        let terminal_id = phux_protocol::ids::TerminalId::local(pane + 1);
+        let stream_id = StreamId::new(1).expect("stream id");
+        let bootstrap_id = BootstrapId::new(1).expect("bootstrap id");
+        vec![
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"pane"),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn aggregate_staging_budget_rejects_many_panes_without_large_allocations() {
+        let mut budget = BootstrapStagingBudget::with_limits(8 * 4, 8 * 3);
+        let mut staged = Vec::new();
+
+        for pane in 0..16 {
+            let mut frames = tiny_staged_pane(pane);
+            let result = budget.append(&mut staged, &mut frames);
+            if pane < 8 {
+                assert!(result.is_ok(), "pane {pane} fits the aggregate budget");
+                assert!(frames.is_empty(), "accepted frames move into staging");
+            } else {
+                assert!(result.is_err(), "pane {pane} exceeds the aggregate budget");
+                assert_eq!(frames.len(), 3, "rejected frames are not appended");
+            }
+        }
+
+        assert_eq!(staged.len(), 8 * 3);
+        assert_eq!(budget.staged_bytes, 8 * 4);
+        assert_eq!(budget.staged_frames, 8 * 3);
+    }
 
     #[test]
     fn synthesized_bootstrap_is_built_completely_before_publication() {

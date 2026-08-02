@@ -853,6 +853,24 @@ fn incompatible_protocol_message(
     )
 }
 
+const WRITER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+async fn close_client_writer(
+    out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    sibling_tasks: &mut JoinSet<()>,
+) {
+    drop(out_tx);
+    if tokio::time::timeout(WRITER_DRAIN_TIMEOUT, async {
+        while sibling_tasks.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        sibling_tasks.abort_all();
+        while sibling_tasks.join_next().await.is_some() {}
+    }
+}
+
 /// Per-client task. Reads frames in a loop and dispatches each one.
 ///
 /// Outbound messages are routed through a per-client `mpsc` channel
@@ -927,7 +945,10 @@ where
         let framed = tokio::select! {
             biased;
             () = token.cancelled() => {
-                debug!(?client_id, "client task cancelled by root token");
+                debug!(?client_id, "client task cancelled");
+                abort_output_pumps(&mut output_pumps, client_id, "connection cancellation").await;
+                detach_and_release_consumer_state(&state, client_id);
+                close_client_writer(out_tx, &mut sibling_tasks).await;
                 return Ok(());
             }
             res = reader.read_frame() => match res {
@@ -2237,6 +2258,267 @@ mod writer_close_tests {
             events.borrow().as_slice(),
             [WriterEvent::Error, WriterEvent::Close]
         );
+    }
+}
+#[cfg(test)]
+#[cfg(all(test, feature = "native-engine", not(target_arch = "wasm32")))]
+mod fatal_preflight_close_tests {
+    use std::collections::VecDeque;
+    use std::io;
+
+    use bytes::BytesMut;
+    use phux_protocol::PROTOCOL_VERSION;
+    use phux_protocol::caps::{
+        BootstrapCapabilities, ClientCapabilities, EngineCodec, EngineFeatureSet,
+    };
+    use phux_protocol::policy::{PeerIdentity, TransportType};
+    use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::{broadcast, mpsc};
+    use tokio::task::LocalSet;
+    use tokio_util::sync::CancellationToken;
+
+    use super::handle_client;
+    use crate::state::{ClientId, SharedState};
+    use crate::terminal_actor::{ConsumerAttachOutcome, PaneOutput, TerminalHandle};
+    use crate::transport::{FrameReader, FrameWriter};
+
+    struct ScriptReader {
+        frames: VecDeque<BytesMut>,
+    }
+
+    impl ScriptReader {
+        fn new(frames: impl IntoIterator<Item = FrameKind>) -> Self {
+            Self {
+                frames: frames
+                    .into_iter()
+                    .map(|frame| {
+                        let mut encoded = BytesMut::new();
+                        frame.encode(&mut encoded);
+                        encoded
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl FrameReader for ScriptReader {
+        async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
+            if let Some(frame) = self.frames.pop_front() {
+                return Ok(Some(frame));
+            }
+            std::future::pending().await
+        }
+    }
+
+    struct DuplexWriter(tokio::io::WriteHalf<tokio::io::DuplexStream>);
+
+    impl FrameWriter for DuplexWriter {
+        async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
+            self.0.write_all(frame).await
+        }
+
+        async fn close(&mut self) -> io::Result<()> {
+            self.0.shutdown().await
+        }
+    }
+
+    async fn read_frame(
+        reader: &mut tokio::io::ReadHalf<tokio::io::DuplexStream>,
+    ) -> io::Result<Option<FrameKind>> {
+        let mut header = [0_u8; 4];
+        match reader.read_exact(&mut header).await {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let body_len = u32::from_be_bytes(header) as usize;
+        let mut framed = BytesMut::with_capacity(4 + body_len);
+        framed.extend_from_slice(&header);
+        framed.resize(4 + body_len, 0);
+        reader.read_exact(&mut framed[4..]).await?;
+        FrameKind::decode(&framed)
+            .map(|(frame, _)| Some(frame))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))
+    }
+
+    fn native_failure_handle() -> (
+        TerminalHandle,
+        mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
+        mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
+    ) {
+        let (output, _output_seed) = broadcast::channel::<PaneOutput>(8);
+        let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
+        let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
+        let (native_release, _native_release_rx) = mpsc::channel(8);
+        let (consumer_detach, _consumer_detach_rx) = mpsc::channel(8);
+        (
+            TerminalHandle {
+                input: mpsc::channel(8).0,
+                encoded_input: mpsc::channel(8).0,
+                input_snapshot: tokio::sync::watch::channel(
+                    crate::input::InputEncoderSnapshot::default(),
+                )
+                .1,
+                snapshot: mpsc::channel(8).0,
+                native_bootstrap,
+                native_history: mpsc::channel(8).0,
+                native_release,
+                set_default_colors: mpsc::channel(8).0,
+                screen: mpsc::channel(8).0,
+                pwd: mpsc::channel(8).0,
+                output,
+                resize: mpsc::channel(8).0,
+                consumer_attach,
+                consumer_detach,
+                consumer_ack: mpsc::channel(8).0,
+                subscribe_to_events: mpsc::channel(8).0,
+                unsubscribe_from_events: mpsc::channel(8).0,
+                upgrade: mpsc::channel(8).0,
+                control: mpsc::channel(8).0,
+                cols: 80,
+                rows: 24,
+            },
+            consumer_attach_rx,
+            native_bootstrap_rx,
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_preflight_failure_flushes_error_then_duplex_eof() {
+        let local = LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_session, _window, terminal) =
+                    state.with_mut(|server| server.seed_session("fatal-duplex"));
+                let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) =
+                    native_failure_handle();
+                state.with_mut(|server| {
+                    let _ =
+                        server.register_terminal_handle(terminal, handle, CancellationToken::new());
+                });
+                let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                state.with_mut(|server| {
+                    server.set_peer_identity(
+                        client_id,
+                        PeerIdentity {
+                            uid: 0,
+                            pid: None,
+                            exe_path: None,
+                            mcp_host_key: None,
+                            transport: TransportType::UnixSocket,
+                            source_addr: None,
+                        },
+                    );
+                });
+
+                let native = BootstrapCapabilities::new().with_native(
+                    EngineCodec::LibghosttyCheckpointV2,
+                    EngineFeatureSet::required_native(),
+                );
+                let reader = ScriptReader::new([
+                    FrameKind::Hello {
+                        client_name: "fatal-duplex-test".to_owned(),
+                        protocol_major: PROTOCOL_VERSION.major,
+                        protocol_minor: PROTOCOL_VERSION.minor,
+                        protocol_patch: PROTOCOL_VERSION.patch,
+                        client_caps: ClientCapabilities::new().with_bootstrap(native),
+                    },
+                    FrameKind::Attach {
+                        attach_id: 1,
+                        target: AttachTarget::ByName("fatal-duplex".to_owned()),
+                        viewport: ViewportInfo::new(80, 24),
+                        request_scrollback: false,
+                        scrollback_limit_lines: 0,
+                    },
+                ]);
+                let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+                let (server_read, server_write) = tokio::io::split(server_io);
+                drop(server_read);
+                let (mut client_read, client_write) = tokio::io::split(client_io);
+                drop(client_write);
+                let connection_token = CancellationToken::new();
+                let task = tokio::task::spawn_local(handle_client(
+                    reader,
+                    DuplexWriter(server_write),
+                    state,
+                    client_id,
+                    connection_token,
+                    CancellationToken::new(),
+                    None,
+                ));
+                let actor = tokio::task::spawn_local(async move {
+                    let registration = consumer_attach_rx
+                        .recv()
+                        .await
+                        .expect("consumer registration");
+                    registration
+                        .reply
+                        .send(Ok(ConsumerAttachOutcome {
+                            tick_managed: false,
+                            state_sync_bootstrap: None,
+                        }))
+                        .expect("registration reply");
+                    native_bootstrap_rx
+                        .recv()
+                        .await
+                        .expect("native preflight")
+                        .reply
+                        .send(Err(crate::native_state::NativeStateError::OutOfMemory))
+                        .expect("native failure reply");
+                });
+
+                let hello = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    read_frame(&mut client_read),
+                )
+                .await
+                .expect("HELLO_OK timed out")
+                .expect("read HELLO_OK")
+                .expect("HELLO_OK frame");
+                assert!(matches!(
+                    hello,
+                    FrameKind::HelloOk {
+                        selected_profile: phux_protocol::caps::BootstrapProfile::NativeState {
+                            codec: EngineCodec::LibghosttyCheckpointV2,
+                            ..
+                        },
+                        ..
+                    }
+                ));
+                let error = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    read_frame(&mut client_read),
+                )
+                .await
+                .expect("terminal ERROR timed out")
+                .expect("read terminal ERROR")
+                .expect("terminal ERROR frame");
+                assert!(matches!(
+                    error,
+                    FrameKind::Error {
+                        code: ErrorCode::CodecUnavailable,
+                        ..
+                    }
+                ));
+                assert!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        read_frame(&mut client_read),
+                    )
+                    .await
+                    .expect("duplex EOF timed out")
+                    .expect("read duplex EOF")
+                    .is_none(),
+                    "transport closes only after flushing terminal ERROR"
+                );
+                actor.await.expect("actor task");
+                task.await
+                    .expect("client task")
+                    .expect("client task result");
+            })
+            .await;
     }
 }
 #[cfg(test)]
