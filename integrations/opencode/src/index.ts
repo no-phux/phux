@@ -1,10 +1,25 @@
 import type { Plugin, PluginInput, PluginOptions } from "@opencode-ai/plugin";
 
 import { PhuxCli, type PhuxCliOptions } from "../../pi/src/adapter.js";
+import {
+  PhuxContextAwareness,
+  contextAwarenessEnabled,
+  normalizeTerminalIdentity,
+} from "../../pi/src/awareness.js";
 import { handleLifecycleEvent, OpenCodeLifecycle } from "./lifecycle.js";
 import { createPhuxTools } from "./tools.js";
 
 export { PhuxCli } from "../../pi/src/adapter.js";
+export {
+  PhuxContextAwareness,
+  contextAwarenessEnabled,
+  normalizeTerminalIdentity,
+} from "../../pi/src/awareness.js";
+export type {
+  PhuxContextAwarenessOptions,
+  PhuxContextEmission,
+  PhuxContextIdentity,
+} from "../../pi/src/awareness.js";
 export type {
   AgentTargetOptions,
   CreateOptions,
@@ -37,6 +52,8 @@ export interface PhuxOpenCodeOptions {
   readonly executable?: string;
   readonly socket?: string;
   readonly lifecycleTimeoutMs?: number;
+  readonly contextAwareness?: boolean;
+  readonly contextTimeoutMs?: number;
   readonly cli?: PhuxCli;
   readonly env?: NodeJS.ProcessEnv;
   readonly onLifecycleError?: (error: unknown) => void;
@@ -62,6 +79,18 @@ export const PhuxPlugin: Plugin = async (
     ...(options.lifecycleTimeoutMs === undefined ? {} : { timeoutMs: options.lifecycleTimeoutMs }),
     ...(options.onLifecycleError === undefined ? {} : { onError: options.onLifecycleError }),
   });
+  const awareness = new PhuxContextAwareness(cli, {
+    enabled: options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS),
+    ...(options.contextTimeoutMs === undefined ? {} : { timeoutMs: options.contextTimeoutMs }),
+  });
+  const contextIdentity = () => {
+    const self = normalizeTerminalIdentity(environment.PHUX_TERMINAL_ID);
+    const selected = currentTarget();
+    return {
+      ...(self === null ? {} : { self }),
+      ...(selected === undefined ? {} : { selected }),
+    };
+  };
 
   const tools = createPhuxTools({
     cli,
@@ -77,7 +106,34 @@ export const PhuxPlugin: Plugin = async (
 
   return {
     tool: tools,
-    event: async ({ event }) => handleLifecycleEvent(lifecycle, event),
+    "chat.message": async (input, output) => {
+      const emission = await awareness.next(input.sessionID, contextIdentity());
+      if (emission === null) return;
+      output.parts.push({
+        id: `phux-context-${output.message.id}-${String(emission.seq)}`,
+        sessionID: output.message.sessionID,
+        messageID: output.message.id,
+        type: "text",
+        text: emission.text,
+        synthetic: true,
+        metadata: {
+          phuxContext: { version: emission.version, kind: emission.kind, seq: emission.seq },
+        },
+      });
+    },
+    "experimental.session.compacting": async (input, output) => {
+      const emission = await awareness.checkpoint(input.sessionID, contextIdentity());
+      if (emission === null) return;
+      output.context.push([
+        "Preserve this canonical phux fleet checkpoint in the compacted context; later phux-context sequences supersede it.",
+        emission.text,
+      ].join("\n"));
+    },
+    event: async ({ event }) => {
+      await handleLifecycleEvent(lifecycle, event);
+      if (event.type === "session.compacted") awareness.forceCheckpoint(event.properties.sessionID);
+      if (event.type === "session.deleted") awareness.delete(event.properties.info.id);
+    },
     dispose: async () => lifecycle.dispose(),
   };
 };

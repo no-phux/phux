@@ -1,16 +1,16 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-07-15
+last-reviewed: 2026-08-01
 ---
 
 # OpenCode integration
 
-**TL;DR.** `@phux/opencode` adds six bounded terminal tools to OpenCode while
-an external local phux server continues to own the terminals. Targets resolve
-from an explicit argument, this plugin instance's most recently created pane,
-then `PHUX_TARGET`. The plugin uses public OpenCode server hooks; it does not
-embed a TUI, paste, or connect to remote phux transports.
+**TL;DR.** `@phux/opencode` adds six bounded terminal tools and cache-preserving
+fleet awareness while an external local phux server owns the terminals. Targets
+resolve from an explicit argument, the latest created pane, then `PHUX_TARGET`.
+The plugin uses public OpenCode hooks; it does not embed a TUI, paste, or connect
+to remote phux transports.
 
 ---
 
@@ -101,8 +101,10 @@ opencode
 ```
 
 `PHUX_SOCKET` chooses a non-default local Unix socket. `PHUX_TARGET` is an
-optional initial target and is read when the plugin instance starts. Restart
-OpenCode after changing either variable.
+optional initial target and is read when the plugin instance starts.
+`PHUX_TERMINAL_ID`, normally inherited automatically inside phux, identifies
+OpenCode's own pane in fleet context. Set `PHUX_CONTEXT_AWARENESS=0` to disable
+that context. Restart OpenCode after changing these variables.
 
 The public OpenCode plugin config type also accepts options alongside an npm
 package entry:
@@ -114,17 +116,45 @@ package entry:
     ["@phux/opencode", {
       "executable": "/absolute/path/to/phux",
       "socket": "/absolute/path/to/phux.sock",
-      "lifecycleTimeoutMs": 1000
+      "lifecycleTimeoutMs": 1000,
+      "contextAwareness": true,
+      "contextTimeoutMs": 1000
     }]
   ]
 }
 ```
 
 `executable` and `socket` override the CLI path and socket for that plugin
-instance. `lifecycleTimeoutMs` bounds each best-effort metadata subprocess;
-its default is 1000 ms. These options apply to a configured npm entry. An
-automatically discovered local shim should use `PATH`, `PHUX_SOCKET`, and
-`PHUX_TARGET` instead.
+instance. `lifecycleTimeoutMs` bounds each best-effort lifecycle subprocess.
+`contextAwareness` overrides the environment opt-out, and `contextTimeoutMs`
+bounds each fleet refresh. Both timeouts default to 1000 ms. These options apply
+to a configured npm entry. An automatically discovered local shim should use
+`PATH`, `PHUX_SOCKET`, `PHUX_TARGET`, and `PHUX_CONTEXT_AWARENESS` instead.
+
+## Automatic fleet context
+
+For each new OpenCode user message, the plugin reads the public phux agent
+inventory. The first observation is a synthetic text part appended to that new
+message. Later changes append sequenced deltas; unchanged state adds nothing.
+The plugin never puts live values in `experimental.chat.system.transform`, so
+the static system prompt and tool definitions remain an exact provider-cache
+prefix.
+
+A checkpoint carries OpenCode's inherited Terminal id, the selected target, and
+up to 64 sorted pane records: canonical Terminal/session/window identity,
+agent label and kind, lifecycle state, attention, and cwd. Context is capped at
+8 KiB and reports omitted panes. Values are marked as untrusted observations.
+Screen rows, scrollback, titles, detector evidence, explanations, tool output,
+and credentials are excluded; terminal content remains an explicit tool read.
+
+The `experimental.session.compacting` hook gives OpenCode's compactor a current
+canonical checkpoint. A successful `session.compacted` event forces another
+checkpoint onto the next synthetic continue or user message. A missing server
+emits one edge-filtered `unavailable` checkpoint and does not fail the user
+turn. Awareness is current at new-message boundaries rather than continuously
+inside one uninterrupted model/tool loop. OpenCode and this plugin are pre-1.0,
+so the runtime smoke guards these experimental hooks. The shared rationale is
+[ADR-0067](../../ADR/0067-cache-preserving-agent-fleet-context.md).
 
 ## The six tools
 
