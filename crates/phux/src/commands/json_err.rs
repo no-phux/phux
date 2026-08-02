@@ -71,9 +71,9 @@ pub(crate) mod codes {
     pub(crate) const PANE_ALREADY_IN_LAYOUT: &str = "pane_already_in_layout";
     /// The server rejected a layout mutation for another reason.
     pub(crate) const LAYOUT_REJECTED: &str = "layout_rejected";
-    /// The server predates cross-session moves (no MOVE_TERMINAL support).
+    /// The server predates cross-session moves (no `MOVE_TERMINAL` support).
     pub(crate) const SERVER_TOO_OLD: &str = "server_too_old";
-    /// The server refused a cross-session MOVE_TERMINAL request.
+    /// The server refused a cross-session `MOVE_TERMINAL` request.
     pub(crate) const MOVE_REFUSED: &str = "move_refused";
     /// A cross-session move committed but the post-move state read failed.
     pub(crate) const POST_MOVE_STATE_FAILED: &str = "post_move_state_failed";
