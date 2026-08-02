@@ -1303,7 +1303,7 @@ fn bootstrap_effects_forward_status_and_jobs_but_suppress_send_and_damage() {
         &[
             KernelEffect::Status(KernelStatus::Engine {
                 terminal_id: terminal_id.clone(),
-                status: EngineStatus::Title(\"bootstrap-finished\".to_owned()),
+                status: EngineStatus::Title("bootstrap-finished".to_owned()),
             }),
             KernelEffect::Job(KernelJob {
                 terminal_id: terminal_id.clone(),
