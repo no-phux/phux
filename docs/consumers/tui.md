@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-08-01
+last-reviewed: 2026-08-02
 ---
 
 # The phux reference TUI
@@ -1081,9 +1081,20 @@ key came from somewhere other than the file you named — with `extends`
 (ADR-0039) in play, "is this typo mine or the distro's?" is the question you
 actually have, and a line number in your own file would not answer it.
 
+Once the stack deserializes, a semantic pass validates the keybindings —
+the mistakes that load fine and then silently do nothing: every chord
+string must parse under the chord grammar (§5.1), every action name must be
+one the dispatcher actually handles (an unknown name comes with a
+did-you-mean suggestion, e.g. ``unknown action `kill-pain` (did you mean
+`kill-pane`?)``), and no binding's sequence may shadow another's as an
+ambiguous prefix. Parameterized action *arguments* are deliberately not
+validated here — argument schemas belong to the dispatcher, not the loader.
+
 Faults are classified because they have different fixes: an **unknown key**
 is a typo or a key removed in a later version; a **bad value** is a real key
-with the wrong type.
+with the wrong type; a **bad chord** is a binding key that does not parse
+(or clashes with another binding); an **unknown name** is an action no
+dispatcher arm handles. The same labels appear in the `--json` findings.
 
 Exit codes are three-way so a dotfiles CI job can react differently to each:
 

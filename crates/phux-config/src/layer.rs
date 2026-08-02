@@ -410,7 +410,16 @@ impl Recorder<'_> {
 /// Dotted-path segment for `key` under `prefix`: bare TOML keys join
 /// with `.`; anything else is double-quoted so the path stays a valid
 /// TOML address.
-fn child_path(prefix: &str, key: &str) -> String {
+///
+/// `pub(crate)` because [`crate::check`]'s semantic pass builds paths
+/// for keybinding findings and they must spell keys exactly the way
+/// provenance recorded them, or layer attribution silently misses.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "`pub` here would trip `unreachable_pub`: the module is \
+              private and this fn is not re-exported"
+)]
+pub(crate) fn child_path(prefix: &str, key: &str) -> String {
     let is_bare = !key.is_empty()
         && key
             .chars()
