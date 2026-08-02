@@ -262,6 +262,22 @@ fn plan_rec(opts: &commands::RecOpts) -> Result<Option<commands::rec::RecordSpec
         .transpose()
 }
 
+/// Resolve `insert-pane` / `move-pane`'s `--split` against the hidden
+/// deprecated `--horizontal` / `--vertical` booleans, printing the single
+/// deprecation line to stderr when a boolean spelling was used. Stderr is
+/// safe in `--json` mode too: the contract only reserves stdout.
+fn split_direction_warning_deprecated(
+    split: commands::SpawnSplit,
+    horizontal: bool,
+    vertical: bool,
+) -> commands::spatial::Direction {
+    let (direction, deprecation) = commands::spatial::resolve_split(split, horizontal, vertical);
+    if let Some(line) = deprecation {
+        eprintln!("{line}");
+    }
+    direction
+}
+
 /// Print the one-line build banner to stderr.
 ///
 /// Reserved for the long-running, human-watched foreground entry points
@@ -498,19 +514,35 @@ fn main() -> ExitCode {
         Some(Command::InsertPane {
             target,
             new_pane,
-            horizontal: _,
+            split,
+            horizontal,
             vertical,
             ratio,
             json,
-        }) => commands::spatial::run_insert_pane(&target, &new_pane, vertical, ratio, json, socket),
+        }) => commands::spatial::run_insert_pane(
+            &target,
+            &new_pane,
+            split_direction_warning_deprecated(split, horizontal, vertical),
+            ratio,
+            json,
+            socket,
+        ),
         Some(Command::MovePane {
             source,
             target,
-            horizontal: _,
+            split,
+            horizontal,
             vertical,
             ratio,
             json,
-        }) => commands::spatial::run_move_pane(&source, &target, vertical, ratio, json, socket),
+        }) => commands::spatial::run_move_pane(
+            &source,
+            &target,
+            split_direction_warning_deprecated(split, horizontal, vertical),
+            ratio,
+            json,
+            socket,
+        ),
         Some(Command::SwapPane {
             first,
             second,
@@ -1412,6 +1444,229 @@ mod tests {
         assert!(
             Cli::try_parse_from(["phux", "swap-pane", "@1"]).is_err(),
             "swap-pane requires exactly two selector arguments"
+        );
+    }
+
+    /// The unified `--split` grammar on `insert-pane` / `move-pane`
+    /// (phux-i0e8.8.4): value-enum values and `h`/`v` shorthands parse, the
+    /// hidden deprecated booleans still parse, and every conflicting pair is
+    /// refused at the clap level.
+    #[test]
+    fn spatial_split_flag_parses_values_aliases_and_conflicts() {
+        use crate::commands::SpawnSplit;
+
+        let parse_insert = |args: &[&str]| {
+            let mut argv = vec!["phux", "insert-pane", "@1", "@2"];
+            argv.extend_from_slice(args);
+            let cli = Cli::try_parse_from(argv).expect("insert-pane must parse");
+            let Some(Command::InsertPane {
+                split,
+                horizontal,
+                vertical,
+                ..
+            }) = cli.command
+            else {
+                panic!("expected InsertPane");
+            };
+            (split, horizontal, vertical)
+        };
+
+        assert_eq!(parse_insert(&[]).0, SpawnSplit::Horizontal, "default axis");
+        assert_eq!(
+            parse_insert(&["--split", "vertical"]).0,
+            SpawnSplit::Vertical
+        );
+        assert_eq!(parse_insert(&["--split", "v"]).0, SpawnSplit::Vertical);
+        assert_eq!(parse_insert(&["--split", "h"]).0, SpawnSplit::Horizontal);
+        assert_eq!(
+            parse_insert(&["--vertical"]),
+            (SpawnSplit::Horizontal, false, true),
+            "deprecated boolean still parses, leaving --split at its default"
+        );
+        assert_eq!(
+            parse_insert(&["--horizontal"]),
+            (SpawnSplit::Horizontal, true, false)
+        );
+
+        for verb in ["insert-pane", "move-pane"] {
+            assert!(
+                Cli::try_parse_from(["phux", verb, "@1", "@2", "--horizontal", "--vertical"])
+                    .is_err(),
+                "{verb}: booleans are mutually exclusive"
+            );
+            assert!(
+                Cli::try_parse_from(["phux", verb, "@1", "@2", "--split", "v", "--horizontal"])
+                    .is_err(),
+                "{verb}: an explicit --split refuses --horizontal"
+            );
+            assert!(
+                Cli::try_parse_from(["phux", verb, "@1", "@2", "--split", "h", "--vertical"])
+                    .is_err(),
+                "{verb}: an explicit --split refuses --vertical"
+            );
+        }
+
+        // move-pane accepts the same unified flag.
+        let cli = Cli::try_parse_from(["phux", "move-pane", "@1", "@2", "--split", "v"])
+            .expect("move-pane --split must parse");
+        let Some(Command::MovePane { split, .. }) = cli.command else {
+            panic!("expected MovePane");
+        };
+        assert_eq!(split, SpawnSplit::Vertical);
+    }
+
+    /// End-to-end direction resolution pins the old parsed-then-discarded
+    /// `--horizontal` bug dead: every spelling reaches `run_insert_pane` /
+    /// `run_move_pane` as the direction the user asked for, and a deprecated
+    /// boolean produces exactly one warning line.
+    #[test]
+    fn spatial_split_resolves_to_the_requested_direction() {
+        use crate::commands::spatial::{Direction, resolve_split};
+
+        let resolve = |args: &[&str]| {
+            let mut argv = vec!["phux", "insert-pane", "@1", "@2"];
+            argv.extend_from_slice(args);
+            let cli = Cli::try_parse_from(argv).expect("insert-pane must parse");
+            let Some(Command::InsertPane {
+                split,
+                horizontal,
+                vertical,
+                ..
+            }) = cli.command
+            else {
+                panic!("expected InsertPane");
+            };
+            resolve_split(split, horizontal, vertical)
+        };
+
+        assert_eq!(resolve(&[]), (Direction::Horizontal, None));
+        assert_eq!(
+            resolve(&["--split", "vertical"]),
+            (Direction::Vertical, None)
+        );
+        assert_eq!(resolve(&["--split", "v"]), (Direction::Vertical, None));
+        assert_eq!(
+            resolve(&["--split", "horizontal"]),
+            (Direction::Horizontal, None)
+        );
+
+        let (direction, deprecation) = resolve(&["--vertical"]);
+        assert_eq!(direction, Direction::Vertical);
+        let line = deprecation.expect("--vertical must warn");
+        assert!(
+            !line.contains('\n'),
+            "exactly one deprecation line: {line:?}"
+        );
+        assert!(
+            line.contains("--split vertical"),
+            "warning teaches the new spelling"
+        );
+
+        let (direction, deprecation) = resolve(&["--horizontal"]);
+        assert_eq!(
+            direction,
+            Direction::Horizontal,
+            "--horizontal must be honored, not discarded"
+        );
+        let line = deprecation.expect("--horizontal must warn");
+        assert!(
+            !line.contains('\n'),
+            "exactly one deprecation line: {line:?}"
+        );
+        assert!(line.contains("--split horizontal"));
+    }
+
+    /// `--ratio` on the spatial verbs now validates at parse time
+    /// (phux-i0e8.8.4): out-of-range or non-numeric ratios are clap usage
+    /// errors, not runtime failures.
+    #[test]
+    fn spatial_ratio_validates_at_parse_time() {
+        for verb in ["insert-pane", "move-pane"] {
+            for bad in ["1.5", "0", "1", "-0.2", "NaN", "bogus"] {
+                assert!(
+                    Cli::try_parse_from(["phux", verb, "@1", "@2", "--ratio", bad]).is_err(),
+                    "{verb} --ratio {bad} must fail at clap"
+                );
+            }
+            assert!(
+                Cli::try_parse_from(["phux", verb, "@1", "@2", "--ratio", "0.25"]).is_ok(),
+                "{verb} --ratio 0.25 must parse"
+            );
+        }
+    }
+
+    /// `insert-pane` / `move-pane` help advertises `--split` and hides the
+    /// deprecated booleans.
+    #[test]
+    fn spatial_help_shows_split_not_the_deprecated_booleans() {
+        use clap::CommandFactory;
+
+        let root = Cli::command();
+        for verb in ["insert-pane", "move-pane"] {
+            let sub = root
+                .get_subcommands()
+                .find(|sub| sub.get_name() == verb)
+                .unwrap_or_else(|| panic!("no `{verb}` subcommand"));
+            let help = sub.clone().render_long_help().to_string();
+            assert!(help.contains("--split"), "{verb} help must show --split");
+            assert!(
+                !help.contains("--horizontal") && !help.contains("--vertical"),
+                "{verb} help must hide the deprecated booleans:\n{help}"
+            );
+        }
+    }
+
+    /// `new --json` without `-s NAME` is refused by clap itself
+    /// (`requires = session` via the verb's arg group), replacing the old
+    /// runtime gate.
+    #[test]
+    fn new_json_requires_session_at_the_clap_level() {
+        let err = Cli::try_parse_from(["phux", "new", "--json"])
+            .expect_err("`new --json` without -s must be a usage error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert_eq!(err.exit_code(), 2, "usage errors exit 2");
+
+        // A positional NAME does not satisfy the rule: `--json` documents an
+        // explicit `-s`.
+        assert!(
+            Cli::try_parse_from(["phux", "new", "work", "--json"]).is_err(),
+            "positional NAME must not satisfy --json's -s requirement"
+        );
+
+        assert!(
+            Cli::try_parse_from(["phux", "new", "--json", "-s", "work"]).is_ok(),
+            "`new --json -s NAME` must parse"
+        );
+        assert!(
+            Cli::try_parse_from(["phux", "new", "-s", "work"]).is_ok(),
+            "-s without --json stays valid"
+        );
+    }
+
+    /// `service install --quic` takes the same `SocketAddr` type as
+    /// `server --quic`: a malformed address fails at parse time, and a valid
+    /// one round-trips to the exact string the unit renderers always wrote.
+    #[test]
+    fn service_install_quic_validates_socket_addr_at_parse_time() {
+        use crate::commands::ServiceAction;
+
+        let err = Cli::try_parse_from(["phux", "service", "install", "--quic", "not-an-addr"])
+            .expect_err("a non-address --quic must fail at clap");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+
+        let cli = Cli::try_parse_from(["phux", "service", "install", "--quic", "0.0.0.0:8788"])
+            .expect("a HOST:PORT --quic must parse");
+        let Some(Command::Service {
+            action: ServiceAction::Install { quic, .. },
+        }) = cli.command
+        else {
+            panic!("expected Service Install");
+        };
+        let addr = quic.expect("--quic value present");
+        assert_eq!(
+            addr.to_string(),
+            "0.0.0.0:8788",
+            "the plan string (and thus the rendered unit) is unchanged"
         );
     }
     #[test]

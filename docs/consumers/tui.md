@@ -243,14 +243,18 @@ edits are rejected. `insert-pane` and `swap-pane` require one session;
 `move-pane` may cross sessions, re-parenting the live Terminal on L1 before
 updating the source and destination envelopes.
 
-`insert-pane TARGET NEW_PANE [--horizontal|--vertical] [--ratio R]` is named
-for what it honestly does: `NEW_PANE` must already exist (for example from
-`phux spawn`) and must not already be in the layout. It does **not** implicitly
-spawn. The omitted direction is horizontal (a horizontal divider, so panes are
-stacked); `--vertical` means a vertical divider and side-by-side panes. `R`
-defaults to `0.5`; ratios must be finite and strictly between zero and one.
-`move-pane SOURCE TARGET` accepts the same user-facing direction and ratio
-flags. A cross-session move preserves the Terminal's process, PTY, scrollback,
+`insert-pane TARGET NEW_PANE [--split horizontal|vertical] [--ratio R]` is
+named for what it honestly does: `NEW_PANE` must already exist (for example
+from `phux spawn`) and must not already be in the layout. It does **not**
+implicitly spawn. `--split` is the same axis flag `spawn` and `launch` take
+(`h` / `v` are accepted shorthands); omitted, it defaults to horizontal (a
+horizontal divider, so panes are stacked), while `--split vertical` means a
+vertical divider and side-by-side panes. The pre-unification boolean
+`--horizontal` / `--vertical` spellings still parse for one release, hidden
+from help and each printing a one-line deprecation warning. `R` defaults to
+`0.5`; ratios must be finite and strictly between zero and one, checked at
+parse time. `move-pane SOURCE TARGET` accepts the same user-facing direction
+and ratio flags. A cross-session move preserves the Terminal's process, PTY, scrollback,
 metadata, and id. `swap-pane FIRST SECOND` preserves
 the existing split geometry. All three accept `--json` and `--socket`.
 

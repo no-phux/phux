@@ -62,7 +62,15 @@ pub(crate) fn run_new(
     };
 
     if json {
-        return run_new_json(&rt, &socket_path, requested, cwd, command, env);
+        // The `--json` ⇒ `-s NAME` rule is clap-enforced on the `new` verb
+        // (phux-i0e8.8.4), so the CLI cannot reach this guard; it exists
+        // only so a future non-clap caller fails with the same exit code
+        // clap's usage error carries, never a panic.
+        let Some(name) = requested else {
+            eprintln!("phux: `phux new --json` requires an explicit -s NAME");
+            return ExitCode::from(2);
+        };
+        return run_new_json(&rt, &socket_path, &name, cwd, command, env);
     }
 
     // If a server is up, snapshot its session names so we can enforce
@@ -158,22 +166,18 @@ pub(crate) fn run_new(
 /// `GET_METADATA` (`SET_METADATA` carries no reply frame).
 ///
 /// `--json` requires an explicit `-s NAME` (auto-naming is reserved for the
-/// attaching path). A name already in use is reported as an error
+/// attaching path); that rule is clap-enforced on the verb, so `name` is
+/// already resolved here. A name already in use is reported as an error
 /// (checked client-side against the pre-write snapshot) — create-only,
 /// never create-or-attach.
 pub(crate) fn run_new_json(
     rt: &tokio::runtime::Runtime,
     socket_path: &Path,
-    session: Option<String>,
+    name: &str,
     cwd: Option<PathBuf>,
     command: Vec<String>,
     env: Vec<(String, String)>,
 ) -> ExitCode {
-    let Some(name) = session else {
-        eprintln!("phux: `phux new --json` requires an explicit -s NAME");
-        return ExitCode::FAILURE;
-    };
-
     // A server must be running to host the new session. Auto-spawn seeds a
     // throwaway session under DEFAULT_SESSION_NAME (kept distinct from the
     // requested name so the create write below does not collide with the
@@ -199,7 +203,7 @@ pub(crate) fn run_new_json(
 
     match rt.block_on(create_session_via_metadata(
         socket_path,
-        &name,
+        name,
         command,
         cwd,
         env,

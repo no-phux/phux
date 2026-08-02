@@ -387,14 +387,23 @@ fn render_unit(manager: Manager, plan: &ServicePlan) -> String {
 /// rather than refused, so rerunning after changing a listener address is the
 /// documented way to change it.
 pub(crate) fn run_install(
-    quic: Option<String>,
+    quic: Option<std::net::SocketAddr>,
     listen: Option<String>,
     restore: bool,
     socket: Option<PathBuf>,
     hub: bool,
     print: bool,
 ) -> ExitCode {
-    let plan = match resolve_plan(quic, listen, restore, socket, hub) {
+    // `--quic` arrives pre-validated as a `SocketAddr` (the same type
+    // `server --quic` takes); the plan keeps the rendered string so the
+    // unit output is byte-identical to what it always was.
+    let plan = match resolve_plan(
+        quic.map(|addr| addr.to_string()),
+        listen,
+        restore,
+        socket,
+        hub,
+    ) {
         Ok(plan) => plan,
         Err(err) => {
             eprintln!("phux service: {err}");

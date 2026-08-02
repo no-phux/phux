@@ -264,8 +264,9 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   `defaults.session-name-template` and gains a numeric suffix when needed; a
   server is auto-spawned if none is running. With `--json` it creates the
   session without attaching (no attach, no resize), then prints the seed pane
-  id as JSON and exits. `--json` requires an explicit `-s NAME` and errors if
-  that name is already in use (create-only, never create-or-attach). Repeat
+  id as JSON and exits. `--json` requires an explicit `-s NAME` — enforced by
+  the parser itself, so omitting `-s` is a usage error (exit `2`) — and errors
+  if that name is already in use (create-only, never create-or-attach). Repeat
   `--env KEY=VALUE` to add seed-process environment entries; `--env` requires
   `--json`. Shape in §4.4.
 - **`phux launch INTEGRATION [--list|--print] [--target TARGET
@@ -293,13 +294,17 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   satellite-capable verb can address through the hub. Does not auto-start
   a server. Typed failures (unknown/unrouted satellite, unreachable link)
   exit nonzero with the diagnostic on stderr. Shape in §4.11.
-- **`phux insert-pane TARGET NEW_PANE [--horizontal|--vertical] [--ratio R]
-  [--json] [--socket P]`** — insert an already-created local pane beside an
-  existing layout leaf. This never spawns: create `NEW_PANE` separately first.
-  Both selectors must each match exactly one pane in the same session.
-  `--vertical` means a vertical divider (side-by-side panes); `--horizontal`
-  means a horizontal divider (stacked panes) and is the default. Shape in §4.12.
-- **`phux move-pane SOURCE TARGET [--horizontal|--vertical] [--ratio R]
+- **`phux insert-pane TARGET NEW_PANE [--split horizontal|vertical]
+  [--ratio R] [--json] [--socket P]`** — insert an already-created local pane
+  beside an existing layout leaf. This never spawns: create `NEW_PANE`
+  separately first. Both selectors must each match exactly one pane in the
+  same session. `--split` is the same axis flag `spawn` and `launch` take
+  (`h` / `v` shorthands accepted): `vertical` means a vertical divider
+  (side-by-side panes); `horizontal` means a horizontal divider (stacked
+  panes) and is the default. The deprecated boolean `--horizontal` /
+  `--vertical` spellings still parse for one release with a one-line stderr
+  warning. Shape in §4.12.
+- **`phux move-pane SOURCE TARGET [--split horizontal|vertical] [--ratio R]
   [--json] [--socket P]`** — collapse `SOURCE` out of its old position and
   insert it beside `TARGET`. When the panes belong to different sessions, the
   live Terminal is re-parented without restarting its process or changing its
@@ -531,7 +536,8 @@ and its seed pane's wire-local id, then exits `0` without attaching:
 { "session": "NAME", "terminal_id": 2 }
 ```
 
-It is create-only: `--json` requires an explicit `-s NAME` and errors (exit `1`)
+It is create-only: `--json` requires an explicit `-s NAME` (a parse-time rule;
+omitting `-s` is a usage error, exit `2`) and errors (exit `1`)
 if that name is already in use. Repeat `--env KEY=VALUE` to inject environment
 entries into the seed process; values may contain additional `=` characters.
 Unlike the versioned `ScreenState` / `RunResult` / `SessionListJson` shapes,

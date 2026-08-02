@@ -27,15 +27,60 @@ use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::{self, CliError, codes};
-use crate::commands::{cli_runtime, command_on, resolve_targets};
+use crate::commands::{SpawnSplit, cli_runtime, command_on, resolve_targets};
 use crate::selector;
 
 const JSON_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Direction {
+pub(crate) enum Direction {
     Horizontal,
     Vertical,
+}
+
+impl From<SpawnSplit> for Direction {
+    fn from(split: SpawnSplit) -> Self {
+        match split {
+            SpawnSplit::Horizontal => Self::Horizontal,
+            SpawnSplit::Vertical => Self::Vertical,
+        }
+    }
+}
+
+/// Resolve the unified `--split` axis against the hidden deprecated boolean
+/// spellings (`--horizontal` / `--vertical`).
+///
+/// The booleans conflict with an explicit `--split` at the clap level, so
+/// when one is set, `split` necessarily holds its default and the boolean
+/// wins. Returns the direction plus at most one deprecation line for the
+/// caller to print on stderr — pinned to exactly one line so scripts see a
+/// single, greppable warning (phux-i0e8.8.4).
+pub(crate) fn resolve_split(
+    split: SpawnSplit,
+    horizontal: bool,
+    vertical: bool,
+) -> (Direction, Option<String>) {
+    if vertical {
+        (
+            Direction::Vertical,
+            Some(deprecated_split_flag_line("--vertical", "vertical")),
+        )
+    } else if horizontal {
+        (
+            Direction::Horizontal,
+            Some(deprecated_split_flag_line("--horizontal", "horizontal")),
+        )
+    } else {
+        (split.into(), None)
+    }
+}
+
+/// The one-line warning for a deprecated boolean split flag.
+fn deprecated_split_flag_line(flag: &str, value: &str) -> String {
+    format!(
+        "phux: {flag} is deprecated and will be removed; use `--split {value}` (or `--split {short}`)",
+        short = &value[..1]
+    )
 }
 
 impl Direction {
@@ -119,7 +164,7 @@ enum PlanKind {
 pub(crate) fn run_insert_pane(
     target: &str,
     new_pane: &str,
-    vertical: bool,
+    direction: Direction,
     ratio: f32,
     json: bool,
     socket: Option<PathBuf>,
@@ -128,11 +173,7 @@ pub(crate) fn run_insert_pane(
         RequestedOperation::Insert {
             target: target.to_owned(),
             new_pane: new_pane.to_owned(),
-            direction: if vertical {
-                Direction::Vertical
-            } else {
-                Direction::Horizontal
-            },
+            direction,
             ratio,
         },
         json,
@@ -145,7 +186,7 @@ pub(crate) fn run_insert_pane(
 pub(crate) fn run_move_pane(
     source: &str,
     target: &str,
-    vertical: bool,
+    direction: Direction,
     ratio: f32,
     json: bool,
     socket: Option<PathBuf>,
@@ -154,11 +195,7 @@ pub(crate) fn run_move_pane(
         RequestedOperation::Move {
             source: source.to_owned(),
             target: target.to_owned(),
-            direction: if vertical {
-                Direction::Vertical
-            } else {
-                Direction::Horizontal
-            },
+            direction,
             ratio,
         },
         json,

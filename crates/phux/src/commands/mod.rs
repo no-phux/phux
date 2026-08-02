@@ -22,10 +22,14 @@ pub(crate) enum SignalArg {
     Kill,
 }
 
-/// Split axis for explicit `spawn` / `launch` placement.
+/// Split axis for explicit pane placement — the one `--split` vocabulary
+/// shared by `spawn`, `launch`, `play`, `insert-pane`, and `move-pane`
+/// (ADR-0065 §6). `h` / `v` are accepted shorthands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SpawnSplit {
+    #[value(alias = "h")]
     Horizontal,
+    #[value(alias = "v")]
     Vertical,
 }
 
@@ -416,6 +420,12 @@ pub(crate) enum Command {
     /// resizes, and the create is atomic server-side (no attach race).
     /// `--json` requires an explicit `-s NAME`, and a name already in use
     /// is an error (create-only, never create-or-attach).
+    // The `--json` ⇒ `-s` rule is enforced here at the clap level (the
+    // group's `requires` fires whenever `--json` is present) rather than as
+    // a runtime gate, so the refusal is a usage error with usage text
+    // (phux-i0e8.8.4). A group is used because `json` lives on the shared
+    // flattened `JsonOpt` and cannot carry a per-verb `requires` itself.
+    #[command(group = clap::ArgGroup::new("json_mode").arg("json").requires("session"))]
     New {
         /// Session name. `phux new work` creates a session named "work".
         /// Omitted ⇒ the `session-name-template` (e.g. "default"),
@@ -567,14 +577,18 @@ pub(crate) enum Command {
         target: String,
         /// Already-created pane to insert; no implicit spawn occurs.
         new_pane: String,
-        /// Use a horizontal split (stacked panes; the default).
-        #[arg(long, conflicts_with = "vertical")]
+        /// Split axis: `horizontal` stacks the panes, `vertical` places
+        /// them side-by-side.
+        #[arg(long, value_enum, default_value = "horizontal")]
+        split: SpawnSplit,
+        /// Deprecated spelling of `--split horizontal`.
+        #[arg(long, hide = true, conflicts_with_all = ["vertical", "split"])]
         horizontal: bool,
-        /// Use a vertical split (side-by-side panes).
-        #[arg(long, conflicts_with = "horizontal")]
+        /// Deprecated spelling of `--split vertical`.
+        #[arg(long, hide = true, conflicts_with = "split")]
         vertical: bool,
         /// Fraction assigned to TARGET; must be strictly between 0 and 1.
-        #[arg(long, default_value_t = 0.5)]
+        #[arg(long, default_value_t = 0.5, value_parser = parse_spawn_ratio)]
         ratio: f32,
         /// Emit a schema-versioned JSON result or error.
         #[arg(long)]
@@ -593,14 +607,18 @@ pub(crate) enum Command {
         source: String,
         /// Existing destination pane.
         target: String,
-        /// Use a horizontal destination split (the default).
-        #[arg(long, conflicts_with = "vertical")]
+        /// Destination split axis: `horizontal` stacks the panes,
+        /// `vertical` places them side-by-side.
+        #[arg(long, value_enum, default_value = "horizontal")]
+        split: SpawnSplit,
+        /// Deprecated spelling of `--split horizontal`.
+        #[arg(long, hide = true, conflicts_with_all = ["vertical", "split"])]
         horizontal: bool,
-        /// Use a vertical destination split.
-        #[arg(long, conflicts_with = "horizontal")]
+        /// Deprecated spelling of `--split vertical`.
+        #[arg(long, hide = true, conflicts_with = "split")]
         vertical: bool,
         /// Fraction assigned to TARGET; must be strictly between 0 and 1.
-        #[arg(long, default_value_t = 0.5)]
+        #[arg(long, default_value_t = 0.5, value_parser = parse_spawn_ratio)]
         ratio: f32,
         /// Emit a schema-versioned JSON result or error.
         #[arg(long)]
@@ -1498,8 +1516,11 @@ pub(crate) enum ServiceAction {
         /// Accept QUIC clients on this `HOST:PORT`. A routable address
         /// (e.g. `0.0.0.0:8788`) engages TLS and requires a `phux pair`
         /// token. Prefer this over `--listen` where UDP is open.
+        // The same `SocketAddr` type as `server --quic`, so a bad address
+        // fails at parse time here instead of at the supervised server's
+        // first start (phux-i0e8.8.4).
         #[arg(long, value_name = "HOST:PORT")]
-        quic: Option<String>,
+        quic: Option<std::net::SocketAddr>,
 
         /// Accept WebSocket clients on this `HOST:PORT`. The fallback for
         /// networks that block UDP.
