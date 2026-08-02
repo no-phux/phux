@@ -656,7 +656,7 @@ impl Session {
     fn published_terminal(&self) -> Option<&Terminal> {
         let terminal_id = self.first_published_terminal()?;
         let kernel = self.kernel.as_ref()?;
-        Some(&kernel.published(&terminal_id)?.engine().terminal)
+        Some(&kernel.published_engine(&terminal_id)?.terminal)
     }
 
     fn published_geometry(&self) -> Option<CanonicalGeometry> {
