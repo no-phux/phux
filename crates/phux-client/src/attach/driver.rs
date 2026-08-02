@@ -812,7 +812,7 @@ impl AttachEnd {
     /// One-line explanation for the cooked terminal after teardown, or
     /// `None` when the ending needs no words (a plain detach).
     ///
-    /// Printed by [`exit_after_detach`] on the production path (which
+    /// Printed by `exit_after_detach` on the production path (which
     /// exits the process before the CLI regains control — see its doc
     /// comment) and available to CLI callers holding a returned
     /// `AttachEnd` on any path that does return.
