@@ -276,7 +276,7 @@ jobs:
     needs: [prepare, release]
     if: ${{ !cancelled() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
-    # Pushes Formula/phux.rb to phall1/homebrew-phux via an SSH deploy key
+    # Pushes Formula/phux.rb to phall1/homebrew-tap via an SSH deploy key
     # (HOMEBREW_TAP_DEPLOY_KEY: a private key whose public half is a
     # write-enabled deploy key on the tap repo). Skipped automatically if the
     # secret is unset, so the release still succeeds without it.
@@ -307,7 +307,7 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         uses: actions/checkout@v7
         with:
-          repository: phall1/homebrew-phux
+          repository: phall1/homebrew-tap
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: tap
 

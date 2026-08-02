@@ -50,7 +50,7 @@ into, read from, and wait on.
 ## Quick start
 
 ```sh
-brew install phall1/phux/phux
+brew install phall1/tap/phux
 phux
 ```
 

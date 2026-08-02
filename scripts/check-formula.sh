@@ -142,4 +142,14 @@ if bash "${ROOT}/scripts/gen-formula.sh" "$tag" "$TMP" "${TMP}/phux-empty.rb" >/
   exit 1
 fi
 
+# 6. A present but malformed sidecar must fail instead of emitting a broken
+# sha256 stanza. Missing sidecars are valid for a partial matrix; malformed ones
+# are not.
+printf 'not-a-checksum  phux-%s-aarch64-apple-darwin.tar.gz\n' "$tag" \
+  > "${TMP}/phux-${tag}-aarch64-apple-darwin.tar.gz.sha256"
+if bash "${ROOT}/scripts/gen-formula.sh" "$tag" "$TMP" "${TMP}/phux-invalid.rb" >/dev/null 2>&1; then
+  echo "error: gen-formula.sh accepted a malformed checksum sidecar" >&2
+  exit 1
+fi
+
 echo "formula generation ok"

@@ -63,14 +63,14 @@ Required secrets:
 
 | Secret | Used by | Required for |
 |---|---|---|
-| `HOMEBREW_TAP_DEPLOY_KEY` | `release.yml` | Automatic push to `phall1/homebrew-phux`. If absent, the release still publishes and the tap step warns/skips. |
+| `HOMEBREW_TAP_DEPLOY_KEY` | `release.yml` | Automatic push to `phall1/homebrew-tap`. If absent, the release still publishes and the tap step warns/skips. |
 | `CARGO_REGISTRY_TOKEN` | `publish-crate.yml` | Publishing `phux-protocol` to crates.io. Not needed for binary/Homebrew-only releases. |
 
 Post-release verification:
 
 ```sh
 scripts/install.sh --dry-run --version vX.Y.Z
-brew fetch --formula phall1/phux/phux
+brew fetch --formula phall1/tap/phux
 cargo search phux-protocol --limit 1
 ```
 
@@ -175,7 +175,7 @@ do not link to Nix-store libraries.
 ### Required secret
 
 `HOMEBREW_TAP_DEPLOY_KEY` — the **private** half of an SSH key whose
-public half is a write-enabled deploy key on `phall1/homebrew-phux`.
+public half is a write-enabled deploy key on `phall1/homebrew-tap`.
 Without it the release still publishes; only the automatic formula bump
 is skipped (a warning annotation is emitted). The formula itself is
 produced by [`scripts/gen-formula.sh`](../scripts/gen-formula.sh), which
@@ -249,7 +249,7 @@ publishable.
 ## Installing from the tap
 
 ```sh
-brew install phall1/phux/phux
+brew install phall1/tap/phux
 ```
 
 The tap does not add Windows support; Windows is not supported here. A Windows

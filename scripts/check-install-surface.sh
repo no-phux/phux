@@ -36,7 +36,8 @@ require_regex() {
 # truth, and a pointer to INSTALL.md. The full channel matrix, source builds,
 # and cargo-install caveats are gated on docs/INSTALL.md below.
 require_fixed README.md "Quick start"
-require_fixed README.md "brew install phall1/phux/phux"
+require_fixed README.md "brew install phall1/tap/phux"
+forbid_fixed README.md "brew install phall1/phux/phux"
 require_fixed README.md "macOS arm64, Linux x86_64, and Linux arm64"
 require_fixed README.md "Windows is not supported"
 require_fixed README.md "docs/INSTALL.md"
@@ -95,6 +96,8 @@ require_fixed justfile "release-preflight-fast TAG:"
 require_fixed scripts/release-preflight.sh "cargo publish --dry-run --allow-dirty -p phux-protocol"
 
 require_fixed scripts/gen-formula.sh 'bin.install "phux-mcp"'
+require_fixed scripts/gen-formula.sh 'assert_path_exists bin/"phux-mcp"'
+require_fixed scripts/gen-formula.sh 'strategy :github_latest'
 require_fixed scripts/gen-formula.sh 'assert_match version.to_s, shell_output("#{bin}/phux --version 2>&1")'
 # A platform with no on_* override silently falls back to the formula's
 # top-level url. macOS ships arm64 only, so the generator must emit a fatal

@@ -18,7 +18,7 @@ working before it sends you into configuration or protocol reference.
 On a Homebrew-supported macOS or Linux machine:
 
 ```sh
-brew install phall1/phux/phux
+brew install phall1/tap/phux
 ```
 
 This installs both `phux` and the bundled `phux-mcp` adapter. The

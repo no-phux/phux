@@ -23,13 +23,24 @@ set -euo pipefail
 
 tag="${1:?usage: gen-formula.sh <tag> <dist-dir> [out-file]}"
 dist="${2:?usage: gen-formula.sh <tag> <dist-dir> [out-file]}"
-version="${tag#v}"
 base="https://github.com/phall1/phux/releases/download/${tag}"
 
 # sha <target> -> prints the checksum, or empty string if the artifact is absent.
 sha() {
-  local f="${dist}/phux-${tag}-$1.tar.gz.sha256"
-  [ -f "$f" ] && cut -d' ' -f1 < "$f" || true
+  local f="${dist}/phux-${tag}-$1.tar.gz.sha256" digest
+  if [ ! -e "$f" ]; then
+    return 0
+  fi
+  if [ ! -f "$f" ] || [ ! -r "$f" ]; then
+    echo "error: checksum sidecar is not a readable file: $f" >&2
+    return 1
+  fi
+  read -r digest _ < "$f" || return 1
+  if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "error: invalid checksum in $f" >&2
+    return 1
+  fi
+  printf '%s\n' "$digest"
 }
 
 # The release matrix (.github/workflows/release.yml) builds exactly these three
@@ -65,10 +76,14 @@ emit() {
 class Phux < Formula
   desc "Libghostty-backed terminal control plane (not tmux)"
   homepage "https://github.com/phall1/phux"
-  version "${version}"
-  license any_of: ["MIT", "Apache-2.0"]
   url "${base}/phux-${tag}-${primary_target}.tar.gz"
   sha256 "${primary_sha}"
+  license any_of: ["MIT", "Apache-2.0"]
+
+  livecheck do
+    url :stable
+    strategy :github_latest
+  end
 
 EOF
 
@@ -128,7 +143,7 @@ EOF
   end
 
   test do
-    assert_predicate bin/"phux-mcp", :exist?
+    assert_path_exists bin/"phux-mcp"
     assert_predicate bin/"phux-mcp", :executable?
     assert_match version.to_s, shell_output("#{bin}/phux --version 2>&1")
   end

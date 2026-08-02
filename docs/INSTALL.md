@@ -30,7 +30,7 @@ crates.io package is `phux-protocol`, not the CLI.
 Install from the published tap:
 
 ```sh
-brew install phall1/phux/phux
+brew install phall1/tap/phux
 ```
 
 This installs both `phux` and `phux-mcp`. Use a source build if the Formula has
