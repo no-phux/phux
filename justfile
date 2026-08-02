@@ -59,8 +59,17 @@ lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Run tests via nextest (parallel, sane output).
+#
+# Deliberately NOT --all-features: ci.yml's unit lane runs default features,
+# and --all-features turns on phux/dhat-heap, which swaps the global allocator
+# for dhat's in every spawned `phux` binary — all ~285 CLI tests then run
+# under a profiling allocator CI never uses (measured ~30-50s slower) and
+# each clean exit writes a dhat-heap.json. It also resolves a different
+# feature union than the `e2e` recipe, forcing a second full build locally.
+# Feature-gated code still compiles under `lint` and `doc` (--all-features).
+# Verified: the test list is identical with and without --all-features.
 test:
-    cargo nextest run --workspace --all-features
+    cargo nextest run --workspace
 
 # Fast e2e lane — gates every PR (the `e2e` step in ci.yml). Covers the
 # headless agent-surface contract (`run_wait_e2e`), the ADR-0040 agent
