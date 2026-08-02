@@ -209,8 +209,13 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
             crate::commands::spawn::report_spawn_error(&err);
             ExitCode::FAILURE
         }
-        other => {
-            eprintln!("phux: unexpected SPAWN_TERMINAL result: {other:?}");
+        // `SpawnResult` is `#[non_exhaustive]`: a kind with no arm here is a
+        // vocabulary this client does not have, i.e. version skew.
+        _ => {
+            eprintln!(
+                "phux: {}",
+                phux_client::explain::unexpected_reply("SPAWN_TERMINAL")
+            );
             ExitCode::FAILURE
         }
     }

@@ -93,6 +93,10 @@ pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec
             (OutputFormat::Gif, out.with_extension("gif"))
         }
         (None, Some(other)) => {
+            // The one deliberate `{other:?}` outside test code
+            // (phux-i0e8.7.3): `other` is the user's own file extension — a
+            // string, not a wire enum — and Debug formatting here is plain
+            // quoting, so `demo.mp4` reports `unknown output extension "mp4"`.
             eprintln!(
                 "phux: rec: unknown output extension {other:?}; \
                  use .cast, .gif, or .png, or pass --format"

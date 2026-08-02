@@ -208,8 +208,9 @@ pub async fn get_state_on(conn: &mut Connection) -> Result<StateView, AttachErro
             Ok(StateView::new(snapshot, degradation))
         }
         CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
-        other => Err(AttachError::Protocol(format!(
-            "unexpected GET_STATE result: {other:?}"
+        other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
+            "GET_STATE",
+            &other,
         ))),
     }
 }

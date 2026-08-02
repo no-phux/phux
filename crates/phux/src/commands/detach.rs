@@ -67,7 +67,10 @@ pub(crate) fn run_detach(session: Option<String>, socket: Option<PathBuf>) -> Ex
             // The reply contract is `OkWith(Json(count))`; a bare `Ok` (or any
             // other shape) means we cannot confirm what happened.
             Ok(other) => {
-                eprintln!("phux: unexpected detach result: {other:?}");
+                eprintln!(
+                    "phux: {}",
+                    phux_client::explain::explain_unexpected("detach", &other)
+                );
                 ExitCode::from(2)
             }
             // Detaching clients never tears the server down (sessions persist

@@ -42,7 +42,10 @@ pub(crate) fn run_upgrade(socket: Option<PathBuf>) -> ExitCode {
                 ExitCode::from(2)
             }
             Ok(other) => {
-                eprintln!("phux: unexpected upgrade result: {other:?}");
+                eprintln!(
+                    "phux: {}",
+                    phux_client::explain::explain_unexpected("upgrade", &other)
+                );
                 ExitCode::from(2)
             }
             Err(err) => report_no_server(&err, &socket_path, "upgrade"),

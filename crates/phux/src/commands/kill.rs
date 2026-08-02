@@ -81,7 +81,8 @@ pub(crate) fn run_kill(target: &str, socket: Option<PathBuf>) -> ExitCode {
                 }
                 Ok(other) => {
                     eprintln!(
-                        "phux: unexpected kill result for session {session_name:?}: {other:?}"
+                        "phux: session {session_name:?}: {}",
+                        phux_client::explain::explain_unexpected("kill", &other)
                     );
                     ExitCode::from(2)
                 }
@@ -127,7 +128,10 @@ pub(crate) fn run_kill(target: &str, socket: Option<PathBuf>) -> ExitCode {
                     refused = true;
                 }
                 Ok(other) => {
-                    eprintln!("phux: unexpected kill result for {terminal_id:?}: {other:?}");
+                    eprintln!(
+                        "phux: {terminal_id:?}: {}",
+                        phux_client::explain::explain_unexpected("kill", &other)
+                    );
                     refused = true;
                 }
                 // A clean disconnect means the server self-exited after its

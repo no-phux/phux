@@ -63,8 +63,9 @@ pub async fn report(
     {
         CommandResult::Ok => Ok(()),
         CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
-        other => Err(AttachError::Protocol(format!(
-            "unexpected REPORT_ASKED result: {other:?}"
+        other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
+            "REPORT_ASKED",
+            &other,
         ))),
     }
 }

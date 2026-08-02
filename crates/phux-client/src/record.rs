@@ -183,9 +183,11 @@ async fn subscribe(
     match conn.recv().await? {
         FrameKind::HelloOk { .. } => {}
         FrameKind::Error { message, .. } => return Err(AttachError::Refused(message)),
-        other => {
-            return Err(AttachError::Protocol(format!(
-                "expected HELLO_OK or ERROR after HELLO, got {other:?}",
+        // A frame that is neither HELLO_OK nor ERROR here means the two
+        // binaries disagree about the handshake itself: version skew.
+        _ => {
+            return Err(AttachError::Protocol(crate::explain::unexpected_reply(
+                "HELLO",
             )));
         }
     }

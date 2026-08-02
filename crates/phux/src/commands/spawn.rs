@@ -80,8 +80,13 @@ pub(crate) fn run_spawn(
             report_spawn_error(&err);
             ExitCode::FAILURE
         }
-        Ok(other) => {
-            eprintln!("phux: unexpected SPAWN_TERMINAL result: {other:?}");
+        // `SpawnResult` is `#[non_exhaustive]`: a kind with no arm here is a
+        // vocabulary this client does not have, i.e. version skew.
+        Ok(_) => {
+            eprintln!(
+                "phux: {}",
+                phux_client::explain::unexpected_reply("SPAWN_TERMINAL")
+            );
             ExitCode::FAILURE
         }
         Err(code) => code,
@@ -196,7 +201,10 @@ pub(crate) fn dispatch_spawn_placed(
         {
             Ok(CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(s))) => s,
             Ok(other) => {
-                eprintln!("phux: unexpected GET_STATE result: {other:?}");
+                eprintln!(
+                    "phux: {}",
+                    phux_client::explain::explain_unexpected("GET_STATE", &other)
+                );
                 return Err(ExitCode::FAILURE);
             }
             Err(err) => return Err(report_no_server(&err, socket_path, verb)),
@@ -249,7 +257,10 @@ pub(crate) fn dispatch_spawn_placed(
                         .to_owned(),
                 )
             }
-            Ok(other) => Some(format!("unexpected ownership verification result: {other:?}")),
+            Ok(other) => Some(phux_client::explain::explain_unexpected(
+                "ownership verification",
+                &other,
+            )),
             Err(err) => Some(format!("ownership verification failed: {err}")),
         };
         if let Some(err) = ownership_error {
@@ -298,7 +309,10 @@ async fn rollback_spawned(socket_path: &Path, pane: &TerminalId, verb: &str, rea
             eprintln!("phux: {verb} placement failed; spawned pane was removed: {reason}");
         }
         Ok(other) => {
-            eprintln!("phux: {verb} placement failed ({reason}); cleanup returned {other:?}");
+            eprintln!(
+                "phux: {verb} placement failed ({reason}); {}",
+                phux_client::explain::explain_unexpected("cleanup", &other)
+            );
         }
         Err(err) => {
             eprintln!("phux: {verb} placement failed ({reason}); cleanup failed: {err}");
@@ -368,7 +382,12 @@ pub(crate) fn report_spawn_error(err: &SpawnError) {
         SpawnError::SatelliteUnreachable(reason) => {
             eprintln!("phux: spawn failed: satellite unreachable: {reason}");
         }
-        other => eprintln!("phux: spawn failed: {other:?}"),
+        // `SpawnError` is `#[non_exhaustive]`: a code with no arm here is a
+        // vocabulary this client does not have, i.e. version skew.
+        _ => eprintln!(
+            "phux: spawn failed: {}",
+            phux_client::explain::unexpected_reply("SPAWN_TERMINAL")
+        ),
     }
 }
 

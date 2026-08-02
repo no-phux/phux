@@ -219,8 +219,9 @@ pub async fn send(
         CommandResult::OkWith(CommandValue::State(snap)) => snap,
         CommandResult::Error { message, .. } => return Err(AttachError::Refused(message)),
         other => {
-            return Err(AttachError::Protocol(format!(
-                "unexpected GET_STATE result: {other:?}"
+            return Err(AttachError::Protocol(crate::explain::explain_unexpected(
+                "GET_STATE",
+                &other,
             )));
         }
     };
@@ -299,8 +300,9 @@ pub async fn paste_to(
     {
         CommandResult::Ok => Ok(()),
         CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
-        other => Err(AttachError::Protocol(format!(
-            "unexpected ROUTE_INPUT result: {other:?}"
+        other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
+            "ROUTE_INPUT",
+            &other,
         ))),
     }
 }
@@ -335,8 +337,9 @@ async fn route_keys(
             CommandResult::Ok => {}
             CommandResult::Error { message, .. } => return Err(AttachError::Refused(message)),
             other => {
-                return Err(AttachError::Protocol(format!(
-                    "unexpected ROUTE_INPUT result: {other:?}"
+                return Err(AttachError::Protocol(crate::explain::explain_unexpected(
+                    "ROUTE_INPUT",
+                    &other,
                 )));
             }
         }

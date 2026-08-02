@@ -242,9 +242,9 @@ async fn read_snapshot(conn: &mut Connection) -> Result<SessionSnapshot, AttachE
     .await?
     {
         CommandResult::OkWith(CommandValue::State(snapshot)) => Ok(snapshot),
-        other => Err(AttachError::Protocol(format!(
-            "unexpected GET_STATE result: {other:?}"
-        ))),
+        other => Err(AttachError::Protocol(
+            phux_client::explain::explain_unexpected("GET_STATE", &other),
+        )),
     }
 }
 

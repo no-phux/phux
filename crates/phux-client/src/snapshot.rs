@@ -86,8 +86,9 @@ pub async fn get_screen_scrollback(
         CommandResult::OkWith(CommandValue::Json(json)) => serde_json::from_str(&json)
             .map_err(|err| AttachError::Protocol(format!("malformed GET_SCREEN JSON: {err}"))),
         CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
-        other => Err(AttachError::Protocol(format!(
-            "unexpected GET_SCREEN result: {other:?}"
+        other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
+            "GET_SCREEN",
+            &other,
         ))),
     }
 }

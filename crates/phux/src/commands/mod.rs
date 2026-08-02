@@ -1937,22 +1937,55 @@ pub(crate) async fn request_command(
 
 /// Print a "no server" diagnostic for a connect-time error, or a generic
 /// one otherwise. Returns the failure exit code for the caller to bubble.
+///
+/// Every arm ends with its remedy (phux-i0e8.7.3): the no-server arm names
+/// the exact start commands, and all arms name the canonical server log and
+/// `phux doctor` — the two places the *reason* lives when the sentence here
+/// is not enough.
 pub(crate) fn report_no_server(err: &AttachError, socket_path: &Path, verb: &str) -> ExitCode {
-    match err {
+    for line in no_server_lines(
+        err,
+        socket_path,
+        verb,
+        &phux_server::telemetry::server_log_path(),
+    ) {
+        eprintln!("{line}");
+    }
+    ExitCode::FAILURE
+}
+
+/// The lines [`report_no_server`] prints, pure so tests can pin every arm
+/// without capturing stderr (the `session_lines` pattern in `ls.rs`).
+///
+/// Continuation lines are indented two spaces so the remedy block reads as
+/// one diagnostic, not four independent errors.
+fn no_server_lines(
+    err: &AttachError,
+    socket_path: &Path,
+    verb: &str,
+    server_log: &Path,
+) -> Vec<String> {
+    let mut lines = match err {
         AttachError::Io(io_err)
             if matches!(
                 io_err.kind(),
                 std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
             ) =>
         {
-            eprintln!("phux: no server running at {}", socket_path.display());
+            vec![
+                format!("phux: no server running at {}", socket_path.display()),
+                "  start one with `phux` (attaches, auto-starting a server) or `phux server`"
+                    .to_owned(),
+            ]
         }
         AttachError::Disconnected => {
-            eprintln!("phux: server closed the connection during {verb}");
+            vec![format!("phux: server closed the connection during {verb}")]
         }
-        other => eprintln!("phux: {verb} failed: {other}"),
-    }
-    ExitCode::FAILURE
+        other => vec![format!("phux: {verb} failed: {other}")],
+    };
+    lines.push(format!("  server log: {}", server_log.display()));
+    lines.push("  run `phux doctor` for a health check".to_owned());
+    lines
 }
 
 /// Parse an optional target string into a [`crate::selector::Selector`],
@@ -2025,6 +2058,31 @@ pub(crate) async fn resolve_targets(
 /// suggests the exact `phux server --session …` invocation, so the
 /// user can copy-paste their way out of the failure mode.
 pub(crate) fn print_attach_error(err: &AttachError, socket_path: &Path, session: &str) {
+    for line in attach_error_lines(
+        err,
+        socket_path,
+        session,
+        &phux_server::telemetry::default_client_log_path(),
+    ) {
+        eprintln!("{line}");
+    }
+}
+
+/// The lines [`print_attach_error`] prints, pure so tests can pin every arm.
+///
+/// The first three arms are self-explaining (each names its own remedy or
+/// cause), so they stay single-line. The fallthrough —
+/// `Disconnected`/`Protocol`/`Terminal`/`Ghostty`/… — is where the sentence
+/// alone was a dead end (phux-i0e8.7.3): those failures leave their reason in
+/// this client's own log, and a `Protocol` error in particular usually means
+/// the binaries disagree, so the remedy block names the client log, `phux
+/// doctor`, and this client's protocol triple for the comparison.
+fn attach_error_lines(
+    err: &AttachError,
+    socket_path: &Path,
+    session: &str,
+    client_log: &Path,
+) -> Vec<String> {
     match err {
         AttachError::Io(io_err)
             if matches!(
@@ -2032,27 +2090,149 @@ pub(crate) fn print_attach_error(err: &AttachError, socket_path: &Path, session:
                 std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
             ) =>
         {
-            eprintln!(
+            vec![format!(
                 "phux: no server at {}. Start one with: phux server --session {session}",
                 socket_path.display(),
-            );
+            )]
         }
         AttachError::Refused(message) => {
-            eprintln!("phux: server refused attach: {message}");
+            vec![format!("phux: server refused attach: {message}")]
         }
         AttachError::NotATty => {
-            eprintln!("phux: attach requires an interactive terminal (stdin is not a TTY).",);
+            vec!["phux: attach requires an interactive terminal (stdin is not a TTY).".to_owned()]
         }
         other => {
-            eprintln!("phux: attach failed: {other}");
+            let version = phux_protocol::PROTOCOL_VERSION;
+            vec![
+                format!("phux: attach failed: {other}"),
+                format!("  client log: {}", client_log.display()),
+                format!(
+                    "  run `phux doctor` for a health check (client protocol {}.{}.{})",
+                    version.major, version.minor, version.patch,
+                ),
+            ]
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::parse_selector;
+    use std::path::Path;
+
+    use phux_client::attach::AttachError;
+
+    use crate::commands::{attach_error_lines, no_server_lines, parse_selector};
     use crate::selector::{Selector, WindowRef};
+
+    fn refused_io() -> AttachError {
+        AttachError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+    }
+
+    /// phux-i0e8.7.3: the no-server arm must name the exact start commands,
+    /// and every arm must end with the server log and the doctor pointer —
+    /// an error that does not name its remedy fails the `print_attach_error`
+    /// bar this helper used to miss.
+    #[test]
+    fn no_server_lines_name_start_commands_log_and_doctor() {
+        let socket = Path::new("/tmp/phux-test.sock");
+        let log = Path::new("/state/phux/server.log");
+
+        let lines = no_server_lines(&refused_io(), socket, "ls", log);
+        assert_eq!(lines[0], "phux: no server running at /tmp/phux-test.sock");
+        assert_eq!(
+            lines[1],
+            "  start one with `phux` (attaches, auto-starting a server) or `phux server`"
+        );
+        assert_eq!(lines[2], "  server log: /state/phux/server.log");
+        assert_eq!(lines[3], "  run `phux doctor` for a health check");
+        assert_eq!(lines.len(), 4);
+    }
+
+    /// A mid-command disconnect is not "no server": the server was there and
+    /// went away, so there is no start command to suggest — but the reason it
+    /// went away lives in its log, so that and doctor still close the arm.
+    #[test]
+    fn no_server_disconnect_arm_names_log_and_doctor() {
+        let lines = no_server_lines(
+            &AttachError::Disconnected,
+            Path::new("/tmp/s.sock"),
+            "kill",
+            Path::new("/state/phux/server.log"),
+        );
+        assert_eq!(lines[0], "phux: server closed the connection during kill");
+        assert_eq!(lines[1], "  server log: /state/phux/server.log");
+        assert_eq!(lines[2], "  run `phux doctor` for a health check");
+    }
+
+    /// The generic arm keeps the error's own Display sentence first and still
+    /// ends with the remedy block.
+    #[test]
+    fn no_server_fallthrough_keeps_the_error_and_adds_remedies() {
+        let lines = no_server_lines(
+            &AttachError::Refused("policy said no".to_owned()),
+            Path::new("/tmp/s.sock"),
+            "tag",
+            Path::new("/log/server.log"),
+        );
+        assert_eq!(
+            lines[0],
+            "phux: tag failed: server refused attach: policy said no"
+        );
+        assert_eq!(lines[1], "  server log: /log/server.log");
+        assert_eq!(lines[2], "  run `phux doctor` for a health check");
+    }
+
+    /// The three self-explaining attach arms stay single-line and keep their
+    /// established sentences (`phux-roz`: the no-server one is copy-pasteable).
+    #[test]
+    fn attach_error_named_arms_stay_single_line() {
+        let socket = Path::new("/tmp/a.sock");
+        let log = Path::new("/state/phux/client-42.log");
+
+        assert_eq!(
+            attach_error_lines(&refused_io(), socket, "main", log),
+            ["phux: no server at /tmp/a.sock. Start one with: phux server --session main"]
+        );
+        assert_eq!(
+            attach_error_lines(
+                &AttachError::Refused("no such session".to_owned()),
+                socket,
+                "main",
+                log,
+            ),
+            ["phux: server refused attach: no such session"]
+        );
+        assert_eq!(
+            attach_error_lines(&AttachError::NotATty, socket, "main", log),
+            ["phux: attach requires an interactive terminal (stdin is not a TTY)."]
+        );
+    }
+
+    /// phux-i0e8.7.3: the fallthrough (`Disconnected`/`Protocol`/`Terminal`/…)
+    /// used to end at "attach failed: {err}" with nowhere to go. It must now
+    /// name this client's own log, doctor, and the client protocol triple —
+    /// a `Protocol` error usually means the binaries disagree, and doctor
+    /// prints both sides.
+    #[test]
+    fn attach_error_fallthrough_names_client_log_doctor_and_triple() {
+        let lines = attach_error_lines(
+            &AttachError::Protocol("bad frame".to_owned()),
+            Path::new("/tmp/a.sock"),
+            "main",
+            Path::new("/state/phux/client-42.log"),
+        );
+        assert_eq!(lines[0], "phux: attach failed: protocol error: bad frame");
+        assert_eq!(lines[1], "  client log: /state/phux/client-42.log");
+        let version = phux_protocol::PROTOCOL_VERSION;
+        assert_eq!(
+            lines[2],
+            format!(
+                "  run `phux doctor` for a health check (client protocol {}.{}.{})",
+                version.major, version.minor, version.patch,
+            )
+        );
+        assert_eq!(lines.len(), 3);
+    }
 
     /// The full `TARGET` grammar now feeds run/send-keys/snapshot/wait/kill
     /// alike (phux-n95). `parse_selector` is the shared CLI front door:

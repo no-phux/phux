@@ -1543,8 +1543,10 @@ async fn handshake(
     match conn.recv().await? {
         FrameKind::HelloOk { .. } => Ok(client_caps.output_mode),
         FrameKind::Error { message, .. } => Err(AttachError::Refused(message)),
-        other => Err(AttachError::Protocol(format!(
-            "expected HELLO_OK or ERROR after HELLO, got {other:?}",
+        // Neither HELLO_OK nor ERROR: the two binaries disagree about the
+        // handshake itself, which is version skew, not a frame worth dumping.
+        _ => Err(AttachError::Protocol(crate::explain::unexpected_reply(
+            "HELLO",
         ))),
     }
 }
@@ -1578,13 +1580,13 @@ async fn wait_for_attached(conn: &mut Connection) -> Result<FrameKind, AttachErr
         FrameKind::Error {
             code: _, message, ..
         } => Err(AttachError::Refused(message)),
-        other => {
+        _ => {
             // Anything else this early is a protocol violation. The
             // server is required to answer `ATTACH` with either
             // `ATTACHED` or `ERROR`; reject otherwise rather than
             // silently soldiering on into a half-attached state.
-            Err(AttachError::Protocol(format!(
-                "expected ATTACHED or ERROR after ATTACH, got {other:?}",
+            Err(AttachError::Protocol(crate::explain::unexpected_reply(
+                "ATTACH",
             )))
         }
     }
@@ -6174,7 +6176,10 @@ mod tests {
         let (res, ()) = tokio::join!(handshake(&mut client, None), server_side);
         match res {
             Err(AttachError::Protocol(msg)) => {
-                assert!(msg.contains("HELLO_OK"));
+                // phux-i0e8.7.3: a frame with no arm is explained as version
+                // skew with a remedy, never dumped as a Debug rendering.
+                assert!(msg.contains("unexpected HELLO reply"), "{msg}");
+                assert!(msg.contains("run `phux doctor`"), "{msg}");
             }
             other => panic!("expected protocol error, got {other:?}"),
         }

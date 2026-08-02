@@ -70,7 +70,10 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: bool) -> ExitCode {
                 ExitCode::from(2)
             }
             Ok(other) => {
-                eprintln!("phux: unexpected {verb} result for {target}: {other:?}");
+                eprintln!(
+                    "phux: {target}: {}",
+                    phux_client::explain::explain_unexpected(verb, &other)
+                );
                 ExitCode::from(2)
             }
             Err(err) => report_no_server(&err, &socket_path, verb),
@@ -114,7 +117,10 @@ pub(crate) fn run_signal(target: &str, signal: SignalArg, socket: Option<PathBuf
                 ExitCode::from(2)
             }
             Ok(other) => {
-                eprintln!("phux: unexpected signal result for {target}: {other:?}");
+                eprintln!(
+                    "phux: {target}: {}",
+                    phux_client::explain::explain_unexpected("signal", &other)
+                );
                 ExitCode::from(2)
             }
             Err(err) => report_no_server(&err, &socket_path, "signal"),

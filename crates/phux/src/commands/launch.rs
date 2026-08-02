@@ -147,8 +147,13 @@ fn spawn_resolved(
             report_spawn_error(&err);
             ExitCode::FAILURE
         }
-        Ok(other) => {
-            eprintln!("phux: unexpected SPAWN_TERMINAL result: {other:?}");
+        // `SpawnResult` is `#[non_exhaustive]`: a kind with no arm here is a
+        // vocabulary this client does not have, i.e. version skew.
+        Ok(_) => {
+            eprintln!(
+                "phux: {}",
+                phux_client::explain::unexpected_reply("SPAWN_TERMINAL")
+            );
             ExitCode::FAILURE
         }
         Err(code) => code,
