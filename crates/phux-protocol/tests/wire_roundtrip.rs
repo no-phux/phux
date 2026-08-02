@@ -645,7 +645,6 @@ fn pane_output_round_trip_hello_world() {
     assert!(tail.is_empty());
 }
 
-
 #[test]
 fn truncated_length_header_is_eof() {
     let bytes = [0u8, 0, 0];

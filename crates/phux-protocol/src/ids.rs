@@ -141,7 +141,6 @@ impl core::fmt::Display for BootstrapId {
     }
 }
 
-
 /// Opaque client-generated identifier for one acknowledged input operation.
 ///
 /// The all-zero value is reserved and cannot be constructed. Debug output is

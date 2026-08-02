@@ -8,17 +8,16 @@ use super::error::DecodeError;
 use super::field;
 use super::frame::Scope;
 use super::frame::{
-    ErrorCode, FrameKind, TombstoneReason, MAX_FRAME_LEN, MAX_HISTORY_CURSOR_BYTES, TYPE_ATTACH,
-    TYPE_ATTACHED,
-    TYPE_ATTACH_READY, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK,
-    TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND, TYPE_COMMAND_RESULT,
-    TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK,
-    TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REQUEST,
-    TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_LIST_METADATA,
-    TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_PING, TYPE_PONG,
-    TYPE_SET_METADATA, TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
-    TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SPAWNED,
-    TYPE_VIEWPORT_RESIZE, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
+    ErrorCode, FrameKind, MAX_FRAME_LEN, MAX_HISTORY_CURSOR_BYTES, TYPE_ATTACH, TYPE_ATTACH_READY,
+    TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
+    TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH,
+    TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK, TYPE_GET_METADATA, TYPE_HELLO,
+    TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REQUEST, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
+    TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED,
+    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_PING, TYPE_PONG, TYPE_SET_METADATA,
+    TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_TERMINAL_CLOSED,
+    TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SPAWNED, TYPE_VIEWPORT_RESIZE,
+    TombstoneReason, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
     decode_bootstrap_id, decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
     decode_command_result, decode_env, decode_focus_event, decode_key_event,
     decode_metadata_scope_key, decode_mouse_event, decode_paste_event, decode_scope,
@@ -347,13 +346,11 @@ impl<'a> Decoder<'a> {
                         field::hello::CLIENT_CAPS => {
                             let mut d = Decoder::new(value);
                             let color_value = d.read_u8()?;
-                            let color_support =
-                                crate::caps::ColorSupport::from_wire(color_value).ok_or(
-                                    DecodeError::UnknownEnumValue {
-                                        field: "ColorSupport",
-                                        value: u32::from(color_value),
-                                    },
-                                )?;
+                            let color_support = crate::caps::ColorSupport::from_wire(color_value)
+                                .ok_or(DecodeError::UnknownEnumValue {
+                                field: "ColorSupport",
+                                value: u32::from(color_value),
+                            })?;
                             let layers = crate::caps::LayerSet::from_wire(d.read_u8()?);
                             let images = crate::caps::ImageProtocolSet::from_wire(d.read_u8()?);
                             let keyboards =
@@ -578,8 +575,7 @@ impl<'a> Decoder<'a> {
                                 sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
                         }
                         field::attach::ATTACH_ID => {
-                            attach_id =
-                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                            attach_id = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
                         }
                         _ => {}
                     }
@@ -720,8 +716,7 @@ impl<'a> Decoder<'a> {
                             initial_client_id = Some(sub!(value, decode_client_id));
                         }
                         field::attached::ATTACH_ID => {
-                            attach_id =
-                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                            attach_id = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
                         }
                         _ => {}
                     }
@@ -977,13 +972,12 @@ impl<'a> Decoder<'a> {
                         }
                         field::bootstrap_tombstone::REASON => {
                             let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
-                            reason =
-                                Some(TombstoneReason::from_wire(value).ok_or(
-                                    DecodeError::UnknownEnumValue {
-                                        field: "TombstoneReason",
-                                        value: u32::from(value),
-                                    },
-                                )?);
+                            reason = Some(TombstoneReason::from_wire(value).ok_or(
+                                DecodeError::UnknownEnumValue {
+                                    field: "TombstoneReason",
+                                    value: u32::from(value),
+                                },
+                            )?);
                         }
                         field::bootstrap_tombstone::LAST_VALID_SEQ => {
                             last_valid_seq =

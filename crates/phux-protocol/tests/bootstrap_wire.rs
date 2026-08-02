@@ -12,9 +12,9 @@ use phux_protocol::caps::{
 use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
-    FrameKind, TombstoneReason, MAX_HISTORY_CURSOR_BYTES, TYPE_ATTACH_READY,
-    TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
-    TYPE_BOOTSTRAP_TOMBSTONE, TYPE_HISTORY_PAGE, TYPE_HISTORY_REQUEST,
+    FrameKind, MAX_HISTORY_CURSOR_BYTES, TYPE_ATTACH_READY, TYPE_BOOTSTRAP_BEGIN,
+    TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_HISTORY_PAGE,
+    TYPE_HISTORY_REQUEST, TombstoneReason,
 };
 
 fn stream(raw: u64) -> StreamId {
@@ -443,13 +443,11 @@ fn malformed_native_state_sync_combination_is_rejected() {
 
 #[test]
 fn profile_selection_prefers_native_then_explicit_compatibility() {
-    let server = BootstrapCapabilities::new().with_limits(
-        BootstrapLimits::new(64 * 1024, 256 * 1024).unwrap(),
-    );
+    let server = BootstrapCapabilities::new()
+        .with_limits(BootstrapLimits::new(64 * 1024, 256 * 1024).unwrap());
     let client = ClientCapabilities::new().with_bootstrap(
-        BootstrapCapabilities::new().with_limits(
-            BootstrapLimits::new(128 * 1024, 128 * 1024).unwrap(),
-        ),
+        BootstrapCapabilities::new()
+            .with_limits(BootstrapLimits::new(128 * 1024, 128 * 1024).unwrap()),
     );
     let (profile, limits) = select_bootstrap_profile(&client, &server).unwrap();
     assert_eq!(
@@ -462,9 +460,8 @@ fn profile_selection_prefers_native_then_explicit_compatibility() {
     assert_eq!(limits.max_chunk_bytes(), 64 * 1024);
     assert_eq!(limits.max_history_page_bytes(), 128 * 1024);
 
-    let state_sync_only = BootstrapProfileSet::with(&[
-        BootstrapProfileKind::SynthesizedVtStateSync,
-    ]);
+    let state_sync_only =
+        BootstrapProfileSet::with(&[BootstrapProfileKind::SynthesizedVtStateSync]);
     let client = ClientCapabilities::new()
         .with_output_mode(OutputMode::StateSync)
         .with_bootstrap(BootstrapCapabilities::new().with_profiles(state_sync_only));

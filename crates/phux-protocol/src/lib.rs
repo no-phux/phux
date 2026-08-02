@@ -51,8 +51,8 @@ pub use caps::{
     CodecUnavailable, ColorSupport, DEFAULT_BOOTSTRAP_CHUNK_BYTES, DEFAULT_HISTORY_PAGE_BYTES,
     EngineCodec, EngineCodecSet, EngineFeature, EngineFeatureSet, FILE_UPLOAD, ImageProtocol,
     ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet,
-    MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, OutputMode, ServerFeature,
-    ServerFeatureSet, TerminalColor, TerminalDefaultColors, select_bootstrap_profile,
+    MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, OutputMode, ServerFeature, ServerFeatureSet,
+    TerminalColor, TerminalDefaultColors, select_bootstrap_profile,
 };
 pub use ids::{
     BootstrapId, ClientId, FileUploadId, FrameId, GroupId, InputOperationId, SatelliteHost,

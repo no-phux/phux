@@ -196,9 +196,7 @@ impl BootstrapLimits {
             } else {
                 other.max_chunk_bytes
             },
-            max_history_page_bytes: if self.max_history_page_bytes
-                < other.max_history_page_bytes
-            {
+            max_history_page_bytes: if self.max_history_page_bytes < other.max_history_page_bytes {
                 self.max_history_page_bytes
             } else {
                 other.max_history_page_bytes
@@ -335,7 +333,6 @@ impl BootstrapCodec {
     /// Wire tag for a native engine codec followed by its exact version byte.
     pub const NATIVE_TAG: u8 = 1;
 }
-
 
 /// Additive set of exact native engine codecs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -605,9 +602,7 @@ pub fn select_bootstrap_profile(
         .bootstrap
         .profiles
         .contains(BootstrapProfileKind::NativeState)
-        && server
-            .profiles
-            .contains(BootstrapProfileKind::NativeState)
+        && server.profiles.contains(BootstrapProfileKind::NativeState)
     {
         if let Some(codec) = client
             .bootstrap
@@ -661,7 +656,6 @@ pub fn select_bootstrap_profile(
 
     Err(CodecUnavailable)
 }
-
 
 // -----------------------------------------------------------------------------
 // Layer / LayerSet — SPEC §6.2 conformance-tier bitset (ADR-0015).
@@ -1075,7 +1069,6 @@ impl ClientCapabilities {
         self.bootstrap = bootstrap;
         self
     }
-
 
     /// Builder setter for [`Self::color_support`].
     #[must_use]

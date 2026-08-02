@@ -90,7 +90,6 @@ pub enum DecodeError {
     #[error("invalid bootstrap profile")]
     InvalidBootstrapProfile,
 
-
     /// A [`crate::wire::info::LayoutNode`] tree nested deeper than the
     /// decoder's recursion bound (see
     /// [`crate::wire::info::MAX_LAYOUT_DEPTH`]).

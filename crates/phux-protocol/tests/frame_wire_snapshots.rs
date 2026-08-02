@@ -61,7 +61,6 @@ fn dump_frame(frame: &FrameKind) -> String {
     hex_dump(&buf)
 }
 
-
 // -----------------------------------------------------------------------------
 // DETACH / DETACHED — unit messages.
 // -----------------------------------------------------------------------------
@@ -159,7 +158,6 @@ fn snap_input_paste_trusted_ascii() {
     insta::assert_snapshot!(dump_frame(&frame));
 }
 
-
 #[test]
 fn snap_bell() {
     insta::assert_snapshot!(dump_frame(&FrameKind::Bell {
@@ -170,7 +168,6 @@ fn snap_bell() {
 // -----------------------------------------------------------------------------
 // VIEWPORT_RESIZE — SPEC §10.5. Cell-only and pixel-augmented viewports.
 // -----------------------------------------------------------------------------
-
 
 #[test]
 fn snap_viewport_resize_cells_only() {
@@ -227,7 +224,6 @@ fn snap_error_internal_max_code() {
     };
     insta::assert_snapshot!(dump_frame(&frame));
 }
-
 
 // -----------------------------------------------------------------------------
 // L3 metadata frames — SPEC §7.4 / §11.L3 (phux-4li.2).

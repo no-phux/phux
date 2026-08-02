@@ -782,7 +782,6 @@ impl TombstoneReason {
     }
 }
 
-
 // -----------------------------------------------------------------------------
 // AttachTarget tagged union — SPEC §13.
 // -----------------------------------------------------------------------------
@@ -2952,9 +2951,7 @@ pub(super) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut Encoder<'_
     }
 }
 
-pub(super) fn decode_bootstrap_codec(
-    dec: &mut Decoder<'_>,
-) -> Result<BootstrapCodec, DecodeError> {
+pub(super) fn decode_bootstrap_codec(dec: &mut Decoder<'_>) -> Result<BootstrapCodec, DecodeError> {
     match dec.read_u8()? {
         BootstrapCodec::SYNTHESIZED_VT_V1_TAG => Ok(BootstrapCodec::SynthesizedVtV1),
         BootstrapCodec::NATIVE_TAG => {
@@ -3022,9 +3019,7 @@ pub(super) fn decode_bootstrap_stream_profile(
     match (codec, output_mode) {
         (BootstrapCodec::Native(codec), 0) => Ok(BootstrapStreamProfile::NativeState { codec }),
         (BootstrapCodec::SynthesizedVtV1, 0) => Ok(BootstrapStreamProfile::SynthesizedVtRaw),
-        (BootstrapCodec::SynthesizedVtV1, 1) => {
-            Ok(BootstrapStreamProfile::SynthesizedVtStateSync)
-        }
+        (BootstrapCodec::SynthesizedVtV1, 1) => Ok(BootstrapStreamProfile::SynthesizedVtStateSync),
         _ => Err(DecodeError::InvalidBootstrapProfile),
     }
 }
@@ -3036,7 +3031,6 @@ pub(super) fn decode_stream_id(dec: &mut Decoder<'_>) -> Result<StreamId, Decode
 pub(super) fn decode_bootstrap_id(dec: &mut Decoder<'_>) -> Result<BootstrapId, DecodeError> {
     BootstrapId::new(dec.read_u64_be()?).ok_or(DecodeError::InvalidBootstrapId)
 }
-
 
 pub(super) fn encode_attach_target(target: &AttachTarget, enc: &mut Encoder<'_>) {
     match target {
