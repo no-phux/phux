@@ -260,6 +260,8 @@ pub struct HistoryCache {
     state: HistoryLoadState,
     loaded_bytes: usize,
     materialized_rows: usize,
+    pinned_bytes: usize,
+    pinned_materialized_rows: usize,
     viewport: ViewportAnchor,
     projection_width: u16,
     unread_rows: u64,
@@ -292,6 +294,8 @@ impl HistoryCache {
             state,
             loaded_bytes: 0,
             materialized_rows: 0,
+            pinned_bytes: 0,
+            pinned_materialized_rows: 0,
             viewport: ViewportAnchor::Tail,
             projection_width: projection_width.max(1),
             unread_rows: 0,
@@ -411,26 +415,16 @@ impl HistoryCache {
         if next_cursor == Some(cursor) && page_seq == u64::MAX {
             return Err(HistoryCacheError::SequenceExhausted);
         }
-        let pinned_bytes: usize = self
-            .pages
-            .iter()
-            .filter(|page| page.pin_count > 0)
-            .map(|page| page.payload.len())
-            .sum();
-        let required_bytes = pinned_bytes.saturating_add(payload.len());
+        let required_bytes = self.pinned_bytes.saturating_add(payload.len());
         if required_bytes > self.config.max_bytes {
             return Err(HistoryCacheError::PinnedBudget {
                 required: required_bytes,
                 budget: self.config.max_bytes,
             });
         }
-        let pinned_rows: usize = self
-            .pages
-            .iter()
-            .filter(|page| page.pin_count > 0)
-            .map(|page| page.materialized_rows)
-            .sum();
-        let required_rows = pinned_rows.saturating_add(declared_rows as usize);
+        let required_rows = self
+            .pinned_materialized_rows
+            .saturating_add(declared_rows as usize);
         if required_rows > self.config.max_materialized_rows {
             return Err(HistoryCacheError::PinnedProjectionBudget {
                 required: required_rows,
@@ -509,6 +503,21 @@ impl HistoryCache {
             .copied()
             .ok_or(HistoryCacheError::PageUnavailable)?;
         let old = self.pages[index].materialized_rows;
+        let pinned = self.pages[index].pin_count > 0;
+        let old_pinned_rows = self.pinned_materialized_rows;
+        if pinned {
+            let required = self
+                .pinned_materialized_rows
+                .saturating_sub(old)
+                .saturating_add(rows);
+            if required > self.config.max_materialized_rows {
+                return Err(HistoryCacheError::PinnedProjectionBudget {
+                    required,
+                    budget: self.config.max_materialized_rows,
+                });
+            }
+            self.pinned_materialized_rows = required;
+        }
         self.materialized_rows = self
             .materialized_rows
             .saturating_sub(old)
@@ -522,6 +531,7 @@ impl HistoryCache {
                 .saturating_sub(rows)
                 .saturating_add(old);
             self.pages[index].materialized_rows = old;
+            self.pinned_materialized_rows = old_pinned_rows;
             return Err(HistoryCacheError::ProjectionTooLarge {
                 required,
                 budget: self.config.max_materialized_rows,
@@ -717,13 +727,27 @@ impl HistoryCache {
 
     fn pin(&mut self, page: &HistoryPageId) {
         if let Some(index) = self.page_indices.get(page).copied() {
-            self.pages[index].pin_count += 1;
+            let page = &mut self.pages[index];
+            if page.pin_count == 0 {
+                self.pinned_bytes = self.pinned_bytes.saturating_add(page.payload.len());
+                self.pinned_materialized_rows = self
+                    .pinned_materialized_rows
+                    .saturating_add(page.materialized_rows);
+            }
+            page.pin_count = page.pin_count.saturating_add(1);
         }
     }
 
     fn unpin(&mut self, page: &HistoryPageId) {
         if let Some(index) = self.page_indices.get(page).copied() {
-            self.pages[index].pin_count = self.pages[index].pin_count.saturating_sub(1);
+            let page = &mut self.pages[index];
+            if page.pin_count == 1 {
+                self.pinned_bytes = self.pinned_bytes.saturating_sub(page.payload.len());
+                self.pinned_materialized_rows = self
+                    .pinned_materialized_rows
+                    .saturating_sub(page.materialized_rows);
+            }
+            page.pin_count = page.pin_count.saturating_sub(1);
         }
     }
 
@@ -785,6 +809,8 @@ impl HistoryCache {
         self.next_page_seq = None;
         self.loaded_bytes = 0;
         self.materialized_rows = 0;
+        self.pinned_bytes = 0;
+        self.pinned_materialized_rows = 0;
         self.viewport = ViewportAnchor::Tail;
         self.unread_rows = 0;
         self.state = state;
@@ -909,7 +935,7 @@ mod tests {
         cache.set_visible_pages([page.clone()]).unwrap();
         assert_eq!(
             cache.set_materialized_rows(&page, 3),
-            Err(HistoryCacheError::ProjectionTooLarge {
+            Err(HistoryCacheError::PinnedProjectionBudget {
                 required: 3,
                 budget: 2,
             })
