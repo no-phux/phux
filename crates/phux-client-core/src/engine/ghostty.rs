@@ -1662,6 +1662,51 @@ mod tests {
     }
 
     #[test]
+    fn native_history_enforces_cumulative_byte_and_line_limits() {
+        let records = capture_records();
+        let ready = records
+            .iter()
+            .position(|(kind, _)| *kind == RecordKind::Ready)
+            .expect("READY record");
+        let bootstrap: Vec<u8> = records[..=ready]
+            .iter()
+            .flat_map(|(_, bytes)| bytes.iter().copied())
+            .collect();
+        let mut adapter = native_adapter();
+        let mut replica = adapter
+            .start_replica(native_profile(), geometry())
+            .expect("native replica");
+        let mut effects = EngineEffectBuffer::new();
+        adapter
+            .apply_bootstrap_chunk(&mut replica, &bootstrap, &mut effects)
+            .expect("checkpoint through READY");
+        adapter
+            .finish_bootstrap(&mut replica, &mut effects)
+            .expect("protocol READY");
+        adapter
+            .configure_history_budget(&mut replica, 64 * 1024, 2)
+            .expect("engine history limits");
+        for (_, record) in &records[ready + 1..] {
+            adapter
+                .apply_history_page(&mut replica, record, &mut effects)
+                .expect("bounded history unit");
+            assert!(
+                replica
+                    .terminal()
+                    .expect("live terminal")
+                    .scrollback_rows()
+                    .expect("scrollback rows")
+                    <= 2
+            );
+        }
+        let projection = adapter
+            .project_history(&mut replica, 80, EngineProjectionOrigin::Tail, 100)
+            .expect("bounded projection");
+        assert!(projection.rows.len() <= 2);
+    }
+
+
+    #[test]
     fn native_projection_search_and_anchors_remain_engine_owned() {
         let records = capture_records();
         let (bootstrap, history) = split_capture(&records);
@@ -1715,6 +1760,14 @@ mod tests {
                 .as_deref(),
             Some("line 10")
         );
+        let full_scrollback = replica
+            .terminal()
+            .expect("live terminal")
+            .scrollback_rows()
+            .expect("scrollback rows");
+        adapter
+            .configure_history_budget(&mut replica, 64 * 1024, full_scrollback)
+            .expect("full scrollback cap");
         let distance_before = adapter
             .history_anchor_tail_distance(&replica, found[0].start)
             .expect("anchor distance")
@@ -1727,6 +1780,26 @@ mod tests {
             .expect("anchor distance")
             .expect("retained anchor");
         assert_eq!(distance_after, distance_before + 1);
+        adapter
+            .apply_output(&mut replica, b"\x1b]2;control-only\x07", &mut effects)
+            .expect("control-only output");
+        assert_eq!(
+            adapter
+                .history_anchor_tail_distance(&replica, found[0].start)
+                .expect("anchor distance")
+                .expect("retained anchor"),
+            distance_after
+        );
+        adapter
+            .apply_output(&mut replica, b"coalesced-one\r\ncoalesced-two\r\n", &mut effects)
+            .expect("coalesced output");
+        assert_eq!(
+            adapter
+                .history_anchor_tail_distance(&replica, found[0].start)
+                .expect("anchor distance")
+                .expect("retained anchor"),
+            distance_after + 2
+        );
         assert!(
             adapter
                 .document_anchor_point(&replica, found[0].start, DocumentSpace::History)

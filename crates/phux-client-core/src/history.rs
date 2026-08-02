@@ -1199,4 +1199,18 @@ mod tests {
         assert!(cache.page_order.len() <= cache.pages.len() * 2 + 64);
         assert_eq!(cache.consumed.len(), 64);
     }
+
+    #[test]
+    fn pruned_anchor_falls_back_to_tail_and_releases_registration() {
+        let mut cache = HistoryCache::new(config(64, 1), None, 80);
+        let anchor = DocumentAnchorId::from_raw(1);
+        cache
+            .register_anchor_pages(anchor, std::iter::empty())
+            .unwrap();
+        cache.pin_viewport(anchor).unwrap();
+        cache.mark_pruned();
+        assert_eq!(cache.viewport_anchor(), ViewportAnchor::Tail);
+        assert_eq!(cache.status().state, HistoryLoadState::Pruned);
+        assert_eq!(cache.remaining_anchor_capacity(), 1);
+    }
 }
