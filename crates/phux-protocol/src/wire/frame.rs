@@ -1889,7 +1889,7 @@ pub enum FrameKind {
         bytes: bytes::Bytes,
     },
 
-    /// `FRAME_ACK` — cumulative StateSync acknowledgement
+    /// `FRAME_ACK` — cumulative `StateSync` acknowledgement
     /// (`docs/spec/proto.md` §8.2).
     ///
     /// Valid only for the `SynthesizedVtStateSync` profile. Raw profiles never
@@ -1898,7 +1898,7 @@ pub enum FrameKind {
     FrameAck {
         /// Acked terminal.
         terminal_id: TerminalId,
-        /// Logical subscription whose StateSync reference advances.
+        /// Logical subscription whose `StateSync` reference advances.
         stream_id: StreamId,
         /// Replica generation whose reference advances.
         bootstrap_id: BootstrapId,
@@ -1960,7 +1960,7 @@ pub enum FrameKind {
         /// New generation for this stream.
         bootstrap_id: BootstrapId,
         /// Concrete stream profile. Its variants encode the `codec` and
-        /// `output_mode` fields without permitting native StateSync.
+        /// `output_mode` fields without permitting native `StateSync`.
         profile: BootstrapStreamProfile,
         /// Authoritative PTY width at the actor cut.
         cols: u16,
@@ -3181,10 +3181,11 @@ pub(super) fn decode_bootstrap_codec(dec: &mut Decoder<'_>) -> Result<BootstrapC
         BootstrapCodec::SYNTHESIZED_VT_V1_TAG => Ok(BootstrapCodec::SynthesizedVtV1),
         BootstrapCodec::NATIVE_TAG => {
             let value = dec.read_u8()?;
-            let codec = EngineCodec::from_wire(value).ok_or(DecodeError::UnknownEnumValue {
-                field: "EngineCodec",
-                value: u32::from(value),
-            })?;
+            let codec =
+                EngineCodec::from_wire(value).ok_or_else(|| DecodeError::UnknownEnumValue {
+                    field: "EngineCodec",
+                    value: u32::from(value),
+                })?;
             Ok(BootstrapCodec::Native(codec))
         }
         value => Err(DecodeError::UnknownEnumValue {
@@ -3216,10 +3217,11 @@ pub(super) fn decode_bootstrap_profile(
     match dec.read_u8()? {
         BootstrapProfile::NATIVE_STATE_TAG => {
             let value = dec.read_u8()?;
-            let codec = EngineCodec::from_wire(value).ok_or(DecodeError::UnknownEnumValue {
-                field: "EngineCodec",
-                value: u32::from(value),
-            })?;
+            let codec =
+                EngineCodec::from_wire(value).ok_or_else(|| DecodeError::UnknownEnumValue {
+                    field: "EngineCodec",
+                    value: u32::from(value),
+                })?;
             let features = EngineFeatureSet::from_wire(dec.read_u32_be()?);
             if !features.supports_native() {
                 return Err(DecodeError::InvalidBootstrapProfile);
@@ -3237,7 +3239,7 @@ pub(super) fn decode_bootstrap_profile(
     }
 }
 
-pub(super) fn decode_bootstrap_stream_profile(
+pub(super) const fn decode_bootstrap_stream_profile(
     codec: BootstrapCodec,
     output_mode: u8,
 ) -> Result<BootstrapStreamProfile, DecodeError> {

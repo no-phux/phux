@@ -19,14 +19,15 @@ use phux_protocol::wire::frame::{
     TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TombstoneReason,
 };
 
-fn stream(raw: u64) -> StreamId {
+const fn stream(raw: u64) -> StreamId {
     StreamId::new(raw).unwrap()
 }
 
-fn bootstrap(raw: u64) -> BootstrapId {
+const fn bootstrap(raw: u64) -> BootstrapId {
     BootstrapId::new(raw).unwrap()
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn round_trip(frame: FrameKind) {
     let mut encoded = BytesMut::new();
     frame.encode(&mut encoded);
@@ -306,6 +307,7 @@ fn hello_ok_rejects_each_omitted_required_field() {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn every_new_frame_encodes_fields_in_allocated_order() {
     let terminal_id = TerminalId::local(1);

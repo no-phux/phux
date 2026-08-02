@@ -367,7 +367,7 @@ impl<'a> Decoder<'a> {
                             let mut d = Decoder::new(value);
                             let color_value = d.read_u8()?;
                             let color_support = crate::caps::ColorSupport::from_wire(color_value)
-                                .ok_or(DecodeError::UnknownEnumValue {
+                                .ok_or_else(|| DecodeError::UnknownEnumValue {
                                 field: "ColorSupport",
                                 value: u32::from(color_value),
                             })?;
@@ -1048,12 +1048,12 @@ impl<'a> Decoder<'a> {
                         }
                         field::bootstrap_tombstone::REASON => {
                             let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
-                            reason = Some(TombstoneReason::from_wire(value).ok_or(
+                            reason = Some(TombstoneReason::from_wire(value).ok_or_else(|| {
                                 DecodeError::UnknownEnumValue {
                                     field: "TombstoneReason",
                                     value: u32::from(value),
-                                },
-                            )?);
+                                }
+                            })?);
                         }
                         field::bootstrap_tombstone::LAST_VALID_SEQ => {
                             last_valid_seq =
@@ -1095,8 +1095,8 @@ impl<'a> Decoder<'a> {
                         }
                         field::history_tombstone::REASON => {
                             let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
-                            reason = Some(HistoryTombstoneReason::from_wire(value).ok_or(
-                                DecodeError::UnknownEnumValue {
+                            reason = Some(HistoryTombstoneReason::from_wire(value).ok_or_else(
+                                || DecodeError::UnknownEnumValue {
                                     field: "HistoryTombstoneReason",
                                     value: u32::from(value),
                                 },
@@ -1140,8 +1140,8 @@ impl<'a> Decoder<'a> {
                         }
                         field::history_rejected::REASON => {
                             let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
-                            reason = Some(HistoryRejectionReason::from_wire(value).ok_or(
-                                DecodeError::UnknownEnumValue {
+                            reason = Some(HistoryRejectionReason::from_wire(value).ok_or_else(
+                                || DecodeError::UnknownEnumValue {
                                     field: "HistoryRejectionReason",
                                     value: u32::from(value),
                                 },

@@ -227,7 +227,7 @@ pub enum BootstrapProfileKind {
     NativeState = 1 << 3,
     /// Server-synthesized VT bootstrap followed by raw compatibility output.
     SynthesizedVtRaw = 1 << 1,
-    /// Server-synthesized VT bootstrap followed by StateSync output.
+    /// Server-synthesized VT bootstrap followed by `StateSync` output.
     SynthesizedVtStateSync = 1 << 2,
 }
 
@@ -589,7 +589,7 @@ pub enum BootstrapProfile {
     },
     /// Synthesized VT bootstrap plus raw compatibility output.
     SynthesizedVtRaw,
-    /// Synthesized VT bootstrap plus StateSync output.
+    /// Synthesized VT bootstrap plus `StateSync` output.
     SynthesizedVtStateSync,
 }
 
@@ -613,7 +613,7 @@ pub struct CodecUnavailable;
 ///
 /// This is the stream-local projection of the connection's selected
 /// [`BootstrapProfile`]. The three variants are the legal codec/output-mode
-/// matrix, so a native StateSync stream cannot be constructed.
+/// matrix, so a native `StateSync` stream cannot be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BootstrapStreamProfile {
@@ -624,7 +624,7 @@ pub enum BootstrapStreamProfile {
     },
     /// Synthesized VT bootstrap followed by raw compatibility bytes.
     SynthesizedVtRaw,
-    /// Synthesized VT bootstrap followed by StateSync bytes.
+    /// Synthesized VT bootstrap followed by `StateSync` bytes.
     SynthesizedVtStateSync,
 }
 
@@ -643,19 +643,17 @@ pub fn select_bootstrap_profile(
         .profiles
         .contains(BootstrapProfileKind::NativeState)
         && server.profiles.contains(BootstrapProfileKind::NativeState)
-    {
-        if let Some(codec) = client
+        && let Some(codec) = client
             .bootstrap
             .native_codecs
             .highest_common(server.native_codecs)
-        {
-            let features = client
-                .bootstrap
-                .native_features
-                .intersect(server.native_features);
-            if features.supports_native() {
-                return Ok((BootstrapProfile::NativeState { codec, features }, limits));
-            }
+    {
+        let features = client
+            .bootstrap
+            .native_features
+            .intersect(server.native_features);
+        if features.supports_native() {
+            return Ok((BootstrapProfile::NativeState { codec, features }, limits));
         }
     }
 
