@@ -46,6 +46,10 @@ pub(crate) struct RemoteEntry {
     pub(crate) cert_fingerprint: Option<String>,
     /// Session to request on arrival, when the operator pinned one.
     pub(crate) session: Option<String>,
+    /// TLS server name (SNI) to offer at dial time — ADR-0052's route name
+    /// when the endpoint is a relay (ADR-0057). `None` dials directly and
+    /// lets the transport derive SNI from the endpoint host.
+    pub(crate) sni: Option<String>,
 }
 
 /// The transport a validated endpoint names.
@@ -115,6 +119,7 @@ pub(crate) fn load_registry() -> Result<Vec<RemoteEntry>, String> {
             token_file: remote.token_file,
             cert_fingerprint: remote.cert_fingerprint,
             session: remote.session,
+            sni: remote.sni,
         });
     }
     Ok(entries)
@@ -142,6 +147,7 @@ pub(crate) struct NewRemote {
     token_file: Option<PathBuf>,
     cert_fingerprint: Option<String>,
     session: Option<String>,
+    sni: Option<String>,
 }
 
 impl NewRemote {
@@ -153,6 +159,7 @@ impl NewRemote {
         token_file: Option<&Path>,
         cert_fingerprint: Option<&str>,
         session: Option<&str>,
+        sni: Option<&str>,
     ) -> Result<Self, String> {
         let parsed = Endpoint::parse(endpoint)?;
         let cert_fingerprint = cert_fingerprint
@@ -169,6 +176,21 @@ impl NewRemote {
             ));
         }
 
+        // A relay route rides QUIC only (the relay's consumer leg, ADR-0057),
+        // and the relay's own `pair` verb rejects malformed names — reject
+        // the same shapes here so a typo fails at registration, not as an
+        // opaque TLS handshake refusal at dial time.
+        let sni = sni.map(str::trim).filter(|s| !s.is_empty());
+        if let Some(route) = sni {
+            if !matches!(parsed, Endpoint::Quic(_)) {
+                return Err(format!(
+                    "--sni names a relay route, which only a quic:// endpoint dials; \
+                     {endpoint} does not use SNI routing"
+                ));
+            }
+            phux_relay::validate_route_name(route).map_err(|err| err.to_string())?;
+        }
+
         Ok(Self {
             name: validate_name(name)?,
             endpoint: endpoint.trim().to_owned(),
@@ -178,6 +200,7 @@ impl NewRemote {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned),
+            sni: sni.map(str::to_owned),
         })
     }
 }
@@ -278,6 +301,14 @@ fn fill_table(table: &mut Table, new: &NewRemote) {
             table.remove("session");
         }
     }
+    match &new.sni {
+        Some(sni) => {
+            table.insert("sni", value(sni));
+        }
+        None => {
+            table.remove("sni");
+        }
+    }
 }
 
 /// Read the bearer token for an entry, if it declares a token file.
@@ -304,8 +335,9 @@ pub(crate) fn run_add(
     token_file: Option<&Path>,
     cert_fingerprint: Option<&str>,
     session: Option<&str>,
+    sni: Option<&str>,
 ) -> ExitCode {
-    let new = match NewRemote::new(name, endpoint, token_file, cert_fingerprint, session) {
+    let new = match NewRemote::new(name, endpoint, token_file, cert_fingerprint, session, sni) {
         Ok(new) => new,
         Err(err) => {
             eprintln!("phux remote: {err}");
@@ -345,6 +377,7 @@ pub(crate) fn run_list(json: bool) -> ExitCode {
                     "token_file": entry.token_file.as_ref().map(|p| p.display().to_string()),
                     "cert_fingerprint": entry.cert_fingerprint,
                     "session": entry.session,
+                    "sni": entry.sni,
                 })
             })
             .collect();
@@ -415,6 +448,7 @@ mod tests {
             token_file: path,
             cert_fingerprint: None,
             session: None,
+            sni: None,
         }
     }
 
@@ -466,16 +500,64 @@ mod tests {
     fn paired_transports_fail_closed_without_a_pin() {
         // ADR-0038's posture: refuse at registration, where the operator can
         // still see what they pasted.
-        let err = NewRemote::new("mini", "quic://mini:8788", None, None, None)
+        let err = NewRemote::new("mini", "quic://mini:8788", None, None, None, None)
             .expect_err("unpinned quic must be refused");
         assert!(err.contains("--cert-fingerprint"), "got {err}");
 
         // ssh:// rides existing ssh trust, so it needs no pin.
-        assert!(NewRemote::new("mini", "ssh://mini", None, None, None).is_ok());
+        assert!(NewRemote::new("mini", "ssh://mini", None, None, None, None).is_ok());
 
         // With a pin, quic is accepted.
         let fp = "ab".repeat(32);
-        assert!(NewRemote::new("mini", "quic://mini:8788", None, Some(&fp), None).is_ok());
+        assert!(NewRemote::new("mini", "quic://mini:8788", None, Some(&fp), None, None).is_ok());
+    }
+
+    #[test]
+    fn sni_is_quic_only_and_route_shaped() {
+        let fp = "ab".repeat(32);
+
+        // A relay route on the relay's quic:// endpoint is the point.
+        let ok = NewRemote::new(
+            "mini",
+            "quic://relay.example:4433",
+            None,
+            Some(&fp),
+            None,
+            Some("mini"),
+        );
+        assert!(ok.is_ok(), "{ok:?}");
+
+        // SNI routing is the relay's QUIC consumer leg; other transports
+        // must refuse rather than silently ignore the flag.
+        let err = NewRemote::new("mini", "wss://mini:1", None, Some(&fp), None, Some("mini"))
+            .expect_err("sni on wss must be refused");
+        assert!(err.contains("quic://"), "got {err}");
+
+        // Route names are RFC 1123 labels (ADR-0057); the relay would refuse
+        // this at the TLS layer, so refuse it at registration instead.
+        assert!(
+            NewRemote::new(
+                "mini",
+                "quic://relay.example:4433",
+                None,
+                Some(&fp),
+                None,
+                Some("Not A Route"),
+            )
+            .is_err()
+        );
+
+        // Blank SNI collapses to absent rather than writing an empty key.
+        let blank = NewRemote::new(
+            "mini",
+            "quic://relay.example:4433",
+            None,
+            Some(&fp),
+            None,
+            Some("  "),
+        )
+        .expect("blank sni is absent");
+        assert_eq!(blank.sni, None);
     }
 
     #[test]

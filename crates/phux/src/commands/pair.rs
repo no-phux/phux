@@ -14,20 +14,26 @@ use std::process::ExitCode;
 /// fingerprint (MITM defense), and the token (credential) in one shot —
 /// no typing a 32-byte hex token by hand. The shape is owned by the mobile
 /// consumer's parser (`ServerConfig.fromConnectLink` in phux-mobile):
-/// `phux://connect?url=<ws(s)-url>[&name=<n>][&fp=<sha256>]&token=<hex>`,
+/// `phux://connect?url=<url>[&name=<n>][&fp=<sha256>][&sni=<route>]&token=<hex>`,
 /// where `url` is mandatory — without it the device has nothing to dial and
 /// rejects the link — so a link is only emitted when an address is known.
+/// `url` is `ws(s)://` for a directly-dialed server, or `quic://HOST:PORT`
+/// with `sni` (the ADR-0052 route name) for a relay-fronted one — `fp` then
+/// pins the *relay's* certificate and the token still authenticates against
+/// the server behind it (ADR-0057).
 const CONNECT_URI_PREFIX: &str = "phux://connect";
 
-/// Build the `phux://connect?...` one-tap link. `url` is a ws(s):// URL,
-/// `token` lowercase hex, and `fingerprint` colon-separated hex — all
-/// query-safe as-is (RFC 3986 `pchar` allows `:` and `/` in query strings,
-/// and the mobile parser reads them unencoded). `name` is free-form operator
-/// input, so it alone is percent-encoded.
+/// Build the `phux://connect?...` one-tap link. `url` is a ws(s):// or
+/// quic:// URL, `token` lowercase hex, `fingerprint` colon-separated hex,
+/// and `sni` an RFC 1123 label — all query-safe as-is (RFC 3986 `pchar`
+/// allows `:` and `/` in query strings, and the mobile parser reads them
+/// unencoded). `name` is free-form operator input, so it alone is
+/// percent-encoded.
 fn build_connect_link(
     url: &str,
     name: Option<&str>,
     fingerprint: Option<&str>,
+    sni: Option<&str>,
     token: &str,
 ) -> String {
     let mut link = format!("{CONNECT_URI_PREFIX}?url={url}");
@@ -38,6 +44,10 @@ fn build_connect_link(
     if let Some(fp) = fingerprint {
         link.push_str("&fp=");
         link.push_str(fp);
+    }
+    if let Some(sni) = sni {
+        link.push_str("&sni=");
+        link.push_str(sni);
     }
     link.push_str("&token=");
     link.push_str(token);
@@ -90,6 +100,34 @@ fn resolve_server_url(
         IpAddr::V4(v4) => format!("wss://{v4}:{port}"),
         IpAddr::V6(v6) => format!("wss://[{v6}]:{port}"),
     })
+}
+
+/// Relay-fronted connect links, one per `[[connector]]` entry recording both
+/// its `route` and the relay's `cert-fingerprint` (ADR-0057): the consumer
+/// dials the relay's quic:// address with the route as SNI, pins the RELAY's
+/// certificate, and authenticates with the same freshly minted server token
+/// (which crosses the relay's blind splice opaquely). Entries missing either
+/// field are skipped — half a link points a device at a handshake it cannot
+/// complete — and a config that fails to load skips them all (best-effort,
+/// like the overlay probe: pairing itself must not fail on a config error).
+fn relay_connect_links(name: Option<&str>, token: &str) -> Vec<String> {
+    let Ok(cfg) = phux_config::loader::load() else {
+        return Vec::new();
+    };
+    cfg.connector
+        .iter()
+        .filter_map(|entry| {
+            let route = entry.route.as_deref()?;
+            let fp = entry.cert_fingerprint.as_deref()?;
+            Some(build_connect_link(
+                &format!("quic://{}", entry.relay),
+                name,
+                Some(fp),
+                Some(route),
+                token,
+            ))
+        })
+        .collect()
 }
 
 /// Render `payload` as a Unicode half-block QR string (`Dense1x2`, two module
@@ -195,7 +233,8 @@ pub(crate) fn run_pair(
     // a secret as the token line above, shown once on the same terminal.
     let ws_addr = std::env::var("PHUX_WS_ADDR").ok();
     let link = resolve_server_url(host.as_deref(), &overlay, ws_addr.as_deref())
-        .map(|url| build_connect_link(&url, name.as_deref(), fingerprint.as_deref(), &token));
+        .map(|url| build_connect_link(&url, name.as_deref(), fingerprint.as_deref(), None, &token));
+    let relay_links = relay_connect_links(name.as_deref(), &token);
 
     if json {
         return print_pair_json(
@@ -204,6 +243,7 @@ pub(crate) fn run_pair(
             &overlay,
             ws_addr.as_deref(),
             link.as_deref(),
+            &relay_links,
             &tokens,
         );
     }
@@ -212,8 +252,23 @@ pub(crate) fn run_pair(
         outln!("One-tap connect link (open on the device — carries the token):");
         outln!("  {link}");
         outln!();
+    }
+    if !relay_links.is_empty() {
+        outln!("Relay connect link (dials the relay; SNI routes to this server):");
+        for relay_link in &relay_links {
+            outln!("  {relay_link}");
+        }
+        outln!();
+    }
+
+    // QR the direct link when there is one, else the first relay link — a
+    // relay-only server still deserves the scan-to-pair path.
+    if let Some(payload) = link
+        .as_deref()
+        .or_else(|| relay_links.first().map(String::as_str))
+    {
         if qr {
-            match render_qr(link) {
+            match render_qr(payload) {
                 Ok(art) => {
                     outln!("Scan to pair:");
                     outln!();
@@ -247,6 +302,7 @@ fn print_pair_json(
     overlay: &[IpAddr],
     ws_addr: Option<&str>,
     connect_link: Option<&str>,
+    relay_connect_links: &[String],
     tokens_path: &std::path::Path,
 ) -> ExitCode {
     let document = serde_json::json!({
@@ -259,6 +315,7 @@ fn print_pair_json(
         "ws_addr": ws_addr,
         "quic_addr": std::env::var("PHUX_QUIC_ADDR").ok(),
         "connect_link": connect_link,
+        "relay_connect_links": relay_connect_links,
         "tokens_path": tokens_path.display().to_string(),
     });
     match serde_json::to_string_pretty(&document) {
@@ -282,7 +339,7 @@ mod tests {
     fn link_includes_only_present_fields_in_stable_order() {
         // url + token are the floor.
         assert_eq!(
-            build_connect_link("wss://h:1", None, None, "deadbeef"),
+            build_connect_link("wss://h:1", None, None, None, "deadbeef"),
             "phux://connect?url=wss://h:1&token=deadbeef"
         );
         // Full house, in the order the mobile parser documents.
@@ -291,14 +348,27 @@ mod tests {
                 "wss://10.0.0.2:8787",
                 Some("mini"),
                 Some("AB:CD"),
+                None,
                 "deadbeef"
             ),
             "phux://connect?url=wss://10.0.0.2:8787&name=mini&fp=AB:CD&token=deadbeef"
         );
         // No fingerprint — the fp param is absent, not empty.
         assert_eq!(
-            build_connect_link("wss://h:1", Some("mini"), None, "deadbeef"),
+            build_connect_link("wss://h:1", Some("mini"), None, None, "deadbeef"),
             "phux://connect?url=wss://h:1&name=mini&token=deadbeef"
+        );
+        // Relay-fronted (ADR-0057): quic:// url, sni carries the route, fp
+        // pins the relay's certificate.
+        assert_eq!(
+            build_connect_link(
+                "quic://relay.example:4433",
+                None,
+                Some("AB:CD"),
+                Some("mini"),
+                "deadbeef"
+            ),
+            "phux://connect?url=quic://relay.example:4433&fp=AB:CD&sni=mini&token=deadbeef"
         );
     }
 
@@ -308,7 +378,7 @@ mod tests {
         assert_eq!(percent_encode("plain-name_1.ok~"), "plain-name_1.ok~");
         assert_eq!(percent_encode("a&b=c"), "a%26b%3Dc");
         assert_eq!(
-            build_connect_link("wss://h:1", Some("studio mini"), None, "aa"),
+            build_connect_link("wss://h:1", Some("studio mini"), None, None, "aa"),
             "phux://connect?url=wss://h:1&name=studio%20mini&token=aa"
         );
     }
@@ -366,6 +436,7 @@ mod tests {
             "wss://100.64.0.2:8787",
             Some("mini"),
             Some("CD:".repeat(31).trim_end_matches(':')),
+            None,
             &"ab".repeat(32),
         );
         let art = render_qr(&link).expect("QR should encode");

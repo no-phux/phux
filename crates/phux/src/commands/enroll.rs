@@ -167,7 +167,7 @@ pub(crate) fn run_enroll(
     // all, and as an escape hatch when pairing misbehaves.
     if ssh_only {
         let endpoint = format!("ssh://{ssh_host}");
-        let new = match NewRemote::new(&name, &endpoint, None, None, session) {
+        let new = match NewRemote::new(&name, &endpoint, None, None, session, None) {
             Ok(new) => new,
             Err(err) => {
                 eprintln!("phux enroll: {err}");
@@ -243,6 +243,7 @@ pub(crate) fn run_enroll(
         token_file.as_deref(),
         report.cert_fingerprint.as_deref(),
         session,
+        None,
     ) {
         Ok(new) => new,
         Err(err) => {

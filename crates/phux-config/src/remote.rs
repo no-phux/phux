@@ -54,4 +54,41 @@ pub struct RemoteConfigEntry {
     /// last-attach memory decides, exactly as a local naked `phux` does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+
+    /// TLS server name (SNI) to offer when dialing the endpoint — ADR-0052's
+    /// route name, for a server reached through a relay (ADR-0057): the
+    /// endpoint is then the *relay's* `quic://HOST:PORT`, `cert-fingerprint`
+    /// pins the *relay's* certificate, and the relay routes the connection
+    /// to the server whose connector claimed this route. Absent for a
+    /// directly-dialed server (SNI defaults to the endpoint host).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sni: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sni_is_optional_and_parses() {
+        let entry: RemoteConfigEntry = toml::from_str(
+            r#"
+name = "mini"
+endpoint = "quic://relay.example:4433"
+cert-fingerprint = "AB:CD"
+sni = "mini"
+"#,
+        )
+        .expect("remote entry with sni parses");
+        assert_eq!(entry.sni.as_deref(), Some("mini"));
+
+        let entry: RemoteConfigEntry = toml::from_str(
+            r#"
+name = "mini"
+endpoint = "quic://mini:8788"
+"#,
+        )
+        .expect("sni-less remote entry parses");
+        assert_eq!(entry.sni, None);
+    }
 }

@@ -1434,6 +1434,14 @@ pub(crate) enum RemoteAction {
         /// last-attach memory decides.
         #[arg(long, value_name = "NAME")]
         session: Option<String>,
+
+        /// TLS server name (SNI) to offer at dial time: the relay route name
+        /// (`phux relay pair --route`) when ENDPOINT is a relay rather than
+        /// the server itself. The endpoint is then the relay's quic://
+        /// address and --cert-fingerprint pins the RELAY's certificate.
+        /// Only valid with a quic:// endpoint.
+        #[arg(long, value_name = "ROUTE")]
+        sni: Option<String>,
     },
 
     /// List registered remotes.
