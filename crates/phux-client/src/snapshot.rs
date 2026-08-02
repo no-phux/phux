@@ -42,9 +42,9 @@ pub async fn get_screen(
 /// Read `terminal_id`'s current screen as structured data, optionally
 /// including scrollback history.
 ///
-/// Opens a fresh connection, issues `GET_SCREEN`, and deserializes the
-/// JSON reply. No `HELLO` and no `ATTACH`: the control command stands
-/// alone (matching `phux ls`/`kill`), and the read is side-effect-free.
+/// Opens a fresh connection, negotiates generic L1, issues `GET_SCREEN`, and
+/// deserializes the JSON reply. It never sends `ATTACH`, so the read remains
+/// side-effect-free.
 ///
 /// `request_scrollback` (`phux-o1v`): `None` for viewport only, `Some(0)`
 /// for all retained history, `Some(n)` for the most-recent `n` history

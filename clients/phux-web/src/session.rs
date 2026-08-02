@@ -65,36 +65,40 @@ impl Session {
         }
     }
 
-    /// Frames to send immediately once the transport opens: `HELLO` then
-    /// `ATTACH` (to the last/only session).
+    /// Frame to send immediately once the transport opens: `HELLO`.
+    ///
+    /// `ATTACH` is returned from [`Self::on_frame`] only after `HELLO_OK`,
+    /// so a refusal can never race a stateful frame onto the connection.
     #[must_use]
     pub fn handshake(&self) -> Vec<Vec<u8>> {
-        let hello = FrameKind::Hello {
+        vec![encode(&FrameKind::Hello {
             client_name: "phux-web".to_owned(),
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
             protocol_patch: PROTOCOL_VERSION.patch,
             client_caps: client_caps(),
-        };
-        let attach = FrameKind::Attach {
-            // The web client owns one session named "default": attach to it, or
-            // create it if the server has none yet.
-            target: AttachTarget::CreateIfMissing {
-                name: "default".to_owned(),
-                command: None,
-                cwd: None,
-            },
-            viewport: ViewportInfo::new(self.cols, self.rows),
-            request_scrollback: false,
-            scrollback_limit_lines: 0,
-        };
-        vec![encode(&hello), encode(&attach)]
+        })]
     }
 
     /// Handle one decoded server frame: feed the engine and return any frames
     /// to send back plus whether a repaint is needed.
     pub fn on_frame(&mut self, frame: FrameKind) -> Outcome {
         match frame {
+            FrameKind::HelloOk { .. } => Outcome {
+                send: vec![encode(&FrameKind::Attach {
+                    // The web client owns one session named "default": attach
+                    // to it, or create it if the server has none yet.
+                    target: AttachTarget::CreateIfMissing {
+                        name: "default".to_owned(),
+                        command: None,
+                        cwd: None,
+                    },
+                    viewport: ViewportInfo::new(self.cols, self.rows),
+                    request_scrollback: false,
+                    scrollback_limit_lines: 0,
+                })],
+                render: false,
+            },
             FrameKind::TerminalSnapshot {
                 terminal_id,
                 cols,

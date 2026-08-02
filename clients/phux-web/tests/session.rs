@@ -2,12 +2,23 @@
 //! no WebSocket/DOM needed (runs under node).
 
 use bytes::BytesMut;
-use phux_protocol::caps::ImageProtocolSet;
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::{ImageProtocolSet, ServerCapabilities};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::FrameKind;
 use phux_vt_web::Vt;
 use phux_web::Session;
 use wasm_bindgen_test::wasm_bindgen_test;
+
+fn hello_ok() -> FrameKind {
+    FrameKind::HelloOk {
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        server_caps: ServerCapabilities::new(),
+        server_id: Vec::new(),
+    }
+}
 
 #[wasm_bindgen_test]
 async fn terminal_output_frame_feeds_engine_and_acks() {
@@ -51,18 +62,22 @@ async fn terminal_output_frame_feeds_engine_and_acks() {
 }
 
 #[wasm_bindgen_test]
-async fn handshake_emits_hello_then_attach() {
+async fn handshake_waits_for_hello_ok_before_attach() {
     let vt = Vt::load().await.expect("load engine");
-    let session = Session::new(&vt, 80, 24);
+    let mut session = Session::new(&vt, 80, 24);
 
     let frames = session.handshake();
-    assert_eq!(frames.len(), 2, "HELLO + ATTACH");
+    assert_eq!(frames.len(), 1, "transport open sends only HELLO");
     let (hello, _) = FrameKind::decode(&frames[0]).expect("decode hello");
     assert!(matches!(hello, FrameKind::Hello { .. }), "first is HELLO");
-    let (attach, _) = FrameKind::decode(&frames[1]).expect("decode attach");
+
+    let outcome = session.on_frame(hello_ok());
+    assert!(!outcome.render);
+    assert_eq!(outcome.send.len(), 1, "HELLO_OK releases exactly one ATTACH");
+    let (attach, _) = FrameKind::decode(&outcome.send[0]).expect("decode attach");
     assert!(
         matches!(attach, FrameKind::Attach { .. }),
-        "second is ATTACH"
+        "ATTACH follows HELLO_OK"
     );
 }
 

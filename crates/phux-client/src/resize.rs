@@ -78,11 +78,11 @@ impl ResizeOutcome {
 /// Resize `pane` to `cols` x `rows` and report the geometry the server
 /// holds afterwards.
 ///
-/// Opens a fresh connection, sends one `TERMINAL_RESIZE`, then reads the
-/// pane's dimensions back out of a `GET_STATE` snapshot on that same
-/// connection. No `HELLO`, no `ATTACH`, no subscription: this connection
-/// never becomes a view of the pane, so it contributes nothing to the
-/// window-size policy and cannot itself shrink what it just sized.
+/// Opens a fresh connection, negotiates generic L1, sends one
+/// `TERMINAL_RESIZE`, then reads the pane's dimensions back out of a
+/// `GET_STATE` snapshot on that same connection. No `ATTACH` and no
+/// subscription: this connection never becomes a view of the pane, so it
+/// contributes nothing to the window-size policy.
 ///
 /// The dimensions are [`NonZeroU16`] because a zero-dimension grid does not
 /// exist: libghostty rejects it and the server clamps it to one cell. Taking
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sends_only_terminal_resize_and_a_read_back() {
+    async fn negotiates_then_sends_terminal_resize_and_read_back() {
         let pane = TerminalId::local(7);
         let (outcome, seen) = drive(snapshot_with(&pane, 120, 40), &pane).await;
 
@@ -197,11 +197,9 @@ mod tests {
         assert_eq!(outcome.applied, (120, 40));
         assert!(outcome.held());
 
-        // The guarantee that makes this verb usable against a session
-        // someone is working in: no ATTACH and no VIEWPORT_RESIZE, so this
-        // connection never becomes a view and never contributes its 80x24
-        // no-TTY viewport to the window-size policy. That is the same
-        // regression `phux rec` had to be built around.
+        // The guarantee that makes this verb usable against a session someone
+        // is working in: no ATTACH and no VIEWPORT_RESIZE, so this connection
+        // never becomes a view and never contributes its no-TTY viewport.
         assert!(
             !seen.iter().any(|frame| matches!(
                 frame,
@@ -210,17 +208,25 @@ mod tests {
             "resize must not attach or report a viewport; sent {seen:?}"
         );
         assert!(
-            matches!(
-                seen.first(),
-                Some(FrameKind::TerminalResize {
-                    cols: 120,
-                    rows: 40,
-                    ..
-                })
-            ),
-            "the resize must be the first frame on the wire; sent {seen:?}"
+            matches!(seen.first(), Some(FrameKind::Hello { .. })),
+            "HELLO must be first; sent {seen:?}"
         );
-        assert_eq!(seen.len(), 2, "resize + read-back, nothing else: {seen:?}");
+        assert!(matches!(
+            seen.get(1),
+            Some(FrameKind::TerminalResize {
+                cols: 120,
+                rows: 40,
+                ..
+            })
+        ));
+        assert!(matches!(
+            seen.get(2),
+            Some(FrameKind::Command {
+                command: phux_protocol::wire::frame::Command::GetState { .. },
+                ..
+            })
+        ));
+        assert_eq!(seen.len(), 3, "HELLO + resize + read-back: {seen:?}");
     }
 
     #[tokio::test]

@@ -9,6 +9,8 @@ use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, WsDial};
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::ServerCapabilities;
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::FrameKind;
 use tokio::net::TcpListener;
@@ -36,6 +38,24 @@ where
     ws.send(Message::Binary(out.to_vec())).await.unwrap();
 }
 
+async fn accept_hello<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    assert!(matches!(read_ws_frame(ws).await, FrameKind::Hello { .. }));
+    write_ws_frame(
+        ws,
+        &FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new(),
+            server_id: Vec::new(),
+        },
+    )
+    .await;
+}
+
 const fn ack(seq: u64) -> FrameKind {
     FrameKind::FrameAck {
         terminal_id: TerminalId::Local { id: 1 },
@@ -57,6 +77,7 @@ async fn plaintext_loopback_round_trips_both_directions() {
         async move {
             let (tcp, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            accept_hello(&mut ws).await;
             assert_eq!(read_ws_frame(&mut ws).await, from_client);
             write_ws_frame(&mut ws, &from_server).await;
         }
@@ -109,6 +130,7 @@ async fn wss_with_pinned_cert_sends_bearer_token() {
             })
             .await
             .unwrap();
+            accept_hello(&mut ws).await;
             assert_eq!(read_ws_frame(&mut ws).await, frame);
         }
     };

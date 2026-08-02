@@ -378,6 +378,8 @@ mod tests {
     use bytes::BytesMut;
     use phux_client::layout::leaves;
     use phux_client::testkit::{ScriptSpec, ScriptedServer};
+    use phux_protocol::PROTOCOL_VERSION;
+    use phux_protocol::caps::ServerCapabilities;
     use phux_protocol::wire::frame::{CommandValue, ErrorCode};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -432,7 +434,17 @@ mod tests {
 
     async fn accept(listener: &tokio::net::UnixListener) -> MockConnection {
         let (stream, _) = listener.accept().await.expect("accept mock client");
-        MockConnection(stream)
+        let mut conn = MockConnection(stream);
+        assert!(matches!(conn.recv().await, FrameKind::Hello { .. }));
+        conn.send(&FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new(),
+            server_id: Vec::new(),
+        })
+        .await;
+        conn
     }
 
     async fn reply_state(conn: &mut MockConnection, snapshot: SessionSnapshot) {
