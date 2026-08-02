@@ -96,6 +96,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0062](./0062-headless-resize-and-window-size-policy.md) | Headless resize and the window-size policy | Accepted (settles the explicit-vs-view precedence [0027](./0027-terminal-references-and-l3-links.md) left to a "future resize verb"; takes no wire under [0061](./0061-capabilities-add-versions-break.md)) |
 | [0063](./0063-ephemeral-server-lifetime.md) | Ephemeral server lifetime | Accepted (an opt-in exit condition alongside the last-pane self-exit of [0003](./0003-server-process-model.md); survives re-exec via [0032](./0032-graceful-server-upgrade.md)) |
 | [0064](./0064-playback-as-a-pane.md) | Playback as a pane | Accepted (supersedes the "shipping a player" rejection in [0060](./0060-self-contained-session-recording.md) for the pane-shaped case only; takes no wire under [0061](./0061-capabilities-add-versions-break.md) and fits the pane with [0062](./0062-headless-resize-and-window-size-policy.md)) |
+| [0066](./0066-native-engine-state-bootstrap.md) | Native engine-state bootstrap and client-owned history | Accepted (replaces native clients' synthesized-VT bootstrap under [0013](./0013-libghostty-bytes-on-wire.md) with an opaque libghostty READY/history lifecycle; compatibility clients retain synthesized VT, and one PTY retains one authoritative geometry) |
 
 ## When to write an ADR
 
