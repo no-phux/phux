@@ -305,7 +305,6 @@ const NATIVE_HISTORY_TTL: std::time::Duration = std::time::Duration::from_secs(3
 #[derive(Debug)]
 struct NativeCursorOwner {
     touched: tokio::time::Instant,
-    last_valid_seq: u64,
     next_page_seq: u64,
     terminal_id: phux_protocol::ids::TerminalId,
     stream_id: phux_protocol::ids::StreamId,
@@ -2892,7 +2891,6 @@ impl TerminalActor {
                 (owner, cursor),
                 NativeCursorOwner {
                     touched: tokio::time::Instant::now(),
-                    last_valid_seq: base_seq,
                     next_page_seq: 1,
                     terminal_id,
                     stream_id,
@@ -3206,6 +3204,7 @@ impl TerminalActor {
         reason: phux_protocol::wire::frame::TombstoneReason,
     ) {
         let bindings: Vec<_> = self.native_cursor_owners.drain().collect();
+        let last_valid_seq = self.raw_seq;
         for ((owner, cursor), binding) in bindings {
             self.publish_native_control(
                 owner,
@@ -3214,7 +3213,7 @@ impl TerminalActor {
                     stream_id: binding.stream_id,
                     bootstrap_id: binding.bootstrap_id,
                     reason,
-                    last_valid_seq: binding.last_valid_seq,
+                    last_valid_seq,
                 },
             );
             if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
@@ -3229,6 +3228,7 @@ impl TerminalActor {
         owner: u64,
         reason: phux_protocol::wire::frame::TombstoneReason,
     ) {
+        let last_valid_seq = self.raw_seq;
         let cursors: Vec<_> = self
             .native_cursor_owners
             .keys()
@@ -3246,7 +3246,7 @@ impl TerminalActor {
                     stream_id: binding.stream_id,
                     bootstrap_id: binding.bootstrap_id,
                     reason,
-                    last_valid_seq: binding.last_valid_seq,
+                    last_valid_seq,
                 },
             );
             if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
@@ -5036,7 +5036,6 @@ mod tests {
             (7, cursor),
             NativeCursorOwner {
                 touched: tokio::time::Instant::now(),
-                last_valid_seq: 5,
                 next_page_seq: 1,
                 terminal_id: terminal_id.clone(),
                 stream_id,
@@ -5044,6 +5043,7 @@ mod tests {
             },
         );
 
+        actor.raw_seq = 5;
         actor
             .output_tx
             .send(PaneOutput::Live {

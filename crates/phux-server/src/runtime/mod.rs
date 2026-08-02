@@ -708,9 +708,9 @@ impl ServerRuntime {
             validate_socket_path_len(&socket_path)?;
             prepare_socket_dir(&socket_path)?;
             handle_existing_socket(&socket_path).await?;
-            let listener = crate::transport::UdsListener::new(
-                UnixListener::bind(&socket_path).map_err(ServerError::Bind)?,
-            );
+            let listener = UnixListener::bind(&socket_path).map_err(ServerError::Bind)?;
+            secure_socket_file(&socket_path)?;
+            let listener = crate::transport::UdsListener::new(listener);
             info!(path = %socket_path.display(), "phux-server listening on UDS");
             listener
         };
@@ -1759,8 +1759,7 @@ mod tests {
                 // haven't replied yet), so only the first request
                 // would land. With the concurrent fan-out all N land
                 // up front.
-                let mut replies: Vec<oneshot::Sender<(SnapshotBytes, u64)>> =
-                    Vec::with_capacity(N);
+                let mut replies: Vec<oneshot::Sender<(SnapshotBytes, u64)>> = Vec::with_capacity(N);
                 for (i, rx) in snapshot_rxs.iter_mut().enumerate() {
                     let req = tokio::time::timeout(MAILBOX_DEADLINE, rx.recv())
                         .await
@@ -1947,24 +1946,25 @@ mod tests {
                     "wire terminal id assigned"
                 );
                 let live_gate = attach_req.live_gate.clone();
-                assert!(!*live_gate.borrow(), "live output must wait for ATTACH_READY");
+                assert!(
+                    !*live_gate.borrow(),
+                    "live output must wait for ATTACH_READY"
+                );
                 // A state-sync consumer is actor-managed; its watch gate is
                 // the only thing preventing pre-ATTACH_READY live deltas.
                 attach_req
                     .reply
                     .send(Ok(crate::terminal_actor::ConsumerAttachOutcome {
                         tick_managed: true,
-                        state_sync_bootstrap: Some(
-                            crate::terminal_actor::StateSyncBootstrap {
-                                snapshot: SnapshotBytes {
-                                    cols: 80,
-                                    rows: 24,
-                                    bytes: b"snap".to_vec(),
-                                    scrollback: Vec::new(),
-                                },
-                                base_seq: 0,
+                        state_sync_bootstrap: Some(crate::terminal_actor::StateSyncBootstrap {
+                            snapshot: SnapshotBytes {
+                                cols: 80,
+                                rows: 24,
+                                bytes: b"snap".to_vec(),
+                                scrollback: Vec::new(),
                             },
-                        ),
+                            base_seq: 0,
+                        }),
                     }))
                     .expect("send attach reply");
 
@@ -2025,7 +2025,10 @@ mod tests {
                     out_rx.try_recv().is_err(),
                     "replacement ATTACHED must wait until prior live emission is retired",
                 );
-                retired.reply.send(()).expect("ack prior consumer retirement");
+                retired
+                    .reply
+                    .send(())
+                    .expect("ack prior consumer retirement");
 
                 let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
                     .await
@@ -2035,28 +2038,25 @@ mod tests {
                     attached,
                     Outbound::Frame(FrameKind::Attached { attach_id: 2, .. })
                 ));
-                let replacement =
-                    tokio::time::timeout(MAILBOX_DEADLINE, consumer_attach_rx.recv())
-                        .await
-                        .expect("replacement ConsumerAttachRequest did not arrive")
-                        .expect("consumer attach channel closed");
+                let replacement = tokio::time::timeout(MAILBOX_DEADLINE, consumer_attach_rx.recv())
+                    .await
+                    .expect("replacement ConsumerAttachRequest did not arrive")
+                    .expect("consumer attach channel closed");
                 let replacement_gate = replacement.live_gate.clone();
                 assert!(!*replacement_gate.borrow());
                 replacement
                     .reply
                     .send(Ok(crate::terminal_actor::ConsumerAttachOutcome {
                         tick_managed: true,
-                        state_sync_bootstrap: Some(
-                            crate::terminal_actor::StateSyncBootstrap {
-                                snapshot: SnapshotBytes {
-                                    cols: 80,
-                                    rows: 24,
-                                    bytes: b"replacement".to_vec(),
-                                    scrollback: Vec::new(),
-                                },
-                                base_seq: 0,
+                        state_sync_bootstrap: Some(crate::terminal_actor::StateSyncBootstrap {
+                            snapshot: SnapshotBytes {
+                                cols: 80,
+                                rows: 24,
+                                bytes: b"replacement".to_vec(),
+                                scrollback: Vec::new(),
                             },
-                        ),
+                            base_seq: 0,
+                        }),
                     }))
                     .expect("ack replacement consumer");
                 for expected in [
@@ -2079,7 +2079,9 @@ mod tests {
                     };
                     assert_eq!(observed, expected);
                 }
-                second_attach.await.expect("replacement attach task panicked");
+                second_attach
+                    .await
+                    .expect("replacement attach task panicked");
                 assert!(*replacement_gate.borrow());
                 assert!(
                     *live_gate.borrow(),
@@ -2237,7 +2239,10 @@ mod tests {
             let routed = encoded_rx
                 .try_recv()
                 .expect("authorized terminal reply reaches the PTY byte lane");
-            assert_eq!(routed.bytes, reply, "opaque bytes, including NUL, are exact");
+            assert_eq!(
+                routed.bytes, reply,
+                "opaque bytes, including NUL, are exact"
+            );
 
             let stranger = ClientId(4242);
             handle_terminal_reply(&state, stranger, &wire_terminal_id, reply);

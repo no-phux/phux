@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use phux_core::TerminalId;
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities, OutputMode,
+    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,
 };
 use phux_protocol::ids::{BootstrapId, GroupId, StreamId};
 use phux_protocol::wire::frame::{
@@ -41,13 +41,6 @@ pub(crate) fn downsample_for_caps(
     }
 }
 
-pub(crate) fn synthesized_stream_profile(caps: ClientCapabilities) -> BootstrapStreamProfile {
-    if matches!(caps.output_mode, OutputMode::StateSync) {
-        BootstrapStreamProfile::SynthesizedVtStateSync
-    } else {
-        BootstrapStreamProfile::SynthesizedVtRaw
-    }
-}
 pub(crate) const fn bootstrap_stream_profile(
     profile: BootstrapProfile,
 ) -> Option<BootstrapStreamProfile> {
@@ -82,10 +75,7 @@ pub(crate) async fn publish_native_bootstrap(
     reply: crate::terminal_actor::NativeBootstrapReply,
 ) -> Result<u64, ()> {
     for frame in reply.frames {
-        out_tx
-            .send(Outbound::Frame(frame))
-            .await
-            .map_err(|_| ())?;
+        out_tx.send(Outbound::Frame(frame)).await.map_err(|_| ())?;
     }
     Ok(reply.base_seq)
 }
@@ -1103,7 +1093,8 @@ pub(crate) async fn handle_spawn_terminal(
                                     .await;
                                 break;
                             };
-                            let Ok(cut) = publish_native_bootstrap(&pump_out_tx, reply).await else {
+                            let Ok(cut) = publish_native_bootstrap(&pump_out_tx, reply).await
+                            else {
                                 break;
                             };
                             published_cut = cut;

@@ -610,7 +610,7 @@ pub(crate) trait LinkTransport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NegotiatedBootstrap {
+pub(crate) struct NegotiatedBootstrap {
     profile: BootstrapProfile,
     limits: BootstrapLimits,
 }

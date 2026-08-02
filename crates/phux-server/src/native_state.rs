@@ -80,6 +80,46 @@ pub struct NativeCheckpointChunk<'buffer> {
     pub bytes: &'buffer [u8],
 }
 
+fn preflight_checkpoint_prefix(
+    terminal: &mut GhosttyTerminal<'_, '_>,
+    options: CaptureOptions,
+    max_record_bytes: usize,
+) -> Result<(), NativeStateError> {
+    let mut capture = terminal.capture(options)?;
+    let mut buffer = Vec::new();
+    loop {
+        match capture.next(&mut buffer) {
+            Err(NativeStateError::OutOfSpace {
+                required_bytes,
+                required_rows: 0,
+            }) if required_bytes != 0 && required_bytes <= max_record_bytes => {
+                buffer
+                    .try_reserve(required_bytes.saturating_sub(buffer.len()))
+                    .map_err(|_| NativeStateError::OutOfMemory)?;
+                buffer.resize(required_bytes, 0);
+            }
+            Err(error) => return Err(error),
+            Ok(event) => {
+                if event.codec_version != CHECKPOINT_VERSION
+                    || event.record.len() > max_record_bytes
+                {
+                    return Err(NativeStateError::LimitExceeded);
+                }
+                match event.kind {
+                    CaptureEventKind::Record => {}
+                    CaptureEventKind::Ready { .. } => {
+                        capture.abort()?;
+                        return Ok(());
+                    }
+                    CaptureEventKind::HistoryBegin { .. }
+                    | CaptureEventKind::HistoryPage { .. }
+                    | CaptureEventKind::Finish => return Err(NativeStateError::InvalidState),
+                }
+            }
+        }
+    }
+}
+
 /// RAII host for the bounded checkpoint prefix ending at READY.
 ///
 /// Construction mutably borrows the canonical terminal and asks libghostty to
@@ -112,10 +152,12 @@ impl<'terminal> NativeCheckpointCapture<'terminal> {
             return Err(NativeStateError::LimitExceeded);
         }
 
-        let capture = terminal.capture(CaptureOptions {
+        let options = CaptureOptions {
             max_record_bytes,
             max_pages,
-        })?;
+        };
+        preflight_checkpoint_prefix(terminal, options, max_record_bytes)?;
+        let capture = terminal.capture(options)?;
         Ok(Self {
             capture: Some(capture),
             max_record_bytes,
@@ -207,14 +249,14 @@ pub enum NativeHistoryEvent<'buffer> {
 /// [`Self::vt_write`] accepts serialized live PTY output. Reset, resize,
 /// pruning, stale generations, bounds, and OOM remain exact typed engine errors.
 #[derive(Debug)]
-pub struct NativeHistoryCursor<'terminal_alloc: 'cb, 'cb> {
+pub struct NativeHistoryCursor<'terminal_alloc, 'cb> {
     inner: LiveHistoryCursor<'terminal_alloc, 'cb, 'static>,
     max_unit_bytes: usize,
     max_rows: usize,
     max_units: usize,
 }
 
-impl<'terminal_alloc: 'cb, 'cb> NativeHistoryCursor<'terminal_alloc, 'cb> {
+impl<'terminal_alloc, 'cb> NativeHistoryCursor<'terminal_alloc, 'cb> {
     /// Consume the canonical terminal and acquire its primary retained-history
     /// cut before the caller publishes `BOOTSTRAP_READY`.
     pub fn new(
@@ -400,11 +442,6 @@ impl NativeTerminalManager {
             .resize(cols, rows, cell_width_px, cell_height_px)
     }
 
-    pub(crate) fn reset(&mut self) {
-        self.continuations.clear();
-        self.terminal.reset();
-    }
-
     pub(crate) fn capture(
         &mut self,
         limits: BootstrapLimits,
@@ -439,10 +476,12 @@ impl NativeTerminalManager {
         {
             return Err(NativeStateError::LimitExceeded);
         }
-        let capture = self.terminal.capture(CaptureOptions {
+        let options = CaptureOptions {
             max_record_bytes,
             max_pages,
-        })?;
+        };
+        preflight_checkpoint_prefix(&mut self.terminal, options, max_record_bytes)?;
+        let capture = self.terminal.capture(options)?;
         Ok(NativeManagedCapture {
             capture: Some(capture),
             max_record_bytes,
@@ -534,16 +573,6 @@ impl NativeTerminalManager {
             .remove(&(owner, *cursor))
             .map(drop)
             .ok_or(NativeStateError::InvalidHandle)
-    }
-
-    pub(crate) fn into_terminal(self) -> GhosttyTerminal<'static, 'static> {
-        let Self {
-            terminal,
-            continuations,
-            ..
-        } = self;
-        drop(continuations);
-        terminal
     }
 }
 
@@ -799,7 +828,8 @@ mod tests {
 
     #[test]
     fn ready_handoff_pages_bounded_history_while_live_output_continues() {
-        let limits = BootstrapLimits::new(64 * 1024, 64 * 1024).expect("test limits");
+        let limits = BootstrapLimits::new(phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES, 64 * 1024)
+            .expect("test limits");
         let mut source = history_terminal();
         capture_to_ready(&mut source, limits);
         let mut history = NativeHistoryCursor::new(source, limits).expect("owned history cursor");
@@ -897,9 +927,20 @@ mod tests {
              cursor keeps its lease live"
         );
 
+        let mut stale = NativeHistoryCursor::new(history_terminal(), limits).expect("stale cursor");
+        stale.vt_write(b"\x1b[3J");
+        assert_eq!(
+            stale
+                .next(limits.max_history_page_bytes(), &mut buffer)
+                .unwrap_err(),
+            NativeStateError::Stale
+        );
+
         let mut pruned =
             NativeHistoryCursor::new(history_terminal(), limits).expect("pruned cursor");
-        pruned.vt_write(b"\x1b[3J");
+        for _ in 0..2_000 {
+            pruned.vt_write(b"history pressure\r\n");
+        }
         assert_eq!(
             pruned
                 .next(limits.max_history_page_bytes(), &mut buffer)
@@ -929,7 +970,8 @@ mod tests {
 
     #[test]
     fn manager_bounds_retained_cuts_and_keeps_live_terminal_writable() {
-        let limits = BootstrapLimits::new(64 * 1024, 64 * 1024).expect("test limits");
+        let limits = BootstrapLimits::new(phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES, 64 * 1024)
+            .expect("test limits");
         let mut manager =
             NativeTerminalManager::new(history_terminal(), 1).expect("native manager");
         let (cursor, continuation) = detach_managed(&mut manager, limits);
@@ -968,7 +1010,8 @@ mod tests {
 
     #[test]
     fn equal_checkpoint_tokens_are_isolated_by_server_owner() {
-        let limits = BootstrapLimits::new(64 * 1024, 64 * 1024).expect("test limits");
+        let limits = BootstrapLimits::new(phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES, 64 * 1024)
+            .expect("test limits");
         let mut manager =
             NativeTerminalManager::new(history_terminal(), 2).expect("native manager");
         let (first_cursor, first) = detach_managed(&mut manager, limits);

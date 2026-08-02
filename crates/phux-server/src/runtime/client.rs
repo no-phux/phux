@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 
 use bytes::BytesMut;
@@ -13,7 +13,7 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet, ServerCapabilities,
     ServerFeature, ServerFeatureSet, select_bootstrap_profile,
 };
-use phux_protocol::policy::{ConsumerId as PolicyConsumerId, PeerIdentity};
+use phux_protocol::policy::ConsumerId as PolicyConsumerId;
 use phux_protocol::wire::frame::{AgentEvent, ErrorCode, FrameKind, TERMINAL_AGENT_KEY};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
@@ -611,7 +611,7 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     }
 }
 
-/// Prepare the parent directory of `socket_path` with mode `0o700`.
+/// Prepare and validate the parent directory of `socket_path` with mode `0o700`.
 pub(crate) fn prepare_socket_dir(socket_path: &Path) -> Result<(), ServerError> {
     let Some(parent) = socket_path.parent() else {
         return Ok(());
@@ -619,14 +619,95 @@ pub(crate) fn prepare_socket_dir(socket_path: &Path) -> Result<(), ServerError> 
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
+    let fail = |source| ServerError::PrepareDir {
+        path: parent.to_path_buf(),
+        source,
+    };
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true).mode(0o700);
-    builder
-        .create(parent)
-        .map_err(|source| ServerError::PrepareDir {
-            path: parent.to_path_buf(),
-            source,
-        })
+    builder.create(parent).map_err(fail)?;
+    let metadata = std::fs::symlink_metadata(parent).map_err(fail)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(fail(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "socket parent must be a real directory, not a symlink",
+        )));
+    }
+    let expected_uid = rustix::process::geteuid().as_raw();
+    if metadata.uid() != expected_uid {
+        return Err(fail(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "socket parent is owned by another user",
+        )));
+    }
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
+    let secured = std::fs::symlink_metadata(parent).map_err(fail)?;
+    if secured.uid() != expected_uid || secured.mode() & 0o777 != 0o700 {
+        return Err(fail(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "socket parent ownership or permissions changed during setup",
+        )));
+    }
+    Ok(())
+}
+
+/// Restrict a freshly bound UDS to its owning user.
+pub(crate) fn secure_socket_file(socket_path: &Path) -> Result<(), ServerError> {
+    let metadata = std::fs::symlink_metadata(socket_path)?;
+    let expected_uid = rustix::process::geteuid().as_raw();
+    if !metadata.file_type().is_socket() || metadata.uid() != expected_uid {
+        return Err(ServerError::Io(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "bound socket is not an owner-controlled Unix socket",
+        )));
+    }
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    let secured = std::fs::symlink_metadata(socket_path)?;
+    if secured.uid() != expected_uid || secured.mode() & 0o777 != 0o600 {
+        return Err(ServerError::Io(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "bound socket ownership or permissions changed during setup",
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod socket_security_tests {
+    use super::*;
+
+    #[test]
+    fn existing_permissive_socket_directory_is_restricted() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let parent = root.path().join("runtime");
+        std::fs::create_dir(&parent).expect("runtime dir");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777))
+            .expect("permissive mode");
+
+        prepare_socket_dir(&parent.join("phux.sock")).expect("secure existing directory");
+
+        let mode = std::fs::symlink_metadata(parent)
+            .expect("secured metadata")
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn socket_parent_symlink_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).expect("target");
+        let parent = root.path().join("runtime-link");
+        symlink(&target, &parent).expect("symlink");
+        assert!(matches!(
+            prepare_socket_dir(&parent.join("phux.sock")),
+            Err(ServerError::PrepareDir { source, .. })
+                if source.kind() == io::ErrorKind::InvalidInput
+        ));
+    }
 }
 
 /// Handle the case where `socket_path` already exists. If something accepts a
@@ -951,18 +1032,26 @@ where
                     let _ = sibling_tasks.join_next().await;
                     return Ok(());
                 }
-                // Policy check: authorize HELLO before proceeding.
+                // Policy check: authorize HELLO only against the identity
+                // authenticated by the accepting transport. A missing registry
+                // entry is never equivalent to a local root peer.
+                let Some(peer) = state.with(|s| s.peer_identity(client_id).cloned()) else {
+                    warn!(
+                        ?client_id,
+                        "HELLO denied: authenticated peer identity missing"
+                    );
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::PermissionDenied,
+                            message: "authenticated peer identity missing".to_owned(),
+                        }))
+                        .await;
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
+                    return Ok(());
+                };
                 let policy_ok = {
-                    let peer = state
-                        .with(|s| s.peer_identity(client_id).cloned())
-                        .unwrap_or(PeerIdentity {
-                            uid: 0,
-                            pid: None,
-                            exe_path: None,
-                            mcp_host_key: None,
-                            transport: phux_protocol::policy::TransportType::UnixSocket,
-                            source_addr: None,
-                        });
                     let bundle = state.with(|s| s.policy_bundle().clone());
                     let _consumer = PolicyConsumerId(client_id.0.to_string());
                     // Build a capability list from the advertised layers.
