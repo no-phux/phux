@@ -634,7 +634,11 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
     // `overlay_active`, minus the modal semantics.
     defer_paint: bool,
 ) -> Result<FrameOutcome, AttachError> {
+    let apply_span =
+        matches!(frame, FrameKind::TerminalOutput { .. }).then(|| tracing::debug_span!("vt_apply"));
+    let apply_guard = apply_span.as_ref().map(tracing::Span::enter);
     let kernel_route = route_engine_frame(&frame, engine_kernel, kernel_effects);
+    drop(apply_guard);
     if let Some(error) = kernel_route.failed.as_ref() {
         return Err(AttachError::Protocol(format!(
             "session kernel rejected {}: {error}",
@@ -2569,6 +2573,19 @@ mod tests {
         panes
     }
 
+    struct EngineFixture {
+        kernel: super::super::driver::AttachKernel,
+        effects: phux_client_core::session::EffectBuffer,
+    }
+
+    fn published_fixture(
+        entries: &[(&TerminalId, u16, u16, &[u8])],
+    ) -> (EngineFixture, HashMap<TerminalId, PaneSlot>) {
+        let (kernel, effects, panes) =
+            super::super::driver::published_test_state(entries);
+        (EngineFixture { kernel, effects }, panes)
+    }
+
     /// Drive any frame through the full attached-state dispatcher.
     fn try_drive_layout_frame(
         frame: FrameKind,
@@ -2881,6 +2898,7 @@ mod tests {
     }
 
     fn drive_output(
+        engine: &mut EngineFixture,
         out: &mut Vec<u8>,
         layout: &mut Workspace,
         focused: &mut Option<TerminalId>,
@@ -2888,12 +2906,20 @@ mod tests {
         terminal_id: &TerminalId,
         bytes: &[u8],
     ) {
-        let _ = drive_output_seq(out, layout, focused, panes, terminal_id, bytes, 1);
+        let seq = engine
+            .kernel
+            .published(terminal_id)
+            .expect("published terminal")
+            .last_seq()
+            .checked_add(1)
+            .expect("live sequence");
+        let _ = drive_output_seq(engine, out, layout, focused, panes, terminal_id, bytes, seq);
     }
 
     /// Like [`drive_output`] but stamps an explicit `seq` and returns the
     /// [`FrameOutcome`] so ack-emission tests can inspect `outcome.ack`.
     fn drive_output_seq(
+        engine: &mut EngineFixture,
         out: &mut Vec<u8>,
         layout: &mut Workspace,
         focused: &mut Option<TerminalId>,
@@ -2903,6 +2929,7 @@ mod tests {
         seq: u64,
     ) -> FrameOutcome {
         drive_output_seq_with_viewport(
+            engine,
             out,
             layout,
             focused,
@@ -2919,6 +2946,7 @@ mod tests {
         reason = "test driver mirrors frame inputs"
     )]
     fn drive_output_seq_with_viewport(
+        engine: &mut EngineFixture,
         out: &mut Vec<u8>,
         layout: &mut Workspace,
         focused: &mut Option<TerminalId>,
@@ -2938,7 +2966,9 @@ mod tests {
         let overlay = Overlay;
         let mut pending_splits = HashMap::new();
         let mut pending_windows = HashMap::new();
-        handle_server_frame(
+        handle_server_frame_with_kernel(
+            &mut engine.kernel,
+            &mut engine.effects,
             out,
             FrameKind::TerminalOutput {
                 terminal_id: terminal_id.clone(),
@@ -2976,10 +3006,11 @@ mod tests {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
         let mut focused = Some(pane.clone());
-        let mut panes = HashMap::new();
+        let (mut engine, mut panes) = published_fixture(&[(&pane, 120, 30, b"")]);
         let mut out: Vec<u8> = Vec::new();
 
         drive_output_seq_with_viewport(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2990,12 +3021,14 @@ mod tests {
             (120, 30),
         );
 
+        let terminal = super::super::driver::published_terminal(&engine.kernel, &pane)
+            .expect("published terminal");
+        assert_eq!(terminal.cols().expect("cols"), 120);
+        assert_eq!(terminal.rows().expect("rows"), 30);
         let slot = panes.get_mut(&pane).expect("slot allocated");
-        assert_eq!(slot.terminal.cols().expect("cols"), 120);
-        assert_eq!(slot.terminal.rows().expect("rows"), 30);
         let cell = slot
             .renderer
-            .read_grapheme_at(&slot.terminal, 0, 99)
+            .read_grapheme_at(terminal, 0, 99)
             .expect("read cell");
         assert_eq!(cell, Some('X'));
     }
@@ -3005,10 +3038,11 @@ mod tests {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
         let mut focused = Some(pane.clone());
-        let mut panes = panes_for(&[&pane]);
+        let (mut engine, mut panes) = published_fixture(&[(&pane, 80, 24, b"")]);
         let mut out = Vec::new();
 
         drive_output(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3020,6 +3054,7 @@ mod tests {
         assert!(panes[&pane].sync_output_since.is_some());
 
         drive_output(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3045,10 +3080,11 @@ mod tests {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
         let mut focused = Some(pane.clone());
-        let mut panes = panes_for(&[&pane]);
+        let (mut engine, mut panes) = published_fixture(&[(&pane, 80, 24, b"")]);
         let mut out: Vec<u8> = Vec::new();
 
         let plain = drive_output_seq(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3063,6 +3099,7 @@ mod tests {
         );
 
         let set = drive_output_seq(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3077,6 +3114,7 @@ mod tests {
         );
 
         let unchanged = drive_output_seq(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3091,6 +3129,7 @@ mod tests {
         );
 
         let cleared = drive_output_seq(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3113,10 +3152,11 @@ mod tests {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
         let mut focused = Some(pane.clone());
-        let mut panes = panes_for(&[&pane]);
+        let (mut engine, mut panes) = published_fixture(&[(&pane, 80, 24, b"")]);
         let mut out: Vec<u8> = Vec::new();
 
         let first = drive_snapshot(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3133,6 +3173,7 @@ mod tests {
         );
 
         let repeat = drive_snapshot(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3154,10 +3195,11 @@ mod tests {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
         let mut focused = Some(pane.clone());
-        let mut panes = panes_for(&[&pane]);
+        let (mut engine, mut panes) = published_fixture(&[(&pane, 80, 24, b"")]);
         let mut out = Vec::new();
 
         drive_output(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3166,6 +3208,7 @@ mod tests {
             b"\x1b[?2026hpartial",
         );
         drive_snapshot(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3176,19 +3219,14 @@ mod tests {
             b"\x1b[!p\x1b[2J\x1b[Hstable snapshot",
             (80, 24),
         );
-        assert!(out.is_empty(), "snapshot must not break the transaction");
-        assert!(panes[&pane].sync_output_since.is_some());
-
-        drive_output(
-            &mut out,
-            &mut layout,
-            &mut focused,
-            &mut panes,
-            &pane,
-            b"\x1b[?2026l",
+        assert!(
+            !out.is_empty(),
+            "replacement publication must paint the new atomic replica"
         );
-        assert!(!out.is_empty());
-        assert!(panes[&pane].sync_output_since.is_none());
+        assert!(
+            panes[&pane].sync_output_since.is_none(),
+            "synchronized-output state belongs to the retired replica"
+        );
     }
 
     /// phux-ih39: the ATTACHED graph already carries per-pane dimensions.
@@ -3244,63 +3282,57 @@ mod tests {
         assert_eq!(slot.terminal.rows().expect("rows"), 43);
     }
 
-    /// phux-3uv: a `TERMINAL_OUTPUT` with a non-zero `seq` yields an
-    /// `ack` outcome carrying that frame's `(terminal_id, seq)`, so the
-    /// driver sends a cumulative `FRAME_ACK`. The ack is set regardless of
-    /// focus — the bytes are applied to the pane mirror before any render
-    /// branch — so we drive a NON-focused pane and still expect the ack.
+    /// `SynthesizedVtRaw` live output is applied but does not request an
+    /// acknowledgement; cumulative frame ACKs belong to state-sync streams.
     #[test]
-    fn terminal_output_yields_frame_ack_outcome() {
+    fn synthesized_raw_output_does_not_yield_frame_ack() {
         let left = tid(1);
         let right = tid(2);
         let mut layout = two_pane_workspace(&left, &right, &left);
         let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&left, 80, 24, b""), (&right, 80, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         let outcome = drive_output_seq(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
             &mut panes,
             &right,
             b"hi",
-            7,
+            1,
         );
         assert_eq!(
-            outcome.ack,
-            Some((
-                right.clone(),
-                phux_protocol::StreamId::new(1).expect("stream"),
-                phux_protocol::BootstrapId::new(1).expect("bootstrap"),
-                7,
-            )),
-            "non-zero seq must ack the delivering terminal's seq",
+            outcome.ack, None,
+            "raw synthesized output must not emit a state-sync acknowledgement"
         );
     }
 
-    /// phux-3uv: `seq == 0` is the server's "empty initial frame"
-    /// sentinel; the client must NOT ack it (acking 0 is meaningless and
-    /// would be a no-op against the server's `last_acked_seq == 0`).
+    /// A zero sequence is not a live output sentinel in the session kernel:
+    /// the published generation starts at `base_seq == 0` and therefore
+    /// requires its first live payload to carry sequence 1.
     #[test]
-    fn terminal_output_seq_zero_is_not_acked() {
-        let left = tid(1);
-        let right = tid(2);
-        let mut layout = two_pane_workspace(&left, &right, &left);
-        let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
-
-        let mut out: Vec<u8> = Vec::new();
-        let outcome = drive_output_seq(
-            &mut out,
-            &mut layout,
-            &mut focused,
-            &mut panes,
-            &right,
-            b"hi",
-            0,
+    fn terminal_output_seq_zero_is_rejected() {
+        let pane = tid(1);
+        let (mut engine, _) = published_fixture(&[(&pane, 80, 24, b"")]);
+        let route = route_engine_frame(
+            &FrameKind::TerminalOutput {
+                terminal_id: pane,
+                stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+                bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
+                seq: 0,
+                bytes: bytes::Bytes::from_static(b"hi"),
+            },
+            &mut engine.kernel,
+            &mut engine.effects,
         );
-        assert_eq!(outcome.ack, None, "seq=0 sentinel must not be acked");
+        assert!(
+            route.failed.is_some(),
+            "sequence zero must be rejected before rendering or acknowledgement"
+        );
+        assert_eq!(route.ack, None);
     }
 
     /// phux-2x9 via the injectable sink: a NON-focused pane must repaint
@@ -3314,10 +3346,12 @@ mod tests {
         let right = tid(2);
         let mut layout = two_pane_workspace(&left, &right, &left);
         let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&left, 80, 24, b""), (&right, 80, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         drive_output(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3351,6 +3385,7 @@ mod tests {
         reason = "test driver mirrors frame inputs"
     )]
     fn drive_snapshot(
+        engine: &mut EngineFixture,
         out: &mut Vec<u8>,
         layout: &mut Workspace,
         focused: &mut Option<TerminalId>,
@@ -3358,9 +3393,19 @@ mod tests {
         terminal_id: &TerminalId,
         cols: u16,
         rows: u16,
-        _vt_replay_bytes: &[u8],
+        vt_replay_bytes: &[u8],
         viewport_dims: (u16, u16),
     ) -> FrameOutcome {
+        let published = engine
+            .kernel
+            .published(terminal_id)
+            .expect("published test generation");
+        let stream_id = published.key().stream_id;
+        let bootstrap_id = phux_protocol::BootstrapId::new(
+            published.key().bootstrap_id.get().checked_add(1).expect("bootstrap id"),
+        )
+        .expect("next bootstrap");
+        let base_seq = published.last_seq();
         let mut session_name = String::new();
         let mut zoomed = None;
         let mut predict = PredictionState::new(
@@ -3371,36 +3416,74 @@ mod tests {
         let overlay = Overlay;
         let mut pending_splits = HashMap::new();
         let mut pending_windows = HashMap::new();
-        handle_server_frame(
-            out,
-            FrameKind::BootstrapBegin {
-                terminal_id: terminal_id.clone(),
-                stream_id: phux_protocol::StreamId::new(1).expect("stream"),
-                bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
-                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
-                cols,
-                rows,
-                base_seq: 0,
-            },
-            panes,
-            layout,
-            focused,
-            &mut zoomed,
-            &mut session_name,
-            None,
-            None,
-            viewport_dims,
-            &mut predict,
-            &overlay,
-            None,
-            &mut pending_splits,
-            &mut pending_windows,
-            &mut HashSet::new(),
-            &mut AgentMetaIndex::default(),
-            false,
-            false,
-        )
-        .expect("handle bootstrap begin")
+        let mut expected_closes = HashSet::new();
+        let mut agent_meta = AgentMetaIndex::default();
+        let mut dispatch = |frame| {
+            handle_server_frame_with_kernel(
+                &mut engine.kernel,
+                &mut engine.effects,
+                out,
+                frame,
+                panes,
+                layout,
+                focused,
+                &mut zoomed,
+                &mut session_name,
+                None,
+                None,
+                viewport_dims,
+                &mut predict,
+                &overlay,
+                None,
+                &mut pending_splits,
+                &mut pending_windows,
+                &mut expected_closes,
+                &mut agent_meta,
+                false,
+                false,
+            )
+            .expect("handle bootstrap frame")
+        };
+        dispatch(FrameKind::BootstrapBegin {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+            cols,
+            rows,
+            base_seq,
+        });
+        dispatch(FrameKind::BootstrapChunk {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: bytes::Bytes::copy_from_slice(vt_replay_bytes),
+        });
+        let outcome = dispatch(FrameKind::BootstrapReady {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        });
+        drop(dispatch);
+        if outcome.layout_replaced
+            && let Some(active) = layout.render_window(zoomed.as_ref())
+        {
+            super::super::paint::paint_full_frame(
+                out,
+                active.as_ref(),
+                panes,
+                &engine.kernel,
+                focused.as_ref(),
+                viewport_dims,
+                None,
+                None,
+                None,
+                &session_name,
+            );
+        }
+        outcome
     }
 
     /// phux-paer: on re-attach the server sends a bootstrap per pane; a
@@ -3414,10 +3497,12 @@ mod tests {
         let right = tid(2);
         let mut layout = two_pane_workspace(&left, &right, &left);
         let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&left, 39, 24, b""), (&right, 39, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         drive_snapshot(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3451,10 +3536,12 @@ mod tests {
         let right = tid(2);
         let mut layout = two_pane_workspace(&left, &right, &left);
         let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&left, 39, 24, b""), (&right, 39, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         drive_snapshot(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3486,10 +3573,12 @@ mod tests {
         let right = tid(2);
         let mut layout = two_pane_workspace(&left, &right, &left);
         let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&left, 80, 24, b""), (&right, 80, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         drive_output(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -3527,10 +3616,12 @@ mod tests {
         // Re-select window 0 as active (add_window activated the new one).
         workspace.select(0);
         let mut focused = Some(active_pane.clone());
-        let mut panes = panes_for(&[&active_pane, &other_pane]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&active_pane, 80, 24, b""), (&other_pane, 80, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         drive_output(
+            &mut engine,
             &mut out,
             &mut workspace,
             &mut focused,
@@ -3548,10 +3639,12 @@ mod tests {
         );
         // The mirror is warm: reading the grapheme grid back shows the
         // bytes landed in pane 2's libghostty Terminal.
+        let terminal = super::super::driver::published_terminal(&engine.kernel, &other_pane)
+            .expect("pane 2 terminal");
         let slot = panes.get_mut(&other_pane).expect("pane 2 slot");
         let cell = slot
             .renderer
-            .read_grapheme_at(&slot.terminal, 0, 0)
+            .read_grapheme_at(terminal, 0, 0)
             .expect("read cell");
         assert_eq!(cell, Some('o'), "pane 2 mirror should hold the output");
     }
@@ -3726,10 +3819,12 @@ mod tests {
             let right = tid(2);
             let mut layout = two_pane_workspace(&left, &right, &left);
             let mut focused = Some(left.clone());
-            let mut panes = panes_for(&[&left, &right]);
+            let (mut engine, mut panes) =
+                published_fixture(&[(&left, 80, 24, b""), (&right, 80, 24, b"")]);
             let mut out: Vec<u8> = Vec::new();
             // Drive the focused pane so the paint trigger fires.
             drive_output(
+                &mut engine,
                 &mut out,
                 &mut layout,
                 &mut focused,

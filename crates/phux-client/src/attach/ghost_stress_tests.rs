@@ -113,11 +113,12 @@ struct Rig {
     agent_meta: AgentMetaIndex,
     glass: GhosttyTerminal<'static, 'static>,
     viewport: (u16, u16),
-    seq: u64,
+    seq: HashMap<TerminalId, u64>,
     kernel: SessionKernel<GhosttyAdapter>,
     kernel_effects: KernelEffectBuffer,
     bootstraps: HashMap<TerminalId, BootstrapId>,
     next_bootstrap: u64,
+    attach_released: bool,
 }
 
 impl Rig {
@@ -162,11 +163,12 @@ impl Rig {
             })
             .expect("glass terminal"),
             viewport,
-            seq: 0,
+            seq: HashMap::new(),
             kernel,
             kernel_effects,
             bootstraps: HashMap::new(),
             next_bootstrap: 1,
+            attach_released: false,
         }
     }
 
@@ -213,13 +215,15 @@ impl Rig {
 
     /// `TERMINAL_OUTPUT` for `pane` — the hot path.
     fn output(&mut self, pane: &TerminalId, bytes: &[u8]) {
-        self.seq += 1;
+        let seq = self.seq.entry(pane.clone()).or_insert(0);
+        *seq += 1;
+        let seq = *seq;
         let bootstrap_id = *self.bootstraps.get(pane).expect("published bootstrap");
         self.drive(FrameKind::TerminalOutput {
             terminal_id: pane.clone(),
             stream_id: StreamId::new(1).expect("stream"),
             bootstrap_id,
-            seq: self.seq,
+            seq,
             bytes: bytes::Bytes::copy_from_slice(bytes),
         });
     }
@@ -236,7 +240,7 @@ impl Rig {
             profile: BootstrapStreamProfile::SynthesizedVtRaw,
             cols,
             rows,
-            base_seq: self.seq,
+            base_seq: self.seq.get(pane).copied().unwrap_or(0),
         });
         self.drive(FrameKind::BootstrapChunk {
             terminal_id: pane.clone(),
@@ -257,6 +261,10 @@ impl Rig {
     /// The driver's `layout_changed` repaint: full frame of the render
     /// window (ED2 + every pane + cursor), exactly as `main_loop` runs it.
     fn full_repaint(&mut self) {
+        if !self.attach_released {
+            self.drive(FrameKind::AttachReady { attach_id: 1 });
+            self.attach_released = true;
+        }
         let mut out: Vec<u8> = Vec::new();
         if let Some(ls) = self.workspace.render_window(self.zoomed.as_ref()) {
             paint_full_frame(

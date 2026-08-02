@@ -5412,15 +5412,18 @@ mod tests {
         use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
         fn visible_prefix(
+            kernel: &super::super::driver::AttachKernel,
             panes: &mut HashMap<TerminalId, PaneSlot>,
             id: &TerminalId,
             row: u16,
         ) -> String {
             let slot = panes.get_mut(id).expect("pane");
+            let terminal =
+                super::super::driver::published_terminal(kernel, id).expect("published terminal");
             (0..6)
                 .filter_map(|col| {
                     slot.renderer
-                        .read_grapheme_string_at(&slot.terminal, row, col)
+                        .read_grapheme_string_at(terminal, row, col)
                         .expect("read cell")
                 })
                 .collect()
@@ -5434,14 +5437,14 @@ mod tests {
         let mut detach_pending = false;
         let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 8, 4);
         let overlay = Overlay;
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        let mut slot = PaneSlot::new_with_size(8, 4).expect("pane slot");
+        let mut replay = Vec::new();
         for n in 0..10 {
-            slot.terminal.vt_write(format!("line{n:02}\r\n").as_bytes());
+            replay.extend_from_slice(format!("line{n:02}\r\n").as_bytes());
         }
-        panes.insert(tid(1), slot);
+        let (mut engine_kernel, _, mut panes) =
+            super::super::driver::published_test_state(&[(&tid(1), 8, 4, &replay)]);
 
-        let before = visible_prefix(&mut panes, &tid(1), 0);
+        let before = visible_prefix(&engine_kernel, &mut panes, &tid(1), 0);
 
         let mut overlays = OverlayState::new();
         overlays.push(Box::new(crate::render::overlay::CopyModeOverlay::new(
@@ -5461,7 +5464,6 @@ mod tests {
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
-        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -5522,7 +5524,7 @@ mod tests {
         .await
         .expect("dispatch");
 
-        let after = visible_prefix(&mut panes, &tid(1), 0);
+        let after = visible_prefix(&engine_kernel, &mut panes, &tid(1), 0);
         assert!(changed, "scrolling copy-mode should trigger a repaint");
         assert_ne!(
             before, after,
@@ -6183,12 +6185,12 @@ mod tests {
         let mut predict =
             PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
         let overlay = Overlay;
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        for (id, vt) in seed_vt {
-            let mut slot = PaneSlot::new_with_size(39, 24).expect("pane slot");
-            slot.terminal.vt_write(vt);
-            panes.insert(id.clone(), slot);
-        }
+        let entries: Vec<_> = seed_vt
+            .iter()
+            .map(|(id, bytes)| (id, 39, 24, *bytes))
+            .collect();
+        let (mut engine_kernel, _, mut panes) =
+            super::super::driver::published_test_state(&entries);
         let mut next_request_id = 1;
         let mut pending_splits = HashMap::new();
         let mut pending_windows = HashMap::new();
@@ -6205,7 +6207,6 @@ mod tests {
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
         let repainted;
         {
-            let mut engine_kernel = test_engine_kernel();
             let mut ctx = DispatchCtx {
                 engine_kernel: &mut engine_kernel,
                 resolver: None,
@@ -6900,15 +6901,12 @@ mod tests {
         // keystroke and a queued ghost is the app-mode gate under test.
         let mut predict = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         let overlay = Overlay;
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        // The focused pane's mirror carries the alt-screen signal the gate
-        // reads via `terminal.mode()`. A fresh pane sits on the main screen
-        // (cooked shell prompt); `?1049h` puts it in a full-screen app.
-        let mut slot = PaneSlot::new().expect("slot");
-        if alt_screen {
-            slot.terminal.vt_write(b"\x1b[?1049h");
-        }
-        panes.insert(tid(1), slot);
+        // The focused replica carries the alt-screen signal the gate reads
+        // via `terminal.mode()`. A fresh pane sits on the main screen (cooked
+        // shell prompt); `?1049h` puts it in a full-screen app.
+        let bootstrap: &[u8] = if alt_screen { b"\x1b[?1049h" } else { b"" };
+        let (mut engine_kernel, _, mut panes) =
+            super::super::driver::published_test_state(&[(&tid(1), 80, 24, bootstrap)]);
 
         let mut next_request_id = 1;
         let mut pending_splits = HashMap::new();
@@ -6923,7 +6921,6 @@ mod tests {
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
-        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             // No resolver: every key forwards straight through to the pane,

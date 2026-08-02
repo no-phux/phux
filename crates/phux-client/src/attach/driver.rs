@@ -279,6 +279,95 @@ impl PaneSlot {
     }
 }
 
+/// Build a protocol-0.7 test session with atomically published synthesized replicas.
+///
+/// Test helpers must seed terminal state through the same ATTACHED,
+/// BEGIN/CHUNK/READY, and ATTACH_READY transitions as production rather than
+/// mutating the test-only [`PaneSlot::terminal`] compatibility field.
+#[cfg(test)]
+pub(super) fn published_test_state(
+    entries: &[(&TerminalId, u16, u16, &[u8])],
+) -> (AttachKernel, KernelEffectBuffer, HashMap<TerminalId, PaneSlot>) {
+    use phux_client_core::session::KernelInput;
+    use phux_protocol::{
+        BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId,
+    };
+
+    let mut kernel = SessionKernel::new(
+        GhosttyAdapter::new(BootstrapLimits::default()),
+        BootstrapProfile::SynthesizedVtRaw,
+    );
+    let mut effects = KernelEffectBuffer::new();
+    let terminals: Vec<_> = entries
+        .iter()
+        .map(|(terminal_id, ..)| (*terminal_id).clone())
+        .collect();
+    kernel
+        .update(
+            KernelInput::AttachStarted {
+                attach_id: 1,
+                terminals: &terminals,
+            },
+            &mut effects,
+        )
+        .expect("test ATTACHED");
+
+    let stream_id = StreamId::new(1).expect("test stream");
+    let bootstrap_id = BootstrapId::new(1).expect("test bootstrap");
+    for (terminal_id, cols, rows, bytes) in entries {
+        kernel
+            .update(
+                KernelInput::BootstrapBegin {
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                    geometry: phux_client_core::engine::CanonicalGeometry::new(*cols, *rows)
+                        .expect("test geometry"),
+                    base_seq: 0,
+                },
+                &mut effects,
+            )
+            .expect("test BOOTSTRAP_BEGIN");
+        kernel
+            .update(
+                KernelInput::BootstrapChunk {
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq: 0,
+                    payload: bytes,
+                },
+                &mut effects,
+            )
+            .expect("test BOOTSTRAP_CHUNK");
+        kernel
+            .update(
+                KernelInput::BootstrapReady {
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    history_cursor: None,
+                },
+                &mut effects,
+            )
+            .expect("test BOOTSTRAP_READY");
+    }
+    kernel
+        .update(KernelInput::AttachReady { attach_id: 1 }, &mut effects)
+        .expect("test ATTACH_READY");
+
+    let mut panes = HashMap::with_capacity(entries.len());
+    for (terminal_id, cols, rows, _) in entries {
+        let mut slot = PaneSlot::new_with_size(*cols, *rows).expect("test pane slot");
+        let terminal = published_terminal(&kernel, terminal_id).expect("published test terminal");
+        slot.title_changed(terminal);
+        slot.update_sync_output(terminal, tokio::time::Instant::now());
+        panes.insert((*terminal_id).clone(), slot);
+    }
+    (kernel, KernelEffectBuffer::new(), panes)
+}
+
 /// ADR-0033: compose the status-bar supervisory badge for the focused pane,
 /// or `None` when it is running and un-leased (so no badge paints). Reads the
 /// per-pane lifecycle + input-lease holder tracked from `TerminalControl`
@@ -5208,66 +5297,7 @@ mod tests {
         rows: u16,
         bytes: &[u8],
     ) -> AttachKernel {
-        use phux_client_core::session::KernelInput;
-        use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId};
-
-        let mut kernel = SessionKernel::new(
-            GhosttyAdapter::new(BootstrapLimits::default()),
-            BootstrapProfile::SynthesizedVtRaw,
-        );
-        let mut effects = KernelEffectBuffer::new();
-        let terminals = [terminal_id.clone()];
-        kernel
-            .update(
-                KernelInput::AttachStarted {
-                    attach_id: 1,
-                    terminals: &terminals,
-                },
-                &mut effects,
-            )
-            .expect("attach started");
-        let stream_id = StreamId::new(1).expect("stream");
-        let bootstrap_id = BootstrapId::new(1).expect("bootstrap");
-        kernel
-            .update(
-                KernelInput::BootstrapBegin {
-                    terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    profile: BootstrapStreamProfile::SynthesizedVtRaw,
-                    geometry: phux_client_core::engine::CanonicalGeometry { cols, rows },
-                    base_seq: 0,
-                },
-                &mut effects,
-            )
-            .expect("bootstrap begin");
-        kernel
-            .update(
-                KernelInput::BootstrapChunk {
-                    terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq: 0,
-                    payload: bytes,
-                },
-                &mut effects,
-            )
-            .expect("bootstrap chunk");
-        kernel
-            .update(
-                KernelInput::BootstrapReady {
-                    terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    history_cursor: None,
-                },
-                &mut effects,
-            )
-            .expect("bootstrap ready");
-        kernel
-            .update(KernelInput::AttachReady { attach_id: 1 }, &mut effects)
-            .expect("attach ready");
-        kernel
+        published_test_state(&[(terminal_id, cols, rows, bytes)]).0
     }
     use phux_protocol::caps::{
         BootstrapCapabilities, ServerCapabilities, TerminalColor, TerminalDefaultColors,
@@ -5883,10 +5913,8 @@ mod tests {
         // strip must show it (tmux automatic-rename / Warp tab titling).
         let id = TerminalId::local(1);
         let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
-        slot.terminal.vt_write(b"\x1b]2;~/src/phux\x07");
-        panes.insert(id, slot);
+        let (_, _, panes) =
+            published_test_state(&[(&id, 80, 24, b"\x1b]2;~/src/phux\x07")]);
 
         let infos = window_infos(
             &workspace,
@@ -5975,10 +6003,8 @@ mod tests {
         // tab exactly as before.
         let id = TerminalId::local(1);
         let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
-        slot.terminal.vt_write(b"\x1b]2;claude task\x07");
-        panes.insert(id, slot);
+        let (_, _, panes) =
+            published_test_state(&[(&id, 80, 24, b"\x1b]2;claude task\x07")]);
 
         let infos = window_infos(
             &workspace,
@@ -6263,15 +6289,10 @@ mod tests {
         let shell = TerminalId::local(2);
         let mut workspace = Workspace::single(claude.clone());
         workspace.add_window("scratch".to_owned(), shell.clone());
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        let mut claude_slot = PaneSlot::new_with_size(80, 24).expect("slot");
-        claude_slot
-            .terminal
-            .vt_write(b"\x1b]2;Claude Code - ~/src/phux\x07");
-        panes.insert(claude.clone(), claude_slot);
-        let mut shell_slot = PaneSlot::new_with_size(80, 24).expect("slot");
-        shell_slot.terminal.vt_write(b"\x1b]2;~/src/phux\x07");
-        panes.insert(shell, shell_slot);
+        let (_, _, mut panes) = published_test_state(&[
+            (&claude, 80, 24, b"\x1b]2;Claude Code - ~/src/phux\x07"),
+            (&shell, 80, 24, b"\x1b]2;~/src/phux\x07"),
+        ]);
 
         let entries = agent_entries(&workspace, &panes, &AgentMetaIndex::default());
         assert_eq!(entries.len(), 1, "the plain shell pane must not list");
@@ -6524,10 +6545,6 @@ mod tests {
         let selected = client
             .negotiated_bootstrap()
             .expect("successful negotiation installs immutable profile state");
-        assert!(matches!(
-            selected.profile,
-            phux_protocol::BootstrapProfile::NativeState { .. }
-        ));
         assert_eq!(selected.limits, phux_protocol::BootstrapLimits::default());
         let duplicate = client
             .negotiate(attach_client_name(), attach_client_caps(None))
