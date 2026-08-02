@@ -151,6 +151,23 @@ pub trait RenderOverlay {
         false
     }
 
+    /// phux-fsb: whether this overlay's geometry stays valid across a
+    /// viewport resize.
+    ///
+    /// Every centered overlay lays itself out from the `area` handed to
+    /// [`RenderOverlay::render`] and [`RenderOverlay::bounds`] on each
+    /// paint, so it reflows into the new viewport for free — `true`, the
+    /// default. The context menu is the exception: it pins its box to the
+    /// pointer cell at construction, against the content rect that existed
+    /// *then*. After a resize that box can be off screen entirely while the
+    /// overlay stays active, capturing every keystroke and committing its
+    /// selected row on Enter with nothing painted to show what it is. Such
+    /// an overlay returns `false` and the driver drops it on SIGWINCH
+    /// ([`OverlayState::dismiss_stale_on_resize`]).
+    fn survives_resize(&self) -> bool {
+        true
+    }
+
     /// phux-foz.7: offer this overlay a freshly rebuilt row set tagged
     /// `key`. A *live* overlay whose data projects shared client state —
     /// the agent-fleet dashboard — replaces its rows in place (preserving
@@ -273,6 +290,24 @@ impl OverlayState {
     #[must_use]
     pub fn wants_pointer_hover(&self) -> bool {
         self.stack.iter().any(|o| o.wants_pointer_hover())
+    }
+
+    /// phux-fsb: drop every overlay whose geometry a viewport resize
+    /// invalidated ([`RenderOverlay::survives_resize`]), returning `true`
+    /// when the stack changed so the caller repaints.
+    ///
+    /// Called from the driver's SIGWINCH arm before it repaints. Dropping
+    /// rather than reflowing is the honest move for a pinned overlay: its
+    /// box was anchored to a pointer position on a screen that no longer
+    /// exists, and re-placing it would put a menu somewhere the user never
+    /// clicked. Native menus close on resize for the same reason.
+    ///
+    /// The whole stack is swept, not just the top, so a pinned overlay can
+    /// never be stranded underneath a survivor.
+    pub fn dismiss_stale_on_resize(&mut self) -> bool {
+        let before = self.stack.len();
+        self.stack.retain(|overlay| overlay.survives_resize());
+        self.stack.len() != before
     }
 
     /// Push `overlay` onto the top of the stack. It becomes the input
@@ -919,5 +954,95 @@ mod tests {
         assert!(txt.contains("hello"));
         // Cursor hide at the top.
         assert!(out.starts_with(b"\x1b[?25l"));
+    }
+
+    // ---------- phux-fsb: pinned overlays do not outlive a resize ----------
+
+    /// A context menu pinned somewhere in an 80x24 viewport, holding a
+    /// destructive row.
+    fn pinned_menu() -> ContextMenu {
+        let action = |name: &str| phux_config::keybind::ResolvedAction {
+            action: name.to_owned(),
+            args: std::collections::BTreeMap::new(),
+        };
+        ContextMenu::new(
+            "pane",
+            vec![
+                MenuRow::item("Close pane", action("kill-pane")),
+                MenuRow::item("Zoom", action("toggle-zoom")),
+            ],
+            (70, 18),
+            crate::layout::Rect {
+                x: 0,
+                y: 0,
+                w: 80,
+                h: 24,
+            },
+            &crate::render::Theme::default(),
+        )
+    }
+
+    /// The reported failure (phux-fsb), stated as the invariant it broke:
+    /// after a resize clips a pinned menu away, it must not still be
+    /// sitting on the stack turning Enter into `kill-pane`.
+    #[test]
+    fn a_resize_drops_a_pinned_menu_before_it_can_commit_invisibly() {
+        let mut s = OverlayState::new();
+        s.push(Box::new(pinned_menu()));
+        assert!(s.is_active());
+
+        assert!(
+            s.dismiss_stale_on_resize(),
+            "the sweep must report a change"
+        );
+        assert!(!s.is_active(), "the menu is gone, not merely unpainted");
+
+        // The dangerous key is now inert: nothing left to commit it.
+        assert_eq!(s.handle_key(&key(PhysicalKey::Enter)), OverlayOutcome::None);
+        // And the driver stops paying for hover reporting.
+        assert!(!s.wants_pointer_hover());
+    }
+
+    /// Reflowing overlays are untouched — they lay out from the render
+    /// `area` every paint, so a resize is already handled for them. A sweep
+    /// that dropped them would close the palette on every window resize.
+    #[test]
+    fn a_resize_keeps_overlays_that_reflow() {
+        let mut s = OverlayState::new();
+        s.push(Box::new(SelectList::new(
+            "command palette",
+            vec![SelectItem::new(
+                "Close pane",
+                phux_config::keybind::ResolvedAction {
+                    action: "kill-pane".to_owned(),
+                    args: std::collections::BTreeMap::new(),
+                },
+            )],
+            &crate::render::Theme::default(),
+        )));
+        assert!(!s.dismiss_stale_on_resize(), "nothing stale ⇒ no change");
+        assert!(s.is_active(), "the palette survives a resize");
+    }
+
+    /// The sweep walks the whole stack, so a pinned overlay cannot be
+    /// stranded (invisible, input-capturing) beneath a survivor.
+    #[test]
+    fn a_resize_sweeps_the_whole_stack_not_just_the_top() {
+        let mut s = OverlayState::new();
+        s.push(Box::new(pinned_menu()));
+        s.push(Box::new(EscDismiss));
+        assert_eq!(s.depth(), 2);
+        assert!(s.dismiss_stale_on_resize());
+        assert_eq!(s.depth(), 1, "only the pinned overlay is dropped");
+        assert!(s.is_active());
+    }
+
+    /// An empty stack is a no-op: SIGWINCH fires constantly during a drag
+    /// resize and must not report a change with nothing to drop.
+    #[test]
+    fn a_resize_with_no_overlays_reports_no_change() {
+        let mut s = OverlayState::new();
+        assert!(!s.dismiss_stale_on_resize());
+        assert!(!s.is_active());
     }
 }

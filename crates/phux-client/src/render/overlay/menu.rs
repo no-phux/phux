@@ -367,14 +367,25 @@ impl RenderOverlay for ContextMenu {
     fn render(&self, _area: Rect, buf: &mut Buffer) {
         // Geometry was resolved against the content rect at construction
         // (menus pin to a pointer, they do not reflow), so `area` is not
-        // consulted here. Intersect with the buffer anyway: a resize
-        // between the open and this paint must never write out of bounds.
-        let rect = self.rect.intersection(buf.area);
-        if rect.width < 2 || rect.height < 2 {
+        // consulted here.
+        //
+        // phux-fsb: paint the box whole or not at all. A resize between the
+        // open and this paint can leave `self.rect` hanging off the new
+        // viewport, and a clipped paint is worse than none: the hit-test
+        // reads the pinned rect, so a truncated box shows one set of rows
+        // while `row_at` resolves another — including rows past the fold
+        // that were never drawn. Bailing keeps paint and hit-test talking
+        // about the same cells; the driver drops the menu on the same
+        // SIGWINCH edge (`OverlayState::dismiss_stale_on_resize`), so the
+        // blank frame lasts at most until that arm runs.
+        if self.rect.intersection(buf.area) != self.rect
+            || self.rect.width < 2
+            || self.rect.height < 2
+        {
             return;
         }
-        let body = self.body_lines(rect.width.saturating_sub(2));
-        Modal::new(&self.theme, self.title.clone(), body).render_into(rect, buf);
+        let body = self.body_lines(self.rect.width.saturating_sub(2));
+        Modal::new(&self.theme, self.title.clone(), body).render_into(self.rect, buf);
     }
 
     fn bounds(&self, _area: Rect) -> Option<Rect> {
@@ -385,6 +396,14 @@ impl RenderOverlay for ContextMenu {
     /// the outer terminal to any-motion reporting while it is open.
     fn wants_pointer_hover(&self) -> bool {
         true
+    }
+
+    /// phux-fsb: a menu is pinned to the pointer cell it was opened at,
+    /// against the content rect of the viewport that existed then. A resize
+    /// invalidates that box, so the driver drops the menu instead of
+    /// leaving an invisible overlay eating input.
+    fn survives_resize(&self) -> bool {
+        false
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
@@ -726,5 +745,64 @@ mod tests {
         let row: String = (0..80).map(|x| buf[(x, 5)].symbol()).collect();
         assert!(row.contains("Split right"), "first row painted: {row:?}");
         assert!(row.contains("C-a |"), "chord annotation painted: {row:?}");
+    }
+
+    // ---------- phux-fsb: a resize invalidates a pinned menu ----------
+
+    /// Anything painted into `buf`, as one flat string.
+    fn painted(menu: &ContextMenu, cols: u16, rows_h: u16) -> String {
+        let area = Rect::new(0, 0, cols, rows_h);
+        let mut buf = Buffer::empty(area);
+        menu.render(area, &mut buf);
+        (0..rows_h)
+            .flat_map(|y| (0..cols).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_owned())
+            .collect()
+    }
+
+    /// phux-fsb: a menu is painted whole or not at all.
+    ///
+    /// A partial paint is the dangerous state: the box on screen shows one
+    /// set of rows while `row_at` — which reads the pinned, pre-resize
+    /// `rect` — resolves a different set, including rows below the fold
+    /// that were never drawn. Committing one of those is a click on a
+    /// command the user cannot see.
+    #[test]
+    fn a_menu_clipped_by_a_resize_paints_nothing() {
+        // Built for 80x24, anchored bottom-right so the box lands around
+        // x 56.., y 14.. — then the terminal shrinks under it.
+        let menu = ContextMenu::new("pane", rows(), (70, 18), area(), &Theme::default());
+        let r = menu.rect();
+        assert!(
+            r.x > 40 || r.y > 10,
+            "fixture must land outside 40x10: {r:?}"
+        );
+
+        // Fully outside the new viewport.
+        assert!(
+            painted(&menu, 40, 10).trim().is_empty(),
+            "a fully clipped menu must paint nothing",
+        );
+        // Partially overlapping it: the box would be truncated, so it must
+        // also paint nothing rather than a sliver whose rows disagree with
+        // the hit-test.
+        assert!(
+            painted(&menu, 60, 20).trim().is_empty(),
+            "a partially clipped menu must paint nothing, not a truncated box",
+        );
+        // Unchanged viewport still paints normally.
+        assert!(
+            painted(&menu, 80, 24).contains("Split right"),
+            "the un-resized case is untouched",
+        );
+    }
+
+    /// phux-fsb: the menu declares that its geometry does not survive a
+    /// resize, which is what makes the driver drop it. Without this the
+    /// overlay stays active and invisible, capturing every keystroke —
+    /// and Enter commits whatever row the selection happens to hold.
+    #[test]
+    fn a_menu_does_not_survive_a_resize() {
+        assert!(!menu_at(10, 4).survives_resize());
     }
 }

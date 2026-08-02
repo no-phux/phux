@@ -1841,6 +1841,12 @@ The menu never covers the sidebar or the status-bar row: it is clamped
 into the pane content rect, flipping left and up at the edges, so a
 click on a bottom-docked bar opens the box upward over the panes.
 
+**Resizing closes it.** A menu is pinned to the cell you clicked, against
+the viewport that existed then, so a terminal resize invalidates its box
+and the client drops it (phux-fsb). Every other overlay — the palette,
+the pickers, help, prompts — lays itself out fresh on each paint and
+reflows into the new size instead.
+
 ---
 
 ## 8. Status bar

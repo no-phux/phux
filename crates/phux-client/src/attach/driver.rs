@@ -3345,6 +3345,17 @@ async fn main_loop<W: super::RenderSink>(
                 // resize-heavy shells. Clear immediately, then let the snapshot
                 // repopulate the viewport at the new dimensions.
                 let _ = out.write_all(b"\x1b[2J\x1b[H");
+                // phux-fsb: an overlay that pinned its box to a pointer cell
+                // (the context menu) is now addressing cells that may not
+                // exist. Drop it BEFORE the repaint below, so this frame is
+                // the one that erases it — leaving it up would keep an
+                // invisible overlay capturing every keystroke, with Enter
+                // committing its selected row (`Close pane`, if that is where
+                // the selection sat) against a pane the user cannot see it
+                // pointing at. Reflowing overlays are untouched.
+                if overlays.dismiss_stale_on_resize() {
+                    tracing::debug!("resize: dropped a pinned overlay whose geometry went stale");
+                }
                 if overlays.is_active() {
                     paint_active_overlay(
                         out,
