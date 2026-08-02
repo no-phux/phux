@@ -8,7 +8,7 @@ use bytes::Bytes;
 use phux_protocol::ClientId;
 use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::wire::frame::{ControlAction, TerminalEventType, TerminalSignal};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 /// A supervisory control request delivered to a [`super::TerminalActor`] over
 /// its `control` mailbox (ADR-0033, "take the wheel + kill").
@@ -109,6 +109,9 @@ pub struct ConsumerAttachRequest {
     /// reference and self-heals. `false` (the default for a direct,
     /// reliable-transport consumer) keeps the emit-once model.
     pub loss_tolerant: bool,
+    /// Aggregate-attach publication gate. While false, the actor retains the
+    /// primed reference but emits no live state-sync frames.
+    pub live_gate: watch::Receiver<bool>,
     /// Channel the actor uses to acknowledge the lifecycle insertion.
     /// `Ok(outcome)` on success (the outcome reports whether this actor
     /// is tick-managing the consumer); `Err(...)` if the per-consumer
@@ -204,26 +207,33 @@ pub const DEFAULT_INPUT_MAILBOX: usize = 64;
 #[derive(Debug)]
 pub(crate) struct EncodedInputRequest {
     /// Fully encoded PTY bytes.
-    pub(crate) bytes: Vec<u8>,
+    pub(crate) bytes: Bytes,
     /// `true` after `write_all` and `flush` both succeed; `false` on either
     /// writer failure. Dropping the sender reports indeterminate delivery.
     pub(crate) completion: Option<std::sync::mpsc::Sender<bool>>,
 }
 
 impl EncodedInputRequest {
-    pub(crate) const fn legacy(bytes: Vec<u8>) -> Self {
+    pub(crate) fn legacy(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes: bytes.into(),
+            completion: None,
+        }
+    }
+
+    pub(crate) fn opaque(bytes: Bytes) -> Self {
         Self {
             bytes,
             completion: None,
         }
     }
 
-    pub(crate) const fn acknowledged(
+    pub(crate) fn acknowledged(
         bytes: Vec<u8>,
         completion: std::sync::mpsc::Sender<bool>,
     ) -> Self {
         Self {
-            bytes,
+            bytes: Bytes::from(bytes),
             completion: Some(completion),
         }
     }
@@ -267,7 +277,12 @@ pub enum ResyncReason {
 #[derive(Clone, Debug)]
 pub enum PaneOutput {
     /// Live PTY byte chunk forwarded as `TERMINAL_OUTPUT`.
-    Live(Bytes),
+    Live {
+        /// Actor-global, strictly increasing raw output sequence.
+        seq: u64,
+        /// Verbatim PTY bytes for this sequence.
+        bytes: Bytes,
+    },
     /// Post-resize grid resync forwarded as `TERMINAL_SNAPSHOT` at the
     /// carried dims (phux-8v1 reconverge mechanism + phux-3ns5 mirror
     /// resize). `bytes` is the synthesized grid replay (with its
@@ -280,6 +295,8 @@ pub enum PaneOutput {
         rows: u16,
         /// Why the prior generation can no longer continue.
         reason: ResyncReason,
+        /// Actor-global raw sequence included by the replacement cut.
+        base_seq: u64,
         /// Synthesized grid replay (with reset preamble) for `vt_write`.
         bytes: Bytes,
     },
@@ -298,10 +315,9 @@ pub struct SnapshotRequest {
     /// the most-recent `n` rows. The actor primes
     /// [`SnapshotBytes::scrollback`] accordingly.
     pub scrollback: Option<u32>,
-    /// Channel the actor uses to ship the synthesized snapshot back.
-    /// Dropping the sender on the receiver side is benign — the actor
-    /// just discards the reply.
-    pub reply: oneshot::Sender<SnapshotBytes>,
+    /// Channel receiving the snapshot and actor-global raw cut.
+    /// Dropping the receiver is benign; the actor discards the reply.
+    pub reply: oneshot::Sender<(SnapshotBytes, u64)>,
 }
 
 /// Native checkpoint publication performed atomically on the terminal actor.
@@ -320,10 +336,8 @@ pub struct NativeBootstrapRequest {
     pub bootstrap_id: BootstrapId,
     /// Negotiated payload limits.
     pub limits: phux_protocol::caps::BootstrapLimits,
-    /// Last live sequence included in the actor cut.
-    pub base_seq: u64,
-    /// Completion status; failure before BEGIN is safe to surface directly.
-    pub reply: oneshot::Sender<Result<(), crate::native_state::NativeStateError>>,
+    /// Actor-global cut included by the published checkpoint.
+    pub reply: oneshot::Sender<Result<u64, crate::native_state::NativeStateError>>,
 }
 
 /// One bounded native history request routed to the owning terminal actor.
@@ -356,7 +370,6 @@ pub struct NativeReleaseRequest {
     /// Server-local owner identity.
     pub owner: u64,
 }
-
 
 /// Install the effective default palette reported by an interactive client.
 ///

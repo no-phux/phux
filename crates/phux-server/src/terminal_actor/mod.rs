@@ -302,14 +302,38 @@ const PANE_KILL_POLL: std::time::Duration = std::time::Duration::from_millis(20)
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const NATIVE_HISTORY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-fn native_bytes(data: &[u8]) -> Result<Bytes, crate::native_state::NativeStateError> {
+#[derive(Debug)]
+struct NativeCursorOwner {
+    owner: u64,
+    touched: tokio::time::Instant,
+    last_valid_seq: u64,
+    terminal_id: phux_protocol::ids::TerminalId,
+    stream_id: phux_protocol::ids::StreamId,
+    bootstrap_id: phux_protocol::ids::BootstrapId,
+    outbound: mpsc::Sender<Outbound>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_NATIVE_HOST_ALLOC: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn reserve_native_bytes(
+    capacity: usize,
+) -> Result<bytes::BytesMut, crate::native_state::NativeStateError> {
+    #[cfg(test)]
+    if FAIL_NEXT_NATIVE_HOST_ALLOC.with(|fail| fail.replace(false)) {
+        return Err(crate::native_state::NativeStateError::OutOfMemory);
+    }
     let mut bytes = bytes::BytesMut::new();
     bytes
-        .try_reserve(data.len())
+        .try_reserve(capacity)
         .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
-    bytes.extend_from_slice(data);
-    Ok(bytes.freeze())
+    Ok(bytes)
 }
+
 
 #[derive(Debug)]
 enum CanonicalTerminal {
@@ -466,6 +490,8 @@ pub struct TerminalActor {
     /// so probing them here could miss a write a sibling handler already
     /// consumed. A self-owned flag cannot be clobbered that way.
     terminal_dirty_since_tick: bool,
+    /// Actor-global raw PTY sequence; never resets across bootstrap generations.
+    raw_seq: u64,
     color_query_scanner: ColorQueryScanner,
     key_enc: RefCell<PerTerminalKeyEncoder>,
     mouse_enc: RefCell<PerTerminalMouseEncoder>,
@@ -480,7 +506,7 @@ pub struct TerminalActor {
     native_requests: NativeRequestReceivers,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_cursor_owners:
-        HashMap<crate::native_state::OpaqueHistoryCursor, (u64, tokio::time::Instant, u64)>,
+        HashMap<crate::native_state::OpaqueHistoryCursor, NativeCursorOwner>,
     set_default_colors_rx: mpsc::Receiver<SetDefaultColorsRequest>,
     screen_rx: mpsc::Receiver<ScreenRequest>,
     upgrade_rx: mpsc::Receiver<UpgradeHandleRequest>,
@@ -1018,6 +1044,7 @@ impl TerminalActor {
             // A pane may carry initial content (PTY banner, restored
             // scrollback); start dirty so the first tick always emits.
             terminal_dirty_since_tick: true,
+            raw_seq: 0,
             color_query_scanner: ColorQueryScanner::default(),
             key_enc: RefCell::new(key_enc),
             mouse_enc: RefCell::new(mouse_enc),
@@ -1249,6 +1276,7 @@ impl TerminalActor {
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
         wants_state_sync: bool,
+        live_gate: watch::Receiver<bool>,
     ) -> Result<(), ConsumerAttachError> {
         // Priming the per-consumer reference + cursor/mode capture costs two
         // full-grid render passes, but a raw broadcast-pump consumer (the
@@ -1290,6 +1318,7 @@ impl TerminalActor {
                 wire_terminal_id,
                 stream_id,
                 bootstrap_id,
+                live_gate,
                 // First emission gets `seq == 1`. `0` is reserved for
                 // the "empty initial frame" sentinel matching
                 // `FrameId::ZERO` in [`LastAckedCursorMode`]'s doc.
@@ -1327,6 +1356,7 @@ impl TerminalActor {
         wire_terminal_id: u32,
         wants_state_sync: bool,
     ) -> Result<(), ConsumerAttachError> {
+        let (_live_gate_tx, live_gate) = watch::channel(true);
         self.register_consumer_generation(
             client_id,
             outbound,
@@ -1335,6 +1365,7 @@ impl TerminalActor {
                 .expect("test stream id"),
             phux_protocol::ids::BootstrapId::new(1).expect("test bootstrap id"),
             wants_state_sync,
+            live_gate,
         )
     }
 
@@ -2328,6 +2359,10 @@ impl TerminalActor {
             // the cache from the real grid size.
             (term.cols().unwrap_or(cols), term.rows().unwrap_or(rows))
         };
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        self.invalidate_all_native_cursors(
+            phux_protocol::wire::frame::TombstoneReason::Resize,
+        );
         self.cols = applied.0;
         self.rows = applied.1;
         self.size_report.set(SizeReportSize {
@@ -2421,6 +2456,7 @@ impl TerminalActor {
                     cols: self.cols,
                     rows: self.rows,
                     reason,
+                    base_seq: self.raw_seq,
                     bytes: Bytes::from(snap.bytes),
                 });
             }
@@ -2670,57 +2706,109 @@ impl TerminalActor {
             stream_id,
             bootstrap_id,
             limits,
-            base_seq,
             reply,
         } = req;
-        let max_bytes = usize::try_from(limits.max_chunk_bytes())
-            .expect("negotiated native chunk limit fits usize");
-        let mut buffer = Vec::new();
-        if buffer.try_reserve_exact(max_bytes).is_err() {
-            let _ = reply.send(Err(crate::native_state::NativeStateError::OutOfMemory));
-            return;
-        }
-        buffer.resize(max_bytes, 0);
-        self.release_native_owner(owner);
+        let base_seq = self.raw_seq;
+        let max_bytes = match usize::try_from(limits.max_chunk_bytes()) {
+            Ok(size) if size != 0 => size,
+            _ => {
+                let _ = reply.send(Err(crate::native_state::NativeStateError::LimitExceeded));
+                return;
+            }
+        };
+        self.invalidate_native_owner(
+            owner,
+            phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
+        );
 
-        let mut began = false;
-        let mut tombstoned = false;
-        let result = (|| -> Result<
-            crate::native_state::OpaqueHistoryCursor,
-            crate::native_state::NativeStateError,
-        > {
+        let result = async {
+            let begin_permit = outbound
+                .clone()
+                .reserve_owned()
+                .await
+                .map_err(|_| crate::native_state::NativeStateError::InvalidHandle)?;
+            let begin_terminal_id = terminal_id.clone();
             let mut host = self.terminal.borrow_mut();
             let manager = host.native_manager()?;
             let mut capture = manager.capture(limits)?;
-            outbound
-                .try_send(Outbound::Frame(FrameKind::BootstrapBegin {
-                    terminal_id: terminal_id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    profile: phux_protocol::caps::BootstrapStreamProfile::NativeState {
-                        codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
-                    },
-                    cols: self.cols,
-                    rows: self.rows,
-                    base_seq,
-                }))
-                .map_err(|_| crate::native_state::NativeStateError::InvalidHandle)?;
-            began = true;
+            begin_permit.send(Outbound::Frame(FrameKind::BootstrapBegin {
+                terminal_id: begin_terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile: phux_protocol::caps::BootstrapStreamProfile::NativeState {
+                    codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+                },
+                cols: self.cols,
+                rows: self.rows,
+                base_seq,
+            }));
 
             let mut chunk_seq = 0_u32;
             loop {
-                let event = match capture.step(&mut buffer) {
+                let permit = outbound
+                    .clone()
+                    .reserve_owned()
+                    .await
+                    .map_err(|_| crate::native_state::NativeStateError::InvalidHandle)?;
+                let mut payload = match reserve_native_bytes(max_bytes) {
+                    Ok(mut payload) => {
+                        payload.resize(max_bytes, 0);
+                        payload
+                    }
+                    Err(error) => {
+                        permit.send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                            terminal_id: terminal_id.clone(),
+                            stream_id,
+                            bootstrap_id,
+                            reason:
+                                phux_protocol::wire::frame::TombstoneReason::CodecFailure,
+                            last_valid_seq: base_seq,
+                        }));
+                        return Err(error);
+                    }
+                };
+                let mut cursor_bytes = match reserve_native_bytes(
+                    std::mem::size_of::<crate::native_state::OpaqueHistoryCursor>(),
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        permit.send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                            terminal_id: terminal_id.clone(),
+                            stream_id,
+                            bootstrap_id,
+                            reason:
+                                phux_protocol::wire::frame::TombstoneReason::CodecFailure,
+                            last_valid_seq: base_seq,
+                        }));
+                        return Err(error);
+                    }
+                };
+                let frame_terminal_id = terminal_id.clone();
+                let next_chunk_seq = match chunk_seq.checked_add(1) {
+                    Some(next) => next,
+                    None => {
+                        permit.send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                            terminal_id: frame_terminal_id,
+                            stream_id,
+                            bootstrap_id,
+                            reason:
+                                phux_protocol::wire::frame::TombstoneReason::CodecFailure,
+                            last_valid_seq: base_seq,
+                        }));
+                        return Err(crate::native_state::NativeStateError::LimitExceeded);
+                    }
+                };
+                let event = match capture.step(&mut payload) {
                     Ok(event) => event,
                     Err(error) => {
-                        let _ = outbound
-                            .try_send(Outbound::Frame(FrameKind::BootstrapTombstone {
-                                terminal_id: terminal_id.clone(),
-                                stream_id,
-                                bootstrap_id,
-                                reason: phux_protocol::wire::frame::TombstoneReason::CodecFailure,
-                                last_valid_seq: base_seq,
-                            }));
-                        tombstoned = true;
+                        permit.send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                            terminal_id: frame_terminal_id,
+                            stream_id,
+                            bootstrap_id,
+                            reason:
+                                phux_protocol::wire::frame::TombstoneReason::CodecFailure,
+                            last_valid_seq: base_seq,
+                        }));
                         return Err(error);
                     }
                 };
@@ -2728,60 +2816,55 @@ impl TerminalActor {
                     event.kind,
                     crate::native_state::NativeCheckpointChunkKind::Ready
                 );
-                let payload = native_bytes(event.bytes)?;
-                outbound
-                    .try_send(Outbound::Frame(FrameKind::BootstrapChunk {
-                        terminal_id: terminal_id.clone(),
-                        stream_id,
-                        bootstrap_id,
-                        chunk_seq,
-                        payload,
-                    }))
-                    .map_err(|_| crate::native_state::NativeStateError::InvalidHandle)?;
-                chunk_seq = chunk_seq
-                    .checked_add(1)
-                    .ok_or(crate::native_state::NativeStateError::LimitExceeded)?;
+                let payload_len = event.bytes.len();
+                payload.truncate(payload_len);
+                permit.send(Outbound::Frame(FrameKind::BootstrapChunk {
+                    terminal_id: frame_terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq,
+                    payload: payload.freeze(),
+                }));
+                chunk_seq = next_chunk_seq;
                 if ready {
                     let cursor = *capture
                         .ready_cursor()
                         .ok_or(crate::native_state::NativeStateError::InvalidState)?;
-                    let cursor_bytes = match native_bytes(&cursor) {
-                        Ok(bytes) => bytes,
-                        Err(error) => {
-                            drop(capture);
-                            manager.release(&cursor)?;
-                            return Err(error);
+                    cursor_bytes.extend_from_slice(&cursor);
+                    drop(capture);
+                    let ready_permit = match outbound.clone().reserve_owned().await {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            let _ = manager.release(&cursor);
+                            return Err(crate::native_state::NativeStateError::InvalidHandle);
                         }
                     };
-                    let ready_frame = FrameKind::BootstrapReady {
+                    ready_permit.send(Outbound::Frame(FrameKind::BootstrapReady {
                         terminal_id: terminal_id.clone(),
                         stream_id,
                         bootstrap_id,
-                        history_cursor: Some(cursor_bytes),
-                    };
-                    if outbound.try_send(Outbound::Frame(ready_frame)).is_err() {
-                        drop(capture);
-                        manager.release(&cursor)?;
-                        return Err(crate::native_state::NativeStateError::InvalidHandle);
-                    }
+                        history_cursor: Some(cursor_bytes.freeze()),
+                    }));
                     return Ok(cursor);
                 }
             }
-        })();
-        if result.is_err() && began && !tombstoned {
-            let _ = outbound.try_send(Outbound::Frame(FrameKind::BootstrapTombstone {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                reason: phux_protocol::wire::frame::TombstoneReason::CodecFailure,
-                last_valid_seq: base_seq,
-            }));
         }
+        .await;
         if let Ok(cursor) = result.as_ref() {
-            self.native_cursor_owners
-                .insert(*cursor, (owner, tokio::time::Instant::now(), base_seq));
+            self.native_cursor_owners.insert(
+                *cursor,
+                NativeCursorOwner {
+                    owner,
+                    touched: tokio::time::Instant::now(),
+                    last_valid_seq: base_seq,
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    outbound,
+                },
+            );
         }
-        let _ = reply.send(result.map(|_| ()));
+        let _ = reply.send(result.map(|_| base_seq));
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -2804,116 +2887,193 @@ impl TerminalActor {
                 return;
             }
         };
-        let result = (|| -> Result<bool, crate::native_state::NativeStateError> {
-            let Some((cursor_owner, _, last_valid_seq)) =
-                self.native_cursor_owners.get(&cursor).copied()
-            else {
-                return Err(crate::native_state::NativeStateError::InvalidHandle);
-            };
-            if cursor_owner != owner {
-                return Err(crate::native_state::NativeStateError::InvalidHandle);
+        let Some(binding) = self.native_cursor_owners.get(&cursor) else {
+            let _ = reply.send(Err(crate::native_state::NativeStateError::InvalidHandle));
+            return;
+        };
+        if binding.owner != owner
+            || binding.terminal_id != terminal_id
+            || binding.stream_id != stream_id
+            || binding.bootstrap_id != bootstrap_id
+        {
+            let _ = reply.send(Err(crate::native_state::NativeStateError::InvalidHandle));
+            return;
+        }
+        let last_valid_seq = binding.last_valid_seq;
+        let bound = max_bytes.min(limits.max_history_page_bytes());
+        let size = match usize::try_from(bound) {
+            Ok(size) if size != 0 => size,
+            _ => {
+                let _ = reply.send(Err(crate::native_state::NativeStateError::LimitExceeded));
+                return;
             }
-            let bound = max_bytes.min(limits.max_history_page_bytes());
-            let size = usize::try_from(bound)
-                .map_err(|_| crate::native_state::NativeStateError::LimitExceeded)?;
-            if size == 0 {
-                return Err(crate::native_state::NativeStateError::LimitExceeded);
+        };
+
+        // Reserve every fallible host resource before advancing the native
+        // cursor. Once `manager.next` succeeds, frame construction and commit
+        // are allocation-free and the owned mailbox permit cannot fail.
+        let permit = match outbound.clone().reserve_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
+                    let _ = manager.release(&cursor);
+                }
+                self.native_cursor_owners.remove(&cursor);
+                let _ = reply.send(Err(crate::native_state::NativeStateError::InvalidHandle));
+                return;
             }
-            let mut buffer = Vec::new();
-            buffer
-                .try_reserve_exact(size)
-                .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
-            buffer.resize(size, 0);
+        };
+        let mut payload = match reserve_native_bytes(size) {
+            Ok(mut payload) => {
+                payload.resize(size, 0);
+                payload
+            }
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        let mut cursor_bytes = match reserve_native_bytes(cursor.len()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        let mut next_cursor_bytes = match reserve_native_bytes(cursor.len()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        cursor_bytes.extend_from_slice(&cursor);
+        let frame_terminal_id = terminal_id.clone();
+
+        let result = {
             let mut host = self.terminal.borrow_mut();
-            let manager = host.native_manager()?;
-            let event = match manager.next(&cursor, limits, bound, &mut buffer) {
-                Ok(event) => event,
+            let manager = match host.native_manager() {
+                Ok(manager) => manager,
                 Err(error) => {
-                    let reason = match error {
-                        crate::native_state::NativeStateError::Resize => {
-                            phux_protocol::wire::frame::TombstoneReason::Resize
-                        }
-                        _ => phux_protocol::wire::frame::TombstoneReason::CodecFailure,
+                    let _ = reply.send(Err(error));
+                    return;
+                }
+            };
+            match manager.next(&cursor, limits, bound, &mut payload) {
+                Ok(crate::native_state::NativeHistoryEvent::Page {
+                    bytes, next_cursor, ..
+                }) => {
+                    let payload_len = bytes.len();
+                    next_cursor_bytes.extend_from_slice(&next_cursor);
+                    payload.truncate(payload_len);
+                    permit.send(Outbound::Frame(FrameKind::HistoryPage {
+                        terminal_id: frame_terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        cursor: cursor_bytes.freeze(),
+                        next_cursor: Some(next_cursor_bytes.freeze()),
+                        payload: payload.freeze(),
+                    }));
+                    Ok(false)
+                }
+                Ok(crate::native_state::NativeHistoryEvent::End) => {
+                    permit.send(Outbound::Frame(FrameKind::HistoryPage {
+                        terminal_id: frame_terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        cursor: cursor_bytes.freeze(),
+                        next_cursor: None,
+                        payload: Bytes::new(),
+                    }));
+                    match manager.release(&cursor) {
+                        Ok(()) => Ok(true),
+                        Err(error) => Err(error),
+                    }
+                }
+                Err(error) => {
+                    let reason = if matches!(error, crate::native_state::NativeStateError::Resize) {
+                        phux_protocol::wire::frame::TombstoneReason::Resize
+                    } else {
+                        phux_protocol::wire::frame::TombstoneReason::CodecFailure
                     };
-                    let _ = outbound.try_send(Outbound::Frame(FrameKind::BootstrapTombstone {
-                        terminal_id: terminal_id.clone(),
+                    permit.send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                        terminal_id: frame_terminal_id,
                         stream_id,
                         bootstrap_id,
                         reason,
                         last_valid_seq,
                     }));
-                    if matches!(
-                        error,
-                        crate::native_state::NativeStateError::Reset
-                            | crate::native_state::NativeStateError::Resize
-                            | crate::native_state::NativeStateError::Pruned
-                            | crate::native_state::NativeStateError::Stale
-                    ) {
-                        let _ = manager.release(&cursor);
-                    }
-                    return Err(error);
-                }
-            };
-            let ended = matches!(&event, crate::native_state::NativeHistoryEvent::End);
-            match event {
-                crate::native_state::NativeHistoryEvent::Page {
-                    bytes, next_cursor, ..
-                } => {
-                    outbound
-                        .try_send(Outbound::Frame(FrameKind::HistoryPage {
-                            terminal_id,
-                            stream_id,
-                            bootstrap_id,
-                            cursor: native_bytes(&cursor)?,
-                            next_cursor: Some(native_bytes(&next_cursor)?),
-                            payload: native_bytes(bytes)?,
-                        }))
-                        .map_err(|_| crate::native_state::NativeStateError::InvalidHandle)?;
-                }
-                crate::native_state::NativeHistoryEvent::End => {
-                    outbound
-                        .try_send(Outbound::Frame(FrameKind::HistoryPage {
-                            terminal_id,
-                            stream_id,
-                            bootstrap_id,
-                            cursor: native_bytes(&cursor)?,
-                            next_cursor: None,
-                            payload: Bytes::new(),
-                        }))
-                        .map_err(|_| crate::native_state::NativeStateError::InvalidHandle)?;
-                    manager.release(&cursor)?;
+                    let _ = manager.release(&cursor);
+                    Err(error)
                 }
             }
-            Ok(ended)
-        })();
-        let invalidated = match &result {
-            Err(error) => matches!(
-                error,
-                crate::native_state::NativeStateError::Reset
-                    | crate::native_state::NativeStateError::Resize
-                    | crate::native_state::NativeStateError::Pruned
-                    | crate::native_state::NativeStateError::Stale
-            ),
-            Ok(_) => false,
         };
-        if matches!(result, Ok(true)) || invalidated {
+        if !matches!(result, Ok(false)) {
             self.native_cursor_owners.remove(&cursor);
-        } else if result.is_ok()
-            && let Some(entry) = self.native_cursor_owners.get_mut(&cursor)
-        {
-            entry.1 = tokio::time::Instant::now();
+        } else if let Some(binding) = self.native_cursor_owners.get_mut(&cursor) {
+            binding.touched = tokio::time::Instant::now();
         }
         let _ = reply.send(result.map(|_| ()));
     }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn invalidate_all_native_cursors(
+        &mut self,
+        reason: phux_protocol::wire::frame::TombstoneReason,
+    ) {
+        let bindings: Vec<_> = self.native_cursor_owners.drain().collect();
+        if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
+            for (cursor, binding) in bindings {
+                let _ = binding
+                    .outbound
+                    .try_send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                        terminal_id: binding.terminal_id,
+                        stream_id: binding.stream_id,
+                        bootstrap_id: binding.bootstrap_id,
+                        reason,
+                        last_valid_seq: binding.last_valid_seq,
+                    }));
+                let _ = manager.release(&cursor);
+            }
+        }
+    }
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn invalidate_native_owner(
+        &mut self,
+        owner: u64,
+        reason: phux_protocol::wire::frame::TombstoneReason,
+    ) {
+        let cursors: Vec<_> = self
+            .native_cursor_owners
+            .iter()
+            .filter_map(|(cursor, binding)| (binding.owner == owner).then_some(*cursor))
+            .collect();
+        for cursor in cursors {
+            let Some(binding) = self.native_cursor_owners.remove(&cursor) else {
+                continue;
+            };
+            let _ = binding
+                .outbound
+                .try_send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                    terminal_id: binding.terminal_id,
+                    stream_id: binding.stream_id,
+                    bootstrap_id: binding.bootstrap_id,
+                    reason,
+                    last_valid_seq: binding.last_valid_seq,
+                }));
+            if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
+                let _ = manager.release(&cursor);
+            }
+        }
+    }
+
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn release_native_owner(&mut self, owner: u64) {
         let cursors: Vec<_> = self
             .native_cursor_owners
             .iter()
-            .filter_map(|(cursor, (cursor_owner, _, _))| {
-                (*cursor_owner == owner).then_some(*cursor)
-            })
+            .filter_map(|(cursor, binding)| (binding.owner == owner).then_some(*cursor))
             .collect();
         if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
             for cursor in &cursors {
@@ -2931,17 +3091,39 @@ impl TerminalActor {
         let cursors: Vec<_> = self
             .native_cursor_owners
             .iter()
-            .filter_map(|(cursor, (_, touched, _))| (*touched <= cutoff).then_some(*cursor))
+            .filter_map(|(cursor, binding)| (binding.touched <= cutoff).then_some(*cursor))
             .collect();
-        if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
-            for cursor in &cursors {
-                let _ = manager.release(cursor);
+        for cursor in cursors {
+            let Some(binding) = self.native_cursor_owners.remove(&cursor) else {
+                continue;
+            };
+            let _ = binding
+                .outbound
+                .try_send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                    terminal_id: binding.terminal_id,
+                    stream_id: binding.stream_id,
+                    bootstrap_id: binding.bootstrap_id,
+                    reason: phux_protocol::wire::frame::TombstoneReason::Other,
+                    last_valid_seq: binding.last_valid_seq,
+                }));
+            if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
+                let _ = manager.release(&cursor);
             }
         }
-        for cursor in cursors {
-            self.native_cursor_owners.remove(&cursor);
+    }
+    async fn handle_native_actor_request(&mut self, req: NativeActorRequest) {
+        match req {
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            NativeActorRequest::Bootstrap(req) => self.handle_native_bootstrap(req).await,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            NativeActorRequest::History(req) => self.handle_native_history(req).await,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            NativeActorRequest::Release(req) => self.release_native_owner(req.owner),
+            #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+            NativeActorRequest::Disabled => unreachable!("disabled native receiver"),
         }
     }
+
 
     /// Run the actor's event loop until shutdown.
     ///
@@ -3018,6 +3200,10 @@ impl TerminalActor {
         tokio::pin!(resync_debounce);
         let mut resync_pending = false;
         let mut resync_reason = ResyncReason::Resize;
+        // Alternate a ready native request with a ready PTY turn. Input and
+        // shutdown remain strictly higher priority, while neither native
+        // publication nor live output can starve the other under sustained load.
+        let mut native_turn = false;
 
         loop {
             // For panes without a PTY, the `pty_rx` branch needs an
@@ -3070,6 +3256,11 @@ impl TerminalActor {
                     }
                 }
 
+                Some(req) = self.native_requests.recv(), if native_turn => {
+                    native_turn = false;
+                    self.handle_native_actor_request(req).await;
+                }
+
                 // PTY → Terminal + broadcast. Polled after the input arm:
                 // when this arm finishes one bounded payload and returns to
                 // the `select!`, the biased re-poll offers `input_rx`
@@ -3080,6 +3271,7 @@ impl TerminalActor {
                 // LocalSet (and a freshly-queued keystroke) get a turn
                 // between bounded parses rather than after the whole burst.
                 evt = recv_or_pending(self.pty_rx.as_mut()) => {
+                    native_turn = true;
                     match evt {
                         Some(PtyEvent::Bytes(first)) => {
                             // Coalesce any chunks already queued behind this one
@@ -3166,7 +3358,16 @@ impl TerminalActor {
                             // subscribers exist; that's a normal
                             // steady-state (no attached clients) and
                             // we silently drop.
-                            let _ = self.output_tx.send(PaneOutput::Live(payload));
+                            let Some(seq) = self.raw_seq.checked_add(1) else {
+                                error!("actor-global raw output sequence exhausted");
+                                self.shutdown_pty().await;
+                                return;
+                            };
+                            self.raw_seq = seq;
+                            let _ = self.output_tx.send(PaneOutput::Live {
+                                seq,
+                                bytes: payload,
+                            });
                             if saw_eof {
                                 self.handle_pty_eof();
                             } else if hit_byte_cap {
@@ -3185,23 +3386,9 @@ impl TerminalActor {
                     }
                 }
 
-                Some(req) = self.native_requests.recv() => {
-                    match req {
-                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                        NativeActorRequest::Bootstrap(req) => {
-                            self.handle_native_bootstrap(req).await;
-                        }
-                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                        NativeActorRequest::History(req) => {
-                            self.handle_native_history(req).await;
-                        }
-                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                        NativeActorRequest::Release(req) => {
-                            self.release_native_owner(req.owner);
-                        }
-                        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-                        NativeActorRequest::Disabled => unreachable!("disabled native receiver"),
-                    }
+                Some(req) = self.native_requests.recv(), if !native_turn => {
+                    native_turn = false;
+                    self.handle_native_actor_request(req).await;
                 }
 
 
@@ -3218,7 +3405,7 @@ impl TerminalActor {
                             }
                         }
                     };
-                    let _ = req.reply.send(snap);
+                    let _ = req.reply.send((snap, self.raw_seq));
                 }
 
                 Some(req) = self.set_default_colors_rx.recv() => {
@@ -3364,6 +3551,7 @@ impl TerminalActor {
                         bootstrap_id,
                         wants_state_sync,
                         loss_tolerant,
+                        live_gate,
                         reply,
                     } = req;
                     // phux-3uv / phux-fseo: map register success to an outcome
@@ -3382,6 +3570,7 @@ impl TerminalActor {
                             stream_id,
                             bootstrap_id,
                             wants_state_sync,
+                            live_gate,
                         )
                         .map(|()| ConsumerAttachOutcome { tick_managed });
                     // phux-v45.8: a forwarded/lossy-leg state-sync consumer
@@ -3634,6 +3823,9 @@ impl TerminalActor {
             // too would double-paint it, so skip it (reference left untouched
             // for a later mode flip).
             if !force_all_consumers && !state.wants_state_sync {
+                continue;
+            }
+            if !*state.live_gate.borrow() {
                 continue;
             }
             // Captured before the `behind` reset below: whether a prior tick
@@ -4040,9 +4232,10 @@ mod tests {
                     })
                     .await
                     .expect("send snapshot request");
-                let snap = reply_rx.await.expect("snapshot reply");
+                let (snap, base_seq) = reply_rx.await.expect("snapshot reply");
                 assert_eq!(snap.cols, 20);
                 assert_eq!(snap.rows, 5);
+                assert_eq!(base_seq, 0);
                 let body = String::from_utf8_lossy(&snap.bytes);
                 assert!(
                     body.contains("hi there"),
@@ -4541,7 +4734,7 @@ mod tests {
                     .expect("input must be serviced mid-burst, not after it");
                 assert_eq!(
                     got.map(|request| request.bytes),
-                    Some(b"x".to_vec()),
+                    Some(Bytes::from_static(b"x")),
                     "queued keystroke should reach the PTY writer while the burst drains",
                 );
 
@@ -4553,7 +4746,7 @@ mod tests {
                 let mut emitted: usize = 0;
                 loop {
                     match out_rx.try_recv() {
-                        Ok(PaneOutput::Live(bytes) | PaneOutput::Resync { bytes, .. }) => {
+                        Ok(PaneOutput::Live { bytes, .. } | PaneOutput::Resync { bytes, .. }) => {
                             emitted += bytes.len();
                         }
                         Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
@@ -4577,6 +4770,172 @@ mod tests {
             .await;
     }
 
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes() {
+        const CHUNKS: usize = 200;
+        const CHUNK_BYTES: usize = 1024;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let bundle = TerminalActor::new(80, 24).expect("new actor");
+                let handle = bundle.handle.clone();
+                let token = bundle.token.clone();
+                let mut actor = bundle.actor;
+                let (pty_tx, _writer_rx) = actor.install_test_pty_channels();
+                let mut raw_rx = handle.output.subscribe();
+                for _ in 0..CHUNKS {
+                    pty_tx
+                        .send(PtyEvent::Bytes(vec![b'x'; CHUNK_BYTES]))
+                        .expect("queue sustained PTY output");
+                }
+                let (outbound, _outbound_rx) = mpsc::channel(256);
+                let (reply, replied) = oneshot::channel();
+                handle
+                    .native_bootstrap
+                    .send(NativeBootstrapRequest {
+                        outbound,
+                        owner: 7,
+                        terminal_id: phux_protocol::ids::TerminalId::local(1),
+                        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+                        bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
+                            .expect("bootstrap id"),
+                        limits: phux_protocol::caps::BootstrapLimits::default(),
+                        reply,
+                    })
+                    .await
+                    .expect("send native request");
+                let run = tokio::task::spawn_local(actor.run());
+                let base_seq = tokio::time::timeout(ACTOR_EXIT_DEADLINE, replied)
+                    .await
+                    .expect("native request starved behind PTY")
+                    .expect("native reply dropped")
+                    .expect("native capture");
+                assert_eq!(
+                    base_seq, 1,
+                    "native request must run after one bounded ready PTY turn"
+                );
+
+                let mut expected_seq = 1_u64;
+                let mut raw_bytes = 0_usize;
+                while raw_bytes < CHUNKS * CHUNK_BYTES {
+                    let output = tokio::time::timeout(ACTOR_EXIT_DEADLINE, raw_rx.recv())
+                        .await
+                        .expect("raw output stalled")
+                        .expect("raw output channel closed");
+                    if let PaneOutput::Live { seq, bytes } = output {
+                        assert_eq!(seq, expected_seq);
+                        expected_seq += 1;
+                        raw_bytes += bytes.len();
+                    }
+                }
+                assert_eq!(raw_bytes, CHUNKS * CHUNK_BYTES);
+                token.cancel();
+                run.await.expect("actor run");
+            })
+            .await;
+    }
+
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn history_host_allocation_failure_does_not_advance_cursor() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let bundle = TerminalActor::new(20, 5).expect("new actor");
+                let handle = bundle.handle.clone();
+                let token = bundle.token.clone();
+                let (outbound, mut outbound_rx) = mpsc::channel(256);
+                let (reply, replied) = oneshot::channel();
+                handle
+                    .native_bootstrap
+                    .send(NativeBootstrapRequest {
+                        outbound: outbound.clone(),
+                        owner: 11,
+                        terminal_id: phux_protocol::ids::TerminalId::local(2),
+                        stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
+                        bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
+                            .expect("bootstrap id"),
+                        limits: phux_protocol::caps::BootstrapLimits::default(),
+                        reply,
+                    })
+                    .await
+                    .expect("send bootstrap");
+                let run = tokio::task::spawn_local(bundle.actor.run());
+                replied
+                    .await
+                    .expect("bootstrap reply")
+                    .expect("bootstrap capture");
+                let cursor = loop {
+                    let Outbound::Frame(frame) = outbound_rx.recv().await.expect("bootstrap frame");
+                    if let FrameKind::BootstrapReady {
+                        history_cursor: Some(cursor),
+                        ..
+                    } = frame
+                    {
+                        break cursor;
+                    }
+                };
+
+                FAIL_NEXT_NATIVE_HOST_ALLOC.with(|fail| fail.set(true));
+                let (failed_reply, failed) = oneshot::channel();
+                handle
+                    .native_history
+                    .send(NativeHistoryRequest {
+                        outbound: outbound.clone(),
+                        owner: 11,
+                        terminal_id: phux_protocol::ids::TerminalId::local(2),
+                        stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
+                        bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
+                            .expect("bootstrap id"),
+                        cursor: cursor.clone(),
+                        max_bytes: phux_protocol::caps::BootstrapLimits::default()
+                            .max_history_page_bytes(),
+                        limits: phux_protocol::caps::BootstrapLimits::default(),
+                        reply: failed_reply,
+                    })
+                    .await
+                    .expect("send failing history request");
+                assert_eq!(
+                    failed.await.expect("failure reply"),
+                    Err(crate::native_state::NativeStateError::OutOfMemory)
+                );
+
+                let (retry_reply, retried) = oneshot::channel();
+                handle
+                    .native_history
+                    .send(NativeHistoryRequest {
+                        outbound,
+                        owner: 11,
+                        terminal_id: phux_protocol::ids::TerminalId::local(2),
+                        stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
+                        bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
+                            .expect("bootstrap id"),
+                        cursor: cursor.clone(),
+                        max_bytes: phux_protocol::caps::BootstrapLimits::default()
+                            .max_history_page_bytes(),
+                        limits: phux_protocol::caps::BootstrapLimits::default(),
+                        reply: retry_reply,
+                    })
+                    .await
+                    .expect("retry history request");
+                retried
+                    .await
+                    .expect("retry reply")
+                    .expect("same cursor remains valid after host OOM");
+                let Outbound::Frame(FrameKind::HistoryPage {
+                    cursor: echoed, ..
+                }) = outbound_rx.recv().await.expect("history page")
+                else {
+                    panic!("expected history page");
+                };
+                assert_eq!(echoed, cursor);
+                token.cancel();
+                run.await.expect("actor run");
+            })
+            .await;
+    }
     /// phux-cs6: the actor answers a `PwdRequest` with its PTY child's
     /// live working directory. A shell is spawned that `cd`s into a
     /// freshly-created temp dir and then blocks (`read`), so its CWD is
@@ -4793,6 +5152,46 @@ mod tests {
         assert_eq!(state.last_cursor_mode.cursor_y, Some(0));
     }
 
+    #[test]
+    fn aggregate_live_gate_preserves_first_delta_until_activation() {
+        let bundle = TerminalActor::new(20, 5).expect("new");
+        let mut actor = bundle.actor;
+        let client = ClientId(8);
+        let (outbound, mut outbound_rx) = dummy_outbound();
+        let (gate_tx, gate_rx) = watch::channel(false);
+        actor
+            .register_consumer_generation(
+                client,
+                outbound,
+                12,
+                phux_protocol::ids::StreamId::new(9).expect("stream id"),
+                phux_protocol::ids::BootstrapId::new(3).expect("bootstrap id"),
+                true,
+                gate_rx,
+            )
+            .expect("register");
+
+        actor.vt_write_for_test(b"after-cut");
+        actor.tick_emit();
+        assert!(
+            outbound_rx.try_recv().is_err(),
+            "live output must remain behind the aggregate ATTACH barrier"
+        );
+        let state = actor.consumer_state(client).expect("consumer state");
+        assert_eq!(state.next_seq, 1, "suppression must not advance sequence");
+        assert!(state.needs_initial_emit, "suppression must not consume the diff");
+
+        gate_tx.send(true).expect("activate live output");
+        actor.tick_emit();
+        let Outbound::Frame(FrameKind::TerminalOutput { seq, bytes, .. }) =
+            outbound_rx.try_recv().expect("first post-barrier delta")
+        else {
+            panic!("expected terminal output");
+        };
+        assert_eq!(seq, 1);
+        assert!(!bytes.is_empty());
+    }
+
     /// A raw broadcast-pump consumer (the human attach path) skips the two
     /// full-grid render passes priming would cost: its reference and
     /// cursor/mode capture are never read (the tick serves only tick-managed
@@ -4843,6 +5242,7 @@ mod tests {
                             .expect("test bootstrap id"),
                         wants_state_sync: false,
                         loss_tolerant: false,
+                        live_gate: watch::channel(true).1,
                         reply: tx_a,
                     })
                     .await
@@ -6088,7 +6488,7 @@ mod tests {
                     }
                     round += 1;
                     match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
-                        Ok(Ok(PaneOutput::Live(bytes))) => acc.extend_from_slice(&bytes),
+                        Ok(Ok(PaneOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
                         Ok(Ok(PaneOutput::Resync { bytes, .. })) => {
                             acc.extend_from_slice(&bytes);
                         }
@@ -6173,7 +6573,7 @@ mod tests {
                                 break;
                             }
                         }
-                        Ok(Ok(PaneOutput::Live(bytes))) => acc.extend_from_slice(&bytes),
+                        Ok(Ok(PaneOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
                         Ok(Err(_)) => break, // channel closed
                         Err(_) => tokio::task::yield_now().await, // poll tick
                     }
@@ -6252,7 +6652,7 @@ mod tests {
                                 break;
                             }
                         }
-                        Ok(Ok(PaneOutput::Live(bytes))) => acc.extend_from_slice(&bytes),
+                        Ok(Ok(PaneOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
                         Ok(Err(_)) => break,
                         Err(_) => tokio::task::yield_now().await,
                     }
@@ -6335,7 +6735,7 @@ mod tests {
                         }
                         // Live output and a lagged drop are both "not a
                         // resync" — skip and keep draining.
-                        Ok(PaneOutput::Live(_))
+                        Ok(PaneOutput::Live { .. })
                         | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
                         Err(_) => break,
                     }

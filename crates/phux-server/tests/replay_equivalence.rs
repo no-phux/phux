@@ -123,7 +123,7 @@ async fn collect_until(rx: &mut Receiver<PaneOutput>, needle: &[u8]) -> Vec<u8> 
         let mut acc: Vec<u8> = Vec::new();
         loop {
             match rx.recv().await {
-                Ok(PaneOutput::Live(chunk) | PaneOutput::Resync { bytes: chunk, .. }) => {
+                Ok(PaneOutput::Live { bytes: chunk, .. } | PaneOutput::Resync { bytes: chunk, .. }) => {
                     acc.extend_from_slice(&chunk);
                     if acc.windows(needle.len()).any(|w| w == needle) {
                         return acc;
@@ -156,7 +156,7 @@ fn drain_pending(rx: &mut Receiver<PaneOutput>) -> Vec<u8> {
     let mut acc = Vec::new();
     loop {
         match rx.try_recv() {
-            Ok(PaneOutput::Live(chunk) | PaneOutput::Resync { bytes: chunk, .. }) => {
+            Ok(PaneOutput::Live { bytes: chunk, .. } | PaneOutput::Resync { bytes: chunk, .. }) => {
                 acc.extend_from_slice(&chunk);
             }
             Err(TryRecvError::Empty | TryRecvError::Closed) => return acc,
@@ -181,6 +181,7 @@ async fn snapshot(snap_tx: &mpsc::Sender<SnapshotRequest>) -> SnapshotBytes {
         .await
         .expect("snapshot timed out")
         .expect("snapshot reply dropped")
+        .0
 }
 
 /// Replay `bytes` into a fresh `Screen` sized `cols x rows` and return the

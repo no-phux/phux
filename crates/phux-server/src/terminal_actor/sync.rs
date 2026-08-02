@@ -9,7 +9,7 @@ use libghostty_vt::{
     terminal::Mode,
 };
 use phux_protocol::ids::{BootstrapId, StreamId};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// Snapshot of the live `Terminal`'s cursor + DEC mode bits captured at
 /// the moment a consumer is brought up-to-date.
@@ -172,6 +172,8 @@ pub struct ConsumerSyncState {
     pub stream_id: StreamId,
     /// Replica generation currently receiving live output.
     pub bootstrap_id: BootstrapId,
+    /// Aggregate-attach gate; false suppresses live output until ATTACH_READY.
+    pub live_gate: watch::Receiver<bool>,
     /// Per-consumer monotonic sequence id for `TERMINAL_OUTPUT`
     /// (`docs/spec/L1.md` §2.1, §12). Starts at `1` and increments on each
     /// emitted frame. Per-consumer (not shared) so each consumer can
