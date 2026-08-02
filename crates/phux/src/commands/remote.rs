@@ -327,9 +327,25 @@ pub(crate) fn run_add(
 
 /// `phux remote list`.
 pub(crate) fn run_list(json: bool) -> ExitCode {
+    use crate::commands::json_err::{self, CliError, codes};
+
     let entries = match load_registry() {
         Ok(entries) => entries,
         Err(err) => {
+            // Under `--json`, the shared error contract (phux-i0e8.8.3);
+            // without it, the historical prose line, byte-identical.
+            if json {
+                return json_err::emit(
+                    true,
+                    &CliError::new(
+                        codes::REGISTRY,
+                        format!("remote: {err}"),
+                        "fix the reported [[remote]] entry; `phux config path` \
+                         names the config file",
+                    ),
+                    1,
+                );
+            }
             eprintln!("phux remote: {err}");
             return ExitCode::FAILURE;
         }
@@ -351,8 +367,15 @@ pub(crate) fn run_list(json: bool) -> ExitCode {
         match serde_json::to_string_pretty(&serde_json::json!({ "remotes": rows })) {
             Ok(text) => outln!("{text}"),
             Err(err) => {
-                eprintln!("phux remote: could not encode JSON: {err}");
-                return ExitCode::FAILURE;
+                return json_err::emit(
+                    true,
+                    &CliError::new(
+                        codes::JSON_SERIALIZE,
+                        format!("could not encode remote JSON: {err}"),
+                        "this is a phux bug; run `phux doctor` and report it",
+                    ),
+                    1,
+                );
             }
         }
         return ExitCode::SUCCESS;

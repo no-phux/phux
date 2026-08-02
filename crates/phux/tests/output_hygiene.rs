@@ -564,11 +564,231 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
             vec!["ask", "work", "--json", "--socket", sock, "hello?"],
             None,
         ),
+        // The registry rollout (phux-i0e8.8.3): `tag` is the one registry
+        // verb that dials the server, so its dead-socket failure joins the
+        // same table as the core verbs.
+        (
+            "tag",
+            vec!["tag", "ls", "work", "--json", "--socket", sock],
+            None,
+        ),
     ];
 
     for (verb, args, xdg) in cases {
         assert_no_server_json_contract(verb, args, *xdg, sock);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The JSON error contract across the registry verbs (phux-i0e8.8.3)
+//
+// The sub-registries (`plugin`, `remote`, `satellite`, `worktree`,
+// `workspace`, `config check`, plus `tag`'s serverless selector error)
+// mostly never dial a server; their failures are local — a broken config, an
+// unknown id, not-a-repository. Under `--json` each must still leave stdout
+// empty and put ONE contract line on stderr, with a code from the closed
+// vocabulary and `exit_code` mirroring the process status.
+// ---------------------------------------------------------------------------
+
+/// Assert the general per-verb contract: the expected exit code, empty
+/// stdout, and stderr that is ONE line parsing as the contract document
+/// with the expected `error.code`, a matching `exit_code`, and a non-empty
+/// remedy.
+fn assert_json_error_contract(
+    verb: &str,
+    args: &[&str],
+    xdg: Option<&std::path::Path>,
+    expected_code: &str,
+    expected_exit: i32,
+) {
+    let (code, stdout, stderr) = run_maybe_xdg(args, xdg);
+    assert_eq!(
+        code,
+        expected_exit,
+        "`phux {}` must exit {expected_exit}; stderr={stderr}",
+        args.join(" ")
+    );
+    assert!(
+        stdout.is_empty(),
+        "`{verb} --json` failure must leave stdout empty; got {stdout:?}"
+    );
+    let line = stderr.trim();
+    assert!(
+        !line.contains('\n'),
+        "`{verb} --json` failure must be ONE stderr line; got {stderr:?}"
+    );
+    let doc: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|err| {
+        panic!("`{verb} --json` stderr must parse as JSON ({err}); got {stderr:?}")
+    });
+    assert_eq!(doc["schema_version"], 1, "{verb}: {doc}");
+    assert_eq!(doc["error"]["code"], expected_code, "{verb}: {doc}");
+    assert_eq!(doc["exit_code"], expected_exit, "{verb}: {doc}");
+    assert!(
+        doc["remedy"].as_str().is_some_and(|r| !r.is_empty()),
+        "{verb}: the error must carry a non-empty remedy; got {doc}"
+    );
+}
+
+/// One registry-table case: (verb, argv, `XDG_CONFIG_HOME` override,
+/// expected `error.code`, expected exit code).
+type RegistryCase<'a> = (
+    &'a str,
+    Vec<&'a str>,
+    Option<&'a std::path::Path>,
+    &'a str,
+    i32,
+);
+
+/// The registry table: one provocable local failure per `--json`-bearing
+/// registry verb, each emitting the contract with its family's code.
+#[test]
+fn json_error_contract_holds_across_registry_verbs() {
+    let tmp = TempDir::new().expect("tempdir");
+
+    // An empty-but-valid config: id/name lookups miss cleanly.
+    let empty_xdg = tmp.path().join("xdg-empty");
+    std::fs::create_dir_all(empty_xdg.join("phux")).expect("create config dir");
+    std::fs::write(empty_xdg.join("phux").join("config.toml"), "").expect("write config");
+
+    // A config whose TOML does not parse: registry loads fail.
+    let broken_xdg = tmp.path().join("xdg-broken");
+    std::fs::create_dir_all(broken_xdg.join("phux")).expect("create config dir");
+    std::fs::write(
+        broken_xdg.join("phux").join("config.toml"),
+        "not = [valid\n",
+    )
+    .expect("write broken config");
+    let broken_toml = broken_xdg.join("phux").join("config.toml");
+    let broken_toml = broken_toml.to_str().expect("utf-8 temp path");
+
+    // A directory that is not inside any git repository.
+    let not_repo = tmp.path().join("not-a-repo");
+    std::fs::create_dir_all(&not_repo).expect("create dir");
+    let not_repo = not_repo.to_str().expect("utf-8 temp path");
+
+    let cases: &[RegistryCase<'_>] = &[
+        // `tag`'s selector parse error needs no server at all.
+        (
+            "tag",
+            vec!["tag", "ls", "work:1.x", "--json"],
+            None,
+            "invalid_selector",
+            1,
+        ),
+        (
+            "plugin",
+            vec!["plugin", "unlink", "no.such.plugin", "--json"],
+            Some(&empty_xdg),
+            "registry",
+            1,
+        ),
+        (
+            "remote",
+            vec!["remote", "list", "--json"],
+            Some(&broken_xdg),
+            "registry",
+            1,
+        ),
+        (
+            "satellite",
+            vec!["satellite", "remove", "no-such-name", "--json"],
+            Some(&empty_xdg),
+            "registry",
+            1,
+        ),
+        (
+            "worktree",
+            vec!["worktree", "list", not_repo, "--json"],
+            None,
+            "workspace",
+            1,
+        ),
+        (
+            "workspace",
+            vec!["workspace", "inspect", not_repo, "--json"],
+            None,
+            "workspace",
+            1,
+        ),
+        // `config check` keeps its distinct exit 2 for "could not check at
+        // all", in the document and the process alike.
+        (
+            "config check",
+            vec!["config", "check", broken_toml, "--json"],
+            Some(&empty_xdg),
+            "invalid_config",
+            2,
+        ),
+    ];
+
+    for (verb, args, xdg, code, exit) in cases {
+        assert_json_error_contract(verb, args, *xdg, code, *exit);
+    }
+}
+
+/// The registry aliases take the SAME failure paths as their canonical
+/// spellings: `plugin rm` under `--json` emits the identical contract line
+/// `plugin unlink` does.
+#[test]
+fn alias_spellings_share_the_canonical_failure_paths() {
+    let tmp = TempDir::new().expect("tempdir");
+    let xdg = tmp.path().join("xdg");
+    std::fs::create_dir_all(xdg.join("phux")).expect("create config dir");
+    std::fs::write(xdg.join("phux").join("config.toml"), "").expect("write config");
+
+    let canonical = run_with_xdg(&["plugin", "unlink", "no.such.plugin", "--json"], &xdg);
+    let alias = run_with_xdg(&["plugin", "rm", "no.such.plugin", "--json"], &xdg);
+    assert_eq!(
+        canonical, alias,
+        "an alias is a second name, never a second code path"
+    );
+}
+
+/// `phux logs --json` (the inventory) is pure JSON on stdout — no banner,
+/// no prose mixed into the document channel — and exits 0 even on a fresh
+/// machine where nothing exists yet.
+#[test]
+fn logs_json_inventory_is_pure_json_stdout() {
+    let (code, stdout, stderr) = run(&["logs", "--json"]);
+    assert_eq!(code, 0, "the inventory always answers; stderr={stderr}");
+    let doc: serde_json::Value =
+        serde_json::from_str(&stdout).expect("`logs --json` stdout must be one JSON document");
+    assert_eq!(doc["schema_version"], 1);
+    assert!(
+        !stderr.contains(BANNER_FRAGMENT),
+        "`logs --json` must not print the banner; got {stderr:?}"
+    );
+}
+
+/// `phux doctor --json` on a FAILURE exit stays prose-free: the verdict —
+/// including the failing check and its hint — is the JSON document on
+/// stdout, and stderr carries nothing. Provoked with a socket path that
+/// cannot fit in `sockaddr_un`, the one check that fails without any
+/// server or config involvement.
+#[test]
+fn doctor_json_failure_exit_is_json_only() {
+    let tmp = TempDir::new().expect("tempdir");
+    let xdg = tmp.path().join("xdg");
+    std::fs::create_dir_all(xdg.join("phux")).expect("create config dir");
+    std::fs::write(xdg.join("phux").join("config.toml"), "").expect("write config");
+
+    let long_sock = format!("/tmp/{}/phux.sock", "x".repeat(200));
+    let (code, stdout, stderr) = run_with_xdg(&["doctor", "--json", "--socket", &long_sock], &xdg);
+
+    assert_eq!(code, 1, "a failed check fails the run; stderr={stderr}");
+    let doc: serde_json::Value =
+        serde_json::from_str(&stdout).expect("`doctor --json` stdout must be one JSON document");
+    assert_eq!(doc["ok"], false);
+    assert!(
+        doc["checks"]
+            .as_array()
+            .is_some_and(|checks| checks.iter().any(|c| c["status"] == "fail")),
+        "the failing check must be in the document; got {doc}"
+    );
+    assert!(
+        stderr.trim().is_empty(),
+        "`doctor --json` must never print prose on a failure exit; got {stderr:?}"
+    );
 }
 
 /// The same failure without `--json` stays prose: unparseable as JSON,

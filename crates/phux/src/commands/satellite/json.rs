@@ -35,9 +35,16 @@ fn print_doc(doc: &serde_json::Value) -> ExitCode {
             outln!("{rendered}");
             ExitCode::SUCCESS
         }
-        Err(err) => {
-            eprintln!("phux: could not render satellite JSON: {err}");
-            ExitCode::FAILURE
-        }
+        // Only ever called on a `--json` path, so the failure is the
+        // contract line (code `json_serialize`), never prose.
+        Err(err) => crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::JSON_SERIALIZE,
+                format!("could not render satellite JSON: {err}"),
+                "this is a phux bug; run `phux doctor` and report it",
+            ),
+            1,
+        ),
     }
 }

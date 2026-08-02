@@ -1139,6 +1139,177 @@ mod tests {
         assert_eq!(super::misplaced_scoped_flag(&err), None);
     }
 
+    /// Parse `argv` to its resolved [`Command`], panicking with the argv on
+    /// any failure — the shared front door for the alias-parity tests.
+    fn parsed(argv: &[&str]) -> Command {
+        Cli::try_parse_from(argv)
+            .unwrap_or_else(|err| panic!("{argv:?} must parse: {err}"))
+            .command
+            .unwrap_or_else(|| panic!("{argv:?} names a verb"))
+    }
+
+    /// Alias parity, list half (phux-i0e8.8.3): every list-shaped registry
+    /// verb answers to both `list` and `ls`, and each alias parses to the
+    /// CANONICAL variant — an alias is a second name, never a second code
+    /// path. `launch --list` deliberately stays a flag (considered and
+    /// kept: launch lists integrations, it is not a registry with its own
+    /// subcommand tree).
+    #[test]
+    fn list_aliases_map_to_the_canonical_variants() {
+        use crate::commands::{PluginAction, RemoteAction, SatelliteAction, TagAction};
+
+        for argv in [["phux", "remote", "list"], ["phux", "remote", "ls"]] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Remote {
+                    action: RemoteAction::List { .. }
+                }
+            ));
+        }
+        for argv in [["phux", "worktree", "list"], ["phux", "worktree", "ls"]] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Worktree(crate::commands::WorktreeAction::List { .. })
+            ));
+        }
+        // tag's canonical name is the short one; `list` is the alias.
+        for argv in [["phux", "tag", "ls", "."], ["phux", "tag", "list", "."]] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Tag {
+                    action: TagAction::Ls { .. }
+                }
+            ));
+        }
+        for argv in [["phux", "plugin", "list"], ["phux", "plugin", "ls"]] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Plugin {
+                    action: PluginAction::List { .. }
+                }
+            ));
+        }
+        for argv in [["phux", "satellite", "list"], ["phux", "satellite", "ls"]] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Satellite {
+                    action: SatelliteAction::List { .. }
+                }
+            ));
+        }
+        // The root registry verb keeps its established pair.
+        for argv in [["phux", "ls"], ["phux", "list"]] {
+            assert!(matches!(parsed(&argv), Command::Ls { .. }));
+        }
+    }
+
+    /// Alias parity, remove half (phux-i0e8.8.3): every remove-shaped
+    /// registry verb answers to both spellings — including `plugin unlink`,
+    /// whose canonical name predates the policy and now also answers to
+    /// `rm` / `remove`.
+    #[test]
+    fn remove_aliases_map_to_the_canonical_variants() {
+        use crate::commands::{PluginAction, RemoteAction, SatelliteAction, TagAction};
+
+        for argv in [
+            ["phux", "remote", "remove", "mini"],
+            ["phux", "remote", "rm", "mini"],
+        ] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Remote {
+                    action: RemoteAction::Remove { .. }
+                }
+            ));
+        }
+        for argv in [
+            ["phux", "worktree", "remove", "feat"],
+            ["phux", "worktree", "rm", "feat"],
+        ] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Worktree(crate::commands::WorktreeAction::Remove { .. })
+            ));
+        }
+        // tag's canonical name is the short one; `remove` is the alias.
+        for argv in [
+            ["phux", "tag", "rm", ".", "build"],
+            ["phux", "tag", "remove", ".", "build"],
+        ] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Tag {
+                    action: TagAction::Rm { .. }
+                }
+            ));
+        }
+        for argv in [
+            ["phux", "plugin", "unlink", "x.y"],
+            ["phux", "plugin", "rm", "x.y"],
+            ["phux", "plugin", "remove", "x.y"],
+        ] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Plugin {
+                    action: PluginAction::Unlink { .. }
+                }
+            ));
+        }
+        for argv in [
+            ["phux", "satellite", "remove", "edge"],
+            ["phux", "satellite", "rm", "edge"],
+        ] {
+            assert!(matches!(
+                parsed(&argv),
+                Command::Satellite {
+                    action: SatelliteAction::Remove { .. }
+                }
+            ));
+        }
+    }
+
+    /// `phux tag` carries the shared `--json` flag on all three actions
+    /// (phux-i0e8.8.3), through the canonical spelling and the alias alike.
+    #[test]
+    fn tag_actions_carry_the_shared_json_flag() {
+        use crate::commands::TagAction;
+
+        for argv in [
+            ["phux", "tag", "ls", ".", "--json"],
+            ["phux", "tag", "list", ".", "--json"],
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("tag ls --json parses");
+            let Some(Command::Tag {
+                action: TagAction::Ls { json, .. },
+            }) = cli.command
+            else {
+                panic!("expected Tag Ls");
+            };
+            assert!(json.json);
+        }
+
+        let cli = Cli::try_parse_from(["phux", "tag", "add", ".", "build", "--json"])
+            .expect("tag add --json parses");
+        let Some(Command::Tag {
+            action: TagAction::Add { json, tags, .. },
+        }) = cli.command
+        else {
+            panic!("expected Tag Add");
+        };
+        assert!(json.json);
+        assert_eq!(tags, ["build"]);
+
+        let cli = Cli::try_parse_from(["phux", "tag", "remove", ".", "build", "--json"])
+            .expect("tag remove --json parses");
+        let Some(Command::Tag {
+            action: TagAction::Rm { json, .. },
+        }) = cli.command
+        else {
+            panic!("expected Tag Rm");
+        };
+        assert!(json.json);
+    }
+
     /// The clap tree is internally consistent (conflicts, requires, groups,
     /// and the propagated global all resolve). `debug_assert` is clap's own
     /// full-tree validation pass; it must survive the root-settings rework.

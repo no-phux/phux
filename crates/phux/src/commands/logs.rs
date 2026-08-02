@@ -70,18 +70,22 @@ pub(crate) fn run_logs(
 
     let inventory = inventory(dir, phux_server::telemetry::server_log_path());
     if json {
-        // NOTE(D3): once the stream-D JSON error contract lands, the failure
-        // paths of `phux logs --json` adopt the shared emitter in D3's
-        // rollout.
         return match serde_json::to_string_pretty(&json_doc(&inventory)) {
             Ok(rendered) => {
                 outln!("{rendered}");
                 ExitCode::SUCCESS
             }
-            Err(err) => {
-                eprintln!("phux logs: could not render the inventory as JSON: {err}");
-                ExitCode::FAILURE
-            }
+            // A `--json` path, so the failure is the shared contract line
+            // (phux-i0e8.8.3), never prose.
+            Err(err) => crate::commands::json_err::emit(
+                true,
+                &crate::commands::json_err::CliError::new(
+                    crate::commands::json_err::codes::JSON_SERIALIZE,
+                    format!("could not render the log inventory as JSON: {err}"),
+                    "this is a phux bug; run `phux doctor` and report it",
+                ),
+                1,
+            ),
         };
     }
     out!("{}", render_human(&inventory));

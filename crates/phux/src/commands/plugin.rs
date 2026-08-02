@@ -49,7 +49,7 @@ fn run_list(json: bool) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(err) => fail(&err),
+        Err(err) => fail(json, &err),
     }
 }
 
@@ -57,12 +57,15 @@ fn run_link(manifest_arg: &Path, enabled: bool, json: bool) -> ExitCode {
     let manifest = match plugin::load_plugin_manifest(manifest_arg) {
         Ok(manifest) => manifest,
         Err(err) => {
-            return fail(&format!("could not load {}: {err}", manifest_arg.display()));
+            return fail(
+                json,
+                &format!("could not load {}: {err}", manifest_arg.display()),
+            );
         }
     };
     let entry = match upsert_config_entry(manifest, enabled) {
         Ok(entry) => entry,
-        Err(err) => return fail(&err),
+        Err(err) => return fail(json, &err),
     };
     if json {
         print_plugin_json("plugin", &entry)
@@ -107,21 +110,21 @@ fn upsert_config_entry(
 fn run_unlink(id: &str, json: bool) -> ExitCode {
     let config_path = config_loader::config_path();
     if let Err(err) = reject_symlinked_config(&config_path) {
-        return fail(&err);
+        return fail(json, &err);
     }
     let entry = match find_entry(&config_path, id) {
         Ok(entry) => entry,
-        Err(err) => return fail(&err),
+        Err(err) => return fail(json, &err),
     };
     let mut doc = match read_config_document(&config_path) {
         Ok(doc) => doc,
-        Err(err) => return fail(&err),
+        Err(err) => return fail(json, &err),
     };
     if let Err(err) = remove_entry(&mut doc, entry.index) {
-        return fail(&err);
+        return fail(json, &err);
     }
     if let Err(err) = write_config_document(&config_path, &doc) {
-        return fail(&err);
+        return fail(json, &err);
     }
     if json {
         print_plugin_json("removed", &entry)
@@ -134,21 +137,21 @@ fn run_unlink(id: &str, json: bool) -> ExitCode {
 fn run_set_enabled(id: &str, enabled: bool, json: bool) -> ExitCode {
     let config_path = config_loader::config_path();
     if let Err(err) = reject_symlinked_config(&config_path) {
-        return fail(&err);
+        return fail(json, &err);
     }
     let mut entry = match find_entry(&config_path, id) {
         Ok(entry) => entry,
-        Err(err) => return fail(&err),
+        Err(err) => return fail(json, &err),
     };
     let mut doc = match read_config_document(&config_path) {
         Ok(doc) => doc,
-        Err(err) => return fail(&err),
+        Err(err) => return fail(json, &err),
     };
     if let Err(err) = set_enabled(&mut doc, entry.index, enabled) {
-        return fail(&err);
+        return fail(json, &err);
     }
     if let Err(err) = write_config_document(&config_path, &doc) {
-        return fail(&err);
+        return fail(json, &err);
     }
     entry.enabled = enabled;
     if json {
@@ -183,7 +186,7 @@ fn validate_manifest(path: &Path, json: bool) -> ExitCode {
             outln!("valid {}", manifest.id);
             ExitCode::SUCCESS
         }
-        Err(err) => fail(&format!("could not load {}: {err}", path.display())),
+        Err(err) => fail(json, &format!("could not load {}: {err}", path.display())),
     }
 }
 
@@ -196,7 +199,7 @@ fn validate_registry(json: bool) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(err) => fail(&err),
+        Err(err) => fail(json, &err),
     }
 }
 
@@ -210,7 +213,22 @@ pub(crate) fn valid_manifest_count() -> Result<usize, String> {
     load_registry().map(|entries| entries.len())
 }
 
-pub(super) fn fail(message: &str) -> ExitCode {
+/// Report a plugin-registry failure: the historical prose line without
+/// `--json` (byte-identical, so scripts that grep stderr keep working), or
+/// one line of the shared JSON error contract with it (phux-i0e8.8.3).
+pub(super) fn fail(json: bool, message: &str) -> ExitCode {
+    if json {
+        return crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::REGISTRY,
+                message,
+                "run `phux plugin list` to see configured plugins; \
+                 `phux config path` names the config file",
+            ),
+            1,
+        );
+    }
     eprintln!("phux: {message}");
     ExitCode::FAILURE
 }

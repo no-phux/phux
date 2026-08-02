@@ -77,6 +77,20 @@ fn run_enroll(
     }
 
     if let Err(err) = crate::commands::enroll::remote_phux_version(ssh_host) {
+        if json {
+            return crate::commands::json_err::emit(
+                true,
+                &crate::commands::json_err::CliError::new(
+                    crate::commands::json_err::codes::REGISTRY,
+                    format!("satellite enroll: {err}"),
+                    format!(
+                        "install phux on {ssh_host} first, or use \
+                         `phux satellite enroll {ssh_host} --ssh-only`"
+                    ),
+                ),
+                1,
+            );
+        }
         eprintln!("phux satellite enroll: {err}");
         eprintln!(
             "      Install phux on {ssh_host} first, or use \
@@ -105,11 +119,11 @@ fn run_enroll(
 
     let stdout = match crate::commands::enroll::ssh_capture(ssh_host, &["phux", "pair", "--json"]) {
         Ok(stdout) => stdout,
-        Err(err) => return enroll_failure(&err),
+        Err(err) => return enroll_failure(json, &err),
     };
     let report = match crate::commands::enroll::PairReport::parse(&stdout) {
         Ok(report) => report,
-        Err(err) => return enroll_failure(&err),
+        Err(err) => return enroll_failure(json, &err),
     };
     let endpoint =
         crate::commands::enroll::choose_endpoint(ssh_host, &report, endpoint_override, quic_port);
@@ -123,12 +137,12 @@ fn run_enroll(
         report.cert_fingerprint.as_deref(),
     ) {
         Ok(new) => new,
-        Err(err) => return enroll_failure(&err),
+        Err(err) => return enroll_failure(json, &err),
     };
     if let Some(path) = &token_file
         && let Err(err) = crate::commands::enroll::write_token(path, &report.token)
     {
-        return enroll_failure(&err);
+        return enroll_failure(json, &err);
     }
 
     finish_enroll(Ok(new), json)
@@ -142,7 +156,21 @@ fn finish_enroll(new: Result<NewSatellite, String>, json: bool) -> ExitCode {
     result
 }
 
-fn enroll_failure(message: &str) -> ExitCode {
+/// Report an enrollment failure: prose with the established prefix, or the
+/// shared JSON error contract under `--json`.
+fn enroll_failure(json: bool, message: &str) -> ExitCode {
+    if json {
+        return crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::REGISTRY,
+                format!("satellite enroll: {message}"),
+                "retry once the ssh path works, or register the route without \
+                 probing via `phux satellite enroll HOST --ssh-only`",
+            ),
+            1,
+        );
+    }
     eprintln!("phux satellite enroll: {message}");
     ExitCode::FAILURE
 }
@@ -160,14 +188,14 @@ fn run_list(json: bool) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(err) => fail(&err),
+        Err(err) => fail(json, &err),
     }
 }
 
 fn run_add(new: Result<NewSatellite, String>, json: bool) -> ExitCode {
     let satellite = match new {
         Ok(satellite) => satellite,
-        Err(err) => return fail(&err),
+        Err(err) => return fail(json, &err),
     };
     match add_or_update(&satellite) {
         Ok(entry) if json => print_satellite_json("satellite", &entry),
@@ -175,7 +203,7 @@ fn run_add(new: Result<NewSatellite, String>, json: bool) -> ExitCode {
             outln!("satellite {}", describe(&entry));
             ExitCode::SUCCESS
         }
-        Err(err) => fail(&err),
+        Err(err) => fail(json, &err),
     }
 }
 
@@ -199,7 +227,7 @@ fn describe(entry: &registry::SatelliteEntry) -> String {
 fn run_remove(name: &str, json: bool) -> ExitCode {
     let entry = match find_entry(name) {
         Ok(entry) => entry,
-        Err(err) => return fail(&err),
+        Err(err) => return fail(json, &err),
     };
     match remove_entry(entry.index) {
         Ok(()) if json => print_satellite_json("removed", &entry),
@@ -207,11 +235,26 @@ fn run_remove(name: &str, json: bool) -> ExitCode {
             outln!("removed {}", entry.name);
             ExitCode::SUCCESS
         }
-        Err(err) => fail(&err),
+        Err(err) => fail(json, &err),
     }
 }
 
-fn fail(message: &str) -> ExitCode {
+/// Report a satellite-registry failure: the historical prose line without
+/// `--json` (byte-identical, so scripts that grep stderr keep working), or
+/// one line of the shared JSON error contract with it (phux-i0e8.8.3).
+fn fail(json: bool, message: &str) -> ExitCode {
+    if json {
+        return crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::REGISTRY,
+                message,
+                "run `phux satellite list` to see configured satellites; \
+                 `phux config path` names the config file",
+            ),
+            1,
+        );
+    }
     eprintln!("phux: {message}");
     ExitCode::FAILURE
 }

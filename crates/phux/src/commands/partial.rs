@@ -109,11 +109,6 @@ pub(crate) fn report_target_miss_keeping_status(
 /// emits [`codes::NO_SUCH_TARGET`] with exit 1; a miss against a partial
 /// view emits [`codes::PARTIAL_VIEW`] with exit [`EXIT_PARTIAL_VIEW`], and
 /// the message still refuses to claim absence.
-#[allow(
-    dead_code,
-    reason = "the exit-3 consumers (kill/tag/agent) gain --json in the registry \
-              rollout, phux-i0e8.8.3; the shared contract half lands here"
-)]
 pub(crate) fn report_target_miss_for(
     json: bool,
     target: Option<&str>,

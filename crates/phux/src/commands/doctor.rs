@@ -384,10 +384,18 @@ fn report_json(checks: &[Check]) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
-        Err(err) => {
-            eprintln!("phux: could not render doctor JSON: {err}");
-            ExitCode::FAILURE
-        }
+        // A `--json` path, so even this last-resort failure is the shared
+        // contract line, never prose — `doctor --json` keeps stderr free of
+        // unstructured text on every failure exit (phux-i0e8.8.3).
+        Err(err) => crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::JSON_SERIALIZE,
+                format!("could not render doctor JSON: {err}"),
+                "this is a phux bug worth filing",
+            ),
+            1,
+        ),
     }
 }
 

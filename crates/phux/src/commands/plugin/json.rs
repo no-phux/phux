@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use super::{fail, registry::RegistryEntry};
+use super::registry::RegistryEntry;
 
 pub(super) fn print_plugins_json(entries: &[RegistryEntry]) -> ExitCode {
     let plugins: Vec<_> = entries.iter().map(plugin_json).collect();
@@ -56,6 +56,16 @@ pub(super) fn print_json(value: &serde_json::Value) -> ExitCode {
             outln!("{rendered}");
             ExitCode::SUCCESS
         }
-        Err(err) => fail(&format!("could not render plugin JSON: {err}")),
+        // Only ever called on a `--json` path, so the failure is the
+        // contract line (code `json_serialize`), never prose.
+        Err(err) => crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::JSON_SERIALIZE,
+                format!("could not render plugin JSON: {err}"),
+                "this is a phux bug; run `phux doctor` and report it",
+            ),
+            1,
+        ),
     }
 }

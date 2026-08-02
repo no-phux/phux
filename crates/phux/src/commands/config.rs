@@ -79,16 +79,14 @@ fn run_config_check(path: Option<&Path>, json: bool) -> ExitCode {
             String::new()
         }
         Err(err) => {
-            eprintln!("phux: cannot read {}: {err}", path.display());
-            return ExitCode::from(2);
+            return check_unrunnable(json, &format!("cannot read {}: {err}", path.display()));
         }
     };
 
     let report = match phux_config::check::check(&body, &path) {
         Ok(report) => report,
         Err(err) => {
-            eprintln!("phux: {err}");
-            return ExitCode::from(2);
+            return check_unrunnable(json, &err.to_string());
         }
     };
 
@@ -96,6 +94,27 @@ fn run_config_check(path: Option<&Path>, json: bool) -> ExitCode {
         return print_check_json(&path, &report, missing);
     }
     print_check_human(&path, &report, missing)
+}
+
+/// Exit-2 "the check could not run" (unreadable file, malformed TOML):
+/// prose without `--json` (unchanged spelling), the shared JSON error
+/// contract with it (code `invalid_config`, exit 2 both in the document and
+/// the process — phux-i0e8.8.3).
+fn check_unrunnable(json: bool, message: &str) -> ExitCode {
+    if json {
+        return crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::INVALID_CONFIG,
+                message,
+                "fix the file at the reported path; `phux config path` names \
+                 the active config",
+            ),
+            2,
+        );
+    }
+    eprintln!("phux: {message}");
+    ExitCode::from(2)
 }
 
 /// Human rendering: one line per finding, path first so the column scans.
@@ -168,10 +187,16 @@ fn print_check_json(path: &Path, report: &phux_config::CheckReport, missing: boo
                 ExitCode::FAILURE
             }
         }
-        Err(err) => {
-            eprintln!("phux: could not render check JSON: {err}");
-            ExitCode::from(2)
-        }
+        // A `--json` path, so the failure is the contract line, never prose.
+        Err(err) => crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::JSON_SERIALIZE,
+                format!("could not render check JSON: {err}"),
+                "this is a phux bug; run `phux doctor` and report it",
+            ),
+            2,
+        ),
     }
 }
 

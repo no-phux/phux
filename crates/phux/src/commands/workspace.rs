@@ -58,6 +58,17 @@ fn run_inspect(path: &Path, json: bool) -> ExitCode {
     match inspect_workspace(path) {
         Ok(report) if json => print_json(&report),
         Ok(report) => print_human(&report),
+        // The `--json`-bearing inspect verb adopts the shared error contract
+        // on its failure path (phux-i0e8.8.3); prose is unchanged.
+        Err(err) if json => crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::WORKSPACE,
+                err,
+                "run this inside a git repository, or pass a path to one",
+            ),
+            1,
+        ),
         Err(err) => fail(&err),
     }
 }
@@ -190,7 +201,16 @@ fn print_json(report: &WorkspaceReport) -> ExitCode {
             outln!("{rendered}");
             ExitCode::SUCCESS
         }
-        Err(err) => fail(&format!("could not render workspace JSON: {err}")),
+        // A `--json` path, so the failure is the contract line, never prose.
+        Err(err) => crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::JSON_SERIALIZE,
+                format!("could not render workspace JSON: {err}"),
+                "this is a phux bug; run `phux doctor` and report it",
+            ),
+            1,
+        ),
     }
 }
 

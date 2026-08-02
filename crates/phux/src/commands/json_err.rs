@@ -83,6 +83,17 @@ pub(crate) mod codes {
     pub(crate) const DESTINATION_LAYOUT_FAILED: &str = "destination_layout_failed";
     /// The source layout cleanup after a cross-session move failed.
     pub(crate) const SOURCE_LAYOUT_FAILED: &str = "source_layout_failed";
+    /// A local config-registry operation failed: a `[[plugins]]` /
+    /// `[[remote]]` / `[[satellites]]` entry could not be read, validated,
+    /// or written (phux-i0e8.8.3).
+    pub(crate) const REGISTRY: &str = "registry";
+    /// A git workspace/worktree operation failed (not a repository, git
+    /// itself failed, or its output did not parse).
+    pub(crate) const WORKSPACE: &str = "workspace";
+    /// `config check` could not run at all: the file was unreadable or the
+    /// TOML did not parse. Exit 2, mirroring the prose path's distinct
+    /// "could not check" status.
+    pub(crate) const INVALID_CONFIG: &str = "invalid_config";
     /// A result document could not be serialized as JSON.
     pub(crate) const JSON_SERIALIZE: &str = "json_serialize";
     /// A client-side invariant this binary should never break.

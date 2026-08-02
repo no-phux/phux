@@ -1472,6 +1472,7 @@ pub(crate) enum RemoteAction {
     },
 
     /// List registered remotes.
+    #[command(visible_alias = "ls")]
     List {
         /// Emit JSON on stdout instead of the table.
         #[arg(long)]
@@ -1479,6 +1480,7 @@ pub(crate) enum RemoteAction {
     },
 
     /// Remove a registered remote. Its token file is left in place.
+    #[command(visible_alias = "rm")]
     Remove {
         /// Registered name.
         name: String,
@@ -1557,6 +1559,7 @@ pub(crate) enum WorktreeAction {
     /// The `bound` column reads `live` when a session by the derived name
     /// exists, `-` when it does not, and `?` when no server is running —
     /// "no server" and "no session" are different facts.
+    #[command(visible_alias = "ls")]
     List {
         /// Path inside the repository or worktree to list from.
         #[arg(default_value = ".")]
@@ -1624,6 +1627,7 @@ pub(crate) enum WorktreeAction {
     /// The session is killed before git runs, because git refuses to remove
     /// a worktree whose files are held open and a shell sitting in that
     /// directory holds it open. Refuses the worktree you are standing in.
+    #[command(visible_alias = "rm")]
     Remove {
         /// Worktree path, branch, or derived session name.
         target: String,
@@ -1639,12 +1643,20 @@ pub(crate) enum WorktreeAction {
 }
 
 /// `phux tag <action>` — list and edit a Terminal's L3 tags.
+///
+/// Alias policy (ADR-0065 §5): every list/remove registry verb answers to
+/// both spellings. This registry's canonical names were the short ones, so
+/// the aliases here are the long forms.
 #[derive(Debug, Subcommand)]
 pub(crate) enum TagAction {
     /// List the tags on each Terminal a selector resolves to.
+    #[command(visible_alias = "list")]
     Ls {
         /// Target selector (session, `session:window`, `@id`, `.`, `#tag`).
         target: String,
+
+        #[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Add one or more tags to each Terminal a selector resolves to.
@@ -1654,15 +1666,22 @@ pub(crate) enum TagAction {
         /// Tags to add (the leading `#` is optional).
         #[arg(required = true)]
         tags: Vec<String>,
+
+        #[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Remove one or more tags from each Terminal a selector resolves to.
+    #[command(visible_alias = "remove")]
     Rm {
         /// Target selector.
         target: String,
         /// Tags to remove (the leading `#` is optional).
         #[arg(required = true)]
         tags: Vec<String>,
+
+        #[command(flatten)]
+        json: JsonOpt,
     },
 }
 
@@ -1739,6 +1758,11 @@ pub(crate) enum PluginAction {
     },
 
     /// Remove a configured plugin by id.
+    // `rm` / `remove` are the alias-policy spellings (ADR-0065 §5): every
+    // remove-shaped registry verb answers to both, and this registry's
+    // canonical name predates the policy. A code comment, not a doc comment —
+    // ADR ids must not leak into `--help` (see `help_inventory`).
+    #[command(visible_aliases = ["rm", "remove"])]
     Unlink {
         /// Plugin id from its manifest.
         id: String,

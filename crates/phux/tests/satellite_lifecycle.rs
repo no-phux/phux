@@ -251,6 +251,24 @@ endpoint = "ssh://devbox-b"
 
     assert_ne!(code, 0, "duplicate satellite names should be refused");
     assert!(stdout.is_empty());
+    // Under `--json` the failure is one line of the shared error contract
+    // (phux-i0e8.8.3): code `registry`, with the duplicate named in the
+    // message (JSON-escaped, so the assertion parses rather than greps).
+    let doc: serde_json::Value =
+        serde_json::from_str(stderr.trim()).expect("`--json` failure stderr parses as JSON");
+    assert_eq!(doc["error"]["code"], "registry");
+    assert!(
+        doc["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(r#"duplicate satellite name "devbox""#)),
+        "the message names the duplicate; got {doc}"
+    );
+
+    // The same refusal without `--json` keeps the prose spelling scripts
+    // already grep for.
+    let (code, stdout, stderr) = run_with_xdg(&["satellite", "list"], &xdg);
+    assert_ne!(code, 0, "duplicate satellite names should be refused");
+    assert!(stdout.is_empty());
     assert!(stderr.contains(r#"duplicate satellite name "devbox""#));
 }
 

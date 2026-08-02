@@ -52,7 +52,7 @@ pub(super) fn run_install(
     };
     match install(&runtime, reference, rev, !disabled, json) {
         Ok(code) => code,
-        Err(err) => fail(&err),
+        Err(err) => fail(json, &err),
     }
 }
 
@@ -64,7 +64,7 @@ pub(super) fn run_update(name: Option<&str>, json: bool) -> ExitCode {
     };
     match update(&runtime, name, json) {
         Ok(code) => code,
-        Err(err) => fail(&err),
+        Err(err) => fail(json, &err),
     }
 }
 
