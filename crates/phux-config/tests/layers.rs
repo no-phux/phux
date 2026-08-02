@@ -18,21 +18,13 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use phux_config::{ConfigError, MAX_EXTENDS_DEPTH, loader, parse_with_defaults};
 use tempfile::TempDir;
 
-/// Write `contents` to `dir/name`, creating parent directories.
-fn write(dir: &Path, name: &str, contents: &str) -> PathBuf {
-    let path = dir.join(name);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("mkdir");
-    }
-    fs::write(&path, contents).expect("write layer");
-    path
-}
+mod common;
+use common::write;
 
 #[test]
 fn three_layer_merge_later_layers_win_per_leaf() {
@@ -193,6 +185,7 @@ fn missing_layer_file_names_layer_and_referencing_file() {
 
 #[test]
 fn extends_cycle_is_an_error() {
+    // Two-file cycle: the error names the offending edge.
     let tmp = TempDir::new().expect("tempdir");
     write(tmp.path(), "a.toml", r#"extends = ["b.toml"]"#);
     write(tmp.path(), "b.toml", r#"extends = ["a.toml"]"#);
@@ -210,14 +203,10 @@ fn extends_cycle_is_an_error() {
         }
         other => panic!("expected LayerCycle, got: {other:?}"),
     }
-}
 
-#[test]
-fn self_extends_is_a_cycle() {
+    // A file extending itself is the degenerate cycle.
     let tmp = TempDir::new().expect("tempdir");
     write(tmp.path(), "a.toml", r#"extends = ["a.toml"]"#);
-    let user = r#"extends = ["a.toml"]"#;
-
     let err = parse_with_defaults(user, &tmp.path().join("config.toml"))
         .expect_err("self-cycle must fail");
     assert!(matches!(err, ConfigError::LayerCycle { .. }), "{err:?}");
@@ -252,62 +241,47 @@ fn nesting_past_max_depth_is_an_error() {
     }
 }
 
+/// Table-driven guard-rail errors: each malformed input must fail as
+/// `ConfigError::Layer` naming the config file, with the given message
+/// substring (empty = variant match only).
 #[test]
-fn extends_must_be_an_array_of_strings() {
-    let err = parse_with_defaults(r#"extends = "distro.toml""#, Path::new("config.toml"))
-        .expect_err("non-array extends must fail");
-    assert!(
-        matches!(&err, ConfigError::Layer { message, .. } if message.contains("array of strings")),
-        "{err:?}"
-    );
-
-    let err = parse_with_defaults("extends = [1, 2]", Path::new("config.toml"))
-        .expect_err("non-string entries must fail");
-    assert!(matches!(err, ConfigError::Layer { .. }), "{err:?}");
-}
-
-#[test]
-fn replace_and_append_in_the_same_layer_is_an_error() {
-    let user = r#"
-[status]
-right = ["session-name"]
-right-append = ["session-name"]
-"#;
-    let err = parse_with_defaults(user, Path::new("config.toml"))
-        .expect_err("conflicting directives must fail");
-    match &err {
-        ConfigError::Layer { path, message } => {
-            assert!(path.ends_with("config.toml"));
-            assert!(message.contains("right"), "{message}");
+fn layer_directive_guard_rails_error() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "non-array extends",
+            r#"extends = "distro.toml""#,
+            "array of strings",
+        ),
+        ("non-string extends entries", "extends = [1, 2]", ""),
+        (
+            "x and x-append in the same layer",
+            "[status]\nright = [\"session-name\"]\nright-append = [\"session-name\"]\n",
+            "right",
+        ),
+        (
+            "-append with a non-array value",
+            "[status]\nright-append = \"session-name\"\n",
+            "must be an array",
+        ),
+        (
+            // `defaults` is a table in the shipped defaults.
+            "-append targeting a non-array",
+            "defaults-append = []\n",
+            "not an array",
+        ),
+    ];
+    for (what, input, want) in cases {
+        let Err(err) = parse_with_defaults(input, Path::new("config.toml")) else {
+            panic!("{what}: must fail");
+        };
+        match &err {
+            ConfigError::Layer { path, message } => {
+                assert!(path.ends_with("config.toml"), "{what}: {err}");
+                assert!(message.contains(want), "{what}: {message}");
+            }
+            other => panic!("{what}: expected Layer, got: {other:?}"),
         }
-        other => panic!("expected Layer, got: {other:?}"),
     }
-}
-
-#[test]
-fn append_with_non_array_value_is_an_error() {
-    let user = r#"
-[status]
-right-append = "session-name"
-"#;
-    let err =
-        parse_with_defaults(user, Path::new("config.toml")).expect_err("scalar -append must fail");
-    assert!(
-        matches!(&err, ConfigError::Layer { message, .. } if message.contains("must be an array")),
-        "{err:?}"
-    );
-}
-
-#[test]
-fn append_targeting_a_non_array_is_an_error() {
-    // `defaults` is a table in the shipped defaults.
-    let user = "defaults-append = []\n";
-    let err = parse_with_defaults(user, Path::new("config.toml"))
-        .expect_err("appending to a table must fail");
-    assert!(
-        matches!(&err, ConfigError::Layer { message, .. } if message.contains("not an array")),
-        "{err:?}"
-    );
 }
 
 #[test]

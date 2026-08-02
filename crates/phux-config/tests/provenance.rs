@@ -17,21 +17,13 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use phux_config::{ConfigProvenance, KeyOrigin, LayerSource, merged_config_with_provenance};
 use tempfile::TempDir;
 
-/// Write `contents` to `dir/name`, creating parent directories.
-fn write(dir: &Path, name: &str, contents: &str) -> PathBuf {
-    let path = dir.join(name);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("mkdir");
-    }
-    fs::write(&path, contents).expect("write layer");
-    path
-}
+mod common;
+use common::write;
 
 /// The root (user) input of the three-layer fixture.
 const USER_INPUT: &str = r#"

@@ -25,19 +25,57 @@ fn fixed_time() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(12345)
 }
 
+fn build_spec(
+    kind: &str,
+    opts: &[(&str, toml::Value)],
+) -> Result<Box<dyn StatusWidget>, WidgetError> {
+    let spec = WidgetSpec {
+        kind: kind.to_owned(),
+        opts: opts_with(opts),
+    };
+    WidgetRegistry::with_builtins().build(&spec)
+}
+
+fn text_of(cells: &WidgetCells) -> String {
+    cells.cells.iter().filter_map(|c| c.text.first()).collect()
+}
+
+fn style_table(entries: &[(&str, toml::Value)]) -> toml::Value {
+    let mut t = toml::value::Table::new();
+    for (k, v) in entries {
+        t.insert((*k).to_owned(), v.clone());
+    }
+    toml::Value::Table(t)
+}
+
+/// Window fixture; flip `zoomed` / `attention` via struct update at the
+/// call site.
+fn win(name: &str, active: bool) -> WindowInfo {
+    WindowInfo {
+        name: name.to_owned(),
+        active,
+        zoomed: false,
+        attention: false,
+        branch: None,
+    }
+}
+
+fn render_windows(opts: &[(&str, toml::Value)], windows: &[WindowInfo]) -> WidgetCells {
+    let w = build_spec("windows", opts).expect("windows builds");
+    w.render(&WidgetContext::new(fixed_time(), "", "C-a", windows))
+}
+
 // ---------------------------------------------------------------------------
 // Registry construction
 // ---------------------------------------------------------------------------
 
 #[test]
-fn with_builtins_registers_time_and_session_name() {
+fn with_builtins_registers_the_shipped_widget_kinds() {
     let r = WidgetRegistry::with_builtins();
     let kinds = r.kinds();
-    assert!(kinds.contains(&"time"), "missing time: {kinds:?}");
-    assert!(
-        kinds.contains(&"session-name"),
-        "missing session-name: {kinds:?}"
-    );
+    for kind in ["time", "session-name", "windows", "help-hints"] {
+        assert!(kinds.contains(&kind), "missing {kind}: {kinds:?}");
+    }
 }
 
 #[test]
@@ -65,80 +103,62 @@ fn register_then_build_invokes_factory() {
     };
     let w = r.build(&spec).expect("custom builds");
     let cells = w.render(&WidgetContext::new(fixed_time(), "main", "C-a", &[]));
-    let chars: String = cells.cells.iter().filter_map(|c| c.text.first()).collect();
-    assert_eq!(chars, "X:main");
+    assert_eq!(text_of(&cells), "X:main");
 }
 
 // ---------------------------------------------------------------------------
 // session-name widget
 // ---------------------------------------------------------------------------
 
-#[test]
-fn session_name_renders_prefix_and_truncated_name() {
-    let r = WidgetRegistry::with_builtins();
-    let spec = WidgetSpec {
-        kind: "session-name".to_owned(),
-        opts: opts_with(&[
-            ("prefix", toml::Value::String("[sess]".to_owned())),
-            ("max-len", toml::Value::Integer(4)),
-        ]),
-    };
-    let w = r.build(&spec).expect("session-name builds");
-    let cells = w.render(&WidgetContext::new(
-        fixed_time(),
-        "very-long-session-name",
-        "C-a",
-        &[],
-    ));
-    let chars: String = cells.cells.iter().filter_map(|c| c.text.first()).collect();
-    assert_eq!(chars, "[sess]very");
-}
+/// One session-name render case: description, opts, session, expected.
+type SessionNameCase<'a> = (&'a str, Vec<(&'a str, toml::Value)>, &'a str, &'a str);
 
+/// Table-driven rendering: opts x session name -> rendered text. Covers
+/// prefix + truncation, the `snake_case` `max_len` alias, the no-options
+/// full name (also the historical default-format behavior), `format`
+/// placeholder substitution, and `format` composing with prefix/max-len
+/// (phux-i0e8.4.2; tui.md section 8.3).
 #[test]
-fn session_name_max_len_accepts_snake_case_alias() {
-    let r = WidgetRegistry::with_builtins();
-    let spec = WidgetSpec {
-        kind: "session-name".to_owned(),
-        opts: opts_with(&[("max_len", toml::Value::Integer(3))]),
-    };
-    let w = r.build(&spec).unwrap();
-    let cells = w.render(&WidgetContext::new(fixed_time(), "abcdef", "C-a", &[]));
-    let chars: String = cells.cells.iter().filter_map(|c| c.text.first()).collect();
-    assert_eq!(chars, "abc");
-}
-
-#[test]
-fn session_name_no_options_renders_full_name() {
-    let w = SessionNameWidget::new(None, None);
-    let cells = w.render(&WidgetContext::new(fixed_time(), "main", "C-a", &[]));
-    let chars: String = cells.cells.iter().filter_map(|c| c.text.first()).collect();
-    assert_eq!(chars, "main");
-}
-
-#[test]
-fn session_name_rejects_zero_max_len() {
-    let r = WidgetRegistry::with_builtins();
-    let spec = WidgetSpec {
-        kind: "session-name".to_owned(),
-        opts: opts_with(&[("max-len", toml::Value::Integer(0))]),
-    };
-    match r.build(&spec) {
-        Err(WidgetError::InvalidOption { kind, .. }) => assert_eq!(kind, "session-name"),
-        other => panic!("expected InvalidOption, got {other:?}"),
+fn session_name_renders_per_its_options() {
+    let cases: &[SessionNameCase<'_>] = &[
+        (
+            "prefix and truncated name",
+            vec![
+                ("prefix", toml::Value::String("[sess]".to_owned())),
+                ("max-len", toml::Value::Integer(4)),
+            ],
+            "very-long-session-name",
+            "[sess]very",
+        ),
+        (
+            "max_len snake_case alias",
+            vec![("max_len", toml::Value::Integer(3))],
+            "abcdef",
+            "abc",
+        ),
+        ("no options renders full name", vec![], "main", "main"),
+        (
+            "format substitutes {name}",
+            vec![("format", toml::Value::String("[{name}]".to_owned()))],
+            "main",
+            "[main]",
+        ),
+        (
+            "format composes with prefix and max-len",
+            vec![
+                ("format", toml::Value::String("<{name}>".to_owned())),
+                ("prefix", toml::Value::String("s:".to_owned())),
+                ("max-len", toml::Value::Integer(4)),
+            ],
+            "very-long",
+            "s:<very>",
+        ),
+    ];
+    for (what, opts, session, want) in cases {
+        let w = build_spec("session-name", opts).unwrap_or_else(|e| panic!("{what}: {e}"));
+        let cells = w.render(&WidgetContext::new(fixed_time(), session, "C-a", &[]));
+        assert_eq!(&text_of(&cells), want, "{what}");
     }
-}
-
-#[test]
-fn session_name_rejects_non_integer_max_len() {
-    let r = WidgetRegistry::with_builtins();
-    let spec = WidgetSpec {
-        kind: "session-name".to_owned(),
-        opts: opts_with(&[("max-len", toml::Value::String("ten".to_owned()))]),
-    };
-    assert!(matches!(
-        r.build(&spec),
-        Err(WidgetError::InvalidOption { .. })
-    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -146,38 +166,22 @@ fn session_name_rejects_non_integer_max_len() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn time_widget_default_format_renders_h_m() {
-    let r = WidgetRegistry::with_builtins();
-    let spec = WidgetSpec {
-        kind: "time".to_owned(),
-        opts: BTreeMap::new(),
-    };
-    let w = r.build(&spec).expect("time builds");
-    let cells = w.render(&WidgetContext::new(fixed_time(), "", "C-a", &[]));
+fn time_widget_formats_render_expected_widths() {
     // Default %H:%M renders to 5 chars (HH:MM) in any locale.
+    let w = build_spec("time", &[]).expect("time builds");
+    let cells = w.render(&WidgetContext::new(fixed_time(), "", "C-a", &[]));
     assert_eq!(
         cells.cells.len(),
         5,
         "expected 5 chars (HH:MM), got {}: {:?}",
         cells.cells.len(),
-        cells
-            .cells
-            .iter()
-            .filter_map(|c| c.text.first())
-            .collect::<String>()
+        text_of(&cells)
     );
-}
 
-#[test]
-fn time_widget_explicit_format_uses_format_string() {
-    let r = WidgetRegistry::with_builtins();
-    let spec = WidgetSpec {
-        kind: "time".to_owned(),
-        opts: opts_with(&[("format", toml::Value::String("%Y".to_owned()))]),
-    };
-    let w = r.build(&spec).expect("time builds");
+    // An explicit format is honored: %Y is a 4-digit year.
+    let w = build_spec("time", &[("format", toml::Value::String("%Y".to_owned()))])
+        .expect("time builds");
     let cells = w.render(&WidgetContext::new(fixed_time(), "", "C-a", &[]));
-    // %Y is a 4-digit year.
     assert_eq!(cells.cells.len(), 4);
 }
 
@@ -187,45 +191,71 @@ fn time_widget_poll_interval_is_one_second() {
     assert_eq!(w.poll_interval(), Some(Duration::from_secs(1)));
 }
 
+// ---------------------------------------------------------------------------
+// Invalid options (per-kind); unknown kind
+// ---------------------------------------------------------------------------
+
+/// One invalid-option case: description, widget kind, opts.
+type InvalidOptionCase<'a> = (&'a str, &'a str, Vec<(&'a str, toml::Value)>);
+
+/// Table-driven rejection: every invalid option value must fail at build
+/// time with `InvalidOption` naming the offending widget kind.
 #[test]
-fn time_widget_rejects_invalid_format() {
-    let r = WidgetRegistry::with_builtins();
-    let spec = WidgetSpec {
-        kind: "time".to_owned(),
-        opts: opts_with(&[("format", toml::Value::String("%Q".to_owned()))]),
-    };
-    // %Q is not a valid strftime directive — must be rejected at build time.
-    match r.build(&spec) {
-        Err(WidgetError::InvalidOption { kind, .. }) => assert_eq!(kind, "time"),
-        other => panic!("expected InvalidOption, got {other:?}"),
+fn invalid_option_values_are_rejected_naming_the_kind() {
+    let cases: &[InvalidOptionCase<'_>] = &[
+        (
+            "zero max-len",
+            "session-name",
+            vec![("max-len", toml::Value::Integer(0))],
+        ),
+        (
+            "non-integer max-len",
+            "session-name",
+            vec![("max-len", toml::Value::String("ten".to_owned()))],
+        ),
+        (
+            "non-string session-name format",
+            "session-name",
+            vec![("format", toml::Value::Integer(1))],
+        ),
+        (
+            // %Q is not a valid strftime directive.
+            "invalid strftime format",
+            "time",
+            vec![("format", toml::Value::String("%Q".to_owned()))],
+        ),
+        (
+            "non-string time format",
+            "time",
+            vec![("format", toml::Value::Integer(42))],
+        ),
+        (
+            "non-table windows style",
+            "windows",
+            vec![("active", toml::Value::String("nope".to_owned()))],
+        ),
+        (
+            "unknown windows style field",
+            "windows",
+            vec![(
+                "inactive",
+                style_table(&[("colour", toml::Value::String("red".to_owned()))]),
+            )],
+        ),
+    ];
+    for (what, kind, opts) in cases {
+        match build_spec(kind, opts) {
+            Err(WidgetError::InvalidOption { kind: k, .. }) => {
+                assert_eq!(&k, kind, "{what}: error names the wrong widget");
+            }
+            other => panic!("{what}: expected InvalidOption, got {other:?}"),
+        }
     }
 }
 
 #[test]
-fn time_widget_rejects_non_string_format() {
-    let r = WidgetRegistry::with_builtins();
-    let spec = WidgetSpec {
-        kind: "time".to_owned(),
-        opts: opts_with(&[("format", toml::Value::Integer(42))]),
-    };
-    assert!(matches!(
-        r.build(&spec),
-        Err(WidgetError::InvalidOption { .. })
-    ));
-}
-
-// ---------------------------------------------------------------------------
-// Unknown kind
-// ---------------------------------------------------------------------------
-
-#[test]
 fn unknown_kind_returns_unknown_kind_error() {
-    let r = WidgetRegistry::with_builtins();
-    let spec = WidgetSpec {
-        kind: "not-a-real-widget".to_owned(),
-        opts: BTreeMap::new(),
-    };
-    match r.build(&spec) {
+    match build_spec("not-a-real-widget", &[]) {
         Err(WidgetError::UnknownKind(k)) => assert_eq!(k, "not-a-real-widget"),
         other => panic!("expected UnknownKind, got {other:?}"),
     }
@@ -240,120 +270,66 @@ fn widget_cells_from_text_one_cell_per_char() {
     let cells = WidgetCells::from_text("hi");
     assert_eq!(cells.len(), 2);
     assert!(!cells.is_empty());
-}
 
-#[test]
-fn widget_cells_empty() {
-    let cells = WidgetCells::from_text("");
-    assert!(cells.is_empty());
-    assert_eq!(cells.len(), 0);
+    let empty = WidgetCells::from_text("");
+    assert!(empty.is_empty());
+    assert_eq!(empty.len(), 0);
 }
 
 // ---------------------------------------------------------------------------
 // windows (tab-bar) widget
 // ---------------------------------------------------------------------------
 
-fn win(name: &str, active: bool) -> WindowInfo {
-    WindowInfo {
-        name: name.to_owned(),
-        active,
-        zoomed: false,
-        attention: false,
-        branch: None,
-    }
-}
-
-fn win_zoomed(name: &str, active: bool) -> WindowInfo {
-    WindowInfo {
-        name: name.to_owned(),
-        active,
-        zoomed: true,
-        attention: false,
-        branch: None,
-    }
-}
-
-fn win_attention(name: &str, active: bool) -> WindowInfo {
-    WindowInfo {
-        name: name.to_owned(),
-        active,
-        zoomed: false,
-        attention: true,
-        branch: None,
-    }
-}
-
-fn render_windows(opts: &[(&str, toml::Value)], windows: &[WindowInfo]) -> WidgetCells {
-    let spec = WidgetSpec {
-        kind: "windows".to_owned(),
-        opts: opts_with(opts),
-    };
-    let w = WidgetRegistry::with_builtins()
-        .build(&spec)
-        .expect("windows builds");
-    w.render(&WidgetContext::new(fixed_time(), "", "C-a", windows))
-}
-
-fn text_of(cells: &WidgetCells) -> String {
-    cells.cells.iter().filter_map(|c| c.text.first()).collect()
-}
-
-fn style_table(entries: &[(&str, toml::Value)]) -> toml::Value {
-    let mut t = toml::value::Table::new();
-    for (k, v) in entries {
-        t.insert((*k).to_owned(), v.clone());
-    }
-    toml::Value::Table(t)
-}
-
+/// Table-driven tab rendering with the default format/separator:
+/// plain tabs, the ` Z` zoom suffix on a zoomed window (phux-x2hm), the
+/// ` !` attention suffix (phux-foz.1, ADR-0035), and the empty list.
 #[test]
-fn windows_widget_registered_in_builtins() {
-    assert!(WidgetRegistry::with_builtins().kinds().contains(&"windows"));
-}
-
-#[test]
-fn help_hints_widget_registered_in_builtins() {
-    assert!(
-        WidgetRegistry::with_builtins()
-            .kinds()
-            .contains(&"help-hints")
-    );
+fn windows_widget_renders_tabs_and_markers() {
+    let cases: &[(&str, Vec<WindowInfo>, &str)] = &[
+        (
+            "default format and separator",
+            vec![win("a", true), win("b", false)],
+            "0:a 1:b",
+        ),
+        (
+            "zoomed active window gets tmux's Z suffix; others unmarked",
+            vec![
+                WindowInfo {
+                    zoomed: true,
+                    ..win("a", true)
+                },
+                win("b", false),
+            ],
+            "0:a Z 1:b",
+        ),
+        (
+            "attention window gets the ! suffix; others stay plain",
+            vec![
+                win("a", true),
+                WindowInfo {
+                    attention: true,
+                    ..win("b", false)
+                },
+            ],
+            "0:a 1:b !",
+        ),
+        ("empty list renders nothing", vec![], ""),
+    ];
+    for (what, windows, want) in cases {
+        let cells = render_windows(&[], windows);
+        assert_eq!(&text_of(&cells), want, "{what}");
+        if want.is_empty() {
+            assert!(cells.is_empty(), "{what}");
+        }
+    }
 }
 
 #[test]
 fn help_hints_widget_uses_configured_prefix() {
-    let spec = WidgetSpec {
-        kind: "help-hints".to_owned(),
-        opts: BTreeMap::new(),
-    };
-    let widget = WidgetRegistry::with_builtins()
-        .build(&spec)
-        .expect("help-hints builds");
+    let widget = build_spec("help-hints", &[]).expect("help-hints builds");
     let cells = widget.render(&WidgetContext::new(fixed_time(), "", "C-b", &[]));
 
     assert_eq!(text_of(&cells), "C-b ? help | C-b : palette | C-b [ copy");
-}
-
-#[test]
-fn windows_widget_default_format_and_separator() {
-    let cells = render_windows(&[], &[win("a", true), win("b", false)]);
-    assert_eq!(text_of(&cells), "0:a 1:b");
-}
-
-#[test]
-fn windows_widget_appends_z_marker_when_zoomed() {
-    // phux-x2hm: a zoomed active window gets tmux's ` Z` suffix; the other
-    // (non-zoomed) tab is unmarked.
-    let cells = render_windows(&[], &[win_zoomed("a", true), win("b", false)]);
-    assert_eq!(text_of(&cells), "0:a Z 1:b");
-}
-
-#[test]
-fn windows_widget_appends_attention_marker() {
-    // phux-foz.1: a window whose pane asked for a human answer (ADR-0035)
-    // gets a ` !` suffix on its tab; unmarked windows stay plain.
-    let cells = render_windows(&[], &[win("a", true), win_attention("b", false)]);
-    assert_eq!(text_of(&cells), "0:a 1:b !");
 }
 
 #[test]
@@ -362,7 +338,16 @@ fn windows_widget_stamps_hit_targets_on_tab_cells() {
     // target (markers included); separator cells are inert. Cell-for-cell
     // against the default format "0:a 1:b Z" (window 1 zoomed... use the
     // attention marker on 1 to cover marker cells too).
-    let cells = render_windows(&[], &[win("a", true), win_attention("bee", false)]);
+    let cells = render_windows(
+        &[],
+        &[
+            win("a", true),
+            WindowInfo {
+                attention: true,
+                ..win("bee", false)
+            },
+        ],
+    );
     // "0:a 1:bee !" — columns 0..3 → window 0, column 3 separator, 4..11 → window 1.
     assert_eq!(text_of(&cells), "0:a 1:bee !");
     for (i, cell) in cells.cells.iter().enumerate() {
@@ -434,18 +419,6 @@ fn windows_widget_active_and_inactive_styles_differ() {
 }
 
 #[test]
-fn windows_widget_custom_format_and_separator() {
-    let cells = render_windows(
-        &[
-            ("format", toml::Value::String("{name}".to_owned())),
-            ("separator", toml::Value::String(" | ".to_owned())),
-        ],
-        &[win("edit", true), win("logs", false)],
-    );
-    assert_eq!(text_of(&cells), "edit | logs");
-}
-
-#[test]
 fn windows_widget_custom_style_parses() {
     let cells = render_windows(
         &[(
@@ -462,54 +435,10 @@ fn windows_widget_custom_style_parses() {
     assert!(style.bold);
 }
 
-#[test]
-fn windows_widget_rejects_non_table_style() {
-    let spec = WidgetSpec {
-        kind: "windows".to_owned(),
-        opts: opts_with(&[("active", toml::Value::String("nope".to_owned()))]),
-    };
-    let err = WidgetRegistry::with_builtins()
-        .build(&spec)
-        .expect_err("non-table style rejected");
-    assert!(matches!(err, WidgetError::InvalidOption { .. }));
-}
-
-#[test]
-fn windows_widget_rejects_unknown_style_field() {
-    let spec = WidgetSpec {
-        kind: "windows".to_owned(),
-        opts: opts_with(&[(
-            "inactive",
-            style_table(&[("colour", toml::Value::String("red".to_owned()))]),
-        )]),
-    };
-    let err = WidgetRegistry::with_builtins()
-        .build(&spec)
-        .expect_err("unknown style field rejected");
-    assert!(matches!(err, WidgetError::InvalidOption { .. }));
-}
-
-#[test]
-fn windows_widget_empty_list_renders_nothing() {
-    let cells = render_windows(&[], &[]);
-    assert!(cells.is_empty());
-}
-
 // ---------------------------------------------------------------------------
 // Closed opts surface (phux-i0e8.4.2): every factory rejects unknown
 // options, naming the widget and suggesting the nearest valid opt.
 // ---------------------------------------------------------------------------
-
-fn build_spec(
-    kind: &str,
-    opts: &[(&str, toml::Value)],
-) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    let spec = WidgetSpec {
-        kind: kind.to_owned(),
-        opts: opts_with(opts),
-    };
-    WidgetRegistry::with_builtins().build(&spec)
-}
 
 /// One rejection case: widget kind, opts, expected suggestion.
 type RejectionCase<'a> = (&'a str, Vec<(&'a str, toml::Value)>, &'a str);
@@ -711,52 +640,6 @@ fn styled_wrapper_forwards_poll_interval_and_exec_feed() {
     )
     .unwrap();
     assert!(exec.exec_feed().is_some(), "exec feed lost behind Styled");
-}
-
-// ---------------------------------------------------------------------------
-// session-name `format` (phux-i0e8.4.2; tui.md §8.3)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn session_name_format_substitutes_name_placeholder() {
-    let w = build_spec(
-        "session-name",
-        &[("format", toml::Value::String("[{name}]".to_owned()))],
-    )
-    .unwrap();
-    let cells = w.render(&WidgetContext::new(fixed_time(), "main", "C-a", &[]));
-    assert_eq!(text_of(&cells), "[main]");
-}
-
-#[test]
-fn session_name_format_composes_with_prefix_and_max_len() {
-    let w = build_spec(
-        "session-name",
-        &[
-            ("format", toml::Value::String("<{name}>".to_owned())),
-            ("prefix", toml::Value::String("s:".to_owned())),
-            ("max-len", toml::Value::Integer(4)),
-        ],
-    )
-    .unwrap();
-    let cells = w.render(&WidgetContext::new(fixed_time(), "very-long", "C-a", &[]));
-    assert_eq!(text_of(&cells), "s:<very>");
-}
-
-#[test]
-fn session_name_default_format_is_unchanged_behavior() {
-    // No `format` ⇒ exactly the historical output (prefix + name).
-    let w = build_spec("session-name", &[]).unwrap();
-    let cells = w.render(&WidgetContext::new(fixed_time(), "main", "C-a", &[]));
-    assert_eq!(text_of(&cells), "main");
-}
-
-#[test]
-fn session_name_rejects_non_string_format() {
-    assert!(matches!(
-        build_spec("session-name", &[("format", toml::Value::Integer(1))]),
-        Err(WidgetError::InvalidOption { .. })
-    ));
 }
 
 #[test]

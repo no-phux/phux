@@ -4,26 +4,36 @@ use tempfile::TempDir;
 
 use phux_config::{Config, parse_str, plugin};
 
-fn write_manifest(dir: &TempDir, body: &str) -> Result<std::path::PathBuf, std::io::Error> {
-    let path = dir.path().join("phux-plugin.toml");
-    std::fs::write(&path, body)?;
-    Ok(path)
-}
+mod common;
+use common::{manifest, write_manifest};
 
 #[test]
-fn checked_in_provider_showcase_manifest_loads() -> Result<(), Box<dyn std::error::Error>> {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+fn checked_in_example_manifests_load() -> Result<(), Box<dyn std::error::Error>> {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("examples/plugins/provider-showcase/phux-plugin.toml");
+        .join("examples/plugins");
 
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
-
+    let loaded =
+        plugin::load_plugin_manifest(&examples.join("provider-showcase/phux-plugin.toml"))?;
     assert_eq!(loaded.id, "com.phux.demo.provider-showcase");
     assert_eq!(loaded.events[0].id, "idle");
     assert_eq!(loaded.panes[0].id, "board");
     assert_eq!(loaded.links[0].id, "ticket");
     assert_eq!(loaded.workspaces[0].id, "ops-bench");
     assert_eq!(loaded.workspaces[0].panes[0].pane, "board");
+
+    let loaded = plugin::load_plugin_manifest(&examples.join("continuum/phux-plugin.toml"))?;
+    assert_eq!(loaded.id, "com.phux.demo.continuum");
+    assert_eq!(loaded.actions[0].id, "autosave");
+    assert_eq!(loaded.actions[1].id, "restore-latest");
+    assert_eq!(loaded.events[0].id, "idle-autosave");
+    assert_eq!(loaded.events[1].on, "session.changed");
+    assert_eq!(loaded.workspaces[0].id, "continuum");
+    assert_eq!(loaded.workspaces[0].actions, ["autosave", "restore-latest"]);
+    assert_eq!(
+        loaded.workspaces[0].events,
+        ["idle-autosave", "session-autosave"]
+    );
     Ok(())
 }
 
@@ -47,12 +57,10 @@ enabled = true
 fn plugin_manifest_loads_actions_events_and_panes() -> Result<(), Box<dyn std::error::Error>> {
     let dir = TempDir::new()?;
     let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.agent-tools"
-name = "Agent Tools"
-version = "0.1.0"
-min_phux_version = "0.0.2"
+        dir.path(),
+        &manifest(
+            "example.agent-tools",
+            r#"
 description = "Agent workflow helpers"
 platforms = ["linux", "macos"]
 
@@ -103,7 +111,8 @@ id = "board-role"
 pane = "board"
 role = "board"
 "#,
-    )?;
+        ),
+    );
 
     let loaded = plugin::load_plugin_manifest(&manifest)?;
 
@@ -135,77 +144,15 @@ role = "board"
     Ok(())
 }
 
+/// Every schema-validation rejection, table-driven: each body must be
+/// refused at load time with an error containing the given message.
 #[test]
-fn plugin_manifest_rejects_workspace_unknown_pane_ref() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.bad-workspace"
-name = "Bad Workspace"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
-[[workspaces]]
-id = "bench"
-title = "Bench"
-
-[[workspaces.panes]]
-id = "missing"
-pane = "not-declared"
-role = "lead"
-"#,
-    )?;
-
-    let Err(err) = plugin::load_plugin_manifest(&manifest) else {
-        return Err("workspace with unknown pane ref loaded successfully".into());
-    };
-    assert!(
-        err.to_string()
-            .contains("workspace bench references unknown pane 'not-declared'"),
-        "error should name missing workspace pane reference; got {err}"
-    );
-    Ok(())
-}
-
-#[test]
-fn plugin_manifest_defaults_agent_state_to_unknown() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.agent-state"
-name = "Agent State"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
-[[agents]]
-id = "background-worker"
-label = "Background Worker"
-"#,
-    )?;
-
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
-
-    assert_eq!(loaded.agents[0].state, plugin::PluginAgentState::Unknown);
-    assert_eq!(
-        loaded.agents[0].attention,
-        plugin::PluginAgentAttention::Normal
-    );
-    Ok(())
-}
-
-#[test]
-fn plugin_manifest_rejects_duplicate_agent_ids() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.dup-agents"
-name = "Duplicate Agents"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
+#[allow(clippy::too_many_lines, reason = "table of manifest bodies")]
+fn plugin_manifest_validation_rejections() -> Result<(), Box<dyn std::error::Error>> {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "duplicate agent ids",
+            r#"
 [[agents]]
 id = "codex"
 label = "Codex"
@@ -214,29 +161,11 @@ label = "Codex"
 id = "codex"
 label = "Codex again"
 "#,
-    )?;
-
-    let Err(err) = plugin::load_plugin_manifest(&manifest) else {
-        return Err("duplicate agent manifest loaded successfully".into());
-    };
-    assert!(
-        err.to_string().contains("duplicate plugin agent id"),
-        "error should name duplicate agent id; got {err}"
-    );
-    Ok(())
-}
-
-#[test]
-fn plugin_manifest_rejects_duplicate_action_ids() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.dup"
-name = "Duplicate"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
+            "duplicate plugin agent id",
+        ),
+        (
+            "duplicate action ids",
+            r#"
 [[actions]]
 id = "run"
 title = "Run"
@@ -247,29 +176,11 @@ id = "run"
 title = "Run again"
 command = ["true"]
 "#,
-    )?;
-
-    let Err(err) = plugin::load_plugin_manifest(&manifest) else {
-        return Err("duplicate action manifest loaded successfully".into());
-    };
-    assert!(
-        err.to_string().contains("duplicate plugin action id"),
-        "error should name duplicate action id; got {err}"
-    );
-    Ok(())
-}
-
-#[test]
-fn plugin_manifest_rejects_duplicate_provider_ids() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.dup-providers"
-name = "Duplicate Providers"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
+            "duplicate plugin action id",
+        ),
+        (
+            "duplicate event provider ids",
+            r#"
 [[events]]
 id = "idle"
 title = "Idle"
@@ -282,73 +193,95 @@ title = "Idle again"
 on = "pane.idle"
 command = ["true"]
 "#,
-    )?;
+            "duplicate plugin event id",
+        ),
+        (
+            "duplicate widget ids",
+            r#"
+[[widgets]]
+id = "w"
+kind = "exec"
+command = "a"
 
-    let Err(err) = plugin::load_plugin_manifest(&manifest) else {
-        return Err("duplicate event provider manifest loaded successfully".into());
-    };
-    assert!(
-        err.to_string().contains("duplicate plugin event id"),
-        "error should name duplicate event provider id; got {err}"
-    );
-    Ok(())
-}
-
-#[test]
-fn plugin_manifest_rejects_malformed_link_provider_ids() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.bad-link"
-name = "Bad Link"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
+[[widgets]]
+id = "w"
+kind = "exec"
+command = "b"
+"#,
+            "duplicate plugin widget id",
+        ),
+        (
+            "malformed link provider id",
+            r#"
 [[links]]
 id = "bad link"
 title = "Bad"
 schemes = ["https"]
 command = ["true"]
 "#,
-    )?;
-
-    let Err(err) = plugin::load_plugin_manifest(&manifest) else {
-        return Err("malformed link provider manifest loaded successfully".into());
-    };
-    assert!(
-        err.to_string().contains("invalid plugin link handler id"),
-        "error should name malformed link provider id; got {err}"
-    );
-    Ok(())
-}
-
-#[test]
-fn plugin_manifest_rejects_link_provider_without_matchers() -> Result<(), Box<dyn std::error::Error>>
-{
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.no-link-matchers"
-name = "No Link Matchers"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
+            "invalid plugin link handler id",
+        ),
+        (
+            "link provider without matchers",
+            r#"
 [[links]]
 id = "ticket"
 title = "Ticket"
 command = ["true"]
 "#,
-    )?;
+            "requires at least one scheme or pattern",
+        ),
+        (
+            "workspace referencing an undeclared pane",
+            r#"
+[[workspaces]]
+id = "bench"
+title = "Bench"
 
-    let Err(err) = plugin::load_plugin_manifest(&manifest) else {
-        return Err("link provider without matchers loaded successfully".into());
-    };
-    assert!(
-        err.to_string()
-            .contains("requires at least one scheme or pattern"),
-        "error should name missing link provider matcher; got {err}"
+[[workspaces.panes]]
+id = "missing"
+pane = "not-declared"
+role = "lead"
+"#,
+            "workspace bench references unknown pane 'not-declared'",
+        ),
+    ];
+
+    for (what, extra, want) in cases {
+        let dir = TempDir::new()?;
+        let path = write_manifest(dir.path(), &manifest("example.reject", extra));
+        let Err(err) = plugin::load_plugin_manifest(&path) else {
+            return Err(format!("{what}: manifest loaded successfully").into());
+        };
+        assert!(
+            err.to_string().contains(want),
+            "{what}: error should contain {want:?}; got {err}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn plugin_manifest_defaults_agent_state_to_unknown() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = TempDir::new()?;
+    let manifest = write_manifest(
+        dir.path(),
+        &manifest(
+            "example.agent-state",
+            r#"
+[[agents]]
+id = "background-worker"
+label = "Background Worker"
+"#,
+        ),
+    );
+
+    let loaded = plugin::load_plugin_manifest(&manifest)?;
+
+    assert_eq!(loaded.agents[0].state, plugin::PluginAgentState::Unknown);
+    assert_eq!(
+        loaded.agents[0].attention,
+        plugin::PluginAgentAttention::Normal
     );
     Ok(())
 }
@@ -401,13 +334,10 @@ fn plugin_action_keys_field_parses_and_defaults_to_none() -> Result<(), Box<dyn 
 {
     let dir = TempDir::new()?;
     let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.keys"
-name = "Keys"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
+        dir.path(),
+        &manifest(
+            "example.keys",
+            r#"
 [[actions]]
 id = "bound"
 title = "Bound action"
@@ -425,7 +355,8 @@ title = "Blank keys action"
 command = ["true"]
 keys = "   "
 "#,
-    )?;
+        ),
+    );
 
     let loaded = plugin::load_plugin_manifest(&manifest)?;
 
@@ -446,31 +377,20 @@ fn load_enabled_manifests_skips_disabled_and_broken_plugins()
     // Three manifests: one healthy + enabled, one healthy + disabled, one
     // missing entirely. Only the first must load; the rest are skipped
     // without failing the batch.
-    let good = dir.path().join("good.toml");
-    std::fs::write(
-        &good,
-        r#"
-id = "example.good"
-name = "Good"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
+    common::write(
+        dir.path(),
+        "good.toml",
+        &manifest(
+            "example.good",
+            r#"
 [[actions]]
 id = "act"
 title = "Act"
 command = ["true"]
 "#,
-    )?;
-    let off = dir.path().join("off.toml");
-    std::fs::write(
-        &off,
-        r#"
-id = "example.off"
-name = "Off"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-"#,
-    )?;
+        ),
+    );
+    let off = common::write(dir.path(), "off.toml", &manifest("example.off", ""));
 
     let entries = vec![
         plugin::PluginConfigEntry {
@@ -503,13 +423,10 @@ min_phux_version = "0.0.2"
 fn plugin_manifest_loads_widget_contributions() -> Result<(), Box<dyn std::error::Error>> {
     let dir = TempDir::new()?;
     let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.battery"
-name = "Battery"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
+        dir.path(),
+        &manifest(
+            "example.battery",
+            r#"
 [[widgets]]
 id = "battery"
 slot = "right"
@@ -522,7 +439,8 @@ id = "branch"
 kind = "exec"
 command = ["git-branch-widget"]
 "#,
-    )?;
+        ),
+    );
 
     let loaded = plugin::load_plugin_manifest(&manifest)?;
 
@@ -548,32 +466,6 @@ command = ["git-branch-widget"]
 }
 
 #[test]
-fn plugin_manifest_rejects_duplicate_widget_ids() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.dup"
-name = "Dup"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
-[[widgets]]
-id = "w"
-kind = "exec"
-command = "a"
-
-[[widgets]]
-id = "w"
-kind = "exec"
-command = "b"
-"#,
-    )?;
-    assert!(plugin::load_plugin_manifest(&manifest).is_err());
-    Ok(())
-}
-
-#[test]
 fn merge_widget_contributions_appends_after_user_widgets_and_drops_invalid()
 -> Result<(), Box<dyn std::error::Error>> {
     use phux_config::widget::WidgetRegistry;
@@ -581,13 +473,10 @@ fn merge_widget_contributions_appends_after_user_widgets_and_drops_invalid()
 
     let dir = TempDir::new()?;
     let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.mixed"
-name = "Mixed"
-version = "0.1.0"
-min_phux_version = "0.0.2"
-
+        dir.path(),
+        &manifest(
+            "example.mixed",
+            r#"
 [[widgets]]
 id = "ok"
 slot = "left"
@@ -603,7 +492,8 @@ id = "bad-opts"
 kind = "exec"
 interval = "30s"
 "#,
-    )?;
+        ),
+    );
     let loaded = plugin::load_plugin_manifest(&manifest)?;
 
     let mut status = StatusCfg {
@@ -628,78 +518,56 @@ interval = "30s"
     Ok(())
 }
 
-/// The `min_phux_version` gate (phux-r82.2): a manifest whose floor is at
-/// or below the current phux version loads; equality is the boundary case.
-#[test]
-fn manifest_at_current_phux_version_loads() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        &format!(
-            r#"
-id = "example.current"
-name = "Current"
-version = "0.1.0"
-min_phux_version = "{}"
-"#,
-            plugin::CURRENT_PHUX_VERSION
-        ),
-    )?;
+// ---------------------------------------------------------------------------
+// The `min_phux_version` gate (phux-r82.2)
+// ---------------------------------------------------------------------------
 
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
-
-    assert_eq!(loaded.id, "example.current");
-    assert_eq!(loaded.min_phux_version, plugin::CURRENT_PHUX_VERSION);
-    Ok(())
-}
-
-/// A manifest demanding a future phux is rejected at load time with an
+/// Table-driven version gate: a floor at the current version loads
+/// (equality is the boundary case); a future floor is rejected with an
 /// error naming the plugin, its floor, and the running version — so both
-/// `phux plugin link` (which loads the manifest) and every load-time
-/// consumer see the same clear refusal.
+/// `phux plugin link` and every load-time consumer see the same refusal;
+/// a floor that is not a dotted numeric version is a schema error, not a
+/// silent pass.
 #[test]
-fn manifest_requiring_future_phux_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.future"
-name = "Future"
-version = "0.1.0"
-min_phux_version = "99.0.0"
-"#,
-    )?;
+fn min_phux_version_gate_accepts_current_and_rejects_future_or_malformed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let current = plugin::CURRENT_PHUX_VERSION;
+    // (case, floor, expected error substrings; empty = must load)
+    let cases: Vec<(&str, &str, Vec<&str>)> = vec![
+        ("current version loads", current, vec![]),
+        (
+            "future floor rejected",
+            "99.0.0",
+            vec!["example.gate", "99.0.0", current],
+        ),
+        (
+            "malformed floor rejected",
+            "latest",
+            vec!["malformed min_phux_version"],
+        ),
+    ];
 
-    let err = plugin::load_plugin_manifest(&manifest).expect_err("future floor must be rejected");
-
-    let message = err.to_string();
-    assert!(message.contains("example.future"), "{message}");
-    assert!(message.contains("99.0.0"), "{message}");
-    assert!(message.contains(plugin::CURRENT_PHUX_VERSION), "{message}");
-    Ok(())
-}
-
-/// A `min_phux_version` that is not a dotted numeric version is a schema
-/// error, not a silent pass.
-#[test]
-fn manifest_with_malformed_min_phux_version_is_rejected() -> Result<(), Box<dyn std::error::Error>>
-{
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        &dir,
-        r#"
-id = "example.badfloor"
-name = "Bad Floor"
-version = "0.1.0"
-min_phux_version = "latest"
-"#,
-    )?;
-
-    let err =
-        plugin::load_plugin_manifest(&manifest).expect_err("malformed floor must be rejected");
-
-    let message = err.to_string();
-    assert!(message.contains("malformed min_phux_version"), "{message}");
+    for (what, floor, want) in cases {
+        let dir = TempDir::new()?;
+        let body = format!(
+            "id = \"example.gate\"\nname = \"Gate\"\nversion = \"0.1.0\"\nmin_phux_version = \"{floor}\"\n"
+        );
+        let path = write_manifest(dir.path(), &body);
+        let result = plugin::load_plugin_manifest(&path);
+        if want.is_empty() {
+            let loaded = result.unwrap_or_else(|e| panic!("{what}: must load: {e}"));
+            assert_eq!(loaded.id, "example.gate");
+            assert_eq!(loaded.min_phux_version, current);
+        } else {
+            let err = result
+                .err()
+                .unwrap_or_else(|| panic!("{what}: must be rejected"));
+            let message = err.to_string();
+            for needle in want {
+                assert!(message.contains(needle), "{what}: {message}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -710,26 +578,16 @@ min_phux_version = "latest"
 fn load_enabled_manifests_skips_version_gated_plugin() -> Result<(), Box<dyn std::error::Error>> {
     let dir = TempDir::new()?;
     let config_path = dir.path().join("config.toml");
-    let good = dir.path().join("good.toml");
-    std::fs::write(
-        &good,
-        r#"
-id = "example.good-floor"
-name = "Good"
-version = "0.1.0"
-min_phux_version = "0.0.1"
-"#,
-    )?;
-    let future = dir.path().join("future.toml");
-    std::fs::write(
-        &future,
-        r#"
-id = "example.future-floor"
-name = "Future"
-version = "0.1.0"
-min_phux_version = "99.0.0"
-"#,
-    )?;
+    let good = common::write(
+        dir.path(),
+        "good.toml",
+        "id = \"example.good-floor\"\nname = \"Good\"\nversion = \"0.1.0\"\nmin_phux_version = \"0.0.1\"\n",
+    );
+    let future = common::write(
+        dir.path(),
+        "future.toml",
+        "id = \"example.future-floor\"\nname = \"Future\"\nversion = \"0.1.0\"\nmin_phux_version = \"99.0.0\"\n",
+    );
 
     let entries = vec![
         plugin::PluginConfigEntry {

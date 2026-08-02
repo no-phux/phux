@@ -13,17 +13,17 @@ use phux_config::scaffold::{
     write_scaffold,
 };
 
-fn p() -> &'static Path {
-    Path::new("config.toml")
-}
+mod common;
+use common::path;
 
 /// A scaffolded file with nothing uncommented must parse to the same
 /// effective config as an empty user file: pure shipped defaults. This
 /// is what makes the projection inert — it never freezes a default.
 #[test]
 fn reference_config_is_inert() {
-    let from_reference = parse_with_defaults(&reference_config(), p()).expect("reference parses");
-    let from_empty = parse_with_defaults("", p()).expect("empty parses");
+    let from_reference =
+        parse_with_defaults(&reference_config(), &path()).expect("reference parses");
+    let from_empty = parse_with_defaults("", &path()).expect("empty parses");
     assert_eq!(
         from_reference, from_empty,
         "commented starter config must impose no overrides"

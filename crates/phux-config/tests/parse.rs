@@ -15,6 +15,9 @@ use phux_config::{
     parse_str,
 };
 
+mod common;
+use common::path;
+
 /// The canonical example from `docs/consumers/tui.md` §4.2.
 const CANONICAL: &str = r##"
 [defaults]
@@ -59,20 +62,20 @@ fg = "#cdd6f4"
 bg = "#1e1e2e"
 "##;
 
-fn path() -> PathBuf {
-    PathBuf::from("config.toml")
+/// Parse `input`, then assert serialize → reparse is the identity.
+#[allow(clippy::expect_used, reason = "test support")]
+fn parse_and_round_trip(input: &str) -> Config {
+    let cfg: Config = parse_str(input, &path()).expect("input parses");
+    let reserialized = toml::to_string(&cfg).expect("re-serialize");
+    let reparsed: Config =
+        parse_str(&reserialized, &path()).expect("reparse of re-serialized config");
+    assert_eq!(cfg, reparsed, "round trip should be identity");
+    cfg
 }
 
 #[test]
 fn canonical_example_round_trips() {
-    let parsed: Config = parse_str(CANONICAL, &path()).expect("canonical parses");
-
-    // Re-serialize and re-parse; the two `Config` values must compare equal.
-    let reserialized = toml::to_string(&parsed).expect("re-serialize");
-    let reparsed: Config =
-        parse_str(&reserialized, &path()).expect("reparse of re-serialized config");
-
-    assert_eq!(parsed, reparsed, "round trip should be identity");
+    let parsed = parse_and_round_trip(CANONICAL);
 
     // Spot-check a couple of fields so a regression doesn't silently
     // pass via two-way equality of broken values.
@@ -108,18 +111,43 @@ shell = "/bin/bash"
     assert!(cfg.theme.slots.is_empty());
 }
 
+/// Empty input is exactly `Config::default()`, AND the shipped default
+/// values themselves are pinned per field so a change to any schema
+/// default cannot slip through the two-way equality:
+/// - which-key on with a 600 ms hesitation delay (phux-foz.2);
+/// - predictive-echo OFF (phux-pxaj, re-evaluated phux-51n6.1: readline
+///   vi command-mode and no-echo prompts remain un-gatable client-side,
+///   and mosh's RTT-adaptive gating is not yet ported — opt in with
+///   `predictive-echo = true`);
+/// - sidebar disabled, width 20, on the left (phux-4h5a);
+/// - status bar at the bottom (phux-foz.8);
+/// - spawn knobs at their shipped values (phux-4li.1);
+/// - `defaults.term` = xterm-256color (phux-ign): a regression here
+///   silently changes the TERM advertised to every server-spawned pane;
+/// - window-size `smallest`, which never crops content (ADR-0027).
 #[test]
 fn empty_input_is_full_defaults() {
     let cfg = parse_str("", &path()).expect("empty parses");
     assert_eq!(cfg, Config::default());
-}
 
-#[test]
-fn which_key_defaults_on_with_600ms_delay() {
-    // phux-foz.2: the popup ships enabled with a 600 ms hesitation delay.
-    let cfg = parse_str("", &path()).expect("empty parses");
     assert!(cfg.keybindings.which_key);
     assert_eq!(cfg.keybindings.which_key_delay_ms, 600);
+    assert!(!cfg.experimental.predictive_echo);
+    assert!(!cfg.sidebar.enabled, "sidebar is off by default");
+    assert_eq!(cfg.sidebar.width, 20, "default width");
+    assert_eq!(cfg.sidebar.position, SidebarPosition::Left);
+    assert_eq!(cfg.status.position, StatusPosition::Bottom);
+    assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::InheritFocused);
+    assert_eq!(cfg.defaults.spawn_on_attach, None);
+    assert_eq!(cfg.defaults.session_name_template, "default");
+    assert_eq!(cfg.defaults.term, "xterm-256color");
+    assert_eq!(cfg.defaults.window_size, WindowSize::Smallest);
+    assert_eq!(WindowSize::default(), WindowSize::Smallest);
+
+    // An empty [experimental] table is also valid and yields the same
+    // default.
+    let cfg2 = parse_str("[experimental]\n", &path()).expect("empty section parses");
+    assert!(!cfg2.experimental.predictive_echo);
 }
 
 #[test]
@@ -134,30 +162,54 @@ which-key-delay-ms = 250
     assert_eq!(cfg.keybindings.which_key_delay_ms, 250);
 }
 
+/// Table-driven rejection: unknown fields (`deny_unknown_fields`) and
+/// unknown enum variants must all fail with `ConfigError::Parse`. Rows
+/// with substrings additionally pin the message contents (any-of).
 #[test]
-fn unknown_field_at_top_level_is_rejected() {
-    let input = r#"
-not-a-real-section = "oops"
-"#;
-    let err = parse_str(input, &path()).expect_err("unknown field rejected");
-    assert!(matches!(err, ConfigError::Parse { .. }));
-}
-
-#[test]
-fn unknown_field_in_defaults_is_rejected() {
-    let input = r#"
-[defaults]
-shell = "/bin/zsh"
-histroy-limit = 50000  # typo: histroy
-"#;
-    let err = parse_str(input, &path()).expect_err("typo rejected by deny_unknown_fields");
-    let ConfigError::Parse { message, .. } = err else {
-        panic!("expected Parse variant");
-    };
-    assert!(
-        message.contains("histroy-limit") || message.contains("unknown"),
-        "message should mention the unknown field: {message}"
-    );
+fn unknown_fields_and_variants_are_rejected() {
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "unknown top-level field",
+            "not-a-real-section = \"oops\"\n",
+            &[],
+        ),
+        (
+            "typo in [defaults]",
+            "[defaults]\nshell = \"/bin/zsh\"\nhistroy-limit = 50000  # typo: histroy\n",
+            &["histroy-limit", "unknown"],
+        ),
+        (
+            "unknown sidebar position",
+            "[sidebar]\nposition = \"floating\"\n",
+            &[],
+        ),
+        ("typo in [sidebar]", "[sidebar]\nwdith = 20\n", &[]),
+        (
+            "unknown status position",
+            "[status]\nposition = \"floating\"\n",
+            &[],
+        ),
+        (
+            "unknown cwd-inheritance variant",
+            "[defaults]\ncwd-inheritance = \"random-walk\"\n",
+            &[],
+        ),
+        (
+            "unknown window-size variant",
+            "[defaults]\nwindow-size = \"fit-to-content\"\n",
+            &[],
+        ),
+    ];
+    for (what, input, want_any) in cases {
+        let err = parse_str(input, &path()).expect_err(&format!("{what}: input must be rejected"));
+        let ConfigError::Parse { message, .. } = &err else {
+            panic!("{what}: expected Parse variant, got {err:?}");
+        };
+        assert!(
+            want_any.is_empty() || want_any.iter().any(|needle| message.contains(needle)),
+            "{what}: message should mention one of {want_any:?}: {message}"
+        );
+    }
 }
 
 #[test]
@@ -228,47 +280,17 @@ fn spanless_schema_error_renders_no_fabricated_position() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn experimental_predictive_echo_true_parses() {
-    let input = r"
-[experimental]
-predictive-echo = true
-";
-    let cfg = parse_str(input, &path()).expect("[experimental] section parses");
+fn experimental_predictive_echo_parses_both_values() {
+    let cfg = parse_str("[experimental]\npredictive-echo = true\n", &path())
+        .expect("[experimental] section parses");
     assert!(
         cfg.experimental.predictive_echo,
         "predictive-echo = true should land as true in the typed view"
     );
-}
 
-#[test]
-fn experimental_predictive_echo_defaults_off_when_absent() {
-    // No [experimental] section at all: the field defaults OFF (phux-pxaj,
-    // re-evaluated phux-51n6.1). The client now proactively gates prediction
-    // on the alternate screen (full-screen apps), but the default stays off
-    // because two main-screen cases remain un-gatable client-side — readline
-    // vi command-mode and no-echo password prompts — and the mosh mechanisms
-    // that make on-by-default safe (RTT-adaptive gating + a prediction
-    // display-timeout) are not yet ported. Opt in with `predictive-echo =
-    // true`.
-    let cfg = parse_str("", &path()).expect("empty parses");
-    assert!(
-        !cfg.experimental.predictive_echo,
-        "absent [experimental] section must leave predictive-echo off by default"
-    );
-
-    // Empty [experimental] table is also valid and yields the same default.
-    let cfg2 = parse_str("[experimental]\n", &path()).expect("empty section parses");
-    assert!(!cfg2.experimental.predictive_echo);
-}
-
-#[test]
-fn experimental_predictive_echo_false_parses() {
-    // The opt-out must stick: an explicit `false` overrides the on-default.
-    let input = r"
-[experimental]
-predictive-echo = false
-";
-    let cfg = parse_str(input, &path()).expect("[experimental] section parses");
+    // The opt-out must stick: an explicit `false` parses as false.
+    let cfg = parse_str("[experimental]\npredictive-echo = false\n", &path())
+        .expect("[experimental] section parses");
     assert!(
         !cfg.experimental.predictive_echo,
         "predictive-echo = false should land as false in the typed view"
@@ -303,138 +325,35 @@ predictive-echo = 1
 }
 
 // ---------------------------------------------------------------------------
-// [sidebar]  (phux-4h5a)
+// Per-field user values parse and round-trip: [sidebar] (phux-4h5a),
+// [status] position (phux-foz.8), defaults.term (phux-ign), the spawn
+// knobs (phux-4li.1), and window-size (ADR-0027).
 // ---------------------------------------------------------------------------
 
 #[test]
-fn sidebar_defaults_to_disabled_when_absent() {
-    let cfg = parse_str("", &path()).expect("empty parses");
-    assert!(!cfg.sidebar.enabled, "sidebar is off by default");
-    assert_eq!(cfg.sidebar.width, 20, "default width");
-    assert_eq!(cfg.sidebar.position, SidebarPosition::Left);
-}
-
-#[test]
-fn sidebar_enabled_parses_and_round_trips() {
-    let input = r#"
-[sidebar]
-enabled  = true
-width    = 30
-position = "right"
-"#;
-    let cfg = parse_str(input, &path()).expect("[sidebar] parses");
+fn user_values_parse_and_round_trip() {
+    let cfg =
+        parse_and_round_trip("[sidebar]\nenabled  = true\nwidth    = 30\nposition = \"right\"\n");
     assert!(cfg.sidebar.enabled);
     assert_eq!(cfg.sidebar.width, 30);
     assert_eq!(cfg.sidebar.position, SidebarPosition::Right);
 
-    let reser = toml::to_string(&cfg).expect("reserialize");
-    let reparsed = parse_str(&reser, &path()).expect("reparse");
-    assert_eq!(cfg, reparsed);
-}
-
-#[test]
-fn sidebar_unknown_position_is_rejected() {
-    let input = r#"
-[sidebar]
-position = "floating"
-"#;
-    let err = parse_str(input, &path()).expect_err("unknown position rejected");
-    assert!(matches!(err, ConfigError::Parse { .. }));
-}
-
-#[test]
-fn sidebar_unknown_field_is_rejected() {
-    let input = r"
-[sidebar]
-wdith = 20
-";
-    let err = parse_str(input, &path()).expect_err("typo rejected by deny_unknown_fields");
-    assert!(matches!(err, ConfigError::Parse { .. }));
-}
-
-// ---------------------------------------------------------------------------
-// [status] position  (phux-foz.8)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn status_position_defaults_to_bottom_when_absent() {
-    let cfg = parse_str("", &path()).expect("empty parses");
-    assert_eq!(cfg.status.position, StatusPosition::Bottom);
-}
-
-#[test]
-fn status_position_top_parses_and_round_trips() {
-    let input = r#"
-[status]
-left     = ["session-name"]
-position = "top"
-"#;
-    let cfg = parse_str(input, &path()).expect("[status] position parses");
+    let cfg = parse_and_round_trip("[status]\nleft     = [\"session-name\"]\nposition = \"top\"\n");
     assert_eq!(cfg.status.position, StatusPosition::Top);
 
-    let reser = toml::to_string(&cfg).expect("reserialize");
-    let reparsed = parse_str(&reser, &path()).expect("reparse");
-    assert_eq!(cfg, reparsed);
-}
-
-#[test]
-fn status_unknown_position_is_rejected() {
-    let input = r#"
-[status]
-position = "floating"
-"#;
-    let err = parse_str(input, &path()).expect_err("unknown position rejected");
-    assert!(matches!(err, ConfigError::Parse { .. }));
-}
-
-// ---------------------------------------------------------------------------
-// [defaults] sane-default spawn knobs  (phux-4li.1)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn defaults_spawn_knobs_default_when_absent() {
-    // Empty config: all three new knobs default to their shipped values.
-    let cfg = parse_str("", &path()).expect("empty parses");
-    assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::InheritFocused);
-    assert_eq!(cfg.defaults.spawn_on_attach, None);
-    assert_eq!(cfg.defaults.session_name_template, "default");
-    assert_eq!(cfg.defaults.window_size, WindowSize::Smallest);
-}
-
-#[test]
-fn defaults_term_defaults_to_xterm_256color() {
-    // phux-ign: the `defaults.term` baseline is the safe xterm value when
-    // the key is absent. A regression here would silently change the TERM
-    // advertised to every server-spawned pane.
-    let cfg = parse_str("", &path()).expect("empty parses");
-    assert_eq!(cfg.defaults.term, "xterm-256color");
-}
-
-#[test]
-fn defaults_term_round_trips_user_value() {
-    // phux-ign: a user can opt into ghostty's extended terminfo by setting
-    // `defaults.term`. The value must survive parse + re-serialize.
-    let input = r#"
-[defaults]
-term = "ghostty"
-"#;
-    let cfg = parse_str(input, &path()).expect("term parses");
+    // phux-ign: a user can opt into ghostty's extended terminfo by
+    // setting `defaults.term`.
+    let cfg = parse_and_round_trip("[defaults]\nterm = \"ghostty\"\n");
     assert_eq!(cfg.defaults.term, "ghostty");
 
-    let reser = toml::to_string(&cfg).expect("reserialize");
-    let reparsed = parse_str(&reser, &path()).expect("reparse");
-    assert_eq!(cfg, reparsed);
-}
-
-#[test]
-fn defaults_spawn_knobs_round_trip_user_values() {
-    let input = r#"
+    let cfg = parse_and_round_trip(
+        r#"
 [defaults]
 cwd-inheritance       = "home"
 spawn-on-attach       = "/usr/bin/tmux-like"
 session-name-template = "phux-${cwd-basename}"
-"#;
-    let cfg = parse_str(input, &path()).expect("knobs parse");
+"#,
+    );
     assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::Home);
     assert_eq!(
         cfg.defaults.spawn_on_attach.as_deref(),
@@ -442,10 +361,8 @@ session-name-template = "phux-${cwd-basename}"
     );
     assert_eq!(cfg.defaults.session_name_template, "phux-${cwd-basename}");
 
-    // Re-serialize and re-parse: PartialEq holds.
-    let reser = toml::to_string(&cfg).expect("reserialize");
-    let reparsed = parse_str(&reser, &path()).expect("reparse");
-    assert_eq!(cfg, reparsed);
+    let cfg = parse_and_round_trip("[defaults]\nwindow-size = \"largest\"\n");
+    assert_eq!(cfg.defaults.window_size, WindowSize::Largest);
 }
 
 #[test]
@@ -464,30 +381,6 @@ fn cwd_inheritance_accepts_all_variants() {
 }
 
 #[test]
-fn cwd_inheritance_unknown_variant_is_rejected() {
-    let input = r#"
-[defaults]
-cwd-inheritance = "random-walk"
-"#;
-    let err = parse_str(input, &path()).expect_err("unknown enum variant rejected");
-    assert!(matches!(err, ConfigError::Parse { .. }));
-}
-
-// ---------------------------------------------------------------------------
-// [defaults] window-size  (ADR-0027)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn window_size_defaults_to_smallest_when_absent() {
-    // ADR-0027: default `smallest` never crops content. A regression here
-    // would silently change the geometry policy for mirrored views /
-    // multi-client attach.
-    let cfg = parse_str("", &path()).expect("empty parses");
-    assert_eq!(cfg.defaults.window_size, WindowSize::Smallest);
-    assert_eq!(WindowSize::default(), WindowSize::Smallest);
-}
-
-#[test]
 fn window_size_accepts_all_variants() {
     for (toml_value, expected) in [
         ("smallest", WindowSize::Smallest),
@@ -500,30 +393,6 @@ fn window_size_accepts_all_variants() {
             .unwrap_or_else(|e| panic!("variant {toml_value} should parse: {e}"));
         assert_eq!(cfg.defaults.window_size, expected);
     }
-}
-
-#[test]
-fn window_size_unknown_variant_is_rejected() {
-    let input = r#"
-[defaults]
-window-size = "fit-to-content"
-"#;
-    let err = parse_str(input, &path()).expect_err("unknown enum variant rejected");
-    assert!(matches!(err, ConfigError::Parse { .. }));
-}
-
-#[test]
-fn window_size_round_trips_user_value() {
-    let input = r#"
-[defaults]
-window-size = "largest"
-"#;
-    let cfg = parse_str(input, &path()).expect("window-size parses");
-    assert_eq!(cfg.defaults.window_size, WindowSize::Largest);
-
-    let reser = toml::to_string(&cfg).expect("reserialize");
-    let reparsed = parse_str(&reser, &path()).expect("reparse");
-    assert_eq!(cfg, reparsed);
 }
 
 #[test]

@@ -4,9 +4,8 @@ use std::path::PathBuf;
 
 use phux_config::{SatelliteConfigEntry, parse_str};
 
-fn path() -> PathBuf {
-    PathBuf::from("config.toml")
-}
+mod common;
+use common::path;
 
 #[test]
 fn satellite_registry_entries_parse() {

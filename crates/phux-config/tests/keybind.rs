@@ -38,61 +38,34 @@ const fn chord(mods: ModSet, key: PhysicalKey) -> KeyChord {
 // parse_chord
 // ---------------------------------------------------------------------------
 
+/// Table-driven chord grammar. Alias rows parse to the same chord as
+/// their canonical spelling: bare uppercase implies shift (`A` == `S-a`),
+/// `Esc`/`Escape` are aliases, `BackTab` is conventionally Shift+Tab,
+/// and `A-` is an alias for the `M-` (meta) modifier.
 #[test]
-fn parse_chord_plain_lowercase_letter() {
-    let c = parse_chord("a").unwrap();
-    assert_eq!(c, chord(ModSet::empty(), PhysicalKey::A));
-}
-
-#[test]
-fn parse_chord_bare_uppercase_implies_shift() {
-    // "A" parses identically to "S-a".
-    let bare = parse_chord("A").unwrap();
-    let explicit = parse_chord("S-a").unwrap();
-    assert_eq!(bare, explicit);
-    assert_eq!(bare, chord(ModSet::SHIFT, PhysicalKey::A));
-}
-
-#[test]
-fn parse_chord_ctrl_c() {
-    let c = parse_chord("C-c").unwrap();
-    assert_eq!(c, chord(ModSet::CTRL, PhysicalKey::C));
-}
-
-#[test]
-fn parse_chord_meta_shift_tab() {
-    let c = parse_chord("M-S-Tab").unwrap();
-    assert_eq!(c, chord(ModSet::ALT | ModSet::SHIFT, PhysicalKey::Tab));
-}
-
-#[test]
-fn parse_chord_function_key_f1_and_f12() {
-    let f1 = parse_chord("F1").unwrap();
-    let f12 = parse_chord("F12").unwrap();
-    assert_eq!(f1, chord(ModSet::empty(), PhysicalKey::F1));
-    assert_eq!(f12, chord(ModSet::empty(), PhysicalKey::F12));
-}
-
-#[test]
-fn parse_chord_esc_and_escape_are_aliases() {
-    let a = parse_chord("Esc").unwrap();
-    let b = parse_chord("Escape").unwrap();
-    assert_eq!(a, b);
-    assert_eq!(a, chord(ModSet::empty(), PhysicalKey::Escape));
-}
-
-#[test]
-fn parse_chord_backtab_implies_shift() {
-    // BackTab is conventionally Shift+Tab.
-    let c = parse_chord("BackTab").unwrap();
-    assert_eq!(c, chord(ModSet::SHIFT, PhysicalKey::Tab));
-}
-
-#[test]
-fn parse_chord_alt_alias_for_meta() {
-    let m = parse_chord("M-x").unwrap();
-    let a = parse_chord("A-x").unwrap();
-    assert_eq!(m, a);
+fn parse_chord_grammar() {
+    let cases: &[(&str, ModSet, PhysicalKey)] = &[
+        ("a", ModSet::empty(), PhysicalKey::A),
+        ("A", ModSet::SHIFT, PhysicalKey::A),
+        ("S-a", ModSet::SHIFT, PhysicalKey::A),
+        ("C-c", ModSet::CTRL, PhysicalKey::C),
+        (
+            "M-S-Tab",
+            ModSet::ALT.union(ModSet::SHIFT),
+            PhysicalKey::Tab,
+        ),
+        ("F1", ModSet::empty(), PhysicalKey::F1),
+        ("F12", ModSet::empty(), PhysicalKey::F12),
+        ("Esc", ModSet::empty(), PhysicalKey::Escape),
+        ("Escape", ModSet::empty(), PhysicalKey::Escape),
+        ("BackTab", ModSet::SHIFT, PhysicalKey::Tab),
+        ("M-x", ModSet::ALT, PhysicalKey::X),
+        ("A-x", ModSet::ALT, PhysicalKey::X),
+    ];
+    for (spec, mods, key) in cases {
+        let c = parse_chord(spec).unwrap_or_else(|e| panic!("{spec:?} should parse: {e:?}"));
+        assert_eq!(c, chord(*mods, *key), "{spec:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -100,15 +73,12 @@ fn parse_chord_alt_alias_for_meta() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn parse_chord_sequence_two_chords() {
+fn parse_chord_sequence_single_and_two_chords() {
     let seq = parse_chord_sequence("C-b c").unwrap();
     assert_eq!(seq.0.len(), 2);
     assert_eq!(seq.0[0], chord(ModSet::CTRL, PhysicalKey::B));
     assert_eq!(seq.0[1], chord(ModSet::empty(), PhysicalKey::C));
-}
 
-#[test]
-fn parse_chord_sequence_single_chord() {
     let seq = parse_chord_sequence("C-c").unwrap();
     assert_eq!(seq.0.len(), 1);
     assert_eq!(seq.0[0], chord(ModSet::CTRL, PhysicalKey::C));
@@ -119,25 +89,23 @@ fn parse_chord_sequence_single_chord() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn parse_chord_empty_string_errors() {
+fn parse_errors_for_malformed_specs() {
+    // Empty chord and empty sequence: syntax error at position 0.
     let err = parse_chord("").unwrap_err();
     assert!(
         matches!(err, KeybindError::Syntax { pos: 0, .. }),
         "expected Syntax {{ pos: 0, .. }}, got {err:?}"
     );
-}
+    let err = parse_chord_sequence("").unwrap_err();
+    assert!(matches!(err, KeybindError::Syntax { pos: 0, .. }));
 
-#[test]
-fn parse_chord_unknown_key_errors() {
+    // Unrecognized key name.
     let err = parse_chord("NotAKey").unwrap_err();
     assert!(
         matches!(err, KeybindError::UnknownKey(ref s) if s == "NotAKey"),
         "got {err:?}"
     );
-}
 
-#[test]
-fn parse_chord_trailing_dash_errors() {
     // "C-" — modifier with nothing after. split_modifier returns None
     // because there's no text past the dash, so the loop breaks and the
     // remaining "C-" is treated as a key token (which fails as unknown).
@@ -147,12 +115,6 @@ fn parse_chord_trailing_dash_errors() {
         err,
         KeybindError::Syntax { .. } | KeybindError::UnknownKey(_)
     ));
-}
-
-#[test]
-fn parse_chord_sequence_empty_errors() {
-    let err = parse_chord_sequence("").unwrap_err();
-    assert!(matches!(err, KeybindError::Syntax { pos: 0, .. }));
 }
 
 // ---------------------------------------------------------------------------
