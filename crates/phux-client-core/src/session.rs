@@ -7,8 +7,8 @@ use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId, TerminalId};
 
 use crate::engine::{
-    CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect, EngineEffectBuffer, EngineJob,
-    EngineSend, EngineStatus,
+    BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
+    EngineEffectBuffer, EngineJob, EngineSend, EngineStatus,
 };
 
 /// Exact identity of one terminal replica generation.

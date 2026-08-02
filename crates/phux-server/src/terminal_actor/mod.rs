@@ -311,8 +311,6 @@ fn native_bytes(data: &[u8]) -> Result<Bytes, crate::native_state::NativeStateEr
     Ok(bytes.freeze())
 }
 
-
-
 #[derive(Debug)]
 enum CanonicalTerminal {
     Plain(Option<GhosttyTerminal<'static, 'static>>),
@@ -355,17 +353,17 @@ impl CanonicalTerminal {
                 .expect("plain canonical terminal is present")
                 .resize(cols, rows, cell_width_px, cell_height_px),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            Self::Native(manager) => {
-                manager.resize(cols, rows, cell_width_px, cell_height_px)
-            }
+            Self::Native(manager) => manager.resize(cols, rows, cell_width_px, cell_height_px),
         }
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn native_manager(
         &mut self,
-    ) -> Result<&mut crate::native_state::NativeTerminalManager, crate::native_state::NativeStateError>
-    {
+    ) -> Result<
+        &mut crate::native_state::NativeTerminalManager,
+        crate::native_state::NativeStateError,
+    > {
         if let Self::Plain(slot) = self {
             let terminal = slot
                 .take()
@@ -391,6 +389,43 @@ impl std::ops::Deref for CanonicalTerminal {
 
     fn deref(&self) -> &Self::Target {
         self.terminal()
+    }
+}
+
+enum NativeActorRequest {
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    Bootstrap(NativeBootstrapRequest),
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    History(NativeHistoryRequest),
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    Release(NativeReleaseRequest),
+    #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+    Disabled,
+}
+
+struct NativeRequestReceivers {
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    bootstrap: mpsc::Receiver<NativeBootstrapRequest>,
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    history: mpsc::Receiver<NativeHistoryRequest>,
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    release: mpsc::Receiver<NativeReleaseRequest>,
+}
+
+impl NativeRequestReceivers {
+    async fn recv(&mut self) -> Option<NativeActorRequest> {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        {
+            tokio::select! {
+                request = self.bootstrap.recv() => request.map(NativeActorRequest::Bootstrap),
+                request = self.history.recv() => request.map(NativeActorRequest::History),
+                request = self.release.recv() => request.map(NativeActorRequest::Release),
+            }
+        }
+        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+        {
+            std::future::pending::<Option<NativeActorRequest>>().await
+        }
     }
 }
 
@@ -442,12 +477,7 @@ pub struct TerminalActor {
     /// Publishes terminal-derived input modes and dimensions to the input lane.
     input_snapshot_tx: watch::Sender<InputEncoderSnapshot>,
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_bootstrap_rx: mpsc::Receiver<NativeBootstrapRequest>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_history_rx: mpsc::Receiver<NativeHistoryRequest>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_release_rx: mpsc::Receiver<NativeReleaseRequest>,
+    native_requests: NativeRequestReceivers,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_cursor_owners:
         HashMap<crate::native_state::OpaqueHistoryCursor, (u64, tokio::time::Instant, u64)>,
@@ -938,6 +968,14 @@ impl TerminalActor {
         let (native_history_tx, native_history_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let (native_release_tx, native_release_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
+        let native_requests = NativeRequestReceivers {
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            bootstrap: native_bootstrap_rx,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            history: native_history_rx,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            release: native_release_rx,
+        };
         let (set_default_colors_tx, set_default_colors_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (screen_tx, screen_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (upgrade_tx, upgrade_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
@@ -989,12 +1027,7 @@ impl TerminalActor {
             encoded_input_rx,
             input_snapshot_tx,
             snapshot_rx,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_bootstrap_rx,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_history_rx,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_release_rx,
+            native_requests,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_cursor_owners: HashMap::new(),
             set_default_colors_rx,
@@ -2824,9 +2857,7 @@ impl TerminalActor {
             let ended = matches!(&event, crate::native_state::NativeHistoryEvent::End);
             match event {
                 crate::native_state::NativeHistoryEvent::Page {
-                    bytes,
-                    next_cursor,
-                    ..
+                    bytes, next_cursor, ..
                 } => {
                     outbound
                         .try_send(Outbound::Frame(FrameKind::HistoryPage {
@@ -2911,7 +2942,6 @@ impl TerminalActor {
             self.native_cursor_owners.remove(&cursor);
         }
     }
-
 
     /// Run the actor's event loop until shutdown.
     ///
@@ -3155,18 +3185,23 @@ impl TerminalActor {
                     }
                 }
 
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                Some(req) = self.native_bootstrap_rx.recv() => {
-                    self.handle_native_bootstrap(req).await;
-                }
-
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                Some(req) = self.native_history_rx.recv() => {
-                    self.handle_native_history(req).await;
-                }
-                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-                Some(req) = self.native_release_rx.recv() => {
-                    self.release_native_owner(req.owner);
+                Some(req) = self.native_requests.recv() => {
+                    match req {
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        NativeActorRequest::Bootstrap(req) => {
+                            self.handle_native_bootstrap(req).await;
+                        }
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        NativeActorRequest::History(req) => {
+                            self.handle_native_history(req).await;
+                        }
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        NativeActorRequest::Release(req) => {
+                            self.release_native_owner(req.owner);
+                        }
+                        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+                        NativeActorRequest::Disabled => unreachable!("disabled native receiver"),
+                    }
                 }
 
 
@@ -4803,8 +4838,7 @@ mod tests {
                         client_id: client,
                         outbound: out_tx,
                         wire_terminal_id: 99,
-                        stream_id: phux_protocol::ids::StreamId::new(43)
-                            .expect("test stream id"),
+                        stream_id: phux_protocol::ids::StreamId::new(43).expect("test stream id"),
                         bootstrap_id: phux_protocol::ids::BootstrapId::new(1)
                             .expect("test bootstrap id"),
                         wants_state_sync: false,
@@ -6128,7 +6162,9 @@ mod tests {
                 let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
                 while tokio::time::Instant::now() < deadline {
                     match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
-                        Ok(Ok(PaneOutput::Resync { cols, rows, bytes, .. })) => {
+                        Ok(Ok(PaneOutput::Resync {
+                            cols, rows, bytes, ..
+                        })) => {
                             resync_dims = Some((cols, rows));
                             acc.extend_from_slice(&bytes);
                             if contains_subslice(&acc, b"\x1b[!p")
@@ -6205,7 +6241,9 @@ mod tests {
                 let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
                 while tokio::time::Instant::now() < deadline {
                     match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
-                        Ok(Ok(PaneOutput::Resync { cols, rows, bytes, .. })) => {
+                        Ok(Ok(PaneOutput::Resync {
+                            cols, rows, bytes, ..
+                        })) => {
                             resync_dims = Some((cols, rows));
                             acc.extend_from_slice(&bytes);
                             if contains_subslice(&acc, b"\x1b[!p")
