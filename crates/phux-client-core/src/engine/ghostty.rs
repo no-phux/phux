@@ -4,14 +4,16 @@
 //! READY transfer, continuation replay, history retention, and FINISH are all
 //! delegated to libghostty's safe incremental wrapper.
 
-use std::{marker::PhantomData, rc::Rc};
+use std::{collections::{HashMap, VecDeque}, marker::PhantomData, rc::Rc};
 
 use libghostty_vt::{
     Terminal as GhosttyTerminal, TerminalOptions,
+    screen::TrackedGridRef,
+    selection::{FormatOptions, Selection},
     snapshot::incremental::{
         AfterReadyStep, DecodeProgress, DecodeStep, Decoder, DecoderOptions, Error as SnapshotError,
     },
-    terminal::ScrollViewport,
+    terminal::{Point, PointCoordinate, PointSpace, ScrollViewport},
 };
 use phux_protocol::{
     BootstrapCapabilities, BootstrapLimits, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
@@ -19,9 +21,11 @@ use phux_protocol::{
 use thiserror::Error;
 
 use super::{
-    BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
-    EngineEffectBuffer,
+    BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
+    EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect,
+    EngineEffectBuffer, EngineHistoryProjection, EngineProjectionRow, EngineSearchMatch, EngineSend,
 };
+use crate::history::DocumentAnchorId;
 
 const CHECKPOINT_VERSION: u16 = EngineCodec::LibghosttyCheckpointV2 as u8 as u16;
 const CHECKPOINT_IDENTITY: &str = "ghostty.snapshot.v1-v2.incremental.v1";
@@ -87,6 +91,7 @@ pub struct GhosttyAdapter {
     limits: BootstrapLimits,
     decoder_options: DecoderOptions,
     native_available: bool,
+    next_anchor_id: u64,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -112,6 +117,7 @@ impl GhosttyAdapter {
                 max_pages,
             },
             native_available: native.is_some(),
+            next_anchor_id: 1,
             _not_send_or_sync: PhantomData,
         }
     }
@@ -132,6 +138,7 @@ impl GhosttyAdapter {
 #[derive(Debug)]
 pub struct GhosttyReplica {
     profile: BootstrapStreamProfile,
+    anchors: HashMap<DocumentAnchorId, TrackedGridRef>,
     state: ReplicaState,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
@@ -175,11 +182,20 @@ impl GhosttyReplica {
     }
 }
 
+type PtyResponses = Rc<RefCell<Vec<Vec<u8>>>>;
+
+fn drain_pty_responses(responses: &PtyResponses, effects: &mut EngineEffectBuffer) {
+    for bytes in responses.borrow_mut().drain(..) {
+        effects.push(EngineEffect::Send(EngineSend::PtyWrite(bytes)));
+    }
+}
+
 #[derive(Debug)]
 enum ReplicaState {
     Synthesized {
         terminal: GhosttyTerminal<'static, 'static>,
         protocol_finished: bool,
+        pty_responses: PtyResponses,
     },
     Native(NativeReplica),
 }
@@ -188,6 +204,7 @@ enum ReplicaState {
 struct NativeReplica {
     decoder: NativeDecoderState,
     protocol_finished: bool,
+    pty_responses: PtyResponses,
 }
 
 impl NativeReplica {
@@ -300,14 +317,22 @@ impl EngineAdapter for GhosttyAdapter {
     ) -> Result<Self::Replica, Self::Error> {
         let state = match profile {
             BootstrapStreamProfile::SynthesizedVtRaw
-            | BootstrapStreamProfile::SynthesizedVtStateSync => ReplicaState::Synthesized {
-                terminal: GhosttyTerminal::new(TerminalOptions {
+            | BootstrapStreamProfile::SynthesizedVtStateSync => {
+                let pty_responses = PtyResponses::default();
+                let mut terminal = GhosttyTerminal::new(TerminalOptions {
                     cols: geometry.cols,
                     rows: geometry.rows,
                     max_scrollback: SYNTH_SCROLLBACK_ROWS,
-                })?,
-                protocol_finished: false,
-            },
+                })?;
+                terminal.on_pty_write({
+                    let pty_responses = Rc::clone(&pty_responses);
+                    move |_terminal, bytes| pty_responses.borrow_mut().push(bytes.to_vec())
+                })?;
+                ReplicaState::Synthesized {
+                    terminal,
+                    pty_responses,
+                }
+            }
             BootstrapStreamProfile::NativeState {
                 codec: EngineCodec::LibghosttyCheckpointV2,
             } if self.native_available => {
@@ -316,6 +341,7 @@ impl EngineAdapter for GhosttyAdapter {
                 ReplicaState::Native(NativeReplica {
                     decoder: NativeDecoderState::BeforeReady(decoder),
                     protocol_finished: false,
+                    pty_responses: PtyResponses::default(),
                 })
             }
             _ => return Err(GhosttyEngineError::UnsupportedProfile(profile)),
@@ -323,6 +349,7 @@ impl EngineAdapter for GhosttyAdapter {
         Ok(GhosttyReplica {
             profile,
             state,
+            anchors: HashMap::new(),
             _not_send_or_sync: PhantomData,
         })
     }
@@ -331,7 +358,7 @@ impl EngineAdapter for GhosttyAdapter {
         &mut self,
         replica: &mut Self::Replica,
         payload: &[u8],
-        _effects: &mut EngineEffectBuffer,
+        effects: &mut EngineEffectBuffer,
     ) -> Result<BootstrapProgress, Self::Error> {
         let limit = self.limits.max_chunk_bytes() as usize;
         if payload.len() > limit {
@@ -344,11 +371,13 @@ impl EngineAdapter for GhosttyAdapter {
             ReplicaState::Synthesized {
                 terminal,
                 protocol_finished,
+                pty_responses,
             } => {
                 if *protocol_finished {
                     return Err(GhosttyEngineError::InputAfterFinish);
                 }
                 terminal.vt_write(payload);
+                drain_pty_responses(pty_responses, effects);
                 Ok(BootstrapProgress::Pending)
             }
             ReplicaState::Native(native) => push_native(native, payload),
@@ -401,26 +430,325 @@ impl EngineAdapter for GhosttyAdapter {
         payload: &[u8],
         effects: &mut EngineEffectBuffer,
     ) -> Result<(), Self::Error> {
-        match &mut replica.state {
+        let pty_responses = match &mut replica.state {
             ReplicaState::Native(native) if !native.protocol_finished => {
                 return Err(GhosttyEngineError::LiveOutputBeforeReady);
             }
-            ReplicaState::Synthesized { terminal, .. } => terminal.vt_write(payload),
-            ReplicaState::Native(native) => match &mut native.decoder {
-                NativeDecoderState::BeforeReady(_) => {
-                    return Err(GhosttyEngineError::LiveOutputBeforeReady);
+            ReplicaState::Synthesized {
+                terminal,
+                pty_responses,
+                ..
+            } => {
+                terminal.vt_write(payload);
+                pty_responses
+            }
+            ReplicaState::Native(native) => {
+                match &mut native.decoder {
+                    NativeDecoderState::BeforeReady(_) => {
+                        return Err(GhosttyEngineError::LiveOutputBeforeReady);
+                    }
+                    NativeDecoderState::AfterReady(stream) => stream.vt_write(payload),
+                    NativeDecoderState::Finished(terminal)
+                    | NativeDecoderState::Failed(Some(terminal)) => terminal.vt_write(payload),
+                    NativeDecoderState::Failed(None) => {
+                        return Err(GhosttyEngineError::DecoderFailed);
+                    }
                 }
-                NativeDecoderState::AfterReady(stream) => stream.vt_write(payload),
-                NativeDecoderState::Finished(terminal)
-                | NativeDecoderState::Failed(Some(terminal)) => terminal.vt_write(payload),
-                NativeDecoderState::Failed(None) => {
-                    return Err(GhosttyEngineError::DecoderFailed);
-                }
-            },
-        }
+                &native.pty_responses
+            }
+        };
+        drain_pty_responses(pty_responses, effects);
         effects.push(EngineEffect::Damage(EngineDamage::Full));
         Ok(())
     }
+}
+
+impl EngineDocumentAdapter for GhosttyAdapter {
+    fn project_history(
+        &mut self,
+        replica: &mut Self::Replica,
+        width: u16,
+        max_rows: usize,
+    ) -> Result<EngineHistoryProjection, Self::Error> {
+        let terminal = replica
+            .terminal()
+            .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?;
+        let width = usize::from(width.max(1));
+        if max_rows == 0 {
+            return Ok(EngineHistoryProjection {
+                width: width as u16,
+                rows: Vec::new(),
+                has_older: false,
+            });
+        }
+        let source = engine_history_rows(terminal, max_rows.saturating_add(1))?;
+        let mut has_older = source.len() > max_rows;
+        let mut rows = Vec::new();
+        'source: for (cells, soft_wrapped) in source {
+            if cells.is_empty() {
+                if rows.len() == max_rows {
+                    has_older = true;
+                    break;
+                }
+                rows.push(EngineProjectionRow {
+                    text: String::new(),
+                    soft_wrapped,
+                    page: None,
+                });
+                continue;
+            }
+            let chunk_count = cells.len().div_ceil(width);
+            for (index, chunk) in cells.chunks(width).enumerate() {
+                if rows.len() == max_rows {
+                    has_older = true;
+                    break 'source;
+                }
+                rows.push(EngineProjectionRow {
+                    text: chunk.concat(),
+                    soft_wrapped: index + 1 < chunk_count || soft_wrapped,
+                    page: None,
+                });
+            }
+        }
+        Ok(EngineHistoryProjection {
+            width: width as u16,
+            rows,
+            has_older,
+        })
+    }
+
+    fn track_document_anchor(
+        &mut self,
+        replica: &mut Self::Replica,
+        point: DocumentPoint,
+    ) -> Result<DocumentAnchorId, Self::Error> {
+        let tracked = replica
+            .terminal()
+            .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?
+            .track_grid_ref(to_ghostty_point(point))?;
+        let id = DocumentAnchorId::from_raw(self.next_anchor_id);
+        self.next_anchor_id = self.next_anchor_id.wrapping_add(1).max(1);
+        replica.anchors.insert(id, tracked);
+        Ok(id)
+    }
+
+    fn release_document_anchor(
+        &mut self,
+        replica: &mut Self::Replica,
+        anchor: DocumentAnchorId,
+    ) {
+        replica.anchors.remove(&anchor);
+    }
+
+    fn document_anchor_point(
+        &self,
+        replica: &Self::Replica,
+        anchor: DocumentAnchorId,
+        space: DocumentSpace,
+    ) -> Result<Option<DocumentPoint>, Self::Error> {
+        let Some(anchor) = replica.anchors.get(&anchor) else {
+            return Ok(None);
+        };
+        let Some(point) = anchor.point(to_ghostty_space(space))? else {
+            return Ok(None);
+        };
+        Ok(Some(DocumentPoint {
+            space,
+            x: point.x,
+            y: point.y,
+        }))
+    }
+
+    fn search_loaded(
+        &mut self,
+        replica: &mut Self::Replica,
+        needle: &str,
+        max_matches: usize,
+    ) -> Result<Vec<EngineSearchMatch>, Self::Error> {
+        if needle.is_empty() || max_matches == 0 {
+            return Ok(Vec::new());
+        }
+        let needle: Vec<char> = needle.chars().collect();
+        let mut ranges = Vec::new();
+        let mut window = VecDeque::with_capacity(needle.len());
+        let mut push_scalar = |scalar: char, point: DocumentPoint| {
+            window.push_back((scalar, point));
+            if window.len() > needle.len() {
+                window.pop_front();
+            }
+            if window.len() == needle.len()
+                && window
+                    .iter()
+                    .map(|(value, _)| *value)
+                    .eq(needle.iter().copied())
+            {
+                ranges.push((
+                    window.front().expect("non-empty search").1,
+                    window.back().expect("non-empty search").1,
+                ));
+            }
+            ranges.len() == max_matches
+        };
+        {
+            let terminal = replica
+                .terminal()
+                .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?;
+            let cols = terminal.cols()?;
+            let mut y = 0_u32;
+            'history: loop {
+                let first = match terminal.grid_ref(Point::History(PointCoordinate { x: 0, y })) {
+                    Ok(value) => value,
+                    Err(libghostty_vt::Error::InvalidValue) => break,
+                    Err(error) => return Err(error.into()),
+                };
+                let wrapped = first.row()?.is_wrapped()?;
+                for x in 0..cols {
+                    let grid_ref = terminal.grid_ref(Point::History(PointCoordinate { x, y }))?;
+                    for scalar in grid_ref_graphemes(&grid_ref)? {
+                        if push_scalar(
+                            scalar,
+                            DocumentPoint {
+                                space: DocumentSpace::History,
+                                x,
+                                y,
+                            },
+                        ) {
+                            break 'history;
+                        }
+                    }
+                }
+                if !wrapped
+                    && push_scalar(
+                        '\n',
+                        DocumentPoint {
+                            space: DocumentSpace::History,
+                            x: cols.saturating_sub(1),
+                            y,
+                        },
+                    )
+                {
+                    break;
+                }
+                y = match y.checked_add(1) {
+                    Some(value) => value,
+                    None => break,
+                };
+            }
+        }
+        let mut matches = Vec::with_capacity(ranges.len());
+        for (start, end) in ranges {
+            let start = match self.track_document_anchor(replica, start) {
+                Ok(anchor) => anchor,
+                Err(error) => {
+                    for found in matches.drain(..) {
+                        self.release_document_anchor(replica, found.start);
+                        self.release_document_anchor(replica, found.end);
+                    }
+                    return Err(error);
+                }
+            };
+            let end = match self.track_document_anchor(replica, end) {
+                Ok(anchor) => anchor,
+                Err(error) => {
+                    self.release_document_anchor(replica, start);
+                    for found in matches.drain(..) {
+                        self.release_document_anchor(replica, found.start);
+                        self.release_document_anchor(replica, found.end);
+                    }
+                    return Err(error);
+                }
+            };
+            matches.push(EngineSearchMatch { start, end });
+        }
+        Ok(matches)
+    }
+
+    fn format_selection(
+        &self,
+        replica: &Self::Replica,
+        selection: EngineDocumentSelection,
+    ) -> Result<Option<String>, Self::Error> {
+        let terminal = replica
+            .terminal()
+            .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?;
+        let Some(start) = replica.anchors.get(&selection.start) else {
+            return Ok(None);
+        };
+        let Some(end) = replica.anchors.get(&selection.end) else {
+            return Ok(None);
+        };
+        let Some(start) = start.snapshot(terminal)? else {
+            return Ok(None);
+        };
+        let Some(end) = end.snapshot(terminal)? else {
+            return Ok(None);
+        };
+        let selection = Selection::new(start, end, selection.rectangle);
+        let formatted = terminal.format_selection_alloc(
+            None,
+            FormatOptions::new().with_selection(&selection),
+        )?;
+        Ok(formatted.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    }
+}
+
+fn to_ghostty_point(point: DocumentPoint) -> Point {
+    let coordinate = PointCoordinate {
+        x: point.x,
+        y: point.y,
+    };
+    match point.space {
+        DocumentSpace::History => Point::History(coordinate),
+        DocumentSpace::Viewport => Point::Viewport(coordinate),
+        DocumentSpace::Active => Point::Active(coordinate),
+    }
+}
+
+fn to_ghostty_space(space: DocumentSpace) -> PointSpace {
+    match space {
+        DocumentSpace::History => PointSpace::History,
+        DocumentSpace::Viewport => PointSpace::Viewport,
+        DocumentSpace::Active => PointSpace::Active,
+    }
+}
+
+fn grid_ref_graphemes(
+    grid_ref: &libghostty_vt::screen::GridRef<'_>,
+) -> Result<Vec<char>, GhosttyEngineError> {
+    let mut inline = ['\0'; 8];
+    match grid_ref.graphemes(&mut inline) {
+        Ok(len) => Ok(inline[..len].to_vec()),
+        Err(libghostty_vt::Error::OutOfSpace { required }) => {
+            let mut values = vec!['\0'; required];
+            let len = grid_ref.graphemes(&mut values)?;
+            values.truncate(len);
+            Ok(values)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn engine_history_rows(
+    terminal: &GhosttyTerminal<'_, '_>,
+    max_rows: usize,
+) -> Result<Vec<(Vec<String>, bool)>, GhosttyEngineError> {
+    let cols = terminal.cols()?;
+    let mut rows = Vec::new();
+    for y in 0..u32::try_from(max_rows).unwrap_or(u32::MAX) {
+        let first = match terminal.grid_ref(Point::History(PointCoordinate { x: 0, y })) {
+            Ok(value) => value,
+            Err(libghostty_vt::Error::InvalidValue) => break,
+            Err(error) => return Err(error.into()),
+        };
+        let wrapped = first.row()?.is_wrapped()?;
+        let mut cells = Vec::with_capacity(usize::from(cols));
+        for x in 0..cols {
+            let grid_ref = terminal.grid_ref(Point::History(PointCoordinate { x, y }))?;
+            cells.push(grid_ref_graphemes(&grid_ref)?.into_iter().collect());
+        }
+        rows.push((cells, wrapped));
+    }
+    Ok(rows)
 }
 
 fn push_native(
@@ -463,8 +791,12 @@ fn push_native(
                     let continuation = decoder.take_terminal().map_err(|error| {
                         GhosttyEngineError::checkpoint(error, progress.consumed)
                     })?;
-                    let stream = continuation.replay().map_err(|failure| {
+                    let mut stream = continuation.replay().map_err(|failure| {
                         GhosttyEngineError::checkpoint(failure.error, progress.consumed)
+                    })?;
+                    stream.on_pty_write({
+                        let pty_responses = Rc::clone(&native.pty_responses);
+                        move |_terminal, bytes| pty_responses.borrow_mut().push(bytes.to_vec())
                     })?;
                     let trailing_result =
                         remaining(input, progress).map(|remaining| remaining.len());
@@ -752,6 +1084,22 @@ mod tests {
     }
 
     #[test]
+    fn synthesized_terminal_queries_emit_exact_pty_write_effects() {
+        let mut adapter = native_adapter();
+        let mut replica = adapter
+            .start_replica(BootstrapStreamProfile::SynthesizedVtRaw, geometry())
+            .expect("synth replica");
+        let mut effects = EngineEffectBuffer::new();
+        adapter
+            .apply_bootstrap_chunk(&mut replica, b"\x1b[5n", &mut effects)
+            .expect("DSR query");
+        assert!(matches!(
+            effects.as_slice(),
+            [EngineEffect::Send(EngineSend::PtyWrite(bytes))] if bytes == b"\x1b[0n"
+        ));
+    }
+
+    #[test]
     fn native_decoder_accepts_arbitrary_fragment_cuts_and_multiple_records() {
         let records = capture_records();
         let (bootstrap, history) = split_capture(&records);
@@ -845,6 +1193,17 @@ mod tests {
             replica.terminal().unwrap().title().unwrap(),
             "published-live"
         );
+        effects.clear();
+        adapter
+            .apply_output(&mut replica, b"\x1b[5n", &mut effects)
+            .expect("native DSR query after READY publication");
+        assert!(matches!(
+            effects.as_slice(),
+            [
+                EngineEffect::Send(EngineSend::PtyWrite(bytes)),
+                EngineEffect::Damage(EngineDamage::Full),
+            ] if bytes == b"\x1b[0n"
+        ));
     }
 
     #[test]
@@ -1037,5 +1396,75 @@ mod tests {
             EngineFeatureSet::required_native()
         );
         assert_eq!(capabilities.limits, limits);
+    }
+
+    #[test]
+    fn native_projection_search_and_anchors_remain_engine_owned() {
+        let records = capture_records();
+        let (bootstrap, history) = split_capture(&records);
+        let mut adapter = native_adapter();
+        let mut replica = adapter
+            .start_replica(native_profile(), geometry())
+            .expect("native replica");
+        let mut effects = EngineEffectBuffer::new();
+        adapter
+            .apply_bootstrap_chunk(&mut replica, &bootstrap, &mut effects)
+            .expect("checkpoint through READY");
+        adapter
+            .finish_bootstrap(&mut replica, &mut effects)
+            .expect("protocol READY");
+        assert_eq!(
+            adapter
+                .apply_history_page(&mut replica, &history, &mut effects)
+                .expect("complete history"),
+            BootstrapProgress::Finished
+        );
+
+        let projection = adapter
+            .project_history(&mut replica, 12, 3)
+            .expect("bounded projection");
+        assert_eq!(projection.width, 12);
+        assert_eq!(projection.rows.len(), 3);
+        assert!(projection.has_older);
+
+        let found = adapter
+            .search_loaded(&mut replica, "line 10", 1)
+            .expect("engine search");
+        assert_eq!(found.len(), 1);
+        let selection = EngineDocumentSelection {
+            start: found[0].start,
+            end: found[0].end,
+            rectangle: false,
+        };
+        assert_eq!(
+            adapter
+                .format_selection(&replica, selection)
+                .expect("engine formatting")
+                .as_deref(),
+            Some("line 10")
+        );
+        adapter
+            .apply_output(&mut replica, b"newer-live-output\r\n", &mut effects)
+            .expect("live append");
+        assert!(
+            adapter
+                .document_anchor_point(&replica, found[0].start, DocumentSpace::History)
+                .expect("tracked point")
+                .is_some()
+        );
+
+        let other = adapter
+            .start_replica(BootstrapStreamProfile::SynthesizedVtRaw, geometry())
+            .expect("other replica");
+        assert_eq!(
+            adapter
+                .document_anchor_point(&other, found[0].start, DocumentSpace::History)
+                .expect("wrong replica lookup"),
+            None
+        );
+        adapter.release_document_anchor(&mut replica, found[0].start);
+        adapter.release_document_anchor(&mut replica, found[0].end);
+        assert!(replica.anchors.is_empty());
+        assert!(other.anchors.is_empty());
     }
 }

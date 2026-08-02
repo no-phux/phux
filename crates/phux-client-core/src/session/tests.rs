@@ -360,6 +360,7 @@ fn protocol_ready(
                 terminal_id,
                 stream_id,
                 bootstrap_id,
+                history_cursor: None,
             },
             effects,
         )
@@ -384,6 +385,37 @@ fn publish_direct(
     );
     push_ready_transcript(kernel, terminal_id, stream_id, bootstrap_id, effects);
     protocol_ready(kernel, terminal_id, stream_id, bootstrap_id, effects);
+}
+
+fn publish_direct_with_history(
+    kernel: &mut SessionKernel<FakeAdapter>,
+    terminal_id: &TerminalId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    base_seq: u64,
+    cursor: &[u8],
+    effects: &mut EffectBuffer,
+) {
+    begin(
+        kernel,
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        base_seq,
+        effects,
+    );
+    push_ready_transcript(kernel, terminal_id, stream_id, bootstrap_id, effects);
+    kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: Some(cursor),
+            },
+            effects,
+        )
+        .unwrap();
 }
 
 #[test]
@@ -735,12 +767,13 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
     let bootstrap_id = bootstrap(230);
     let mut kernel = kernel(ReadyMode::ChunkFirst);
     let mut effects = EffectBuffer::new();
-    publish_direct(
+    publish_direct_with_history(
         &mut kernel,
         &terminal_id,
         stream_id,
         bootstrap_id,
         40,
+        b"cursor-0",
         &mut effects,
     );
 
@@ -750,8 +783,9 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
+                cursor: b"cursor-0",
+                next_cursor: Some(b"cursor-1"),
                 payload: b"history-one",
-                has_more: true,
             },
             &mut effects,
         )
@@ -776,8 +810,9 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
+                cursor: b"cursor-1",
+                next_cursor: Some(b"cursor-2"),
                 payload: b"history-two",
-                has_more: true,
             },
             &mut effects,
         )
@@ -797,8 +832,9 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id: bootstrap(999),
+            cursor: b"wrong-cursor",
+            next_cursor: Some(b"wrong-next"),
             payload: b"wrong-generation",
-            has_more: true,
         },
         &mut effects,
     );
@@ -819,12 +855,13 @@ fn history_engine_failure_freezes_the_last_published_view() {
     let bootstrap_id = bootstrap(231);
     let mut kernel = kernel(ReadyMode::ChunkFirst);
     let mut effects = EffectBuffer::new();
-    publish_direct(
+    publish_direct_with_history(
         &mut kernel,
         &terminal_id,
         stream_id,
         bootstrap_id,
         73,
+        b"cursor-0",
         &mut effects,
     );
 
@@ -833,8 +870,9 @@ fn history_engine_failure_freezes_the_last_published_view() {
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id,
+            cursor: b"cursor-0",
+            next_cursor: Some(b"cursor-1"),
             payload: b"history-error",
-            has_more: true,
         },
         &mut effects,
     );
@@ -1151,8 +1189,9 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
             terminal_id: &terminal_id,
             stream_id,
             bootstrap_id,
+            cursor: b"cursor-0",
+            next_cursor: Some(b"cursor-1"),
             payload: b"\xfefuture-history-before-ready",
-            has_more: true,
         },
         &mut effects,
     );
@@ -1232,6 +1271,7 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
+                history_cursor: Some(b"cursor-0"),
             },
             &mut effects,
         )
@@ -1240,13 +1280,18 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     assert_eq!(published_key.terminal_id, terminal_id);
     assert_eq!(published_key.stream_id, stream_id);
     assert_eq!(published_key.bootstrap_id, bootstrap_id);
-    assert_eq!(
-        effects.as_slice(),
-        &[KernelEffect::Damage(KernelDamage {
-            terminal_id: terminal_id.clone(),
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. })
+            if cursor == b"cursor-0"
+    )));
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Damage(KernelDamage {
+            terminal_id: damaged,
             kind: KernelDamageKind::Full,
-        })]
-    );
+        }) if damaged == &terminal_id
+    )));
 
     let live_a: &[u8] = b"\x80live-a\xff";
     let history: &[u8] = b"\0\xfehistory-future\x81";
@@ -1270,13 +1315,18 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
+                cursor: b"cursor-0",
+                next_cursor: Some(b"cursor-1"),
                 payload: history,
-                has_more: true,
             },
             &mut effects,
         )
         .unwrap();
-    assert!(effects.is_empty());
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Status(KernelStatus::History { status, .. })
+            if status.state == HistoryLoadState::Idle
+    )));
     kernel
         .update(
             KernelInput::TerminalOutput {
@@ -1354,6 +1404,7 @@ fn published_recording_native(
                 terminal_id,
                 stream_id,
                 bootstrap_id,
+                history_cursor: Some(b"cursor-0"),
             },
             &mut effects,
         )
@@ -1381,8 +1432,9 @@ fn native_history_requires_finish_exactly_on_the_final_cursor_page() {
                 terminal_id: &terminal_id,
                 stream_id,
                 bootstrap_id,
+                cursor: b"cursor-0",
+                next_cursor: has_more.then_some(b"cursor-1".as_slice()),
                 payload,
-                has_more,
             },
             &mut effects,
         );
@@ -1800,11 +1852,7 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         )
         .unwrap();
     let finish_error = kernel.update(
-        KernelInput::BootstrapReady {
-            terminal_id: &finish_terminal,
-            stream_id: finish_stream,
-            bootstrap_id: finish_bootstrap,
-        },
+        KernelInput::BootstrapReady { terminal_id: &finish_terminal, stream_id: finish_stream, bootstrap_id: finish_bootstrap, history_cursor: None },
         &mut effects,
     );
     assert!(matches!(
@@ -1818,11 +1866,7 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
             .is_some()
     );
     let finish_retry = kernel.update(
-        KernelInput::BootstrapReady {
-            terminal_id: &finish_terminal,
-            stream_id: finish_stream,
-            bootstrap_id: finish_bootstrap,
-        },
+        KernelInput::BootstrapReady { terminal_id: &finish_terminal, stream_id: finish_stream, bootstrap_id: finish_bootstrap, history_cursor: None },
         &mut effects,
     );
     assert!(matches!(

@@ -1,6 +1,7 @@
 //! Frontend-neutral terminal-engine boundary used by the session kernel.
 
 use phux_protocol::BootstrapStreamProfile;
+use crate::history::{DocumentAnchorId, HistoryPageId};
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod ghostty;
@@ -194,4 +195,118 @@ pub trait EngineAdapter {
         payload: &[u8],
         effects: &mut EngineEffectBuffer,
     ) -> Result<(), Self::Error>;
+}
+
+/// Coordinate space for engine-owned document anchors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentSpace {
+    /// Scrollback history before the active area.
+    History,
+    /// Current visible viewport.
+    Viewport,
+    /// Active PTY area.
+    Active,
+}
+
+/// A point interpreted only by the selected terminal engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocumentPoint {
+    /// Coordinate space.
+    pub space: DocumentSpace,
+    /// Cell column.
+    pub x: u16,
+    /// Physical row in the selected space.
+    pub y: u32,
+}
+
+/// Adapter-produced semantic row for frontend projection.
+///
+/// This is derived from imported engine state, never from opaque history bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineProjectionRow {
+    /// Engine-formatted Unicode text.
+    pub text: String,
+    /// Whether the following physical row continues this logical line.
+    pub soft_wrapped: bool,
+    /// Cached opaque page backing this row when known.
+    pub page: Option<HistoryPageId>,
+}
+
+/// Cooperative client-local history projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineHistoryProjection {
+    /// Frontend-local width used for wrapping.
+    pub width: u16,
+    /// Oldest-to-newest semantic rows returned within the caller's bound.
+    pub rows: Vec<EngineProjectionRow>,
+    /// Whether an older uncached/unmaterialized row remains.
+    pub has_older: bool,
+}
+
+/// Engine-owned selection endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineDocumentSelection {
+    /// Inclusive start anchor.
+    pub start: DocumentAnchorId,
+    /// Inclusive end anchor.
+    pub end: DocumentAnchorId,
+    /// Rectangular rather than linear selection.
+    pub rectangle: bool,
+}
+
+/// One engine search result represented by stable tracked anchors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineSearchMatch {
+    /// Inclusive first match scalar.
+    pub start: DocumentAnchorId,
+    /// Inclusive last match scalar.
+    pub end: DocumentAnchorId,
+}
+
+/// Optional semantic document operations for adapters with an engine-owned grid.
+pub trait EngineDocumentAdapter: EngineAdapter {
+    /// Cooperatively project imported history without resizing canonical PTY state.
+    fn project_history(
+        &mut self,
+        replica: &mut Self::Replica,
+        width: u16,
+        max_rows: usize,
+    ) -> Result<EngineHistoryProjection, Self::Error>;
+
+    /// Create one tracked anchor owned by the replica.
+    fn track_document_anchor(
+        &mut self,
+        replica: &mut Self::Replica,
+        point: DocumentPoint,
+    ) -> Result<DocumentAnchorId, Self::Error>;
+
+    /// Release one tracked anchor.
+    fn release_document_anchor(
+        &mut self,
+        replica: &mut Self::Replica,
+        anchor: DocumentAnchorId,
+    );
+
+    /// Resolve an anchor immediately before projection.
+    fn document_anchor_point(
+        &self,
+        replica: &Self::Replica,
+        anchor: DocumentAnchorId,
+        space: DocumentSpace,
+    ) -> Result<Option<DocumentPoint>, Self::Error>;
+
+    /// Search only engine state already imported into this replica.
+    fn search_loaded(
+        &mut self,
+        replica: &mut Self::Replica,
+        needle: &str,
+        max_matches: usize,
+    ) -> Result<Vec<EngineSearchMatch>, Self::Error>;
+
+    /// Format a selection with engine wrap and grapheme semantics.
+    fn format_selection(
+        &self,
+        replica: &Self::Replica,
+        selection: EngineDocumentSelection,
+    ) -> Result<Option<String>, Self::Error>;
 }
