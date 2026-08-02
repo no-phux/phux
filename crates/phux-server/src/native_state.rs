@@ -2,14 +2,16 @@
 //!
 //! Native bootstrap publishes only the checkpoint prefix through the codec's
 //! authenticated READY record. Retained history is a separate, client-pulled
-//! stream backed by an owned live cursor, so ordinary PTY output can continue
-//! while older history is paged. All codec records and tokens remain opaque.
+//! stream backed by owned native continuations, so ordinary PTY output can
+//! continue while older history is paged. Records and tokens remain opaque.
+
+use std::collections::HashMap;
 
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
     snapshot::incremental::{
-        self, Capture, CaptureEventKind, CaptureOptions, HistoryEvent, HistoryOptions,
-        LiveHistoryCursor, LiveHistorySet, LiveSetCapture, ScreenKey, TOKEN_LEN,
+        self, Capture, CaptureContinuation, CaptureEventKind, CaptureOptions, ContinuationOptions,
+        DetachOptions, HistoryEvent, HistoryOptions, LiveHistoryCursor, ScreenKey, TOKEN_LEN,
     },
 };
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet};
@@ -326,10 +328,25 @@ pub(crate) struct NativeManagerInitFailure {
     pub(crate) terminal: GhosttyTerminal<'static, 'static>,
 }
 
+/// One terminal-independent continuation record returned to the actor.
+#[derive(Debug)]
+pub(crate) enum NativeManagedHistoryEvent<'buffer> {
+    Page {
+        bytes: &'buffer [u8],
+        rows: usize,
+        next_cursor: OpaqueHistoryCursor,
+    },
+    Finish {
+        bytes: &'buffer [u8],
+    },
+}
+
 /// Actor-owned terminal and bounded concurrent native history cuts.
 #[derive(Debug)]
 pub(crate) struct NativeTerminalManager {
-    inner: LiveHistorySet<'static, 'static, 'static>,
+    terminal: GhosttyTerminal<'static, 'static>,
+    continuations: HashMap<(u64, OpaqueHistoryCursor), CaptureContinuation<'static>>,
+    capacity: usize,
     engine: incremental::Capabilities,
 }
 
@@ -342,21 +359,33 @@ impl NativeTerminalManager {
             Ok(engine) => engine,
             Err(error) => return Err(NativeManagerInitFailure { error, terminal }),
         };
-        match terminal.into_live_history_set(capacity) {
-            Ok(inner) => Ok(Self { inner, engine }),
-            Err(failure) => Err(NativeManagerInitFailure {
-                error: failure.error,
-                terminal: failure.terminal,
-            }),
+        if capacity == 0 {
+            return Err(NativeManagerInitFailure {
+                error: NativeStateError::LimitExceeded,
+                terminal,
+            });
         }
+        let mut continuations = HashMap::new();
+        if continuations.try_reserve(capacity).is_err() {
+            return Err(NativeManagerInitFailure {
+                error: NativeStateError::OutOfMemory,
+                terminal,
+            });
+        }
+        Ok(Self {
+            terminal,
+            continuations,
+            capacity,
+            engine,
+        })
     }
 
     pub(crate) fn terminal(&self) -> &GhosttyTerminal<'static, 'static> {
-        self.inner.terminal()
+        &self.terminal
     }
 
     pub(crate) fn vt_write(&mut self, bytes: &[u8]) {
-        self.inner.vt_write(bytes);
+        self.terminal.vt_write(bytes);
     }
 
     pub(crate) fn resize(
@@ -366,48 +395,90 @@ impl NativeTerminalManager {
         cell_width_px: u32,
         cell_height_px: u32,
     ) -> libghostty_vt::error::Result<()> {
-        self.inner.resize(cols, rows, cell_width_px, cell_height_px)
+        self.continuations.clear();
+        self.terminal
+            .resize(cols, rows, cell_width_px, cell_height_px)
     }
 
     pub(crate) fn reset(&mut self) {
-        self.inner.reset();
+        self.continuations.clear();
+        self.terminal.reset();
     }
 
     pub(crate) fn capture(
         &mut self,
         limits: BootstrapLimits,
     ) -> Result<NativeManagedCapture<'_>, NativeStateError> {
+        if self.continuations.len() == self.capacity {
+            return Err(NativeStateError::LimitExceeded);
+        }
         let max_record_bytes = usize::try_from(limits.max_chunk_bytes())
             .map_err(|_| NativeStateError::LimitExceeded)?
             .min(self.engine.max_record_bytes);
-        let max_pages = CaptureOptions::default()
-            .max_pages
-            .min(self.engine.max_pages);
-        if max_record_bytes == 0 || max_pages == 0 {
+        let max_unit_bytes = usize::try_from(limits.max_history_page_bytes())
+            .map_err(|_| NativeStateError::LimitExceeded)?
+            .min(self.engine.max_unit_bytes);
+        let capture_defaults = CaptureOptions::default();
+        let detach_defaults = DetachOptions::default();
+        let max_pages = capture_defaults.max_pages.min(self.engine.max_pages);
+        let protocol_max_rows = usize::try_from(phux_protocol::MAX_HISTORY_PAGE_ROWS)
+            .map_err(|_| NativeStateError::LimitExceeded)?;
+        let max_rows = detach_defaults
+            .max_rows
+            .min(self.engine.max_rows)
+            .min(protocol_max_rows);
+        let negotiated_total_bytes = max_unit_bytes
+            .checked_mul(max_pages)
+            .ok_or(NativeStateError::LimitExceeded)?;
+        let max_total_bytes = detach_defaults.max_total_bytes.min(negotiated_total_bytes);
+        if max_record_bytes == 0
+            || max_unit_bytes == 0
+            || max_pages == 0
+            || max_rows == 0
+            || max_total_bytes == 0
+        {
             return Err(NativeStateError::LimitExceeded);
         }
-        let capture = self.inner.capture(
-            ScreenKey::PRIMARY,
-            CaptureOptions {
-                max_record_bytes,
-                max_pages,
-            },
-        )?;
-        Ok(NativeManagedCapture {
-            capture,
+        let capture = self.terminal.capture(CaptureOptions {
             max_record_bytes,
+            max_pages,
+        })?;
+        Ok(NativeManagedCapture {
+            capture: Some(capture),
+            max_record_bytes,
+            detach_options: DetachOptions {
+                max_pages,
+                max_total_bytes,
+                max_rows,
+            },
             ready_cursor: None,
         })
     }
 
+    pub(crate) fn retain(
+        &mut self,
+        owner: u64,
+        cursor: OpaqueHistoryCursor,
+        continuation: CaptureContinuation<'static>,
+    ) -> Result<(), NativeStateError> {
+        if self.continuations.len() == self.capacity
+            || self.continuations.contains_key(&(owner, cursor))
+        {
+            return Err(NativeStateError::LimitExceeded);
+        }
+        self.continuations.insert((owner, cursor), continuation);
+        Ok(())
+    }
+
     pub(crate) fn next<'buffer>(
         &mut self,
+        owner: u64,
         cursor: &OpaqueHistoryCursor,
         limits: BootstrapLimits,
         requested_max_bytes: u32,
         requested_max_rows: u32,
         buffer: &'buffer mut [u8],
-    ) -> Result<NativeHistoryEvent<'buffer>, NativeStateError> {
+    ) -> Result<NativeManagedHistoryEvent<'buffer>, NativeStateError> {
         let negotiated = usize::try_from(limits.max_history_page_bytes())
             .map_err(|_| NativeStateError::LimitExceeded)?
             .min(self.engine.max_unit_bytes);
@@ -415,46 +486,72 @@ impl NativeTerminalManager {
             usize::try_from(requested_max_bytes).map_err(|_| NativeStateError::LimitExceeded)?;
         let requested_rows =
             usize::try_from(requested_max_rows).map_err(|_| NativeStateError::LimitExceeded)?;
-        let defaults = HistoryOptions::default();
-        let options = HistoryOptions {
-            max_unit_bytes: negotiated.min(requested),
-            max_rows: defaults
-                .max_rows
-                .min(self.engine.max_rows)
-                .min(requested_rows),
-            max_units: defaults.max_units.min(self.engine.max_pages),
-        };
-        if options.max_unit_bytes == 0 || options.max_rows == 0 || options.max_units == 0 {
+        let max_bytes = negotiated.min(requested);
+        let protocol_max_rows = usize::try_from(phux_protocol::MAX_HISTORY_PAGE_ROWS)
+            .map_err(|_| NativeStateError::LimitExceeded)?;
+        let max_rows = requested_rows
+            .min(self.engine.max_rows)
+            .min(protocol_max_rows);
+        if max_bytes == 0 || max_rows == 0 {
             return Err(NativeStateError::LimitExceeded);
         }
-        match self.inner.next(cursor, options, buffer)? {
-            HistoryEvent::Unit {
-                unit,
-                rows,
-                page_complete,
-            } => Ok(NativeHistoryEvent::Page {
-                bytes: unit,
-                rows,
-                page_complete,
+        let continuation = self
+            .continuations
+            .get_mut(&(owner, *cursor))
+            .ok_or(NativeStateError::InvalidHandle)?;
+        let output_len = buffer.len().min(max_bytes);
+        let event =
+            continuation.next(ContinuationOptions { max_rows }, &mut buffer[..output_len])?;
+        if event.codec_version != CHECKPOINT_VERSION || event.record.len() > max_bytes {
+            return Err(NativeStateError::InvalidState);
+        }
+        match event.kind {
+            CaptureEventKind::HistoryBegin { .. } => Ok(NativeManagedHistoryEvent::Page {
+                bytes: event.record,
+                rows: 0,
                 next_cursor: *cursor,
             }),
-            HistoryEvent::End => Ok(NativeHistoryEvent::End),
+            CaptureEventKind::HistoryPage { .. } => Ok(NativeManagedHistoryEvent::Page {
+                bytes: event.record,
+                rows: event.rows,
+                next_cursor: *cursor,
+            }),
+            CaptureEventKind::Finish => Ok(NativeManagedHistoryEvent::Finish {
+                bytes: event.record,
+            }),
+            CaptureEventKind::Record | CaptureEventKind::Ready { .. } => {
+                Err(NativeStateError::InvalidState)
+            }
         }
     }
 
-    pub(crate) fn release(&mut self, cursor: &OpaqueHistoryCursor) -> Result<(), NativeStateError> {
-        self.inner.release(cursor)
+    pub(crate) fn release(
+        &mut self,
+        owner: u64,
+        cursor: &OpaqueHistoryCursor,
+    ) -> Result<(), NativeStateError> {
+        self.continuations
+            .remove(&(owner, *cursor))
+            .map(drop)
+            .ok_or(NativeStateError::InvalidHandle)
     }
 
     pub(crate) fn into_terminal(self) -> GhosttyTerminal<'static, 'static> {
-        self.inner.into_terminal()
+        let Self {
+            terminal,
+            continuations,
+            ..
+        } = self;
+        drop(continuations);
+        terminal
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct NativeManagedCapture<'manager> {
-    capture: LiveSetCapture<'manager, 'static, 'static, 'static, 'static>,
+    capture: Option<Capture<'manager, 'static>>,
     max_record_bytes: usize,
+    detach_options: DetachOptions,
     ready_cursor: Option<OpaqueHistoryCursor>,
 }
 
@@ -466,7 +563,11 @@ impl NativeManagedCapture<'_> {
         if self.ready_cursor.is_some() {
             return Err(NativeStateError::InvalidState);
         }
-        let event = self.capture.next(buffer)?;
+        let event = self
+            .capture
+            .as_mut()
+            .ok_or(NativeStateError::InvalidState)?
+            .next(buffer)?;
         if event.codec_version != CHECKPOINT_VERSION {
             return Err(NativeStateError::UnknownVersion);
         }
@@ -475,12 +576,8 @@ impl NativeManagedCapture<'_> {
         }
         let kind = match event.kind {
             CaptureEventKind::Record => NativeCheckpointChunkKind::Record,
-            CaptureEventKind::Ready { .. } => {
-                let cut = self
-                    .capture
-                    .ready_cut()
-                    .ok_or(NativeStateError::InvalidState)?;
-                self.ready_cursor = Some(*cut.capability());
+            CaptureEventKind::Ready { checkpoint } => {
+                self.ready_cursor = Some(*checkpoint.as_bytes());
                 NativeCheckpointChunkKind::Ready
             }
             CaptureEventKind::HistoryBegin { .. }
@@ -494,8 +591,15 @@ impl NativeManagedCapture<'_> {
         })
     }
 
-    pub(crate) fn ready_cursor(&self) -> Option<&OpaqueHistoryCursor> {
-        self.ready_cursor.as_ref()
+    pub(crate) fn detach_ready(
+        mut self,
+    ) -> Result<(OpaqueHistoryCursor, CaptureContinuation<'static>), NativeStateError> {
+        let cursor = self.ready_cursor.ok_or(NativeStateError::InvalidState)?;
+        let capture = self.capture.take().ok_or(NativeStateError::InvalidState)?;
+        let continuation = capture
+            .detach_ready(self.detach_options)
+            .map_err(|failure| failure.error)?;
+        Ok((cursor, continuation))
     }
 }
 
@@ -615,6 +719,28 @@ mod tests {
                 return;
             }
         }
+    }
+
+    fn detach_managed(
+        manager: &mut NativeTerminalManager,
+        limits: BootstrapLimits,
+    ) -> (OpaqueHistoryCursor, CaptureContinuation<'static>) {
+        let mut capture = manager.capture(limits).expect("managed capture preflight");
+        loop {
+            let required = match capture.step(&mut []) {
+                Err(NativeStateError::OutOfSpace {
+                    required_bytes,
+                    required_rows: 0,
+                }) => required_bytes,
+                other => panic!("managed capture probe: {other:?}"),
+            };
+            let mut exact = vec![0; required];
+            let event = capture.step(&mut exact).expect("managed record");
+            if matches!(event.kind, NativeCheckpointChunkKind::Ready) {
+                break;
+            }
+        }
+        capture.detach_ready().expect("detach READY continuation")
     }
 
     #[test]
@@ -806,24 +932,10 @@ mod tests {
         let limits = BootstrapLimits::new(64 * 1024, 64 * 1024).expect("test limits");
         let mut manager =
             NativeTerminalManager::new(history_terminal(), 1).expect("native manager");
-        let cursor = {
-            let mut capture = manager.capture(limits).expect("managed capture preflight");
-            loop {
-                let required = match capture.step(&mut []) {
-                    Err(NativeStateError::OutOfSpace {
-                        required_bytes,
-                        required_rows: 0,
-                    }) => required_bytes,
-                    other => panic!("managed capture probe: {other:?}"),
-                };
-                let mut exact = vec![0; required];
-                let event = capture.step(&mut exact).expect("managed record");
-                if matches!(event.kind, NativeCheckpointChunkKind::Ready) {
-                    break *capture.ready_cursor().expect("managed READY cursor");
-                }
-            }
-        };
-
+        let (cursor, continuation) = detach_managed(&mut manager, limits);
+        manager
+            .retain(1, cursor, continuation)
+            .expect("retain detached continuation");
         manager.vt_write(b"live PTY bytes while retained history is leased\r\n");
         assert!(matches!(
             manager.capture(limits),
@@ -838,6 +950,7 @@ mod tests {
         assert!(matches!(
             manager
                 .next(
+                    1,
                     &cursor,
                     limits,
                     limits.max_history_page_bytes(),
@@ -845,11 +958,71 @@ mod tests {
                     &mut page,
                 )
                 .expect("retained history page"),
-            NativeHistoryEvent::Page { .. } | NativeHistoryEvent::End
+            NativeManagedHistoryEvent::Page { .. } | NativeManagedHistoryEvent::Finish { .. }
         ));
-        manager.release(&cursor).expect("release retained cut");
+        manager.release(1, &cursor).expect("release retained cut");
         manager
             .capture(limits)
             .expect("released capacity admits next capture");
+    }
+
+    #[test]
+    fn equal_checkpoint_tokens_are_isolated_by_server_owner() {
+        let limits = BootstrapLimits::new(64 * 1024, 64 * 1024).expect("test limits");
+        let mut manager =
+            NativeTerminalManager::new(history_terminal(), 2).expect("native manager");
+        let (first_cursor, first) = detach_managed(&mut manager, limits);
+        manager.retain(1, first_cursor, first).expect("first owner");
+        let (second_cursor, second) = detach_managed(&mut manager, limits);
+        assert_eq!(
+            first_cursor, second_cursor,
+            "checkpoint authentication is content-derived, not an owner id"
+        );
+        manager
+            .retain(2, second_cursor, second)
+            .expect("second owner with same opaque checkpoint");
+
+        let size = usize::try_from(limits.max_history_page_bytes()).expect("history bound");
+        let mut first_bytes = vec![0; size];
+        let mut second_bytes = vec![0; size];
+        let first = manager
+            .next(
+                1,
+                &first_cursor,
+                limits,
+                limits.max_history_page_bytes(),
+                u32::MAX,
+                &mut first_bytes,
+            )
+            .expect("first owner continuation");
+        let second = manager
+            .next(
+                2,
+                &second_cursor,
+                limits,
+                limits.max_history_page_bytes(),
+                u32::MAX,
+                &mut second_bytes,
+            )
+            .expect("second owner continuation");
+        let (
+            NativeManagedHistoryEvent::Page {
+                bytes: first,
+                rows: first_rows,
+                ..
+            },
+            NativeManagedHistoryEvent::Page {
+                bytes: second,
+                rows: second_rows,
+                ..
+            },
+        ) = (first, second)
+        else {
+            panic!("both owners begin independent continuations");
+        };
+        assert_eq!(first, second);
+        assert_eq!(first_rows, second_rows);
+        manager.release(1, &first_cursor).expect("first release");
+        manager.release(2, &second_cursor).expect("second release");
     }
 }
