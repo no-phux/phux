@@ -13,6 +13,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use bytes::{Buf, BytesMut};
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, MAX_FRAME_LEN, Scope, SpawnResult,
 };
@@ -53,12 +55,10 @@ impl Dial {
     }
 }
 
-/// A connected, owned transport split into framed read and write halves.
-///
-/// Construction performs the connect (UDS or QUIC); the two halves are
-/// independent after that. The struct keeps them together so the simple "send +
-/// recv on the same task" case is one type. Both transports carry the identical
-/// SPEC §5 framing — the variant only changes the byte plumbing underneath.
+/// Production construction connects (UDS, QUIC, or WebSocket) and completes
+/// protocol negotiation before returning. The two halves are independent
+/// after that. All transports carry identical SPEC §5 frames; the variant only
+/// changes the byte plumbing underneath.
 ///
 /// # The COMMAND interleave contract
 ///
@@ -96,6 +96,7 @@ impl Dial {
 pub struct Connection {
     reader: FrameReader,
     writer: FrameWriter,
+    negotiated: bool,
 }
 
 /// Read half — pulls one [`FrameKind`] per call, over either transport.
@@ -193,15 +194,41 @@ impl Drop for QuicWriter {
     }
 }
 
+fn default_client_name() -> String {
+    format!("phux-client/{}", env!("CARGO_PKG_VERSION"))
+}
+
 impl Connection {
-    /// Open the UDS at `socket` and return a framed connection.
+    /// Open the UDS at `socket` and negotiate the current L1 protocol.
+    ///
+    /// Control-plane callers use the generic phux client identity and default
+    /// L1 capabilities. Consumers with a richer profile (the TUI and recorder)
+    /// use [`Self::connect_with_hello`] instead.
     ///
     /// # Errors
     ///
-    /// Surfaces `AttachError::Io` on any connect failure. The OS-level
-    /// reason (ENOENT, ECONNREFUSED, EACCES, ...) is preserved in the
-    /// inner `io::Error`.
+    /// Surfaces `AttachError::Io` on any connect failure and handshake errors
+    /// when the server refuses or does not acknowledge `HELLO`.
     pub async fn connect(socket: &Path) -> Result<Self, AttachError> {
+        Self::connect_with_hello(socket, default_client_name(), ClientCapabilities::new()).await
+    }
+
+    /// Open the UDS and negotiate with the supplied client profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
+    pub async fn connect_with_hello(
+        socket: &Path,
+        client_name: String,
+        client_caps: ClientCapabilities,
+    ) -> Result<Self, AttachError> {
+        let mut conn = Self::connect_uds_transport(socket).await?;
+        conn.negotiate(client_name, client_caps).await?;
+        Ok(conn)
+    }
+
+    async fn connect_uds_transport(socket: &Path) -> Result<Self, AttachError> {
         let stream = UnixStream::connect(socket).await.map_err(AttachError::Io)?;
         let (read, write) = stream.into_split();
         Ok(Self {
@@ -213,21 +240,38 @@ impl Connection {
                 inner: write,
                 out: BytesMut::with_capacity(4096),
             }),
+            negotiated: false,
         })
     }
 
-    /// Dial a remote QUIC listener and return a framed connection.
+    /// Dial a remote QUIC listener and negotiate the current L1 protocol.
     ///
-    /// Establishes the TLS 1.3 handshake (phux ALPN), opens one bidirectional
-    /// stream, and writes the bearer-token preamble when [`QuicDial::token`] is
-    /// set, all before returning — so the first [`Self::send`]/[`Self::recv`]
-    /// sees a stream the server is already reading phux frames off.
+    /// Establishes TLS and the optional bearer-token preamble, then waits for
+    /// `HELLO_OK` before returning.
     ///
     /// # Errors
     ///
-    /// Surfaces [`AttachError::Connect`] on any handshake, certificate, or
-    /// preamble failure (the address, the pin, or the token).
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
     pub async fn connect_quic(dial: &QuicDial) -> Result<Self, AttachError> {
+        Self::connect_quic_with_hello(dial, default_client_name(), ClientCapabilities::new()).await
+    }
+
+    /// Dial QUIC and negotiate with the supplied client profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
+    pub async fn connect_quic_with_hello(
+        dial: &QuicDial,
+        client_name: String,
+        client_caps: ClientCapabilities,
+    ) -> Result<Self, AttachError> {
+        let mut conn = Self::connect_quic_transport(dial).await?;
+        conn.negotiate(client_name, client_caps).await?;
+        Ok(conn)
+    }
+
+    async fn connect_quic_transport(dial: &QuicDial) -> Result<Self, AttachError> {
         let (endpoint, connection, send, recv) = quic::dial(dial).await?;
         Ok(Self {
             reader: FrameReader::Quic(QuicReader {
@@ -242,14 +286,35 @@ impl Connection {
                 endpoint,
                 connection,
             }),
+            negotiated: false,
         })
     }
 
-    /// Dial a remote WebSocket listener and return a framed connection.
+    /// Dial a remote WebSocket listener and negotiate the current L1 protocol.
     ///
-    /// The server uses one binary WebSocket message per encoded phux frame.
-    /// This is the native TCP fallback for networks where UDP/QUIC is blocked.
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
     pub async fn connect_ws(dial: &WsDial) -> Result<Self, AttachError> {
+        Self::connect_ws_with_hello(dial, default_client_name(), ClientCapabilities::new()).await
+    }
+
+    /// Dial WebSocket and negotiate with the supplied client profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
+    pub async fn connect_ws_with_hello(
+        dial: &WsDial,
+        client_name: String,
+        client_caps: ClientCapabilities,
+    ) -> Result<Self, AttachError> {
+        let mut conn = Self::connect_ws_transport(dial).await?;
+        conn.negotiate(client_name, client_caps).await?;
+        Ok(conn)
+    }
+
+    async fn connect_ws_transport(dial: &WsDial) -> Result<Self, AttachError> {
         let ws = ws::dial(dial).await?;
         let (tx, rx) = futures_util::StreamExt::split(ws);
         Ok(Self {
@@ -260,6 +325,7 @@ impl Connection {
                 inner: ws::WsWriter { tx },
                 out: BytesMut::with_capacity(4096),
             }),
+            negotiated: false,
         })
     }
 
@@ -278,16 +344,29 @@ impl Connection {
         }
     }
 
-    /// Connect over whichever transport `dial` names.
+    /// Connect over `dial` and negotiate the generic L1 profile.
     ///
     /// # Errors
     ///
-    /// Propagates [`Self::connect`] / [`Self::connect_quic`] errors.
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
     pub async fn connect_dial(dial: &Dial) -> Result<Self, AttachError> {
+        Self::connect_dial_with_hello(dial, default_client_name(), ClientCapabilities::new()).await
+    }
+
+    /// Connect over `dial` and negotiate with the supplied client profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
+    pub async fn connect_dial_with_hello(
+        dial: &Dial,
+        client_name: String,
+        client_caps: ClientCapabilities,
+    ) -> Result<Self, AttachError> {
         match dial {
-            Dial::Uds(path) => Self::connect(path).await,
-            Dial::Quic(quic) => Self::connect_quic(quic).await,
-            Dial::Ws(ws) => Self::connect_ws(ws).await,
+            Dial::Uds(path) => Self::connect_with_hello(path, client_name, client_caps).await,
+            Dial::Quic(quic) => Self::connect_quic_with_hello(quic, client_name, client_caps).await,
+            Dial::Ws(ws) => Self::connect_ws_with_hello(ws, client_name, client_caps).await,
         }
     }
 
@@ -309,6 +388,42 @@ impl Connection {
                 inner: write,
                 out: BytesMut::with_capacity(4096),
             }),
+            negotiated: false,
+        }
+    }
+
+    /// Negotiate the current protocol once on an already-connected transport.
+    ///
+    /// Production constructors call this before returning. It is crate-visible
+    /// so scripted tests can exercise the same handshake over `from_stream`.
+    pub(crate) async fn negotiate(
+        &mut self,
+        client_name: String,
+        client_caps: ClientCapabilities,
+    ) -> Result<(), AttachError> {
+        if self.negotiated {
+            return Err(AttachError::Protocol(
+                "HELLO negotiation already completed on this connection".to_owned(),
+            ));
+        }
+        self.writer
+            .send(&FrameKind::Hello {
+                client_name,
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                client_caps,
+            })
+            .await?;
+        match self.reader.recv().await? {
+            FrameKind::HelloOk { .. } => {
+                self.negotiated = true;
+                Ok(())
+            }
+            FrameKind::Error { message, .. } => Err(AttachError::Refused(message)),
+            other => Err(AttachError::Protocol(format!(
+                "expected HELLO_OK or ERROR after HELLO, got {other:?}",
+            ))),
         }
     }
 

@@ -25,16 +25,11 @@
 //! `NEVER_SENDS_ATTACH_OR_VIEWPORT_RESIZE` test below is the regression
 //! guard.
 //!
-//! # Why this one *does* send `HELLO`
+//! # Recorder HELLO profile
 //!
-//! [`crate::watch::watch_events`] deliberately skips the handshake — a bare
-//! `SUBSCRIBE_EVENTS` stands alone. This path does not skip it, on purpose:
-//! sending `HELLO` puts the recorder through the server's protocol-version
-//! gate and its `authorize_hello` policy check rather than sneaking past
-//! them. A tool that writes files to disk should not inherit a handshake
-//! bypass. The advertised capabilities are the "recorder consumer" shape
-//! `phux_protocol::caps` already anticipates: the default L1-only
-//! `LayerSet`, the default `OutputMode::Raw`, and — load-bearing —
+//! Construction negotiates before any stateful frame, using the recorder
+//! consumer shape `phux_protocol::caps` already anticipates: the default
+//! L1-only `LayerSet`, the default `OutputMode::Raw`, and — load-bearing —
 //! [`ColorSupport::TrueColor`], which makes the server's per-client
 //! `downsample::rewrite_bytes` a no-op so the captured bytes are the PTY's
 //! verbatim.
@@ -55,7 +50,6 @@
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{AgentEvent, Command, CommandResult, FrameKind};
@@ -121,7 +115,9 @@ pub async fn record_terminal(
     max_duration: Option<Duration>,
     progress: impl FnMut(Duration, usize),
 ) -> Result<HeadlessRecording, AttachError> {
-    let mut conn = Connection::connect(socket).await?;
+    let mut conn =
+        Connection::connect_with_hello(socket, recorder_client_name(), recorder_client_caps())
+            .await?;
     let outcome = record_on_connection(&mut conn, terminal_id, max_duration, progress).await;
     conn.shutdown().await;
     outcome
@@ -153,15 +149,11 @@ async fn record_on_connection(
     outcome
 }
 
-/// Handshake, then subscribe to the Terminal's content and event streams.
+/// Subscribe to the Terminal's content and event streams.
 ///
-/// The frame order is normative for this path and asserted by
-/// `sends_hello_then_attach_terminal_then_subscribe_events`: `HELLO` ->
-/// `COMMAND { AttachTerminal }` -> `SUBSCRIBE_EVENTS`. The event
-/// subscription comes last and is not optional — an `ATTACH_TERMINAL`-only
-/// observer is not in the server's `attached` map, so it never receives
-/// `TERMINAL_CLOSED`; the event stream is the only way this path learns the
-/// pane exited instead of blocking until EOF.
+/// The connection has already negotiated the recorder's custom profile. The
+/// stateful frame order asserted by the tests is therefore `HELLO` ->
+/// `COMMAND { AttachTerminal }` -> `SUBSCRIBE_EVENTS`.
 ///
 /// Returns the frames that arrived interleaved with the `COMMAND_RESULT` --
 /// in practice the priming `TERMINAL_SNAPSHOT`. They are already consumed off
@@ -171,25 +163,6 @@ async fn subscribe(
     conn: &mut Connection,
     terminal_id: &TerminalId,
 ) -> Result<Vec<FrameKind>, AttachError> {
-    let client_caps = ClientCapabilities::new().with_color_support(ColorSupport::TrueColor);
-    conn.send(&FrameKind::Hello {
-        client_name: format!("phux-rec/{}", env!("CARGO_PKG_VERSION")),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps,
-    })
-    .await?;
-    match conn.recv().await? {
-        FrameKind::HelloOk { .. } => {}
-        FrameKind::Error { message, .. } => return Err(AttachError::Refused(message)),
-        other => {
-            return Err(AttachError::Protocol(format!(
-                "expected HELLO_OK or ERROR after HELLO, got {other:?}",
-            )));
-        }
-    }
-
     // SPEC §5 permits the priming TERMINAL_SNAPSHOT to arrive before the
     // COMMAND_RESULT, and the reference server always sends it that way
     // (crates/phux-server/src/runtime/commands.rs: the snapshot is pushed
@@ -218,6 +191,14 @@ async fn subscribe(
     })
     .await?;
     Ok(primed)
+}
+
+fn recorder_client_name() -> String {
+    format!("phux-rec/{}", env!("CARGO_PKG_VERSION"))
+}
+
+fn recorder_client_caps() -> ClientCapabilities {
+    ClientCapabilities::new().with_color_support(ColorSupport::TrueColor)
 }
 
 /// Drain the subscription into asciicast events until a stop condition.
@@ -578,6 +559,10 @@ mod tests {
         let mut client = Connection::from_stream(client_stream);
         let server_side =
             tokio::task::spawn_local(ScriptedServer::on_stream(server_stream, spec).run());
+        client
+            .negotiate(recorder_client_name(), recorder_client_caps())
+            .await
+            .expect("recorder HELLO");
         let recorded = record_on_connection(&mut client, terminal(), max_duration, |_, _| {}).await;
         let seen = server_side.await.expect("server task");
         (recorded, seen)
@@ -939,6 +924,10 @@ mod tests {
             let spec = attached(80, 24, b"grid").push(pane_closed(Some(0)));
             let server_side =
                 tokio::task::spawn_local(ScriptedServer::on_stream(server_stream, spec).run());
+            client
+                .negotiate(recorder_client_name(), recorder_client_caps())
+                .await
+                .expect("recorder HELLO");
             let mut calls: Vec<(Duration, usize)> = Vec::new();
             let recorded = record_on_connection(&mut client, terminal(), None, |at, count| {
                 calls.push((at, count));

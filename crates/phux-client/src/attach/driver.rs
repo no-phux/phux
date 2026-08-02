@@ -33,7 +33,6 @@ use std::time::Duration;
 
 use libghostty_vt::terminal::Mode;
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, Layer, LayerSet, OutputMode, detect_color_support};
 use phux_protocol::ids::{ClientId, TerminalId};
 use phux_protocol::wire::frame::{
@@ -1008,8 +1007,10 @@ pub async fn run_headless_rendered(
     /// Hard cap on the whole drain, guarding a pathological never-idle stream.
     const SETTLE_DEADLINE: Duration = Duration::from_secs(3);
 
-    let mut conn = Connection::connect(socket).await?;
-    let _mode = handshake(&mut conn, None).await?;
+    let client_caps = attach_client_caps(None);
+    let _mode = client_caps.output_mode;
+    let mut conn =
+        Connection::connect_with_hello(socket, attach_client_name(), client_caps).await?;
     send_attach(&mut conn, target).await?;
     let attached = wait_for_attached(&mut conn).await?;
 
@@ -1218,26 +1219,27 @@ async fn attach_session<W: super::RenderSink>(
     // this block fails (no server, refused, signal during connect) the
     // user's terminal stays in its original state and `Err(_)` carries
     // the actionable cause up to the CLI.
-    let mut conn = Connection::connect_dial(dial).await?;
     // Attach-handshake timing (info): HELLO -> ATTACH -> ATTACHED. The
     // span's CLOSE duration is the end-to-end attach latency a trace reader
     // wants for "why was the first paint slow." Lifecycle-rate, so info.
     let handshake_span = tracing::info_span!("attach_handshake", ?target);
-    let (attached, output_mode) = async {
+    let (mut conn, attached, output_mode) = async {
         let default_colors = probe_default_colors
             .then(super::terminal_probe::default_colors)
             .flatten();
-        let mode = handshake(&mut conn, default_colors).await?;
+        let client_caps = attach_client_caps(default_colors);
+        let output_mode = client_caps.output_mode;
+        let mut conn =
+            Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await?;
         send_attach(&mut conn, target).await?;
         let attached = wait_for_attached(&mut conn).await?;
-        Ok::<_, AttachError>((attached, mode))
+        Ok::<_, AttachError>((conn, attached, output_mode))
     }
     .instrument(handshake_span)
     .await?;
-    // The output mode is a per-connection HELLO property; `handshake`
-    // runs exactly once per connection and the re-attach loop below reuses
-    // the same `conn` without re-running it, so this bool is stable across
-    // an in-connection session switch. Only a `StateSync` consumer's
+    // The output mode is a per-connection HELLO property; construction
+    // negotiates exactly once and the re-attach loop below reuses the same
+    // `conn`, so this bool is stable across an in-connection session switch.
     // `FRAME_ACK`s feed the server's per-seq RTT/backpressure accounting;
     // a raw consumer's acks are dropped server-side, so the loop skips them.
     let wants_state_sync = output_mode == OutputMode::StateSync;
@@ -1454,43 +1456,31 @@ fn should_emit_frame_ack(
     if wants_state_sync { ack } else { None }
 }
 
-/// Send `HELLO` and require `HELLO_OK` before ATTACH. Returns the
-/// [`OutputMode`] the client advertised — a per-connection HELLO
-/// property the caller threads into the session loop to decide whether
-/// `FRAME_ACK` accounting is load-bearing.
-async fn handshake(
-    conn: &mut Connection,
+/// Build the reference TUI's per-connection HELLO profile.
+///
+/// The same value is passed to [`Connection::connect_dial_with_hello`] before
+/// any ATTACH can be sent. Keeping it as data rather than a second handshake
+/// routine prevents reconnect and custom-capability paths from double-HELLO.
+fn attach_client_caps(
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
-) -> Result<OutputMode, AttachError> {
+) -> ClientCapabilities {
     // Sniff `$COLORTERM` / `$TERM` / `$TERM_PROGRAM` per
     // `detect_color_support`. The advertised tier feeds the server's
     // per-client `downsample::rewrite_bytes` (SPEC §6.2).
     //
     // phux-4li.5: declare L3 (`Layer::L3`) so the server forwards
-    // `MetadataChanged` events for the `phux.tui.layout/v1` key — the
-    // reconcile-on-attach path in `main_loop` subscribes to that key
-    // and re-renders multi-pane when another client mutates the layout.
+    // `MetadataChanged` events for the `phux.tui.layout/v1` key.
     let mut client_caps = ClientCapabilities::new()
         .with_color_support(detect_color_support())
         .with_layers(LayerSet::with(&[Layer::L3]));
     if let Some(colors) = default_colors {
         client_caps = client_caps.with_default_colors(colors);
     }
-    conn.send(&FrameKind::Hello {
-        client_name: format!("phux-client/{}", env!("CARGO_PKG_VERSION")),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps,
-    })
-    .await?;
-    match conn.recv().await? {
-        FrameKind::HelloOk { .. } => Ok(client_caps.output_mode),
-        FrameKind::Error { message, .. } => Err(AttachError::Refused(message)),
-        other => Err(AttachError::Protocol(format!(
-            "expected HELLO_OK or ERROR after HELLO, got {other:?}",
-        ))),
-    }
+    client_caps
+}
+
+fn attach_client_name() -> String {
+    format!("phux-client/{}", env!("CARGO_PKG_VERSION"))
 }
 
 /// Send the `ATTACH` frame using the current terminal viewport.
@@ -4780,7 +4770,8 @@ fn install_panic_hook_once() {
 mod tests {
     use super::*;
     use crate::testkit::{ScriptSpec, ScriptedServer};
-    use phux_protocol::caps::{TerminalColor, TerminalDefaultColors};
+    use phux_protocol::PROTOCOL_VERSION;
+    use phux_protocol::caps::{ServerCapabilities, TerminalColor, TerminalDefaultColors};
     use tokio::net::UnixStream;
 
     static TERMINAL_RESET_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -5813,49 +5804,89 @@ mod tests {
         assert_ne!(std::mem::discriminant(&a), std::mem::discriminant(&b),);
     }
     #[tokio::test(flavor = "current_thread")]
-    async fn handshake_waits_for_hello_ok() {
+    async fn attach_negotiation_waits_for_hello_ok_and_sends_one_hello() {
         let (client_stream, server_stream) = UnixStream::pair().expect("pair");
         let mut client = Connection::from_stream(client_stream);
         let server =
             tokio::spawn(ScriptedServer::on_stream(server_stream, ScriptSpec::new()).run());
 
-        let res = handshake(&mut client, None).await;
+        let res = client
+            .negotiate(attach_client_name(), attach_client_caps(None))
+            .await;
         assert!(
             res.is_ok(),
             "handshake should succeed when HELLO_OK arrives"
         );
+        let duplicate = client
+            .negotiate(attach_client_name(), attach_client_caps(None))
+            .await;
+        assert!(
+            matches!(duplicate, Err(AttachError::Protocol(_))),
+            "a second local negotiation must be rejected before it reaches the wire"
+        );
         drop(client);
         let seen = server.await.expect("scripted server task");
         assert!(
-            matches!(seen.first(), Some(FrameKind::Hello { .. })),
-            "first client frame must be HELLO, got {:?}",
-            seen.first()
+            matches!(seen.as_slice(), [FrameKind::Hello { .. }]),
+            "attach construction must send exactly one HELLO, got {seen:?}"
         );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn handshake_advertises_probed_default_colors() {
+    async fn attach_negotiation_preserves_custom_caps_then_sends_attach() {
         let colors = TerminalDefaultColors {
             foreground: TerminalColor { r: 1, g: 2, b: 3 },
             background: TerminalColor { r: 4, g: 5, b: 6 },
         };
         let (client_stream, server_stream) = UnixStream::pair().expect("pair");
         let mut client = Connection::from_stream(client_stream);
-        let server =
-            tokio::spawn(ScriptedServer::on_stream(server_stream, ScriptSpec::new()).run());
+        let mut server = Connection::from_stream(server_stream);
 
-        let res = handshake(&mut client, Some(colors)).await;
-        assert!(res.is_ok());
-        drop(client);
-        let seen = server.await.expect("scripted server task");
-        let Some(FrameKind::Hello { client_caps, .. }) = seen.first() else {
-            panic!("first client frame must be HELLO, got {:?}", seen.first());
+        let client_side = async {
+            client
+                .negotiate(attach_client_name(), attach_client_caps(Some(colors)))
+                .await
+                .expect("HELLO_OK");
+            client
+                .send(&FrameKind::Attach {
+                    target: AttachTarget::Last,
+                    viewport: ViewportInfo::new(120, 40),
+                    request_scrollback: true,
+                    scrollback_limit_lines: 10_000,
+                })
+                .await
+                .expect("ATTACH");
+        };
+        let server_side = async {
+            let hello = server.recv().await.expect("HELLO");
+            server
+                .send(&FrameKind::HelloOk {
+                    protocol_major: PROTOCOL_VERSION.major,
+                    protocol_minor: PROTOCOL_VERSION.minor,
+                    protocol_patch: PROTOCOL_VERSION.patch,
+                    server_caps: ServerCapabilities::new(),
+                    server_id: Vec::new(),
+                })
+                .await
+                .expect("HELLO_OK");
+            let attach = server.recv().await.expect("ATTACH");
+            (hello, attach)
+        };
+
+        let ((), (hello, attach)) = tokio::join!(client_side, server_side);
+        let FrameKind::Hello { client_caps, .. } = hello else {
+            panic!("first frame must be HELLO");
         };
         assert_eq!(client_caps.default_colors, Some(colors));
+        assert!(client_caps.layers.contains(Layer::L3));
+        assert!(
+            matches!(attach, FrameKind::Attach { .. }),
+            "ATTACH must immediately follow the single HELLO exchange"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn handshake_rejects_non_hello_ok_reply() {
+    async fn attach_negotiation_rejects_non_hello_ok_reply() {
         let (client_stream, server_stream) = UnixStream::pair().expect("pair");
         let mut client = Connection::from_stream(client_stream);
         let mut server = Connection::from_stream(server_stream);
@@ -5872,7 +5903,8 @@ mod tests {
                 .expect("server send detached");
         };
 
-        let (res, ()) = tokio::join!(handshake(&mut client, None), server_side);
+        let negotiation = client.negotiate(attach_client_name(), attach_client_caps(None));
+        let (res, ()) = tokio::join!(negotiation, server_side);
         match res {
             Err(AttachError::Protocol(msg)) => {
                 assert!(msg.contains("HELLO_OK"));

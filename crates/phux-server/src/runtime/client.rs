@@ -774,29 +774,13 @@ where
     // DETACHED and may serve a later ATTACH on the same connection.
     let mut output_pumps: JoinSet<()> = JoinSet::new();
 
-    // Per-connection cache of the most-recently-advertised
-    // [`ClientCapabilities`] (SPEC §6.2). HELLO populates this; ATTACH
-    // consumes it when constructing the `AttachedClient`. Pre-HELLO it
-    // defaults to [`ClientCapabilities::default`] (most-permissive) so a
-    // client that skips HELLO (out of spec, but tolerated for
-    // forward-compat) still attaches with sensible bytes-on-wire behavior.
+    // Per-connection capabilities negotiated by HELLO (SPEC §6.2). The value
+    // is never consumed before `hello_seen`: every transport now rejects
+    // stateful frames until negotiation succeeds.
     let mut negotiated_client_caps = ClientCapabilities::default();
 
-    // SPEC §6.1: every connection opens with HELLO. On the local UDS
-    // transport (and same-process loopback) a missing HELLO stays
-    // tolerated — the same-uid trust boundary holds and the CLI's
-    // control commands rely on it. On network-reachable transports an
-    // unversioned peer must not reach ATTACH/COMMAND at all: skipping
-    // HELLO would otherwise bypass version negotiation entirely.
-    let requires_hello = state
-        .with(|s| s.peer_identity(client_id).map(|peer| peer.transport))
-        .is_some_and(|transport| {
-            !matches!(
-                transport,
-                phux_protocol::policy::TransportType::UnixSocket
-                    | phux_protocol::policy::TransportType::Localhost
-            )
-        });
+    // SPEC §6.1: every stateful connection opens with HELLO. UDS and localhost
+    // are not exemptions; PING alone remains a stateless liveness probe.
     let mut hello_seen = false;
 
     loop {
@@ -835,22 +819,16 @@ where
         // (the connector's consumer health check is exactly that), and the
         // spec's close-before-processing clause targets "ATTACH or other
         // stateful frames".
-        if requires_hello
-            && !hello_seen
-            && !matches!(frame, FrameKind::Hello { .. } | FrameKind::Ping { .. })
-        {
-            warn!(
-                ?client_id,
-                "frame before HELLO on network transport; closing"
-            );
+        if !hello_seen && !matches!(frame, FrameKind::Hello { .. } | FrameKind::Ping { .. }) {
+            warn!(?client_id, "stateful frame before HELLO; closing");
             let _ = out_tx
                 .send(Outbound::Frame(FrameKind::Error {
                     request_id: None,
                     code: ErrorCode::VersionIncompatible,
-                    message: "HELLO required before any other frame on this transport".to_owned(),
+                    message: "HELLO required before any stateful frame".to_owned(),
                 }))
                 .await;
-            // Same flush-then-close dance as the version-mismatch arm.
+            // Flush the refusal before closing the transport.
             drop(out_tx);
             let _ = sibling_tasks.join_next().await;
             return Ok(());
@@ -864,6 +842,24 @@ where
                 protocol_patch,
                 client_caps,
             } => {
+                if hello_seen {
+                    warn!(?client_id, "duplicate HELLO; closing");
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::InvalidCommand,
+                            message: "HELLO already completed on this connection".to_owned(),
+                        }))
+                        .await;
+                    // Never patch a live client's capabilities. Tear down any
+                    // attached profile so its mailbox sender cannot keep the
+                    // writer alive, flush the protocol-order error, then close.
+                    abort_output_pumps(&mut output_pumps, client_id, "duplicate HELLO").await;
+                    detach_and_release_consumer_state(&state, client_id);
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
+                    return Ok(());
+                }
                 debug!(
                     ?client_id,
                     %client_name,
@@ -931,22 +927,20 @@ where
                     }
                 };
                 if !policy_ok {
+                    // Do not abort the writer before the policy refusal is on
+                    // the transport.
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
                     return Ok(());
                 }
-                // SPEC §6.1: HELLO arrives before ATTACH. Cache the
-                // advertised tier on the per-task stack; the ATTACH
-                // branch consumes it when building the `AttachedClient`.
-                // If a client (mis-)sends HELLO post-ATTACH we also
-                // patch the live `AttachedClient` so downsample picks
-                // up the change — the alternative (protocol error
-                // close) gives the operator nothing to debug.
+                // Cache the profile exactly once, before any stateful frame.
+                // Duplicate HELLO is rejected above so capabilities can never
+                // mutate underneath an attached or subscribed client.
                 negotiated_client_caps = client_caps;
                 state.with_mut(|s| {
                     s.set_client_capabilities(client_id, client_caps);
                     // SPEC §6.2: cache the negotiated layer set. The L3
-                    // dispatch arms (METADATA_*) gate emission of
-                    // `METADATA_CHANGED` on `client_speaks_l3` so non-L3
-                    // consumers never see L3 frames (SPEC §16.4).
+                    // dispatch arms gate METADATA_CHANGED on this value.
                     s.set_client_layers(client_id, client_caps.layers);
                 });
                 // SPEC §6.1: server replies with HELLO_OK before ATTACH

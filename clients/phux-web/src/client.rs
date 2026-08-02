@@ -51,7 +51,7 @@ pub async fn run(
 
     let app = build_app(WireTx::Ws(ws.clone()), canvas, cols, rows).await?;
 
-    // On open: send HELLO + ATTACH.
+    // On open: send HELLO. Session dispatch sends ATTACH after HELLO_OK.
     {
         let app = Rc::clone(&app);
         let onopen = Closure::<dyn FnMut()>::new(move || {
@@ -150,7 +150,7 @@ pub async fn run_webtransport(
     let app = build_app(WireTx::Wt(writer), canvas, cols, rows).await?;
 
     // The session is already established (unlike the WebSocket path there is
-    // no onopen moment): send HELLO + ATTACH immediately.
+    // no onopen moment): send HELLO now; ATTACH follows HELLO_OK.
     {
         let a = app.borrow();
         a.send(a.session.handshake());
