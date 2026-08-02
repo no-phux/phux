@@ -1459,14 +1459,9 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 ..FrameOutcome::default()
             })
         }
-        other => {
-            // Anything else — `HELLO_OK`, `PONG`, future spec frames — is
-            // accepted-but-ignored. The protocol decoder rejects unknown
-            // discriminants; this branch handles known-but-not-yet-wired
-            // frames.
-            tracing::debug!(kind = ?other, "ignoring server frame");
-            Ok(FrameOutcome::default())
-        }
+        other => Err(AttachError::Protocol(format!(
+            "frame is not valid from a server in the attached phase: {other:?}",
+        ))),
     }
 }
 
@@ -1662,7 +1657,7 @@ mod tests {
     use phux_protocol::wire::frame::FrameKind;
     use phux_protocol::wire::info::{LayoutNode, SessionSnapshot, SplitDir, TerminalInfo};
 
-    use crate::attach::driver::{AttachEnd, PaneSlot};
+    use crate::attach::driver::{AttachEnd, AttachError, PaneSlot};
     use crate::layout::{LayoutState, Workspace};
     use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 
@@ -1817,14 +1812,14 @@ mod tests {
         panes
     }
 
-    /// Drive a layout metadata frame through the full dispatcher.
-    fn drive_layout_frame(
+    /// Drive any frame through the full attached-state dispatcher.
+    fn try_drive_layout_frame(
         frame: FrameKind,
         pending_layout_request: Option<u32>,
         workspace: &mut Workspace,
         focused: &mut Option<TerminalId>,
         panes: &mut HashMap<TerminalId, PaneSlot>,
-    ) -> FrameOutcome {
+    ) -> Result<FrameOutcome, AttachError> {
         let mut out: Vec<u8> = Vec::new();
         let mut session_name = String::new();
         let mut zoomed: Option<TerminalId> = None;
@@ -1853,7 +1848,51 @@ mod tests {
             false,
             false,
         )
+    }
+
+    fn drive_layout_frame(
+        frame: FrameKind,
+        pending_layout_request: Option<u32>,
+        workspace: &mut Workspace,
+        focused: &mut Option<TerminalId>,
+        panes: &mut HashMap<TerminalId, PaneSlot>,
+    ) -> FrameOutcome {
+        try_drive_layout_frame(
+            frame,
+            pending_layout_request,
+            workspace,
+            focused,
+            panes,
+        )
         .expect("handle layout frame")
+    }
+
+    #[test]
+    fn duplicate_hello_ok_is_fatal_in_attached_phase() {
+        let pane = tid(1);
+        let mut workspace = Workspace::single(pane.clone());
+        let mut focused = Some(pane.clone());
+        let mut panes = panes_for(&[&pane]);
+        let error = try_drive_layout_frame(
+            FrameKind::HelloOk {
+                protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+                protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+                protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+                server_caps: phux_protocol::caps::ServerCapabilities::new(),
+                server_id: Vec::new(),
+                selected_profile: phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: phux_protocol::caps::BootstrapLimits::default(),
+            },
+            None,
+            &mut workspace,
+            &mut focused,
+            &mut panes,
+        )
+        .expect_err("post-negotiation HELLO_OK must terminate the client");
+        assert!(matches!(
+            error,
+            AttachError::Protocol(message) if message.contains("not valid from a server")
+        ));
     }
 
     /// ADR-0049: a sibling's layout broadcast contributes topology only. Its

@@ -68,8 +68,13 @@ pub async fn run(
         let app = Rc::clone(&app);
         let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
             let buf = js_sys::Uint8Array::new(&e.data()).to_vec();
+            if app.borrow().session.is_failed() {
+                return;
+            }
             match decode_server_frame(&app, &buf) {
-                Ok(frame) => handle_frame(&app, frame),
+                Ok(frame) => {
+                    let _ = handle_frame(&app, frame);
+                }
                 Err(message) => close_with_protocol_error(&app, &message),
             }
         });
@@ -147,7 +152,16 @@ pub async fn run_webtransport(
     let writer = WritableStreamDefaultWriter::new(&stream.writable())?;
     let reader = ReadableStreamDefaultReader::new(&stream.readable())?;
 
-    let app = build_app(WireTx::Wt(writer), canvas, cols, rows).await?;
+    let app = build_app(
+        WireTx::Wt {
+            writer,
+            session: wt.clone(),
+        },
+        canvas,
+        cols,
+        rows,
+    )
+    .await?;
 
     // The session is already established (unlike the WebSocket path there is
     // no onopen moment): send HELLO now; ATTACH follows HELLO_OK.
@@ -181,7 +195,11 @@ pub async fn run_webtransport(
                 frames.push(&js_sys::Uint8Array::new(&value).to_vec());
                 while let Some(framed) = frames.next_frame() {
                     match decode_server_frame(&app, &framed) {
-                        Ok(frame) => handle_frame(&app, frame),
+                        Ok(frame) => {
+                            if matches!(handle_frame(&app, frame), ReceiveFlow::Stop) {
+                                return;
+                            }
+                        }
                         Err(message) => {
                             close_with_protocol_error(&app, &message);
                             return;
@@ -229,7 +247,10 @@ enum WireTx {
     /// One binary message per frame.
     Ws(WebSocket),
     /// Length-prefixed frames over the session's single bidirectional stream.
-    Wt(WritableStreamDefaultWriter),
+    Wt {
+        writer: WritableStreamDefaultWriter,
+        session: WebTransport,
+    },
 }
 
 impl WireTx {
@@ -238,7 +259,7 @@ impl WireTx {
             Self::Ws(ws) => {
                 let _ = ws.send_with_u8_array(frame);
             }
-            Self::Wt(writer) => {
+            Self::Wt { writer, .. } => {
                 let chunk = js_sys::Uint8Array::from(frame);
                 // Writer chunks queue in call order; await the promise off
                 // the hot path only to observe (and drop) failures, so a
@@ -256,7 +277,8 @@ impl WireTx {
             Self::Ws(ws) => {
                 let _ = ws.close();
             }
-            Self::Wt(writer) => {
+            Self::Wt { writer, session } => {
+                session.close();
                 let pending = writer.close();
                 wasm_bindgen_futures::spawn_local(async move {
                     let _ = JsFuture::from(pending).await;
@@ -322,9 +344,15 @@ async fn build_app(
     })))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiveFlow {
+    Continue,
+    Stop,
+}
+
 /// Drive the session with one decoded server frame: ack and repaint as the
 /// session asks. Shared by both transports' receive paths.
-fn handle_frame(app: &Rc<RefCell<App>>, frame: FrameKind) {
+fn handle_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> ReceiveFlow {
     let mut a = app.borrow_mut();
     let outcome = a.session.on_frame(frame);
     if let Some(message) = outcome.fatal {
@@ -332,7 +360,7 @@ fn handle_frame(app: &Rc<RefCell<App>>, frame: FrameKind) {
             "phux-web protocol error: {message}",
         )));
         a.tx.close();
-        return;
+        return ReceiveFlow::Stop;
     }
     if !outcome.send.is_empty() {
         a.send(outcome.send);
@@ -340,9 +368,13 @@ fn handle_frame(app: &Rc<RefCell<App>>, frame: FrameKind) {
     if outcome.render {
         a.paint();
     }
+    ReceiveFlow::Continue
 }
 
 fn decode_server_frame(app: &Rc<RefCell<App>>, framed: &[u8]) -> Result<FrameKind, String> {
+    if app.borrow().session.is_failed() {
+        return Err("web session already failed".to_owned());
+    }
     let limits = app.borrow().session.bootstrap_limits();
     let decoded = match limits {
         Some(limits) => FrameKind::decode_with_limits(framed, limits),
@@ -359,7 +391,9 @@ fn close_with_protocol_error(app: &Rc<RefCell<App>>, message: &str) {
     web_sys::console::error_1(&JsValue::from_str(&format!(
         "phux-web protocol error: {message}",
     )));
-    app.borrow().tx.close();
+    let mut app = app.borrow_mut();
+    app.session.fail_protocol(message);
+    app.tx.close();
 }
 
 /// Keyboard: each keydown becomes an `INPUT_KEY` for the attached terminal.

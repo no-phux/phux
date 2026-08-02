@@ -1034,6 +1034,21 @@ where
                 request_scrollback,
                 scrollback_limit_lines,
             } => {
+                if attach_id == 0 {
+                    warn!(?client_id, "ATTACH used reserved zero attach_id; closing");
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::MalformedMessage,
+                            message: "ATTACH attach_id must be nonzero".to_owned(),
+                        }))
+                        .await;
+                    abort_output_pumps(&mut output_pumps, client_id, "zero ATTACH id").await;
+                    detach_and_release_consumer_state(&state, client_id);
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
+                    return Ok(());
+                }
                 let selection =
                     negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
                 debug!(
@@ -1225,7 +1240,21 @@ where
                 .await;
             }
             other => {
-                debug!(kind = ?other, "unhandled message type (INPUT_* / etc.)");
+                warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
+                let _ = out_tx
+                    .send(Outbound::Frame(FrameKind::Error {
+                        request_id: None,
+                        code: ErrorCode::InvalidCommand,
+                        message: format!(
+                            "frame is not valid from a client in the negotiated phase: {other:?}"
+                        ),
+                    }))
+                    .await;
+                abort_output_pumps(&mut output_pumps, client_id, "direction-invalid frame").await;
+                detach_and_release_consumer_state(&state, client_id);
+                drop(out_tx);
+                let _ = sibling_tasks.join_next().await;
+                return Ok(());
             }
         }
     }

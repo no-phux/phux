@@ -10,6 +10,7 @@ use phux_protocol::ids::{
     BootstrapId, ClientId, SessionId, StreamId, TerminalId, WindowId,
 };
 use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_vt_web::Vt;
 use phux_web::Session;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -26,23 +27,68 @@ fn hello_ok() -> FrameKind {
     }
 }
 
+fn attached(attach_id: u32, terminal_id: TerminalId) -> FrameKind {
+    FrameKind::Attached {
+        attach_id,
+        snapshot: phux_protocol::wire::info::SessionSnapshot::new(
+            SessionId::new(1),
+            WindowId::new(1),
+            terminal_id,
+        ),
+        initial_client_id: ClientId::new(1),
+    }
+}
+
+fn output(terminal_id: TerminalId, bytes: &'static [u8]) -> FrameKind {
+    FrameKind::TerminalOutput {
+        terminal_id,
+        stream_id: StreamId::new(1).unwrap(),
+        bootstrap_id: BootstrapId::new(1).unwrap(),
+        seq: 7,
+        bytes: bytes::Bytes::from_static(bytes),
+    }
+}
+
+fn key_event() -> KeyEvent {
+    KeyEvent {
+        action: KeyAction::Press,
+        key: PhysicalKey::A,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: Some("a".to_owned()),
+        unshifted_codepoint: Some(u32::from(b'a')),
+    }
+}
+
+fn first_row(session: &Session) -> String {
+    let grid = session.grid();
+    grid.cells[..usize::from(grid.cols)]
+        .iter()
+        .map(|cell| cell.ch)
+        .collect()
+}
+
 #[wasm_bindgen_test]
 async fn terminal_output_frame_feeds_engine_without_raw_ack() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Session::new(&vt, 20, 3);
     let handshake = session.on_frame(hello_ok());
     assert!(handshake.fatal.is_none());
+    let tid = TerminalId::local(1);
+    assert!(session.key_frame(key_event()).is_none());
+    assert!(session.on_frame(attached(1, tid.clone())).fatal.is_none());
+    assert!(session.key_frame(key_event()).is_none());
+    assert!(
+        session
+            .on_frame(FrameKind::AttachReady { attach_id: 1 })
+            .fatal
+            .is_none()
+    );
 
     // A real TERMINAL_OUTPUT frame, round-tripped through the wire codec (the
     // exact bytes the server would send) before the session sees it.
-    let tid = TerminalId::local(1);
-    let frame = FrameKind::TerminalOutput {
-        terminal_id: tid.clone(),
-        stream_id: StreamId::new(1).unwrap(),
-        bootstrap_id: BootstrapId::new(1).unwrap(),
-        seq: 7,
-        bytes: bytes::Bytes::from_static(b"Hi phux"),
-    };
+    let frame = output(tid.clone(), b"Hi phux");
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
     let (decoded, rest) = FrameKind::decode(&buf).expect("decode");
@@ -92,15 +138,7 @@ async fn attached_id_mismatch_is_fatal() {
     let mut session = Session::new(&vt, 80, 24);
     let handshake = session.on_frame(hello_ok());
     assert_eq!(handshake.send.len(), 1);
-    let outcome = session.on_frame(FrameKind::Attached {
-        attach_id: 2,
-        snapshot: phux_protocol::wire::info::SessionSnapshot::new(
-            SessionId::new(1),
-            WindowId::new(1),
-            TerminalId::local(1),
-        ),
-        initial_client_id: ClientId::new(1),
-    });
+    let outcome = session.on_frame(attached(2, TerminalId::local(1)));
     assert!(outcome.send.is_empty());
     assert!(
         outcome
@@ -108,6 +146,70 @@ async fn attached_id_mismatch_is_fatal() {
             .as_deref()
             .is_some_and(|message| message.contains("attach_id mismatch"))
     );
+    let before = first_row(&session);
+    let after_fatal = session.on_frame(output(TerminalId::local(1), b"must not render"));
+    assert!(after_fatal.send.is_empty());
+    assert!(!after_fatal.render);
+    assert!(after_fatal.fatal.is_some());
+    assert!(session.key_frame(key_event()).is_none());
+    assert_eq!(first_row(&session), before);
+}
+
+#[wasm_bindgen_test]
+async fn output_before_correlated_attached_and_ready_is_fatal() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 80, 24);
+    assert!(session.on_frame(hello_ok()).fatal.is_none());
+    assert!(session.key_frame(key_event()).is_none());
+
+    let outcome = session.on_frame(output(TerminalId::local(1), b"early"));
+    assert!(outcome.send.is_empty());
+    assert!(!outcome.render);
+    assert!(outcome.fatal.is_some());
+    assert!(session.key_frame(key_event()).is_none());
+}
+
+#[wasm_bindgen_test]
+async fn duplicate_hello_ok_latches_failure_before_queued_output() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 80, 24);
+    assert!(session.on_frame(hello_ok()).fatal.is_none());
+    assert!(
+        session
+            .on_frame(attached(1, TerminalId::local(1)))
+            .fatal
+            .is_none()
+    );
+    assert!(
+        session
+            .on_frame(FrameKind::AttachReady { attach_id: 1 })
+            .fatal
+            .is_none()
+    );
+
+    let duplicate = session.on_frame(hello_ok());
+    assert!(duplicate.send.is_empty());
+    assert!(!duplicate.render);
+    assert!(duplicate.fatal.is_some());
+    assert!(session.is_failed());
+    let before = first_row(&session);
+
+    let queued = session.on_frame(output(TerminalId::local(1), b"queued"));
+    assert!(queued.send.is_empty());
+    assert!(!queued.render);
+    assert!(queued.fatal.is_some());
+    assert!(session.key_frame(key_event()).is_none());
+    assert_eq!(first_row(&session), before);
+}
+
+#[wasm_bindgen_test]
+async fn attach_ready_before_attached_is_fatal() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 80, 24);
+    assert!(session.on_frame(hello_ok()).fatal.is_none());
+    let outcome = session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    assert!(outcome.fatal.is_some());
+    assert!(session.is_failed());
 }
 
 /// Regression for phux-ycw0: the canvas renderer paints text/color/cursor

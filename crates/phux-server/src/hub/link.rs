@@ -849,7 +849,11 @@ async fn run_relay_session<C: LinkConn>(
                 }
             }
             inbound = conn.recv_frame() => match inbound {
-                Ok(Some(frame)) => session.handle_inbound(&frame),
+                Ok(Some(frame)) => {
+                    if let Err(error) = session.handle_inbound(&frame) {
+                        break (true, error);
+                    }
+                }
                 Ok(None) => break (true, "connection closed by satellite".to_owned()),
                 Err(error) => break (true, error),
             },

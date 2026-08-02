@@ -56,14 +56,34 @@ pub struct Outcome {
     pub fatal: Option<String>,
 }
 
+#[derive(Debug)]
+enum Phase {
+    AwaitHelloOk,
+    AwaitAttached {
+        attach_id: u32,
+        profile: BootstrapProfile,
+        limits: BootstrapLimits,
+    },
+    AwaitReady {
+        attach_id: u32,
+        profile: BootstrapProfile,
+        limits: BootstrapLimits,
+        terminal_id: Option<TerminalId>,
+    },
+    Attached {
+        profile: BootstrapProfile,
+        limits: BootstrapLimits,
+    },
+    Failed,
+}
+
 /// A single-terminal wire session backed by a ghostty-vt engine terminal.
 pub struct Session {
     term: Terminal,
     cols: u16,
     rows: u16,
     terminal_id: Option<TerminalId>,
-    negotiated: Option<(BootstrapProfile, BootstrapLimits)>,
-    pending_attach_id: Option<u32>,
+    phase: Phase,
     next_attach_id: u32,
 }
 
@@ -76,8 +96,7 @@ impl Session {
             cols,
             rows,
             terminal_id: None,
-            negotiated: None,
-            pending_attach_id: None,
+            phase: Phase::AwaitHelloOk,
             next_attach_id: 1,
         }
     }
@@ -100,6 +119,10 @@ impl Session {
     /// Handle one decoded server frame: feed the engine and return any frames
     /// to send back plus whether a repaint is needed.
     pub fn on_frame(&mut self, frame: FrameKind) -> Outcome {
+        if matches!(&self.phase, Phase::Failed) {
+            return fatal("web session already failed");
+        }
+
         match frame {
             FrameKind::HelloOk {
                 protocol_major,
@@ -109,8 +132,8 @@ impl Session {
                 bootstrap_limits,
                 ..
             } => {
-                if self.negotiated.is_some() {
-                    return fatal("duplicate HELLO_OK on an established web connection");
+                if !matches!(&self.phase, Phase::AwaitHelloOk) {
+                    return self.fail("duplicate or out-of-phase HELLO_OK");
                 }
                 if let Err(message) = validate_hello_ok(
                     &client_caps(),
@@ -120,17 +143,18 @@ impl Session {
                     selected_profile,
                     bootstrap_limits,
                 ) {
-                    return fatal(message);
+                    return self.fail(message);
                 }
-                self.negotiated = Some((selected_profile, bootstrap_limits));
                 let attach_id = self.next_attach_id;
                 self.next_attach_id = self.next_attach_id.wrapping_add(1).max(1);
-                self.pending_attach_id = Some(attach_id);
+                self.phase = Phase::AwaitAttached {
+                    attach_id,
+                    profile: selected_profile,
+                    limits: bootstrap_limits,
+                };
                 Outcome {
                     send: vec![encode(&FrameKind::Attach {
                         attach_id,
-                        // The web client owns one session named "default": attach
-                        // to it, or create it if the server has none yet.
                         target: AttachTarget::CreateIfMissing {
                             name: "default".to_owned(),
                             command: None,
@@ -144,25 +168,51 @@ impl Session {
                     fatal: None,
                 }
             }
-            FrameKind::Attached { attach_id, .. }
-                if self.pending_attach_id == Some(attach_id) =>
-            {
+            FrameKind::Attached {
+                attach_id,
+                snapshot,
+                ..
+            } => {
+                let (expected, profile, limits) = match &self.phase {
+                    Phase::AwaitAttached {
+                        attach_id,
+                        profile,
+                        limits,
+                    } => (*attach_id, *profile, *limits),
+                    _ => return self.fail("ATTACHED received outside the attach phase"),
+                };
+                if attach_id != expected {
+                    return self.fail(format!(
+                        "ATTACHED attach_id mismatch: expected {expected}, received {attach_id}",
+                    ));
+                }
+                self.phase = Phase::AwaitReady {
+                    attach_id,
+                    profile,
+                    limits,
+                    terminal_id: Some(snapshot.focused_pane),
+                };
                 Outcome::default()
             }
-            FrameKind::Attached { attach_id, .. } => fatal(format!(
-                "ATTACHED attach_id mismatch: expected {:?}, received {attach_id}",
-                self.pending_attach_id,
-            )),
-            FrameKind::AttachReady { attach_id }
-                if self.pending_attach_id == Some(attach_id) =>
-            {
-                self.pending_attach_id = None;
+            FrameKind::AttachReady { attach_id } => {
+                let (expected, profile, limits, terminal_id) = match &self.phase {
+                    Phase::AwaitReady {
+                        attach_id,
+                        profile,
+                        limits,
+                        terminal_id,
+                    } => (*attach_id, *profile, *limits, terminal_id.clone()),
+                    _ => return self.fail("ATTACH_READY received outside the ready phase"),
+                };
+                if attach_id != expected {
+                    return self.fail(format!(
+                        "ATTACH_READY attach_id mismatch: expected {expected}, received {attach_id}",
+                    ));
+                }
+                self.terminal_id = terminal_id;
+                self.phase = Phase::Attached { profile, limits };
                 Outcome::default()
             }
-            FrameKind::AttachReady { attach_id } => fatal(format!(
-                "ATTACH_READY attach_id mismatch: expected {:?}, received {attach_id}",
-                self.pending_attach_id,
-            )),
             FrameKind::TerminalOutput {
                 terminal_id,
                 stream_id: _,
@@ -170,10 +220,20 @@ impl Session {
                 seq: _,
                 bytes,
             } => {
-                if self.negotiated.is_none() {
-                    return fatal("TERMINAL_OUTPUT received before HELLO_OK");
+                if !matches!(&self.phase, Phase::Attached { .. }) {
+                    return self.fail("TERMINAL_OUTPUT received before ATTACH_READY");
                 }
-                self.terminal_id.get_or_insert_with(|| terminal_id.clone());
+                if self
+                    .terminal_id
+                    .as_ref()
+                    .is_some_and(|expected| expected != &terminal_id)
+                {
+                    return self.fail(format!(
+                        "TERMINAL_OUTPUT terminal mismatch: expected {:?}, received {terminal_id:?}",
+                        self.terminal_id,
+                    ));
+                }
+                self.terminal_id.get_or_insert(terminal_id);
                 self.term.write(&bytes);
                 Outcome {
                     send: Vec::new(),
@@ -181,10 +241,39 @@ impl Session {
                     fatal: None,
                 }
             }
-            // PONG, ERROR, metadata, and bootstrap frames are not rendered by
-            // this handshake-only slice.
-            _ => Outcome::default(),
+            FrameKind::BootstrapBegin { .. }
+            | FrameKind::BootstrapChunk { .. }
+            | FrameKind::BootstrapReady { .. }
+            | FrameKind::HistoryPage { .. }
+                if matches!(
+                    &self.phase,
+                    Phase::AwaitReady { .. } | Phase::Attached { .. }
+                ) =>
+            {
+                Outcome::default()
+            }
+            FrameKind::Pong { .. }
+            | FrameKind::Bell { .. }
+            | FrameKind::TerminalClosed { .. }
+            | FrameKind::Event { .. }
+                if matches!(&self.phase, Phase::Attached { .. }) =>
+            {
+                Outcome::default()
+            }
+            other => self.fail(format!(
+                "unexpected server frame in web session phase: {other:?}",
+            )),
         }
+    }
+
+    fn fail(&mut self, message: impl Into<String>) -> Outcome {
+        self.phase = Phase::Failed;
+        self.terminal_id = None;
+        fatal(message)
+    }
+
+    pub(crate) fn fail_protocol(&mut self, message: impl Into<String>) {
+        let _ = self.fail(message);
     }
 
     /// The current styled grid (for the renderer).
@@ -202,13 +291,38 @@ impl Session {
     /// Negotiated payload bounds used by the browser receive path.
     #[must_use]
     pub fn bootstrap_limits(&self) -> Option<BootstrapLimits> {
-        self.negotiated.map(|(_, limits)| limits)
+        match &self.phase {
+            Phase::AwaitAttached { limits, .. }
+            | Phase::AwaitReady { limits, .. }
+            | Phase::Attached { limits, .. } => Some(*limits),
+            Phase::AwaitHelloOk | Phase::Failed => None,
+        }
+    }
+
+    /// Exact profile selected by HELLO_OK, retained through the connection.
+    #[must_use]
+    pub fn bootstrap_profile(&self) -> Option<BootstrapProfile> {
+        match &self.phase {
+            Phase::AwaitAttached { profile, .. }
+            | Phase::AwaitReady { profile, .. }
+            | Phase::Attached { profile, .. } => Some(*profile),
+            Phase::AwaitHelloOk | Phase::Failed => None,
+        }
+    }
+
+    /// Whether a fatal protocol violation permanently stopped this session.
+    #[must_use]
+    pub fn is_failed(&self) -> bool {
+        matches!(&self.phase, Phase::Failed)
     }
 
     /// Encode an `INPUT_KEY` for the attached terminal, or `None` if not yet
     /// attached.
     #[must_use]
     pub fn key_frame(&self, event: KeyEvent) -> Option<Vec<u8>> {
+        if !matches!(&self.phase, Phase::Attached { .. }) {
+            return None;
+        }
         self.terminal_id
             .clone()
             .map(|terminal_id| encode(&FrameKind::InputKey { terminal_id, event }))

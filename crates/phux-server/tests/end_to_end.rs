@@ -224,6 +224,75 @@ fn handshake_hello_round_trip() {
 }
 
 #[test]
+fn zero_attach_id_is_rejected_before_attached_state() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        negotiate(&mut stream).await;
+
+        send_frame(
+            &mut stream,
+            &FrameKind::Attach {
+                attach_id: 0,
+                target: phux_protocol::wire::frame::AttachTarget::ByName("default".to_owned()),
+                viewport: phux_protocol::wire::frame::ViewportInfo::new(80, 24),
+                request_scrollback: false,
+                scrollback_limit_lines: 0,
+            },
+        )
+        .await;
+        let (_, response) = recv_typed(&mut stream).await;
+        assert!(matches!(
+            response,
+            FrameKind::Error {
+                code: ErrorCode::MalformedMessage,
+                message,
+                ..
+            } if message.contains("attach_id must be nonzero")
+        ));
+        assert_server_closed(&mut stream).await;
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn client_sent_hello_ok_is_fatal_after_negotiation() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        negotiate(&mut stream).await;
+
+        send_frame(
+            &mut stream,
+            &FrameKind::HelloOk {
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                server_caps: phux_protocol::caps::ServerCapabilities::new(),
+                server_id: Vec::new(),
+                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: BootstrapLimits::default(),
+            },
+        )
+        .await;
+        let (_, response) = recv_typed(&mut stream).await;
+        assert!(matches!(
+            response,
+            FrameKind::Error {
+                code: ErrorCode::InvalidCommand,
+                ..
+            }
+        ));
+        assert_server_closed(&mut stream).await;
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
 fn handshake_selects_explicit_synth_fallback_and_intersects_bounds() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
