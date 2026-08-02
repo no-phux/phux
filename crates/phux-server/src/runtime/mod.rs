@@ -1711,6 +1711,7 @@ mod tests {
                     handle_attach(
                         &state_for_task,
                         client_id,
+                        1,
                         AttachTarget::ByName("multi".to_owned()),
                         ViewportInfo::new(80, 24),
                         false,
@@ -1865,6 +1866,7 @@ mod tests {
                     handle_attach(
                         &state_for_task,
                         client_id,
+                        1,
                         AttachTarget::ByName("lifecycle".to_owned()),
                         ViewportInfo::new(80, 24),
                         false,

@@ -10,7 +10,9 @@ use futures_util::{SinkExt, StreamExt};
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, WsDial};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::ServerCapabilities;
+use phux_protocol::caps::{
+    BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile,
+};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::FrameKind;
 use tokio::net::TcpListener;
@@ -42,7 +44,12 @@ async fn accept_hello<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    assert!(matches!(read_ws_frame(ws).await, FrameKind::Hello { .. }));
+    let FrameKind::Hello { client_caps, .. } = read_ws_frame(ws).await else {
+        panic!("expected HELLO");
+    };
+    let (selected_profile, bootstrap_limits) =
+        select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new())
+            .expect("fixture profiles intersect");
     write_ws_frame(
         ws,
         &FrameKind::HelloOk {
@@ -51,6 +58,8 @@ where
             protocol_patch: PROTOCOL_VERSION.patch,
             server_caps: ServerCapabilities::new(),
             server_id: Vec::new(),
+            selected_profile,
+            bootstrap_limits,
         },
     )
     .await;

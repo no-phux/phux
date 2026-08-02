@@ -110,6 +110,7 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
         };
         ws.send(Message::Binary(encode(&hello))).await.unwrap();
         let attach = FrameKind::Attach {
+            attach_id: 1,
             target: AttachTarget::ByName("default".to_owned()),
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,

@@ -59,6 +59,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::BytesMut;
+use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::ids::{GroupId, SatelliteHost, TerminalId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, SpawnError, SpawnResult,
@@ -690,6 +691,7 @@ enum Registration {
 #[derive(Debug)]
 pub(crate) struct RelaySession {
     host: SatelliteHost,
+    bootstrap_limits: BootstrapLimits,
     next_request_id: u32,
     pending: HashMap<u32, PendingCommand>,
     /// Relayed `SPAWN_TERMINAL`s awaiting their `TERMINAL_SPAWNED`
@@ -702,9 +704,10 @@ pub(crate) struct RelaySession {
 
 impl RelaySession {
     /// Fresh session state for one established connection to `host`.
-    pub(crate) fn new(host: SatelliteHost) -> Self {
+    pub(crate) fn new(host: SatelliteHost, bootstrap_limits: BootstrapLimits) -> Self {
         Self {
             host,
+            bootstrap_limits,
             next_request_id: 1,
             pending: HashMap::new(),
             pending_spawns: HashMap::new(),
@@ -923,7 +926,8 @@ impl RelaySession {
         reason = "one resolve/re-tag arm per relayable return-leg frame kind; splitting hides the catalog"
     )]
     pub(crate) fn handle_inbound(&mut self, framed: &[u8]) {
-        let frame = match FrameKind::decode(framed) {
+        let frame =
+            match FrameKind::decode_with_bootstrap_limits(framed, self.bootstrap_limits) {
             Ok((frame, _rest)) => frame,
             Err(err) => {
                 warn!(satellite = %self.host, error = ?err, "undecodable frame from satellite; dropping");
@@ -1784,7 +1788,7 @@ mod tests {
 
     #[test]
     fn session_remaps_request_ids_and_resolves_replies() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (reply_a, mut rx_a) = oneshot::channel();
         let (reply_b, mut rx_b) = oneshot::channel();
 
@@ -1834,7 +1838,7 @@ mod tests {
 
     #[test]
     fn session_maps_correlated_error_frames_to_command_errors() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (reply, mut rx) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::Upgrade,
@@ -1873,7 +1877,7 @@ mod tests {
 
     #[test]
     fn session_relays_spawn_with_stripped_addressing_and_retags_the_reply() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (reply, mut rx) = oneshot::channel();
         let wire = session.handle_request(spawn_request(reply));
         let FrameKind::SpawnTerminal {
@@ -1902,7 +1906,7 @@ mod tests {
 
     #[test]
     fn session_rejects_chained_ids_and_relays_spawn_errors_verbatim() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         // A Satellite-tagged id in the satellite's own reply never chains.
         let (reply, mut rx) = oneshot::channel();
         let wire = session.handle_request(spawn_request(reply));
@@ -1935,7 +1939,7 @@ mod tests {
 
     #[test]
     fn teardown_and_fail_fast_resolve_spawns_with_satellite_unreachable() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (reply, mut rx) = oneshot::channel();
         let _ = session.handle_request(spawn_request(reply));
         session.teardown("satellite went away");
@@ -1954,7 +1958,7 @@ mod tests {
 
     #[test]
     fn prune_abandoned_covers_pending_spawns() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (reply, rx) = oneshot::channel();
         let _ = session.handle_request(spawn_request(reply));
         assert_eq!(session.prune_abandoned(), 0, "consumer still waits");
@@ -1966,7 +1970,7 @@ mod tests {
 
     #[test]
     fn session_retags_subscribed_streams_local_to_satellite() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
 
@@ -2004,7 +2008,7 @@ mod tests {
 
     #[test]
     fn session_drops_chained_satellite_tags_from_the_return_leg() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
         // ADR-0007: satellites are unaware of each other; a nested
@@ -2018,7 +2022,7 @@ mod tests {
 
     #[test]
     fn terminal_closed_retags_and_drops_the_proxy_subscription() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
         session.handle_inbound(&encode(&FrameKind::TerminalClosed {
@@ -2067,7 +2071,7 @@ mod tests {
         // consumer's mailbox is briefly full at attach the return-leg
         // snapshot cannot be delivered; it must be retained (not dropped)
         // so a later TERMINAL_OUTPUT does not reach the consumer first.
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         // Capacity two so both the retried snapshot and the delta can land
         // in order once the fillers drain.
         let (out_tx, mut out_rx) = mpsc::channel(2);
@@ -2117,7 +2121,7 @@ mod tests {
         // While the snapshot stays stuck behind a full mailbox, deltas are
         // suppressed (never delivered ahead of it); the keepalive-tick flush
         // converges the consumer once the mailbox drains.
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(1);
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
         out_tx
@@ -2157,7 +2161,7 @@ mod tests {
     async fn a_fresher_snapshot_replaces_a_retained_one() {
         // A satellite resync sends a newer snapshot while an older one is
         // still retained: the freshest full-grid must win.
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(1);
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
         out_tx
@@ -2206,7 +2210,7 @@ mod tests {
         // registration lands immediately, but its own return-leg
         // TERMINAL_SNAPSHOT arrives ~1 RTT after A's ongoing TERMINAL_OUTPUT.
         // B must NOT observe that delta before its snapshot (L1 §9.1).
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx_a, mut rx_a) = mpsc::channel(8);
         let (tx_b, mut rx_b) = mpsc::channel(8);
 
@@ -2258,7 +2262,7 @@ mod tests {
         // snapshot is reaped when the terminal closes. TERMINAL_CLOSED must
         // be delivered best-effort past the gate, or the consumer is torn
         // down without ever learning its terminal is gone.
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx_b, mut rx_b) = mpsc::channel(8);
         // B attaches: gate is AwaitingFirst, no snapshot delivered yet.
         attach(&mut session, 9, ClientId(2), tx_b);
@@ -2297,7 +2301,7 @@ mod tests {
         // A SUBSCRIBE_EVENTS / SUBSCRIBE_TERMINAL_EVENTS registration carries
         // no snapshot: its EVENT deltas must flow immediately (gating them
         // would strand the subscriber forever, since no snapshot ever comes).
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
         session.handle_inbound(&encode(&FrameKind::Event {
@@ -2324,7 +2328,7 @@ mod tests {
         // fresh second attach gets (phux-v45.14), resurfacing on the upgrade
         // path. Without the re-gate the delta at step 3 leaks, so this test is
         // non-vacuous.
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
 
         // 1. Event-only subscribe: gate Open, an EVENT flows immediately.
@@ -2376,7 +2380,7 @@ mod tests {
         // re-subscribe). An event-only re-subscribe carries no snapshot, so it
         // must leave an already-Open stream flowing — re-gating it would strand
         // the consumer forever (no snapshot ever comes to re-open the gate).
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
         // A second event-only subscribe for the same client (idempotent).
@@ -2397,7 +2401,7 @@ mod tests {
         // snapshot does not capture, so gating it behind an AwaitingFirst
         // subscriber's not-yet-delivered snapshot would drop it permanently.
         // It routes past the gate best-effort, like TERMINAL_CLOSED.
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx, mut rx) = mpsc::channel(8);
         // Attach: gate is AwaitingFirst, no snapshot delivered yet.
         attach(&mut session, 9, ClientId(2), tx);
@@ -2435,7 +2439,7 @@ mod tests {
 
     #[test]
     fn teardown_fails_pending_and_notifies_each_consumer_once() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (reply, mut reply_rx) = oneshot::channel();
         let _ = session.handle_request(RelayRequest::Command {
             command: Command::Upgrade,
@@ -2473,7 +2477,7 @@ mod tests {
 
     #[test]
     fn unsubscribe_client_stops_fan_out() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
         let frames = session.handle_unsubscribe(Unsubscribe::Client(ClientId(1)));
@@ -2500,7 +2504,7 @@ mod tests {
 
     #[test]
     fn unsubscribe_keeps_satellite_streaming_while_other_subscribers_remain() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx_a, _rx_a) = mpsc::channel(8);
         let (tx_b, mut rx_b) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), tx_a);
@@ -2543,7 +2547,7 @@ mod tests {
         // is dropped: no subscriber removed, no satellite-side
         // DETACH_TERMINAL emitted, and the re-attached stream keeps
         // flowing.
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         // Original attach (token 1), then the re-attach that raced ahead
         // of the stale detach (token 3).
@@ -2647,7 +2651,7 @@ mod tests {
     fn satellite_error_rolls_back_the_commands_subscription() {
         // phux-v45.11 finding 3: a subscribing command the satellite
         // refuses must not leave a proxy registration behind.
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         let (reply, mut reply_rx) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
@@ -2701,7 +2705,7 @@ mod tests {
         // 3. B's upgrade gets a transient error reply. Its Regated rollback
         //    must not replace the newer Retained gate with Open, or the next
         //    delta reaches B without the snapshot (L1 §9.1).
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx_b, mut rx_b) = mpsc::channel(2);
         let (tx_c, mut rx_c) = mpsc::channel(8);
 
@@ -2789,7 +2793,7 @@ mod tests {
         // stream (phux-v45.15, `Registration::Regated`); the error must
         // *restore* the gate to `Open` rather than strand the pre-existing
         // stream behind a snapshot that a refused attach never sends.
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
         let (reply, _reply_rx) = oneshot::channel();
@@ -2870,7 +2874,7 @@ mod tests {
 
     #[test]
     fn prune_abandoned_drops_only_commands_whose_consumer_gave_up() {
-        let mut session = RelaySession::new(host());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (reply_live, mut live_rx) = oneshot::channel();
         let (reply_gone, gone_rx) = oneshot::channel();
         let _ = session.handle_request(RelayRequest::Command {

@@ -483,10 +483,12 @@ fn concurrent_attach_l1_snapshot_consistency() {
         match (&attached_a, &attached_b) {
             (
                 FrameKind::Attached {
+                    attach_id: _,
                     snapshot: snap_a,
                     initial_client_id: id_a,
                 },
                 FrameKind::Attached {
+                    attach_id: _,
                     snapshot: snap_b,
                     initial_client_id: id_b,
                 },

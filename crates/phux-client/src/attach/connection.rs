@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 
 use bytes::{Buf, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::ClientCapabilities;
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities,
+};
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, MAX_FRAME_LEN, Scope, SpawnResult,
 };
@@ -96,7 +98,21 @@ impl Dial {
 pub struct Connection {
     reader: FrameReader,
     writer: FrameWriter,
-    negotiated: bool,
+    /// Exact profile and bounds selected by the one successful `HELLO_OK`.
+    ///
+    /// Every production constructor fills this before returning. It is an
+    /// `Option` only for the crate's raw in-process transport test seam.
+    negotiated_bootstrap: Option<NegotiatedBootstrap>,
+    next_attach_id: u32,
+}
+
+/// Immutable result of protocol-0.7 bootstrap negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NegotiatedBootstrap {
+    /// Exact synchronization profile selected by the server.
+    pub profile: BootstrapProfile,
+    /// Exact per-frame bootstrap/history payload bounds.
+    pub limits: BootstrapLimits,
 }
 
 /// Read half — pulls one [`FrameKind`] per call, over either transport.
@@ -132,6 +148,9 @@ pub struct UdsReader {
     /// next read. This buffering is what lets the attach loop coalesce a
     /// back-to-back output burst into one paint (phux-jhv8).
     buf: BytesMut,
+    /// Payload bounds selected by `HELLO_OK`, or the client's advertised
+    /// bounds while the handshake itself is being decoded.
+    bootstrap_limits: BootstrapLimits,
 }
 
 /// UDS write half.
@@ -157,6 +176,7 @@ pub struct QuicReader {
     buf: BytesMut,
     _endpoint: quinn::Endpoint,
     _connection: quinn::Connection,
+    bootstrap_limits: BootstrapLimits,
 }
 
 /// QUIC write half. Holds the endpoint + connection for the same reasons as
@@ -174,6 +194,7 @@ pub struct QuicWriter {
 #[derive(Debug)]
 pub struct WsReader {
     inner: ws::WsReader,
+    bootstrap_limits: BootstrapLimits,
 }
 
 /// WebSocket write half.
@@ -235,12 +256,14 @@ impl Connection {
             reader: FrameReader::Uds(UdsReader {
                 inner: read,
                 buf: BytesMut::with_capacity(8192),
+                bootstrap_limits: BootstrapLimits::default(),
             }),
             writer: FrameWriter::Uds(UdsWriter {
                 inner: write,
                 out: BytesMut::with_capacity(4096),
             }),
-            negotiated: false,
+            negotiated_bootstrap: None,
+            next_attach_id: 1,
         })
     }
 
@@ -279,6 +302,7 @@ impl Connection {
                 buf: BytesMut::with_capacity(8192),
                 _endpoint: endpoint.clone(),
                 _connection: connection.clone(),
+                bootstrap_limits: BootstrapLimits::default(),
             }),
             writer: FrameWriter::Quic(QuicWriter {
                 send,
@@ -286,7 +310,8 @@ impl Connection {
                 endpoint,
                 connection,
             }),
-            negotiated: false,
+            negotiated_bootstrap: None,
+            next_attach_id: 1,
         })
     }
 
@@ -320,12 +345,14 @@ impl Connection {
         Ok(Self {
             reader: FrameReader::Ws(WsReader {
                 inner: ws::WsReader { rx },
+                bootstrap_limits: BootstrapLimits::default(),
             }),
             writer: FrameWriter::Ws(WsWriter {
                 inner: ws::WsWriter { tx },
                 out: BytesMut::with_capacity(4096),
             }),
-            negotiated: false,
+            negotiated_bootstrap: None,
+            next_attach_id: 1,
         })
     }
 
@@ -383,12 +410,14 @@ impl Connection {
             reader: FrameReader::Uds(UdsReader {
                 inner: read,
                 buf: BytesMut::with_capacity(8192),
+                bootstrap_limits: BootstrapLimits::default(),
             }),
             writer: FrameWriter::Uds(UdsWriter {
                 inner: write,
                 out: BytesMut::with_capacity(4096),
             }),
-            negotiated: false,
+            negotiated_bootstrap: None,
+            next_attach_id: 1,
         }
     }
 
@@ -401,7 +430,7 @@ impl Connection {
         client_name: String,
         client_caps: ClientCapabilities,
     ) -> Result<(), AttachError> {
-        if self.negotiated {
+        if self.negotiated_bootstrap.is_some() {
             return Err(AttachError::Protocol(
                 "HELLO negotiation already completed on this connection".to_owned(),
             ));
@@ -416,8 +445,28 @@ impl Connection {
             })
             .await?;
         match self.reader.recv().await? {
-            FrameKind::HelloOk { .. } => {
-                self.negotiated = true;
+            FrameKind::HelloOk {
+                protocol_major,
+                protocol_minor,
+                protocol_patch,
+                server_caps: _,
+                server_id: _,
+                selected_profile,
+                bootstrap_limits,
+            } => {
+                validate_hello_ok(
+                    &client_caps,
+                    protocol_major,
+                    protocol_minor,
+                    protocol_patch,
+                    selected_profile,
+                    bootstrap_limits,
+                )?;
+                self.reader.set_bootstrap_limits(bootstrap_limits);
+                self.negotiated_bootstrap = Some(NegotiatedBootstrap {
+                    profile: selected_profile,
+                    limits: bootstrap_limits,
+                });
                 Ok(())
             }
             FrameKind::Error { message, .. } => Err(AttachError::Refused(message)),
@@ -427,16 +476,29 @@ impl Connection {
         }
     }
 
-    /// Split into independent read and write halves.
+    /// Return the exact immutable bootstrap selection.
     ///
-    /// Useful when the attach loop wants to `tokio::select!` on the read
-    /// side while a separate task drains a write queue. The current driver
-    /// uses [`Self::send`] / [`Self::recv`] directly and does not need the
-    /// split — kept for forward use by phux-9gw.1.
+    /// Production constructors cannot return a connection without this value.
+    /// The `Option` exposes the unnegotiated state only to crate-internal raw
+    /// transport tests built with [`Self::from_stream`].
     #[must_use]
-    pub fn into_split(self) -> (FrameReader, FrameWriter) {
-        (self.reader, self.writer)
+    pub const fn negotiated_bootstrap(&self) -> Option<NegotiatedBootstrap> {
+        self.negotiated_bootstrap
     }
+
+    /// Allocate a non-zero correlation id for the next `ATTACH`.
+    ///
+    /// IDs are connection-local. Wrapping skips zero so every emitted request
+    /// remains wire-valid.
+    pub(crate) fn next_attach_id(&mut self) -> u32 {
+        let id = self.next_attach_id;
+        self.next_attach_id = self.next_attach_id.wrapping_add(1);
+        if self.next_attach_id == 0 {
+            self.next_attach_id = 1;
+        }
+        id
+    }
+
 
     /// Encode `frame` and write it to the server.
     pub async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
@@ -709,6 +771,65 @@ impl Connection {
     }
 }
 
+fn validate_hello_ok(
+    offered: &ClientCapabilities,
+    protocol_major: u16,
+    protocol_minor: u16,
+    protocol_patch: u16,
+    selected_profile: BootstrapProfile,
+    selected_limits: BootstrapLimits,
+) -> Result<(), AttachError> {
+    if (protocol_major, protocol_minor, protocol_patch)
+        != (
+            PROTOCOL_VERSION.major,
+            PROTOCOL_VERSION.minor,
+            PROTOCOL_VERSION.patch,
+        )
+    {
+        return Err(AttachError::Protocol(format!(
+            "HELLO_OK selected unsupported protocol {protocol_major}.{protocol_minor}.{protocol_patch}; client offered {}.{}.{}",
+            PROTOCOL_VERSION.major,
+            PROTOCOL_VERSION.minor,
+            PROTOCOL_VERSION.patch,
+        )));
+    }
+
+    let profile_is_offered = match selected_profile {
+        BootstrapProfile::NativeState { codec, features } => {
+            offered
+                .bootstrap
+                .profiles
+                .contains(BootstrapProfileKind::NativeState)
+                && offered.bootstrap.native_codecs.contains(codec)
+                && features.supports_native()
+                && offered.bootstrap.native_features.intersect(features) == features
+        }
+        BootstrapProfile::SynthesizedVtRaw => offered
+            .bootstrap
+            .profiles
+            .contains(BootstrapProfileKind::SynthesizedVtRaw),
+        BootstrapProfile::SynthesizedVtStateSync => offered
+            .bootstrap
+            .profiles
+            .contains(BootstrapProfileKind::SynthesizedVtStateSync),
+        _ => false,
+    };
+    if !profile_is_offered {
+        return Err(AttachError::Protocol(format!(
+            "HELLO_OK selected bootstrap profile outside the client's offer: {selected_profile:?}",
+        )));
+    }
+
+    if offered.bootstrap.limits.intersect(selected_limits) != selected_limits {
+        return Err(AttachError::Protocol(format!(
+            "HELLO_OK selected bootstrap limits outside the client's offer: chunk={} history_page={}",
+            selected_limits.max_chunk_bytes(),
+            selected_limits.max_history_page_bytes(),
+        )));
+    }
+    Ok(())
+}
+
 /// The peer's correlated `ERROR` answer to one request (`proto.md` §9).
 ///
 /// Distinct from an uncorrelated `ERROR`, which answers nothing and reaches
@@ -823,6 +944,14 @@ impl FrameReader {
         }
     }
 
+    fn set_bootstrap_limits(&mut self, limits: BootstrapLimits) {
+        match self {
+            Self::Uds(reader) => reader.bootstrap_limits = limits,
+            Self::Quic(reader) => reader.bootstrap_limits = limits,
+            Self::Ws(reader) => reader.bootstrap_limits = limits,
+        }
+    }
+
     /// Non-blocking sibling of [`Self::recv`]: decode a frame only if one is
     /// already buffered (or, for UDS, becomes readable without blocking).
     ///
@@ -863,7 +992,7 @@ impl UdsReader {
     /// bytes (awaiting the socket) until a full frame lands.
     async fn recv(&mut self) -> Result<FrameKind, AttachError> {
         loop {
-            if let Some(frame) = decode_buffered(&mut self.buf)? {
+            if let Some(frame) = decode_buffered(&mut self.buf, self.bootstrap_limits)? {
                 return Ok(frame);
             }
             // No complete frame buffered — pull more bytes. A read of zero is
@@ -886,7 +1015,7 @@ impl UdsReader {
     fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
         // A frame may already be sitting in the buffer behind the one `recv`
         // just returned; hand it over before touching the socket.
-        if let Some(frame) = decode_buffered(&mut self.buf)? {
+        if let Some(frame) = decode_buffered(&mut self.buf, self.bootstrap_limits)? {
             return Ok(Some(frame));
         }
         // Top up from the socket without blocking. `WouldBlock` just means
@@ -897,7 +1026,7 @@ impl UdsReader {
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(None),
             Err(err) => return Err(AttachError::Io(err)),
         }
-        decode_buffered(&mut self.buf)
+        decode_buffered(&mut self.buf, self.bootstrap_limits)
     }
 }
 
@@ -922,7 +1051,7 @@ impl QuicReader {
     /// zero ([`AttachError::Disconnected`]).
     async fn recv(&mut self) -> Result<FrameKind, AttachError> {
         loop {
-            if let Some(frame) = decode_buffered(&mut self.buf)? {
+            if let Some(frame) = decode_buffered(&mut self.buf, self.bootstrap_limits)? {
                 return Ok(frame);
             }
             let n = self
@@ -940,7 +1069,7 @@ impl QuicReader {
     /// just returned. quinn has no sync ready-check, so this never reads from
     /// the stream — it only peels off bytes a prior `recv` over-read.
     fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
-        decode_buffered(&mut self.buf)
+        decode_buffered(&mut self.buf, self.bootstrap_limits)
     }
 }
 
@@ -963,9 +1092,10 @@ impl WsReader {
                 frame.len()
             )));
         }
-        let (decoded, rest) = FrameKind::decode(&frame).map_err(|err| {
-            AttachError::Protocol(format!("server sent undecodable frame: {err:?}"))
-        })?;
+        let (decoded, rest) =
+            FrameKind::decode_with_bootstrap_limits(&frame, self.bootstrap_limits).map_err(
+                |err| AttachError::Protocol(format!("server sent undecodable frame: {err:?}")),
+            )?;
         if !rest.is_empty() {
             return Err(AttachError::Protocol(
                 "server sent trailing bytes after WebSocket frame".to_owned(),
@@ -981,7 +1111,10 @@ impl WsReader {
 /// length prefix is missing, or the body has not all arrived). The decoded
 /// frame's bytes are dropped from the front; any trailing partial frame stays
 /// for the next read.
-fn decode_buffered(buf: &mut BytesMut) -> Result<Option<FrameKind>, AttachError> {
+fn decode_buffered(
+    buf: &mut BytesMut,
+    bootstrap_limits: BootstrapLimits,
+) -> Result<Option<FrameKind>, AttachError> {
     if buf.len() < LENGTH_PREFIX {
         return Ok(None);
     }
@@ -998,8 +1131,10 @@ fn decode_buffered(buf: &mut BytesMut) -> Result<Option<FrameKind>, AttachError>
         // Body still in flight — wait for more bytes.
         return Ok(None);
     }
-    let (frame, _rest) = FrameKind::decode(&buf[..frame_len])
-        .map_err(|err| AttachError::Protocol(format!("server sent undecodable frame: {err:?}")))?;
+    let (frame, _rest) =
+        FrameKind::decode_with_bootstrap_limits(&buf[..frame_len], bootstrap_limits).map_err(
+            |err| AttachError::Protocol(format!("server sent undecodable frame: {err:?}")),
+        )?;
     buf.advance(frame_len);
     Ok(Some(frame))
 }
@@ -1450,4 +1585,48 @@ mod tests {
             ));
         });
     }
+    #[test]
+    fn hello_ok_profile_must_have_been_offered() {
+        let offered = ClientCapabilities::new().with_bootstrap(
+            phux_protocol::BootstrapCapabilities::new()
+                .with_profiles(phux_protocol::BootstrapProfileSet::with(&[
+                    BootstrapProfileKind::SynthesizedVtRaw,
+                ]))
+                .with_native_codecs(phux_protocol::EngineCodecSet::new())
+                .with_native_features(phux_protocol::EngineFeatureSet::new()),
+        );
+        let malicious = BootstrapProfile::NativeState {
+            codec: phux_protocol::EngineCodec::LibghosttyCheckpointV2,
+            features: phux_protocol::EngineFeatureSet::required_native(),
+        };
+        assert!(matches!(
+            validate_hello_ok(
+                &offered,
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch,
+                malicious,
+                BootstrapLimits::default(),
+            ),
+            Err(AttachError::Protocol(message)) if message.contains("outside the client's offer")
+        ));
+    }
+
+    #[test]
+    fn hello_ok_limits_must_not_exceed_the_offer() {
+        let offered = ClientCapabilities::new();
+        let excessive = BootstrapLimits::new(512 * 1024, 2 * 1024 * 1024).unwrap();
+        assert!(matches!(
+            validate_hello_ok(
+                &offered,
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch,
+                BootstrapProfile::SynthesizedVtRaw,
+                excessive,
+            ),
+            Err(AttachError::Protocol(message)) if message.contains("limits outside")
+        ));
+    }
+
 }

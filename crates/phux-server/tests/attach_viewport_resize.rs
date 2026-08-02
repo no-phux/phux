@@ -113,6 +113,7 @@ fn attach_resizes_seed_pty_to_client_viewport() {
         send_frame(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::ByName("default".to_owned()),
                 viewport,
                 request_scrollback: false,

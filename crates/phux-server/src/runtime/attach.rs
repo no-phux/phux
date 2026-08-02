@@ -968,6 +968,7 @@ pub(crate) async fn handle_spawn_terminal(
 pub(crate) async fn handle_attach(
     state: &SharedState,
     client_id: ClientId,
+    attach_id: u32,
     target: AttachTarget,
     viewport: phux_protocol::wire::frame::ViewportInfo,
     request_scrollback: bool,
@@ -1059,6 +1060,7 @@ pub(crate) async fn handle_attach(
 
     if out_tx
         .send(Outbound::Frame(FrameKind::Attached {
+            attach_id,
             snapshot,
             initial_client_id,
         }))

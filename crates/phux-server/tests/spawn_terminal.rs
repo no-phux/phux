@@ -201,6 +201,7 @@ const fn enter_key() -> KeyEvent {
 fn attach_create_if_missing(name: &str) -> FrameKind {
     use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::CreateIfMissing {
             name: name.to_owned(),
             command: None,
@@ -1019,6 +1020,7 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
         send_frame(
             &mut stream_b,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::ByName("resize-test".to_owned()),
                 viewport: ViewportInfo::new(80, 24),
                 request_scrollback: false,
@@ -1219,6 +1221,7 @@ fn attach_create_seed_pane_injects_matching_terminal_id_env() {
         send_frame(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::CreateIfMissing {
                     name: "seed-id".to_owned(),
                     command: Some(vec![
@@ -1345,6 +1348,7 @@ fn attach_create_seed_pane_injects_server_socket_env() {
         send_frame(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::CreateIfMissing {
                     name: "seed-sock".to_owned(),
                     command: Some(vec!["/bin/sh".to_owned(), "-c".to_owned(), probe]),
@@ -1511,6 +1515,7 @@ fn create_if_missing_seeds_pane_in_wire_cwd() {
         send_frame(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::CreateIfMissing {
                     name: "proj".to_owned(),
                     command: Some(vec![

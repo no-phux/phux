@@ -8,15 +8,15 @@ use std::rc::Rc;
 
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, ImageProtocolSet};
+use phux_protocol::caps::{
+    BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
+    BootstrapProfileSet, ClientCapabilities, EngineCodecSet, EngineFeatureSet, ImageProtocolSet,
+};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_vt_web::{Grid, Terminal, Vt};
 
-/// Advisory cell pixel size handed to the engine on resize.
-const CELL_W: u32 = 8;
-const CELL_H: u32 = 16;
 
 /// The capability set phux-web advertises in `HELLO`.
 ///
@@ -33,7 +33,15 @@ const CELL_H: u32 = 16;
 /// replies, and OSC 8 hyperlink framing without harm.
 #[must_use]
 pub fn client_caps() -> ClientCapabilities {
-    ClientCapabilities::new().with_image_protocols(ImageProtocolSet::new())
+    let bootstrap = BootstrapCapabilities::new()
+        .with_profiles(BootstrapProfileSet::with(&[
+            BootstrapProfileKind::SynthesizedVtRaw,
+        ]))
+        .with_native_codecs(EngineCodecSet::new())
+        .with_native_features(EngineFeatureSet::new());
+    ClientCapabilities::new()
+        .with_image_protocols(ImageProtocolSet::new())
+        .with_bootstrap(bootstrap)
 }
 
 /// The result of handling one incoming frame.
@@ -43,6 +51,9 @@ pub struct Outcome {
     pub send: Vec<Vec<u8>>,
     /// Whether the grid changed and should be repainted.
     pub render: bool,
+    /// Fatal protocol violation. The transport must close without sending any
+    /// stateful follow-up.
+    pub fatal: Option<String>,
 }
 
 /// A single-terminal wire session backed by a ghostty-vt engine terminal.
@@ -51,6 +62,9 @@ pub struct Session {
     cols: u16,
     rows: u16,
     terminal_id: Option<TerminalId>,
+    negotiated: Option<(BootstrapProfile, BootstrapLimits)>,
+    pending_attach_id: Option<u32>,
+    next_attach_id: u32,
 }
 
 impl Session {
@@ -62,6 +76,9 @@ impl Session {
             cols,
             rows,
             terminal_id: None,
+            negotiated: None,
+            pending_attach_id: None,
+            next_attach_id: 1,
         }
     }
 
@@ -84,56 +101,88 @@ impl Session {
     /// to send back plus whether a repaint is needed.
     pub fn on_frame(&mut self, frame: FrameKind) -> Outcome {
         match frame {
-            FrameKind::HelloOk { .. } => Outcome {
-                send: vec![encode(&FrameKind::Attach {
-                    // The web client owns one session named "default": attach
-                    // to it, or create it if the server has none yet.
-                    target: AttachTarget::CreateIfMissing {
-                        name: "default".to_owned(),
-                        command: None,
-                        cwd: None,
-                    },
-                    viewport: ViewportInfo::new(self.cols, self.rows),
-                    request_scrollback: false,
-                    scrollback_limit_lines: 0,
-                })],
-                render: false,
-            },
-            FrameKind::TerminalSnapshot {
-                terminal_id,
-                cols,
-                rows,
-                vt_replay_bytes,
-                scrollback_bytes,
+            FrameKind::HelloOk {
+                protocol_major,
+                protocol_minor,
+                protocol_patch,
+                selected_profile,
+                bootstrap_limits,
+                ..
             } => {
-                self.terminal_id = Some(terminal_id);
-                if cols != self.cols || rows != self.rows {
-                    self.term.resize(cols, rows, CELL_W, CELL_H);
-                    self.cols = cols;
-                    self.rows = rows;
+                if self.negotiated.is_some() {
+                    return fatal("duplicate HELLO_OK on an established web connection");
                 }
-                if let Some(sb) = scrollback_bytes {
-                    self.term.write(&sb);
+                if let Err(message) = validate_hello_ok(
+                    &client_caps(),
+                    protocol_major,
+                    protocol_minor,
+                    protocol_patch,
+                    selected_profile,
+                    bootstrap_limits,
+                ) {
+                    return fatal(message);
                 }
-                self.term.write(&vt_replay_bytes);
+                self.negotiated = Some((selected_profile, bootstrap_limits));
+                let attach_id = self.next_attach_id;
+                self.next_attach_id = self.next_attach_id.wrapping_add(1).max(1);
+                self.pending_attach_id = Some(attach_id);
                 Outcome {
-                    send: Vec::new(),
-                    render: true,
+                    send: vec![encode(&FrameKind::Attach {
+                        attach_id,
+                        // The web client owns one session named "default": attach
+                        // to it, or create it if the server has none yet.
+                        target: AttachTarget::CreateIfMissing {
+                            name: "default".to_owned(),
+                            command: None,
+                            cwd: None,
+                        },
+                        viewport: ViewportInfo::new(self.cols, self.rows),
+                        request_scrollback: false,
+                        scrollback_limit_lines: 0,
+                    })],
+                    render: false,
+                    fatal: None,
                 }
             }
+            FrameKind::Attached { attach_id, .. }
+                if self.pending_attach_id == Some(attach_id) =>
+            {
+                Outcome::default()
+            }
+            FrameKind::Attached { attach_id, .. } => fatal(format!(
+                "ATTACHED attach_id mismatch: expected {:?}, received {attach_id}",
+                self.pending_attach_id,
+            )),
+            FrameKind::AttachReady { attach_id }
+                if self.pending_attach_id == Some(attach_id) =>
+            {
+                self.pending_attach_id = None;
+                Outcome::default()
+            }
+            FrameKind::AttachReady { attach_id } => fatal(format!(
+                "ATTACH_READY attach_id mismatch: expected {:?}, received {attach_id}",
+                self.pending_attach_id,
+            )),
             FrameKind::TerminalOutput {
                 terminal_id,
-                seq,
+                stream_id: _,
+                bootstrap_id: _,
+                seq: _,
                 bytes,
             } => {
+                if self.negotiated.is_none() {
+                    return fatal("TERMINAL_OUTPUT received before HELLO_OK");
+                }
                 self.terminal_id.get_or_insert_with(|| terminal_id.clone());
                 self.term.write(&bytes);
                 Outcome {
-                    send: vec![encode(&FrameKind::FrameAck { terminal_id, seq })],
+                    send: Vec::new(),
                     render: true,
+                    fatal: None,
                 }
             }
-            // PONG, ERROR, metadata, etc. — nothing to render.
+            // PONG, ERROR, metadata, and bootstrap frames are not rendered by
+            // this handshake-only slice.
             _ => Outcome::default(),
         }
     }
@@ -148,6 +197,12 @@ impl Session {
     #[must_use]
     pub const fn dims(&self) -> (u16, u16) {
         (self.cols, self.rows)
+    }
+
+    /// Negotiated payload bounds used by the browser receive path.
+    #[must_use]
+    pub fn bootstrap_limits(&self) -> Option<BootstrapLimits> {
+        self.negotiated.map(|(_, limits)| limits)
     }
 
     /// Encode an `INPUT_KEY` for the attached terminal, or `None` if not yet
@@ -165,4 +220,66 @@ fn encode(frame: &FrameKind) -> Vec<u8> {
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
     buf.to_vec()
+}
+
+fn fatal(message: impl Into<String>) -> Outcome {
+    Outcome {
+        send: Vec::new(),
+        render: false,
+        fatal: Some(message.into()),
+    }
+}
+
+fn validate_hello_ok(
+    offered: &ClientCapabilities,
+    protocol_major: u16,
+    protocol_minor: u16,
+    protocol_patch: u16,
+    selected_profile: BootstrapProfile,
+    selected_limits: BootstrapLimits,
+) -> Result<(), String> {
+    if (protocol_major, protocol_minor, protocol_patch)
+        != (
+            PROTOCOL_VERSION.major,
+            PROTOCOL_VERSION.minor,
+            PROTOCOL_VERSION.patch,
+        )
+    {
+        return Err(format!(
+            "HELLO_OK selected unsupported protocol {protocol_major}.{protocol_minor}.{protocol_patch}",
+        ));
+    }
+    let profile_is_offered = match selected_profile {
+        BootstrapProfile::NativeState { codec, features } => {
+            offered
+                .bootstrap
+                .profiles
+                .contains(BootstrapProfileKind::NativeState)
+                && offered.bootstrap.native_codecs.contains(codec)
+                && features.supports_native()
+                && offered.bootstrap.native_features.intersect(features) == features
+        }
+        BootstrapProfile::SynthesizedVtRaw => offered
+            .bootstrap
+            .profiles
+            .contains(BootstrapProfileKind::SynthesizedVtRaw),
+        BootstrapProfile::SynthesizedVtStateSync => offered
+            .bootstrap
+            .profiles
+            .contains(BootstrapProfileKind::SynthesizedVtStateSync),
+        _ => false,
+    };
+    if !profile_is_offered {
+        return Err(format!(
+            "HELLO_OK selected bootstrap profile outside the web client's offer: {selected_profile:?}",
+        ));
+    }
+    if offered.bootstrap.limits.intersect(selected_limits) != selected_limits {
+        return Err(format!(
+            "HELLO_OK selected bootstrap limits outside the web client's offer: chunk={} history_page={}",
+            selected_limits.max_chunk_bytes(),
+            selected_limits.max_history_page_bytes(),
+        ));
+    }
+    Ok(())
 }

@@ -49,6 +49,7 @@ fn create_if_missing(name: &str) -> FrameKind {
 
 fn create_if_missing_with_command(name: &str, command: Option<Vec<String>>) -> FrameKind {
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::CreateIfMissing {
             name: name.to_owned(),
             command,

@@ -18,7 +18,9 @@ use bytes::BytesMut;
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, QuicDial};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::ServerCapabilities;
+use phux_protocol::caps::{
+    BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile,
+};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::policy::QUIC_ALPN;
 use phux_protocol::wire::frame::FrameKind;
@@ -78,7 +80,12 @@ async fn write_frame(send: &mut quinn::SendStream, frame: &FrameKind) {
 }
 
 async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream) {
-    assert!(matches!(read_frame(recv).await, FrameKind::Hello { .. }));
+    let FrameKind::Hello { client_caps, .. } = read_frame(recv).await else {
+        panic!("expected HELLO");
+    };
+    let (selected_profile, bootstrap_limits) =
+        select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new())
+            .expect("fixture profiles intersect");
     write_frame(
         send,
         &FrameKind::HelloOk {
@@ -87,6 +94,8 @@ async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream
             protocol_patch: PROTOCOL_VERSION.patch,
             server_caps: ServerCapabilities::new(),
             server_id: Vec::new(),
+            selected_profile,
+            bootstrap_limits,
         },
     )
     .await;

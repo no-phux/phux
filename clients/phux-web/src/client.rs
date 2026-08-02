@@ -68,10 +68,10 @@ pub async fn run(
         let app = Rc::clone(&app);
         let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
             let buf = js_sys::Uint8Array::new(&e.data()).to_vec();
-            let Ok((frame, _rest)) = FrameKind::decode(&buf) else {
-                return;
-            };
-            handle_frame(&app, frame);
+            match decode_server_frame(&app, &buf) {
+                Ok(frame) => handle_frame(&app, frame),
+                Err(message) => close_with_protocol_error(&app, &message),
+            }
         });
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
         onmessage.forget();
@@ -180,10 +180,13 @@ pub async fn run_webtransport(
                 };
                 frames.push(&js_sys::Uint8Array::new(&value).to_vec());
                 while let Some(framed) = frames.next_frame() {
-                    let Ok((frame, _rest)) = FrameKind::decode(&framed) else {
-                        continue;
-                    };
-                    handle_frame(&app, frame);
+                    match decode_server_frame(&app, &framed) {
+                        Ok(frame) => handle_frame(&app, frame),
+                        Err(message) => {
+                            close_with_protocol_error(&app, &message);
+                            return;
+                        }
+                    }
                 }
                 if frames.poisoned() {
                     web_sys::console::error_1(&JsValue::from_str(
@@ -241,6 +244,20 @@ impl WireTx {
                 // the hot path only to observe (and drop) failures, so a
                 // rejected write never surfaces as an unhandled rejection.
                 let pending = writer.write_with_chunk(&chunk);
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = JsFuture::from(pending).await;
+                });
+            }
+        }
+    }
+
+    fn close(&self) {
+        match self {
+            Self::Ws(ws) => {
+                let _ = ws.close();
+            }
+            Self::Wt(writer) => {
+                let pending = writer.close();
                 wasm_bindgen_futures::spawn_local(async move {
                     let _ = JsFuture::from(pending).await;
                 });
@@ -310,12 +327,39 @@ async fn build_app(
 fn handle_frame(app: &Rc<RefCell<App>>, frame: FrameKind) {
     let mut a = app.borrow_mut();
     let outcome = a.session.on_frame(frame);
+    if let Some(message) = outcome.fatal {
+        web_sys::console::error_1(&JsValue::from_str(&format!(
+            "phux-web protocol error: {message}",
+        )));
+        a.tx.close();
+        return;
+    }
     if !outcome.send.is_empty() {
         a.send(outcome.send);
     }
     if outcome.render {
         a.paint();
     }
+}
+
+fn decode_server_frame(app: &Rc<RefCell<App>>, framed: &[u8]) -> Result<FrameKind, String> {
+    let limits = app.borrow().session.bootstrap_limits();
+    let decoded = match limits {
+        Some(limits) => FrameKind::decode_with_bootstrap_limits(framed, limits),
+        None => FrameKind::decode(framed),
+    }
+    .map_err(|error| format!("server sent undecodable frame: {error:?}"))?;
+    if !decoded.1.is_empty() {
+        return Err("server frame contained trailing bytes".to_owned());
+    }
+    Ok(decoded.0)
+}
+
+fn close_with_protocol_error(app: &Rc<RefCell<App>>, message: &str) {
+    web_sys::console::error_1(&JsValue::from_str(&format!(
+        "phux-web protocol error: {message}",
+    )));
+    app.borrow().tx.close();
 }
 
 /// Keyboard: each keydown becomes an `INPUT_KEY` for the attached terminal.

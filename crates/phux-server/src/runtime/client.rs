@@ -7,7 +7,8 @@ use std::path::Path;
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
-    ClientCapabilities, LayerSet, ServerCapabilities, ServerFeature, ServerFeatureSet,
+    BootstrapCapabilities, BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet,
+    ServerCapabilities, ServerFeature, ServerFeatureSet, select_bootstrap_profile,
 };
 use phux_protocol::policy::{ConsumerId as PolicyConsumerId, PeerIdentity};
 use phux_protocol::wire::frame::{AgentEvent, ErrorCode, FrameKind, TERMINAL_AGENT_KEY};
@@ -26,6 +27,13 @@ use super::{
 use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState, TerminalInput};
 use crate::terminal_actor::ConsumerDetachRequest;
 use crate::transport::{FrameReader, FrameWriter, Incoming};
+
+#[derive(Debug, Clone, Copy)]
+struct NegotiatedConnection {
+    client_caps: ClientCapabilities,
+    profile: BootstrapProfile,
+    limits: BootstrapLimits,
+}
 
 pub(crate) fn spawn_pane_event_drain(
     state: SharedState,
@@ -774,14 +782,10 @@ where
     // DETACHED and may serve a later ATTACH on the same connection.
     let mut output_pumps: JoinSet<()> = JoinSet::new();
 
-    // Per-connection capabilities negotiated by HELLO (SPEC §6.2). The value
-    // is never consumed before `hello_seen`: every transport now rejects
-    // stateful frames until negotiation succeeds.
-    let mut negotiated_client_caps = ClientCapabilities::default();
-
-    // SPEC §6.1: every stateful connection opens with HELLO. UDS and localhost
-    // are not exemptions; PING alone remains a stateless liveness probe.
-    let mut hello_seen = false;
+    // Exact per-connection bootstrap state selected by HELLO. `None` is the
+    // pre-negotiation state; successful selection writes it exactly once and
+    // duplicate HELLO is fatal, so an attached connection can never mutate it.
+    let mut negotiated: Option<NegotiatedConnection> = None;
 
     loop {
         // Pull the next complete frame from the transport — length-prefixed on
@@ -807,7 +811,12 @@ where
             },
         };
 
-        let frame = match FrameKind::decode(&framed) {
+        let decoded = if let Some(selection) = negotiated {
+            FrameKind::decode_with_bootstrap_limits(&framed, selection.limits)
+        } else {
+            FrameKind::decode(&framed)
+        };
+        let frame = match decoded {
             Ok((frame, _rest)) => frame,
             Err(err) => {
                 warn!(error = ?err, "client sent undecodable frame; closing");
@@ -819,7 +828,9 @@ where
         // (the connector's consumer health check is exactly that), and the
         // spec's close-before-processing clause targets "ATTACH or other
         // stateful frames".
-        if !hello_seen && !matches!(frame, FrameKind::Hello { .. } | FrameKind::Ping { .. }) {
+        if negotiated.is_none()
+            && !matches!(frame, FrameKind::Hello { .. } | FrameKind::Ping { .. })
+        {
             warn!(?client_id, "stateful frame before HELLO; closing");
             let _ = out_tx
                 .send(Outbound::Frame(FrameKind::Error {
@@ -842,7 +853,7 @@ where
                 protocol_patch,
                 client_caps,
             } => {
-                if hello_seen {
+                if negotiated.is_some() {
                     warn!(?client_id, "duplicate HELLO; closing");
                     let _ = out_tx
                         .send(Outbound::Frame(FrameKind::Error {
@@ -933,23 +944,60 @@ where
                     let _ = sibling_tasks.join_next().await;
                     return Ok(());
                 }
-                // Cache the profile exactly once, before any stateful frame.
-                // Duplicate HELLO is rejected above so capabilities can never
-                // mutate underneath an attached or subscribed client.
-                negotiated_client_caps = client_caps;
+                let server_bootstrap = BootstrapCapabilities::new();
+                let (selected_profile, bootstrap_limits) =
+                    match select_bootstrap_profile(&client_caps, &server_bootstrap) {
+                        Ok(selection) => selection,
+                        Err(_) => {
+                            let message = format!(
+                                "no common protocol-0.7 bootstrap profile: client profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}; server profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}. NativeState requires an exact common codec and every required engine feature; advertise SynthesizedVtRaw/SynthesizedVtStateSync or update the incompatible peer",
+                                client_caps.bootstrap.profiles.as_wire(),
+                                client_caps.bootstrap.native_codecs.as_wire(),
+                                client_caps.bootstrap.native_features.as_wire(),
+                                server_bootstrap.profiles.as_wire(),
+                                server_bootstrap.native_codecs.as_wire(),
+                                server_bootstrap.native_features.as_wire(),
+                            );
+                            warn!(?client_id, %message, "HELLO codec unavailable");
+                            let _ = out_tx
+                                .send(Outbound::Frame(FrameKind::Error {
+                                    request_id: None,
+                                    code: ErrorCode::CodecUnavailable,
+                                    message,
+                                }))
+                                .await;
+                            drop(out_tx);
+                            let _ = sibling_tasks.join_next().await;
+                            return Ok(());
+                        }
+                    };
+                let mut effective_client_caps = client_caps;
+                effective_client_caps.output_mode = if matches!(
+                    selected_profile,
+                    BootstrapProfile::SynthesizedVtStateSync
+                ) {
+                    phux_protocol::caps::OutputMode::StateSync
+                } else {
+                    // NativeState and SynthesizedVtRaw both carry raw live PTY
+                    // output regardless of the client's compatibility
+                    // preference field.
+                    phux_protocol::caps::OutputMode::Raw
+                };
+
+                // Cache all negotiated state exactly once before any stateful
+                // frame can be processed. Subsequent decoding immediately uses
+                // these bounds, rejecting oversized borrowed payloads before
+                // the protocol decoder copies them into owned storage.
+                negotiated = Some(NegotiatedConnection {
+                    client_caps: effective_client_caps,
+                    profile: selected_profile,
+                    limits: bootstrap_limits,
+                });
                 state.with_mut(|s| {
-                    s.set_client_capabilities(client_id, client_caps);
                     // SPEC §6.2: cache the negotiated layer set. The L3
                     // dispatch arms gate METADATA_CHANGED on this value.
                     s.set_client_layers(client_id, client_caps.layers);
                 });
-                // SPEC §6.1: server replies with HELLO_OK before ATTACH
-                // is processed on this connection. The compatible
-                // single-version client and server agree on major.minor; the
-                // server selects its current patch and advertises the full
-                // tier set it mounts (L1+L2+L3).
-                // the negotiated set is the intersection with the client's
-                // `layers`. `server_id` is the opaque process identity.
                 let hello_ok = FrameKind::HelloOk {
                     protocol_major: PROTOCOL_VERSION.major,
                     protocol_minor: PROTOCOL_VERSION.minor,
@@ -961,11 +1009,12 @@ where
                             ServerFeature::FileUpload,
                         ])),
                     server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
+                    selected_profile,
+                    bootstrap_limits,
                 };
                 if out_tx.send(Outbound::Frame(hello_ok)).await.is_err() {
                     trace!(?client_id, "HELLO_OK send dropped: writer gone");
                 }
-                hello_seen = true;
             }
             FrameKind::Ping { nonce } => {
                 // SPEC §7.4: echo nonce in PONG.
@@ -979,20 +1028,32 @@ where
                 }
             }
             FrameKind::Attach {
+                attach_id,
                 target,
                 viewport,
                 request_scrollback,
                 scrollback_limit_lines,
             } => {
+                let selection =
+                    negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
+                debug!(
+                    ?client_id,
+                    attach_id,
+                    profile = ?selection.profile,
+                    chunk_limit = selection.limits.max_chunk_bytes(),
+                    history_page_limit = selection.limits.max_history_page_bytes(),
+                    "ATTACH with immutable bootstrap selection",
+                );
                 handle_attach(
                     &state,
                     client_id,
+                    attach_id,
                     target,
                     viewport,
                     request_scrollback,
                     scrollback_limit_lines,
                     &out_tx,
-                    negotiated_client_caps,
+                    selection.client_caps,
                     &root_token,
                     &mut output_pumps,
                 )

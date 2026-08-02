@@ -1024,25 +1024,6 @@ mod tests {
         assert_eq!(client.client_caps.color_support, ColorSupport::Indexed16);
     }
 
-    #[test]
-    fn set_client_color_support_updates_live_attached_client() {
-        // Out-of-order HELLO after ATTACH (out of spec, but tolerated):
-        // the setter patches the live record so downsample picks up the
-        // newer tier.
-        let mut s = ServerState::new();
-        let _ = s.seed_session("default");
-        let cid = s.new_client_id();
-        s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-        assert!(s.set_client_color_support(cid, ColorSupport::Indexed256));
-        let client = s.attached.get(&cid).unwrap();
-        assert_eq!(client.client_caps.color_support, ColorSupport::Indexed256);
-    }
-
-    #[test]
-    fn set_client_color_support_returns_false_for_unknown_client() {
-        let mut s = ServerState::new();
-        assert!(!s.set_client_color_support(ClientId(999), ColorSupport::Indexed16));
-    }
 
     #[test]
     fn attach_snapshot_panes_collects_live_handles_for_session_tree() {

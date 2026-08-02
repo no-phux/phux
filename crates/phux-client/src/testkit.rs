@@ -79,7 +79,9 @@ use std::fmt;
 
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::ServerCapabilities;
+use phux_protocol::caps::{
+    BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile,
+};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, SpawnResult,
@@ -420,13 +422,20 @@ impl ScriptedServer {
 /// [`ScriptedServer::run`].
 fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
     match frame {
-        FrameKind::Hello { .. } => vec![FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new(),
-            server_id: Vec::new(),
-        }],
+        FrameKind::Hello { client_caps, .. } => {
+            let (selected_profile, bootstrap_limits) =
+                select_bootstrap_profile(client_caps, &BootstrapCapabilities::new())
+                    .expect("default scripted server and client share a bootstrap profile");
+            vec![FrameKind::HelloOk {
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                server_caps: ServerCapabilities::new(),
+                server_id: Vec::new(),
+                selected_profile,
+                bootstrap_limits,
+            }]
+        }
         FrameKind::Command {
             request_id,
             command,

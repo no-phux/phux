@@ -67,6 +67,7 @@ fn byc_6_3_detach_releases_state_and_allows_fresh_reattach() {
         assert_eq!(type_byte, TYPE_ATTACHED, "client A: first frame ATTACHED");
         let client_a_id = match attached_a {
             FrameKind::Attached {
+                attach_id: _,
                 snapshot,
                 initial_client_id,
             } => {
@@ -124,6 +125,7 @@ fn byc_6_3_detach_releases_state_and_allows_fresh_reattach() {
         assert_eq!(type_byte, TYPE_ATTACHED, "client B: first frame ATTACHED");
         let client_b_id = match attached_b {
             FrameKind::Attached {
+                attach_id: _,
                 snapshot,
                 initial_client_id,
             } => {

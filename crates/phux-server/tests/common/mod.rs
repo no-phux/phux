@@ -360,6 +360,7 @@ pub fn encode_frame(frame: &FrameKind) -> BytesMut {
 #[must_use]
 pub fn attach_by_name(name: &str) -> FrameKind {
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::ByName(name.to_owned()),
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,

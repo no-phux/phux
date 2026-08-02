@@ -753,39 +753,6 @@ impl ServerState {
         self.attach(client_id, session_name, tx, ClientCapabilities::default())
     }
 
-    /// Update the recorded [`ClientCapabilities`] for an already-attached
-    /// client. Returns `false` if the client is not in [`Self::attached`].
-    ///
-    /// Used by the HELLO handler if a HELLO arrives after ATTACH (out of
-    /// spec, but tolerated for forward-compat — the alternative is a
-    /// protocol-error close that gives the operator no breadcrumbs).
-    pub fn set_client_capabilities(
-        &mut self,
-        client_id: ClientId,
-        client_caps: ClientCapabilities,
-    ) -> bool {
-        self.attached
-            .get_mut(&client_id)
-            .map(|c| {
-                c.client_caps = client_caps;
-            })
-            .is_some()
-    }
-
-    /// Compatibility wrapper for tests that still update color only.
-    pub fn set_client_color_support(
-        &mut self,
-        client_id: ClientId,
-        color_support: ColorSupport,
-    ) -> bool {
-        self.attached
-            .get_mut(&client_id)
-            .map(|c| {
-                c.client_caps = c.client_caps.with_color_support(color_support);
-            })
-            .is_some()
-    }
-
     /// Detach `client_id`, removing it from `attached` and from every
     /// `terminal_subscribers` list it appears in.
     ///

@@ -379,7 +379,9 @@ mod tests {
     use phux_client::layout::leaves;
     use phux_client::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::PROTOCOL_VERSION;
-    use phux_protocol::caps::ServerCapabilities;
+    use phux_protocol::caps::{
+        BootstrapLimits, BootstrapProfile, EngineCodec, EngineFeatureSet, ServerCapabilities,
+    };
     use phux_protocol::wire::frame::{CommandValue, ErrorCode};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -442,6 +444,11 @@ mod tests {
             protocol_patch: PROTOCOL_VERSION.patch,
             server_caps: ServerCapabilities::new(),
             server_id: Vec::new(),
+            selected_profile: BootstrapProfile::NativeState {
+                codec: EngineCodec::LibghosttyCheckpointV2,
+                features: EngineFeatureSet::required_native(),
+            },
+            bootstrap_limits: BootstrapLimits::default(),
         })
         .await;
         conn

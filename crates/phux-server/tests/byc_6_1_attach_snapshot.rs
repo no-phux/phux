@@ -99,6 +99,7 @@ fn byc_6_1_attach_returns_session_id_and_round_trip_snapshot() {
         );
         let (snapshot_cols_expected, snapshot_rows_expected) = match attached {
             FrameKind::Attached {
+                attach_id: _,
                 snapshot,
                 initial_client_id,
             } => {

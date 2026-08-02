@@ -60,6 +60,7 @@ use crate::common::{
 /// dimensions line up with the no-PTY seed actor's defaults.
 fn create_if_missing_frame(name: &str) -> FrameKind {
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::CreateIfMissing {
             name: name.to_owned(),
             command: None,
@@ -77,6 +78,7 @@ fn create_if_missing_frame(name: &str) -> FrameKind {
 /// against a PTY-backed server with no override command.
 fn create_if_missing_with_cwd_frame(name: &str, cwd: &str) -> FrameKind {
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::CreateIfMissing {
             name: name.to_owned(),
             command: Some(vec![
@@ -130,6 +132,7 @@ fn create_if_missing_creates_session_when_absent() {
         );
         match attached {
             FrameKind::Attached {
+                attach_id: _,
                 snapshot,
                 initial_client_id,
             } => {

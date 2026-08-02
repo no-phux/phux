@@ -211,6 +211,7 @@ impl Client {
         send(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::ByName(session.to_owned()),
                 viewport,
                 request_scrollback: false,
@@ -223,6 +224,7 @@ impl Client {
         assert_eq!(tb, TYPE_ATTACHED, "first frame must be ATTACHED");
         let (client_id, terminal_id) = match attached {
             FrameKind::Attached {
+                attach_id: _,
                 initial_client_id,
                 snapshot,
             } => {

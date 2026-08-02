@@ -311,6 +311,7 @@ impl ClientHandle {
         send_frame(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: phux_protocol::wire::frame::AttachTarget::ByName(session.to_owned()),
                 viewport,
                 request_scrollback: false,
@@ -327,9 +328,11 @@ impl ClientHandle {
         }
         let (client_id, terminal_id) = match attached {
             FrameKind::Attached {
+                attach_id,
                 snapshot,
                 initial_client_id,
             } => {
+                assert_eq!(attach_id, 1, "ATTACHED must echo ATTACH.attach_id");
                 let pane = snapshot
                     .panes
                     .first()

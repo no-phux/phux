@@ -3,8 +3,12 @@
 
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ImageProtocolSet, ServerCapabilities};
-use phux_protocol::ids::TerminalId;
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ImageProtocolSet, ServerCapabilities,
+};
+use phux_protocol::ids::{
+    BootstrapId, ClientId, SessionId, StreamId, TerminalId, WindowId,
+};
 use phux_protocol::wire::frame::FrameKind;
 use phux_vt_web::Vt;
 use phux_web::Session;
@@ -17,19 +21,25 @@ fn hello_ok() -> FrameKind {
         protocol_patch: PROTOCOL_VERSION.patch,
         server_caps: ServerCapabilities::new(),
         server_id: Vec::new(),
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::default(),
     }
 }
 
 #[wasm_bindgen_test]
-async fn terminal_output_frame_feeds_engine_and_acks() {
+async fn terminal_output_frame_feeds_engine_without_raw_ack() {
     let vt = Vt::load().await.expect("load engine");
     let mut session = Session::new(&vt, 20, 3);
+    let handshake = session.on_frame(hello_ok());
+    assert!(handshake.fatal.is_none());
 
     // A real TERMINAL_OUTPUT frame, round-tripped through the wire codec (the
     // exact bytes the server would send) before the session sees it.
     let tid = TerminalId::local(1);
     let frame = FrameKind::TerminalOutput {
         terminal_id: tid.clone(),
+        stream_id: StreamId::new(1).unwrap(),
+        bootstrap_id: BootstrapId::new(1).unwrap(),
         seq: 7,
         bytes: bytes::Bytes::from_static(b"Hi phux"),
     };
@@ -40,17 +50,11 @@ async fn terminal_output_frame_feeds_engine_and_acks() {
 
     let outcome = session.on_frame(decoded);
     assert!(outcome.render, "output should trigger a repaint");
-    assert_eq!(outcome.send.len(), 1, "output should be acked");
-
-    // The ack is a real FRAME_ACK for the same terminal + seq.
-    let (ack, _) = FrameKind::decode(&outcome.send[0]).expect("decode ack");
-    match ack {
-        FrameKind::FrameAck { terminal_id, seq } => {
-            assert_eq!(terminal_id, tid);
-            assert_eq!(seq, 7);
-        }
-        other => panic!("expected FRAME_ACK, got {other:?}"),
-    }
+    assert!(
+        outcome.send.is_empty(),
+        "SynthesizedVtRaw never emits FRAME_ACK"
+    );
+    assert!(outcome.fatal.is_none());
 
     // The engine rendered the bytes.
     let grid = session.grid();
@@ -73,11 +77,36 @@ async fn handshake_waits_for_hello_ok_before_attach() {
 
     let outcome = session.on_frame(hello_ok());
     assert!(!outcome.render);
+    assert!(outcome.fatal.is_none());
     assert_eq!(outcome.send.len(), 1, "HELLO_OK releases exactly one ATTACH");
     let (attach, _) = FrameKind::decode(&outcome.send[0]).expect("decode attach");
     assert!(
-        matches!(attach, FrameKind::Attach { .. }),
-        "ATTACH follows HELLO_OK"
+        matches!(attach, FrameKind::Attach { attach_id: 1, .. }),
+        "ATTACH follows HELLO_OK with a non-zero correlation id"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn attached_id_mismatch_is_fatal() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 80, 24);
+    let handshake = session.on_frame(hello_ok());
+    assert_eq!(handshake.send.len(), 1);
+    let outcome = session.on_frame(FrameKind::Attached {
+        attach_id: 2,
+        snapshot: phux_protocol::wire::info::SessionSnapshot::new(
+            SessionId::new(1),
+            WindowId::new(1),
+            TerminalId::local(1),
+        ),
+        initial_client_id: ClientId::new(1),
+    });
+    assert!(outcome.send.is_empty());
+    assert!(
+        outcome
+            .fatal
+            .as_deref()
+            .is_some_and(|message| message.contains("attach_id mismatch"))
     );
 }
 
@@ -101,4 +130,66 @@ async fn hello_advertises_no_image_protocols() {
         "phux-web cannot render images yet; it must not advertise image \
          protocols (docs/consumers/web.md, ADR-0034)"
     );
+    assert!(
+        client_caps
+            .bootstrap
+            .profiles
+            .contains(BootstrapProfileKind::SynthesizedVtRaw)
+    );
+    assert!(
+        !client_caps
+            .bootstrap
+            .profiles
+            .contains(BootstrapProfileKind::NativeState),
+        "web cannot restore native checkpoints and must advertise only its explicit synth fallback",
+    );
+}
+
+#[wasm_bindgen_test]
+async fn malicious_hello_ok_outside_web_offer_is_fatal_before_attach() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 80, 24);
+    let outcome = session.on_frame(FrameKind::HelloOk {
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        server_caps: ServerCapabilities::new(),
+        server_id: Vec::new(),
+        selected_profile: BootstrapProfile::NativeState {
+            codec: phux_protocol::EngineCodec::LibghosttyCheckpointV2,
+            features: phux_protocol::EngineFeatureSet::required_native(),
+        },
+        bootstrap_limits: BootstrapLimits::default(),
+    });
+    assert!(outcome.send.is_empty());
+    assert!(
+        outcome
+            .fatal
+            .as_deref()
+            .is_some_and(|message| message.contains("outside the web client's offer"))
+    );
+}
+
+#[wasm_bindgen_test]
+async fn hello_ok_bounds_above_web_offer_are_fatal_before_attach() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 80, 24);
+    let too_large = BootstrapLimits::new(512 * 1024, 2 * 1024 * 1024).unwrap();
+    let outcome = session.on_frame(FrameKind::HelloOk {
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        server_caps: ServerCapabilities::new(),
+        server_id: Vec::new(),
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: too_large,
+    });
+    assert!(outcome.send.is_empty());
+    assert!(
+        outcome
+            .fatal
+            .as_deref()
+            .is_some_and(|message| message.contains("limits outside"))
+    );
+
 }

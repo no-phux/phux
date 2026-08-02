@@ -1059,11 +1059,10 @@ pub async fn run_headless_rendered(
     const SETTLE_DEADLINE: Duration = Duration::from_secs(3);
 
     let client_caps = attach_client_caps(None);
-    let _mode = client_caps.output_mode;
     let mut conn =
         Connection::connect_with_hello(socket, attach_client_name(), client_caps).await?;
-    send_attach(&mut conn, target).await?;
-    let attached = wait_for_attached(&mut conn).await?;
+    let attach_id = send_attach(&mut conn, target).await?;
+    let attached = wait_for_attached(&mut conn, attach_id).await?;
 
     let viewport_dims = (cols.max(1), rows.max(1));
     // Throwaway sink: `defer_paint = true` emits no VT, but
@@ -1284,11 +1283,21 @@ async fn attach_session<W: super::RenderSink>(
             .then(super::terminal_probe::default_colors)
             .flatten();
         let client_caps = attach_client_caps(default_colors);
-        let output_mode = client_caps.output_mode;
-        let mut conn =
+        let conn =
             Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await?;
-        send_attach(&mut conn, target).await?;
-        let attached = wait_for_attached(&mut conn).await?;
+        let output_mode = if matches!(
+            conn.negotiated_bootstrap()
+                .expect("production connection returns only after HELLO_OK")
+                .profile,
+            phux_protocol::BootstrapProfile::SynthesizedVtStateSync
+        ) {
+            OutputMode::StateSync
+        } else {
+            OutputMode::Raw
+        };
+        let mut conn = conn;
+        let attach_id = send_attach(&mut conn, target).await?;
+        let attached = wait_for_attached(&mut conn, attach_id).await?;
         Ok::<_, AttachError>((conn, attached, output_mode))
     }
     .instrument(handshake_span)
@@ -1425,8 +1434,8 @@ async fn attach_session<W: super::RenderSink>(
                     }
                     ReattachTarget::Create(name) => create_session_target(name),
                 };
-                send_attach(&mut conn, attach_target).await?;
-                attached = wait_for_attached(&mut conn).await?;
+                let attach_id = send_attach(&mut conn, attach_target).await?;
+                attached = wait_for_attached(&mut conn, attach_id).await?;
                 tracing::info!("attach loop: re-attach handshake complete");
                 // Re-enter `main_loop`, which rebuilds ALL session-scoped
                 // state fresh (pane mirrors, workspace, predict, overlays,
@@ -1540,9 +1549,11 @@ fn attach_client_name() -> String {
 }
 
 /// Send the `ATTACH` frame using the current terminal viewport.
-async fn send_attach(conn: &mut Connection, target: AttachTarget) -> Result<(), AttachError> {
+async fn send_attach(conn: &mut Connection, target: AttachTarget) -> Result<u32, AttachError> {
     let viewport = current_viewport()?;
+    let attach_id = conn.next_attach_id();
     conn.send(&FrameKind::Attach {
+        attach_id,
         target,
         viewport,
         // SPEC §13: clients SHOULD opt in to scrollback. The cap below
@@ -1551,7 +1562,8 @@ async fn send_attach(conn: &mut Connection, target: AttachTarget) -> Result<(), 
         request_scrollback: true,
         scrollback_limit_lines: 10_000,
     })
-    .await
+    .await?;
+    Ok(attach_id)
 }
 
 /// Read frames off `conn` until we get the expected `ATTACHED` reply,
@@ -1561,10 +1573,16 @@ async fn send_attach(conn: &mut Connection, target: AttachTarget) -> Result<(), 
 /// Runs entirely on the cooked terminal (pre-`RawModeGuard`) per
 /// `phux-roz`. A server-side reject prints an actionable error on the
 /// normal screen and exits without flicker.
-async fn wait_for_attached(conn: &mut Connection) -> Result<FrameKind, AttachError> {
+async fn wait_for_attached(
+    conn: &mut Connection,
+    expected_attach_id: u32,
+) -> Result<FrameKind, AttachError> {
     let frame = conn.recv().await?;
     match frame {
-        FrameKind::Attached { .. } => Ok(frame),
+        FrameKind::Attached { attach_id, .. } if attach_id == expected_attach_id => Ok(frame),
+        FrameKind::Attached { attach_id, .. } => Err(AttachError::Protocol(format!(
+            "ATTACHED attach_id mismatch: sent {expected_attach_id}, received {attach_id}",
+        ))),
         FrameKind::Error {
             code: _, message, ..
         } => Err(AttachError::Refused(message)),
@@ -4964,7 +4982,10 @@ mod tests {
     use super::*;
     use crate::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::PROTOCOL_VERSION;
-    use phux_protocol::caps::{ServerCapabilities, TerminalColor, TerminalDefaultColors};
+    use phux_protocol::caps::{
+        BootstrapCapabilities, ServerCapabilities, TerminalColor, TerminalDefaultColors,
+        select_bootstrap_profile,
+    };
     use tokio::net::UnixStream;
 
     static TERMINAL_RESET_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -6116,6 +6137,14 @@ mod tests {
             res.is_ok(),
             "handshake should succeed when HELLO_OK arrives"
         );
+        let selected = client
+            .negotiated_bootstrap()
+            .expect("successful negotiation installs immutable profile state");
+        assert!(matches!(
+            selected.profile,
+            phux_protocol::BootstrapProfile::NativeState { .. }
+        ));
+        assert_eq!(selected.limits, phux_protocol::BootstrapLimits::default());
         let duplicate = client
             .negotiate(attach_client_name(), attach_client_caps(None))
             .await;
@@ -6148,6 +6177,7 @@ mod tests {
                 .expect("HELLO_OK");
             client
                 .send(&FrameKind::Attach {
+                    attach_id: 1,
                     target: AttachTarget::Last,
                     viewport: ViewportInfo::new(120, 40),
                     request_scrollback: true,
@@ -6158,6 +6188,12 @@ mod tests {
         };
         let server_side = async {
             let hello = server.recv().await.expect("HELLO");
+            let FrameKind::Hello { client_caps, .. } = &hello else {
+                panic!("expected HELLO");
+            };
+            let (selected_profile, bootstrap_limits) =
+                select_bootstrap_profile(client_caps, &BootstrapCapabilities::new())
+                    .expect("fixture profiles intersect");
             server
                 .send(&FrameKind::HelloOk {
                     protocol_major: PROTOCOL_VERSION.major,
@@ -6165,6 +6201,8 @@ mod tests {
                     protocol_patch: PROTOCOL_VERSION.patch,
                     server_caps: ServerCapabilities::new(),
                     server_id: Vec::new(),
+                    selected_profile,
+                    bootstrap_limits,
                 })
                 .await
                 .expect("HELLO_OK");

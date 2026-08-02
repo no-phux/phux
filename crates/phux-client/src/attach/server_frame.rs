@@ -353,6 +353,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
     .entered();
     match frame {
         FrameKind::Attached {
+            attach_id: _,
             snapshot,
             initial_client_id,
         } => {
@@ -2425,6 +2426,7 @@ mod tests {
         handle_server_frame(
             &mut out,
             FrameKind::Attached {
+                attach_id: 1,
                 snapshot,
                 initial_client_id: ClientId::new(1),
             },

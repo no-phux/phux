@@ -9,8 +9,12 @@ mod common;
 use std::time::Duration;
 
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
-use phux_protocol::ids::FileUploadId;
+use phux_protocol::caps::{
+    BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
+    BootstrapProfileSet, ClientCapabilities, ColorSupport, EngineCodecSet, EngineFeatureSet,
+    LayerSet, ServerFeature,
+};
+use phux_protocol::ids::{BootstrapId, FileUploadId, StreamId, TerminalId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_DETACHED,
@@ -46,14 +50,28 @@ fn hello_frame() -> FrameKind {
 }
 
 fn hello_for_version(major: u16, minor: u16, patch: u16) -> FrameKind {
+    hello_with_caps(
+        major,
+        minor,
+        patch,
+        ClientCapabilities::new()
+            .with_color_support(ColorSupport::TrueColor)
+            .with_layers(LayerSet::all()),
+    )
+}
+
+fn hello_with_caps(
+    major: u16,
+    minor: u16,
+    patch: u16,
+    client_caps: ClientCapabilities,
+) -> FrameKind {
     FrameKind::Hello {
         client_name: "phux-end-to-end-test".to_owned(),
         protocol_major: major,
         protocol_minor: minor,
         protocol_patch: patch,
-        client_caps: ClientCapabilities::new()
-            .with_color_support(ColorSupport::TrueColor)
-            .with_layers(LayerSet::all()),
+        client_caps,
     }
 }
 
@@ -127,6 +145,8 @@ fn handshake_hello_round_trip() {
                 protocol_minor,
                 server_caps,
                 server_id,
+                selected_profile,
+                bootstrap_limits,
                 ..
             } => {
                 assert_eq!(
@@ -152,6 +172,11 @@ fn handshake_hello_round_trip() {
                     server_caps.features.contains(ServerFeature::FileUpload),
                     "reference server advertises sandboxed file upload",
                 );
+                assert!(matches!(
+                    selected_profile,
+                    BootstrapProfile::NativeState { .. }
+                ));
+                assert_eq!(bootstrap_limits, BootstrapLimits::default());
                 assert_eq!(server_id.len(), 16);
                 server_id
             }
@@ -178,9 +203,11 @@ fn handshake_hello_round_trip() {
         );
         match attached {
             FrameKind::Attached {
+                attach_id,
                 snapshot,
                 initial_client_id,
             } => {
+                assert_eq!(attach_id, 1);
                 assert_eq!(snapshot.sessions.len(), 1);
                 assert_eq!(snapshot.sessions[0].name, "default");
                 assert!(initial_client_id.get() >= 1);
@@ -192,6 +219,129 @@ fn handshake_hello_round_trip() {
         assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
 
         drop(stream);
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn handshake_selects_explicit_synth_fallback_and_intersects_bounds() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let offered_limits = BootstrapLimits::new(64 * 1024, 128 * 1024).unwrap();
+        let bootstrap = BootstrapCapabilities::new()
+            .with_profiles(BootstrapProfileSet::with(&[
+                BootstrapProfileKind::SynthesizedVtRaw,
+            ]))
+            .with_native_codecs(EngineCodecSet::new())
+            .with_native_features(EngineFeatureSet::new())
+            .with_limits(offered_limits);
+        send_frame(
+            &mut stream,
+            &hello_with_caps(
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch,
+                ClientCapabilities::new().with_bootstrap(bootstrap),
+            ),
+        )
+        .await;
+        let (_, response) = recv_typed(&mut stream).await;
+        assert!(matches!(
+            response,
+            FrameKind::HelloOk {
+                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits,
+                ..
+            } if bootstrap_limits == offered_limits
+        ));
+        drop(stream);
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn native_required_without_common_codec_fails_before_attach() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let native_only = BootstrapCapabilities::new()
+            .with_profiles(BootstrapProfileSet::with(&[
+                BootstrapProfileKind::NativeState,
+            ]))
+            .with_native_codecs(EngineCodecSet::new());
+        send_frame(
+            &mut stream,
+            &hello_with_caps(
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch,
+                ClientCapabilities::new().with_bootstrap(native_only),
+            ),
+        )
+        .await;
+        let (_, response) = recv_typed(&mut stream).await;
+        match response {
+            FrameKind::Error { code, message, .. } => {
+                assert_eq!(code, ErrorCode::CodecUnavailable);
+                assert!(message.contains("exact common codec"));
+                assert!(message.contains("SynthesizedVtRaw"));
+            }
+            other => panic!("expected CODEC_UNAVAILABLE, got {other:?}"),
+        }
+        assert_server_closed(&mut stream).await;
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn negotiated_chunk_limit_rejects_oversized_payload_at_runtime_decode() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let offered_limits = BootstrapLimits::new(1024, 2048).unwrap();
+        let bootstrap = BootstrapCapabilities::new()
+            .with_profiles(BootstrapProfileSet::with(&[
+                BootstrapProfileKind::SynthesizedVtRaw,
+            ]))
+            .with_native_codecs(EngineCodecSet::new())
+            .with_native_features(EngineFeatureSet::new())
+            .with_limits(offered_limits);
+        send_frame(
+            &mut stream,
+            &hello_with_caps(
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch,
+                ClientCapabilities::new().with_bootstrap(bootstrap),
+            ),
+        )
+        .await;
+        assert!(matches!(
+            recv_typed(&mut stream).await.1,
+            FrameKind::HelloOk {
+                bootstrap_limits,
+                ..
+            } if bootstrap_limits == offered_limits
+        ));
+        send_frame(
+            &mut stream,
+            &FrameKind::BootstrapChunk {
+                terminal_id: TerminalId::local(1),
+                stream_id: StreamId::new(1).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from(vec![0; 1025]),
+            },
+        )
+        .await;
+        assert_server_closed(&mut stream).await;
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });
 }
@@ -453,6 +603,7 @@ fn attach_returns_snapshot() {
         assert_eq!(type_byte, TYPE_ATTACHED);
         match attached {
             FrameKind::Attached {
+                attach_id: _,
                 snapshot,
                 initial_client_id,
             } => {

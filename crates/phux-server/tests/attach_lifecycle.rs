@@ -122,6 +122,7 @@ fn encode_frame(frame: &FrameKind) -> BytesMut {
 
 fn attach_by_name(name: &str) -> FrameKind {
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::ByName(name.to_owned()),
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
@@ -163,6 +164,7 @@ fn attach_returns_attached_and_pane_snapshot() {
         assert_eq!(type_byte, TYPE_ATTACHED, "first frame should be ATTACHED");
         match &frame {
             FrameKind::Attached {
+                attach_id: _,
                 snapshot,
                 initial_client_id,
             } => {

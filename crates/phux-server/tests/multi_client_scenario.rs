@@ -106,6 +106,7 @@ async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, u32, Term
     assert_eq!(type_byte, TYPE_ATTACHED, "first frame must be ATTACHED");
     let (client_id, terminal_id) = match attached {
         FrameKind::Attached {
+            attach_id: _,
             snapshot,
             initial_client_id,
         } => {
