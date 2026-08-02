@@ -161,6 +161,9 @@ oriented byte stream. This version defines these concrete transports:
   reliable, ordered octet stream, satisfying the property above. TLS 1.3
   is intrinsic to QUIC, so confidentiality is never optional; a routable
   listener additionally requires a per-attachment bearer token (§10).
+  QUIC mandates ALPN: both ends MUST offer the exact protocol id
+  `phux-quic/1` (`QUIC_ALPN` in `phux-protocol`) or the TLS handshake
+  fails — a stray non-phux QUIC client never reaches the frame layer.
 
 Future protocol versions MAY define additional transports (for example,
 a UDP-based resilient transport in the style of Mosh). Such transports
@@ -168,6 +171,44 @@ MUST satisfy the reliable/ordered/bidirectional property; if they do
 not, they require a new major protocol version.
 
 [ADR-0007]: ../../ADR/0007-mosh-class-transport-and-satellites.md
+
+### 4.1 Relay tunnel (QUIC)
+
+A relay ([ADR-0051], [ADR-0057]) forwards a consumer's QUIC connection
+to a server that dialed out to the relay, without ever parsing phux
+frames. One relay endpoint serves both legs; the negotiated ALPN alone
+— never the byte stream — decides the role:
+
+- **Connector leg** — ALPN `phux-relay/1` (`QUIC_RELAY_ALPN` in
+  `phux-protocol`; it MUST NOT equal `QUIC_ALPN`, ADR-0051 invariant 7).
+  The dialing server opens one bidirectional stream and writes a
+  length-prefixed auth preamble (`len: u32` big-endian + raw token
+  bytes, at most 256 bytes, within 5 seconds), then keeps stream 0
+  silent. Any byte on stream 0 after the preamble is a protocol
+  violation; richer relay dialogue requires an ALPN bump, never in-band
+  bytes (ADR-0051 invariant 4).
+- **Consumer leg** — ALPN `phux-quic/1`, routed by TLS SNI to the
+  enrolled route of the same name. An unknown or absent SNI is refused
+  at the TLS layer (the certificate resolver declines; no phux-shaped
+  error). The relay blind-splices the consumer's stream to the tunnel,
+  including the consumer's own §10 bearer preamble — end-to-end
+  authentication stays between consumer and server.
+
+A relay refuses with these QUIC application close codes:
+
+| Code   | Name                 | Meaning                                             |
+|--------|----------------------|-----------------------------------------------------|
+| `0x01` | `AUTH_FAILED`        | bad, missing, or unknown tunnel token (connector leg; mirrors the server listener's auth refusal) |
+| `0x02` | `ROUTE_OFFLINE`      | enrolled route, no live tunnel — handshake completes, then app-close (distinguishes "server down" from "unknown route", which never gets past TLS) |
+| `0x03` | `RECLAIMED`          | tunnel superseded by a newer claim on the same route (last-writer-wins) |
+| `0x04` | `PROTOCOL_VIOLATION` | bytes on stream 0 after the auth preamble           |
+| `0x05` | `OVER_CAP`           | relay at its connection cap — handshake completes, then app-close; existing connections unaffected |
+
+The relay is a transport concern per the responsibility rule above: it
+adds no frame, field, tag, or error code to the protocol.
+
+[ADR-0051]: ../../ADR/0051-outbound-dial-out-connector-transport.md
+[ADR-0057]: ../../ADR/0057-minimal-reference-relay.md
 
 The transport is responsible for authentication and confidentiality.
 The protocol assumes both. Servers MUST NOT accept connections on
