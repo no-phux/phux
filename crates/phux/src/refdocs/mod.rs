@@ -24,6 +24,7 @@
 //! hidden subcommand rather than an xtask or a build script.
 
 pub(crate) mod cli;
+pub(crate) mod config;
 
 /// The `last-reviewed` date stamped into every generated page's frontmatter.
 ///
@@ -91,7 +92,7 @@ impl Page {
 /// index table, the generator's write set, and the freshness test's compare
 /// set all follow automatically.
 pub(crate) fn pages() -> Vec<Page> {
-    let content = vec![cli::page()];
+    let content = vec![cli::page(), config::page()];
     let mut pages = Vec::with_capacity(content.len() + 1);
     pages.push(index_page(&content));
     pages.extend(content);

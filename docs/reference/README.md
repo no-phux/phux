@@ -19,3 +19,4 @@ Every file in this directory is rendered from the compiled `phux` binary by `jus
 | Page | Contents |
 |---|---|
 | [cli.md](cli.md) | Every non-hidden `phux` invocation path with its flags, defaults, and help text. |
+| [config.md](config.md) | Every `config.toml` section, the scalar defaults, and the annotated default config. |

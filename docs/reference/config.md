@@ -1,3 +1,63 @@
+---
+audience: humans, agents, contributors
+stability: evolving
+last-reviewed: 2026-08-02
+---
+
+# phux config reference
+
+**TL;DR.** The complete `config.toml` surface: a section index pinned against the config schema, every scalar knob with its shipped default, and the annotated default configuration embedded in the binary that generated this page.
+
+<!--
+GENERATED FILE - do not edit. A unit test byte-compares this page
+against `phux gen-reference-docs` output and fails on any drift, so
+hand edits do not survive. Regenerate with `just docs-gen`.
+-->
+
+The configuration surface of `~/.config/phux/config.toml`. The loader layers your file on top of the annotated defaults shown at the bottom of this page: every key you set wins, everything you omit keeps tracking the shipped default. Scaffold a starter file with `phux config init`, validate yours with `phux config check`, and inspect the effective merged result with `phux config show`.
+
+## Sections
+
+| Section | Contents |
+|---|---|
+| `[defaults]` | Server-wide defaults: shell, `TERM`, scrollback depth, mouse tracking, spawn-time cwd policy, session naming, multi-view window sizing. |
+| `[keybindings]` | Prefix chord, the prefix-table and global binding maps, and the which-key popup knobs. |
+| `[status]` | Status-bar composition: widget lists for the left, center, and right slots, plus which outer-terminal row the bar reserves. |
+| `[sidebar]` | The window sidebar: off by default; width in columns and the edge it docks to when enabled. |
+| `[[hooks.<event>]]` | Event hooks: per event name, an array of `when` predicates each paired with an action to run on match. |
+| `[[plugins]]` | Declarative plugin manifests composed into this config; each entry names a `phux-plugin.toml` path and an enabled flag. |
+| `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, and certificate pin (ADR-0038). |
+| `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin (ADR-0052). |
+| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux enroll` / `phux remote add` and resolved by `phux attach <name>` (ADR-0055). |
+| `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
+| `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
+
+## Scalar keys
+
+Every scalar knob with its shipped default, serialized from the schema itself. Keys that are unset by default (`defaults.shell`, `defaults.spawn-on-attach`) and composite keys — widget lists, binding tables, hook and registry arrays — do not appear here; the annotated config below documents them in place.
+
+| Key | Default |
+|---|---|
+| `defaults.cwd-inheritance` | `"inherit-focused"` |
+| `defaults.history-limit` | `50000` |
+| `defaults.mouse` | `true` |
+| `defaults.session-name-template` | `"default"` |
+| `defaults.term` | `"xterm-256color"` |
+| `defaults.window-size` | `"smallest"` |
+| `experimental.predictive-echo` | `false` |
+| `keybindings.prefix` | `"C-a"` |
+| `keybindings.which-key` | `true` |
+| `keybindings.which-key-delay-ms` | `600` |
+| `sidebar.enabled` | `false` |
+| `sidebar.position` | `"left"` |
+| `sidebar.width` | `20` |
+| `status.position` | `"bottom"` |
+
+## The annotated default config
+
+The base layer embedded in the binary (`crates/phux-config/src/default.toml`), verbatim. `phux config init` writes a fully-commented projection of this file, and `phux config show --default` prints it.
+
+```toml
 # phux default configuration.
 #
 # This file ships with the phux binary (embedded via include_str!) and
@@ -366,3 +426,4 @@ right  = ["session-name", { kind = "time", format = " %H:%M" }]
 # enabled = false
 # width = 20
 # position = "left"
+```
