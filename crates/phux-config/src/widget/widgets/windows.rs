@@ -10,11 +10,50 @@ use std::collections::BTreeMap;
 
 use crate::widget::{
     Cell, CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError,
-    reject_unknown_opts, style_opt,
+    WidgetKindSpec, WidgetOptSpec, reject_unknown_opts, style_opt,
 };
 
 /// Widget kind, used in error messages.
 const KIND: &str = "windows";
+
+/// Doc spec — the factory validates against this same const, so the
+/// documented option surface is the enforced one (phux-i0e8.11.3).
+pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
+    kind: KIND,
+    summary: "The tmux-style tab bar: one segment per window, the active \
+              one in the `active` style and the rest in `inactive`, joined \
+              by `separator`. A zoomed active window gets a ` Z` marker, a \
+              window waiting on a human answer a ` !` marker, and every \
+              tab is a click target committing `select-window` for its \
+              index — in any slot, top or bottom bar.",
+    options: &[
+        WidgetOptSpec {
+            name: "active",
+            aliases: &[],
+            doc: "style table, default bold reverse-video — style of the \
+                  active window's segment.",
+        },
+        WidgetOptSpec {
+            name: "inactive",
+            aliases: &[],
+            doc: "style table, default dim — style of inactive windows' \
+                  segments.",
+        },
+        WidgetOptSpec {
+            name: "separator",
+            aliases: &[],
+            doc: "string, default `\" \"` — literal text between segments.",
+        },
+        WidgetOptSpec {
+            name: "format",
+            aliases: &[],
+            doc: "string, default `\"{index}:{name}\"` — per-segment \
+                  template; `{index}` (0-based position, the \
+                  `select-window` selector) and `{name}` (the editable \
+                  label) are substituted.",
+        },
+    ],
+};
 
 /// `windows` (tab-bar) widget.
 #[derive(Debug, Clone)]
@@ -119,7 +158,7 @@ impl StatusWidget for WindowsWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(KIND, opts, &["active", "inactive", "separator", "format"])?;
+    reject_unknown_opts(&SPEC, opts)?;
     let defaults = WindowsWidget::default();
     let active = style_opt(KIND, opts, "active")?.unwrap_or(defaults.active);
     let inactive = style_opt(KIND, opts, "inactive")?.unwrap_or(defaults.inactive);

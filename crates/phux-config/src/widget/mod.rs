@@ -280,6 +280,78 @@ pub type WidgetFactory =
 /// a [`CellStyle`] table applied by the registry, not by factories.
 const STYLE_OPT: &str = "style";
 
+/// Documentation spec for one built-in widget kind (phux-i0e8.11.3).
+///
+/// Each widget file defines a `SPEC` const next to its factory, and the
+/// factory validates its options against that same const (via
+/// [`reject_unknown_opts`]), so the documented option surface and the
+/// enforced one are one object and cannot drift. [`BUILTIN_WIDGET_SPECS`]
+/// aggregates them; a unit test pins that list to
+/// [`WidgetRegistry::with_builtins`], and the generated reference page
+/// `docs/reference/widgets.md` (see `phux::refdocs::widgets`) renders
+/// from it.
+///
+/// Named `WidgetKindSpec` because [`crate::schema::WidgetSpec`] already
+/// names the parsed `[[status.widgets]]` TOML entry.
+#[derive(Debug, Clone, Copy)]
+pub struct WidgetKindSpec {
+    /// Registered kind string (the `kind = "..."` value).
+    pub kind: &'static str,
+    /// One-paragraph human description of what the widget renders.
+    pub summary: &'static str,
+    /// The kind-specific options the factory accepts. The universal
+    /// `style` table is not listed per kind — it is registry-applied and
+    /// documented once on the generated page.
+    pub options: &'static [WidgetOptSpec],
+}
+
+/// One accepted option of a widget kind.
+#[derive(Debug, Clone, Copy)]
+pub struct WidgetOptSpec {
+    /// Canonical option key (kebab-case).
+    pub name: &'static str,
+    /// Alternative accepted spellings (e.g. `max_len` for `max-len`).
+    pub aliases: &'static [&'static str],
+    /// Type, default, and behavior in one line, rendered verbatim into
+    /// the generated reference.
+    pub doc: &'static str,
+}
+
+impl WidgetKindSpec {
+    /// `true` when `key` is an accepted spelling of one of this kind's
+    /// options.
+    fn accepts(&self, key: &str) -> bool {
+        self.options
+            .iter()
+            .any(|opt| opt.name == key || opt.aliases.contains(&key))
+    }
+
+    /// Every accepted option spelling plus the universal `style` key —
+    /// the did-you-mean candidate set for an unknown-option diagnostic.
+    fn candidate_keys(&self) -> Vec<&'static str> {
+        let mut keys: Vec<&'static str> = self
+            .options
+            .iter()
+            .flat_map(|opt| std::iter::once(opt.name).chain(opt.aliases.iter().copied()))
+            .collect();
+        keys.push(STYLE_OPT);
+        keys
+    }
+}
+
+/// The doc specs of every built-in widget kind, in ASCII order of kind
+/// (matching [`WidgetRegistry::kinds`] on a builtins registry). Pinned to
+/// [`WidgetRegistry::with_builtins`] by a unit test below.
+pub const BUILTIN_WIDGET_SPECS: &[&WidgetKindSpec] = &[
+    &widgets::cwd::SPEC,
+    &widgets::exec::SPEC,
+    &widgets::exit_status::SPEC,
+    &widgets::help_hints::SPEC,
+    &widgets::session_name::SPEC,
+    &widgets::time::SPEC,
+    &widgets::windows::SPEC,
+];
+
 /// Parse an optional [`CellStyle`] from an inline-table option.
 ///
 /// Shared by the registry (the universal `style` option) and by widgets
@@ -301,30 +373,29 @@ pub(crate) fn style_opt(
     })
 }
 
-/// Reject any option key outside `allowed`, naming the widget and
-/// suggesting the nearest valid option (phux-i0e8.4.2).
+/// Reject any option key outside the kind's [`WidgetKindSpec`], naming
+/// the widget and suggesting the nearest valid option (phux-i0e8.4.2).
 ///
-/// Every factory calls this first, so a typo'd option fails the build
-/// loudly instead of parsing into an open `BTreeMap` and doing nothing.
-/// The universal `style` key is always accepted: [`WidgetRegistry::build`]
+/// Every factory calls this first with its own `SPEC` const, so a typo'd
+/// option fails the build loudly instead of parsing into an open
+/// `BTreeMap` and doing nothing — and the enforced surface is the very
+/// object the generated reference documents (phux-i0e8.11.3). The
+/// universal `style` key is always accepted: [`WidgetRegistry::build`]
 /// extracts and applies it before the factory runs, so factories never
 /// see it — but it is a valid spelling and belongs in the suggestions.
 pub(crate) fn reject_unknown_opts(
-    kind: &str,
+    spec: &WidgetKindSpec,
     opts: &BTreeMap<String, toml::Value>,
-    allowed: &[&str],
 ) -> Result<(), WidgetError> {
     for key in opts.keys() {
-        if key == STYLE_OPT || allowed.contains(&key.as_str()) {
+        if key == STYLE_OPT || spec.accepts(key) {
             continue;
         }
-        let mut candidates: Vec<&str> = allowed.to_vec();
-        candidates.push(STYLE_OPT);
-        let suggestion = vocab::did_you_mean(key, &candidates)
+        let suggestion = vocab::did_you_mean(key, &spec.candidate_keys())
             .map(|hit| format!(" (did you mean `{hit}`?)"))
             .unwrap_or_default();
         return Err(WidgetError::InvalidOption {
-            kind: kind.to_owned(),
+            kind: spec.kind.to_owned(),
             message: format!("unknown option `{key}`{suggestion}"),
         });
     }
@@ -417,7 +488,7 @@ impl WidgetRegistry {
     /// per factory: it is parsed and removed from the opts before the
     /// factory runs, and a non-plain style wraps the built widget in a
     /// decorator that styles its unstyled cells (per-cell styles win —
-    /// see `docs/consumers/tui.md` §8.3 for the precedence contract).
+    /// see `docs/reference/widgets.md` for the precedence contract).
     ///
     /// # Errors
     ///
@@ -474,4 +545,58 @@ pub enum WidgetError {
         /// Human-readable explanation.
         message: String,
     },
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use std::collections::BTreeSet;
+
+    use super::{BUILTIN_WIDGET_SPECS, WidgetRegistry};
+
+    /// The registry-vs-spec pin (phux-i0e8.11.3): the documented kinds are
+    /// exactly the kinds [`WidgetRegistry::with_builtins`] registers, in
+    /// the same (ASCII) order. Registering a new builtin without a doc
+    /// spec — or documenting a kind that is not registered — fails here,
+    /// which is what keeps the generated `docs/reference/widgets.md`
+    /// covering exactly the real widget surface.
+    #[test]
+    fn builtin_specs_match_the_builtin_registry() {
+        let documented: Vec<&str> = BUILTIN_WIDGET_SPECS.iter().map(|s| s.kind).collect();
+        assert_eq!(
+            documented,
+            WidgetRegistry::with_builtins().kinds(),
+            "widget doc specs and with_builtins() drifted \
+             (add/remove the SPEC const next to the factory)",
+        );
+    }
+
+    /// Doc specs exist to be rendered: every summary and every option doc
+    /// must carry text, and option spellings must not collide within or
+    /// across name/alias lists of a kind.
+    #[test]
+    fn builtin_specs_are_renderable_and_unambiguous() {
+        for spec in BUILTIN_WIDGET_SPECS {
+            assert!(
+                !spec.summary.trim().is_empty(),
+                "`{}` has an empty summary",
+                spec.kind
+            );
+            let mut seen = BTreeSet::new();
+            for opt in spec.options {
+                assert!(
+                    !opt.doc.trim().is_empty(),
+                    "`{}` option `{}` has an empty doc",
+                    spec.kind,
+                    opt.name
+                );
+                for key in std::iter::once(opt.name).chain(opt.aliases.iter().copied()) {
+                    assert!(
+                        seen.insert(key),
+                        "`{}` documents option spelling `{key}` twice",
+                        spec.kind
+                    );
+                }
+            }
+        }
+    }
 }

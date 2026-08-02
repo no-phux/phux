@@ -489,7 +489,7 @@ pub enum Widget {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WidgetSpec {
     /// Widget kind (`clock`, `session`, `exec`, ...). See
-    /// `docs/consumers/tui.md` §8.3 for the built-in catalog.
+    /// `docs/reference/widgets.md` for the built-in catalog.
     pub kind: String,
     /// Remaining inline-table fields.
     #[serde(flatten)]

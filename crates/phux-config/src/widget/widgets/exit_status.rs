@@ -8,12 +8,31 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, reject_unknown_opts};
+use crate::widget::{
+    StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec, WidgetOptSpec,
+    reject_unknown_opts,
+};
 
 /// Widget kind, used in error messages.
 const KIND: &str = "exit";
 /// Default render format; `{code}` is the decimal exit code.
 const DEFAULT_FORMAT: &str = "{code}";
+
+/// Doc spec — the factory validates against this same const, so the
+/// documented option surface is the enforced one (phux-i0e8.11.3).
+pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
+    kind: KIND,
+    summary: "The focused pane's last command exit code, fed by the OSC-133 \
+              `D`-mark (`command_finished.exit_code`), so it requires shell \
+              integration. Renders nothing until a command finishes with a \
+              reported code.",
+    options: &[WidgetOptSpec {
+        name: "format",
+        aliases: &[],
+        doc: "string, default `\"{code}\"` — render template; every \
+              `{code}` occurrence is replaced with the decimal exit code.",
+    }],
+};
 
 /// `exit` widget.
 #[derive(Debug, Clone)]
@@ -52,7 +71,7 @@ impl StatusWidget for ExitWidget {
 
 /// Factory: builds an [`ExitWidget`] from a TOML `opts` map.
 ///
-/// Accepted keys (per `docs/consumers/tui.md` §8.3):
+/// Accepted keys (per [`SPEC`], rendered into `docs/reference/widgets.md`):
 /// - `format` (string, optional, default `"{code}"`).
 ///
 /// # Errors
@@ -62,7 +81,7 @@ impl StatusWidget for ExitWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(KIND, opts, &["format"])?;
+    reject_unknown_opts(&SPEC, opts)?;
     let format = match opts.get("format") {
         None => DEFAULT_FORMAT.to_owned(),
         Some(toml::Value::String(s)) => s.clone(),

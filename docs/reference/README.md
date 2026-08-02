@@ -20,3 +20,5 @@ Every file in this directory is rendered from the compiled `phux` binary by `jus
 |---|---|
 | [cli.md](cli.md) | Every non-hidden `phux` invocation path with its flags, defaults, and help text. |
 | [config.md](config.md) | Every `config.toml` section, the scalar defaults, and the annotated default config. |
+| [actions.md](actions.md) | Every dispatcher action with its parameters, description, and palette placement. |
+| [widgets.md](widgets.md) | Every registered status-bar widget kind with its options and defaults. |

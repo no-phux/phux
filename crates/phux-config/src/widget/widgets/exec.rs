@@ -20,12 +20,47 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::widget::{
-    Cell, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, reject_unknown_opts,
+    Cell, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec,
+    WidgetOptSpec, reject_unknown_opts,
 };
 
 /// Widget kind, used in error messages.
 const KIND: &str = "exec";
-/// Default run interval per `docs/consumers/tui.md` §8.3.
+
+/// Doc spec — the factory validates against this same const, so the
+/// documented option surface is the enforced one (phux-i0e8.11.3).
+pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
+    kind: KIND,
+    summary: "The first output line of a user-supplied command, run by the \
+              client on an interval as a bounded child process (10s hard \
+              cap, `kill_on_drop`) — render never blocks on it; the bar \
+              shows the last completed run, and a failed or timed-out run \
+              keeps the last good output.",
+    options: &[
+        WidgetOptSpec {
+            name: "command",
+            aliases: &[],
+            doc: "string or non-empty string array, required — a string \
+                  runs via `/bin/sh -c` (so `~` and `$VAR` expand); an \
+                  array is an argv run directly.",
+        },
+        WidgetOptSpec {
+            name: "interval",
+            aliases: &[],
+            doc: "duration string (`\"500ms\"`, `\"30s\"`, `\"2m\"`, \
+                  `\"1h\"`) or positive integer seconds, default `\"5s\"` \
+                  — run cadence, floored to 1s.",
+        },
+        WidgetOptSpec {
+            name: "parse-ansi",
+            aliases: &["parse_ansi"],
+            doc: "bool, default `true` — interpret SGR escape sequences in \
+                  the output into per-cell styles; when `false` (and for \
+                  every non-SGR escape either way) escapes are stripped.",
+        },
+    ],
+};
+/// Default run interval (documented in [`SPEC`]).
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
 /// Interval floor. The bar's repaint tick is 1s, so a faster cadence
 /// would only burn child processes without ever being visible.
@@ -128,7 +163,7 @@ impl StatusWidget for ExecWidget {
 
 /// Factory: builds an [`ExecWidget`] from a TOML `opts` map.
 ///
-/// Accepted keys (per `docs/consumers/tui.md` §8.3):
+/// Accepted keys (per [`SPEC`], rendered into `docs/reference/widgets.md`):
 /// - `command` (required) — a string (run via `/bin/sh -c`, so `~` and
 ///   `$VAR` expand) or a non-empty array of strings (argv, run directly).
 /// - `interval` (optional, default `"5s"`) — a duration string
@@ -145,11 +180,7 @@ impl StatusWidget for ExecWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(
-        KIND,
-        opts,
-        &["command", "interval", "parse-ansi", "parse_ansi"],
-    )?;
+    reject_unknown_opts(&SPEC, opts)?;
     let argv = match opts.get("command") {
         Some(toml::Value::String(s)) if !s.trim().is_empty() => {
             vec!["/bin/sh".to_owned(), "-c".to_owned(), s.clone()]

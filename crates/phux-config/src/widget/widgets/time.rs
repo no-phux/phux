@@ -6,12 +6,30 @@ use std::time::Duration;
 use chrono::format::{Item, StrftimeItems};
 use chrono::{DateTime, Local};
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, reject_unknown_opts};
+use crate::widget::{
+    StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec, WidgetOptSpec,
+    reject_unknown_opts,
+};
 
 /// Default strftime format if none is supplied.
 const DEFAULT_FORMAT: &str = "%H:%M";
 /// Widget kind, used in error messages.
 const KIND: &str = "time";
+
+/// Doc spec — the factory validates against this same const, so the
+/// documented option surface is the enforced one (phux-i0e8.11.3).
+pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
+    kind: KIND,
+    summary: "The wall clock, strftime-formatted, rendered in the local \
+              time zone and repainted every second.",
+    options: &[WidgetOptSpec {
+        name: "format",
+        aliases: &[],
+        doc: "string, default `\"%H:%M\"` — strftime spec, validated at \
+              build time (an invalid directive fails `phux config check` \
+              and the bar build).",
+    }],
+};
 
 /// `time` widget: renders [`WidgetContext::now`] formatted with
 /// `strftime`-style directives.
@@ -74,7 +92,7 @@ impl StatusWidget for TimeWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(KIND, opts, &["format"])?;
+    reject_unknown_opts(&SPEC, opts)?;
     let format = match opts.get("format") {
         None => DEFAULT_FORMAT.to_owned(),
         Some(toml::Value::String(s)) => s.clone(),

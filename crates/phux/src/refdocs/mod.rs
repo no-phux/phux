@@ -23,8 +23,10 @@
 //! See `ADR/0069-generated-reference-docs.md` for why the generator is a
 //! hidden subcommand rather than an xtask or a build script.
 
+pub(crate) mod actions;
 pub(crate) mod cli;
 pub(crate) mod config;
+pub(crate) mod widgets;
 
 /// The `last-reviewed` date stamped into every generated page's frontmatter.
 ///
@@ -92,7 +94,12 @@ impl Page {
 /// index table, the generator's write set, and the freshness test's compare
 /// set all follow automatically.
 pub(crate) fn pages() -> Vec<Page> {
-    let content = vec![cli::page(), config::page()];
+    let content = vec![
+        cli::page(),
+        config::page(),
+        actions::page(),
+        widgets::page(),
+    ];
     let mut pages = Vec::with_capacity(content.len() + 1);
     pages.push(index_page(&content));
     pages.extend(content);

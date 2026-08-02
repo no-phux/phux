@@ -3,13 +3,46 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, reject_unknown_opts};
+use crate::widget::{
+    StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec, WidgetOptSpec,
+    reject_unknown_opts,
+};
 
 /// Widget kind, used in error messages.
 const KIND: &str = "session-name";
 /// Default render format; `{name}` is the (possibly truncated) session
-/// name (`docs/consumers/tui.md` §8.3).
+/// name.
 const DEFAULT_FORMAT: &str = "{name}";
+
+/// Doc spec — the factory validates against this same const, so the
+/// documented option surface is the enforced one (phux-i0e8.11.3).
+pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
+    kind: KIND,
+    summary: "The current session's name, optionally truncated, templated \
+              via `format`, and prefixed.",
+    options: &[
+        WidgetOptSpec {
+            name: "format",
+            aliases: &[],
+            doc: "string, default `\"{name}\"` — render template; every \
+                  `{name}` occurrence is replaced with the (truncated) \
+                  session name.",
+        },
+        WidgetOptSpec {
+            name: "prefix",
+            aliases: &[],
+            doc: "string, optional — literal text prepended verbatim to \
+                  the formatted output.",
+        },
+        WidgetOptSpec {
+            name: "max-len",
+            aliases: &["max_len"],
+            doc: "integer `> 0`, optional — truncate the session name \
+                  itself to this many characters (prefix and format \
+                  literals not counted); no ellipsis.",
+        },
+    ],
+};
 
 /// `session-name` widget.
 ///
@@ -69,7 +102,7 @@ impl StatusWidget for SessionNameWidget {
 
 /// Factory: builds a [`SessionNameWidget`] from a TOML `opts` map.
 ///
-/// Accepted keys (per `docs/consumers/tui.md` §8.3):
+/// Accepted keys (per [`SPEC`], rendered into `docs/reference/widgets.md`):
 /// - `format` (string, optional, default `"{name}"`) — render template;
 ///   `{name}` is replaced with the (truncated) session name.
 /// - `prefix` (string, optional) — literal prefix prepended to the
@@ -85,7 +118,7 @@ impl StatusWidget for SessionNameWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(KIND, opts, &["format", "prefix", "max-len", "max_len"])?;
+    reject_unknown_opts(&SPEC, opts)?;
     let format = match opts.get("format") {
         None => DEFAULT_FORMAT.to_owned(),
         Some(toml::Value::String(s)) => s.clone(),

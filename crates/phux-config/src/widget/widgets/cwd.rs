@@ -8,13 +8,42 @@
 
 use std::collections::BTreeMap;
 
-use crate::widget::{StatusWidget, WidgetCells, WidgetContext, WidgetError, reject_unknown_opts};
+use crate::widget::{
+    StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec, WidgetOptSpec,
+    reject_unknown_opts,
+};
 
 /// Widget kind, used in error messages.
 const KIND: &str = "cwd";
 /// Default render format; `{cwd}` is the (possibly home-collapsed,
 /// possibly truncated) directory.
 const DEFAULT_FORMAT: &str = "{cwd}";
+
+/// Doc spec — the factory validates against this same const, so the
+/// documented option surface is the enforced one (phux-i0e8.11.3).
+pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
+    kind: KIND,
+    summary: "The focused pane's live working directory, fed by the \
+              server's `cwd_changed` agent events (kernel-queried PTY-child \
+              cwd). A `$HOME` prefix collapses to `~`; renders nothing \
+              until the cwd is known.",
+    options: &[
+        WidgetOptSpec {
+            name: "format",
+            aliases: &[],
+            doc: "string, default `\"{cwd}\"` — render template; every \
+                  `{cwd}` occurrence is replaced with the (home-collapsed, \
+                  truncated) directory.",
+        },
+        WidgetOptSpec {
+            name: "truncate",
+            aliases: &[],
+            doc: "integer `> 0`, optional — maximum displayed characters \
+                  of the directory itself (format literals not counted); \
+                  truncation keeps the path's trailing end.",
+        },
+    ],
+};
 
 /// `cwd` widget.
 ///
@@ -89,7 +118,7 @@ impl StatusWidget for CwdWidget {
 
 /// Factory: builds a [`CwdWidget`] from a TOML `opts` map.
 ///
-/// Accepted keys (per `docs/consumers/tui.md` §8.3):
+/// Accepted keys (per [`SPEC`], rendered into `docs/reference/widgets.md`):
 /// - `format` (string, optional, default `"{cwd}"`).
 /// - `truncate` (integer, optional, `> 0`) — max displayed chars of the
 ///   directory, keeping the trailing end.
@@ -104,7 +133,7 @@ impl StatusWidget for CwdWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(KIND, opts, &["format", "truncate"])?;
+    reject_unknown_opts(&SPEC, opts)?;
     let format = match opts.get("format") {
         None => DEFAULT_FORMAT.to_owned(),
         Some(toml::Value::String(s)) => s.clone(),

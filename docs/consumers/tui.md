@@ -1320,48 +1320,14 @@ line of config. The shipped prefix-table bindings:
 
 ### 5.4 Action catalog
 
-These are the actions the dispatcher actually handles today (the set is
-kept in lockstep with `ACTION_NAMES` and the palette registry by a unit
-test, so this table cannot silently drift):
-
-| Action            | Parameters                                  |
-|-------------------|---------------------------------------------|
-| `split-pane`      | `direction` (`horizontal` \| `vertical`)    |
-| `kill-pane`       |                                             |
-| `new-window`      |                                             |
-| `kill-window`     |                                             |
-| `next-window`     |                                             |
-| `previous-window` |                                             |
-| `select-window`   | `index`                                     |
-| `rename-window`   | `name?` (bare opens an interactive prompt)  |
-| `rename-session`  | `name?` (bare opens an interactive prompt)  |
-| `focus-direction` | `direction` (`left`/`right`/`up`/`down`)    |
-| `resize-pane`     | `direction`, `amount`                       |
-| `next-pane`       |                                             |
-| `previous-pane`   |                                             |
-| `last-pane`       | jump to this attached client's previous focus |
-| `next-attention`  | cycle asking panes in deterministic window + DFS order |
-| `return-from-attention` | return once to the client-local saved origin |
-| `toggle-zoom`     |                                             |
-| `toggle-sidebar`  |                                             |
-| `copy-mode`       |                                             |
-| `show-help`       |                                             |
-| `command-palette` | (opens the palette — §5.5)                  |
-| `context-menu`    | (opens the focused pane's context menu — §7.1, ADR-0058) |
-| `window-picker`   | (opens the grouped window picker — §5.5)    |
-| `session-picker`  | (opens the session picker — §5.5)           |
-| `agent-fleet`     | (opens the fleet dashboard — §5.6)          |
-| `focus-pane`      | `window`, `pane` — focus a pane by window index + DFS leaf ordinal (committed by fleet rows, §5.6) |
-| `new-session`     | `name?` (bare opens an interactive prompt)  |
-| `switch-session`  | `name`, `window?`, `pane?` (re-attaches this client; `window` selects that window index after the switch — §5.5; `pane` then focuses that DFS leaf ordinal — the one-step cross-session pane pick the fleet's foreign rows commit, §5.6) |
-| `detach`          |                                             |
-| `take-input`      | seize the focused pane's input lease (ADR-0033) |
-| `give-input`      | release the focused pane's input lease (ADR-0033) |
-| `signal-terminal` | `signal` = `interrupt`\|`freeze`\|`resume`\|`terminate`\|`kill` (ADR-0033) |
-| `set-pane`        | `mouse` = `on`\|`off`\|`toggle` — per-pane mouse opt-out (§7, ADR-0048) |
-| `plugin-action`   | `plugin`, `action` — run a plugin manifest action (§5.5) |
-| `plugin-pane`     | `plugin`, `pane` — open a plugin manifest pane (§5.5) |
-| `reload-config`   | re-read the config and apply it in place (§4.3) |
+The action catalog is a generated reference:
+[`docs/reference/actions.md`](../reference/actions.md) lists every
+action the dispatcher handles — parameter surface, description, and
+where the command palette offers it (with the reason for each deliberate
+palette omission). It renders from the same in-code inventories the
+dispatcher and the palette are test-pinned to, so it cannot drift from
+the binary; regenerate with `just docs-gen` after changing the action
+surface.
 
 ### 5.5 Command palette and pickers
 
@@ -1981,32 +1947,14 @@ architectural revision to grow a status bar plugin story.
 
 ### 8.3 Built-in widget kinds
 
-| Kind            | Parameters                                                   |
-|-----------------|--------------------------------------------------------------|
-| `session-name`  | `format?` (default: `"{name}"`; `{name}` is the truncated session name), `prefix?` (literal, prepended), `max-len?` (chars, `> 0`) — **implemented** |
-| `time`          | `format` (strftime) — **implemented**                       |
-| `windows`       | `active?`/`inactive?` (style tables), `separator?`, `format?` (`{index}`/`{name}`) — **implemented**; tabs are click targets (`select-window`, phux-foz.12) wherever the widget sits (any slot, top or bottom bar) |
-| `help-hints`    | prefix-aware help / palette / copy affordances — **implemented** |
-| `window`        | `format?` (default: `"{name}"`)                              |
-| `pane`          | `format?`                                                    |
-| `cwd`           | `format?`, `truncate?` (chars; keeps the path tail), `$HOME` collapses to `~` — **implemented** |
-| `exit`          | `format?` (`{code}` placeholder; last command exit code, OSC 133) — **implemented** |
-| `host`          | `format?`                                                    |
-| `mode`          | `format?` (current input mode)                               |
-| `key-indicator` | shows the last key/chord pressed; reserved for v0.2          |
-| `text`          | `value` (literal styled text)                                |
-| `spacer`        | flexible expanding space; no parameters                      |
-| `exec`          | `command` (string via `/bin/sh -c`, or argv array), `interval?` (default `5s`, floor `1s`), `parse-ansi?` (true) — **implemented** |
-
-Every widget kind accepts a `style` table with optional `fg`, `bg`
-(color strings: names, `#rrggbb`, or palette indices), and the boolean
-attributes `bold`, `dim`, `italic`, `underline`, `reverse`. The registry
-applies it uniformly, so no widget can opt out. Precedence: cells the
-widget styles itself keep their own style — `windows`' `active`/
-`inactive` segments, `exec`'s SGR-parsed output, `help-hints`' dim base
-all win — and only cells the widget left plain inherit the widget-level
-`style`. A `style` value that is not a table, or a table with an unknown
-field, fails the bar build and is flagged by `phux config check`.
+The widget catalog is a generated reference:
+[`docs/reference/widgets.md`](../reference/widgets.md) lists every
+registered widget kind with the exact options and defaults its factory
+accepts, plus the universal `style` table and its precedence contract.
+It renders from spec consts the factories themselves validate options
+against, test-pinned to the registry, so a kind or option is listed
+there exactly when the binary accepts it; regenerate with
+`just docs-gen` after changing the widget surface.
 
 Widget options are a **closed surface**: every factory rejects an
 option outside its documented set, naming the widget and suggesting the
@@ -2016,11 +1964,8 @@ nearest valid spelling ("unknown option `formt` (did you mean
 surfaces as a located finding instead of parsing clean and doing
 nothing.
 
-The implemented built-ins today are `session-name`, `time`, `windows`,
-`help-hints`, `cwd`, `exit`, and `exec` (the others above are design
-intent); `windows` takes its `active` and `inactive` segments as such
-style tables. Plugin manifests can contribute additional widget entries
-via `[[widgets]]` (section 7's manifest contract): each contribution is a
+Plugin manifests can contribute additional widget entries via
+`[[widgets]]` (section 4.2's manifest contract): each contribution is a
 widget table plus a `slot`, appended after the user's own widgets, and a
 contribution that fails validation is dropped with a logged warning
 rather than degrading the bar.

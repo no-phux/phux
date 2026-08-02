@@ -1,10 +1,21 @@
 use std::collections::BTreeMap;
 
 use crate::widget::{
-    CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, reject_unknown_opts,
+    CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec,
+    reject_unknown_opts,
 };
 
 const KIND: &str = "help-hints";
+
+/// Doc spec — the factory validates against this same const, so the
+/// documented option surface is the enforced one (phux-i0e8.11.3).
+pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
+    kind: KIND,
+    summary: "Dim, prefix-aware affordance hints (`<prefix> ? help | \
+              <prefix> : palette | <prefix> [ copy`), rendered with the \
+              configured prefix chord.",
+    options: &[],
+};
 
 /// `help-hints` widget.
 #[derive(Debug, Clone, Copy, Default)]
@@ -32,6 +43,6 @@ impl StatusWidget for HelpHintsWidget {
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-    reject_unknown_opts(KIND, opts, &[])?;
+    reject_unknown_opts(&SPEC, opts)?;
     Ok(Box::new(HelpHintsWidget))
 }

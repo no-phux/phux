@@ -13,13 +13,17 @@
 //! [`ACTION_NAMES`](super::input_dispatch::ACTION_NAMES), owned next to
 //! `run_action`. This module's [`REGISTRY`] supplies the *presentation*
 //! (description + the default [`ResolvedAction`] the palette commits) for
-//! each of those names. A unit test
-//! (`registry_covers_every_dispatched_action`) asserts the two sets are
-//! equal in both directions, so adding an arm to `run_action` without
-//! registering it — or vice versa — fails CI. Adding a new action is
-//! therefore a three-touch change that the compiler and the test funnel
-//! together: the `run_action` match arm, the `ACTION_NAMES` entry, and the
-//! [`REGISTRY`] row.
+//! each of those names; [`NON_PALETTE_ACTIONS`] documents the remainder —
+//! actions the dispatcher handles but the palette deliberately omits, each
+//! with the reason. A unit test (`every_action_has_exactly_one_doc_home`)
+//! asserts the two consts partition `ACTION_NAMES` exactly, so adding an
+//! arm to `run_action` without documenting it — or vice versa — fails CI.
+//! Adding a new action is therefore a three-touch change that the compiler
+//! and the test funnel together: the `run_action` match arm, the
+//! `ACTION_NAMES` entry, and the [`REGISTRY`] row (or
+//! [`NON_PALETTE_ACTIONS`] entry). The generated reference page
+//! `docs/reference/actions.md` renders from the union (see
+//! `phux::refdocs::actions`), so the same funnel keeps the docs complete.
 //!
 //! Palette items resolve their *bound chord* at build time from the live
 //! [`KeybindingsCfg`] snapshot, so the displayed shortcut always reflects
@@ -53,8 +57,10 @@ impl Category {
     /// All categories in the order the palette renders their sections.
     const ORDER: &'static [Self] = &[Self::Pane, Self::Window, Self::Session, Self::View];
 
-    /// The section-header label shown above this category's rows.
-    const fn header(self) -> &'static str {
+    /// The section-header label shown above this category's rows (also
+    /// the palette-placement column of the generated actions reference).
+    #[must_use]
+    pub const fn header(self) -> &'static str {
         match self {
             Self::Pane => "Pane",
             Self::Window => "Window",
@@ -74,6 +80,12 @@ pub struct ActionSpec {
     pub category: Category,
     /// One-line human description shown in the palette.
     pub description: &'static str,
+    /// The action's full parameter surface, for the generated reference
+    /// page (`docs/reference/actions.md`): accepted keys with their value
+    /// spaces, or `""` for a bare action. Documentation only — the
+    /// dispatcher parses args itself; [`Self::args`] below is what the
+    /// palette actually commits.
+    pub params: &'static str,
     /// Inline `(key, value)` args the palette-committed
     /// [`ResolvedAction`] should carry. Empty for bare actions; e.g.
     /// `split-pane` carries `direction = "vertical"` so the palette
@@ -139,24 +151,28 @@ pub const REGISTRY: &[ActionSpec] = &[
         name: "split-pane",
         category: Category::Pane,
         description: "Split the focused pane side-by-side (vertical divider)",
+        params: "`direction` = `horizontal` | `vertical`",
         args: &[("direction", ArgValue::Str("vertical"))],
     },
     ActionSpec {
         name: "kill-pane",
         category: Category::Pane,
         description: "Close the focused pane",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "focus-direction",
         category: Category::Pane,
         description: "Move focus to the pane on the left",
+        params: "`direction` = `left` | `right` | `up` | `down`",
         args: &[("direction", ArgValue::Str("left"))],
     },
     ActionSpec {
         name: "resize-pane",
         category: Category::Pane,
         description: "Grow the focused pane to the left",
+        params: "`direction` = `left` | `right` | `up` | `down`; `amount` (cells)",
         args: &[
             ("direction", ArgValue::Str("left")),
             ("amount", ArgValue::Int(5)),
@@ -166,151 +182,264 @@ pub const REGISTRY: &[ActionSpec] = &[
         name: "next-pane",
         category: Category::Pane,
         description: "Cycle focus to the next pane",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "next-attention",
         category: Category::Pane,
         description: "Jump to the next pane waiting for an answer",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "return-from-attention",
         category: Category::Pane,
         description: "Return to where attention navigation started",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "previous-pane",
         category: Category::Pane,
         description: "Cycle focus to the previous pane",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "last-pane",
         category: Category::Pane,
         description: "Jump back to the previously focused pane",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "toggle-zoom",
         category: Category::Pane,
         description: "Zoom the focused pane to fill the window (toggle)",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "context-menu",
         category: Category::Pane,
         description: "Open the context menu for the focused pane (ADR-0058)",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "new-window",
         category: Category::Window,
         description: "Open a new window",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "kill-window",
         category: Category::Window,
         description: "Close the active window and all its panes",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "next-window",
         category: Category::Window,
         description: "Switch to the next window",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "previous-window",
         category: Category::Window,
         description: "Switch to the previous window",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "window-picker",
         category: Category::Window,
         description: "Pick a window from all sessions (grouped)",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "rename-window",
         category: Category::Window,
         description: "Rename the active window (interactive prompt)",
+        params: "`name?` (bare opens an interactive prompt)",
         args: &[],
     },
     ActionSpec {
         name: "session-picker",
         category: Category::Session,
         description: "Pick a session from a filterable list",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "new-session",
         category: Category::Session,
         description: "Create a new session and switch to it",
+        params: "`name?` (bare opens an interactive prompt)",
         args: &[],
     },
     ActionSpec {
         name: "rename-session",
         category: Category::Session,
         description: "Rename the current session (interactive prompt)",
+        params: "`name?` (bare opens an interactive prompt)",
         args: &[],
     },
     ActionSpec {
         name: "toggle-sidebar",
         category: Category::View,
         description: "Show or hide the window sidebar (toggle)",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "agent-fleet",
         category: Category::View,
         description: "Agent fleet: every pane's agent, state, and attention",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "show-help",
         category: Category::View,
         description: "Show the keybindings help overlay",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "detach",
         category: Category::View,
         description: "Detach this client from the session",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "reload-config",
         category: Category::View,
         description: "Reload the config file (keybindings, theme, status bar)",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "take-input",
         category: Category::Pane,
         description: "Take the wheel: seize exclusive input over the focused pane (ADR-0033)",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "give-input",
         category: Category::Pane,
         description: "Give back the wheel: release the focused pane's input lease (ADR-0033)",
+        params: "",
         args: &[],
     },
     ActionSpec {
         name: "signal-terminal",
         category: Category::Pane,
         description: "Signal the focused pane's process group (freeze/resume/kill, ADR-0033)",
+        params: "`signal` = `interrupt` | `freeze` | `resume` | `terminate` | `kill`",
         args: &[("signal", ArgValue::Str("freeze"))],
     },
     ActionSpec {
         name: "set-pane",
         category: Category::Pane,
         description: "Toggle per-pane mouse opt-out for the focused pane (ADR-0048)",
+        params: "`mouse` = `on` | `off` | `toggle`",
         args: &[("mouse", ArgValue::Str("toggle"))],
+    },
+];
+
+/// A dispatched action the palette deliberately does not offer.
+///
+/// Together with [`REGISTRY`], this const partitions
+/// [`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES): every dispatched
+/// action has exactly one home — a palette row above, or an entry here
+/// with the reason it has no row. The
+/// `every_action_has_exactly_one_doc_home` test enforces the partition in
+/// both directions, so adding (or removing) an action forces a doc blurb;
+/// the generated `docs/reference/actions.md` renders from the union and
+/// its freshness test forces the page regeneration.
+#[derive(Debug, Clone, Copy)]
+pub struct NonPaletteAction {
+    /// Canonical action name (matches an
+    /// [`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES) entry).
+    pub name: &'static str,
+    /// One-line human description, same register as
+    /// [`ActionSpec::description`].
+    pub description: &'static str,
+    /// Parameter surface, same register as [`ActionSpec::params`].
+    pub params: &'static str,
+    /// Why the palette has no row for it (surfaced in the generated
+    /// reference so the omission reads as deliberate).
+    pub reason: &'static str,
+}
+
+/// Dispatched-but-not-palette-offered actions, with the reason for each.
+///
+/// This is the single documented home for the palette exemptions the
+/// lockstep test used to keep in a bare name list; the rationale for each
+/// entry is unchanged from that list's comments.
+pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
+    NonPaletteAction {
+        name: "command-palette",
+        description: "Open the command palette",
+        params: "",
+        reason: "opening the palette from the palette is noise",
+    },
+    NonPaletteAction {
+        name: "select-window",
+        description: "Focus the window at a given index",
+        params: "`index` (0-based window position)",
+        reason: "parameterized by `index`, which the palette has no UI to \
+                 collect; the window picker is the surface for \"jump to \
+                 window N\"",
+    },
+    NonPaletteAction {
+        name: "switch-session",
+        description: "Re-attach this client to another session",
+        params: "`name`; `window?` (window index to select after the \
+                 switch); `pane?` (DFS leaf ordinal to focus in that window)",
+        reason: "requires a `name` arg supplied by the session picker (or \
+                 the fleet's foreign rows), so a bare palette row would \
+                 have no target to act on",
+    },
+    NonPaletteAction {
+        name: "copy-mode",
+        description: "Enter copy-mode on the focused pane (scrollback \
+                      navigation, selection, yank)",
+        params: "",
+        reason: "a modal input surface entered from its keybinding, not a \
+                 one-shot command the palette can commit",
+    },
+    NonPaletteAction {
+        name: "plugin-action",
+        description: "Run an enabled plugin's manifest action",
+        params: "`plugin`, `action`",
+        reason: "its palette rows are built dynamically from enabled \
+                 plugins' manifests, one per manifest action, carrying \
+                 `plugin`/`action` args a static row could not supply",
+    },
+    NonPaletteAction {
+        name: "plugin-pane",
+        description: "Open an enabled plugin's manifest pane",
+        params: "`plugin`, `pane`",
+        reason: "same shape as `plugin-action`: dynamic rows from enabled \
+                 plugins' manifest `[[panes]]`, carrying `plugin`/`pane` \
+                 args",
+    },
+    NonPaletteAction {
+        name: "focus-pane",
+        description: "Focus a pane by window index and DFS leaf ordinal",
+        params: "`window` (window index), `pane` (DFS leaf ordinal)",
+        reason: "parameterized by coordinates only the agent-fleet \
+                 dashboard's rows can supply (the `select-window` \
+                 precedent)",
     },
 ];
 
@@ -557,60 +686,58 @@ mod tests {
         );
     }
 
+    /// The exhaustiveness gate (phux-i0e8.11.3): [`REGISTRY`] and
+    /// [`NON_PALETTE_ACTIONS`] must partition `ACTION_NAMES` exactly —
+    /// disjoint, and their union equal to the dispatched set in both
+    /// directions. Adding a `run_action` arm therefore forces a described
+    /// home (a palette row or a reasoned non-palette entry), which is what
+    /// keeps the generated `docs/reference/actions.md` complete.
     #[test]
-    fn registry_covers_every_dispatched_action() {
-        // `command-palette` and `select-window` are dispatched but
-        // intentionally excluded from the palette (no palette UI / opens
-        // self), so they are exempt from the registry-side check.
-        // `switch-session` is likewise dispatched-only: it requires a
-        // `name` arg supplied by the session picker, so a bare palette
-        // row would have no target to act on.
-        // `plugin-action` (phux-r82.5) is dispatched but has no static
-        // registry row: its palette rows are built dynamically from the
-        // enabled plugins' manifests (`palette_items`'s `plugin_actions`
-        // parameter), one per manifest action, carrying `plugin`/`action`
-        // args a bare registry row could not supply.
-        // `plugin-pane` (phux-r82.7) is the same shape for manifest
-        // `[[panes]]`: dynamic rows from `palette_items`'s `plugin_panes`
-        // parameter, carrying `plugin`/`pane` args.
-        // `focus-pane` (phux-foz.7) is parameterized by `window`/`pane`
-        // coordinates only the agent-fleet dashboard's rows can supply —
-        // the select-window precedent.
-        const PALETTE_EXEMPT: &[&str] = &[
-            "command-palette",
-            "select-window",
-            "switch-session",
-            "copy-mode",
-            "plugin-action",
-            "plugin-pane",
-            "focus-pane",
-        ];
-
-        // The two source-of-truth sets must be identical: the registry's
-        // presentation rows and the dispatcher's handled-action names.
+    fn every_action_has_exactly_one_doc_home() {
         let dispatched: BTreeSet<&str> = super::super::input_dispatch::ACTION_NAMES
             .iter()
             .copied()
             .collect();
         let registered: BTreeSet<&str> = REGISTRY.iter().map(|s| s.name).collect();
+        let non_palette: BTreeSet<&str> = NON_PALETTE_ACTIONS.iter().map(|s| s.name).collect();
 
-        // Every registered action is dispatched.
-        for name in &registered {
+        // Disjoint: an action is palette-offered or reasoned-out, never both.
+        if let Some(name) = registered.intersection(&non_palette).next() {
+            panic!("`{name}` is both a REGISTRY row and a NON_PALETTE_ACTIONS entry");
+        }
+
+        // Every documented action is dispatched.
+        for name in registered.union(&non_palette) {
             assert!(
                 dispatched.contains(name),
-                "registry lists `{name}` but run_action has no arm (or ACTION_NAMES omits it)",
+                "`{name}` is documented but run_action has no arm (or ACTION_NAMES omits it)",
             );
         }
-        // Every dispatched action is registered, modulo the documented
-        // exemptions.
+        // Every dispatched action is documented exactly once.
         for name in &dispatched {
-            if PALETTE_EXEMPT.contains(name) {
-                continue;
-            }
             assert!(
-                registered.contains(name),
-                "run_action handles `{name}` but the palette registry omits it \
-                 (add an ActionSpec or document it in PALETTE_EXEMPT)",
+                registered.contains(name) || non_palette.contains(name),
+                "run_action handles `{name}` but it has no doc home \
+                 (add a REGISTRY ActionSpec or a NON_PALETTE_ACTIONS entry)",
+            );
+        }
+    }
+
+    /// A non-palette entry's whole point is the blurb: every field that
+    /// the generated reference renders must be non-empty (params may be
+    /// empty — bare actions exist — but description and reason may not).
+    #[test]
+    fn non_palette_entries_carry_description_and_reason() {
+        for spec in NON_PALETTE_ACTIONS {
+            assert!(
+                !spec.description.trim().is_empty(),
+                "`{}` has an empty description",
+                spec.name
+            );
+            assert!(
+                !spec.reason.trim().is_empty(),
+                "`{}` has an empty reason",
+                spec.name
             );
         }
     }
