@@ -2,6 +2,9 @@
 
 use phux_protocol::BootstrapStreamProfile;
 
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+pub mod ghostty;
+
 /// The canonical live PTY geometry selected by the server.
 ///
 /// Frontends may project historical content at another width, but must never
