@@ -1330,11 +1330,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         Ok(())
     }
 
-    fn buffer_bootstrap_effects(
-        &mut self,
-        terminal_id: &TerminalId,
-        generation: GenerationId,
-    ) {
+    fn buffer_bootstrap_effects(&mut self, terminal_id: &TerminalId, generation: GenerationId) {
         let mut captured = std::mem::take(&mut self.engine_effects);
         let staging = self
             .terminals
