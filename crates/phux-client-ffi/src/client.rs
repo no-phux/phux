@@ -6,18 +6,16 @@ use libghostty_vt::screen::CellContentTag;
 use libghostty_vt::selection::Selection;
 use libghostty_vt::style::{RgbColor, StyleColor};
 use libghostty_vt::terminal::{Point, PointCoordinate, ScrollViewport};
-use phux_client_core::engine::{
-    DocumentPoint, DocumentSpace, EngineDocumentSelection,
-};
 use phux_client_core::engine::ghostty::{GhosttyAdapter, GhosttyReplica};
+use phux_client_core::engine::{DocumentPoint, DocumentSpace, EngineDocumentSelection};
 use phux_client_core::history::{DocumentAnchorId, HistoryCacheConfig, HistoryLoadState};
 use phux_client_core::session::{
     EffectBuffer, KernelDamageKind, KernelEffect, KernelSend, KernelStatus, ReplicaKey,
     SessionKernel,
 };
+use phux_protocol::BootstrapLimits;
 use phux_protocol::TerminalId;
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::BootstrapLimits;
 
 use crate::error::BridgeError;
 use crate::types::*;
@@ -171,7 +169,8 @@ impl Client {
 
     pub fn set_error(&mut self, message: impl AsRef<str>) {
         self.last_error.clear();
-        self.last_error.extend_from_slice(message.as_ref().as_bytes());
+        self.last_error
+            .extend_from_slice(message.as_ref().as_bytes());
     }
 
     pub fn ensure_attached(&self) -> Result<(), BridgeError> {
@@ -196,7 +195,8 @@ impl Client {
             .next_document_revision
             .checked_add(1)
             .ok_or_else(|| BridgeError::engine("document revision space exhausted"))?;
-        self.document_revisions.insert(terminal_id.clone(), revision);
+        self.document_revisions
+            .insert(terminal_id.clone(), revision);
         Ok(())
     }
 
@@ -210,8 +210,7 @@ impl Client {
             .next_anchor_handle
             .checked_add(1)
             .ok_or_else(|| BridgeError::engine("document anchor handle space exhausted"))?;
-        self.anchors
-            .insert(handle, (terminal_id.clone(), anchor));
+        self.anchors.insert(handle, (terminal_id.clone(), anchor));
         Ok(PhuxDocumentAnchor { opaque_id: handle })
     }
 
@@ -313,7 +312,10 @@ impl Client {
             .ok_or_else(|| BridgeError::state("terminal has no published document revision"))
     }
 
-    pub fn terminal(&self, id: &TerminalId) -> Result<&libghostty_vt::Terminal<'static, 'static>, BridgeError> {
+    pub fn terminal(
+        &self,
+        id: &TerminalId,
+    ) -> Result<&libghostty_vt::Terminal<'static, 'static>, BridgeError> {
         self.ensure_attached()?;
         self.session
             .published_engine(id)
@@ -437,7 +439,12 @@ impl Client {
                 }
                 self.owned_effects.push(out);
             }
-            KernelStatus::ResyncRequired { terminal_id, stream_id, bootstrap_id, reason } => {
+            KernelStatus::ResyncRequired {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                reason,
+            } => {
                 let mut out = OwnedEffect::simple(2, 3, terminal_id);
                 out.stream_id = u64::from(stream_id.get());
                 out.bootstrap_id = u64::from(bootstrap_id.get());
@@ -484,27 +491,33 @@ impl Client {
         self.outgoing.push(encoded.to_vec());
     }
 
-
     pub fn rebuild_effect_views(&mut self) {
         self.effect_views.clear();
-        self.effect_views.extend(self.owned_effects.iter().map(|effect| PhuxClientEffect {
-            kind: effect.kind,
-            detail: effect.detail,
-            status_code: effect.status_code,
-            terminal_id: terminal_id_out(&effect.terminal_id),
-            stream_id: effect.stream_id,
-            bootstrap_id: effect.bootstrap_id,
-            seq: effect.seq,
-            first_row: effect.first_row,
-            last_row: effect.last_row,
-            bytes: bytes_out(&effect.bytes),
-        }));
+        self.effect_views
+            .extend(self.owned_effects.iter().map(|effect| PhuxClientEffect {
+                kind: effect.kind,
+                detail: effect.detail,
+                status_code: effect.status_code,
+                terminal_id: terminal_id_out(&effect.terminal_id),
+                stream_id: effect.stream_id,
+                bootstrap_id: effect.bootstrap_id,
+                seq: effect.seq,
+                first_row: effect.first_row,
+                last_row: effect.last_row,
+                bytes: bytes_out(&effect.bytes),
+            }));
     }
 
-    pub fn build_grid(&mut self, terminal_id: &TerminalId) -> Result<*const PhuxTerminalGridView, BridgeError> {
+    pub fn build_grid(
+        &mut self,
+        terminal_id: &TerminalId,
+    ) -> Result<*const PhuxTerminalGridView, BridgeError> {
         let key = self.terminal_key(terminal_id)?;
         let revision = self.document_revision(terminal_id)?;
-        let history = self.session.history_cache(terminal_id).map(|cache| cache.status());
+        let history = self
+            .session
+            .history_cache(terminal_id)
+            .map(|cache| cache.status());
         let top_anchor = self.track_anchor(
             terminal_id,
             PhuxDocumentPoint {
@@ -515,190 +528,246 @@ impl Client {
             },
         )?;
         let result = (|| {
-        let terminal = self.terminal(terminal_id)? as *const libghostty_vt::Terminal<'static, 'static>;
-        let cache = self.render.entry(terminal_id.clone()).or_insert(RenderCache::new()?);
-        // SAFETY: terminal is owned by session; render cache is disjoint bridge state and no
-        // session mutation occurs until this method returns.
-        let terminal = unsafe { &*terminal };
-        let snapshot = cache.state.update(terminal).map_err(BridgeError::ghostty)?;
-        let cols = snapshot.cols().map_err(BridgeError::ghostty)?;
-        let rows = snapshot.rows().map_err(BridgeError::ghostty)?;
-        let colors = snapshot.colors().map_err(BridgeError::ghostty)?;
-        cache.grid_cells.clear();
-        cache.utf8.clear();
-        cache.grid_cells.reserve(usize::from(cols) * usize::from(rows));
-        let mut graphemes = String::new();
-        let mut hyperlink = vec![0_u8; 64];
-        let mut row_index = 0_u32;
-        let mut row_iter = cache.rows.update(&snapshot).map_err(BridgeError::ghostty)?;
-        while let Some(row) = row_iter.next() {
-            let mut column_index = 0_u16;
-            let mut cell_iter = cache.cells.update(row).map_err(BridgeError::ghostty)?;
-            while let Some(cell) = cell_iter.next() {
-                let raw = cell.raw_cell().map_err(BridgeError::ghostty)?;
-                let style = cell.style().map_err(BridgeError::ghostty)?;
-                let content_tag = raw.content_tag().map_err(BridgeError::ghostty)?;
-                let start = cache.utf8.len();
-                match content_tag {
-                    CellContentTag::Codepoint => {
-                        let cp = raw.codepoint().map_err(BridgeError::ghostty)?;
-                        if cp != 0 {
-                            let ch = char::from_u32(cp).ok_or_else(|| BridgeError::engine("invalid terminal codepoint"))?;
-                            let mut encoded = [0_u8; 4];
-                            cache.utf8.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
-                        }
-                    }
-                    CellContentTag::CodepointGrapheme => {
-                        graphemes.clear();
-                        cell.graphemes_utf8(&mut graphemes).map_err(BridgeError::ghostty)?;
-                        cache.utf8.extend_from_slice(graphemes.as_bytes());
-                    }
-                    CellContentTag::BgColorPalette | CellContentTag::BgColorRgb => {}
-                }
-                let cell_utf8_len = cache.utf8.len() - start;
-                const NO_HYPERLINK: (u32, u32) = (0, 0);
-                let has_hyperlink = raw.has_hyperlink().map_err(BridgeError::ghostty)?;
-                let (hyperlink_offset, hyperlink_len) = if has_hyperlink {
-                    let reference = terminal
-                        .grid_ref(Point::Viewport(PointCoordinate {
-                            x: column_index,
-                            y: row_index,
-                        }))
-                        .map_err(BridgeError::ghostty)?;
-                    let len = loop {
-                        match reference.hyperlink_uri(&mut hyperlink) {
-                            Ok(len) => break len,
-                            Err(libghostty_vt::Error::OutOfSpace { required })
-                                if required > hyperlink.len() =>
-                            {
-                                hyperlink.resize(required, 0);
+            let terminal =
+                self.terminal(terminal_id)? as *const libghostty_vt::Terminal<'static, 'static>;
+            let cache = self
+                .render
+                .entry(terminal_id.clone())
+                .or_insert(RenderCache::new()?);
+            // SAFETY: terminal is owned by session; render cache is disjoint bridge state and no
+            // session mutation occurs until this method returns.
+            let terminal = unsafe { &*terminal };
+            let snapshot = cache.state.update(terminal).map_err(BridgeError::ghostty)?;
+            let cols = snapshot.cols().map_err(BridgeError::ghostty)?;
+            let rows = snapshot.rows().map_err(BridgeError::ghostty)?;
+            let colors = snapshot.colors().map_err(BridgeError::ghostty)?;
+            cache.grid_cells.clear();
+            cache.utf8.clear();
+            cache
+                .grid_cells
+                .reserve(usize::from(cols) * usize::from(rows));
+            let mut graphemes = String::new();
+            let mut hyperlink = vec![0_u8; 64];
+            let mut row_index = 0_u32;
+            let mut row_iter = cache.rows.update(&snapshot).map_err(BridgeError::ghostty)?;
+            while let Some(row) = row_iter.next() {
+                let mut column_index = 0_u16;
+                let mut cell_iter = cache.cells.update(row).map_err(BridgeError::ghostty)?;
+                while let Some(cell) = cell_iter.next() {
+                    let raw = cell.raw_cell().map_err(BridgeError::ghostty)?;
+                    let style = cell.style().map_err(BridgeError::ghostty)?;
+                    let content_tag = raw.content_tag().map_err(BridgeError::ghostty)?;
+                    let start = cache.utf8.len();
+                    match content_tag {
+                        CellContentTag::Codepoint => {
+                            let cp = raw.codepoint().map_err(BridgeError::ghostty)?;
+                            if cp != 0 {
+                                let ch = char::from_u32(cp).ok_or_else(|| {
+                                    BridgeError::engine("invalid terminal codepoint")
+                                })?;
+                                let mut encoded = [0_u8; 4];
+                                cache
+                                    .utf8
+                                    .extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
                             }
-                            Err(error) => return Err(BridgeError::ghostty(error)),
                         }
+                        CellContentTag::CodepointGrapheme => {
+                            graphemes.clear();
+                            cell.graphemes_utf8(&mut graphemes)
+                                .map_err(BridgeError::ghostty)?;
+                            cache.utf8.extend_from_slice(graphemes.as_bytes());
+                        }
+                        CellContentTag::BgColorPalette | CellContentTag::BgColorRgb => {}
+                    }
+                    let cell_utf8_len = cache.utf8.len() - start;
+                    const NO_HYPERLINK: (u32, u32) = (0, 0);
+                    let has_hyperlink = raw.has_hyperlink().map_err(BridgeError::ghostty)?;
+                    let (hyperlink_offset, hyperlink_len) = if has_hyperlink {
+                        let reference = terminal
+                            .grid_ref(Point::Viewport(PointCoordinate {
+                                x: column_index,
+                                y: row_index,
+                            }))
+                            .map_err(BridgeError::ghostty)?;
+                        let len = loop {
+                            match reference.hyperlink_uri(&mut hyperlink) {
+                                Ok(len) => break len,
+                                Err(libghostty_vt::Error::OutOfSpace { required })
+                                    if required > hyperlink.len() =>
+                                {
+                                    hyperlink.resize(required, 0);
+                                }
+                                Err(error) => return Err(BridgeError::ghostty(error)),
+                            }
+                        };
+                        let offset = u32::try_from(cache.utf8.len())
+                            .map_err(|_| BridgeError::engine("cell UTF-8 arena exceeds u32"))?;
+                        cache.utf8.extend_from_slice(&hyperlink[..len]);
+                        (
+                            offset,
+                            u32::try_from(len)
+                                .map_err(|_| BridgeError::engine("hyperlink URI exceeds u32"))?,
+                        )
+                    } else {
+                        NO_HYPERLINK
                     };
-                    let offset = u32::try_from(cache.utf8.len())
-                        .map_err(|_| BridgeError::engine("cell UTF-8 arena exceeds u32"))?;
-                    cache.utf8.extend_from_slice(&hyperlink[..len]);
-                    (
-                        offset,
-                        u32::try_from(len)
-                            .map_err(|_| BridgeError::engine("hyperlink URI exceeds u32"))?,
-                    )
-                } else {
-                    NO_HYPERLINK
-                };
-                let fg = resolve_color(style.fg_color, colors.foreground, &colors.palette);
-                let mut bg = resolve_color(style.bg_color, colors.background, &colors.palette);
-                let underline_color =
-                    resolve_color(style.underline_color, colors.foreground, &colors.palette);
-                bg = match content_tag {
-                    CellContentTag::BgColorPalette => colors.palette[usize::from(raw.bg_color_palette().map_err(BridgeError::ghostty)?.0)],
-                    CellContentTag::BgColorRgb => raw.bg_color_rgb().map_err(BridgeError::ghostty)?,
-                    _ => bg,
-                };
-                let mut flags = 0;
-                if style.bold { flags |= CELL_BOLD; }
-                if style.italic { flags |= CELL_ITALIC; }
-                if style.faint { flags |= CELL_FAINT; }
-                if style.blink { flags |= CELL_BLINK; }
-                if style.inverse { flags |= CELL_INVERSE; }
-                if style.invisible { flags |= CELL_INVISIBLE; }
-                if style.strikethrough { flags |= CELL_STRIKETHROUGH; }
-                if style.overline { flags |= CELL_OVERLINE; }
-                if cell.is_selected().map_err(BridgeError::ghostty)? { flags |= CELL_SELECTED; }
-                if raw.is_protected().map_err(BridgeError::ghostty)? { flags |= CELL_PROTECTED; }
-                if has_hyperlink { flags |= CELL_HYPERLINK; }
-                cache.grid_cells.push(PhuxTerminalCell {
-                    utf8_offset: u32::try_from(start).map_err(|_| BridgeError::engine("cell UTF-8 arena exceeds u32"))?,
-                    utf8_len: u16::try_from(cell_utf8_len).map_err(|_| BridgeError::engine("cell grapheme exceeds u16"))?,
-                    hyperlink_offset,
-                    hyperlink_len,
-                    content_tag: content_tag as u16,
-                    wide: raw.wide().map_err(BridgeError::ghostty)? as u8,
-                    semantic_content: raw.semantic_content().map_err(BridgeError::ghostty)? as u8,
-                    flags,
-                    foreground_r: fg.r,
-                    foreground_g: fg.g,
-                    foreground_b: fg.b,
-                    background_r: bg.r,
-                    background_g: bg.g,
-                    underline_r: underline_color.r,
-                    underline_g: underline_color.g,
-                    underline_b: underline_color.b,
-                    background_b: bg.b,
-                    underline: style.underline as u8,
-                    reserved: 0,
-                });
-                column_index = column_index
-                    .checked_add(1)
-                    .ok_or_else(|| BridgeError::engine("render column exceeds u16"))?;
-            }
-            row_index = row_index
-                .checked_add(1)
-                .ok_or_else(|| BridgeError::engine("render row exceeds u32"))?;
-        }
-        let expected_cells = usize::from(cols)
-            .checked_mul(usize::from(rows))
-            .ok_or_else(|| BridgeError::engine("render grid dimensions overflow usize"))?;
-        if cache.grid_cells.len() != expected_cells {
-            return Err(BridgeError::engine(
-                "libghostty render iterator did not produce a dense viewport",
-            ));
-        }
-        let cursor = snapshot.cursor_viewport().map_err(BridgeError::ghostty)?;
-        let scrollbar = terminal.scrollbar().map_err(BridgeError::ghostty)?;
-        let (pages, bytes, unread_rows, loading, has_more) =
-            history.map_or((0, 0, 0, false, false), |status| {
-                (
-                    status.loaded_pages as u64,
-                    status.loaded_bytes as u64,
-                    status.unread_rows,
-                    status.state == HistoryLoadState::Loading,
-                    status.next_cursor.is_some(),
-                )
-            });
-        cache.terminal_host.clear();
-        let view_terminal_id = match terminal_id {
-            TerminalId::Local { id } => PhuxTerminalId {
-                kind: 0,
-                id: *id,
-                host: PhuxBytes::default(),
-            },
-            TerminalId::Satellite { host, id } => {
-                cache.terminal_host.extend_from_slice(host.as_str().as_bytes());
-                PhuxTerminalId {
-                    kind: 1,
-                    id: *id,
-                    host: bytes_out(&cache.terminal_host),
+                    let fg = resolve_color(style.fg_color, colors.foreground, &colors.palette);
+                    let mut bg = resolve_color(style.bg_color, colors.background, &colors.palette);
+                    let underline_color =
+                        resolve_color(style.underline_color, colors.foreground, &colors.palette);
+                    bg = match content_tag {
+                        CellContentTag::BgColorPalette => {
+                            colors.palette[usize::from(
+                                raw.bg_color_palette().map_err(BridgeError::ghostty)?.0,
+                            )]
+                        }
+                        CellContentTag::BgColorRgb => {
+                            raw.bg_color_rgb().map_err(BridgeError::ghostty)?
+                        }
+                        _ => bg,
+                    };
+                    let mut flags = 0;
+                    if style.bold {
+                        flags |= CELL_BOLD;
+                    }
+                    if style.italic {
+                        flags |= CELL_ITALIC;
+                    }
+                    if style.faint {
+                        flags |= CELL_FAINT;
+                    }
+                    if style.blink {
+                        flags |= CELL_BLINK;
+                    }
+                    if style.inverse {
+                        flags |= CELL_INVERSE;
+                    }
+                    if style.invisible {
+                        flags |= CELL_INVISIBLE;
+                    }
+                    if style.strikethrough {
+                        flags |= CELL_STRIKETHROUGH;
+                    }
+                    if style.overline {
+                        flags |= CELL_OVERLINE;
+                    }
+                    if cell.is_selected().map_err(BridgeError::ghostty)? {
+                        flags |= CELL_SELECTED;
+                    }
+                    if raw.is_protected().map_err(BridgeError::ghostty)? {
+                        flags |= CELL_PROTECTED;
+                    }
+                    if has_hyperlink {
+                        flags |= CELL_HYPERLINK;
+                    }
+                    cache.grid_cells.push(PhuxTerminalCell {
+                        utf8_offset: u32::try_from(start)
+                            .map_err(|_| BridgeError::engine("cell UTF-8 arena exceeds u32"))?,
+                        utf8_len: u16::try_from(cell_utf8_len)
+                            .map_err(|_| BridgeError::engine("cell grapheme exceeds u16"))?,
+                        hyperlink_offset,
+                        hyperlink_len,
+                        content_tag: content_tag as u16,
+                        wide: raw.wide().map_err(BridgeError::ghostty)? as u8,
+                        semantic_content: raw.semantic_content().map_err(BridgeError::ghostty)?
+                            as u8,
+                        flags,
+                        foreground_r: fg.r,
+                        foreground_g: fg.g,
+                        foreground_b: fg.b,
+                        background_r: bg.r,
+                        background_g: bg.g,
+                        underline_r: underline_color.r,
+                        underline_g: underline_color.g,
+                        underline_b: underline_color.b,
+                        background_b: bg.b,
+                        underline: style.underline as u8,
+                        reserved: 0,
+                    });
+                    column_index = column_index
+                        .checked_add(1)
+                        .ok_or_else(|| BridgeError::engine("render column exceeds u16"))?;
                 }
+                row_index = row_index
+                    .checked_add(1)
+                    .ok_or_else(|| BridgeError::engine("render row exceeds u32"))?;
             }
-        };
-        cache.view = PhuxTerminalGridView {
-            terminal_id: view_terminal_id,
-            stream_id: u64::from(key.stream_id.get()),
-            bootstrap_id: u64::from(key.bootstrap_id.get()),
-            last_seq: self.session.published(terminal_id).map_or(0, |p| p.last_seq()),
-            document_revision: revision,
-            cols,
-            rows,
-            cells: if cache.grid_cells.is_empty() { ptr::null() } else { cache.grid_cells.as_ptr() },
-            cell_count: cache.grid_cells.len(),
-            utf8: bytes_out(&cache.utf8),
-            cursor_visible: snapshot.cursor_visible().map_err(BridgeError::ghostty)? && cursor.is_some(),
-            cursor_col: cursor.map_or(0, |value| value.x),
-            cursor_row: cursor.map_or(0, |value| value.y),
-            cursor_style: cursor_style(snapshot.cursor_visual_style().map_err(BridgeError::ghostty)?),
-            history_total_rows: scrollbar.total,
-            history_viewport_offset: scrollbar.offset,
-            history_visible_rows: scrollbar.len,
-            history_pages_loaded: pages,
-            history_unread_rows: unread_rows,
-            history_bytes_loaded: bytes,
-            history_loading: loading,
-            history_has_more: has_more,
-            top_anchor,
-        };
-        Ok(ptr::from_ref(&cache.view))
+            let expected_cells = usize::from(cols)
+                .checked_mul(usize::from(rows))
+                .ok_or_else(|| BridgeError::engine("render grid dimensions overflow usize"))?;
+            if cache.grid_cells.len() != expected_cells {
+                return Err(BridgeError::engine(
+                    "libghostty render iterator did not produce a dense viewport",
+                ));
+            }
+            let cursor = snapshot.cursor_viewport().map_err(BridgeError::ghostty)?;
+            let scrollbar = terminal.scrollbar().map_err(BridgeError::ghostty)?;
+            let (pages, bytes, unread_rows, loading, has_more) =
+                history.map_or((0, 0, 0, false, false), |status| {
+                    (
+                        status.loaded_pages as u64,
+                        status.loaded_bytes as u64,
+                        status.unread_rows,
+                        status.state == HistoryLoadState::Loading,
+                        status.next_cursor.is_some(),
+                    )
+                });
+            cache.terminal_host.clear();
+            let view_terminal_id = match terminal_id {
+                TerminalId::Local { id } => PhuxTerminalId {
+                    kind: 0,
+                    id: *id,
+                    host: PhuxBytes::default(),
+                },
+                TerminalId::Satellite { host, id } => {
+                    cache
+                        .terminal_host
+                        .extend_from_slice(host.as_str().as_bytes());
+                    PhuxTerminalId {
+                        kind: 1,
+                        id: *id,
+                        host: bytes_out(&cache.terminal_host),
+                    }
+                }
+            };
+            cache.view = PhuxTerminalGridView {
+                terminal_id: view_terminal_id,
+                stream_id: u64::from(key.stream_id.get()),
+                bootstrap_id: u64::from(key.bootstrap_id.get()),
+                last_seq: self
+                    .session
+                    .published(terminal_id)
+                    .map_or(0, |p| p.last_seq()),
+                document_revision: revision,
+                cols,
+                rows,
+                cells: if cache.grid_cells.is_empty() {
+                    ptr::null()
+                } else {
+                    cache.grid_cells.as_ptr()
+                },
+                cell_count: cache.grid_cells.len(),
+                utf8: bytes_out(&cache.utf8),
+                cursor_visible: snapshot.cursor_visible().map_err(BridgeError::ghostty)?
+                    && cursor.is_some(),
+                cursor_col: cursor.map_or(0, |value| value.x),
+                cursor_row: cursor.map_or(0, |value| value.y),
+                cursor_style: cursor_style(
+                    snapshot
+                        .cursor_visual_style()
+                        .map_err(BridgeError::ghostty)?,
+                ),
+                history_total_rows: scrollbar.total,
+                history_viewport_offset: scrollbar.offset,
+                history_visible_rows: scrollbar.len,
+                history_pages_loaded: pages,
+                history_unread_rows: unread_rows,
+                history_bytes_loaded: bytes,
+                history_loading: loading,
+                history_has_more: has_more,
+                top_anchor,
+            };
+            Ok(ptr::from_ref(&cache.view))
         })();
         if result.is_err() {
             let _ = self.release_anchor(terminal_id, top_anchor);
@@ -706,7 +775,12 @@ impl Client {
         result
     }
 
-    pub fn scroll(&mut self, terminal_id: &TerminalId, kind: u32, value: i64) -> Result<(), BridgeError> {
+    pub fn scroll(
+        &mut self,
+        terminal_id: &TerminalId,
+        kind: u32,
+        value: i64,
+    ) -> Result<(), BridgeError> {
         self.ensure_attached()?;
         let scroll = match kind {
             0 => ScrollViewport::Top,
@@ -726,7 +800,10 @@ impl Client {
             .ok_or_else(|| BridgeError::state("terminal has no published READY generation"))?
             .scroll_viewport(scroll)
             .map_err(|error| BridgeError::engine(error.to_string()))?;
-        let scrollbar = self.terminal(terminal_id)?.scrollbar().map_err(BridgeError::ghostty)?;
+        let scrollbar = self
+            .terminal(terminal_id)?
+            .scrollbar()
+            .map_err(BridgeError::ghostty)?;
         let at_tail = scrollbar.offset.saturating_add(scrollbar.len) >= scrollbar.total;
         if at_tail {
             self.session
@@ -895,7 +972,6 @@ fn cursor_style(style: CursorVisualStyle) -> u32 {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,12 +1015,11 @@ mod tests {
             .expect("explicit TERMINAL_REPLY feature");
 
         let (decoded, remaining) =
-            phux_protocol::wire::FrameKind::decode(&client.outgoing[0])
-                .expect("decode generated frame");
+            FrameKind::decode(&client.outgoing[0]).expect("decode generated frame");
         assert!(remaining.is_empty());
         assert!(matches!(
             decoded,
-            phux_protocol::wire::FrameKind::InputTerminalReply {
+            FrameKind::InputTerminalReply {
                 terminal_id,
                 bytes,
             } if terminal_id == TerminalId::local(7) && bytes.as_ref() == b"\x1b[1;1R"

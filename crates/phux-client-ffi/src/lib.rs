@@ -19,11 +19,11 @@ use phux_client_core::engine::CanonicalGeometry;
 use phux_client_core::engine::ghostty::native_bootstrap_capabilities;
 use phux_client_core::session::{KernelAction, KernelInput};
 use phux_protocol::caps::BootstrapLimits;
+use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_protocol::{PROTOCOL_VERSION, SessionId};
 
@@ -58,7 +58,9 @@ fn with_client_mut(
             error.result
         }
         Err(_) => {
-            client_ref.inner.set_error("panic contained at phux-client FFI boundary");
+            client_ref
+                .inner
+                .set_error("panic contained at phux-client FFI boundary");
             PhuxClientResult::Panic
         }
     };
@@ -88,7 +90,9 @@ fn invoke_failure(client: *mut PhuxClient, result: PhuxClientResult) -> PhuxClie
     let client_ref = unsafe { &mut *client };
     client_ref.inner.in_callback = false;
     if callback_result.is_err() {
-        client_ref.inner.set_error("panic contained in phux-client failure callback");
+        client_ref
+            .inner
+            .set_error("panic contained in phux-client failure callback");
         PhuxClientResult::Panic
     } else {
         result
@@ -114,17 +118,16 @@ fn invoke_attached(client: *mut PhuxClient) -> PhuxClientResult {
     let client_ref = unsafe { &mut *client };
     client_ref.inner.in_callback = false;
     if callback_result.is_err() {
-        client_ref.inner.set_error("panic contained in phux-client attached callback");
+        client_ref
+            .inner
+            .set_error("panic contained in phux-client attached callback");
         PhuxClientResult::Panic
     } else {
         PhuxClientResult::Ok
     }
 }
 
-fn apply_kernel_input(
-    client: &mut Client,
-    input: KernelInput<'_>,
-) -> Result<(), BridgeError> {
+fn apply_kernel_input(client: &mut Client, input: KernelInput<'_>) -> Result<(), BridgeError> {
     let update_result = client
         .session
         .update(input, &mut client.effects)
@@ -133,7 +136,11 @@ fn apply_kernel_input(
     update_result.and(effect_result)
 }
 
-fn apply_input(client: &mut Client, terminal_id: &phux_protocol::TerminalId, event: &InputEvent) -> Result<(), BridgeError> {
+fn apply_input(
+    client: &mut Client,
+    terminal_id: &phux_protocol::TerminalId,
+    event: &InputEvent,
+) -> Result<(), BridgeError> {
     client.ensure_attached()?;
     apply_kernel_input(
         client,
@@ -147,7 +154,9 @@ fn stream_profile_matches(
 ) -> bool {
     match (selected, stream) {
         (
-            phux_protocol::BootstrapProfile::NativeState { codec: selected, .. },
+            phux_protocol::BootstrapProfile::NativeState {
+                codec: selected, ..
+            },
             phux_protocol::BootstrapStreamProfile::NativeState { codec: stream },
         ) => selected == stream,
         (
@@ -202,21 +211,32 @@ fn history_rejection_reason(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_new(options: *const PhuxClientOptions, out_client: *mut *mut PhuxClient) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_new(
+    options: *const PhuxClientOptions,
+    out_client: *mut *mut PhuxClient,
+) -> PhuxClientResult {
     match catch_unwind(AssertUnwindSafe(|| -> Result<(), BridgeError> {
         // SAFETY: checked before write.
         let out = unsafe { out_client.as_mut() }
             .ok_or_else(|| BridgeError::invalid("out_client is null"))?;
         *out = ptr::null_mut();
         // SAFETY: checked before dereference.
-        let options = unsafe { options.as_ref() }
-            .ok_or_else(|| BridgeError::invalid("options is null"))?;
-        check_struct(options.size, mem::size_of::<PhuxClientOptions>(), options.version)?;
-        let limits = BootstrapLimits::new(options.max_bootstrap_chunk_bytes, options.max_history_page_bytes)
-            .ok_or_else(|| BridgeError::invalid("bootstrap/history bounds are zero or exceed protocol limits"))?;
+        let options =
+            unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
+        check_struct(
+            options.size,
+            mem::size_of::<PhuxClientOptions>(),
+            options.version,
+        )?;
+        let limits = BootstrapLimits::new(
+            options.max_bootstrap_chunk_bytes,
+            options.max_history_page_bytes,
+        )
+        .ok_or_else(|| {
+            BridgeError::invalid("bootstrap/history bounds are zero or exceed protocol limits")
+        })?;
         if options.max_history_page_rows == 0
-            || options.max_history_page_rows
-                > phux_client_core::history::MAX_HISTORY_PAGE_ROWS
+            || options.max_history_page_rows > phux_client_core::history::MAX_HISTORY_PAGE_ROWS
         {
             return Err(BridgeError::invalid(
                 "history page row bound is zero or exceeds the protocol limit",
@@ -224,8 +244,7 @@ pub unsafe extern "C" fn phux_client_new(options: *const PhuxClientOptions, out_
         }
         if options.max_history_cache_bytes == 0
             || options.max_history_materialized_rows == 0
-            || usize::try_from(options.max_history_page_bytes)
-                .is_err()
+            || usize::try_from(options.max_history_page_bytes).is_err()
             || usize::try_from(options.max_history_page_bytes)
                 .is_ok_and(|bytes| bytes > options.max_history_cache_bytes)
             || usize::try_from(options.max_history_page_rows)
@@ -301,7 +320,10 @@ pub unsafe extern "C" fn phux_client_state(client: *const PhuxClient) -> PhuxCli
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_last_error(client: *const PhuxClient, out_error: *mut PhuxBytes) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_last_error(
+    client: *const PhuxClient,
+    out_error: *mut PhuxBytes,
+) -> PhuxClientResult {
     let result = catch_unwind(AssertUnwindSafe(|| {
         let client = unsafe { client.as_ref() }.ok_or(PhuxClientResult::InvalidArgument)?;
         if client.inner.in_callback {
@@ -319,18 +341,23 @@ pub unsafe extern "C" fn phux_client_last_error(client: *const PhuxClient, out_e
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_queue_hello(client: *mut PhuxClient, client_name: PhuxBytes) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_queue_hello(
+    client: *mut PhuxClient,
+    client_name: PhuxBytes,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         if client.hello_queued || client.protocol_ready {
             return Err(BridgeError::state("HELLO was already queued or negotiated"));
         }
         let name = unsafe { bytes_in(client_name.data, client_name.len) }?;
-        let name = std::str::from_utf8(name).map_err(|_| BridgeError::invalid("client name is not UTF-8"))?;
+        let name = std::str::from_utf8(name)
+            .map_err(|_| BridgeError::invalid("client name is not UTF-8"))?;
         if name.is_empty() {
             return Err(BridgeError::invalid("client name is empty"));
         }
-        let limits = BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
-            .ok_or_else(|| BridgeError::state("stored bootstrap limits are invalid"))?;
+        let limits =
+            BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
+                .ok_or_else(|| BridgeError::state("stored bootstrap limits are invalid"))?;
         let caps = phux_protocol::ClientCapabilities::new()
             .with_bootstrap(native_bootstrap_capabilities(limits));
         client.queue_frame(FrameKind::Hello {
@@ -346,13 +373,23 @@ pub unsafe extern "C" fn phux_client_queue_hello(client: *mut PhuxClient, client
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_queue_attach(client: *mut PhuxClient, options: *const PhuxAttachOptions) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_queue_attach(
+    client: *mut PhuxClient,
+    options: *const PhuxAttachOptions,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         if !client.protocol_ready || client.attached || client.attach_queued || client.detached {
-            return Err(BridgeError::state("ATTACH is not valid in the current lifecycle state"));
+            return Err(BridgeError::state(
+                "ATTACH is not valid in the current lifecycle state",
+            ));
         }
-        let options = unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
-        check_struct(options.size, mem::size_of::<PhuxAttachOptions>(), options.version)?;
+        let options =
+            unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
+        check_struct(
+            options.size,
+            mem::size_of::<PhuxAttachOptions>(),
+            options.version,
+        )?;
         if options.cols == 0 || options.rows == 0 {
             return Err(BridgeError::invalid("attach geometry must be non-zero"));
         }
@@ -368,18 +405,25 @@ pub unsafe extern "C" fn phux_client_queue_attach(client: *mut PhuxClient, optio
             ));
         }
         let name_bytes = unsafe { bytes_in(options.name.data, options.name.len) }?;
-        let name = std::str::from_utf8(name_bytes).map_err(|_| BridgeError::invalid("attach name is not UTF-8"))?;
+        let name = std::str::from_utf8(name_bytes)
+            .map_err(|_| BridgeError::invalid("attach name is not UTF-8"))?;
         let target = match options.target_kind {
             0 => AttachTarget::Last,
             1 => AttachTarget::ByName(name.to_owned()),
             2 => AttachTarget::ById(SessionId::new(options.session_id)),
-            3 => AttachTarget::CreateIfMissing { name: name.to_owned(), command: None, cwd: None },
+            3 => AttachTarget::CreateIfMissing {
+                name: name.to_owned(),
+                command: None,
+                cwd: None,
+            },
             _ => return Err(BridgeError::invalid("unknown attach target kind")),
         };
         if matches!(options.target_kind, 1 | 3) && name.is_empty() {
             return Err(BridgeError::invalid("named attach target is empty"));
         }
-        let pixels = options.has_pixel_size.then_some((options.pixel_width, options.pixel_height));
+        let pixels = options
+            .has_pixel_size
+            .then_some((options.pixel_width, options.pixel_height));
         let viewport = ViewportInfo::new(options.cols, options.rows)
             .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1));
         client.queue_frame(FrameKind::Attach {
@@ -396,26 +440,46 @@ pub unsafe extern "C" fn phux_client_queue_attach(client: *mut PhuxClient, optio
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *const u8, len: usize) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_feed_frame(
+    client: *mut PhuxClient,
+    data: *const u8,
+    len: usize,
+) -> PhuxClientResult {
     let mut notify_attached = false;
     let result = with_client_mut(client, |client| {
         let data = unsafe { bytes_in(data, len) }?;
-        let (frame, remaining) = FrameKind::decode(data).map_err(|error| BridgeError::protocol(error.to_string()))?;
+        let (frame, remaining) =
+            FrameKind::decode(data).map_err(|error| BridgeError::protocol(error.to_string()))?;
         if !remaining.is_empty() {
-            return Err(BridgeError::protocol("feed_frame accepts exactly one complete frame"));
+            return Err(BridgeError::protocol(
+                "feed_frame accepts exactly one complete frame",
+            ));
         }
         if !client.protocol_ready && !matches!(&frame, FrameKind::HelloOk { .. }) {
             return Err(BridgeError::state("server frame arrived before HELLO_OK"));
         }
         match frame {
-            FrameKind::HelloOk { protocol_major, protocol_minor, server_caps, selected_profile, bootstrap_limits, .. } => {
-                if protocol_major != PROTOCOL_VERSION.major || protocol_minor != PROTOCOL_VERSION.minor {
-                    return Err(BridgeError::protocol("server selected an unsupported protocol version"));
+            FrameKind::HelloOk {
+                protocol_major,
+                protocol_minor,
+                server_caps,
+                selected_profile,
+                bootstrap_limits,
+                ..
+            } => {
+                if protocol_major != PROTOCOL_VERSION.major
+                    || protocol_minor != PROTOCOL_VERSION.minor
+                {
+                    return Err(BridgeError::protocol(
+                        "server selected an unsupported protocol version",
+                    ));
                 }
                 if bootstrap_limits.max_chunk_bytes() > client.limits.bootstrap_chunk
                     || bootstrap_limits.max_history_page_bytes() > client.limits.history_page
                 {
-                    return Err(BridgeError::protocol("server selected payload limits above the client advertisement"));
+                    return Err(BridgeError::protocol(
+                        "server selected payload limits above the client advertisement",
+                    ));
                 }
                 if !client.hello_queued || client.protocol_ready {
                     return Err(BridgeError::protocol("unsolicited or duplicate HELLO_OK"));
@@ -446,17 +510,26 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
                 client.protocol_ready = true;
             }
             FrameKind::Ping { nonce } => client.queue_frame(FrameKind::Pong { nonce }),
-            FrameKind::Attached { attach_id, snapshot, .. } => {
+            FrameKind::Attached {
+                attach_id,
+                snapshot,
+                ..
+            } => {
                 if !client.attach_queued {
                     return Err(BridgeError::protocol("unsolicited ATTACHED"));
                 }
                 if client.expected_attach_id != Some(attach_id) {
-                    return Err(BridgeError::protocol("ATTACHED attach_id does not match the request"));
+                    return Err(BridgeError::protocol(
+                        "ATTACHED attach_id does not match the request",
+                    ));
                 }
                 let terminals: Vec<_> = snapshot.panes.into_iter().map(|pane| pane.id).collect();
                 apply_kernel_input(
                     client,
-                    KernelInput::AttachStarted { attach_id, terminals: &terminals },
+                    KernelInput::AttachStarted {
+                        attach_id,
+                        terminals: &terminals,
+                    },
                 )?;
             }
             FrameKind::AttachReady { attach_id } => {
@@ -464,14 +537,24 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
                     return Err(BridgeError::protocol("unsolicited ATTACH_READY"));
                 }
                 if client.expected_attach_id != Some(attach_id) {
-                    return Err(BridgeError::protocol("ATTACH_READY attach_id does not match the request"));
+                    return Err(BridgeError::protocol(
+                        "ATTACH_READY attach_id does not match the request",
+                    ));
                 }
                 apply_kernel_input(client, KernelInput::AttachReady { attach_id })?;
                 client.attach_queued = false;
                 client.attached = true;
                 notify_attached = true;
             }
-            FrameKind::BootstrapBegin { terminal_id, stream_id, bootstrap_id, profile, cols, rows, base_seq } => {
+            FrameKind::BootstrapBegin {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile,
+                cols,
+                rows,
+                base_seq,
+            } => {
                 let selected_profile = client.selected_profile.ok_or_else(|| {
                     BridgeError::state("BOOTSTRAP_BEGIN arrived before profile negotiation")
                 })?;
@@ -494,7 +577,13 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
                     },
                 )?;
             }
-            FrameKind::BootstrapChunk { terminal_id, stream_id, bootstrap_id, chunk_seq, payload } => {
+            FrameKind::BootstrapChunk {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
+                payload,
+            } => {
                 apply_kernel_input(
                     client,
                     KernelInput::BootstrapChunk {
@@ -506,7 +595,12 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
                     },
                 )?;
             }
-            FrameKind::BootstrapReady { terminal_id, stream_id, bootstrap_id, history_cursor } => {
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor,
+            } => {
                 apply_kernel_input(
                     client,
                     KernelInput::BootstrapReady {
@@ -519,10 +613,23 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
                 client.invalidate_terminal_handles(&terminal_id);
                 client.bump_document_revision(&terminal_id)?;
             }
-            FrameKind::HistoryPage { terminal_id, stream_id, bootstrap_id, page_seq, cursor, next_cursor, payload, rows } => {
+            FrameKind::HistoryPage {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                page_seq,
+                cursor,
+                next_cursor,
+                payload,
+                rows,
+            } => {
                 let before = client.session.history_cache(&terminal_id).map(|cache| {
                     let status = cache.status();
-                    (status.loaded_pages, status.loaded_bytes, status.materialized_rows)
+                    (
+                        status.loaded_pages,
+                        status.loaded_bytes,
+                        status.materialized_rows,
+                    )
                 });
                 apply_kernel_input(
                     client,
@@ -539,12 +646,15 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
                 )?;
                 let after = client.session.history_cache(&terminal_id).map(|cache| {
                     let status = cache.status();
-                    (status.loaded_pages, status.loaded_bytes, status.materialized_rows)
+                    (
+                        status.loaded_pages,
+                        status.loaded_bytes,
+                        status.materialized_rows,
+                    )
                 });
                 if before != after {
                     client.bump_document_revision(&terminal_id)?;
                 }
-
             }
             FrameKind::HistoryTombstone {
                 terminal_id,
@@ -586,7 +696,13 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
                     },
                 )?;
             }
-            FrameKind::TerminalOutput { terminal_id, stream_id, bootstrap_id, seq, bytes } => {
+            FrameKind::TerminalOutput {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq,
+                bytes,
+            } => {
                 let before = client
                     .session
                     .published(&terminal_id)
@@ -608,9 +724,14 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
                 if before != after {
                     client.bump_document_revision(&terminal_id)?;
                 }
-
             }
-            FrameKind::BootstrapTombstone { terminal_id, stream_id, bootstrap_id, reason, last_valid_seq } => {
+            FrameKind::BootstrapTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                reason,
+                last_valid_seq,
+            } => {
                 apply_kernel_input(
                     client,
                     KernelInput::Tombstone {
@@ -624,17 +745,17 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
                 client.render.remove(&terminal_id);
                 client.document_revisions.remove(&terminal_id);
                 client.invalidate_terminal_handles(&terminal_id);
-
             }
             FrameKind::TerminalClosed { terminal_id, .. } => {
                 apply_kernel_input(
                     client,
-                    KernelInput::TerminalClosed { terminal_id: &terminal_id },
+                    KernelInput::TerminalClosed {
+                        terminal_id: &terminal_id,
+                    },
                 )?;
                 client.render.remove(&terminal_id);
                 client.document_revisions.remove(&terminal_id);
                 client.invalidate_terminal_handles(&terminal_id);
-
             }
             FrameKind::Bell { terminal_id } => {
                 client
@@ -658,7 +779,11 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
                 ));
                 client.rebuild_effect_views();
             }
-            _ => return Err(BridgeError::protocol("server sent a frame not accepted by the client session kernel")),
+            _ => {
+                return Err(BridgeError::protocol(
+                    "server sent a frame not accepted by the client session kernel",
+                ));
+            }
         }
         Ok(())
     });
@@ -672,12 +797,20 @@ pub unsafe extern "C" fn phux_client_feed_frame(client: *mut PhuxClient, data: *
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_outgoing_count(client: *const PhuxClient) -> usize {
     unsafe { client.as_ref() }.map_or(0, |client| {
-        if client.inner.in_callback { 0 } else { client.inner.outgoing.len() }
+        if client.inner.in_callback {
+            0
+        } else {
+            client.inner.outgoing.len()
+        }
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_outgoing_get(client: *const PhuxClient, index: usize, out_frame: *mut PhuxBytes) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_outgoing_get(
+    client: *const PhuxClient,
+    index: usize,
+    out_frame: *mut PhuxBytes,
+) -> PhuxClientResult {
     match catch_unwind(AssertUnwindSafe(|| -> Result<(), PhuxClientResult> {
         let client = unsafe { client.as_ref() }.ok_or(PhuxClientResult::InvalidArgument)?;
         if client.inner.in_callback {
@@ -685,7 +818,11 @@ pub unsafe extern "C" fn phux_client_outgoing_get(client: *const PhuxClient, ind
         }
         let out = unsafe { out_frame.as_mut() }.ok_or(PhuxClientResult::InvalidArgument)?;
         *out = PhuxBytes::default();
-        let frame = client.inner.outgoing.get(index).ok_or(PhuxClientResult::NoValue)?;
+        let frame = client
+            .inner
+            .outgoing
+            .get(index)
+            .ok_or(PhuxClientResult::NoValue)?;
         *out = bytes_out(frame);
         Ok(())
     })) {
@@ -706,12 +843,20 @@ pub unsafe extern "C" fn phux_client_outgoing_clear(client: *mut PhuxClient) -> 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_effect_count(client: *const PhuxClient) -> usize {
     unsafe { client.as_ref() }.map_or(0, |client| {
-        if client.inner.in_callback { 0 } else { client.inner.effect_views.len() }
+        if client.inner.in_callback {
+            0
+        } else {
+            client.inner.effect_views.len()
+        }
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_effect_get(client: *const PhuxClient, index: usize, out_effect: *mut PhuxClientEffect) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_effect_get(
+    client: *const PhuxClient,
+    index: usize,
+    out_effect: *mut PhuxClientEffect,
+) -> PhuxClientResult {
     match catch_unwind(AssertUnwindSafe(|| -> Result<(), PhuxClientResult> {
         let client = unsafe { client.as_ref() }.ok_or(PhuxClientResult::InvalidArgument)?;
         if client.inner.in_callback {
@@ -719,7 +864,11 @@ pub unsafe extern "C" fn phux_client_effect_get(client: *const PhuxClient, index
         }
         let out = unsafe { out_effect.as_mut() }.ok_or(PhuxClientResult::InvalidArgument)?;
         *out = PhuxClientEffect::default();
-        *out = *client.inner.effect_views.get(index).ok_or(PhuxClientResult::NoValue)?;
+        *out = *client
+            .inner
+            .effect_views
+            .get(index)
+            .ok_or(PhuxClientResult::NoValue)?;
         Ok(())
     })) {
         Ok(Ok(())) => PhuxClientResult::Ok,
@@ -738,9 +887,14 @@ pub unsafe extern "C" fn phux_client_effect_clear(client: *mut PhuxClient) -> Ph
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_terminal_grid(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId, out_view: *mut PhuxTerminalGridView) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_terminal_grid(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    out_view: *mut PhuxTerminalGridView,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
-        let out = unsafe { out_view.as_mut() }.ok_or_else(|| BridgeError::invalid("out_view is null"))?;
+        let out =
+            unsafe { out_view.as_mut() }.ok_or_else(|| BridgeError::invalid("out_view is null"))?;
         *out = PhuxTerminalGridView::default();
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         let view = client.build_grid(&terminal_id)?;
@@ -751,28 +905,49 @@ pub unsafe extern "C" fn phux_client_terminal_grid(client: *mut PhuxClient, term
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_send_key(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId, event: *const PhuxKeyEvent) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_send_key(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    event: *const PhuxKeyEvent,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
-        let event = unsafe { event.as_ref() }.ok_or_else(|| BridgeError::invalid("event is null"))?;
+        let event =
+            unsafe { event.as_ref() }.ok_or_else(|| BridgeError::invalid("event is null"))?;
         check_struct(event.size, mem::size_of::<PhuxKeyEvent>(), event.version)?;
         let text = if event.has_text {
             let bytes = unsafe { bytes_in(event.text.data, event.text.len) }?;
-            let text = std::str::from_utf8(bytes).map_err(|_| BridgeError::invalid("key text is not UTF-8"))?;
-            if text.chars().any(|ch| ch <= '\u{1f}' || ch == '\u{7f}' || ('\u{f700}'..='\u{f8ff}').contains(&ch)) {
-                return Err(BridgeError::invalid("key text contains forbidden control or platform function codepoints"));
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| BridgeError::invalid("key text is not UTF-8"))?;
+            if text.chars().any(|ch| {
+                ch <= '\u{1f}' || ch == '\u{7f}' || ('\u{f700}'..='\u{f8ff}').contains(&ch)
+            }) {
+                return Err(BridgeError::invalid(
+                    "key text contains forbidden control or platform function codepoints",
+                ));
             }
             Some(text.to_owned())
         } else {
-            if event.text.len != 0 { return Err(BridgeError::invalid("key text bytes present when has_text is false")); }
+            if event.text.len != 0 {
+                return Err(BridgeError::invalid(
+                    "key text bytes present when has_text is false",
+                ));
+            }
             None
         };
-        let mods = ModSet::from_bits(event.modifiers).ok_or_else(|| BridgeError::invalid("unknown key modifier bits"))?;
-        let consumed_mods = ModSet::from_bits(event.consumed_modifiers).ok_or_else(|| BridgeError::invalid("unknown consumed modifier bits"))?;
-        if !mods.contains(consumed_mods) { return Err(BridgeError::invalid("consumed modifiers are not a subset of modifiers")); }
+        let mods = ModSet::from_bits(event.modifiers)
+            .ok_or_else(|| BridgeError::invalid("unknown key modifier bits"))?;
+        let consumed_mods = ModSet::from_bits(event.consumed_modifiers)
+            .ok_or_else(|| BridgeError::invalid("unknown consumed modifier bits"))?;
+        if !mods.contains(consumed_mods) {
+            return Err(BridgeError::invalid(
+                "consumed modifiers are not a subset of modifiers",
+            ));
+        }
         let unshifted_codepoint = if event.has_unshifted_codepoint {
-            char::from_u32(event.unshifted_codepoint)
-                .ok_or_else(|| BridgeError::invalid("unshifted codepoint is not a Unicode scalar"))?;
+            char::from_u32(event.unshifted_codepoint).ok_or_else(|| {
+                BridgeError::invalid("unshifted codepoint is not a Unicode scalar")
+            })?;
             Some(event.unshifted_codepoint)
         } else {
             if event.unshifted_codepoint != 0 {
@@ -783,8 +958,10 @@ pub unsafe extern "C" fn phux_client_send_key(client: *mut PhuxClient, terminal_
             None
         };
         let event = InputEvent::Key(KeyEvent {
-            action: KeyAction::try_from(event.action).map_err(|_| BridgeError::invalid("unknown key action"))?,
-            key: PhysicalKey::try_from(event.key).map_err(|_| BridgeError::invalid("unknown physical key"))?,
+            action: KeyAction::try_from(event.action)
+                .map_err(|_| BridgeError::invalid("unknown key action"))?,
+            key: PhysicalKey::try_from(event.key)
+                .map_err(|_| BridgeError::invalid("unknown physical key"))?,
             mods,
             consumed_mods,
             composing: event.composing,
@@ -796,18 +973,28 @@ pub unsafe extern "C" fn phux_client_send_key(client: *mut PhuxClient, terminal_
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_send_mouse(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId, event: *const PhuxMouseEvent) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_send_mouse(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    event: *const PhuxMouseEvent,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
-        let event = unsafe { event.as_ref() }.ok_or_else(|| BridgeError::invalid("event is null"))?;
+        let event =
+            unsafe { event.as_ref() }.ok_or_else(|| BridgeError::invalid("event is null"))?;
         check_struct(event.size, mem::size_of::<PhuxMouseEvent>(), event.version)?;
         if !event.x.is_finite() || !event.y.is_finite() || event.x < 0.0 || event.y < 0.0 {
-            return Err(BridgeError::invalid("mouse coordinates must be finite and non-negative"));
+            return Err(BridgeError::invalid(
+                "mouse coordinates must be finite and non-negative",
+            ));
         }
         let input = InputEvent::Mouse(MouseEvent {
-            action: MouseAction::try_from(event.action).map_err(|_| BridgeError::invalid("unknown mouse action"))?,
-            button: MouseButton::try_from(event.button).map_err(|_| BridgeError::invalid("unknown mouse button"))?,
-            mods: ModSet::from_bits(event.modifiers).ok_or_else(|| BridgeError::invalid("unknown mouse modifier bits"))?,
+            action: MouseAction::try_from(event.action)
+                .map_err(|_| BridgeError::invalid("unknown mouse action"))?,
+            button: MouseButton::try_from(event.button)
+                .map_err(|_| BridgeError::invalid("unknown mouse button"))?,
+            mods: ModSet::from_bits(event.modifiers)
+                .ok_or_else(|| BridgeError::invalid("unknown mouse modifier bits"))?,
             x: event.x,
             y: event.y,
         });
@@ -816,45 +1003,99 @@ pub unsafe extern "C" fn phux_client_send_mouse(client: *mut PhuxClient, termina
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_send_focus(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId, focused: bool) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_send_focus(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    focused: bool,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
-        apply_input(client, &terminal_id, &InputEvent::Focus(if focused { FocusEvent::Gained } else { FocusEvent::Lost }))
+        apply_input(
+            client,
+            &terminal_id,
+            &InputEvent::Focus(if focused {
+                FocusEvent::Gained
+            } else {
+                FocusEvent::Lost
+            }),
+        )
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_send_paste(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId, data: *const u8, len: usize, trusted: bool) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_send_paste(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    data: *const u8,
+    len: usize,
+    trusted: bool,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         let data = unsafe { bytes_in(data, len) }?;
-        apply_input(client, &terminal_id, &InputEvent::Paste(PasteEvent {
-            trust: if trusted { PasteTrust::Trusted } else { PasteTrust::Untrusted },
-            data: data.to_vec(),
-        }))
+        apply_input(
+            client,
+            &terminal_id,
+            &InputEvent::Paste(PasteEvent {
+                trust: if trusted {
+                    PasteTrust::Trusted
+                } else {
+                    PasteTrust::Untrusted
+                },
+                data: data.to_vec(),
+            }),
+        )
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_terminal_resize(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId, cols: u16, rows: u16) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_terminal_resize(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    cols: u16,
+    rows: u16,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
-        if cols == 0 || rows == 0 { return Err(BridgeError::invalid("terminal resize geometry must be non-zero")); }
+        if cols == 0 || rows == 0 {
+            return Err(BridgeError::invalid(
+                "terminal resize geometry must be non-zero",
+            ));
+        }
         if !client.attached {
-            return Err(BridgeError::state("terminal resize requires an attached client"));
+            return Err(BridgeError::state(
+                "terminal resize requires an attached client",
+            ));
         }
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         let _ = client.terminal_key(&terminal_id)?;
-        client.queue_frame(FrameKind::TerminalResize { terminal_id, cols, rows });
+        client.queue_frame(FrameKind::TerminalResize {
+            terminal_id,
+            cols,
+            rows,
+        });
         Ok(())
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_viewport_resize(client: *mut PhuxClient, cols: u16, rows: u16, has_pixel_size: bool, pixel_width: u16, pixel_height: u16) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_viewport_resize(
+    client: *mut PhuxClient,
+    cols: u16,
+    rows: u16,
+    has_pixel_size: bool,
+    pixel_width: u16,
+    pixel_height: u16,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
-        if cols == 0 || rows == 0 { return Err(BridgeError::invalid("viewport resize geometry must be non-zero")); }
+        if cols == 0 || rows == 0 {
+            return Err(BridgeError::invalid(
+                "viewport resize geometry must be non-zero",
+            ));
+        }
         if !client.attached {
-            return Err(BridgeError::state("viewport resize requires an attached client"));
+            return Err(BridgeError::state(
+                "viewport resize requires an attached client",
+            ));
         }
         if has_pixel_size {
             if pixel_width == 0 || pixel_height == 0 {
@@ -869,14 +1110,20 @@ pub unsafe extern "C" fn phux_client_viewport_resize(client: *mut PhuxClient, co
         }
         let pixels = has_pixel_size.then_some((pixel_width, pixel_height));
         client.queue_frame(FrameKind::ViewportResize {
-            viewport: ViewportInfo::new(cols, rows).with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1)),
+            viewport: ViewportInfo::new(cols, rows)
+                .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1)),
         });
         Ok(())
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_scroll_viewport(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId, kind: u32, value: i64) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_scroll_viewport(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    kind: u32,
+    value: i64,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         client.scroll(&terminal_id, kind, value)
@@ -936,7 +1183,13 @@ pub unsafe extern "C" fn phux_client_history_follow_live(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_selection_set(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId, start: PhuxDocumentAnchor, end: PhuxDocumentAnchor, rectangle: bool) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_selection_set(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    start: PhuxDocumentAnchor,
+    end: PhuxDocumentAnchor,
+    rectangle: bool,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         client.set_selection(&terminal_id, start, end, rectangle)
@@ -944,7 +1197,10 @@ pub unsafe extern "C" fn phux_client_selection_set(client: *mut PhuxClient, term
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_selection_clear(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_selection_clear(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         client.clear_selection(&terminal_id)
@@ -952,9 +1208,14 @@ pub unsafe extern "C" fn phux_client_selection_clear(client: *mut PhuxClient, te
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_selection_text(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId, out_text: *mut PhuxBytes) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_selection_text(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    out_text: *mut PhuxBytes,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
-        let out = unsafe { out_text.as_mut() }.ok_or_else(|| BridgeError::invalid("out_text is null"))?;
+        let out =
+            unsafe { out_text.as_mut() }.ok_or_else(|| BridgeError::invalid("out_text is null"))?;
         *out = PhuxBytes::default();
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         client.selection_text(&terminal_id)?;
@@ -964,7 +1225,14 @@ pub unsafe extern "C" fn phux_client_selection_text(client: *mut PhuxClient, ter
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_search(client: *mut PhuxClient, terminal_id: *const PhuxTerminalId, query_utf8: PhuxBytes, case_sensitive: bool, out_results: *mut *const PhuxSearchResult, out_count: *mut usize) -> PhuxClientResult {
+pub unsafe extern "C" fn phux_client_search(
+    client: *mut PhuxClient,
+    terminal_id: *const PhuxTerminalId,
+    query_utf8: PhuxBytes,
+    case_sensitive: bool,
+    out_results: *mut *const PhuxSearchResult,
+    out_count: *mut usize,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         let out_results = unsafe { out_results.as_mut() }
             .ok_or_else(|| BridgeError::invalid("out_results is null"))?;
@@ -975,7 +1243,11 @@ pub unsafe extern "C" fn phux_client_search(client: *mut PhuxClient, terminal_id
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         let query = unsafe { bytes_in(query_utf8.data, query_utf8.len) }?;
         client.search(&terminal_id, query, case_sensitive)?;
-        *out_results = if client.search_results.is_empty() { ptr::null() } else { client.search_results.as_ptr() };
+        *out_results = if client.search_results.is_empty() {
+            ptr::null()
+        } else {
+            client.search_results.as_ptr()
+        };
         *out_count = client.search_results.len();
         Ok(())
     })
@@ -984,6 +1256,7 @@ pub unsafe extern "C" fn phux_client_search(client: *mut PhuxClient, terminal_id
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phux_protocol::caps::ServerCapabilities;
     use std::ffi::c_void;
 
     struct CallbackContext {
@@ -998,8 +1271,7 @@ mod tests {
     unsafe extern "C-unwind" fn attached_callback(userdata: *mut c_void) {
         let context = unsafe { &mut *userdata.cast::<CallbackContext>() };
         context.calls += 1;
-        context.staged_before_call =
-            unsafe { (*context.client).inner.owned_effects.len() == 1 };
+        context.staged_before_call = unsafe { (*context.client).inner.owned_effects.len() == 1 };
         context.reentry_result = unsafe { phux_client_outgoing_clear(context.client) };
     }
 
@@ -1011,10 +1283,9 @@ mod tests {
         let context = unsafe { &mut *userdata.cast::<CallbackContext>() };
         context.calls += 1;
         context.failure_result = result;
-        context.failure_message =
-            unsafe { bytes_in(message.data, message.len) }
-                .expect("callback message span")
-                .to_vec();
+        context.failure_message = unsafe { bytes_in(message.data, message.len) }
+            .expect("callback message span")
+            .to_vec();
         context.reentry_result = unsafe { phux_client_outgoing_clear(context.client) };
     }
 
@@ -1116,7 +1387,7 @@ mod tests {
     fn hello_ok_explicitly_gates_terminal_reply_frames() {
         fn feed_hello(
             client: *mut PhuxClient,
-            server_caps: phux_protocol::ServerCapabilities,
+            server_caps: ServerCapabilities,
         ) -> PhuxClientResult {
             unsafe { (*client).inner.hello_queued = true };
             let mut encoded = bytes::BytesMut::new();
@@ -1127,8 +1398,7 @@ mod tests {
                 server_caps,
                 server_id: b"server".to_vec(),
                 selected_profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-                bootstrap_limits: BootstrapLimits::new(1024, 1024)
-                    .expect("valid test limits"),
+                bootstrap_limits: BootstrapLimits::new(1024, 1024).expect("valid test limits"),
             }
             .encode(&mut encoded);
             unsafe { phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) }
@@ -1136,21 +1406,17 @@ mod tests {
 
         let old = boxed_client();
         assert_eq!(
-            feed_hello(old, phux_protocol::ServerCapabilities::new()),
+            feed_hello(old, ServerCapabilities::new()),
             PhuxClientResult::Ok
         );
         assert!(!unsafe { (*old).inner.terminal_reply });
         unsafe { phux_client_free(old) };
 
         let new = boxed_client();
-        let features = phux_protocol::ServerFeatureSet::with(&[
-            phux_protocol::ServerFeature::TerminalReply,
-        ]);
+        let features =
+            phux_protocol::ServerFeatureSet::with(&[phux_protocol::ServerFeature::TerminalReply]);
         assert_eq!(
-            feed_hello(
-                new,
-                phux_protocol::ServerCapabilities::new().with_features(features),
-            ),
+            feed_hello(new, ServerCapabilities::new().with_features(features),),
             PhuxClientResult::Ok
         );
         assert!(unsafe { (*new).inner.terminal_reply });

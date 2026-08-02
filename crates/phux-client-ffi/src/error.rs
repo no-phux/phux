@@ -10,19 +10,31 @@ pub struct BridgeError {
 
 impl BridgeError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self { result: PhuxClientResult::InvalidArgument, message: message.into() }
+        Self {
+            result: PhuxClientResult::InvalidArgument,
+            message: message.into(),
+        }
     }
 
     pub fn state(message: impl Into<String>) -> Self {
-        Self { result: PhuxClientResult::InvalidState, message: message.into() }
+        Self {
+            result: PhuxClientResult::InvalidState,
+            message: message.into(),
+        }
     }
 
     pub fn protocol(message: impl Into<String>) -> Self {
-        Self { result: PhuxClientResult::ProtocolError, message: message.into() }
+        Self {
+            result: PhuxClientResult::ProtocolError,
+            message: message.into(),
+        }
     }
 
     pub fn engine(message: impl Into<String>) -> Self {
-        Self { result: PhuxClientResult::EngineError, message: message.into() }
+        Self {
+            result: PhuxClientResult::EngineError,
+            message: message.into(),
+        }
     }
 
     pub fn ghostty(error: libghostty_vt::Error) -> Self {
@@ -31,7 +43,10 @@ impl BridgeError {
         } else {
             PhuxClientResult::EngineError
         };
-        Self { result, message: error.to_string() }
+        Self {
+            result,
+            message: error.to_string(),
+        }
     }
 }
 
@@ -50,7 +65,9 @@ pub unsafe fn bytes_in<'a>(data: *const u8, len: usize) -> Result<&'a [u8], Brid
         return Ok(&[]);
     }
     if data.is_null() {
-        return Err(BridgeError::invalid("non-empty byte span has a null pointer"));
+        return Err(BridgeError::invalid(
+            "non-empty byte span has a null pointer",
+        ));
     }
     // SAFETY: caller promises the non-null span is readable for `len` bytes.
     Ok(unsafe { std::slice::from_raw_parts(data, len) })
@@ -58,12 +75,14 @@ pub unsafe fn bytes_in<'a>(data: *const u8, len: usize) -> Result<&'a [u8], Brid
 
 pub unsafe fn terminal_id_in(value: *const PhuxTerminalId) -> Result<TerminalId, BridgeError> {
     // SAFETY: pointer validity is checked before dereference.
-    let value = unsafe { value.as_ref() }
-        .ok_or_else(|| BridgeError::invalid("terminal_id is null"))?;
+    let value =
+        unsafe { value.as_ref() }.ok_or_else(|| BridgeError::invalid("terminal_id is null"))?;
     match value.kind {
         0 => {
             if value.host.len != 0 {
-                return Err(BridgeError::invalid("local terminal ID must not carry a host"));
+                return Err(BridgeError::invalid(
+                    "local terminal ID must not carry a host",
+                ));
             }
             Ok(TerminalId::local(value.id))
         }

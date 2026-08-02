@@ -49,7 +49,10 @@ pub struct PhuxBytes {
 
 impl Default for PhuxBytes {
     fn default() -> Self {
-        Self { data: ptr::null(), len: 0 }
+        Self {
+            data: ptr::null(),
+            len: 0,
+        }
     }
 }
 
@@ -299,7 +302,11 @@ impl OwnedEffect {
 
 pub fn bytes_out(data: &[u8]) -> PhuxBytes {
     PhuxBytes {
-        data: if data.is_empty() { ptr::null() } else { data.as_ptr() },
+        data: if data.is_empty() {
+            ptr::null()
+        } else {
+            data.as_ptr()
+        },
         len: data.len(),
     }
 }
