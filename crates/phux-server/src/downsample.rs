@@ -106,6 +106,10 @@ pub fn rewrite_bytes_with_caps(input: &[u8], caps: ClientCapabilities) -> Vec<u8
             }
         }
     }
+    debug_assert!(
+        out.len() <= input.len(),
+        "capability adaptation must never expand its source"
+    );
     out
 }
 
@@ -259,71 +263,84 @@ fn handle_apc(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Ve
 /// tolerate any value there.
 fn rewrite_sgr(params: &[u8], support: ColorSupport, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b[");
-    let groups: Vec<&[u8]> = params.split(|b| *b == b';').collect();
 
     let mut first = true;
-    let mut i = 0;
-    while i < groups.len() {
-        let raw = groups[i];
+    let mut position = Some(0_usize);
+    while let Some(start) = position {
+        let (raw, next) = sgr_group(params, start);
 
         // ITU colon form: the entire truecolor spec lives in one group.
         if let Some(rgb) = parse_itu_truecolor(raw, 38) {
             emit_color_params(rgb, true, support, out, &mut first);
-            i += 1;
+            position = next;
             continue;
         }
         if let Some(rgb) = parse_itu_truecolor(raw, 48) {
             emit_color_params(rgb, false, support, out, &mut first);
-            i += 1;
+            position = next;
             continue;
         }
 
-        // Classic semicolon form: 38 ; 2 ; R ; G ; B spans five groups.
-        // Only matches when the group contains no `:` (otherwise the
-        // ITU branch above would have either matched or this is some
-        // unrelated extension we must not eat).
+        // Classic semicolon form: inspect the following four groups without
+        // collecting every parameter into a heap Vec. Besides avoiding a
+        // per-SGR allocation, this gives aggregate bootstrap adaptation the
+        // exact peak bound of source bytes plus one output allocation.
         if !raw.contains(&b':')
-            && parse_single_param(raw) == Some(38)
-            && i + 4 < groups.len()
-            && parse_single_param(groups[i + 1]) == Some(2)
-            && let (Some(r), Some(g), Some(b)) = (
-                parse_single_param(groups[i + 2]),
-                parse_single_param(groups[i + 3]),
-                parse_single_param(groups[i + 4]),
-            )
+            && let Some(selector) = parse_single_param(raw)
+            && matches!(selector, 38 | 48)
+            && let Some((rgb, after)) = classic_truecolor(params, next)
         {
-            let rgb = [clamp_u8(r), clamp_u8(g), clamp_u8(b)];
-            emit_color_params(rgb, true, support, out, &mut first);
-            i += 5;
-            continue;
-        }
-        if !raw.contains(&b':')
-            && parse_single_param(raw) == Some(48)
-            && i + 4 < groups.len()
-            && parse_single_param(groups[i + 1]) == Some(2)
-            && let (Some(r), Some(g), Some(b)) = (
-                parse_single_param(groups[i + 2]),
-                parse_single_param(groups[i + 3]),
-                parse_single_param(groups[i + 4]),
-            )
-        {
-            let rgb = [clamp_u8(r), clamp_u8(g), clamp_u8(b)];
-            emit_color_params(rgb, false, support, out, &mut first);
-            i += 5;
+            emit_color_params(rgb, selector == 38, support, out, &mut first);
+            position = after;
             continue;
         }
 
-        // Anything else passes through verbatim. The group's original
-        // bytes (including any `:` sub-separators, e.g. `4:3` curly
-        // underline) survive intact.
+        // Anything else passes through verbatim. The group's original bytes
+        // (including any `:` sub-separators, e.g. `4:3` curly underline)
+        // survive intact.
         if !first {
             out.push(b';');
         }
         first = false;
         out.extend_from_slice(raw);
-        i += 1;
+        position = next;
     }
     out.push(b'm');
+}
+
+fn sgr_group(params: &[u8], start: usize) -> (&[u8], Option<usize>) {
+    let tail = &params[start..];
+    match tail.iter().position(|byte| *byte == b';') {
+        Some(relative_end) => {
+            let end = start + relative_end;
+            (&params[start..end], Some(end + 1))
+        }
+        None => (tail, None),
+    }
+}
+
+fn classic_truecolor(
+    params: &[u8],
+    mut position: Option<usize>,
+) -> Option<([u8; 3], Option<usize>)> {
+    let mut values = [0_u32; 4];
+    for value in &mut values {
+        let start = position?;
+        let (raw, next) = sgr_group(params, start);
+        *value = parse_single_param(raw)?;
+        position = next;
+    }
+    if values[0] != 2 {
+        return None;
+    }
+    Some((
+        [
+            clamp_u8(values[1]),
+            clamp_u8(values[2]),
+            clamp_u8(values[3]),
+        ],
+        position,
+    ))
 }
 
 /// Parse a single colon-free SGR parameter group. Empty → `Some(0)`

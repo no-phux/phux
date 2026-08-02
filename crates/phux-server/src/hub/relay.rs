@@ -3063,7 +3063,9 @@ mod tests {
             }))
             .expect("valid satellite frame");
 
-        let Outbound::Frame(first) = out_rx.try_recv().expect("event fanned out");
+        let Outbound::Frame(first) = out_rx.try_recv().expect("event fanned out") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert_eq!(
             first,
             FrameKind::Event {
@@ -3071,7 +3073,9 @@ mod tests {
                 event: AgentEvent::CommandStarted,
             }
         );
-        let Outbound::Frame(second) = out_rx.try_recv().expect("output fanned out");
+        let Outbound::Frame(second) = out_rx.try_recv().expect("output fanned out") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(matches!(
             second,
             FrameKind::TerminalOutput { terminal_id, seq: 42, .. }
@@ -3107,7 +3111,9 @@ mod tests {
                 exit_status: Some(0),
             }))
             .expect("valid satellite frame");
-        let Outbound::Frame(frame) = out_rx.try_recv().expect("closed fanned out");
+        let Outbound::Frame(frame) = out_rx.try_recv().expect("closed fanned out") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert_eq!(
             frame,
             FrameKind::TerminalClosed {
@@ -3198,12 +3204,16 @@ mod tests {
             .handle_inbound(&encode(&output_frame(9, 1, b"delta")))
             .expect("valid satellite frame");
 
-        let Outbound::Frame(first) = out_rx.try_recv().expect("snapshot delivered");
+        let Outbound::Frame(first) = out_rx.try_recv().expect("snapshot delivered") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(
             matches!(first, FrameKind::BootstrapReady { .. }),
             "the snapshot must reach the consumer before any delta, got {first:?}"
         );
-        let Outbound::Frame(second) = out_rx.try_recv().expect("delta delivered");
+        let Outbound::Frame(second) = out_rx.try_recv().expect("delta delivered") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(
             matches!(
                 second,
@@ -3248,7 +3258,9 @@ mod tests {
         // The keepalive tick retries the retained snapshot; the mailbox now
         // has room, so it lands — and it was never preceded by the delta.
         session.flush_pending_snapshots();
-        let Outbound::Frame(frame) = out_rx.try_recv().expect("snapshot flushed on tick");
+        let Outbound::Frame(frame) = out_rx.try_recv().expect("snapshot flushed on tick") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(
             matches!(frame, FrameKind::BootstrapReady { .. }),
             "the tick flush delivers the retained snapshot, got {frame:?}"
@@ -3313,7 +3325,9 @@ mod tests {
         session
             .handle_inbound(&encode(&snapshot_frame(9)))
             .expect("valid satellite frame");
-        let Outbound::Frame(a_snap) = rx_a.try_recv().expect("A's snapshot");
+        let Outbound::Frame(a_snap) = rx_a.try_recv().expect("A's snapshot") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(matches!(a_snap, FrameKind::BootstrapReady { .. }));
 
         // B attaches to the same terminal (registration is immediate) but its
@@ -3326,7 +3340,9 @@ mod tests {
         session
             .handle_inbound(&encode(&output_frame(9, 1, b"a-stream")))
             .expect("valid satellite frame");
-        let Outbound::Frame(a_delta) = rx_a.try_recv().expect("A sees the delta");
+        let Outbound::Frame(a_delta) = rx_a.try_recv().expect("A sees the delta") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(matches!(a_delta, FrameKind::TerminalOutput { seq: 1, .. }));
         assert!(
             rx_b.try_recv().is_err(),
@@ -3337,7 +3353,9 @@ mod tests {
         session
             .handle_inbound(&encode(&snapshot_frame(9)))
             .expect("valid satellite frame");
-        let Outbound::Frame(b_first) = rx_b.try_recv().expect("B's snapshot lands");
+        let Outbound::Frame(b_first) = rx_b.try_recv().expect("B's snapshot lands") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(
             matches!(b_first, FrameKind::BootstrapReady { .. }),
             "B's first frame must be its snapshot, got {b_first:?}"
@@ -3347,7 +3365,10 @@ mod tests {
         session
             .handle_inbound(&encode(&output_frame(9, 2, b"after")))
             .expect("valid satellite frame");
-        let Outbound::Frame(b_delta) = rx_b.try_recv().expect("B sees the post-snapshot delta");
+        let Outbound::Frame(b_delta) = rx_b.try_recv().expect("B sees the post-snapshot delta")
+        else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(
             matches!(
                 b_delta,
@@ -3385,7 +3406,9 @@ mod tests {
                 exit_status: Some(0),
             }))
             .expect("valid satellite frame");
-        let Outbound::Frame(frame) = rx_b.try_recv().expect("close delivered past the gate");
+        let Outbound::Frame(frame) = rx_b.try_recv().expect("close delivered past the gate") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert_eq!(
             frame,
             FrameKind::TerminalClosed {
@@ -3418,7 +3441,10 @@ mod tests {
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
-        let Outbound::Frame(frame) = out_rx.try_recv().expect("event flows without a snapshot");
+        let Outbound::Frame(frame) = out_rx.try_recv().expect("event flows without a snapshot")
+        else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert_eq!(
             frame,
             FrameKind::Event {
@@ -3471,7 +3497,9 @@ mod tests {
         session
             .handle_inbound(&encode(&snapshot_frame(9)))
             .expect("valid satellite frame");
-        let Outbound::Frame(first) = out_rx.try_recv().expect("the attach snapshot lands");
+        let Outbound::Frame(first) = out_rx.try_recv().expect("the attach snapshot lands") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(
             matches!(first, FrameKind::BootstrapReady { .. }),
             "the first post-upgrade frame must be the snapshot, got {first:?}"
@@ -3481,7 +3509,9 @@ mod tests {
         session
             .handle_inbound(&encode(&output_frame(9, 2, b"post-snapshot")))
             .expect("valid satellite frame");
-        let Outbound::Frame(delta) = out_rx.try_recv().expect("post-snapshot delta rides");
+        let Outbound::Frame(delta) = out_rx.try_recv().expect("post-snapshot delta rides") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(
             matches!(
                 delta,
@@ -3541,7 +3571,9 @@ mod tests {
                 terminal_id: TerminalId::local(9),
             }))
             .expect("valid satellite frame");
-        let Outbound::Frame(frame) = rx.try_recv().expect("bell delivered past the gate");
+        let Outbound::Frame(frame) = rx.try_recv().expect("bell delivered past the gate") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert_eq!(
             frame,
             FrameKind::Bell {
@@ -3586,7 +3618,9 @@ mod tests {
                 ..
             }
         ));
-        let Outbound::Frame(frame) = out_rx.try_recv().expect("consumer notified");
+        let Outbound::Frame(frame) = out_rx.try_recv().expect("consumer notified") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(matches!(
             frame,
             FrameKind::Error {
@@ -3655,7 +3689,9 @@ mod tests {
                 event: AgentEvent::CommandStarted,
             }))
             .expect("valid satellite frame");
-        let Outbound::Frame(_) = rx_b.try_recv().expect("client 2 still fanned out");
+        let Outbound::Frame(_) = rx_b.try_recv().expect("client 2 still fanned out") else {
+            panic!("unexpected terminal outbound sentinel");
+        };
         // Now the last subscriber leaves: exactly one detach goes out.
         let frames = session.handle_unsubscribe(Unsubscribe::Terminal {
             client: ClientId(2),
@@ -3704,7 +3740,10 @@ mod tests {
                 bytes: bytes::Bytes::from_static(b"live"),
             }))
             .expect("valid satellite frame");
-        let Outbound::Frame(frame) = out_rx.try_recv().expect("re-attached stream torn down");
+        let Outbound::Frame(frame) = out_rx.try_recv().expect("re-attached stream torn down")
+        else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(matches!(
             frame,
             FrameKind::TerminalOutput { terminal_id, seq: 7, .. }
@@ -3772,7 +3811,9 @@ mod tests {
                 terminal: Some(TerminalId::local(9)),
             },
         );
-        let Outbound::Frame(frame) = out_rx.try_recv().expect("typed error pushed");
+        let Outbound::Frame(frame) = out_rx.try_recv().expect("typed error pushed") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
         assert!(matches!(
             frame,
             FrameKind::Error {

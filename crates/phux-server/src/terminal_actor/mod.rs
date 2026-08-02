@@ -339,6 +339,19 @@ fn reserve_native_bytes(capacity: usize) -> Result<Vec<u8>, crate::native_state:
     .unwrap_or(Err(crate::native_state::NativeStateError::OutOfMemory))
 }
 
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn native_step_bytes(
+    capture_bytes: usize,
+    retained_bytes: usize,
+    chunk_bytes: usize,
+) -> Result<usize, crate::native_state::NativeStateError> {
+    capture_bytes
+        .checked_sub(retained_bytes)
+        .filter(|bytes| *bytes != 0)
+        .map(|remaining| remaining.min(chunk_bytes))
+        .ok_or(crate::native_state::NativeStateError::LimitExceeded)
+}
+
 #[derive(Debug)]
 enum CanonicalTerminal {
     Plain(Option<GhosttyTerminal<'static, 'static>>),
@@ -2890,8 +2903,9 @@ impl TerminalActor {
                 frames
                     .try_reserve(1)
                     .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
-                let mut payload = reserve_native_bytes(chunk_bytes)?;
-                payload.resize(chunk_bytes, 0);
+                let step_bytes = native_step_bytes(capture_bytes, retained_bytes, chunk_bytes)?;
+                let mut payload = reserve_native_bytes(step_bytes)?;
+                payload.resize(step_bytes, 0);
                 let (ready, payload_len) = {
                     let event = capture.step(&mut payload)?;
                     (
@@ -4643,7 +4657,10 @@ mod tests {
             // supervisory TerminalControl broadcast.
             let scan = async {
                 loop {
-                    let Outbound::Frame(frame) = rx.recv().await.expect("event channel open");
+                    let Outbound::Frame(frame) = rx.recv().await.expect("event channel open")
+                    else {
+                        panic!("unexpected terminal outbound sentinel")
+                    };
                     if let FrameKind::Event {
                         event:
                             AgentEvent::TerminalControl {
@@ -4973,6 +4990,17 @@ mod tests {
                 );
             })
             .await;
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[test]
+    fn native_step_allocation_never_exceeds_remaining_capture_budget() {
+        assert_eq!(native_step_bytes(10, 7, 8).expect("remaining step"), 3);
+        assert_eq!(native_step_bytes(10, 0, 8).expect("full step"), 8);
+        assert!(matches!(
+            native_step_bytes(10, 10, 8),
+            Err(crate::native_state::NativeStateError::LimitExceeded)
+        ));
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

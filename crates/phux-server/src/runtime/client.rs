@@ -2213,13 +2213,32 @@ pub(crate) async fn writer_task<W: FrameWriter>(
         } else {
             rx.recv().await
         };
-        let Some(Outbound::Frame(frame)) = message else {
+        let Some(message) = message else {
             break;
+        };
+        let (frame, terminal) = match message {
+            Outbound::Frame(frame) => (frame, false),
+            Outbound::TerminalError {
+                request_id,
+                code,
+                message,
+            } => (
+                FrameKind::Error {
+                    request_id,
+                    code,
+                    message,
+                },
+                true,
+            ),
         };
         buf.clear();
         frame.encode(&mut buf);
         if let Err(err) = writer.write_frame(&buf).await {
             debug!(?client_id, error = %err, "writer error on frame; client task ending");
+            let _ = writer.close().await;
+            return;
+        }
+        if terminal {
             let _ = writer.close().await;
             return;
         }
@@ -2244,6 +2263,7 @@ mod writer_close_tests {
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum WriterEvent {
+        Frame,
         Error,
         Close,
     }
@@ -2252,11 +2272,11 @@ mod writer_close_tests {
 
     impl FrameWriter for RecordingWriter {
         async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-            assert!(matches!(
-                FrameKind::decode(frame).expect("encoded frame").0,
-                FrameKind::Error { .. }
-            ));
-            self.0.borrow_mut().push(WriterEvent::Error);
+            let event = match FrameKind::decode(frame).expect("encoded frame").0 {
+                FrameKind::Error { .. } => WriterEvent::Error,
+                _ => WriterEvent::Frame,
+            };
+            self.0.borrow_mut().push(event);
             Ok(())
         }
 
@@ -2270,21 +2290,27 @@ mod writer_close_tests {
     async fn terminal_error_is_written_before_transport_close() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let writer = RecordingWriter(Rc::clone(&events));
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        tx.send(Outbound::Frame(FrameKind::Error {
+        let (tx, rx) = tokio::sync::mpsc::channel(3);
+        tx.send(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
+            .await
+            .expect("queue earlier frame");
+        tx.send(Outbound::TerminalError {
             request_id: None,
             code: ErrorCode::CodecUnavailable,
             message: "fatal native stream failure".to_owned(),
-        }))
+        })
         .await
         .expect("queue terminal error");
-        drop(tx);
+        tx.send(Outbound::Frame(FrameKind::Pong { nonce: 2 }))
+            .await
+            .expect("racing producer queues after sentinel");
 
         let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
         writer_task(writer, rx, close_rx, ClientId(7)).await;
         assert_eq!(
             events.borrow().as_slice(),
-            [WriterEvent::Error, WriterEvent::Close]
+            [WriterEvent::Frame, WriterEvent::Error, WriterEvent::Close],
+            "the terminal ERROR is the last decoded frame before transport close",
         );
     }
 }

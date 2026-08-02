@@ -1175,7 +1175,9 @@ mod tests {
     fn drain_frames(rx: &mut mpsc::Receiver<Outbound>) -> Vec<FrameKind> {
         let mut out = Vec::new();
         while let Ok(msg) = rx.try_recv() {
-            let Outbound::Frame(f) = msg;
+            let Outbound::Frame(f) = msg else {
+                panic!("unexpected terminal outbound sentinel")
+            };
             out.push(f);
         }
         out

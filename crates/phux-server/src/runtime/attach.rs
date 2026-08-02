@@ -41,6 +41,82 @@ pub(crate) fn downsample_for_caps(
     }
 }
 
+fn bootstrap_source_ceiling(
+    remaining_bytes: usize,
+    caps: phux_protocol::ClientCapabilities,
+) -> usize {
+    if crate::downsample::caps_pass_through(caps) {
+        remaining_bytes
+    } else {
+        // During adaptation the source and one equally bounded output Vec are
+        // simultaneously live. The rewriter has no other payload-sized heap
+        // scratch, so half the connection budget is the exact source ceiling.
+        remaining_bytes / 2
+    }
+}
+
+#[derive(Debug)]
+struct AdaptedBootstrap {
+    payloads: Vec<bytes::Bytes>,
+    peak_bytes: usize,
+}
+
+fn adapt_bootstrap_snapshot(
+    snapshot: crate::grid::SnapshotBytes,
+    caps: phux_protocol::ClientCapabilities,
+    peak_budget: usize,
+) -> Result<AdaptedBootstrap, ()> {
+    let sources = [snapshot.scrollback, snapshot.bytes];
+    let mut remaining_source = sources
+        .iter()
+        .try_fold(0_usize, |total, source| {
+            total.checked_add(source.capacity())
+        })
+        .ok_or(())?;
+    let passthrough = crate::downsample::caps_pass_through(caps);
+    if remaining_source > bootstrap_source_ceiling(peak_budget, caps) {
+        return Err(());
+    }
+    let mut peak_bytes = remaining_source;
+
+    let mut retained_output = 0_usize;
+    let mut payloads = Vec::new();
+    payloads.try_reserve(2).map_err(|_| ())?;
+    for source in sources {
+        if source.is_empty() {
+            remaining_source = remaining_source.checked_sub(source.capacity()).ok_or(())?;
+            continue;
+        }
+        let source_capacity = source.capacity();
+        let (output, output_allocation) = if passthrough {
+            (bytes::Bytes::from(source), source_capacity)
+        } else {
+            let rewritten = crate::downsample::rewrite_bytes_with_caps(&source, caps);
+            let output_allocation = rewritten.capacity();
+            if output_allocation > source_capacity {
+                return Err(());
+            }
+            let peak = retained_output
+                .checked_add(remaining_source)
+                .and_then(|bytes| bytes.checked_add(output_allocation))
+                .ok_or(())?;
+            if peak > peak_budget {
+                return Err(());
+            }
+            peak_bytes = peak_bytes.max(peak);
+            drop(source);
+            (bytes::Bytes::from(rewritten), output_allocation)
+        };
+        remaining_source = remaining_source.checked_sub(source_capacity).ok_or(())?;
+        retained_output = retained_output.checked_add(output_allocation).ok_or(())?;
+        payloads.push(output);
+    }
+    Ok(AdaptedBootstrap {
+        payloads,
+        peak_bytes,
+    })
+}
+
 pub(crate) const fn bootstrap_stream_profile(
     profile: BootstrapProfile,
 ) -> Option<BootstrapStreamProfile> {
@@ -310,17 +386,18 @@ async fn fail_aggregate_attach_prepublication(
     }
     crate::runtime::client::detach_and_release_consumer_state(state, client_id);
 
-    // No producer retaining this connection's outbound sender remains. Queue
-    // the terminal error last, then wake the connection task so its writer
-    // drains the error before closing the transport.
+    // Queue one ordered terminal sentinel after rollback. Even if an old
+    // state-sync producer survives its bounded detach acknowledgement and
+    // races another frame, the writer closes immediately after this ERROR and
+    // discards everything behind it.
     if !matches!(
         tokio::time::timeout(
             producer_deadline,
-            out_tx.send(Outbound::Frame(FrameKind::Error {
+            out_tx.send(Outbound::TerminalError {
                 request_id: None,
                 code: ErrorCode::CodecUnavailable,
                 message: format!("ATTACH {attach_id} failed before publication: {reason}"),
-            })),
+            }),
         )
         .await,
         Ok(Ok(()))
@@ -1809,6 +1886,8 @@ pub(crate) async fn handle_attach(
         fail_prepublication!("bootstrap chunk bound cannot fit host");
     };
     for pane in panes_to_snapshot {
+        let synthesized_source_max =
+            bootstrap_source_ceiling(staging_budget.remaining_bytes(), client_caps);
         let terminal_id = pane.terminal_id;
         let handle = pane.handle;
         staged_handles.push(handle.clone());
@@ -1855,7 +1934,7 @@ pub(crate) async fn handle_attach(
                         phux_protocol::caps::OutputMode::StateSync
                     ),
                     state_sync_scrollback: scrollback_req,
-                    bootstrap_max_bytes: staging_budget.remaining_bytes(),
+                    bootstrap_max_bytes: synthesized_source_max,
                     bootstrap_max_frames: staging_budget.remaining_frames(),
                     bootstrap_chunk_bytes: aggregate_chunk_bytes,
                     // phux-v45.8: a directly-attached consumer rides a reliable,
@@ -2159,20 +2238,23 @@ pub(crate) async fn handle_attach(
         }
         if let Some(state_sync) = state_sync_bootstrap {
             let snap = state_sync.snapshot;
-            let replay = downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps);
-            let mut payloads = Vec::with_capacity(2);
-            if !snap.scrollback.is_empty() {
-                payloads.push(bytes::Bytes::from(snap.scrollback));
-            }
-            payloads.push(replay);
+            let cols = snap.cols;
+            let rows = snap.rows;
+            let Ok(adapted) =
+                adapt_bootstrap_snapshot(snap, client_caps, staging_budget.remaining_bytes())
+            else {
+                fail_prepublication!("state-sync bootstrap adaptation exceeded source budget");
+            };
+            debug_assert!(adapted.peak_bytes <= staging_budget.remaining_bytes());
+            let payloads = adapted.payloads;
             let Ok(mut frames) = synthesized_bootstrap_frames(
                 wire_terminal_id,
                 stream_id,
                 bootstrap_id,
                 stream_profile,
                 bootstrap_limits,
-                snap.cols,
-                snap.rows,
+                cols,
+                rows,
                 state_sync.base_seq,
                 payloads,
             ) else {
@@ -2246,7 +2328,7 @@ pub(crate) async fn handle_attach(
             .snapshot
             .send(SnapshotRequest {
                 scrollback: scrollback_req,
-                max_bytes: staging_budget.remaining_bytes(),
+                max_bytes: synthesized_source_max,
                 max_frames: staging_budget.remaining_frames(),
                 chunk_bytes: aggregate_chunk_bytes,
                 reply: reply_tx,
@@ -2274,20 +2356,23 @@ pub(crate) async fn handle_attach(
                 fail_prepublication!("pane actor dropped synthesized snapshot reply");
             }
         };
-        let replay = downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps);
-        let mut payloads = Vec::with_capacity(2);
-        if !snap.scrollback.is_empty() {
-            payloads.push(bytes::Bytes::from(snap.scrollback));
-        }
-        payloads.push(replay);
+        let cols = snap.cols;
+        let rows = snap.rows;
+        let Ok(adapted) =
+            adapt_bootstrap_snapshot(snap, client_caps, staging_budget.remaining_bytes())
+        else {
+            fail_prepublication!("synthesized bootstrap adaptation exceeded source budget");
+        };
+        debug_assert!(adapted.peak_bytes <= staging_budget.remaining_bytes());
+        let payloads = adapted.payloads;
         let Ok(mut frames) = synthesized_bootstrap_frames(
             wire_terminal_id,
             stream_id,
             bootstrap_id,
             stream_profile,
             bootstrap_limits,
-            snap.cols,
-            snap.rows,
+            cols,
+            rows,
             cut,
             payloads,
         ) else {
@@ -2497,6 +2582,45 @@ mod tests {
         assert_eq!(staged.len(), 8 * 3);
         assert_eq!(budget.staged_bytes, 8 * 4);
         assert_eq!(budget.staged_frames, 8 * 3);
+    }
+
+    #[test]
+    fn bootstrap_adaptation_peak_includes_sources_scratch_and_outputs() {
+        let mut scrollback = Vec::new();
+        scrollback
+            .try_reserve_exact(512)
+            .expect("scrollback reserve");
+        scrollback.resize(512, b's');
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(1_024).expect("snapshot reserve");
+        bytes.resize(1_024, b'x');
+        let source_capacity = scrollback.capacity() + bytes.capacity();
+        let peak_budget = source_capacity.checked_mul(2).expect("peak budget");
+        let caps = ClientCapabilities::default()
+            .with_color_support(phux_protocol::caps::ColorSupport::Indexed256);
+        assert!(!crate::downsample::caps_pass_through(caps));
+
+        let adapted = adapt_bootstrap_snapshot(
+            crate::grid::SnapshotBytes {
+                cols: 80,
+                rows: 24,
+                bytes,
+                scrollback,
+            },
+            caps,
+            peak_budget,
+        )
+        .expect("bounded capability adaptation");
+
+        assert_eq!(
+            adapted
+                .payloads
+                .iter()
+                .map(bytes::Bytes::len)
+                .sum::<usize>(),
+            source_capacity,
+        );
+        assert!(adapted.peak_bytes <= peak_budget);
     }
 
     #[test]
@@ -2776,10 +2900,10 @@ mod tests {
 
                 assert!(matches!(
                     out_rx.recv().await,
-                    Some(Outbound::Frame(FrameKind::Error {
+                    Some(Outbound::TerminalError {
                         code: ErrorCode::CodecUnavailable,
                         ..
-                    }))
+                    })
                 ));
                 assert!(out_rx.try_recv().is_err(), "no ATTACHED or BEGIN may leak");
                 assert!(connection_token.is_cancelled());
@@ -2861,10 +2985,10 @@ mod tests {
                 );
                 assert!(matches!(
                     out_rx.recv().await,
-                    Some(Outbound::Frame(FrameKind::Error {
+                    Some(Outbound::TerminalError {
                         code: ErrorCode::CodecUnavailable,
                         ..
-                    }))
+                    })
                 ));
                 assert!(connection_token.is_cancelled());
                 assert!(state.with(|s| !s.attached.contains_key(&client_id)));

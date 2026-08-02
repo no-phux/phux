@@ -1765,7 +1765,9 @@ mod tests {
                     .await
                     .expect("attached frame did not arrive")
                     .expect("out_rx closed before attached");
-                let Outbound::Frame(frame) = attached;
+                let Outbound::Frame(frame) = attached else {
+                    panic!("unexpected terminal outbound sentinel")
+                };
                 assert!(
                     matches!(frame, FrameKind::Attached { .. }),
                     "expected Attached, got {frame:?}",
@@ -1969,7 +1971,9 @@ mod tests {
                         .await
                         .expect("first bootstrap frame did not arrive")
                         .expect("outbound closed during first bootstrap");
-                    let Outbound::Frame(frame) = queued;
+                    let Outbound::Frame(frame) = queued else {
+                        panic!("unexpected terminal outbound sentinel")
+                    };
                     let observed = match frame {
                         FrameKind::BootstrapBegin { .. } => "BOOTSTRAP_BEGIN",
                         FrameKind::BootstrapChunk { .. } => "BOOTSTRAP_CHUNK",
@@ -2061,7 +2065,9 @@ mod tests {
                         .await
                         .expect("replacement bootstrap frame did not arrive")
                         .expect("outbound closed during replacement bootstrap");
-                    let Outbound::Frame(frame) = queued;
+                    let Outbound::Frame(frame) = queued else {
+                        panic!("unexpected terminal outbound sentinel")
+                    };
                     let observed = match frame {
                         FrameKind::BootstrapBegin { .. } => "BOOTSTRAP_BEGIN",
                         FrameKind::BootstrapChunk { .. } => "BOOTSTRAP_CHUNK",
@@ -2490,7 +2496,10 @@ mod tests {
                         tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
                             .await
                             .expect("bootstrap frame timed out")
-                            .expect("outbound closed");
+                            .expect("outbound closed")
+                    else {
+                        panic!("unexpected terminal outbound sentinel")
+                    };
                     let actual = match frame {
                         FrameKind::Attached { .. } => "ATTACHED",
                         FrameKind::BootstrapBegin { .. } => "BEGIN",

@@ -334,7 +334,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             return Ok(snap);
         };
         let remaining = max_bytes
-            .checked_sub(snap.bytes.len())
+            .checked_sub(snap.bytes.capacity())
             .ok_or(SynthesisError::LimitExceeded)?;
         snap.scrollback =
             Self::scrollback_styled_bytes_bounded(terminal, want, snap.rows, remaining)?;
