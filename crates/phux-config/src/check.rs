@@ -37,13 +37,15 @@
 //! cannot see because chords are free-form `BTreeMap` string keys and
 //! actions are free-form strings.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_path_to_error::Segment;
 
 use crate::keybind::{KeybindError, Resolver, parse_chord, parse_chord_sequence};
 use crate::{
-    Action, Config, ConfigError, KeybindingsCfg, LayerSource, merged_config_with_provenance, vocab,
+    Action, Config, ConfigError, HookEntry, KeybindingsCfg, LayerSource,
+    merged_config_with_provenance, vocab,
 };
 
 /// Upper bound on findings collected in one run.
@@ -66,10 +68,16 @@ pub enum Fault {
     /// that clashes with another binding (one binding's sequence is a
     /// strict prefix of another's, so the longer could never fire).
     BadChord,
-    /// A name outside the validation vocabulary ([`crate::vocab`]) — today
-    /// an action name no dispatcher arm handles, so the binding would
-    /// parse, load, and then do nothing.
+    /// A name outside the validation vocabulary ([`crate::vocab`]) — an
+    /// action name no dispatcher arm handles, a hook event the server
+    /// never fires, or a hook `when` key outside the event's context —
+    /// so the entry would parse, load, and then do nothing.
     UnknownName,
+    /// A hook action that can never execute server-side (only `run`
+    /// does; `noop` is the deliberate sentinel and is not flagged). A
+    /// matched entry still consumes its event under first-match-wins,
+    /// so a dead action can also shadow a live entry below it.
+    DeadAction,
 }
 
 impl Fault {
@@ -81,6 +89,7 @@ impl Fault {
             Self::BadValue => "bad value",
             Self::BadChord => "bad chord",
             Self::UnknownName => "unknown name",
+            Self::DeadAction => "dead action",
         }
     }
 }
@@ -224,14 +233,15 @@ pub fn check(user_input: &str, path: &Path) -> Result<CheckReport, ConfigError> 
 }
 
 /// Validators that need the typed, merged-and-pruned [`Config`] rather
-/// than the raw TOML table. Keybindings today (phux-i0e8.3.2); hook
-/// validation (phux-i0e8.3.3) plugs in here.
+/// than the raw TOML table: keybindings (phux-i0e8.3.2) and hooks
+/// (phux-i0e8.3.3).
 fn semantic_pass(
     config: &Config,
     provenance: &crate::ConfigProvenance,
     findings: &mut Vec<Finding>,
 ) {
     keybinding_findings(&config.keybindings, provenance, findings);
+    hook_findings(&config.hooks, provenance, findings);
 }
 
 /// Semantic keybinding validation (phux-i0e8.3.2), catching the two
@@ -304,6 +314,122 @@ fn keybinding_findings(
             );
         }
     }
+}
+
+/// Semantic hook validation (phux-i0e8.3.3). Hooks fail open three
+/// ways, and each is a silent no-op at runtime the schema walk cannot
+/// see (`[[hooks.<name>]]` is a free-form map):
+///
+/// 1. An event name outside [`vocab::HOOK_EVENTS`] never fires — the
+///    whole table is dead, so one finding covers it and its entries are
+///    not validated further.
+/// 2. A `when` key outside the event's context
+///    ([`vocab::hook_context_keys`]) never matches. The `-startswith`
+///    suffix strips off before the lookup, mirroring the dispatcher's
+///    clause evaluation.
+/// 3. An action that never executes server-side
+///    ([`vocab::hook_action_is_executable`]) still consumes the event
+///    under first-match-wins. `noop` is exempt: consuming an event and
+///    doing nothing is that sentinel's documented job.
+///
+/// The server logs the same findings at startup
+/// (`HookCatalog::from_config` in phux-server) so a config that skipped
+/// `phux config check` is still loud.
+fn hook_findings(
+    hooks: &BTreeMap<String, Vec<HookEntry>>,
+    provenance: &crate::ConfigProvenance,
+    findings: &mut Vec<Finding>,
+) {
+    for (event, entries) in hooks {
+        let table_path = crate::layer::child_path("hooks", event);
+        let Some(context_keys) = vocab::hook_context_keys(event) else {
+            let message = vocab::did_you_mean(event, vocab::HOOK_EVENTS).map_or_else(
+                || format!("unknown hook event `{event}`; these entries will never fire"),
+                |suggestion| {
+                    format!(
+                        "unknown hook event `{event}` (did you mean `{suggestion}`?); \
+                         these entries will never fire"
+                    )
+                },
+            );
+            push_semantic(
+                findings,
+                provenance,
+                table_path,
+                Fault::UnknownName,
+                message,
+            );
+            continue;
+        };
+
+        for (index, entry) in entries.iter().enumerate() {
+            let entry_path = format!("{table_path}[{index}]");
+            let source = hook_entry_source(provenance, &table_path, index);
+
+            for key in entry.when.keys() {
+                let base = key.strip_suffix("-startswith").unwrap_or(key);
+                if context_keys.contains(&base) {
+                    continue;
+                }
+                let suggestion = vocab::did_you_mean(base, context_keys)
+                    .map(|hit| format!(" (did you mean `{hit}`?)"))
+                    .unwrap_or_default();
+                findings.push(Finding {
+                    path: crate::layer::child_path(&format!("{entry_path}.when"), key),
+                    fault: Fault::UnknownName,
+                    message: format!(
+                        "unknown when key `{key}`: this clause can never match; \
+                         `{event}` context keys are {}{suggestion}",
+                        context_keys.join(", "),
+                    ),
+                    source: source.clone(),
+                });
+            }
+
+            let name = action_name(&entry.action);
+            if name != "noop" && !vocab::hook_action_is_executable(&entry.action) {
+                let message = if name == "run" {
+                    "`run` action has no usable `command` (need a non-blank string or a \
+                     non-empty array of strings); a match consumes the event and runs nothing"
+                        .to_owned()
+                } else {
+                    format!(
+                        "action `{name}` never executes server-side (only `run` does; \
+                         `noop` is the deliberate no-op); a match still consumes the event"
+                    )
+                };
+                findings.push(Finding {
+                    path: format!("{entry_path}.action"),
+                    fault: Fault::DeadAction,
+                    message,
+                    source: source.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// Resolve the layer that contributed hook entry `index` of the array at
+/// `table_path`.
+///
+/// Hook entries live in an array-of-tables, and provenance records
+/// arrays as a single leaf with per-element contributor indices
+/// ([`crate::KeyOrigin::elements`]) — with `-append` layering, entry 0
+/// and entry 1 of the same event can come from different files. Falls
+/// back to the array's own layer when the element index is out of range.
+fn hook_entry_source(
+    provenance: &crate::ConfigProvenance,
+    table_path: &str,
+    index: usize,
+) -> Option<LayerSource> {
+    let origin = provenance.keys.get(table_path)?;
+    let layer = origin
+        .elements
+        .as_ref()
+        .and_then(|elements| elements.get(index))
+        .copied()
+        .unwrap_or(origin.layer);
+    provenance.layers.get(layer).cloned()
 }
 
 /// Record one semantic finding, attributing it to the layer that set the
@@ -495,13 +621,15 @@ mod tests {
         assert!(report.is_ok(), "false positives: {:?}", report.findings);
     }
 
-    /// Free-form key spaces must not be flagged. `hooks` is a map keyed by
-    /// arbitrary event names; treating those as unknown keys would make the
-    /// checker unusable for anyone who uses hooks.
+    /// Free-form key spaces must not be flagged by the *schema* walk.
+    /// `hooks` is a map keyed by arbitrary event names; treating those as
+    /// unknown keys would make the checker unusable for anyone who uses
+    /// hooks. (The semantic pass has its own, vocabulary-aware opinion —
+    /// see the hook tests below — so this fixture uses a valid entry.)
     #[test]
     fn free_form_map_keys_are_not_unknown_keys() {
         let report = run(
-            "[[hooks.after-new-pane]]\nwhen = { cwd-startswith = \"/x\" }\naction = \"noop\"\n",
+            "[[hooks.after-new-pane]]\nwhen = { session-startswith = \"work\" }\naction = \"noop\"\n",
         );
         assert!(report.is_ok(), "hooks flagged: {:?}", report.findings);
     }
@@ -629,6 +757,143 @@ mod tests {
             finding.message.contains("ambiguous prefix"),
             "wrong message: {}",
             finding.message
+        );
+    }
+
+    // -- semantic pass: hooks (phux-i0e8.3.3) ------------------------------
+
+    /// `[[hooks.pane-exited]]` (real event: `pane-exit`) parses fine and
+    /// never fires. The check must flag the event name with a suggestion,
+    /// and must not pile per-entry findings onto an already-dead table.
+    #[test]
+    fn an_unknown_hook_event_is_flagged_with_a_suggestion() {
+        let report = run("[[hooks.pane-exited]]\naction = \"noop\"\n");
+        assert_eq!(paths(&report), vec!["hooks.pane-exited"]);
+        let finding = &report.findings[0];
+        assert_eq!(finding.fault, Fault::UnknownName);
+        assert!(
+            finding
+                .message
+                .contains("unknown hook event `pane-exited` (did you mean `pane-exit`?)"),
+            "no suggestion in: {}",
+            finding.message
+        );
+    }
+
+    /// A `when` key outside the event's context can never match, so the
+    /// entry silently never fires. The finding names the entry, the key,
+    /// and the keys that would work.
+    #[test]
+    fn an_unknown_when_key_is_flagged_with_the_valid_keys() {
+        let report = run(
+            "[[hooks.pane-exit]]\nwhen = { exitcode = 0 }\naction = { kind = \"run\", command = \"true\" }\n",
+        );
+        assert_eq!(paths(&report), vec!["hooks.pane-exit[0].when.exitcode"]);
+        let finding = &report.findings[0];
+        assert_eq!(finding.fault, Fault::UnknownName);
+        assert!(
+            finding
+                .message
+                .contains("context keys are exit-code, terminal-id"),
+            "valid keys missing from: {}",
+            finding.message
+        );
+        assert!(
+            finding.message.contains("did you mean `exit-code`?"),
+            "no suggestion in: {}",
+            finding.message
+        );
+    }
+
+    /// The `-startswith` suffix is match grammar, not part of the key: it
+    /// strips before validation, so a valid base passes and an invalid
+    /// base is flagged under the full spelling the user wrote.
+    #[test]
+    fn startswith_strips_before_the_context_key_lookup() {
+        let clean = run(
+            "[[hooks.after-new-pane]]\nwhen = { session-startswith = \"work\" }\naction = \"noop\"\n",
+        );
+        assert!(clean.is_ok(), "false positives: {:?}", clean.findings);
+
+        let report = run(
+            "[[hooks.after-new-pane]]\nwhen = { cwd-startswith = \"/x\" }\naction = \"noop\"\n",
+        );
+        assert_eq!(
+            paths(&report),
+            vec!["hooks.after-new-pane[0].when.cwd-startswith"]
+        );
+        assert_eq!(report.findings[0].fault, Fault::UnknownName);
+        assert!(
+            report.findings[0]
+                .message
+                .contains("unknown when key `cwd-startswith`"),
+            "wrong message: {}",
+            report.findings[0].message
+        );
+    }
+
+    /// A matched entry whose action never executes server-side consumes
+    /// the event and runs nothing — flagged per entry, with the index, so
+    /// the second entry of the same event is named precisely.
+    #[test]
+    fn a_never_executable_hook_action_is_flagged_per_entry() {
+        let report = run(
+            "[[hooks.pane-exit]]\naction = { kind = \"run\", command = \"true\" }\n\n\
+             [[hooks.pane-exit]]\naction = { kind = \"message\", text = \"bye\" }\n",
+        );
+        assert_eq!(paths(&report), vec!["hooks.pane-exit[1].action"]);
+        let finding = &report.findings[0];
+        assert_eq!(finding.fault, Fault::DeadAction);
+        assert!(
+            finding
+                .message
+                .contains("action `message` never executes server-side"),
+            "wrong message: {}",
+            finding.message
+        );
+    }
+
+    /// A `run` action without a usable `command` is just as dead as a
+    /// client-side kind, and gets a fix-oriented message.
+    #[test]
+    fn a_run_action_without_a_usable_command_is_flagged() {
+        let report = run("[[hooks.pane-exit]]\naction = { kind = \"run\", command = [] }\n");
+        assert_eq!(paths(&report), vec!["hooks.pane-exit[0].action"]);
+        assert_eq!(report.findings[0].fault, Fault::DeadAction);
+        assert!(
+            report.findings[0].message.contains("no usable `command`"),
+            "wrong message: {}",
+            report.findings[0].message
+        );
+    }
+
+    /// `noop` is the documented consume-and-do-nothing sentinel, not a
+    /// mistake; a valid hooks table stays clean.
+    #[test]
+    fn valid_hooks_including_noop_check_clean() {
+        let report = run(
+            "[[hooks.pane-exit]]\nwhen = { exit-code = 0 }\naction = \"noop\"\n\n\
+             [[hooks.pane-exit]]\nwhen = { exit-code = \"*\" }\naction = { kind = \"run\", command = \"say done\" }\n\n\
+             [[hooks.agent-state-changed]]\nwhen = { to = \"blocked\" }\naction = { kind = \"run\", command = [\"afplay\", \"/tmp/x.aiff\"] }\n",
+        );
+        assert!(report.is_ok(), "false positives: {:?}", report.findings);
+    }
+
+    /// Hook findings carry layer attribution like every other finding:
+    /// the array element's contributing layer, which is the file to open.
+    #[test]
+    fn a_hook_finding_is_attributed_to_the_user_file() {
+        let path = Path::new("/nonexistent/config.toml");
+        let report = check(
+            "[[hooks.pane-exit]]\naction = { kind = \"message\", text = \"bye\" }\n",
+            path,
+        )
+        .expect("check runs");
+        assert_eq!(
+            report.findings[0].source,
+            Some(LayerSource::User(path.to_path_buf())),
+            "origin was {}",
+            report.findings[0].origin()
         );
     }
 }

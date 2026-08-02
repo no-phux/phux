@@ -35,7 +35,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use phux_config::plugin::{self, PluginPlatform};
-use phux_config::{Action, Config, HookEntry};
+use phux_config::{Action, Config, HookEntry, vocab};
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, warn};
 
@@ -235,8 +235,22 @@ impl HookCatalog {
     /// runtime). Disabled plugins are skipped, as are `[[events]]` entries
     /// whose `platforms` list excludes the current OS. A manifest that
     /// fails to load is logged and skipped rather than failing the server.
+    ///
+    /// Config hook entries that can never do what they say — unknown
+    /// event names, `when` keys outside the event's context, actions
+    /// that never execute server-side — are each warned about once here
+    /// (phux-i0e8.3.3), so a config that never saw `phux config check`
+    /// is still loud at startup. The entries are kept, not dropped:
+    /// first-match-wins semantics are unchanged.
     #[must_use]
     pub fn from_config(cfg: &Config, config_path: &Path) -> Self {
+        for problem in offending_config_hooks(&cfg.hooks) {
+            warn!(
+                hook = %problem.label,
+                "hooks: {}; run `phux config check`",
+                problem.detail,
+            );
+        }
         let mut plugin_events = Vec::new();
         for entry in &cfg.plugins {
             if !entry.enabled {
@@ -272,6 +286,76 @@ impl HookCatalog {
             config_hooks: cfg.hooks.clone(),
             plugin_events,
         }
+    }
+}
+
+/// One config hook table or entry that can never do what it says: a
+/// log-ready label (`hooks.pane-exit[1]`, matching the dispatch labels)
+/// plus what is wrong with it.
+#[derive(Debug, PartialEq, Eq)]
+struct HookConfigProblem {
+    label: String,
+    detail: String,
+}
+
+/// Find every config hook entry `phux config check` would flag
+/// (phux-i0e8.3.3), one problem record per offending entry.
+///
+/// Same vocabulary the check's semantic pass uses
+/// ([`phux_config::vocab`]), so startup warnings and check findings
+/// cannot disagree: an unknown event name yields one record for the
+/// whole (dead) table; a known event's entries each yield at most one
+/// record aggregating their unknown `when` keys (checked after
+/// stripping the `-startswith` suffix) and never-executable action
+/// (`noop` is the deliberate sentinel, not a mistake).
+fn offending_config_hooks(hooks: &BTreeMap<String, Vec<HookEntry>>) -> Vec<HookConfigProblem> {
+    let mut problems = Vec::new();
+    for (event, entries) in hooks {
+        let Some(context_keys) = vocab::hook_context_keys(event) else {
+            let suggestion = vocab::did_you_mean(event, vocab::HOOK_EVENTS)
+                .map(|hit| format!(" (did you mean `{hit}`?)"))
+                .unwrap_or_default();
+            problems.push(HookConfigProblem {
+                label: format!("hooks.{event}"),
+                detail: format!("unknown event `{event}`{suggestion}; its entries will never fire"),
+            });
+            continue;
+        };
+        for (index, entry) in entries.iter().enumerate() {
+            let mut details = Vec::new();
+            for key in entry.when.keys() {
+                let base = key.strip_suffix("-startswith").unwrap_or(key);
+                if !context_keys.contains(&base) {
+                    details.push(format!(
+                        "when key `{key}` can never match (`{event}` context keys: {})",
+                        context_keys.join(", "),
+                    ));
+                }
+            }
+            let name = config_action_name(&entry.action);
+            if name != "noop" && !vocab::hook_action_is_executable(&entry.action) {
+                details.push(format!(
+                    "action `{name}` never executes server-side (only `run` with a usable \
+                     `command` does); a match still consumes the event"
+                ));
+            }
+            if !details.is_empty() {
+                problems.push(HookConfigProblem {
+                    label: format!("hooks.{event}[{index}]"),
+                    detail: details.join("; "),
+                });
+            }
+        }
+    }
+    problems
+}
+
+/// The action name a config hook entry invokes, whichever spelling
+/// (`action = "noop"` or `{ kind = "run", ... }`) it used.
+fn config_action_name(action: &Action) -> &str {
+    match action {
+        Action::Bare(name) => name,
+        Action::Parameterized(parameterized) => &parameterized.action,
     }
 }
 
@@ -428,10 +512,11 @@ fn matched_runs(
                     },
                 });
             } else {
-                debug!(
+                warn!(
                     event = %event.name,
                     index,
-                    "hook entry matched but its action is not server-executable; skipping",
+                    "hook entry matched but its action is not server-executable; \
+                     the event is consumed and nothing runs -- run `phux config check`",
                 );
             }
             break;
@@ -703,6 +788,112 @@ mod tests {
         assert_eq!(
             action_argv(&action("action = { kind = \"run\", command = [] }")),
             None
+        );
+    }
+
+    /// Agreement test (phux-i0e8.3.3): the pure predicate
+    /// `phux_config::vocab::hook_action_is_executable` must agree with
+    /// [`action_argv`], the dispatcher's actual resolver, on every
+    /// action shape — otherwise `phux config check` would bless hooks
+    /// the server skips, or flag hooks that run fine.
+    #[test]
+    fn executability_predicate_agrees_with_action_argv() {
+        let cases = [
+            "action = \"noop\"",
+            "action = \"kill-pane\"",
+            "action = { kind = \"noop\" }",
+            "action = { kind = \"message\", text = \"hi\" }",
+            "action = { kind = \"run\", command = \"echo hi\" }",
+            "action = { kind = \"run\", command = \"   \" }",
+            "action = { kind = \"run\", command = [\"say\", \"done\"] }",
+            "action = { kind = \"run\", command = [] }",
+            "action = { kind = \"run\", command = [\"say\", 3] }",
+            "action = { kind = \"run\", command = 3 }",
+            "action = { kind = \"run\" }",
+        ];
+        for case in cases {
+            let action = action(case);
+            assert_eq!(
+                vocab::hook_action_is_executable(&action),
+                action_argv(&action).is_some(),
+                "predicate disagrees with action_argv for: {case}",
+            );
+        }
+    }
+
+    /// Agreement test (phux-i0e8.3.3): `vocab::hook_context_keys` is
+    /// documented code-is-truth against these constructors. Build each
+    /// event with every optional key present and assert the key sets
+    /// match exactly — a constructor growing a key without teaching the
+    /// vocab (or vice versa) fails here, not in a user's silent hook.
+    #[test]
+    fn vocab_context_keys_match_the_event_constructors() {
+        let terminal = phux_protocol::ids::TerminalId::local(7);
+        let client = crate::state::ClientId(3);
+        let events = [
+            HookEvent::after_new_pane(&terminal, Some("work")),
+            HookEvent::pane_exit(&terminal, Some(0)),
+            HookEvent::focus_changed(&terminal, client),
+            HookEvent::client_attached(client, "work"),
+            HookEvent::client_detached(client, Some("work")),
+            HookEvent::agent_state_changed(&terminal, "claude", "reviewer", Some("busy"), "idle"),
+        ];
+        assert_eq!(
+            events.len(),
+            vocab::HOOK_EVENTS.len(),
+            "an event is missing from this agreement test",
+        );
+        for event in events {
+            let expected = vocab::hook_context_keys(&event.name)
+                .unwrap_or_else(|| panic!("constructor built unknown event `{}`", event.name));
+            let got: Vec<&str> = event.context.keys().map(String::as_str).collect();
+            assert_eq!(got, expected, "context keys drifted for `{}`", event.name);
+        }
+    }
+
+    /// Startup validation (phux-i0e8.3.3): each offending config entry
+    /// yields exactly one problem record — an unknown event covers its
+    /// whole table, an entry's unknown when key and dead action
+    /// aggregate — and a clean config yields none. `from_config` warns
+    /// once per record.
+    #[test]
+    fn offending_config_hooks_flags_each_bad_entry_once() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [[hooks.pane-exited]]
+            action = "noop"
+
+            [[hooks.pane-exit]]
+            when = { exit-code = 0 }
+            action = "noop"
+
+            [[hooks.pane-exit]]
+            when = { exitcode = "*" }
+            action = { kind = "message", text = "bye" }
+
+            [[hooks.after-new-pane]]
+            when = { session-startswith = "work" }
+            action = { kind = "run", command = "true" }
+            "#,
+        )
+        .expect("valid config");
+        let problems = offending_config_hooks(&cfg.hooks);
+        let labels: Vec<&str> = problems.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["hooks.pane-exit[1]", "hooks.pane-exited"],
+            "problems: {problems:?}",
+        );
+        let entry_problem = &problems[0].detail;
+        assert!(
+            entry_problem.contains("when key `exitcode` can never match")
+                && entry_problem.contains("action `message` never executes server-side"),
+            "entry problems not aggregated: {entry_problem}",
+        );
+        assert!(
+            problems[1].detail.contains("did you mean `pane-exit`?"),
+            "no suggestion in: {}",
+            problems[1].detail,
         );
     }
 

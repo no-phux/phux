@@ -2131,8 +2131,8 @@ array-of-tables (TOML `[[hooks.<name>]]`) of `{ when, action }` pairs.
 
 ```toml
 [[hooks.after-new-pane]]
-when   = { cwd-startswith = "/Users/phall/work" }
-action = { kind = "message", text = "in work tree" }
+when   = { session-startswith = "work" }
+action = { kind = "run", command = "echo pane up >> ~/.cache/phux/hooks.log" }
 
 [[hooks.pane-exit]]
 when   = { exit-code = 0 }
@@ -2151,21 +2151,34 @@ The hook system is intentionally small:
 - **Async by default.** Hook actions fire and the server moves on. Sync
   hooks (where the result blocks the trigger) are reserved for v0.2.
 
-Hook points (initial):
+Hook points (initial). The context keys are what `when` clauses can
+match (and what the hook child receives as `PHUX_*` variables); keys in
+parentheses may be absent on a given firing — `exit-code` for a
+signal-killed child, `session` when none applies, `agent-name` for an
+anonymous agent, `from` on a first sighting. This table mirrors
+`phux_config::vocab::hook_context_keys`, which is itself pinned to the
+server's event constructors by an agreement test.
 
-| Hook                  | Fires after / on                         |
-|-----------------------|------------------------------------------|
-| `after-new-session`   | session creation                         |
-| `after-new-window`    | window creation                          |
-| `after-new-pane`      | pane creation, before exec               |
-| `after-kill-pane`     | pane removed from layout                 |
-| `pane-exit`           | inner process exit                       |
-| `client-attached`     | client attach completed                  |
-| `client-detached`     | client detach (any reason)               |
-| `focus-changed`       | any client changes focus                 |
-| `agent-state-changed` | a pane's derived agent state changed     |
-| `output-silenced`     | configurable silence threshold elapsed   |
-| `output-active`       | first byte after a silence               |
+| Hook                  | Fires after / on                         | Context keys                                              |
+|-----------------------|------------------------------------------|-----------------------------------------------------------|
+| `after-new-session`   | session creation                         | design intent                                             |
+| `after-new-window`    | window creation                          | design intent                                             |
+| `after-new-pane`      | pane creation, before exec               | (`session`), `terminal-id`                                |
+| `after-kill-pane`     | pane removed from layout                 | design intent                                             |
+| `pane-exit`           | inner process exit                       | (`exit-code`), `terminal-id`                              |
+| `client-attached`     | client attach completed                  | `client-id`, `session`                                    |
+| `client-detached`     | client detach (any reason)               | `client-id`, (`session`)                                  |
+| `focus-changed`       | any client changes focus                 | `client-id`, `terminal-id`                                |
+| `agent-state-changed` | a pane's derived agent state changed     | `agent-kind`, (`agent-name`), (`from`), `terminal-id`, `to` |
+| `output-silenced`     | configurable silence threshold elapsed   | design intent                                             |
+| `output-active`       | first byte after a silence               | design intent                                             |
+
+`phux config check` validates this whole surface — an unknown event
+name (including the design-intent rows, which the server does not fire
+yet), a `when` key outside the event's context (the `-startswith`
+suffix strips off before the lookup), or an action that can never
+execute server-side is reported there and warned about again at server
+startup, instead of silently never firing.
 
 Server-side execution semantics (the shipped subset):
 
