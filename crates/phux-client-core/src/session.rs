@@ -4,9 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::TombstoneReason;
-use phux_protocol::{
-    BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId, TerminalId,
-};
+use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId, TerminalId};
 
 use crate::engine::{
     CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect, EngineEffectBuffer, EngineJob,
@@ -304,6 +302,16 @@ pub struct PublishedReplica<'a, E: EngineAdapter> {
     last_seq: u64,
     engine: &'a E::Replica,
 }
+impl<E: EngineAdapter> std::fmt::Debug for PublishedReplica<'_, E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PublishedReplica")
+            .field("key", &self.key)
+            .field("geometry", &self.geometry)
+            .field("last_seq", &self.last_seq)
+            .finish_non_exhaustive()
+    }
+}
 
 impl<'a, E: EngineAdapter> PublishedReplica<'a, E> {
     /// Exact protocol identity and profile.
@@ -338,6 +346,17 @@ pub struct StagingReplica<'a, E: EngineAdapter> {
     engine_ready: bool,
     protocol_ready: bool,
     engine: &'a E::Replica,
+}
+impl<E: EngineAdapter> std::fmt::Debug for StagingReplica<'_, E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StagingReplica")
+            .field("key", &self.key)
+            .field("geometry", &self.geometry)
+            .field("engine_ready", &self.engine_ready)
+            .field("protocol_ready", &self.protocol_ready)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a, E: EngineAdapter> StagingReplica<'a, E> {
@@ -573,6 +592,20 @@ pub struct SessionKernel<E: EngineAdapter> {
     attach: Option<AttachState>,
     engine_effects: EngineEffectBuffer,
 }
+impl<E: EngineAdapter> std::fmt::Debug for SessionKernel<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionKernel")
+            .field("selected_profile", &self.selected_profile)
+            .field("terminal_count", &self.terminals.len())
+            .field("closed_terminal_count", &self.closed.len())
+            .field(
+                "active_attach_id",
+                &self.attach.as_ref().map(|attach| attach.attach_id),
+            )
+            .finish_non_exhaustive()
+    }
+}
 
 impl<E: EngineAdapter> SessionKernel<E> {
     /// Construct a kernel bound to the exact profile selected by `HELLO_OK`.
@@ -704,13 +737,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 bootstrap_id,
                 chunk_seq,
                 payload,
-            } => self.bootstrap_chunk(
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                chunk_seq,
-                payload,
-            ),
+            } => self.bootstrap_chunk(terminal_id, stream_id, bootstrap_id, chunk_seq, payload),
             KernelInput::BootstrapReady {
                 terminal_id,
                 stream_id,
@@ -722,14 +749,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 bootstrap_id,
                 seq,
                 payload,
-            } => self.terminal_output(
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq,
-                payload,
-                effects,
-            ),
+            } => self.terminal_output(terminal_id, stream_id, bootstrap_id, seq, payload, effects),
             KernelInput::Tombstone {
                 terminal_id,
                 stream_id,
@@ -794,10 +814,15 @@ impl<E: EngineAdapter> SessionKernel<E> {
         attach.terminals.reserve(terminal_ids.len());
         attach
             .terminals
-            .extend(terminal_ids.iter().cloned().map(|terminal_id| AttachParticipant {
-                terminal_id,
-                resolved: false,
-            }));
+            .extend(
+                terminal_ids
+                    .iter()
+                    .cloned()
+                    .map(|terminal_id| AttachParticipant {
+                        terminal_id,
+                        resolved: false,
+                    }),
+            );
         Ok(())
     }
 
@@ -835,13 +860,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
         attach.released = true;
         for participant in &attach.terminals {
-            let Some(replica) = self
+            if self
                 .terminals
-                .get_mut(&participant.terminal_id)
-                .and_then(|state| state.published.as_mut())
-            else {
+                .get(&participant.terminal_id)
+                .and_then(|state| state.published.as_ref())
+                .is_none()
+            {
                 continue;
-            };
+            }
             effects.push(KernelEffect::Damage(KernelDamage {
                 terminal_id: participant.terminal_id.clone(),
                 kind: KernelDamageKind::Full,
@@ -1027,10 +1053,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
         staging.protocol_ready = true;
 
         self.engine_effects.clear();
-        let progress = match self.adapter.finish_bootstrap(
-            &mut staging.engine,
-            &mut self.engine_effects,
-        ) {
+        let progress = match self
+            .adapter
+            .finish_bootstrap(&mut staging.engine, &mut self.engine_effects)
+        {
             Ok(progress) => progress,
             Err(error) => {
                 self.engine_effects.clear();
@@ -1131,11 +1157,10 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
 
         self.engine_effects.clear();
-        if let Err(error) = self.adapter.apply_output(
-            &mut replica.engine,
-            payload,
-            &mut self.engine_effects,
-        ) {
+        if let Err(error) =
+            self.adapter
+                .apply_output(&mut replica.engine, payload, &mut self.engine_effects)
+        {
             self.engine_effects.clear();
             return Err(KernelError::Engine(error));
         }
@@ -1337,13 +1362,12 @@ fn retired_error<E: std::error::Error + 'static>(
     }
 }
 
-const fn profile_matches(
-    selected: BootstrapProfile,
-    incoming: BootstrapStreamProfile,
-) -> bool {
+const fn profile_matches(selected: BootstrapProfile, incoming: BootstrapStreamProfile) -> bool {
     match (selected, incoming) {
         (
-            BootstrapProfile::NativeState { codec: selected, .. },
+            BootstrapProfile::NativeState {
+                codec: selected, ..
+            },
             BootstrapStreamProfile::NativeState { codec: incoming },
         ) => selected as u8 == incoming as u8,
         (BootstrapProfile::SynthesizedVtRaw, BootstrapStreamProfile::SynthesizedVtRaw)

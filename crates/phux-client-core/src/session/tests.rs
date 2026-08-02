@@ -91,9 +91,7 @@ impl EngineAdapter for FakeAdapter {
     ) -> Result<(), Self::Error> {
         replica.transcript.extend_from_slice(payload);
         if payload == b"effects" {
-            effects.push(EngineEffect::Send(EngineSend::PtyWrite(
-                b"reply".to_vec(),
-            )));
+            effects.push(EngineEffect::Send(EngineSend::PtyWrite(b"reply".to_vec())));
             effects.push(EngineEffect::Damage(EngineDamage::Rows {
                 first: 2,
                 last: 4,
@@ -266,6 +264,7 @@ fn dual_ready_orders_and_fragmentation_hold_first_damage() {
 
         let staging = kernel.staging(&terminal_id).unwrap();
         assert_eq!(staging.geometry(), geometry());
+        assert_eq!(staging.engine().geometry, geometry());
         assert_eq!(
             staging.engine_ready(),
             matches!(mode, ReadyMode::ChunkFirst)
@@ -283,6 +282,7 @@ fn dual_ready_orders_and_fragmentation_hold_first_damage() {
         );
         let published = kernel.published(&terminal_id).unwrap();
         assert_eq!(published.geometry(), geometry());
+        assert_eq!(published.engine().geometry, geometry());
         assert_eq!(published.last_seq(), 100);
         assert_eq!(
             published.key().profile,
@@ -520,10 +520,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         },
         &mut effects,
     );
-    assert!(matches!(
-        stale,
-        Err(KernelError::RetiredGeneration { .. })
-    ));
+    assert!(matches!(stale, Err(KernelError::RetiredGeneration { .. })));
 }
 
 #[test]
@@ -610,15 +607,19 @@ fn replacement_is_atomic_and_old_view_remains_live_until_swap() {
         new_bootstrap
     );
     assert_eq!(kernel.published(&terminal_id).unwrap().last_seq(), 10);
-    assert!(kernel
-        .published(&terminal_id)
-        .unwrap()
-        .engine()
-        .transcript
-        .starts_with(b"replacement-prefix"));
-    assert!(kernel
-        .tombstone(&terminal_id, stream_id, old_bootstrap)
-        .is_some());
+    assert!(
+        kernel
+            .published(&terminal_id)
+            .unwrap()
+            .engine()
+            .transcript
+            .starts_with(b"replacement-prefix")
+    );
+    assert!(
+        kernel
+            .tombstone(&terminal_id, stream_id, old_bootstrap)
+            .is_some()
+    );
 
     let stale = kernel.update(
         KernelInput::TerminalOutput {
@@ -630,10 +631,7 @@ fn replacement_is_atomic_and_old_view_remains_live_until_swap() {
         },
         &mut effects,
     );
-    assert!(matches!(
-        stale,
-        Err(KernelError::RetiredGeneration { .. })
-    ));
+    assert!(matches!(stale, Err(KernelError::RetiredGeneration { .. })));
 }
 
 #[test]
