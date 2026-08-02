@@ -210,8 +210,8 @@ mod tests {
 
     use super::{CliError, ERROR_SCHEMA_VERSION, codes, error_document, no_server_error};
 
-    /// The emit shape, pinned: schema_version 1, nested error object with
-    /// code and message, top-level remedy and exit_code.
+    /// The emit shape, pinned: `schema_version` 1, nested error object with
+    /// code and message, top-level `remedy` and `exit_code`.
     #[test]
     fn error_document_pins_the_contract_shape() {
         let err = CliError::new(codes::NO_SERVER, "no server running at /tmp/x", "start one");

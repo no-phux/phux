@@ -13,8 +13,8 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{
     DEFAULT_SESSION_NAME, attach::client_cwd, attach::report_attach_end,
-    attach::resolved_default_session_name, attach::run_attach_once, cli_runtime, json_err,
-    partial, print_attach_error, server::maybe_auto_spawn_server,
+    attach::resolved_default_session_name, attach::run_attach_once, cli_runtime, json_err, partial,
+    print_attach_error, server::maybe_auto_spawn_server,
 };
 
 /// `phux new` — create a *new* session and attach to it.

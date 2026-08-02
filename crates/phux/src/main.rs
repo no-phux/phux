@@ -269,7 +269,7 @@ pub(crate) fn print_banner() {
 /// fallback), and `phux new` *without* `--json` (which attaches after
 /// creating). `phux new --json` creates without attaching, so it stays on
 /// the stderr path like every other one-shot verb.
-fn is_interactive_client(cli: &Cli) -> bool {
+const fn is_interactive_client(cli: &Cli) -> bool {
     match &cli.command {
         Some(Command::Attach { .. }) | None => true,
         Some(Command::New { json, .. }) => !json.json,
@@ -447,9 +447,9 @@ fn main() -> ExitCode {
             cwd,
             json,
             command,
-        }) => {
-            commands::spawn::run_spawn(satellite, target, split, ratio, cwd, json.json, socket, command)
-        }
+        }) => commands::spawn::run_spawn(
+            satellite, target, split, ratio, cwd, json.json, socket, command,
+        ),
         Some(Command::Launch {
             integration,
             list,

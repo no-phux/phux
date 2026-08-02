@@ -154,10 +154,10 @@ fn miss_error(
     degraded_status: u8,
 ) -> (CliError, u8) {
     if degradation.is_complete() {
-        let message = match target {
-            Some(target) => format!("no such target: {target}"),
-            None => "no such target".to_owned(),
-        };
+        let message = target.map_or_else(
+            || "no such target".to_owned(),
+            |target| format!("no such target: {target}"),
+        );
         return (
             CliError::new(
                 codes::NO_SUCH_TARGET,
@@ -169,15 +169,19 @@ fn miss_error(
     }
     // Deliberately never the words "no such target": this client does not
     // know that (see the module docs).
-    let message = match target {
-        Some(target) => format!(
-            "could not resolve '{target}': this server's view of the fleet is \
+    let message = target.map_or_else(
+        || {
+            "could not resolve the target: this server's view of the fleet is \
              incomplete, so a miss here does not mean the target is gone"
-        ),
-        None => "could not resolve the target: this server's view of the fleet is \
-             incomplete, so a miss here does not mean the target is gone"
-            .to_owned(),
-    };
+                .to_owned()
+        },
+        |target| {
+            format!(
+                "could not resolve '{target}': this server's view of the fleet is \
+                 incomplete, so a miss here does not mean the target is gone"
+            )
+        },
+    );
     let unreachable = degradation
         .notices()
         .iter()

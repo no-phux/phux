@@ -400,7 +400,7 @@ pub(crate) enum Command {
     /// machine shape instead of the human text.
     #[command(visible_alias = "list")]
     Ls {
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
     },
 
@@ -433,7 +433,7 @@ pub(crate) enum Command {
         #[arg(short = 'c', long = "cwd")]
         cwd: Option<std::path::PathBuf>,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
 
         /// Environment assignment for the seed process. Repeat for multiple
@@ -484,7 +484,7 @@ pub(crate) enum Command {
         #[arg(short = 'c', long = "cwd")]
         cwd: Option<String>,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
 
         /// Command (and arguments) to run instead of the default shell.
@@ -520,7 +520,7 @@ pub(crate) enum Command {
         #[arg(long, visible_alias = "dry-run")]
         print: bool,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
 
         /// Existing local pane beside which to place the launched pane.
@@ -652,7 +652,7 @@ pub(crate) enum Command {
         #[arg(value_name = "COLSxROWS", value_parser = resize::parse_geometry)]
         geometry: resize::Geometry,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
     },
 
@@ -746,7 +746,7 @@ pub(crate) enum Command {
         #[arg(value_name = "TARGET")]
         session: Option<String>,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
 
         /// Include scrollback history above the viewport.
@@ -876,7 +876,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECS")]
         timeout: Option<u64>,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
     },
 
@@ -903,7 +903,7 @@ pub(crate) enum Command {
         #[arg(value_name = "TARGET")]
         session: Option<String>,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
     },
 
@@ -968,7 +968,7 @@ pub(crate) enum Command {
               value_parser = clap::value_parser!(u8).range(2..=3))]
         cast_version: u8,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
     },
 
@@ -1043,7 +1043,7 @@ pub(crate) enum Command {
         #[arg(long)]
         close: bool,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
 
         /// Internal: this process IS the pane, so write the recording to
@@ -1081,7 +1081,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECS")]
         elapsed_seconds: Option<u64>,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
 
         /// Human-facing question text.
@@ -1128,7 +1128,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECS")]
         timeout: Option<u64>,
 
-#[command(flatten)]
+        #[command(flatten)]
         json: JsonOpt,
     },
 

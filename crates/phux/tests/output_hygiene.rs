@@ -18,6 +18,7 @@
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
+#![allow(clippy::panic, reason = "tests")]
 
 use std::process::{Command, Stdio};
 
@@ -412,6 +413,175 @@ fn rec_json_no_server_is_silent_stdout_and_banner_free() {
     assert!(
         !out.exists(),
         "a capture that never started must not leave an empty cast behind"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The JSON error contract (ADR-0065 §4, phux-i0e8.8.2)
+//
+// Every converted `--json` verb failing against a dead socket must leave
+// stdout empty and put ONE JSON line on stderr:
+// {"schema_version":1,"error":{"code":"no_server","message":...},
+//  "remedy":...,"exit_code":1} — with the process exiting 1. The prose
+// paths (no `--json`) are pinned separately above and in unit tests.
+// ---------------------------------------------------------------------------
+
+/// Run `phux <args...>` with an optional `XDG_CONFIG_HOME`, returning
+/// `(exit_code, stdout, stderr)`.
+fn run_maybe_xdg(args: &[&str], xdg: Option<&std::path::Path>) -> (i32, String, String) {
+    xdg.map_or_else(|| run(args), |xdg| run_with_xdg(args, xdg))
+}
+
+/// Assert the whole per-verb contract: exit 1, empty stdout, and stderr
+/// that is ONE line parsing as the contract document with code `no_server`,
+/// `exit_code` 1, the socket named in the message, and a non-empty remedy.
+fn assert_no_server_json_contract(
+    verb: &str,
+    args: &[&str],
+    xdg: Option<&std::path::Path>,
+    sock: &str,
+) {
+    let (code, stdout, stderr) = run_maybe_xdg(args, xdg);
+    assert_eq!(
+        code,
+        1,
+        "`phux {}` with no server must exit 1; stderr={stderr}",
+        args.join(" ")
+    );
+    assert!(
+        stdout.is_empty(),
+        "`{verb} --json` failure must leave stdout empty; got {stdout:?}"
+    );
+    let line = stderr.trim();
+    assert!(
+        !line.contains('\n'),
+        "`{verb} --json` failure must be ONE stderr line; got {stderr:?}"
+    );
+    let doc: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|err| {
+        panic!("`{verb} --json` stderr must parse as JSON ({err}); got {stderr:?}")
+    });
+    assert_eq!(doc["schema_version"], 1, "{verb}: {doc}");
+    assert_eq!(doc["error"]["code"], "no_server", "{verb}: {doc}");
+    assert!(
+        doc["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(sock)),
+        "{verb}: the message names the socket; got {doc}"
+    );
+    assert_eq!(doc["exit_code"], 1, "{verb}: {doc}");
+    assert!(
+        doc["remedy"].as_str().is_some_and(|r| !r.is_empty()),
+        "{verb}: the error must carry a non-empty remedy; got {doc}"
+    );
+}
+
+/// One converted verb, `--json`, against a dead socket: exit 1, empty
+/// stdout, and stderr that parses as the contract document with code
+/// `no_server`, `exit_code` 1, and a non-empty remedy.
+///
+/// The "dead socket" is a real socket file whose listener has gone (bound,
+/// then dropped) rather than a missing path, for two reasons: connecting to
+/// it is a clean `ECONNREFUSED` on every platform (a plain file would be
+/// `ENOTSOCK`), and the existing path keeps `new --json` — which auto-spawns
+/// a server when the socket does not exist — on the same connect-refused
+/// path as every other verb.
+#[test]
+fn json_error_contract_holds_across_core_verbs_with_no_server() {
+    let tmp = TempDir::new().expect("tempdir");
+    let sock_file = tmp.path().join("dead.sock");
+    drop(std::os::unix::net::UnixListener::bind(&sock_file).expect("bind then abandon socket"));
+    assert!(sock_file.exists(), "the abandoned socket file must persist");
+    let sock = sock_file.to_str().expect("utf-8 temp path");
+
+    // `play` validates its cast before dialing; give it a real one.
+    let cast = tmp.path().join("demo.cast");
+    std::fs::write(
+        &cast,
+        "{\"version\": 2, \"width\": 80, \"height\": 24}\n[0.1, \"o\", \"hi\"]\n",
+    )
+    .expect("write cast");
+    let cast = cast.to_str().expect("utf-8 temp path");
+    let out = tmp.path().join("out.cast");
+    let out = out.to_str().expect("utf-8 temp path");
+
+    // `launch` resolves its integration from config before dialing; the
+    // checked-in demo plugin provides one.
+    let demo_xdg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/plugins/agent-tools/config")
+        .canonicalize()
+        .expect("demo plugin config");
+
+    let cases: &[(&str, Vec<&str>, Option<&std::path::Path>)] = &[
+        ("ls", vec!["ls", "--json", "--socket", sock], None),
+        (
+            "snapshot",
+            vec!["snapshot", "--json", "work", "--socket", sock],
+            None,
+        ),
+        (
+            "wait",
+            vec!["wait", "--json", "--socket", sock, "work"],
+            None,
+        ),
+        (
+            "run",
+            vec!["run", "--json", "--socket", sock, "work", "true"],
+            None,
+        ),
+        (
+            "watch",
+            vec!["watch", "--json", "--socket", sock, "work"],
+            None,
+        ),
+        (
+            "resize",
+            vec!["resize", "work", "80x24", "--json", "--socket", sock],
+            None,
+        ),
+        ("spawn", vec!["spawn", "--json", "--socket", sock], None),
+        (
+            "launch",
+            vec!["launch", "codex", "--json", "--socket", sock],
+            Some(&demo_xdg),
+        ),
+        ("play", vec!["play", cast, "--json", "--socket", sock], None),
+        (
+            "rec",
+            vec!["rec", "--json", "-o", out, "--socket", sock],
+            None,
+        ),
+        (
+            "new",
+            vec!["new", "--json", "-s", "x", "--socket", sock],
+            None,
+        ),
+        (
+            "ask",
+            vec!["ask", "work", "--json", "--socket", sock, "hello?"],
+            None,
+        ),
+    ];
+
+    for (verb, args, xdg) in cases {
+        assert_no_server_json_contract(verb, args, *xdg, sock);
+    }
+}
+
+/// The same failure without `--json` stays prose: unparseable as JSON,
+/// multi-line, naming the missing server and its remedies (the shape the
+/// `no_server_lines` unit tests pin exactly).
+#[test]
+fn no_server_without_json_stays_prose() {
+    let sock = dead_socket();
+    let (code, _stdout, stderr) = run(&["ls", "--socket", &sock]);
+    assert_eq!(code, 1);
+    assert!(
+        serde_json::from_str::<serde_json::Value>(stderr.trim()).is_err(),
+        "prose path must not emit the JSON document; got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("no server running") && stderr.contains("phux doctor"),
+        "prose keeps the remedy block; got {stderr:?}"
     );
 }
 

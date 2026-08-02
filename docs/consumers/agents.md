@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-07-15
+last-reviewed: 2026-08-02
 ---
 
 # The phux agent CLI
@@ -856,15 +856,16 @@ internal child-axis enum.
 }
 ```
 
-With `--json`, failures emit a versioned JSON error on stderr and leave stdout
-empty: `{ "schema_version": 1, "error": { "code": "...", "message": "..." } }`.
-Stable codes include `invalid_selector`, `selector_miss`,
-`selector_not_single`, `satellite_target`, `cross_session`, `invalid_ratio`,
-`layout_missing`, `pane_not_in_layout`, and `pane_already_in_layout`.
-Cross-session moves may also report `server_too_old`,
-`post_move_state_failed`, `destination_changed`, `destination_layout_failed`,
-or `source_layout_failed`; these are exit `1` because ownership or transport
-work has begun, while preflight selector and layout refusals remain exit `2`.
+With `--json`, failures emit the shared JSON error contract (§5.3) on stderr
+and leave stdout empty. Stable codes for spatial edits include
+`invalid_selector`, `selector_miss`, `selector_not_single`,
+`satellite_target`, `cross_session`, `same_pane`, `invalid_ratio`,
+`layout_missing`, `pane_not_in_layout`, `pane_already_in_layout`, and
+`layout_rejected`. Cross-session moves may also report `server_too_old`,
+`move_refused`, `post_move_state_failed`, `destination_changed`,
+`destination_layout_failed`, or `source_layout_failed`; these are exit `1`
+because ownership or transport work has begun, while preflight selector and
+layout refusals remain exit `2`.
 
 ### 4.13 `phux launch --json`
 
@@ -1103,6 +1104,55 @@ So `run` reserves `125` (the wrapper-failure convention, as used by `env` and
 legitimately exited `124`. `wait`, which wraps nothing, uses `124` for its own
 timeout. `kill` is a control-plane verb (not strictly an agent read) but shares
 `TARGET`; its `0`/`1`/`2` triad is listed for completeness.
+
+### 5.3 The JSON error contract
+
+Every core server-talking verb above
+(`ls` / `snapshot` / `wait` / `run` / `watch` / `resize` / `spawn` / `launch` /
+`play` / `rec` / `new` / `ask`, plus the spatial edits of §4.12) reports a
+`--json` failure the same way: **stdout stays empty** (the document channel
+never carries half a result) and **stderr carries one line of JSON**
+(ADR-0065 §4):
+
+```json
+{
+  "schema_version": 1,
+  "error": { "code": "no_server", "message": "no server running at /run/phux.sock" },
+  "remedy": "start one with `phux` (attaches, auto-starting a server) or `phux server`; ...",
+  "exit_code": 1
+}
+```
+
+- `schema_version` is `1`; new fields are additive and do not bump it.
+- `error.code` is a **closed vocabulary** (defined in one place,
+  `commands/json_err.rs`); branch on it, never on `message` text. The
+  transport family: `no_server` (nothing listening at the socket),
+  `server_disconnected` (the server went away mid-command), `transport`
+  (any other transport/protocol failure). The resolution family:
+  `no_such_target` (a miss against a complete view) and `partial_view` (a
+  miss against an incomplete fleet — the target may exist on an unreachable
+  satellite; retry, per §5.2's exit-3 discussion). Spatial edits add the
+  codes listed in §4.12.
+- `remedy` is always present and non-empty: the next command to run, in
+  prose.
+- `exit_code` mirrors the process's own exit status, so a consumer that
+  only captured stderr still learns it. Exit-code semantics are unchanged
+  from §5.2 (`0` ok, `1` miss / no server, `2` refusal / usage, `3` partial
+  view where the verb can spend it, `124`/`125` timeouts) — under `--json`
+  a partial-view miss carries `partial_view` in `error.code` even for the
+  shared-resolver verbs whose status must stay `1`.
+- Warnings (e.g. partial-fleet notices on a *successful* resolution) still
+  precede the error line on stderr as prose; the JSON error object is the
+  final line.
+
+Without `--json` the same failures stay prose (message plus an indented
+remedy block), so nothing changes for humans or for scripts that grep
+stderr.
+
+**Why there is no `-j` short flag.** Considered and rejected in ADR-0065 §7:
+`--json` is typed almost exclusively by scripts and agents, where
+explicitness is worth more than two saved characters, and the binary keeps
+its short-flag surface reserved for high-frequency human-typed options.
 
 ## 6. Relationship to the other agent surfaces
 
