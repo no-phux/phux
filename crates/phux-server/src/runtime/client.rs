@@ -63,7 +63,7 @@ mod negotiated_feature_tests {
     }
 
     #[test]
-    fn old_07_without_terminal_reply_bit_rejects_terminal_reply() {
+    fn old_07_without_terminal_reply_bit_discards_reply_without_routing() {
         assert!(!connection(ServerFeatureSet::new()).accepts_terminal_reply());
     }
 
@@ -1207,16 +1207,10 @@ where
                                     .to_owned(),
                         }))
                         .await;
-                    abort_output_pumps(
-                        &mut output_pumps,
-                        client_id,
-                        "unnegotiated INPUT_TERMINAL_REPLY",
-                    )
-                    .await;
-                    detach_and_release_consumer_state(&state, client_id);
-                    drop(out_tx);
-                    let _ = sibling_tasks.join_next().await;
-                    return Ok(());
+                    // The frame is additive within protocol 0.7: report the
+                    // unadvertised type without killing an otherwise valid
+                    // connection, and never pass its bytes to the PTY.
+                    continue;
                 }
                 handle_terminal_reply(&state, client_id, &terminal_id, bytes);
             }
