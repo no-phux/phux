@@ -17,28 +17,31 @@
 #![allow(clippy::cast_possible_truncation, clippy::unwrap_used)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{FrameKind, TYPE_BOOTSTRAP_CHUNK};
 
-static MAX_ALLOC: AtomicUsize = AtomicUsize::new(0);
-static RECORDING: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    static MAX_ALLOC: Cell<usize> = const { Cell::new(0) };
+    static RECORDING: Cell<bool> = const { Cell::new(false) };
+}
 
 struct RecordingAlloc;
 
 // SAFETY: forwards every call straight to `System`; the only added behaviour is
-// reading `layout.size()` and updating two atomics, neither of which touches
-// the returned pointer or violates the `GlobalAlloc` contract.
+// updating thread-local `Cell`s, which never touch the returned pointer or
+// violate the `GlobalAlloc` contract.
 unsafe impl GlobalAlloc for RecordingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if RECORDING.load(Ordering::Relaxed) == 1 {
-            MAX_ALLOC.fetch_max(layout.size(), Ordering::Relaxed);
+        if RECORDING.try_with(Cell::get).unwrap_or(false) {
+            let _ = MAX_ALLOC.try_with(|max| max.set(max.get().max(layout.size())));
         }
         // SAFETY: same layout precondition the caller already upholds.
         unsafe { System.alloc(layout) }
     }
+
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // SAFETY: `ptr`/`layout` pairing is the caller's responsibility.
         unsafe { System.dealloc(ptr, layout) }
@@ -49,22 +52,22 @@ unsafe impl GlobalAlloc for RecordingAlloc {
 static A: RecordingAlloc = RecordingAlloc;
 
 fn largest_alloc_during(decode_input: &[u8]) -> usize {
-    MAX_ALLOC.store(0, Ordering::Relaxed);
-    RECORDING.store(1, Ordering::Relaxed);
+    MAX_ALLOC.set(0);
+    RECORDING.set(true);
     let _ = FrameKind::decode(decode_input);
-    RECORDING.store(0, Ordering::Relaxed);
-    MAX_ALLOC.load(Ordering::Relaxed)
+    RECORDING.set(false);
+    MAX_ALLOC.get()
 }
 
 fn largest_alloc_during_with_limits(
     decode_input: &[u8],
     limits: BootstrapLimits,
 ) -> (Result<(), DecodeError>, usize) {
-    MAX_ALLOC.store(0, Ordering::Relaxed);
-    RECORDING.store(1, Ordering::Relaxed);
+    MAX_ALLOC.set(0);
+    RECORDING.set(true);
     let result = FrameKind::decode_with_limits(decode_input, limits).map(|_| ());
-    RECORDING.store(0, Ordering::Relaxed);
-    (result, MAX_ALLOC.load(Ordering::Relaxed))
+    RECORDING.set(false);
+    (result, MAX_ALLOC.get())
 }
 
 /// Build a frame: 4-byte length header, then body bytes.
@@ -180,10 +183,9 @@ fn negotiated_oversize_bootstrap_chunk_rejects_before_payload_allocation() {
 
     let (result, max) = largest_alloc_during_with_limits(&frame, limits);
     assert_eq!(result.unwrap_err(), DecodeError::BootstrapLimitExceeded);
-    assert!(
-        max < payload.len(),
-        "oversized borrowed payload triggered a {max}-byte allocation for {} payload bytes",
-        payload.len()
+    assert_eq!(
+        max, 0,
+        "oversized borrowed payload must fail before allocation"
     );
 }
 
@@ -201,14 +203,13 @@ fn malformed_bootstrap_payload_length_rejects_without_reserving() {
     put_varint(&mut body, u64::MAX);
     let frame = framed(&body);
 
-    let (result, max) =
-        largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
+    let (result, max) = largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
     assert!(matches!(
         result,
         Err(DecodeError::LengthOverflow | DecodeError::UnexpectedEof)
     ));
-    assert!(
-        max < 1 << 20,
-        "malformed payload length triggered a {max}-byte allocation"
+    assert_eq!(
+        max, 0,
+        "malformed payload length must fail before allocation"
     );
 }

@@ -1,3 +1,7 @@
+use phux_protocol::caps::{
+    BootstrapCapabilities, ClientCapabilities, EngineCodec, EngineFeatureSet,
+    select_bootstrap_profile,
+};
 use phux_protocol::input::{InputEvent, focus::FocusEvent};
 use phux_protocol::wire::frame::TombstoneReason;
 use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId, TerminalId};
@@ -162,6 +166,93 @@ impl EngineAdapter for FakeAdapter {
         } else {
             effects.push(EngineEffect::Damage(EngineDamage::Full));
         }
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NativeRecord {
+    Bootstrap(Vec<u8>),
+    Ready,
+    Live(Vec<u8>),
+    History(Vec<u8>),
+}
+
+struct RecordingNativeReplica {
+    records: Vec<NativeRecord>,
+    chunk_count: usize,
+}
+
+struct RecordingNativeAdapter;
+
+impl EngineAdapter for RecordingNativeAdapter {
+    type Replica = RecordingNativeReplica;
+    type Error = FakeError;
+
+    fn start_replica(
+        &mut self,
+        profile: BootstrapStreamProfile,
+        _geometry: CanonicalGeometry,
+    ) -> Result<Self::Replica, Self::Error> {
+        if !matches!(
+            profile,
+            BootstrapStreamProfile::NativeState {
+                codec: EngineCodec::LibghosttyCheckpointV2,
+            }
+        ) {
+            return Err(FakeError::UnsupportedProfile);
+        }
+        Ok(RecordingNativeReplica {
+            records: Vec::new(),
+            chunk_count: 0,
+        })
+    }
+
+    fn apply_bootstrap_chunk(
+        &mut self,
+        replica: &mut Self::Replica,
+        payload: &[u8],
+        _effects: &mut EngineEffectBuffer,
+    ) -> Result<BootstrapProgress, Self::Error> {
+        replica
+            .records
+            .push(NativeRecord::Bootstrap(payload.to_vec()));
+        replica.chunk_count += 1;
+        Ok(if replica.chunk_count == 2 {
+            BootstrapProgress::Ready
+        } else {
+            BootstrapProgress::Pending
+        })
+    }
+
+    fn finish_bootstrap(
+        &mut self,
+        replica: &mut Self::Replica,
+        _effects: &mut EngineEffectBuffer,
+    ) -> Result<BootstrapProgress, Self::Error> {
+        replica.records.push(NativeRecord::Ready);
+        Ok(BootstrapProgress::Finished)
+    }
+
+    fn apply_history_page(
+        &mut self,
+        replica: &mut Self::Replica,
+        payload: &[u8],
+        _effects: &mut EngineEffectBuffer,
+    ) -> Result<BootstrapProgress, Self::Error> {
+        replica
+            .records
+            .push(NativeRecord::History(payload.to_vec()));
+        Ok(BootstrapProgress::Ready)
+    }
+
+    fn apply_output(
+        &mut self,
+        replica: &mut Self::Replica,
+        payload: &[u8],
+        _effects: &mut EngineEffectBuffer,
+    ) -> Result<(), Self::Error> {
+        replica.records.push(NativeRecord::Live(payload.to_vec()));
         Ok(())
     }
 }
@@ -957,6 +1048,13 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
         100,
         &mut effects,
     );
+    let staging_before = kernel.staging(&terminal_id).unwrap();
+    let key_before = staging_before.key().clone();
+    let geometry_before = staging_before.geometry();
+    let engine_ready_before = staging_before.engine_ready();
+    let protocol_ready_before = staging_before.protocol_ready();
+    assert!(staging_before.engine().transcript.is_empty());
+    assert!(effects.is_empty());
     let live_before_ready = kernel.update(
         KernelInput::TerminalOutput {
             terminal_id: &terminal_id,
@@ -971,6 +1069,7 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
         live_before_ready,
         Err(KernelError::GenerationMismatch { .. })
     ));
+    assert!(effects.is_empty());
     let history_before_ready = kernel.update(
         KernelInput::HistoryPage {
             terminal_id: &terminal_id,
@@ -984,8 +1083,137 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
         history_before_ready,
         Err(KernelError::GenerationMismatch { .. })
     ));
+    assert!(effects.is_empty());
+    let staging_after = kernel.staging(&terminal_id).unwrap();
+    assert_eq!(staging_after.key(), &key_before);
+    assert_eq!(staging_after.geometry(), geometry_before);
+    assert_eq!(staging_after.engine_ready(), engine_ready_before);
+    assert_eq!(staging_after.protocol_ready(), protocol_ready_before);
+    assert!(staging_after.engine().transcript.is_empty());
     assert!(kernel.published(&terminal_id).is_none());
     assert!(kernel.staging(&terminal_id).is_some());
+}
+
+#[test]
+fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
+    let advertised = BootstrapCapabilities::new().with_native(
+        EngineCodec::LibghosttyCheckpointV2,
+        EngineFeatureSet::required_native(),
+    );
+    let client = ClientCapabilities::new().with_bootstrap(advertised);
+    let (selected, _) = select_bootstrap_profile(&client, &advertised).unwrap();
+    assert_eq!(
+        selected,
+        BootstrapProfile::NativeState {
+            codec: EngineCodec::LibghosttyCheckpointV2,
+            features: EngineFeatureSet::required_native(),
+        }
+    );
+    let profile = BootstrapStreamProfile::NativeState {
+        codec: EngineCodec::LibghosttyCheckpointV2,
+    };
+    let terminal_id = terminal(80);
+    let stream_id = stream(81);
+    let bootstrap_id = bootstrap(82);
+    let mut kernel = SessionKernel::new(RecordingNativeAdapter, selected);
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::BootstrapBegin {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile,
+                geometry: geometry(),
+                base_seq: 900,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty());
+
+    let checkpoint_a: &[u8] = b"\xff\0checkpoint-a\x80";
+    let checkpoint_b: &[u8] = b"\xfecheckpoint-b\0\xfd";
+    for (chunk_seq, payload) in [(0, checkpoint_a), (1, checkpoint_b)] {
+        kernel
+            .update(
+                KernelInput::BootstrapChunk {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq,
+                    payload,
+                },
+                &mut effects,
+            )
+            .unwrap();
+        assert!(effects.is_empty());
+    }
+    kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty());
+
+    let live_a: &[u8] = b"\x80live-a\xff";
+    let history: &[u8] = b"\0\xfehistory-future\x81";
+    let live_b: &[u8] = b"\xfdlive-b\0";
+    kernel
+        .update(
+            KernelInput::TerminalOutput {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq: 901,
+                payload: live_a,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty());
+    kernel
+        .update(
+            KernelInput::HistoryPage {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                payload: history,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty());
+    kernel
+        .update(
+            KernelInput::TerminalOutput {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq: 902,
+                payload: live_b,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty());
+
+    assert_eq!(
+        kernel.published(&terminal_id).unwrap().engine().records,
+        [
+            NativeRecord::Bootstrap(checkpoint_a.to_vec()),
+            NativeRecord::Bootstrap(checkpoint_b.to_vec()),
+            NativeRecord::Ready,
+            NativeRecord::Live(live_a.to_vec()),
+            NativeRecord::History(history.to_vec()),
+            NativeRecord::Live(live_b.to_vec()),
+        ]
+    );
 }
 
 #[test]
