@@ -100,7 +100,8 @@ const MAX_SUGGESTION_DISTANCE: usize = 2;
 ///
 /// Returns the candidate with the smallest Levenshtein distance from
 /// `input`, provided that distance is at most
-/// [`MAX_SUGGESTION_DISTANCE`]; ties go to the earlier candidate. An
+/// `MAX_SUGGESTION_DISTANCE` (a private const, currently 2); ties go
+/// to the earlier candidate. An
 /// exact match returns that candidate (distance 0). Returns `None` when
 /// nothing is close enough to be a plausible typo target.
 ///
