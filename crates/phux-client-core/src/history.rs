@@ -105,6 +105,7 @@ impl std::fmt::Debug for HistoryPageId {
 pub struct DocumentAnchorId(u64);
 
 impl DocumentAnchorId {
+    #[cfg(any(feature = "native-engine", test))]
     /// Construct an identifier allocated by an engine adapter.
     #[must_use]
     pub(crate) const fn from_raw(value: u64) -> Self {
