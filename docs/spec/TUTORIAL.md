@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-06-06
+last-reviewed: 2026-08-02
 ---
 
 # Protocol 101: a complete session walkthrough
@@ -14,47 +14,80 @@ last-reviewed: 2026-06-06
 
 A phux session, in one breath: a client connects to a server, negotiates capabilities, attaches to a terminal (or creates one), receives a stream of VT bytes as the PTY emits them, sends keypresses and mouse events back, and eventually detaches. The flow is asymmetric on purpose. The server sends opaque terminal **bytes**; the client sends **structured** input events. Both ends run the same terminal engine (libghostty), so neither side re-encodes terminal state into a second model — the bytes go straight onto the wire and are parsed once on each end.
 
-Protocol version for this walkthrough is `0.3.0`.
+Protocol version for this walkthrough is `0.7.0`.
 
 ---
 
 ## Step 1: HELLO negotiation
 
-**What happens:** the client connects over a Unix socket (or SSH stdin/stdout), declares the versions it speaks, and advertises its capabilities.
+**What happens:** the client connects over a Unix socket (or SSH stdin/stdout),
+sends the exact protocol version it speaks, and advertises its capabilities.
+Every top-level body field is tagged; `client_caps` itself is the required
+positional sub-record defined by [proto.md §6.2](./proto.md).
 
 ```
 Client sends (frame type 0x01):
   HELLO {
-    versions: [{ min: 0.3.0, max: 0.3.0 }],
-    client_caps: {
-      layers: 0x01,              // L1 only
+    client_name: "phux-tui",       // field 1
+    protocol_major: 0,             // field 2
+    protocol_minor: 7,             // field 3
+    protocol_patch: 0,             // field 4
+    client_caps: {                 // field 5
       color: TrueColor,
-      kbd_protocols: 0x03,       // kitty + modifyOtherKeys
-      mouse_protocols: 0x01,     // standard mouse
+      layers: 0x05,                // L1 + L3; L2 remains reserved
+      images: 0x00,
+      kbd_protocols: 0x03,         // kitty + modifyOtherKeys
       hyperlinks: true,
-      output_mode: Raw,          // byte-faithful PTY broadcast
+      output_mode: Raw,            // synthesized-profile preference only
+      default_colors: None,
+      bootstrap_profiles: 0x0e,    // synth raw/state-sync + native-v2 offer
+      native_codecs: 1 << 2,       // exact LibghosttyCheckpointV2
+      native_features: 0x0000000f, // all four required native features
+      max_chunk_bytes: 262144,
+      max_history_page_bytes: 1048576,
     }
   }
 
 Server replies (frame type 0x80):
   HELLO_OK {
-    version: 0.3.0,
-    server_caps: {
-      layers: 0x05,              // L1 + L3 implemented (no L2 tier)
-      features: 0x01,            // REATTACH_REPLAY enabled
-      max_message_size: 16777216,
+    protocol_major: 0,             // field 1
+    protocol_minor: 7,             // field 2
+    protocol_patch: 0,             // field 3
+    server_caps: {                 // field 4
+      layers: 0x05,
+      features: 0x00000000,
     },
-    server_id: "phux-server-abc123"
+    server_id: "phux-server-abc123", // field 5, opaque incarnation bytes
+    selected_profile: NativeState { // field 6; current native tag is 3
+      codec: LibghosttyCheckpointV2,
+      features: 0x0000000f,
+    },
+    max_chunk_bytes: 262144,        // field 7, negotiated minimum
+    max_history_page_bytes: 1048576, // field 8, negotiated minimum
   }
 ```
 
 **Wire shape:** see [proto.md §6.1](./proto.md). Key pieces:
 
-- `versions` lists the semantic version ranges the client accepts; the server selects the highest version that lies in some range and that it also supports, then echoes it back.
-- `layers` is a bitset: `0x01` is L1 only, `0x05` is L1+L3. The negotiated tier set is the intersection of the two `layers` fields; an agent declares L1, a TUI declares L1+L3. The L2 bit (`0x02`) is reserved but unused — there is no collection tier (see [L2.md](./L2.md)).
-- The capability fields (color, keyboard, mouse, hyperlinks) tell the server how to downsample the outbound byte stream. If the client advertises `Indexed256`, the server rewrites truecolor SGR codes to their 256-color equivalents before forwarding.
-
-`HELLO.client_caps` carries a legacy `rendering` field (`Diff` vs. `VtReplay`); it is deprecated and ignored. With `TERMINAL_OUTPUT` carrying VT bytes, every client renders by local libghostty parse, so there is no structured-diff alternative to select. See [proto.md §6.2](./proto.md).
+- `major.minor` must equal `0.7`; a `0.6` peer is rejected before session
+  state. Patch differences are compatible, and the server returns its current
+  patch.
+- `layers` is intersected once for the connection. `0x01` is L1 only and
+  `0x05` is L1+L3; L2's `0x02` bit remains reserved and unmounted (see
+  [L2.md](./L2.md)).
+- `BootstrapCapabilities::new()` offers only the two synthesized compatibility
+  profiles. Native is explicit opt-in after a successful engine probe: both
+  peers must share the exact checkpoint-v2 codec and all four required features
+  (`CONTINUATION`, `READY_BOUNDARY`, `HISTORY_PAGES`, and
+  `BOUNDED_HISTORY_CONTROL`). The current native offer bit is `0x08`; the
+  incomplete legacy `0x01` offer is permanently retired.
+- The server selects one advertised profile and the per-axis minimum of the
+  nonzero byte bounds. If native is unusable it may select only a synthesized
+  profile advertised by both peers; with no shared profile it sends
+  `CODEC_UNAVAILABLE`. There is no fallback after `HELLO_OK`.
+- Color/image/keyboard/hyperlink rewriting applies only to synthesized
+  compatibility profiles. Native checkpoint, history, cursor, and live PTY
+  bytes remain opaque and byte-identical.
 
 **Why it matters:** negotiation happens once and fixes the contract for the whole connection — version, capabilities, and which tiers the two sides will use.
 
