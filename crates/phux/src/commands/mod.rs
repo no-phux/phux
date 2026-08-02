@@ -75,6 +75,26 @@ pub(crate) struct RecOpts {
     pub(crate) rec_format: Option<RecFormat>,
 }
 
+/// The shared `--json` declaration for the core server-talking verbs
+/// (ADR-0065 §3, phux-i0e8.8.2).
+///
+/// `--json` stays verb-scoped rather than global so help stays honest by
+/// construction (a global would advertise itself on verbs with no JSON
+/// projection); this one flattened struct is the single declaration those
+/// verbs share, so the doc string and the error contract cannot drift
+/// per-verb. Deliberately **no `-j` short flag**: considered and rejected in
+/// ADR-0065 §7 (`--json` is typed by scripts and agents, where explicitness
+/// beats two saved characters), cross-referenced in
+/// `docs/consumers/agents.md` §5.3.
+#[derive(Debug, Args)]
+pub(crate) struct JsonOpt {
+    /// Emit stable, versioned JSON on stdout instead of the human view.
+    /// On failure, stdout stays empty and stderr carries one JSON error
+    /// object (see docs/consumers/agents.md).
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
 /// Validates a split ratio as finite and strictly between zero and one.
 fn parse_spawn_ratio(value: &str) -> Result<f32, String> {
     let ratio: f32 = value
@@ -123,6 +143,7 @@ pub(crate) mod config_action;
 pub(crate) mod detach;
 pub(crate) mod doctor;
 pub(crate) mod enroll;
+pub(crate) mod json_err;
 pub(crate) mod kill;
 pub(crate) mod launch;
 pub(crate) mod logs;
@@ -379,10 +400,8 @@ pub(crate) enum Command {
     /// machine shape instead of the human text.
     #[command(visible_alias = "list")]
     Ls {
-        /// Emit the session list as stable, versioned JSON instead of
-        /// human text.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Create a new session and attach to it.
@@ -414,10 +433,8 @@ pub(crate) enum Command {
         #[arg(short = 'c', long = "cwd")]
         cwd: Option<std::path::PathBuf>,
 
-        /// Create without attaching and print the seed pane's id as JSON.
-        /// Requires `-s NAME`.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
 
         /// Environment assignment for the seed process. Repeat for multiple
         /// variables. Headless `--json` mode only.
@@ -467,10 +484,8 @@ pub(crate) enum Command {
         #[arg(short = 'c', long = "cwd")]
         cwd: Option<String>,
 
-        /// Emit the result as JSON:
-        /// `{"terminal_id": N, "satellite": "NAME" | null}`.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
 
         /// Command (and arguments) to run instead of the default shell.
         /// Must follow `--`: `phux spawn -- htop`.
@@ -505,9 +520,8 @@ pub(crate) enum Command {
         #[arg(long, visible_alias = "dry-run")]
         print: bool,
 
-        /// Emit the result as JSON instead of the human view.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
 
         /// Existing local pane beside which to place the launched pane.
         #[arg(long, value_name = "TARGET", conflicts_with_all = ["list", "print"])]
@@ -638,10 +652,8 @@ pub(crate) enum Command {
         #[arg(value_name = "COLSxROWS", value_parser = resize::parse_geometry)]
         geometry: resize::Geometry,
 
-        /// Emit a schema-versioned JSON result naming the requested and the
-        /// applied geometry.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Detach clients from a session, from outside the attach UI.
@@ -734,9 +746,8 @@ pub(crate) enum Command {
         #[arg(value_name = "TARGET")]
         session: Option<String>,
 
-        /// Emit JSON (stable schema) instead of the human boxed view.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
 
         /// Include scrollback history above the viewport.
         /// Bare `--scrollback` requests all retained history; `--scrollback
@@ -865,9 +876,8 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECS")]
         timeout: Option<u64>,
 
-        /// Emit the final screen as JSON instead of staying silent.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Stream a pane's live events (the push half of the agent surface).
@@ -893,10 +903,8 @@ pub(crate) enum Command {
         #[arg(value_name = "TARGET")]
         session: Option<String>,
 
-        /// Emit one JSON object per line instead of the human form. stdout
-        /// stays pure JSON (diagnostics go to stderr).
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Record a pane and export it as an asciinema cast, an animated GIF, or
@@ -960,9 +968,8 @@ pub(crate) enum Command {
               value_parser = clap::value_parser!(u8).range(2..=3))]
         cast_version: u8,
 
-        /// Emit one JSON result object on stdout.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Play a recording back as a live pane.
@@ -1036,9 +1043,8 @@ pub(crate) enum Command {
         #[arg(long)]
         close: bool,
 
-        /// Emit one JSON object naming the pane and the recording.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
 
         /// Internal: this process IS the pane, so write the recording to
         /// stdout rather than spawning one. Hidden because it is an
@@ -1075,9 +1081,8 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECS")]
         elapsed_seconds: Option<u64>,
 
-        /// Emit the reported event as JSON.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
 
         /// Human-facing question text.
         question: String,
@@ -1123,9 +1128,8 @@ pub(crate) enum Command {
         #[arg(long, value_name = "SECS")]
         timeout: Option<u64>,
 
-        /// Emit the result as JSON instead of the human view.
-        #[arg(long)]
-        json: bool,
+#[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Inspect, scaffold, and reload the phux config file.
@@ -2020,18 +2024,23 @@ pub(crate) fn parse_selector(session: Option<&str>) -> Result<crate::selector::S
 /// child's own exit code and `wait` owns `124`. A shared resolver cannot hand
 /// out a code that means one thing for `kill` and collides for `run`, so the
 /// distinction stays in the sentence, which is where the user reads it.
+///
+/// `json` selects the failure channel per the JSON error contract
+/// ([`json_err`], phux-i0e8.8.2): verbs without a `--json` flag pass `false`
+/// and keep the historical prose.
 pub(crate) async fn resolve_target(
     socket_path: &Path,
     selector: &crate::selector::Selector,
     verb: &str,
+    json: bool,
 ) -> Result<phux_protocol::ids::TerminalId, ExitCode> {
     let (snapshot, degradation) = phux_client::state::get_state(socket_path)
         .await
-        .map_err(|err| report_no_server(&err, socket_path, verb))?
+        .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))?
         .into_parts();
     let candidates = resolve_targets(socket_path, selector, &snapshot).await;
     let picked = crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
-        .ok_or_else(|| partial::report_target_miss_keeping_status(None, &degradation))?;
+        .ok_or_else(|| partial::report_target_miss_keeping_status_for(json, None, &degradation))?;
     // A hit is still worth a word: the pane we picked is the best of what a
     // partial fleet offered, and the user is about to act on it.
     partial::warn_partial_view(verb, &degradation);

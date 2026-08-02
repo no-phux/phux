@@ -51,7 +51,7 @@ pub(crate) fn run_paste(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "paste").await {
+        let pane = match resolve_target(&socket_path, &selector, "paste", false).await {
             Ok(id) => id,
             Err(code) => return code,
         };

@@ -6,7 +6,7 @@ use phux_client::attach::AttachError;
 use phux_client::resize::{ResizeOutcome, resize_to};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
 /// A `COLSxROWS` geometry argument, parsed and range-checked.
 ///
@@ -81,14 +81,14 @@ pub(crate) fn run_resize(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "resize").await {
+        let pane = match resolve_target(&socket_path, &selector, "resize", json).await {
             Ok(id) => id,
             Err(code) => return code,
         };
         let outcome = match resize_to(&socket_path, &pane, geometry.cols, geometry.rows).await {
             Ok(outcome) => outcome,
             Err(err @ AttachError::Io(_)) => {
-                return report_no_server(&err, &socket_path, "resize");
+                return json_err::report_no_server(json, &err, &socket_path, "resize");
             }
             Err(AttachError::Refused(msg)) => {
                 eprintln!("phux: cannot resize '{target}': {msg} (try `phux ls`)");

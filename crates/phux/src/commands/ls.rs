@@ -7,7 +7,7 @@ use phux_core::session_list::{SessionJson, SessionListJson};
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, partial, report_no_server};
+use crate::commands::{cli_runtime, json_err, partial};
 
 /// `phux ls` — list sessions via `GET_STATE`. Does not auto-start a
 /// server. With `json`, emits the stable [`SessionListJson`] contract
@@ -38,7 +38,7 @@ pub(crate) fn run_ls(json: bool, socket: Option<PathBuf>) -> ExitCode {
                 ExitCode::SUCCESS
             }
         }
-        Err(err) => report_no_server(&err, &socket_path, "ls"),
+        Err(err) => json_err::report_no_server(json, &err, &socket_path, "ls"),
     }
 }
 

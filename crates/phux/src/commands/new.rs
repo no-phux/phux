@@ -13,8 +13,8 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{
     DEFAULT_SESSION_NAME, attach::client_cwd, attach::report_attach_end,
-    attach::resolved_default_session_name, attach::run_attach_once, cli_runtime, partial,
-    print_attach_error, report_no_server, server::maybe_auto_spawn_server,
+    attach::resolved_default_session_name, attach::run_attach_once, cli_runtime, json_err,
+    partial, print_attach_error, server::maybe_auto_spawn_server,
 };
 
 /// `phux new` — create a *new* session and attach to it.
@@ -205,6 +205,7 @@ pub(crate) fn run_new_json(
         env,
         None,
         false,
+        true,
     )) {
         Ok(terminal_id) => {
             let payload = serde_json::json!({ "session": name, "terminal_id": terminal_id });
@@ -226,6 +227,7 @@ pub(crate) fn run_new_json(
 async fn require_atomic_agent_session_create(
     conn: &mut Connection,
     socket_path: &Path,
+    json: bool,
 ) -> Result<(), ExitCode> {
     // Native restore must be atomic with session creation. Older servers treat
     // the nonce-result namespace as ordinary metadata and cannot install
@@ -239,11 +241,11 @@ async fn require_atomic_agent_session_create(
         value: uuid::Uuid::new_v4().as_bytes().to_vec(),
     })
     .await
-    .map_err(|err| report_no_server(&err, socket_path, "new"))?;
+    .map_err(|err| json_err::report_no_server(json, &err, socket_path, "new"))?;
     let (probe, interleaved) = conn
         .request_metadata(101, Scope::Global, probe_key.clone())
         .await
-        .map_err(|err| report_no_server(&err, socket_path, "new"))?
+        .map_err(|err| json_err::report_no_server(json, &err, socket_path, "new"))?
         .into_parts();
     for message in phux_client::state::degradation_notices(&interleaved) {
         eprintln!("phux: warning: partial results — {message}");
@@ -257,13 +259,13 @@ async fn require_atomic_agent_session_create(
                 key: probe_key.clone(),
             })
             .await
-            .map_err(|err| report_no_server(&err, socket_path, "new"))?;
+            .map_err(|err| json_err::report_no_server(json, &err, socket_path, "new"))?;
             // Ordered read-back confirms that the old server processed the
             // cleanup before this connection closes.
             let _ = conn
                 .request_metadata(103, Scope::Global, probe_key)
                 .await
-                .map_err(|err| report_no_server(&err, socket_path, "new"))?;
+                .map_err(|err| json_err::report_no_server(json, &err, socket_path, "new"))?;
             eprintln!(
                 "phux: create-session failed: server does not support atomic agent-session restore"
             );
@@ -283,8 +285,8 @@ pub(crate) async fn preflight_atomic_agent_session_create(
 ) -> Result<(), ExitCode> {
     let mut conn = Connection::connect(socket_path)
         .await
-        .map_err(|err| report_no_server(&err, socket_path, "workspace restore"))?;
-    require_atomic_agent_session_create(&mut conn, socket_path).await
+        .map_err(|err| crate::commands::report_no_server(&err, socket_path, "workspace restore"))?;
+    require_atomic_agent_session_create(&mut conn, socket_path, false).await
 }
 
 /// Create a named session without attaching via the conventional
@@ -297,6 +299,10 @@ pub(crate) async fn preflight_atomic_agent_session_create(
 /// Returns the seed pane's local id on success, or the failure `ExitCode`
 /// (already reported to stderr) otherwise. Shared by `phux new --json`; mirrors
 /// the MCP `phux_new` path.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared create-without-attach path keeps the complete operation explicit"
+)]
 pub(crate) async fn create_session_via_metadata(
     socket_path: &Path,
     name: &str,
@@ -305,6 +311,7 @@ pub(crate) async fn create_session_via_metadata(
     env: std::collections::BTreeMap<String, String>,
     agent_session: Option<Vec<u8>>,
     agent_session_preflighted: bool,
+    json: bool,
 ) -> Result<u64, ExitCode> {
     let allow_legacy_result = agent_session.is_none();
     let request_token = uuid::Uuid::new_v4().to_string();
@@ -324,7 +331,7 @@ pub(crate) async fn create_session_via_metadata(
 
     let mut conn = Connection::connect(socket_path)
         .await
-        .map_err(|err| report_no_server(&err, socket_path, "new"))?;
+        .map_err(|err| json_err::report_no_server(json, &err, socket_path, "new"))?;
 
     // Reject a duplicate name before writing (the server also refuses it, but
     // silently — SET_METADATA has no reply frame).
@@ -335,7 +342,7 @@ pub(crate) async fn create_session_via_metadata(
     // and a warning has no place in that document.
     let (pre, degradation) = phux_client::state::get_state_on(&mut conn)
         .await
-        .map_err(|err| report_no_server(&err, socket_path, "new"))?
+        .map_err(|err| json_err::report_no_server(json, &err, socket_path, "new"))?
         .into_parts();
     partial::warn_partial_view("new", &degradation);
     if pre.sessions.iter().any(|s| s.name == name) {
@@ -344,7 +351,7 @@ pub(crate) async fn create_session_via_metadata(
     }
 
     if !allow_legacy_result && !agent_session_preflighted {
-        require_atomic_agent_session_create(&mut conn, socket_path).await?;
+        require_atomic_agent_session_create(&mut conn, socket_path, json).await?;
     }
 
     // Request the create, then read only this request's one-shot result.
@@ -357,7 +364,7 @@ pub(crate) async fn create_session_via_metadata(
         value: create_bytes,
     })
     .await
-    .map_err(|err| report_no_server(&err, socket_path, "new"))?;
+    .map_err(|err| json_err::report_no_server(json, &err, socket_path, "new"))?;
     // The read-back rides `request_metadata`, not a hand-rolled wait. The
     // loop that used to be here matched METADATA_VALUE on request id 2 and
     // dropped everything else, so a server that refused the read with a
@@ -367,7 +374,7 @@ pub(crate) async fn create_session_via_metadata(
     let (answer, interleaved) = conn
         .request_metadata(2, Scope::Global, result_key)
         .await
-        .map_err(|err| report_no_server(&err, socket_path, "new"))?
+        .map_err(|err| json_err::report_no_server(json, &err, socket_path, "new"))?
         .into_parts();
     for message in phux_client::state::degradation_notices(&interleaved) {
         eprintln!("phux: warning: partial results — {message}");
@@ -388,7 +395,7 @@ pub(crate) async fn create_session_via_metadata(
         let (legacy_answer, legacy_interleaved) = conn
             .request_metadata(3, Scope::Global, SESSION_CREATE_RESULT_KEY.to_owned())
             .await
-            .map_err(|err| report_no_server(&err, socket_path, "new"))?
+            .map_err(|err| json_err::report_no_server(json, &err, socket_path, "new"))?
             .into_parts();
         for message in phux_client::state::degradation_notices(&legacy_interleaved) {
             eprintln!("phux: warning: partial results — {message}");

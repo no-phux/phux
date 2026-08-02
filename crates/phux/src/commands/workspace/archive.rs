@@ -136,6 +136,7 @@ pub(super) fn run_restore(archive_path: &Path, socket: Option<PathBuf>) -> ExitC
             env,
             agent_session,
             agent_session_preflighted,
+            false,
         )) {
             Ok(pane_id) => {
                 if let Some(prepared) = &prepared

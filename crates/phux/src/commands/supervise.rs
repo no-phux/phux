@@ -43,7 +43,7 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: bool) -> ExitCode {
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let terminal_id = match resolve_target(&socket_path, &selector, verb).await {
+        let terminal_id = match resolve_target(&socket_path, &selector, verb, false).await {
             Ok(id) => id,
             Err(code) => return code,
         };
@@ -95,7 +95,7 @@ pub(crate) fn run_signal(target: &str, signal: SignalArg, socket: Option<PathBuf
     };
     let wire_signal = TerminalSignal::from(signal);
     rt.block_on(async move {
-        let terminal_id = match resolve_target(&socket_path, &selector, "signal").await {
+        let terminal_id = match resolve_target(&socket_path, &selector, "signal", false).await {
             Ok(id) => id,
             Err(code) => return code,
         };

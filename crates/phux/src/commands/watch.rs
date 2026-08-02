@@ -6,7 +6,7 @@ use phux_client::watch::WatchEvent;
 use phux_protocol::wire::frame::AgentEvent;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
 /// `phux watch [TARGET]` — stream a pane's live events (SPEC §7.5,
 /// ADR-0022 'events', `phux-y2t`).
@@ -31,7 +31,7 @@ pub(crate) fn run_watch(session: Option<&str>, json: bool, socket: Option<PathBu
     };
 
     rt.block_on(async move {
-        let terminal_id = match resolve_target(&socket_path, &selector, "watch").await {
+        let terminal_id = match resolve_target(&socket_path, &selector, "watch", json).await {
             Ok(id) => id,
             Err(code) => return code,
         };
@@ -47,7 +47,9 @@ pub(crate) fn run_watch(session: Option<&str>, json: bool, socket: Option<PathBu
         tokio::select! {
             result = &mut stream => match result {
                 Ok(()) => ExitCode::SUCCESS,
-                Err(err @ AttachError::Io(_)) => report_no_server(&err, &socket_path, "watch"),
+                Err(err @ AttachError::Io(_)) => {
+                    json_err::report_no_server(json, &err, &socket_path, "watch")
+                }
                 Err(err) => {
                     eprintln!("phux: watch failed: {err}");
                     ExitCode::FAILURE

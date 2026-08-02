@@ -5,7 +5,7 @@ use std::time::Duration;
 use phux_client::attach::AttachError;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
 /// `phux wait [TARGET]` — poll until a pane meets a condition (ADR-0022 §4).
 ///
@@ -42,7 +42,7 @@ pub(crate) fn run_wait(
     };
 
     rt.block_on(async move {
-        let terminal_id = match resolve_target(&socket_path, &selector, "wait").await {
+        let terminal_id = match resolve_target(&socket_path, &selector, "wait", json).await {
             Ok(id) => id,
             Err(code) => return code,
         };
@@ -56,7 +56,9 @@ pub(crate) fn run_wait(
         .await
         {
             Ok(result) => result,
-            Err(err @ AttachError::Io(_)) => return report_no_server(&err, &socket_path, "wait"),
+            Err(err @ AttachError::Io(_)) => {
+                return json_err::report_no_server(json, &err, &socket_path, "wait");
+            }
             Err(err) => {
                 eprintln!("phux: wait failed: {err}");
                 return ExitCode::FAILURE;

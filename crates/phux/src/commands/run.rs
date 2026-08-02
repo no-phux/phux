@@ -6,7 +6,7 @@ use phux_client::attach::AttachError;
 use phux_client::run::RunOutcome;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
 /// Default `run` timeout when `--timeout` is unset. Bounds the poll so an
 /// interactive or never-returning command does not hang forever; users opt
@@ -54,7 +54,7 @@ pub(crate) fn run_run(
     };
 
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "run").await {
+        let pane = match resolve_target(&socket_path, &selector, "run", json).await {
             Ok(id) => id,
             Err(code) => return code,
         };
@@ -87,7 +87,9 @@ pub(crate) fn run_run(
                 // so a caller can distinguish "phux gave up" from the child.
                 ExitCode::from(RUN_TIMEOUT_EXIT_CODE)
             }
-            Err(err @ AttachError::Io(_)) => report_no_server(&err, &socket_path, "run"),
+            Err(err @ AttachError::Io(_)) => {
+                json_err::report_no_server(json, &err, &socket_path, "run")
+            }
             Err(AttachError::Refused(msg)) => {
                 eprintln!("phux: cannot run in '{target}': {msg} (try `phux ls`)");
                 ExitCode::FAILURE

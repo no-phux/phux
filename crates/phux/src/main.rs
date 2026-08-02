@@ -272,7 +272,7 @@ pub(crate) fn print_banner() {
 fn is_interactive_client(cli: &Cli) -> bool {
     match &cli.command {
         Some(Command::Attach { .. }) | None => true,
-        Some(Command::New { json, .. }) => !json,
+        Some(Command::New { json, .. }) => !json.json,
         _ => false,
     }
 }
@@ -430,7 +430,7 @@ fn main() -> ExitCode {
             seed_command.as_deref(),
             resume,
         ),
-        Some(Command::Ls { json }) => commands::ls::run_ls(json, socket),
+        Some(Command::Ls { json }) => commands::ls::run_ls(json.json, socket),
         Some(Command::New {
             name,
             session,
@@ -438,7 +438,7 @@ fn main() -> ExitCode {
             json,
             env,
             command,
-        }) => commands::new::run_new(name, session, cwd, socket, json, command, env),
+        }) => commands::new::run_new(name, session, cwd, socket, json.json, command, env),
         Some(Command::Spawn {
             satellite,
             target,
@@ -448,7 +448,7 @@ fn main() -> ExitCode {
             json,
             command,
         }) => {
-            commands::spawn::run_spawn(satellite, target, split, ratio, cwd, json, socket, command)
+            commands::spawn::run_spawn(satellite, target, split, ratio, cwd, json.json, socket, command)
         }
         Some(Command::Launch {
             integration,
@@ -464,7 +464,7 @@ fn main() -> ExitCode {
             integration,
             list,
             print,
-            json,
+            json.json,
             target,
             split,
             ratio,
@@ -499,7 +499,7 @@ fn main() -> ExitCode {
             target,
             geometry,
             json,
-        }) => commands::resize::run_resize(&target, geometry, json, socket),
+        }) => commands::resize::run_resize(&target, geometry, json.json, socket),
         Some(Command::Take { target }) => commands::supervise::run_take(&target, socket),
         Some(Command::Give { target }) => commands::supervise::run_give(&target, socket),
         Some(Command::Signal { target, signal }) => {
@@ -519,7 +519,7 @@ fn main() -> ExitCode {
             rows,
         }) => commands::snapshot::run_snapshot(
             session.as_deref(),
-            json,
+            json.json,
             scrollback,
             cells,
             &commands::snapshot::RenderedOpts {
@@ -543,9 +543,9 @@ fn main() -> ExitCode {
             idle,
             timeout,
             json,
-        }) => commands::wait::run_wait(session.as_deref(), until, idle, timeout, json, socket),
+        }) => commands::wait::run_wait(session.as_deref(), until, idle, timeout, json.json, socket),
         Some(Command::Watch { session, json }) => {
-            commands::watch::run_watch(session.as_deref(), json, socket)
+            commands::watch::run_watch(session.as_deref(), json.json, socket)
         }
         Some(Command::Rec {
             target,
@@ -568,7 +568,7 @@ fn main() -> ExitCode {
             idle_limit,
             max_bytes,
             cast_version,
-            json,
+            json: json.json,
             socket,
         }),
         Some(Command::Play {
@@ -600,7 +600,7 @@ fn main() -> ExitCode {
             ratio,
             no_fit,
             close,
-            json,
+            json: json.json,
             socket,
             pty_writer,
         }),
@@ -616,7 +616,7 @@ fn main() -> ExitCode {
             id,
             suggestions,
             elapsed_seconds,
-            json,
+            json.json,
             question,
             socket,
         ),
@@ -626,7 +626,7 @@ fn main() -> ExitCode {
             command,
             timeout,
             json,
-        }) => commands::run::run_run(&target, &command, timeout, json, socket),
+        }) => commands::run::run_run(&target, &command, timeout, json.json, socket),
         Some(Command::Config { action }) => commands::config::run_config(&action, socket),
         Some(Command::Plugin { action }) => commands::plugin::run_plugin(&action),
         Some(Command::Workspace { action }) => commands::workspace::run_workspace(&action, socket),

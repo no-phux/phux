@@ -333,6 +333,7 @@ fn bind_session(
         BTreeMap::default(),
         None,
         false,
+        false,
     )) {
         Ok(_) => {
             outln!("{name}");

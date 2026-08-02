@@ -26,7 +26,8 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, command_on, report_no_server, resolve_targets};
+use crate::commands::json_err::{self, CliError, codes};
+use crate::commands::{cli_runtime, command_on, resolve_targets};
 use crate::selector;
 
 const JSON_SCHEMA_VERSION: u8 = 1;
@@ -74,21 +75,6 @@ enum RequestedOperation {
         first: String,
         second: String,
     },
-}
-
-#[derive(Debug)]
-struct SpatialError {
-    code: &'static str,
-    message: String,
-}
-
-impl SpatialError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -201,11 +187,11 @@ fn run(operation: RequestedOperation, json: bool, socket: Option<PathBuf>) -> Ex
     if let Some(ratio) = operation.ratio()
         && let Err(err) = validate_ratio(ratio)
     {
-        return print_error(json, &err, ExitCode::from(2));
+        return json_err::emit(json, &err, 2);
     }
     let parsed = match operation.parse_selectors() {
         Ok(parsed) => parsed,
-        Err(err) => return print_error(json, &err, ExitCode::from(2)),
+        Err(err) => return json_err::emit(json, &err, 2),
     };
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let rt = match cli_runtime() {
@@ -216,15 +202,15 @@ fn run(operation: RequestedOperation, json: bool, socket: Option<PathBuf>) -> Ex
     rt.block_on(async move {
         let mut conn = match Connection::connect(&socket_path).await {
             Ok(conn) => conn,
-            Err(err) => return print_transport_error(json, &err, &socket_path),
+            Err(err) => return json_err::report_no_server(json, &err, &socket_path, "layout"),
         };
         let snapshot = match read_snapshot(&mut conn, 0).await {
             Ok(snapshot) => snapshot,
-            Err(err) => return print_transport_or_protocol_error(json, &err, &socket_path),
+            Err(err) => return json_err::report_no_server(json, &err, &socket_path, "layout"),
         };
         let plan = match build_plan(&socket_path, &snapshot, operation, parsed).await {
             Ok(plan) => plan,
-            Err(err) => return print_error(json, &err, ExitCode::from(2)),
+            Err(err) => return json_err::emit(json, &err, 2),
         };
         match plan {
             PlanKind::Local(plan) => {
@@ -257,17 +243,17 @@ async fn execute_cross_move(
     match server_supports_move(conn).await {
         Ok(true) => {}
         Ok(false) => {
-            return print_error(
+            return json_err::emit(
                 json,
-                &SpatialError::new(
-                    "server_too_old",
-                    "this server predates cross-session moves (MOVE_TERMINAL); \
-                     upgrade it with `phux upgrade`, then retry",
+                &CliError::new(
+                    codes::SERVER_TOO_OLD,
+                    "this server predates cross-session moves (MOVE_TERMINAL)",
+                    "upgrade it with `phux upgrade`, then retry",
                 ),
-                ExitCode::FAILURE,
+                1,
             );
         }
-        Err(err) => return print_transport_error(json, &err, socket_path),
+        Err(err) => return json_err::report_no_server(json, &err, socket_path, "layout"),
     }
 
     let frame = FrameKind::MoveTerminal {
@@ -281,10 +267,10 @@ async fn execute_cross_move(
                 "server refused the move: {refusal}"
             )))
         }),
-        Err(err) => return print_transport_error(json, &err, socket_path),
+        Err(err) => return json_err::report_no_server(json, &err, socket_path, "layout"),
     };
     if let Err(err) = move_refusal(moved) {
-        return print_error(json, &err, ExitCode::FAILURE);
+        return json_err::emit(json, &err, 1);
     }
 
     // Reaping is authoritative server state, not a prediction from the
@@ -294,30 +280,32 @@ async fn execute_cross_move(
         Ok(snapshot) => snapshot,
         Err(err) => {
             let suffix = rollback_suffix(conn, plan).await;
-            return print_error(
+            return json_err::emit(
                 json,
-                &SpatialError::new(
-                    "post_move_state_failed",
+                &CliError::new(
+                    codes::POST_MOVE_STATE_FAILED,
                     format!(
                         "the server moved the pane but its resulting ownership could not be read \
                          ({err}); {suffix}"
                     ),
+                    "run `phux ls` to verify where the pane landed",
                 ),
-                ExitCode::FAILURE,
+                1,
             );
         }
     };
     if !snapshot_confirms_destination(&post_move_snapshot, plan) {
         let suffix = rollback_suffix(conn, plan).await;
-        return print_error(
+        return json_err::emit(
             json,
-            &SpatialError::new(
-                "destination_changed",
+            &CliError::new(
+                codes::DESTINATION_CHANGED,
                 format!(
                     "the destination pane changed windows while the move was in flight; {suffix}"
                 ),
+                "re-run `phux ls` and retry with current selectors",
             ),
-            ExitCode::FAILURE,
+            1,
         );
     }
     let source_session_reaped = !post_move_snapshot
@@ -329,13 +317,14 @@ async fn execute_cross_move(
     // inverse move (best-effort — the spawn-placement rollback shape).
     if let Err(err) = publish_destination_layout(conn, plan).await {
         let suffix = rollback_suffix(conn, plan).await;
-        return print_error(
+        return json_err::emit(
             json,
-            &SpatialError::new(
-                "destination_layout_failed",
+            &CliError::new(
+                codes::DESTINATION_LAYOUT_FAILED,
                 format!("destination layout write failed ({err}); {suffix}"),
+                "run `phux ls` to verify pane ownership, then retry the move",
             ),
-            ExitCode::FAILURE,
+            1,
         );
     }
 
@@ -343,16 +332,17 @@ async fn execute_cross_move(
     // represented as an empty Workspace, and its session was reaped by the
     // ownership move, so delete that dead session's envelope instead.
     if let Err(err) = cleanup_source_layout(conn, plan, source_session_reaped).await {
-        return print_error(
+        return json_err::emit(
             json,
-            &SpatialError::new(
-                "source_layout_failed",
+            &CliError::new(
+                codes::SOURCE_LAYOUT_FAILED,
                 format!(
                     "the pane was moved and placed, but the source layout could not be cleaned up \
-                     ({err}); retry the layout edit before relying on either session's topology"
+                     ({err})"
                 ),
+                "retry the layout edit before relying on either session's topology",
             ),
-            ExitCode::FAILURE,
+            1,
         );
     }
 
@@ -471,17 +461,23 @@ fn cross_move_plan(
 /// Fold a `TERMINAL_MOVED` result into the verb's error vocabulary.
 /// `MoveResult` is `#[non_exhaustive]`; a future variant from a newer server
 /// reads as a refusal rather than a silent success.
-fn move_refusal(moved: MoveResult) -> Result<(), SpatialError> {
+fn move_refusal(moved: MoveResult) -> Result<(), CliError> {
     match moved {
         MoveResult::Ok(_) => Ok(()),
-        MoveResult::Err(MoveError::UnsupportedSatelliteRoute) => Err(SpatialError::new(
-            "satellite_target",
+        MoveResult::Err(MoveError::UnsupportedSatelliteRoute) => Err(CliError::new(
+            codes::SATELLITE_TARGET,
             "cross-session moves are local-only; satellite panes are not supported",
+            "pick a hub-local pane for layout edits",
         )),
-        MoveResult::Err(err) => Err(SpatialError::new("move_refused", err_text(&err))),
-        other => Err(SpatialError::new(
-            "move_refused",
+        MoveResult::Err(err) => Err(CliError::new(
+            codes::MOVE_REFUSED,
+            err_text(&err),
+            "run `phux ls` to re-check both panes, then retry",
+        )),
+        other => Err(CliError::new(
+            codes::MOVE_REFUSED,
             format!("unrecognized move result: {other:?}"),
+            "run `phux ls` to re-check both panes, then retry",
         )),
     }
 }
@@ -662,14 +658,15 @@ impl RequestedOperation {
         }
     }
 
-    fn parse_selectors(&self) -> Result<Vec<selector::Selector>, SpatialError> {
+    fn parse_selectors(&self) -> Result<Vec<selector::Selector>, CliError> {
         self.raw_selectors()
             .into_iter()
             .map(|(role, raw)| {
                 selector::parse(raw).map_err(|err| {
-                    SpatialError::new(
-                        "invalid_selector",
+                    CliError::new(
+                        codes::INVALID_SELECTOR,
                         format!("invalid {role} selector {raw:?}: {err}"),
+                        "selector grammar: session, session:window, session:window.pane, @id, `.`",
                     )
                 })
             })
@@ -714,7 +711,7 @@ async fn build_plan(
     snapshot: &SessionSnapshot,
     operation: RequestedOperation,
     selectors: Vec<selector::Selector>,
-) -> Result<PlanKind, SpatialError> {
+) -> Result<PlanKind, CliError> {
     let roles = operation.raw_selectors();
     let mut terminals = Vec::with_capacity(selectors.len());
     for ((role, _), selector) in roles.iter().zip(&selectors) {
@@ -722,10 +719,7 @@ async fn build_plan(
         terminals.push(exactly_one_local(role, &candidates)?);
     }
     if terminals.len() == 2 && terminals[0] == terminals[1] {
-        return Err(SpatialError::new(
-            "same_pane",
-            "the two pane selectors must resolve differently",
-        ));
+        return Err(same_pane_error());
     }
 
     // Cross-session move (ADR-0056): the one spatial operation that may span
@@ -812,44 +806,62 @@ async fn build_plan(
             }),
             human: format!("swapped @{} and @{}", local_id(first), local_id(second)),
         })),
-        _ => Err(SpatialError::new(
-            "internal_error",
+        _ => Err(CliError::new(
+            codes::INTERNAL_ERROR,
             "spatial operation argument mismatch",
+            "this is a phux bug; run `phux doctor` and report it",
         )),
     }
 }
 
-fn validate_ratio(ratio: f32) -> Result<(), SpatialError> {
+/// The shared "two selectors, one pane" refusal (raised both client-side and
+/// by the server's layout engine).
+fn same_pane_error() -> CliError {
+    CliError::new(
+        codes::SAME_PANE,
+        "the two pane selectors must resolve differently",
+        "pass two selectors that name different panes (`phux ls` lists them)",
+    )
+}
+
+fn validate_ratio(ratio: f32) -> Result<(), CliError> {
     if ratio.is_finite() && ratio > 0.0 && ratio < 1.0 {
         Ok(())
     } else {
-        Err(SpatialError::new(
-            "invalid_ratio",
+        Err(CliError::new(
+            codes::INVALID_RATIO,
             format!("ratio must be finite and strictly between 0 and 1; got {ratio}"),
+            "pass e.g. --ratio 0.5",
         ))
     }
 }
 
-fn exactly_one_local(role: &str, candidates: &[TerminalId]) -> Result<TerminalId, SpatialError> {
+fn exactly_one_local(role: &str, candidates: &[TerminalId]) -> Result<TerminalId, CliError> {
     let [terminal] = candidates else {
-        let (code, message) = if candidates.is_empty() {
-            ("selector_miss", format!("{role} selector matched no panes"))
+        let err = if candidates.is_empty() {
+            CliError::new(
+                codes::SELECTOR_MISS,
+                format!("{role} selector matched no panes"),
+                "run `phux ls` to see live sessions and panes",
+            )
         } else {
-            (
-                "selector_not_single",
+            CliError::new(
+                codes::SELECTOR_NOT_SINGLE,
                 format!(
                     "{role} selector matched {} panes; use an exact pane selector",
                     candidates.len()
                 ),
+                "address exactly one pane, e.g. @N or session:window.pane",
             )
         };
-        return Err(SpatialError::new(code, message));
+        return Err(err);
     };
     match terminal {
         TerminalId::Local { .. } => Ok(terminal.clone()),
-        TerminalId::Satellite { .. } => Err(SpatialError::new(
-            "satellite_target",
+        TerminalId::Satellite { .. } => Err(CliError::new(
+            codes::SATELLITE_TARGET,
             format!("{role} must resolve to a local pane; satellite panes are not supported"),
+            "pick a hub-local pane for layout edits",
         )),
     }
 }
@@ -857,33 +869,32 @@ fn exactly_one_local(role: &str, candidates: &[TerminalId]) -> Result<TerminalId
 fn same_session(
     snapshot: &SessionSnapshot,
     terminals: &[TerminalId],
-) -> Result<SessionId, SpatialError> {
-    let Some(first) = terminals.first() else {
-        return Err(SpatialError::new("internal_error", "no pane selectors"));
-    };
-    let session = session_for(snapshot, first).ok_or_else(|| {
-        SpatialError::new(
-            "unknown_terminal_session",
+) -> Result<SessionId, CliError> {
+    let unknown_session = |terminal: &TerminalId| {
+        CliError::new(
+            codes::UNKNOWN_TERMINAL_SESSION,
             format!(
                 "cannot determine the session containing {}",
-                crate::selector::format_terminal_id(first)
+                crate::selector::format_terminal_id(terminal)
             ),
+            "run `phux ls` to see live sessions and panes",
         )
-    })?;
+    };
+    let Some(first) = terminals.first() else {
+        return Err(CliError::new(
+            codes::INTERNAL_ERROR,
+            "no pane selectors",
+            "this is a phux bug; run `phux doctor` and report it",
+        ));
+    };
+    let session = session_for(snapshot, first).ok_or_else(|| unknown_session(first))?;
     for terminal in &terminals[1..] {
-        let other = session_for(snapshot, terminal).ok_or_else(|| {
-            SpatialError::new(
-                "unknown_terminal_session",
-                format!(
-                    "cannot determine the session containing {}",
-                    crate::selector::format_terminal_id(terminal)
-                ),
-            )
-        })?;
+        let other = session_for(snapshot, terminal).ok_or_else(|| unknown_session(terminal))?;
         if other != session {
-            return Err(SpatialError::new(
-                "cross_session",
+            return Err(CliError::new(
+                codes::CROSS_SESSION,
                 "all panes in a spatial operation must belong to the same session",
+                "pick panes from one session (`phux ls` shows the grouping)",
             ));
         }
     }
@@ -916,10 +927,14 @@ fn print_success(json: bool, output: &serde_json::Value, human: &str) -> ExitCod
         match serde_json::to_string_pretty(output) {
             Ok(rendered) => outln!("{rendered}"),
             Err(err) => {
-                return print_error(
+                return json_err::emit(
                     true,
-                    &SpatialError::new("json_serialize", err.to_string()),
-                    ExitCode::FAILURE,
+                    &CliError::new(
+                        codes::JSON_SERIALIZE,
+                        err.to_string(),
+                        "this is a phux bug; run `phux doctor` and report it",
+                    ),
+                    1,
                 );
             }
         }
@@ -929,84 +944,47 @@ fn print_success(json: bool, output: &serde_json::Value, human: &str) -> ExitCod
     ExitCode::SUCCESS
 }
 
-fn print_error(json: bool, err: &SpatialError, exit: ExitCode) -> ExitCode {
-    if json {
-        match serde_json::to_string(&error_document(err)) {
-            Ok(rendered) => eprintln!("{rendered}"),
-            Err(_) => eprintln!("phux: {}", err.message),
-        }
-    } else {
-        eprintln!("phux: {}", err.message);
-    }
-    exit
-}
-
-fn error_document(err: &SpatialError) -> serde_json::Value {
-    serde_json::json!({
-        "schema_version": JSON_SCHEMA_VERSION,
-        "error": { "code": err.code, "message": err.message },
-    })
-}
-
-fn print_transport_error(json: bool, err: &AttachError, socket_path: &Path) -> ExitCode {
-    if json {
-        print_error(
-            true,
-            &SpatialError::new("transport", err.to_string()),
-            ExitCode::FAILURE,
-        )
-    } else {
-        report_no_server(err, socket_path, "layout")
-    }
-}
-
-fn print_transport_or_protocol_error(
-    json: bool,
-    err: &AttachError,
-    socket_path: &Path,
-) -> ExitCode {
-    print_transport_error(json, err, socket_path)
-}
-
 fn print_layout_error(json: bool, err: &LayoutOpsError, socket_path: &Path) -> ExitCode {
     match err {
-        LayoutOpsError::Transport(transport) => print_transport_error(json, transport, socket_path),
-        LayoutOpsError::MissingLayout => print_error(
+        LayoutOpsError::Transport(transport) => {
+            json_err::report_no_server(json, transport, socket_path, "layout")
+        }
+        LayoutOpsError::MissingLayout => json_err::emit(
             json,
-            &SpatialError::new(
-                "layout_missing",
+            &CliError::new(
+                codes::LAYOUT_MISSING,
                 "session has no persisted layout; attach a TUI before editing topology",
+                "attach once with `phux attach SESSION` to seed the layout, then retry",
             ),
-            ExitCode::from(2),
+            2,
         ),
-        LayoutOpsError::ForeignTarget(_) => print_error(
+        LayoutOpsError::ForeignTarget(_) => json_err::emit(
             json,
-            &SpatialError::new(
-                "pane_not_in_layout",
+            &CliError::new(
+                codes::PANE_NOT_IN_LAYOUT,
                 "a selected pane is not present in this session's persisted layout",
+                "insert it first with `phux insert-pane`",
             ),
-            ExitCode::from(2),
+            2,
         ),
-        LayoutOpsError::DuplicatePane(_) => print_error(
+        LayoutOpsError::DuplicatePane(_) => json_err::emit(
             json,
-            &SpatialError::new(
-                "pane_already_in_layout",
+            &CliError::new(
+                codes::PANE_ALREADY_IN_LAYOUT,
                 "the pane being inserted is already present in the persisted layout",
+                "use `phux move-pane` to relocate a pane the layout already holds",
             ),
-            ExitCode::from(2),
+            2,
         ),
-        LayoutOpsError::SamePane => print_error(
+        LayoutOpsError::SamePane => json_err::emit(json, &same_pane_error(), 2),
+        other => json_err::emit(
             json,
-            &SpatialError::new(
-                "same_pane",
-                "the two pane selectors must resolve differently",
+            &CliError::new(
+                codes::LAYOUT_REJECTED,
+                other.to_string(),
+                "run `phux doctor` for a health check",
             ),
-            ExitCode::from(2),
-        ),
-        other => print_error(
-            json,
-            &SpatialError::new("layout_rejected", other.to_string()),
-            ExitCode::from(2),
+            2,
         ),
     }
 }
@@ -1271,10 +1249,17 @@ mod tests {
         );
     }
 
+    /// Spatial errors ride the shared emitter (phux-i0e8.8.2): same
+    /// versioned shape as before, now with `remedy` and `exit_code` added.
     #[test]
     fn json_error_documents_are_versioned() {
-        let error = error_document(&SpatialError::new("cross_session", "no"));
+        let error = json_err::error_document(&same_pane_error(), 2);
         assert_eq!(error["schema_version"], 1);
-        assert_eq!(error["error"]["code"], "cross_session");
+        assert_eq!(error["error"]["code"], "same_pane");
+        assert!(
+            error["remedy"].as_str().is_some_and(|r| !r.is_empty()),
+            "spatial errors must carry a remedy: {error}"
+        );
+        assert_eq!(error["exit_code"], 2);
     }
 }

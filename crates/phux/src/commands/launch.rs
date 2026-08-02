@@ -133,12 +133,14 @@ fn spawn_resolved(
             split,
             ratio,
             prepared.map(|session| &session.record),
+            json,
         ),
         None => dispatch_spawn(
             &socket_path,
             &frame,
             "launch",
             prepared.map(|session| &session.record),
+            json,
         ),
     };
     match result {

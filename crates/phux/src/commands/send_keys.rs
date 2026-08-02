@@ -26,7 +26,7 @@ pub(crate) fn run_send_keys(target: &str, keys: &[String], socket: Option<PathBu
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_target(&socket_path, &selector, "send-keys").await {
+        let pane = match resolve_target(&socket_path, &selector, "send-keys", false).await {
             Ok(id) => id,
             Err(code) => return code,
         };

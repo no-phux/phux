@@ -6,7 +6,7 @@ use phux_client::snapshot::{RenderedFrame, ScreenState};
 use phux_protocol::wire::frame::AttachTarget;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
 /// Options for the composited `--rendered` view (`phux-l5xa`). Bundled so the
 /// `run_snapshot` arg list stays readable.
@@ -55,7 +55,7 @@ pub(crate) fn run_snapshot(
     };
 
     rt.block_on(async move {
-        let terminal_id = match resolve_target(&socket_path, &selector, "snapshot").await {
+        let terminal_id = match resolve_target(&socket_path, &selector, "snapshot", json).await {
             Ok(id) => id,
             Err(code) => return code,
         };
@@ -73,7 +73,7 @@ pub(crate) fn run_snapshot(
         {
             Ok(screen) => screen,
             Err(err @ AttachError::Io(_)) => {
-                return report_no_server(&err, &socket_path, "snapshot");
+                return json_err::report_no_server(json, &err, &socket_path, "snapshot");
             }
             Err(err) => {
                 eprintln!("phux: snapshot failed: {err}");
@@ -113,7 +113,7 @@ fn run_rendered(
         let frame = match run_headless_rendered(socket_path, target, opts.cols, opts.rows).await {
             Ok(frame) => frame,
             Err(err @ AttachError::Io(_)) => {
-                return report_no_server(&err, socket_path, "snapshot");
+                return json_err::report_no_server(json, &err, socket_path, "snapshot");
             }
             Err(err) => {
                 eprintln!("phux: rendered snapshot failed: {err}");

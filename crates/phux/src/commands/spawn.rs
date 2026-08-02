@@ -12,7 +12,7 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::agent::{AgentSessionRecord, persist_record};
 use crate::commands::{
-    SpawnSplit, cli_runtime, parse_selector, report_no_server, request_command, resolve_targets,
+    SpawnSplit, cli_runtime, json_err, parse_selector, request_command, resolve_targets,
 };
 
 /// `phux spawn` — create a Terminal without attaching (`SPAWN_TERMINAL`,
@@ -71,8 +71,9 @@ pub(crate) fn run_spawn(
             split,
             ratio,
             None,
+            json,
         ),
-        None => dispatch_spawn(&socket_path, &frame, "spawn", None),
+        None => dispatch_spawn(&socket_path, &frame, "spawn", None, json),
     };
     match result {
         Ok(SpawnResult::Ok(terminal_id)) => print_spawned(&terminal_id, json),
@@ -104,15 +105,20 @@ pub(crate) fn run_spawn(
 ///
 /// The correlation id is not a parameter: it is read out of `frame`'s own
 /// `request_id` field, so the id sent and the id waited on cannot drift.
+///
+/// `json` selects the failure channel per the JSON error contract
+/// (phux-i0e8.8.2): under `--json` a connect failure is one JSON error line
+/// on stderr rather than the prose diagnostic.
 pub(crate) fn dispatch_spawn(
     socket_path: &Path,
     frame: &FrameKind,
     verb: &str,
     agent_session: Option<&AgentSessionRecord>,
+    json: bool,
 ) -> Result<SpawnResult, ExitCode> {
     let rt = cli_runtime()?;
     rt.block_on(dispatch_spawn_async(socket_path, frame, agent_session))
-        .map_err(|err| report_no_server(&err, socket_path, verb))
+        .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))
 }
 
 /// Open a connection, send `frame`, and return the correlated spawn outcome.
@@ -187,6 +193,7 @@ pub(crate) fn dispatch_spawn_placed(
     split: SpawnSplit,
     ratio: f32,
     agent_session: Option<&AgentSessionRecord>,
+    json: bool,
 ) -> Result<SpawnResult, ExitCode> {
     let selector = parse_selector(Some(target_text))?;
     let rt = cli_runtime()?;
@@ -207,7 +214,7 @@ pub(crate) fn dispatch_spawn_placed(
                 );
                 return Err(ExitCode::FAILURE);
             }
-            Err(err) => return Err(report_no_server(&err, socket_path, verb)),
+            Err(err) => return Err(json_err::report_no_server(json, &err, socket_path, verb)),
         };
         let candidates = resolve_targets(socket_path, &selector, &snapshot).await;
         let Some(owner) = crate::selector::pick_target_pane(&candidates, &snapshot.focused_pane)
@@ -230,7 +237,7 @@ pub(crate) fn dispatch_spawn_placed(
         *owner_terminal = Some(owner.clone());
         let spawned = dispatch_spawn_async(socket_path, &frame, agent_session)
             .await
-            .map_err(|err| report_no_server(&err, socket_path, verb))?;
+            .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))?;
         let SpawnResult::Ok(new_pane) = &spawned else {
             return Ok(spawned);
         };
@@ -595,6 +602,7 @@ mod tests {
             SpawnSplit::Vertical,
             0.3,
             None,
+            false,
         );
         assert!(matches!(result, Ok(SpawnResult::Ok(id)) if id == TerminalId::local(3)));
         mock.join().expect("mock server");
@@ -614,6 +622,7 @@ mod tests {
             SpawnSplit::Horizontal,
             0.5,
             None,
+            false,
         );
         assert!(result.is_err());
         mock.join().expect("mock server");

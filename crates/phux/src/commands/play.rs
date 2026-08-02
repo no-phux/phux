@@ -199,6 +199,7 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
         args.split,
         args.ratio,
         None,
+        args.json,
     ) {
         Ok(result) => result,
         Err(code) => return code,
