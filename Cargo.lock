@@ -1633,7 +1633,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=45dcaac3ece6ed21d209f8489875271ae5183b79#45dcaac3ece6ed21d209f8489875271ae5183b79"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=19d5e74648a81ecd5d4acbbc2a5605007b7db6b3#19d5e74648a81ecd5d4acbbc2a5605007b7db6b3"
 dependencies = [
  "allocator-api2 0.4.0",
  "bitflags 2.13.0",
@@ -1645,7 +1645,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=45dcaac3ece6ed21d209f8489875271ae5183b79#45dcaac3ece6ed21d209f8489875271ae5183b79"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=19d5e74648a81ecd5d4acbbc2a5605007b7db6b3#19d5e74648a81ecd5d4acbbc2a5605007b7db6b3"
 
 [[package]]
 name = "libm"
@@ -2199,6 +2199,7 @@ dependencies = [
  "phux-protocol",
  "proptest",
  "serde",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "unicode-segmentation",
  "unicode-width",
