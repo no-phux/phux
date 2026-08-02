@@ -392,7 +392,7 @@ impl EngineAdapter for GhosttyAdapter {
                 NativeDecoderState::BeforeReady(_) => {
                     return Err(GhosttyEngineError::LiveOutputBeforeReady);
                 }
-                NativeDecoderState::AfterReady(stream) => stream.terminal_mut().vt_write(payload),
+                NativeDecoderState::AfterReady(stream) => stream.vt_write(payload),
                 NativeDecoderState::Finished(terminal)
                 | NativeDecoderState::Failed(Some(terminal)) => terminal.vt_write(payload),
                 NativeDecoderState::Failed(None) => {
