@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-08-01
 ---
 
-# 0066 — Native agent-session restore
+# 0067 — Native agent-session restore
 
 **TL;DR.** A `phux launch` may establish one provider-native session identity,
 record only its bounded opaque identity plus owning plugin/integration on the
