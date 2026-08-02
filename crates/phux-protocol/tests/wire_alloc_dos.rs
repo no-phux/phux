@@ -19,7 +19,9 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::caps::BootstrapLimits;
+use phux_protocol::wire::DecodeError;
+use phux_protocol::wire::frame::{FrameKind, TYPE_BOOTSTRAP_CHUNK};
 
 static MAX_ALLOC: AtomicUsize = AtomicUsize::new(0);
 static RECORDING: AtomicUsize = AtomicUsize::new(0);
@@ -52,6 +54,17 @@ fn largest_alloc_during(decode_input: &[u8]) -> usize {
     let _ = FrameKind::decode(decode_input);
     RECORDING.store(0, Ordering::Relaxed);
     MAX_ALLOC.load(Ordering::Relaxed)
+}
+
+fn largest_alloc_during_with_limits(
+    decode_input: &[u8],
+    limits: BootstrapLimits,
+) -> (Result<(), DecodeError>, usize) {
+    MAX_ALLOC.store(0, Ordering::Relaxed);
+    RECORDING.store(1, Ordering::Relaxed);
+    let result = FrameKind::decode_with_limits(decode_input, limits).map(|_| ());
+    RECORDING.store(0, Ordering::Relaxed);
+    (result, MAX_ALLOC.load(Ordering::Relaxed))
 }
 
 /// Build a frame: 4-byte length header, then body bytes.
@@ -149,4 +162,53 @@ fn attached_snapshot_huge_sessions_list_does_not_over_reserve() {
     let max = largest_alloc_during(&frame);
     assert!(FrameKind::decode(&frame).is_err());
     assert!(max < 1 << 20, "snapshot sessions reserved {max} bytes");
+}
+
+#[test]
+fn negotiated_oversize_bootstrap_chunk_rejects_before_payload_allocation() {
+    let limits = BootstrapLimits::new(1024, 2048).unwrap();
+    let mut terminal = [0_u8; 5];
+    terminal[1..].copy_from_slice(&1_u32.to_be_bytes());
+    let payload = vec![0xA5; 256 * 1024];
+    let mut body = vec![TYPE_BOOTSTRAP_CHUNK];
+    tlv_field(&mut body, 1, &terminal);
+    tlv_field(&mut body, 2, &1_u64.to_be_bytes());
+    tlv_field(&mut body, 3, &1_u64.to_be_bytes());
+    tlv_field(&mut body, 4, &0_u32.to_be_bytes());
+    tlv_field(&mut body, 5, &payload);
+    let frame = framed(&body);
+
+    let (result, max) = largest_alloc_during_with_limits(&frame, limits);
+    assert_eq!(result.unwrap_err(), DecodeError::BootstrapLimitExceeded);
+    assert!(
+        max < payload.len(),
+        "oversized borrowed payload triggered a {max}-byte allocation for {} payload bytes",
+        payload.len()
+    );
+}
+
+#[test]
+fn malformed_bootstrap_payload_length_rejects_without_reserving() {
+    let mut terminal = [0_u8; 5];
+    terminal[1..].copy_from_slice(&1_u32.to_be_bytes());
+    let mut body = vec![TYPE_BOOTSTRAP_CHUNK];
+    tlv_field(&mut body, 1, &terminal);
+    tlv_field(&mut body, 2, &1_u64.to_be_bytes());
+    tlv_field(&mut body, 3, &1_u64.to_be_bytes());
+    tlv_field(&mut body, 4, &0_u32.to_be_bytes());
+    put_varint(&mut body, 5);
+    body.push(4);
+    put_varint(&mut body, u64::MAX);
+    let frame = framed(&body);
+
+    let (result, max) =
+        largest_alloc_during_with_limits(&frame, BootstrapLimits::default());
+    assert!(matches!(
+        result,
+        Err(DecodeError::LengthOverflow | DecodeError::UnexpectedEof)
+    ));
+    assert!(
+        max < 1 << 20,
+        "malformed payload length triggered a {max}-byte allocation"
+    );
 }

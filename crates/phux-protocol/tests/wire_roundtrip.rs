@@ -12,9 +12,10 @@
 
 use bytes::BytesMut;
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, ImageProtocol,
-    ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet, OutputMode,
-    ServerCapabilities, ServerFeature, ServerFeatureSet, TerminalColor, TerminalDefaultColors,
+    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities, ColorSupport,
+    EngineCodec, ImageProtocol, ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer,
+    LayerSet, OutputMode, ServerCapabilities, ServerFeature, ServerFeatureSet, TerminalColor,
+    TerminalDefaultColors,
 };
 use phux_protocol::ids::{
     BootstrapId, ClientId, FileUploadId, GroupId, InputOperationId, SessionId, StreamId,
@@ -424,6 +425,72 @@ proptest! {
         prop_assert!(tail.is_empty());
     }
 
+    #[test]
+    fn opaque_bootstrap_lifecycle_round_trips_arbitrary_bytes(
+        terminal_id in arb_terminal_id(),
+        stream_raw in 1_u64..=u64::MAX,
+        bootstrap_raw in 1_u64..=u64::MAX,
+        cols in 1_u16..=u16::MAX,
+        rows in 1_u16..=u16::MAX,
+        base_seq in any::<u64>(),
+        chunk_seq in any::<u32>(),
+        checkpoint in proptest::collection::vec(any::<u8>(), 0..4096),
+        cursor in proptest::collection::vec(any::<u8>(), 0..4096),
+        next_cursor in proptest::option::of(proptest::collection::vec(any::<u8>(), 0..4096)),
+        history in proptest::collection::vec(any::<u8>(), 0..4096),
+    ) {
+        let stream_id = StreamId::new(stream_raw).unwrap();
+        let bootstrap_id = BootstrapId::new(bootstrap_raw).unwrap();
+        let frames = [
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::NativeState {
+                    codec: EngineCodec::LibghosttyCheckpointV2,
+                },
+                cols,
+                rows,
+                base_seq,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
+                payload: checkpoint.into(),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: Some(cursor.clone().into()),
+            },
+            FrameKind::HistoryRequest {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                cursor: cursor.clone().into(),
+                max_bytes: 4096,
+            },
+            FrameKind::HistoryPage {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor: cursor.into(),
+                next_cursor: next_cursor.map(Into::into),
+                payload: history.into(),
+            },
+        ];
+
+        for frame in frames {
+            let mut encoded = BytesMut::new();
+            frame.encode(&mut encoded);
+            let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+            prop_assert_eq!(decoded, frame);
+            prop_assert!(tail.is_empty());
+        }
+    }
 }
 
 #[test]

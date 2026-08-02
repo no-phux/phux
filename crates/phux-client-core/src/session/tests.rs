@@ -913,6 +913,82 @@ fn selected_synth_profile_is_explicit_and_enforced() {
 }
 
 #[test]
+fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
+    let terminal_id = terminal(70);
+    let stream_id = stream(71);
+    let bootstrap_id = bootstrap(72);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::AttachStarted {
+                attach_id: 73,
+                terminals: std::slice::from_ref(&terminal_id),
+            },
+            &mut effects,
+        )
+        .unwrap();
+
+    let wrong_profile = kernel.update(
+        KernelInput::BootstrapBegin {
+            terminal_id: &terminal_id,
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::SynthesizedVtStateSync,
+            geometry: geometry(),
+            base_seq: 100,
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        wrong_profile,
+        Err(KernelError::ProfileMismatch {
+            selected: BootstrapProfile::SynthesizedVtRaw,
+            incoming: BootstrapStreamProfile::SynthesizedVtStateSync,
+        })
+    ));
+    assert!(kernel.staging(&terminal_id).is_none());
+
+    begin(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        100,
+        &mut effects,
+    );
+    let live_before_ready = kernel.update(
+        KernelInput::TerminalOutput {
+            terminal_id: &terminal_id,
+            stream_id,
+            bootstrap_id,
+            seq: 101,
+            payload: b"\xfflive-before-ready",
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        live_before_ready,
+        Err(KernelError::GenerationMismatch { .. })
+    ));
+    let history_before_ready = kernel.update(
+        KernelInput::HistoryPage {
+            terminal_id: &terminal_id,
+            stream_id,
+            bootstrap_id,
+            payload: b"\xfefuture-history-before-ready",
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        history_before_ready,
+        Err(KernelError::GenerationMismatch { .. })
+    ));
+    assert!(kernel.published(&terminal_id).is_none());
+    assert!(kernel.staging(&terminal_id).is_some());
+}
+
+#[test]
 fn engine_effects_are_drained_after_apply_in_order() {
     let terminal_id = terminal(8);
     let stream_id = stream(17);

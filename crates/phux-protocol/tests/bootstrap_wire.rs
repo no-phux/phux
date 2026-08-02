@@ -6,10 +6,11 @@ use bytes::{Bytes, BytesMut};
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, EngineCodec, EngineCodecSet,
-    EngineFeatureSet, MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, OutputMode,
+    EngineFeature, EngineFeatureSet, MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, OutputMode,
     ServerCapabilities, select_bootstrap_profile,
 };
 use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::{
     FrameKind, MAX_HISTORY_CURSOR_BYTES, TYPE_ATTACH_READY, TYPE_BOOTSTRAP_BEGIN,
@@ -556,6 +557,200 @@ fn profile_selection_prefers_native_then_explicit_compatibility() {
         .with_profiles(native_only);
     assert!(select_bootstrap_profile(&client, &server).is_err());
 }
+
+#[test]
+fn native_selection_uses_the_highest_exact_known_common_codec() {
+    let future_codec_bit = 1_u64 << 63;
+    let v2_bit = 1_u64 << EngineCodec::LibghosttyCheckpointV2.as_wire();
+    let client_codecs = EngineCodecSet::from_wire(future_codec_bit | v2_bit);
+    let server_codecs = EngineCodecSet::from_wire(v2_bit);
+    assert_eq!(
+        client_codecs.highest_common(server_codecs),
+        Some(EngineCodec::LibghosttyCheckpointV2)
+    );
+
+    let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
+    let client = ClientCapabilities::new().with_bootstrap(
+        BootstrapCapabilities::new()
+            .with_profiles(native_only)
+            .with_native_codecs(client_codecs)
+            .with_native_features(EngineFeatureSet::required_native()),
+    );
+    let server = BootstrapCapabilities::new()
+        .with_profiles(native_only)
+        .with_native_codecs(server_codecs)
+        .with_native_features(EngineFeatureSet::required_native());
+    assert_eq!(
+        select_bootstrap_profile(&client, &server).unwrap().0,
+        BootstrapProfile::NativeState {
+            codec: EngineCodec::LibghosttyCheckpointV2,
+            features: EngineFeatureSet::required_native(),
+        }
+    );
+}
+
+#[test]
+fn future_only_codec_bits_never_select_native() {
+    let future_only = EngineCodecSet::from_wire(1_u64 << 63);
+    assert_eq!(future_only, EngineCodecSet::new());
+
+    let advertised = BootstrapProfileSet::all();
+    let client = ClientCapabilities::new().with_bootstrap(
+        BootstrapCapabilities::new()
+            .with_profiles(advertised)
+            .with_native_codecs(future_only)
+            .with_native_features(EngineFeatureSet::required_native()),
+    );
+    let server = BootstrapCapabilities::new()
+        .with_profiles(advertised)
+        .with_native_codecs(future_only)
+        .with_native_features(EngineFeatureSet::required_native());
+    assert_eq!(
+        select_bootstrap_profile(&client, &server).unwrap().0,
+        BootstrapProfile::SynthesizedVtRaw
+    );
+
+    let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
+    let client = ClientCapabilities::new().with_bootstrap(
+        client
+            .bootstrap
+            .with_profiles(native_only),
+    );
+    let server = server.with_profiles(native_only);
+    assert!(select_bootstrap_profile(&client, &server).is_err());
+}
+
+#[test]
+fn every_native_required_feature_is_strict() {
+    let incomplete_feature_sets = [
+        EngineFeatureSet::with(&[
+            EngineFeature::ReadyBoundary,
+            EngineFeature::HistoryPages,
+        ]),
+        EngineFeatureSet::with(&[
+            EngineFeature::Continuation,
+            EngineFeature::HistoryPages,
+        ]),
+        EngineFeatureSet::with(&[
+            EngineFeature::Continuation,
+            EngineFeature::ReadyBoundary,
+        ]),
+    ];
+    let native_and_raw = BootstrapProfileSet::with(&[
+        BootstrapProfileKind::NativeState,
+        BootstrapProfileKind::SynthesizedVtRaw,
+    ]);
+    let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
+    let codecs = EngineCodecSet::with(&[EngineCodec::LibghosttyCheckpointV2]);
+    let server = BootstrapCapabilities::new()
+        .with_profiles(native_and_raw)
+        .with_native_codecs(codecs)
+        .with_native_features(EngineFeatureSet::required_native());
+
+    for features in incomplete_feature_sets {
+        let bootstrap = BootstrapCapabilities::new()
+            .with_profiles(native_and_raw)
+            .with_native_codecs(codecs)
+            .with_native_features(features);
+        let client = ClientCapabilities::new().with_bootstrap(bootstrap);
+        assert_eq!(
+            select_bootstrap_profile(&client, &server).unwrap().0,
+            BootstrapProfile::SynthesizedVtRaw,
+            "partial native features must fall back explicitly"
+        );
+
+        let native_required = ClientCapabilities::new()
+            .with_bootstrap(bootstrap.with_profiles(native_only));
+        assert!(
+            select_bootstrap_profile(&native_required, &server.with_profiles(native_only)).is_err(),
+            "partial native features must reject when no synthesis profile is common"
+        );
+    }
+}
+
+#[test]
+fn old_engine_capabilities_fall_back_without_changing_protocol_version() {
+    let old_engine_client = ClientCapabilities::new();
+    let native_server = BootstrapCapabilities::new().with_native(
+        EngineCodec::LibghosttyCheckpointV2,
+        EngineFeatureSet::required_native(),
+    );
+    assert_eq!(
+        select_bootstrap_profile(&old_engine_client, &native_server)
+            .unwrap()
+            .0,
+        BootstrapProfile::SynthesizedVtRaw
+    );
+    assert_eq!(
+        (PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor),
+        (0, 7)
+    );
+    assert_eq!(EngineCodec::LibghosttyCheckpointV2.as_wire(), 2);
+}
+
+#[test]
+fn opaque_lifecycle_records_reencode_byte_identically() {
+    let terminal_id = TerminalId::local(44);
+    let stream_id = stream(45);
+    let bootstrap_id = bootstrap(46);
+    let future_record = Bytes::from_static(b"\xff\x80\0future-checkpoint-v255\xfe");
+    let cursor = Bytes::from_static(b"\0\xffcursor\x80");
+    let next_cursor = Bytes::from_static(b"\xfe\xfdnext\0");
+    let frames = [
+        FrameKind::BootstrapBegin {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::NativeState {
+                codec: EngineCodec::LibghosttyCheckpointV2,
+            },
+            cols: 132,
+            rows: 43,
+            base_seq: 901,
+        },
+        FrameKind::BootstrapChunk {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: future_record.clone(),
+        },
+        FrameKind::BootstrapReady {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: Some(cursor.clone()),
+        },
+        FrameKind::HistoryRequest {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            cursor: cursor.clone(),
+            max_bytes: 4096,
+        },
+        FrameKind::HistoryPage {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor,
+            next_cursor: Some(next_cursor),
+            payload: future_record,
+        },
+    ];
+
+    for frame in frames {
+        let mut encoded = BytesMut::new();
+        frame.encode(&mut encoded);
+        let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+        assert!(tail.is_empty());
+        assert_eq!(decoded, frame);
+
+        let mut reencoded = BytesMut::new();
+        decoded.encode(&mut reencoded);
+        assert_eq!(reencoded, encoded);
+    }
+}
+
 #[test]
 fn negotiated_payload_limits_reject_before_owned_copy() {
     let limits = BootstrapLimits::new(1024, 2048).unwrap();
