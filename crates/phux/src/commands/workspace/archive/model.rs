@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-pub(super) const ARCHIVE_SCHEMA_VERSION: u8 = 1;
+pub(super) const ARCHIVE_SCHEMA_VERSION: u8 = 2;
+const LEGACY_ARCHIVE_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(super) struct WorkspaceArchive {
@@ -44,10 +45,23 @@ pub(super) struct WorkspacePane {
     pub(super) cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) command: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) agent_session: Option<WorkspaceAgentSession>,
     #[serde(default)]
     pub(super) cols: u16,
     #[serde(default)]
     pub(super) rows: u16,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the archive mirrors the versioned L3 provenance schema"
+)]
+pub(super) struct WorkspaceAgentSession {
+    pub(super) plugin_id: String,
+    pub(super) integration_id: String,
+    pub(super) native_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,14 +103,18 @@ pub(super) struct CreateRequest {
     pub(super) name: String,
     pub(super) cwd: Option<String>,
     pub(super) command: Option<Vec<String>>,
+    pub(super) agent_session: Option<WorkspaceAgentSession>,
 }
 
 pub(super) fn parse_archive(input: &str) -> Result<WorkspaceArchive, String> {
     let archive: WorkspaceArchive = serde_json::from_str(input)
         .map_err(|err| format!("invalid workspace archive JSON: {err}"))?;
-    if archive.schema_version != ARCHIVE_SCHEMA_VERSION {
+    if !matches!(
+        archive.schema_version,
+        LEGACY_ARCHIVE_SCHEMA_VERSION | ARCHIVE_SCHEMA_VERSION
+    ) {
         return Err(format!(
-            "unsupported workspace archive schema {}; expected {ARCHIVE_SCHEMA_VERSION}",
+            "unsupported workspace archive schema {}; expected {LEGACY_ARCHIVE_SCHEMA_VERSION} or {ARCHIVE_SCHEMA_VERSION}",
             archive.schema_version
         ));
     }
@@ -128,6 +146,7 @@ pub(super) fn restore_plan(
                 .command
                 .clone()
                 .or_else(|| pane.and_then(|pane| pane.command.clone())),
+            agent_session: pane.and_then(|pane| pane.agent_session.clone()),
         });
     }
     Ok(RestorePlan {
@@ -138,6 +157,19 @@ pub(super) fn restore_plan(
 
 fn validate_archive(archive: &WorkspaceArchive) -> Result<(), String> {
     let mut names = BTreeSet::new();
+    if archive.schema_version == LEGACY_ARCHIVE_SCHEMA_VERSION
+        && archive.sessions.iter().any(|session| {
+            session
+                .windows
+                .iter()
+                .flat_map(|window| &window.panes)
+                .any(|pane| pane.agent_session.is_some())
+        })
+    {
+        return Err(
+            "workspace archive schema 1 cannot contain native agent session records".to_owned(),
+        );
+    }
     for session in &archive.sessions {
         if session.name.trim().is_empty() {
             return Err("workspace archive contains a session with an empty name".to_owned());
@@ -147,6 +179,21 @@ fn validate_archive(archive: &WorkspaceArchive) -> Result<(), String> {
                 "workspace archive contains duplicate session '{}'",
                 session.name
             ));
+        }
+        for pane in session.windows.iter().flat_map(|window| &window.panes) {
+            if let Some(agent) = &pane.agent_session {
+                crate::commands::agent::AgentSessionRecord::new(
+                    &agent.plugin_id,
+                    &agent.integration_id,
+                    &agent.native_id,
+                )
+                .map_err(|err| {
+                    format!(
+                        "workspace archive session '{}' has an invalid agent session record: {err}",
+                        session.name
+                    )
+                })?;
+            }
         }
     }
     Ok(())
@@ -211,6 +258,7 @@ mod tests {
         assert_eq!(plan.creates[0].name, "bench");
         assert_eq!(plan.creates[0].cwd, None);
         assert_eq!(plan.creates[0].command, None);
+        assert_eq!(plan.creates[0].agent_session, None);
     }
 
     #[test]
@@ -238,5 +286,103 @@ mod tests {
 
         assert_eq!(plan.creates[0].cwd.as_deref(), Some("/right"));
         assert_eq!(plan.creates[0].command, Some(vec!["right".to_owned()]));
+    }
+
+    #[test]
+    fn restore_plan_carries_only_the_preferred_panes_agent_session() {
+        let json = r#"{
+            "schema_version": 2,
+            "sessions": [{
+                "name": "bench",
+                "windows": [{
+                    "name": "main",
+                    "panes": [
+                        {
+                            "agent_session": {
+                                "plugin_id": "wrong.plugin",
+                                "integration_id": "wrong",
+                                "native_id": "wrong-session"
+                            }
+                        },
+                        {
+                            "active": true,
+                            "agent_session": {
+                                "plugin_id": "com.phux.agents",
+                                "integration_id": "claude-code",
+                                "native_id": "session-42"
+                            }
+                        }
+                    ]
+                }]
+            }]
+        }"#;
+
+        let archive = parse_archive(json).expect("schema 2 archive parses");
+        let plan = restore_plan(&archive, &[]).expect("restore plan");
+        let agent = plan.creates[0]
+            .agent_session
+            .as_ref()
+            .expect("preferred agent session");
+        assert_eq!(agent.plugin_id, "com.phux.agents");
+        assert_eq!(agent.integration_id, "claude-code");
+        assert_eq!(agent.native_id, "session-42");
+    }
+
+    #[test]
+    fn legacy_or_invalid_agent_records_fail_closed() {
+        let legacy = r#"{
+            "schema_version": 1,
+            "sessions": [{
+                "name": "bench",
+                "windows": [{
+                    "name": "main",
+                    "panes": [{
+                        "agent_session": {
+                            "plugin_id": "com.phux.agents",
+                            "integration_id": "claude-code",
+                            "native_id": "session-42"
+                        }
+                    }]
+                }]
+            }]
+        }"#;
+        assert!(
+            parse_archive(legacy)
+                .expect_err("schema 1 must not smuggle a schema 2 record")
+                .contains("schema 1")
+        );
+
+        let invalid = legacy
+            .replace("\"schema_version\": 1", "\"schema_version\": 2")
+            .replace("\"session-42\"", "\" padded \"");
+        assert!(
+            parse_archive(&invalid)
+                .expect_err("padded identity is untrusted")
+                .contains("invalid agent session record")
+        );
+
+        let option_shaped = legacy
+            .replace("\"schema_version\": 1", "\"schema_version\": 2")
+            .replace(
+                "\"session-42\"",
+                "\"--dangerously-bypass-approvals-and-sandbox\"",
+            );
+        assert!(
+            parse_archive(&option_shaped)
+                .expect_err("option-shaped identity is untrusted")
+                .contains("invalid agent session record")
+        );
+
+        let unknown = legacy
+            .replace("\"schema_version\": 1", "\"schema_version\": 2")
+            .replace(
+                "\"native_id\": \"session-42\"",
+                "\"native_id\": \"session-42\", \"argv\": [\"sh\"]",
+            );
+        assert!(
+            parse_archive(&unknown)
+                .expect_err("unknown resume authority is untrusted")
+                .contains("unknown field")
+        );
     }
 }

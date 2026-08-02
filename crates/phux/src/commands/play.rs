@@ -181,6 +181,7 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
         // satellite owner), so a playback pane is never routed to one.
         satellite: None,
         owner_terminal: None,
+        agent_session: None,
     };
 
     // An omitted TARGET means `.`, the focused pane — so a human running
@@ -197,6 +198,7 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
         target,
         args.split,
         args.ratio,
+        None,
     ) {
         Ok(result) => result,
         Err(code) => return code,

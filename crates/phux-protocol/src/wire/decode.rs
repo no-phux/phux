@@ -879,6 +879,7 @@ impl<'a> Decoder<'a> {
                 let mut term: Option<String> = None;
                 let mut satellite: Option<crate::ids::SatelliteHost> = None;
                 let mut owner_terminal: Option<crate::ids::TerminalId> = None;
+                let mut agent_session: Option<Vec<u8>> = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::spawn_terminal::REQUEST_ID => {
@@ -915,6 +916,9 @@ impl<'a> Decoder<'a> {
                         field::spawn_terminal::OWNER_TERMINAL => {
                             owner_terminal = Some(sub!(value, decode_terminal_id));
                         }
+                        field::spawn_terminal::AGENT_SESSION => {
+                            agent_session = Some(value.to_vec());
+                        }
                         _ => {}
                     }
                 }
@@ -927,6 +931,7 @@ impl<'a> Decoder<'a> {
                     term,
                     satellite,
                     owner_terminal,
+                    agent_session,
                 }
             }
             TYPE_TERMINAL_SPAWNED => {

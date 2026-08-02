@@ -61,6 +61,7 @@ impl ServerState {
             session_last_touched: HashMap::new(),
             next_touch_timestamp: 1,
             metadata: MetadataStore::default(),
+            session_create_results: HashMap::new(),
             client_layers: HashMap::new(),
             event_subscriptions: HashMap::new(),
             agent_asked: crate::agent_asked::AskedDetector::default(),
@@ -550,6 +551,51 @@ impl ServerState {
         self.broadcast_metadata_changed(&subscribers, scope, key, None)
     }
 
+    /// Publish ownership of a one-shot session-create result.
+    ///
+    /// The metadata value must already have been written. At most 256 unread
+    /// results are retained per connection; the oldest is evicted first.
+    pub fn track_session_create_result(&mut self, client_id: ClientId, key: String) {
+        const MAX_PENDING_PER_CLIENT: usize = 256;
+        let evicted = {
+            let keys = self.session_create_results.entry(client_id).or_default();
+            let evicted = (keys.len() >= MAX_PENDING_PER_CLIENT)
+                .then(|| keys.pop_front())
+                .flatten();
+            keys.push_back(key);
+            evicted
+        };
+        if let Some(key) = evicted {
+            let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, &key);
+        }
+    }
+
+    /// Whether any live connection owns an unread result at `key`.
+    #[must_use]
+    pub fn session_create_result_is_pending(&self, key: &str) -> bool {
+        self.session_create_results
+            .values()
+            .any(|keys| keys.iter().any(|candidate| candidate == key))
+    }
+
+    /// Whether `client_id` owns the unread nonce-bearing result at `key`.
+    #[must_use]
+    pub fn owns_session_create_result(&self, client_id: ClientId, key: &str) -> bool {
+        self.session_create_results
+            .get(&client_id)
+            .is_some_and(|keys| keys.iter().any(|candidate| candidate == key))
+    }
+
+    /// Consume a one-shot session-create result and forget its owner.
+    pub fn consume_session_create_result(&mut self, key: &str) {
+        let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, key);
+        for keys in self.session_create_results.values_mut() {
+            keys.retain(|candidate| candidate != key);
+        }
+        self.session_create_results
+            .retain(|_, keys| !keys.is_empty());
+    }
+
     /// Register a subscription for `client_id`. The client MUST be
     /// L3-capable (call sites in the runtime gate on
     /// [`Self::client_speaks_l3`] before invoking this).
@@ -777,6 +823,11 @@ impl ServerState {
         // says subscriptions are connection-scoped) plus its cached layer
         // negotiation. Keeps the maps bounded across attach churn.
         self.metadata.drop_client(client_id);
+        if let Some(keys) = self.session_create_results.remove(&client_id) {
+            for key in keys {
+                let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, &key);
+            }
+        }
         self.client_layers.remove(&client_id);
         // Agent-event subscriptions are connection-scoped (SPEC §7.5),
         // same as L3 metadata subscriptions above. Drop them so the map

@@ -104,8 +104,8 @@ fn integration_template_actions_are_local_and_validated() {
     assert_eq!(code, 0, "list integrations should succeed; stderr={stderr}");
     let output: serde_json::Value = serde_json::from_str(&stdout).expect("list stdout is JSON");
     let listed = stdout_from_json(&output);
-    assert!(listed.contains("codex\tCodex\tterminal-agent\t0.1.0\topt-in\tcodex"));
-    assert!(listed.contains("claude-code\tClaude Code\tterminal-agent\t0.1.0\topt-in\tclaude"));
+    assert!(listed.contains("codex\tCodex\tterminal-agent\t0.2.0\topt-in\tcodex"));
+    assert!(listed.contains("claude-code\tClaude Code\tterminal-agent\t0.2.0\topt-in\tclaude"));
     assert!(listed.contains("generic-shell-agent\tGeneric Shell Agent"));
 
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, VALIDATE_ACTION, "--json"]);

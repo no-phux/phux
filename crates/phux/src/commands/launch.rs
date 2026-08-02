@@ -9,6 +9,7 @@ use phux_protocol::wire::frame::{FrameKind, SpawnResult};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::SpawnSplit;
+use crate::commands::agent::{PreparedAgentSession, prepare_for_launch};
 use crate::commands::spawn::{dispatch_spawn, dispatch_spawn_placed, report_spawn_error};
 
 /// `phux launch` (phux-ark7, ADR-0042) — resolve a named agent integration
@@ -60,32 +61,67 @@ pub(crate) fn run_launch(
             Ok(resolved) => resolved,
             Err(err) => return report_launch_error(&err),
         };
+    let prepared = match prepare_for_launch(&resolved) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            eprintln!("phux: could not prepare agent session: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let argv = prepared
+        .as_ref()
+        .map_or(&resolved.argv, |session| &session.argv);
     if print {
-        return print_resolved(&resolved, json);
+        return print_resolved(&resolved, argv, json);
     }
-    spawn_resolved(&resolved, socket, json, target, split, ratio)
+    spawn_resolved(
+        &resolved,
+        prepared.as_ref(),
+        socket,
+        json,
+        target,
+        split,
+        ratio,
+    )
 }
 
 fn spawn_resolved(
     resolved: &ResolvedLaunch,
+    prepared: Option<&PreparedAgentSession>,
     socket: Option<PathBuf>,
     json: bool,
     target: Option<String>,
     split: SpawnSplit,
     ratio: f32,
 ) -> ExitCode {
+    let argv = prepared.map_or(&resolved.argv, |session| &session.argv);
+    let env = prepared.map(|session| {
+        session
+            .env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    });
+    let agent_session = match prepared.map(|session| session.record.encode()).transpose() {
+        Ok(record) => record,
+        Err(err) => {
+            eprintln!("phux: could not encode agent session provenance: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let request_id = 1u32;
     let frame = FrameKind::SpawnTerminal {
         request_id,
         // v0.1 servers expose the single default group (SPEC §3.1).
         group: GroupId::new(1),
-        command: Some(resolved.argv.clone()),
+        command: Some(argv.clone()),
         cwd: Some(resolved.cwd.display().to_string()),
-        env: None,
+        env,
         term: None,
         satellite: None,
         owner_terminal: None,
+        agent_session,
     };
     let result = match target {
         Some(target) => dispatch_spawn_placed(
@@ -96,11 +132,17 @@ fn spawn_resolved(
             &target,
             split,
             ratio,
+            prepared.map(|session| &session.record),
         ),
-        None => dispatch_spawn(&socket_path, &frame, "launch"),
+        None => dispatch_spawn(
+            &socket_path,
+            &frame,
+            "launch",
+            prepared.map(|session| &session.record),
+        ),
     };
     match result {
-        Ok(SpawnResult::Ok(terminal_id)) => print_launched(resolved, &terminal_id, json),
+        Ok(SpawnResult::Ok(terminal_id)) => print_launched(resolved, argv, &terminal_id, json),
         Ok(SpawnResult::Err(err)) => {
             report_spawn_error(&err);
             ExitCode::FAILURE
@@ -156,7 +198,7 @@ fn run_list(config_path: &std::path::Path, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn print_resolved(resolved: &ResolvedLaunch, json: bool) -> ExitCode {
+fn print_resolved(resolved: &ResolvedLaunch, argv: &[String], json: bool) -> ExitCode {
     if json {
         let payload = serde_json::json!({
             "schema_version": 1,
@@ -164,7 +206,7 @@ fn print_resolved(resolved: &ResolvedLaunch, json: bool) -> ExitCode {
             "plugin": resolved.plugin_id,
             "cwd": resolved.cwd.display().to_string(),
             "working_directory": working_directory_slug(resolved.working_directory),
-            "argv": resolved.argv,
+            "argv": argv,
         });
         return match serde_json::to_string_pretty(&payload) {
             Ok(rendered) => {
@@ -179,12 +221,13 @@ fn print_resolved(resolved: &ResolvedLaunch, json: bool) -> ExitCode {
     }
     outln!("{} ({})", resolved.integration_id, resolved.plugin_id);
     outln!("  cwd: {}", resolved.cwd.display());
-    outln!("  argv: {}", resolved.argv.join(" "));
+    outln!("  argv: {}", argv.join(" "));
     ExitCode::SUCCESS
 }
 
 fn print_launched(
     resolved: &ResolvedLaunch,
+    argv: &[String],
     terminal_id: &phux_protocol::ids::TerminalId,
     json: bool,
 ) -> ExitCode {
@@ -198,7 +241,7 @@ fn print_launched(
             "terminal_id": id,
             "integration": resolved.integration_id,
             "plugin": resolved.plugin_id,
-            "argv": resolved.argv,
+            "argv": argv,
         });
         return match serde_json::to_string_pretty(&payload) {
             Ok(rendered) => {

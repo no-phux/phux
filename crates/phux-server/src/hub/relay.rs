@@ -769,6 +769,7 @@ impl RelaySession {
                     // never crosses the link (hub-and-spoke, no chaining).
                     satellite: None,
                     owner_terminal: None,
+                    agent_session: None,
                 })
             }
             RelayRequest::Subscribe {

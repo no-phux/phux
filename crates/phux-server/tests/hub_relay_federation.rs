@@ -503,6 +503,7 @@ async fn spawn_via_stream(
             term: None,
             satellite: satellite.map(SatelliteHost::new),
             owner_terminal: None,
+            agent_session: None,
         },
     )
     .await;

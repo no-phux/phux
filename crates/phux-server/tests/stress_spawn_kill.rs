@@ -106,6 +106,7 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
                     term: None,
                     satellite: None,
                     owner_terminal: None,
+                    agent_session: None,
                 },
             )
             .await;

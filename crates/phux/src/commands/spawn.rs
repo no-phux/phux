@@ -10,6 +10,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::runtime::default_socket_path;
 
+use crate::commands::agent::{AgentSessionRecord, persist_record};
 use crate::commands::{
     SpawnSplit, cli_runtime, parse_selector, report_no_server, request_command, resolve_targets,
 };
@@ -58,6 +59,7 @@ pub(crate) fn run_spawn(
         term: None,
         satellite: satellite.map(SatelliteHost::new),
         owner_terminal: None,
+        agent_session: None,
     };
     let result = match target {
         Some(target) => dispatch_spawn_placed(
@@ -68,8 +70,9 @@ pub(crate) fn run_spawn(
             &target,
             split,
             ratio,
+            None,
         ),
-        None => dispatch_spawn(&socket_path, &frame, "spawn"),
+        None => dispatch_spawn(&socket_path, &frame, "spawn", None),
     };
     match result {
         Ok(SpawnResult::Ok(terminal_id)) => print_spawned(&terminal_id, json),
@@ -100,9 +103,10 @@ pub(crate) fn dispatch_spawn(
     socket_path: &Path,
     frame: &FrameKind,
     verb: &str,
+    agent_session: Option<&AgentSessionRecord>,
 ) -> Result<SpawnResult, ExitCode> {
     let rt = cli_runtime()?;
-    rt.block_on(dispatch_spawn_async(socket_path, frame))
+    rt.block_on(dispatch_spawn_async(socket_path, frame, agent_session))
         .map_err(|err| report_no_server(&err, socket_path, verb))
 }
 
@@ -119,22 +123,56 @@ pub(crate) fn dispatch_spawn(
 async fn dispatch_spawn_async(
     socket_path: &Path,
     frame: &FrameKind,
+    agent_session: Option<&AgentSessionRecord>,
 ) -> Result<SpawnResult, phux_client::attach::AttachError> {
     let mut conn = Connection::connect(socket_path).await?;
     let (answer, interleaved) = conn.request_spawn(frame).await?.into_parts();
     for message in phux_client::state::degradation_notices(&interleaved) {
         eprintln!("phux: warning: partial results — {message}");
     }
-    Ok(answer.unwrap_or_else(|refusal| {
+    let mut result = answer.unwrap_or_else(|refusal| {
         SpawnResult::Err(SpawnError::SpawnFailed(format!(
             "server refused the spawn: {refusal}"
         )))
-    }))
+    });
+    if let (Some(record), SpawnResult::Ok(terminal)) = (agent_session, &result) {
+        let request_id = match frame {
+            FrameKind::SpawnTerminal { request_id, .. } => *request_id,
+            _ => 1,
+        };
+        if let Err(err) =
+            persist_record(&mut conn, terminal, record, request_id.wrapping_add(1)).await
+        {
+            let cleanup = conn
+                .request(
+                    request_id.wrapping_add(4),
+                    Command::KillTerminal {
+                        terminal_id: terminal.clone(),
+                    },
+                )
+                .await;
+            let cleanup_note = match cleanup {
+                Ok(reply) => match reply.into_parts().0 {
+                    CommandResult::Ok => "spawned terminal removed".to_owned(),
+                    other => format!("cleanup returned {other:?}"),
+                },
+                Err(cleanup_err) => format!("cleanup failed: {cleanup_err}"),
+            };
+            result = SpawnResult::Err(SpawnError::SpawnFailed(format!(
+                "agent session record could not be confirmed: {err}; {cleanup_note}"
+            )));
+        }
+    }
+    Ok(result)
 }
 
 /// Resolve an explicit local owner, spawn into its exact server window, then
 /// insert the returned leaf through shared `LayoutOps`. If layout publication
 /// fails after spawn, kill the known new Terminal before returning failure.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shared spawn placement keeps the complete CLI operation explicit"
+)]
 pub(crate) fn dispatch_spawn_placed(
     socket_path: &Path,
     mut frame: FrameKind,
@@ -143,6 +181,7 @@ pub(crate) fn dispatch_spawn_placed(
     target_text: &str,
     split: SpawnSplit,
     ratio: f32,
+    agent_session: Option<&AgentSessionRecord>,
 ) -> Result<SpawnResult, ExitCode> {
     let selector = parse_selector(Some(target_text))?;
     let rt = cli_runtime()?;
@@ -181,7 +220,7 @@ pub(crate) fn dispatch_spawn_placed(
             return Err(ExitCode::FAILURE);
         };
         *owner_terminal = Some(owner.clone());
-        let spawned = dispatch_spawn_async(socket_path, &frame)
+        let spawned = dispatch_spawn_async(socket_path, &frame, agent_session)
             .await
             .map_err(|err| report_no_server(&err, socket_path, verb))?;
         let SpawnResult::Ok(new_pane) = &spawned else {
@@ -519,6 +558,7 @@ mod tests {
             term: None,
             satellite: None,
             owner_terminal: None,
+            agent_session: None,
         }
     }
 
@@ -535,6 +575,7 @@ mod tests {
             "@1",
             SpawnSplit::Vertical,
             0.3,
+            None,
         );
         assert!(matches!(result, Ok(SpawnResult::Ok(id)) if id == TerminalId::local(3)));
         mock.join().expect("mock server");
@@ -553,6 +594,7 @@ mod tests {
             "@1",
             SpawnSplit::Horizontal,
             0.5,
+            None,
         );
         assert!(result.is_err());
         mock.join().expect("mock server");
@@ -582,11 +624,13 @@ mod tests {
         );
         let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
 
-        let result =
-            tokio::time::timeout(WEDGE_TIMEOUT, dispatch_spawn_async(&socket, &spawn_frame()))
-                .await
-                .expect("a refused spawn must return; a timeout here is the wedge itself")
-                .expect("transport");
+        let result = tokio::time::timeout(
+            WEDGE_TIMEOUT,
+            dispatch_spawn_async(&socket, &spawn_frame(), None),
+        )
+        .await
+        .expect("a refused spawn must return; a timeout here is the wedge itself")
+        .expect("transport");
 
         // Folded into the shape a hub already produces for this case, so the
         // CLI's existing `report_spawn_error` renders it.

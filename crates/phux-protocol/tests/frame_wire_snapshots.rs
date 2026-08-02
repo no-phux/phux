@@ -753,6 +753,7 @@ fn snap_spawn_terminal_minimal() {
         term: None,
         satellite: None,
         owner_terminal: None,
+        agent_session: None,
     };
     insta::assert_snapshot!(dump_frame(&frame));
 }
@@ -773,6 +774,9 @@ fn snap_spawn_terminal_full() {
         term: None,
         satellite: None,
         owner_terminal: Some(TerminalId::local(42)),
+        agent_session: Some(
+            br#"{"plugin_id":"com.phux.agents","native_id":"session-42"}"#.to_vec(),
+        ),
     };
     insta::assert_snapshot!(dump_frame(&frame));
 }
@@ -791,6 +795,7 @@ fn snap_spawn_terminal_term_field() {
         term: Some("ghostty".to_owned()),
         satellite: None,
         owner_terminal: None,
+        agent_session: None,
     };
     insta::assert_snapshot!(dump_frame(&frame));
 }

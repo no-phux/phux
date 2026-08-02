@@ -1,14 +1,18 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use crate::commands::agent::AgentSessionRecord;
 use phux_protocol::ids::{SessionId, TerminalId, WindowId};
 use phux_protocol::wire::info::{LayoutNode, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo};
 
 use super::model::{
-    ARCHIVE_SCHEMA_VERSION, WorkspaceArchive, WorkspaceLayoutNode, WorkspacePane, WorkspaceSession,
-    WorkspaceSplitDir, WorkspaceWindow,
+    ARCHIVE_SCHEMA_VERSION, WorkspaceAgentSession, WorkspaceArchive, WorkspaceLayoutNode,
+    WorkspacePane, WorkspaceSession, WorkspaceSplitDir, WorkspaceWindow,
 };
 
-pub(super) fn archive_from_snapshot(snapshot: &SessionSnapshot) -> WorkspaceArchive {
+pub(super) fn archive_from_snapshot(
+    snapshot: &SessionSnapshot,
+    agent_sessions: &HashMap<TerminalId, AgentSessionRecord>,
+) -> WorkspaceArchive {
     let windows_by_session = windows_by_session(&snapshot.windows);
     let panes_by_window = panes_by_window(&snapshot.panes);
     let sessions = snapshot
@@ -19,7 +23,14 @@ pub(super) fn archive_from_snapshot(snapshot: &SessionSnapshot) -> WorkspaceArch
                 .get(&session.id)
                 .into_iter()
                 .flat_map(|windows| windows.iter())
-                .map(|window| archive_window(window, session.active_window, &panes_by_window))
+                .map(|window| {
+                    archive_window(
+                        window,
+                        session.active_window,
+                        &panes_by_window,
+                        agent_sessions,
+                    )
+                })
                 .collect();
             WorkspaceSession {
                 name: session.name.clone(),
@@ -40,6 +51,7 @@ fn archive_window(
     window: &WindowInfo,
     active_window: Option<WindowId>,
     panes_by_window: &BTreeMap<WindowId, Vec<&TerminalInfo>>,
+    agent_sessions: &HashMap<TerminalId, AgentSessionRecord>,
 ) -> WorkspaceWindow {
     let panes = panes_by_window.get(&window.id).cloned().unwrap_or_default();
     let pane_index = panes
@@ -61,6 +73,13 @@ fn archive_window(
                 title: pane.title.clone(),
                 cwd: pane.cwd.clone(),
                 command: None,
+                agent_session: agent_sessions
+                    .get(&pane.id)
+                    .map(|record| WorkspaceAgentSession {
+                        plugin_id: record.plugin_id.clone(),
+                        integration_id: record.integration_id.clone(),
+                        native_id: record.native_id.clone(),
+                    }),
                 cols: pane.cols,
                 rows: pane.rows,
             })
@@ -142,10 +161,15 @@ mod tests {
                 .with_sessions(vec![session])
                 .with_windows(vec![window])
                 .with_panes(vec![pane]);
+        let agent_sessions = HashMap::from([(
+            TerminalId::local(3),
+            AgentSessionRecord::new("com.phux.agents", "claude-code", "session-42")
+                .expect("valid record"),
+        )]);
 
-        let archive = archive_from_snapshot(&snapshot);
+        let archive = archive_from_snapshot(&snapshot, &agent_sessions);
 
-        assert_eq!(archive.schema_version, 1);
+        assert_eq!(archive.schema_version, ARCHIVE_SCHEMA_VERSION);
         assert_eq!(archive.sessions[0].name, "ops");
         assert!(archive.sessions[0].active);
         assert_eq!(
@@ -157,6 +181,13 @@ mod tests {
             Some("/tmp/phux-ops")
         );
         assert_eq!(archive.sessions[0].windows[0].panes[0].command, None);
+        assert_eq!(
+            archive.sessions[0].windows[0].panes[0]
+                .agent_session
+                .as_ref()
+                .map(|record| record.native_id.as_str()),
+            Some("session-42")
+        );
     }
 
     #[test]
@@ -179,7 +210,7 @@ mod tests {
                 .with_windows(vec![inactive_window, active_window])
                 .with_panes(panes);
 
-        let archive = archive_from_snapshot(&snapshot);
+        let archive = archive_from_snapshot(&snapshot, &HashMap::new());
 
         assert!(!archive.sessions[0].windows[0].active);
         assert!(archive.sessions[0].windows[1].active);

@@ -1612,6 +1612,7 @@ proptest! {
         term in proptest::option::of(".{0,16}"),
         satellite in proptest::option::of(".{0,16}"),
         owner_terminal in proptest::option::of(any::<u32>()),
+        agent_session in proptest::option::of(proptest::collection::vec(any::<u8>(), 0..64)),
     ) {
         let frame = FrameKind::SpawnTerminal {
             request_id,
@@ -1622,6 +1623,7 @@ proptest! {
             term,
             satellite: satellite.map(phux_protocol::ids::SatelliteHost::new),
             owner_terminal: owner_terminal.map(TerminalId::local),
+            agent_session,
         };
         let mut buf = BytesMut::new();
         frame.encode(&mut buf);
@@ -2336,6 +2338,7 @@ fn spawn_terminal_empty_command_vec_round_trips() {
         term: None,
         satellite: None,
         owner_terminal: None,
+        agent_session: None,
     };
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
@@ -2358,6 +2361,7 @@ fn spawn_terminal_empty_env_vec_round_trips() {
         term: None,
         satellite: None,
         owner_terminal: None,
+        agent_session: None,
     };
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);
@@ -2381,6 +2385,7 @@ fn spawn_terminal_term_field_round_trips() {
             term,
             satellite: None,
             owner_terminal: None,
+            agent_session: None,
         };
         let mut buf = BytesMut::new();
         frame.encode(&mut buf);

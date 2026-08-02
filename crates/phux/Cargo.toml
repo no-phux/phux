@@ -50,6 +50,9 @@ toml_edit.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Generate provider-native session ids before spawning integrations whose
+# documented CLI accepts a caller-supplied fresh UUID.
+uuid.workspace = true
 # `process`: `setsid(2)` to detach an auto-spawned server from the launching
 # client's controlling terminal so it survives the terminal closing.
 # `termios`: `phux play`'s in-pane writer clears OPOST and ECHO on its own

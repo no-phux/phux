@@ -256,6 +256,9 @@ pub mod spawn_terminal {
     /// Optional existing Terminal whose owning window must host the spawn.
     /// Absent preserves the server's legacy placement policy.
     pub const OWNER_TERMINAL: u32 = 8;
+    /// Optional opaque `phux.agent-session/v1` record installed atomically on
+    /// the new local Terminal.
+    pub const AGENT_SESSION: u32 = 9;
 }
 
 /// `TERMINAL_SPAWNED` body fields (`docs/spec/L1.md` §10.1).

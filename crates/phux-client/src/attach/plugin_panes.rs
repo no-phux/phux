@@ -147,6 +147,7 @@ impl PluginPaneEntry {
             term: None,
             satellite: None,
             owner_terminal: None,
+            agent_session: None,
         }
     }
 }
@@ -296,6 +297,7 @@ mod tests {
             term,
             satellite,
             owner_terminal,
+            agent_session,
         } = entry.spawn_frame(7)
         else {
             panic!("expected SpawnTerminal");
@@ -303,6 +305,10 @@ mod tests {
         assert_eq!(request_id, 7);
         assert_eq!(satellite, None, "plugin panes spawn locally");
         assert_eq!(owner_terminal, None, "plugin panes use attached ownership");
+        assert_eq!(
+            agent_session, None,
+            "plugin panes have no resume provenance"
+        );
         assert_eq!(group, DEFAULT_GROUP_ID);
         assert_eq!(
             command,

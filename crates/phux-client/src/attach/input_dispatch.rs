@@ -1809,6 +1809,7 @@ fn run_action(
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             };
             effects.spawn_terminal = Some((
                 request_id,
@@ -1968,6 +1969,7 @@ fn run_action(
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             };
             effects.spawn_window = Some((request_id, PendingWindow { name }, frame));
         }

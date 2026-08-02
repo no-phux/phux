@@ -43,8 +43,9 @@ use std::time::Duration;
 use phux_protocol::ids::GroupId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, SpawnError, SpawnResult, StateScope,
-    TYPE_COMMAND_RESULT, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SPAWNED,
+    Command, CommandResult, CommandValue, FrameKind, Scope, SpawnError, SpawnResult, StateScope,
+    TERMINAL_AGENT_SESSION_KEY, TYPE_COMMAND_RESULT, TYPE_METADATA_VALUE, TYPE_TERMINAL_CLOSED,
+    TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SPAWNED,
 };
 use phux_server::DEFAULT_GROUP_ID;
 use portable_pty::CommandBuilder;
@@ -81,6 +82,28 @@ async fn await_terminal_spawned(stream: &mut UnixStream, request_id: u32) -> Spa
         }
     }
     panic!("timed out waiting for TERMINAL_SPAWNED request_id={request_id}");
+}
+
+async fn await_metadata_value(stream: &mut UnixStream, request_id: u32) -> Option<Vec<u8>> {
+    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
+            break;
+        };
+        if type_byte != TYPE_METADATA_VALUE {
+            continue;
+        }
+        if let FrameKind::MetadataValue {
+            request_id: got,
+            value,
+        } = frame
+            && got == request_id
+        {
+            return value;
+        }
+    }
+    panic!("timed out waiting for METADATA_VALUE request_id={request_id}");
 }
 
 /// Drain until the accumulated TERMINAL_OUTPUT bytes for `pane`
@@ -224,6 +247,9 @@ fn spawn_terminal_in_default_group_round_trips_input() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let (mut stream, shutdown_tx, server_handle) = spawn_and_attach(&tmp, "default").await;
+        let agent_session =
+            br#"{"plugin_id":"com.phux.agents","integration_id":"codex","native_id":"session-42"}"#
+                .to_vec();
 
         // SPAWN_TERMINAL with /bin/cat — cooked-mode echo fixture from
         // input_dispatch.rs. cat echoes the input back through the PTY
@@ -239,6 +265,7 @@ fn spawn_terminal_in_default_group_round_trips_input() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: Some(agent_session.clone()),
             },
         )
         .await;
@@ -253,6 +280,21 @@ fn spawn_terminal_in_default_group_round_trips_input() {
         assert!(
             new_id.is_local(),
             "freshly spawned TerminalId must be LOCAL (got {new_id:?})",
+        );
+
+        send_frame(
+            &mut stream,
+            &FrameKind::GetMetadata {
+                request_id: 43,
+                scope: Scope::Terminal(new_id.clone()),
+                key: TERMINAL_AGENT_SESSION_KEY.to_owned(),
+            },
+        )
+        .await;
+        assert_eq!(
+            await_metadata_value(&mut stream, 43).await,
+            Some(agent_session),
+            "SPAWN_TERMINAL must publish native resume provenance with the new pane",
         );
 
         // INPUT_KEY('a') + Enter through the new pane.
@@ -281,6 +323,109 @@ fn spawn_terminal_in_default_group_round_trips_input() {
             "INPUT_KEY('a') to spawned pane must round-trip through PTY (got {} bytes: {:?})",
             acc.len(),
             acc,
+        );
+
+        drop(stream);
+        shutdown_tx.send(()).ok();
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+            .await
+            .expect("server did not shut down after the shutdown signal")
+            .expect("server join")
+            .expect("server run_async ok");
+    });
+}
+
+#[test]
+fn spawn_terminal_rejects_invalid_agent_session_provenance() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let (mut stream, shutdown_tx, server_handle) =
+            spawn_and_attach(&tmp, "invalid-provenance").await;
+
+        for (request_id, agent_session) in [(50, Vec::new()), (51, vec![b'x'; 4097])] {
+            send_frame(
+                &mut stream,
+                &FrameKind::SpawnTerminal {
+                    request_id,
+                    group: DEFAULT_GROUP_ID,
+                    command: Some(vec!["/bin/cat".to_owned()]),
+                    cwd: None,
+                    env: None,
+                    term: None,
+                    satellite: None,
+                    owner_terminal: None,
+                    agent_session: Some(agent_session),
+                },
+            )
+            .await;
+            let result = await_terminal_spawned(&mut stream, request_id).await;
+            assert!(
+                matches!(
+                    &result,
+                    SpawnResult::Err(SpawnError::SpawnFailed(reason))
+                        if reason.contains("1..=4096")
+                ),
+                "request {request_id} must reject invalid provenance, got {result:?}",
+            );
+        }
+
+        drop(stream);
+        shutdown_tx.send(()).ok();
+        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+            .await
+            .expect("server did not shut down after the shutdown signal")
+            .expect("server join")
+            .expect("server run_async ok");
+    });
+}
+
+#[test]
+fn failed_actor_build_reaps_atomic_agent_session_provenance() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let (mut stream, shutdown_tx, server_handle) =
+            spawn_and_attach(&tmp, "build-failure").await;
+        send_frame(
+            &mut stream,
+            &FrameKind::SpawnTerminal {
+                request_id: 60,
+                group: DEFAULT_GROUP_ID,
+                command: Some(vec!["/definitely/not/a/phux-test-program".to_owned()]),
+                cwd: None,
+                env: None,
+                term: None,
+                satellite: None,
+                owner_terminal: None,
+                agent_session: Some(br#"{"native_id":"never-live"}"#.to_vec()),
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                await_terminal_spawned(&mut stream, 60).await,
+                SpawnResult::Err(SpawnError::SpawnFailed(_))
+            ),
+            "an unspawnable child must fail the request",
+        );
+
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 61,
+                command: Command::GetState {
+                    scope: StateScope::Server,
+                },
+            },
+        )
+        .await;
+        let snapshot = match await_command_result(&mut stream, 61).await {
+            CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
+            other => panic!("expected state after failed spawn, got {other:?}"),
+        };
+        assert_eq!(
+            snapshot.panes.len(),
+            1,
+            "failed spawn must not leave an actorless Terminal or its metadata",
         );
 
         drop(stream);
@@ -329,6 +474,7 @@ fn explicit_owner_terminal_selects_exact_session_window() {
                 term: None,
                 satellite: None,
                 owner_terminal: Some(owner.clone()),
+                agent_session: None,
             },
         )
         .await;
@@ -422,6 +568,7 @@ fn spawn_terminal_lands_in_attached_session_not_a_new_session() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -505,6 +652,7 @@ fn spawn_terminal_env_term_overrides_default() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -560,6 +708,7 @@ fn spawn_terminal_default_term_is_xterm_256color() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -614,6 +763,7 @@ fn spawn_terminal_term_field_overrides_default() {
                 term: Some("phux-term-field".to_owned()),
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -666,6 +816,7 @@ fn spawn_terminal_env_term_beats_term_field() {
                 term: Some("phux-term-field".to_owned()),
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -713,6 +864,7 @@ fn spawn_terminal_unknown_group_returns_group_not_found() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -761,6 +913,7 @@ fn spawn_terminal_emits_terminal_closed_on_pty_exit() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -827,6 +980,7 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -1014,6 +1168,7 @@ fn spawn_terminal_injects_matching_terminal_id_env() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -1142,6 +1297,7 @@ fn spawn_terminal_injects_server_socket_env() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -1296,6 +1452,7 @@ fn spawn_terminal_inherits_focused_pane_live_cwd() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -1465,6 +1622,7 @@ fn spawn_terminal_session_root_inherits_seed_pane_dir() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -1550,6 +1708,7 @@ fn spawn_terminal_last_cwd_per_window_inherits_active_pane_dir() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;

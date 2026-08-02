@@ -6,7 +6,8 @@ use phux_core::TerminalId;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, ErrorCode, FrameKind, SpawnError, SpawnResult,
+    AgentEvent, AttachTarget, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, SpawnError,
+    SpawnResult,
 };
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -498,6 +499,8 @@ pub(crate) struct SpawnRequest {
     pub(crate) satellite: Option<phux_protocol::ids::SatelliteHost>,
     /// Existing local Terminal whose exact window must own the new pane.
     pub(crate) owner_terminal: Option<phux_protocol::ids::TerminalId>,
+    /// Opaque native agent-session provenance to install before publication.
+    pub(crate) agent_session: Option<Vec<u8>>,
 }
 
 /// Relay one satellite-addressed spawn over the owning hub link
@@ -599,6 +602,7 @@ pub(crate) async fn handle_spawn_terminal(
         term,
         satellite,
         owner_terminal,
+        agent_session,
     } = request;
     debug!(
         ?client_id,
@@ -617,9 +621,9 @@ pub(crate) async fn handle_spawn_terminal(
     // satellite, whose errors relay back verbatim. Never falls through to
     // local dispatch.
     if let Some(host) = satellite {
-        let result = if owner_terminal.is_some() {
+        let result = if owner_terminal.is_some() || agent_session.is_some() {
             SpawnResult::Err(SpawnError::SpawnFailed(
-                "owner-terminal targeting is local-only".to_owned(),
+                "owner-terminal targeting and agent-session provenance are local-only".to_owned(),
             ))
         } else {
             relay_spawn_to_satellite(state, &host, group, command, cwd, env, term).await
@@ -628,6 +632,21 @@ pub(crate) async fn handle_spawn_terminal(
             .send(Outbound::Frame(FrameKind::TerminalSpawned {
                 request_id,
                 result,
+            }))
+            .await;
+        return;
+    }
+
+    if agent_session
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.len() > MAX_AGENT_SESSION_RECORD_BYTES)
+    {
+        let _ = out_tx
+            .send(Outbound::Frame(FrameKind::TerminalSpawned {
+                request_id,
+                result: SpawnResult::Err(SpawnError::SpawnFailed(
+                    "agent-session provenance must contain 1..=4096 bytes".to_owned(),
+                )),
             }))
             .await;
         return;
@@ -750,6 +769,7 @@ pub(crate) async fn handle_spawn_terminal(
         history_limit,
         root_token,
         default_colors,
+        agent_session,
     ) {
         Ok(Some(id)) => id,
         Ok(None) => {

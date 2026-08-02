@@ -6,7 +6,8 @@ use phux_client::attach::connection::Connection;
 use phux_client::predict::PredictiveConfig;
 use phux_config::loader as config_loader;
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, Scope,
+    AttachTarget, FrameKind, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY,
+    SESSION_CREATE_RESULT_KEY_PREFIX, Scope,
 };
 use phux_server::runtime::default_socket_path;
 
@@ -202,6 +203,8 @@ pub(crate) fn run_new_json(
         command,
         cwd,
         env,
+        None,
+        false,
     )) {
         Ok(terminal_id) => {
             let payload = serde_json::json!({ "session": name, "terminal_id": terminal_id });
@@ -220,23 +223,99 @@ pub(crate) fn run_new_json(
     }
 }
 
+async fn require_atomic_agent_session_create(
+    conn: &mut Connection,
+    socket_path: &Path,
+) -> Result<(), ExitCode> {
+    // Native restore must be atomic with session creation. Older servers treat
+    // the nonce-result namespace as ordinary metadata and cannot install
+    // `agent_session` in the create transaction. Current servers reserve it
+    // and reject the sentinel write. This consumes no protocol capability bit.
+    let probe_key = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{}", uuid::Uuid::new_v4());
+    conn.send(&FrameKind::SetMetadata {
+        request_id: 100,
+        scope: Scope::Global,
+        key: probe_key.clone(),
+        value: uuid::Uuid::new_v4().as_bytes().to_vec(),
+    })
+    .await
+    .map_err(|err| report_no_server(&err, socket_path, "new"))?;
+    let (probe, interleaved) = conn
+        .request_metadata(101, Scope::Global, probe_key.clone())
+        .await
+        .map_err(|err| report_no_server(&err, socket_path, "new"))?
+        .into_parts();
+    for message in phux_client::state::degradation_notices(&interleaved) {
+        eprintln!("phux: warning: partial results — {message}");
+    }
+    match probe {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => {
+            conn.send(&FrameKind::DeleteMetadata {
+                request_id: 102,
+                scope: Scope::Global,
+                key: probe_key.clone(),
+            })
+            .await
+            .map_err(|err| report_no_server(&err, socket_path, "new"))?;
+            // Ordered read-back confirms that the old server processed the
+            // cleanup before this connection closes.
+            let _ = conn
+                .request_metadata(103, Scope::Global, probe_key)
+                .await
+                .map_err(|err| report_no_server(&err, socket_path, "new"))?;
+            eprintln!(
+                "phux: create-session failed: server does not support atomic agent-session restore"
+            );
+            Err(ExitCode::FAILURE)
+        }
+        Err(refusal) => {
+            eprintln!(
+                "phux: create-session failed: server refused the agent-session capability probe: {refusal}"
+            );
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+pub(crate) async fn preflight_atomic_agent_session_create(
+    socket_path: &Path,
+) -> Result<(), ExitCode> {
+    let mut conn = Connection::connect(socket_path)
+        .await
+        .map_err(|err| report_no_server(&err, socket_path, "workspace restore"))?;
+    require_atomic_agent_session_create(&mut conn, socket_path).await
+}
+
 /// Create a named session without attaching via the conventional
-/// `SESSION_CREATE_KEY` write, then read the seed-pane id back from
-/// `SESSION_CREATE_RESULT_KEY`. Returns the seed pane's local id on success,
-/// or the failure `ExitCode` (already reported to stderr) otherwise. Shared
-/// by `phux new --json`; mirrors the MCP `phux_new` path.
+/// `SESSION_CREATE_KEY` write, then read the seed-pane id back from a
+/// nonce-correlated, one-shot result key.
+///
+/// `agent_session_preflighted` is true only when a multi-session caller has
+/// already run [`preflight_atomic_agent_session_create`] before creating any
+/// member of its batch; otherwise this function performs that probe itself.
+/// Returns the seed pane's local id on success, or the failure `ExitCode`
+/// (already reported to stderr) otherwise. Shared by `phux new --json`; mirrors
+/// the MCP `phux_new` path.
 pub(crate) async fn create_session_via_metadata(
     socket_path: &Path,
     name: &str,
     command: Option<Vec<String>>,
     cwd: Option<String>,
     env: std::collections::BTreeMap<String, String>,
+    agent_session: Option<Vec<u8>>,
+    agent_session_preflighted: bool,
 ) -> Result<u64, ExitCode> {
+    let allow_legacy_result = agent_session.is_none();
+    let request_token = uuid::Uuid::new_v4().to_string();
+    let result_key = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{request_token}");
     let create_bytes = serde_json::to_vec(&serde_json::json!({
         "name": name,
         "command": command,
         "cwd": cwd,
         "env": env,
+        "request_token": request_token.clone(),
+        "agent_session": agent_session,
     }))
     .map_err(|err| {
         eprintln!("phux: failed to serialize create request: {err}");
@@ -264,8 +343,13 @@ pub(crate) async fn create_session_via_metadata(
         return Err(ExitCode::FAILURE);
     }
 
-    // Request the create, then read the published result. Frames are ordered
-    // on the single connection, so the GET's reply observes the SET's effect.
+    if !allow_legacy_result && !agent_session_preflighted {
+        require_atomic_agent_session_create(&mut conn, socket_path).await?;
+    }
+
+    // Request the create, then read only this request's one-shot result.
+    // Frames are ordered on the connection, while the nonce prevents another
+    // concurrent creator from supplying a stale or unrelated Terminal id.
     conn.send(&FrameKind::SetMetadata {
         request_id: 1,
         scope: Scope::Global,
@@ -281,7 +365,7 @@ pub(crate) async fn create_session_via_metadata(
     // session possibly already created — the worst shape of this bug, because
     // the user's Ctrl-C then looks like the create failed.
     let (answer, interleaved) = conn
-        .request_metadata(2, Scope::Global, SESSION_CREATE_RESULT_KEY.to_owned())
+        .request_metadata(2, Scope::Global, result_key)
         .await
         .map_err(|err| report_no_server(&err, socket_path, "new"))?
         .into_parts();
@@ -298,10 +382,40 @@ pub(crate) async fn create_session_via_metadata(
         eprintln!("phux: create-session failed: server did not register session '{name}'");
         ExitCode::FAILURE
     };
-    let bytes = result_value.ok_or_else(not_registered)?;
+    let (bytes, correlated) = if let Some(bytes) = result_value {
+        (bytes, true)
+    } else if allow_legacy_result {
+        let (legacy_answer, legacy_interleaved) = conn
+            .request_metadata(3, Scope::Global, SESSION_CREATE_RESULT_KEY.to_owned())
+            .await
+            .map_err(|err| report_no_server(&err, socket_path, "new"))?
+            .into_parts();
+        for message in phux_client::state::degradation_notices(&legacy_interleaved) {
+            eprintln!("phux: warning: partial results — {message}");
+        }
+        let legacy = legacy_answer
+            .map_err(|refusal| {
+                eprintln!(
+                    "phux: create-session failed: server refused legacy read-back: {refusal}"
+                );
+                ExitCode::FAILURE
+            })?
+            .ok_or_else(not_registered)?;
+        (legacy, false)
+    } else {
+        return Err(not_registered());
+    };
     serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
         .filter(|v| v.get("name").and_then(serde_json::Value::as_str) == Some(name))
+        .filter(|v| {
+            if correlated {
+                v.get("request_token").and_then(serde_json::Value::as_str)
+                    == Some(request_token.as_str())
+            } else {
+                v.get("request_token").is_none()
+            }
+        })
         .and_then(|v| v.get("terminal_id").and_then(serde_json::Value::as_u64))
         .ok_or_else(not_registered)
 }

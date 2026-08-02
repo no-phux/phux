@@ -13,10 +13,12 @@
 //!
 //! [ADR-0042]: ../../ADR/0042-launch-executor.md
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use phux_config::integration::{
-    self, IntegrationError, IntegrationLaunch, IntegrationTemplate, LaunchWorkingDirectory,
+    self, IntegrationError, IntegrationLaunch, IntegrationSessionIdentity, IntegrationTemplate,
+    LaunchWorkingDirectory, SessionResumeError,
 };
 use phux_config::loader as config_loader;
 
@@ -44,6 +46,36 @@ pub struct ResolvedLaunch {
     pub working_directory: LaunchWorkingDirectory,
     /// Owning plugin's root directory.
     pub plugin_root: PathBuf,
+    /// Provider-native session policy declared by the integration.
+    pub session_identity: Option<IntegrationSessionIdentity>,
+}
+
+impl ResolvedLaunch {
+    /// Rebuild this launch argv as a provider-native resume invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the integration does not support native resume
+    /// or the supplied identity violates the policy's bounds.
+    pub fn resume_argv(&self, native_id: &str) -> Result<Vec<String>, SessionResumeError> {
+        self.session_identity
+            .as_ref()
+            .ok_or(SessionResumeError::Unsupported)?
+            .resume_argv(&self.argv, native_id)
+    }
+
+    /// Rebuild this launch argv with a caller-supplied fresh-session identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider has no documented fresh-identity
+    /// argv or the supplied identity violates the policy's bounds.
+    pub fn fresh_argv(&self, native_id: &str) -> Result<Vec<String>, SessionResumeError> {
+        self.session_identity
+            .as_ref()
+            .ok_or(SessionResumeError::Unsupported)?
+            .fresh_argv(&self.argv, native_id)
+    }
 }
 
 /// One launchable integration surfaced by [`list_launchable`].
@@ -73,6 +105,30 @@ pub enum LaunchError {
         path: PathBuf,
         /// Manifest error.
         source: phux_config::plugin::PluginManifestError,
+    },
+    /// Multiple enabled manifests claimed one globally unique plugin id.
+    #[error(
+        "enabled plugin id {id:?} is ambiguous between {} and {}",
+        first.display(),
+        second.display()
+    )]
+    DuplicatePluginId {
+        /// Duplicated manifest id.
+        id: String,
+        /// First owning plugin root.
+        first: PathBuf,
+        /// Conflicting plugin root.
+        second: PathBuf,
+    },
+    /// Multiple enabled plugins/templates claimed one integration id.
+    #[error("enabled integration id {id:?} is ambiguous between plugins {first:?} and {second:?}")]
+    DuplicateIntegrationId {
+        /// Duplicated integration id.
+        id: String,
+        /// First plugin that declared the id.
+        first: String,
+        /// Conflicting plugin that declared the id.
+        second: String,
     },
     /// The requested integration's template failed to read or validate.
     #[error("could not load integration template {path}: {source}")]
@@ -121,10 +177,10 @@ struct EnabledPlugin {
 /// directory a `working_directory = "workspace"` template runs in
 /// (typically the process's current directory).
 ///
-/// Resolution scans plugins in config order and, within a plugin, templates
-/// in sorted filename order, returning the first `id` match. A template
-/// that fails to parse is skipped **unless** its filename stem is the
-/// requested id, in which case its error is surfaced.
+/// Resolution scans every enabled plugin and rejects an integration id claimed
+/// by more than one enabled template. Within a plugin, templates are read in
+/// sorted filename order. A template that fails to parse is skipped **unless**
+/// its filename stem is the requested id, in which case its error is surfaced.
 ///
 /// # Errors
 ///
@@ -140,6 +196,8 @@ pub fn resolve_launch(
     workspace_cwd: &Path,
 ) -> Result<ResolvedLaunch, LaunchError> {
     let mut available: Vec<String> = Vec::new();
+    let mut matched_owner: Option<String> = None;
+    let mut resolved: Option<ResolvedLaunch> = None;
     for plugin in enabled_plugins(config_path)? {
         for path in template_paths(&plugin.plugin_root)? {
             let template = match integration::load_integration_template(&path) {
@@ -160,19 +218,32 @@ pub fn resolve_launch(
             if template.id != integration_id {
                 continue;
             }
-            let Some(launch) = template.launch.clone() else {
-                return Err(LaunchError::NoLaunchCommand {
-                    name: integration_id.to_owned(),
+            if let Some(first) = &matched_owner {
+                return Err(LaunchError::DuplicateIntegrationId {
+                    id: integration_id.to_owned(),
+                    first: first.clone(),
+                    second: plugin.plugin_id.clone(),
                 });
-            };
-            return Ok(build_resolved(
-                &plugin,
-                &template,
-                &launch,
-                extra_args,
-                workspace_cwd,
-            ));
+            }
+            matched_owner = Some(plugin.plugin_id.clone());
+            if let Some(launch) = template.launch.clone() {
+                resolved = Some(build_resolved(
+                    &plugin,
+                    &template,
+                    &launch,
+                    extra_args,
+                    workspace_cwd,
+                ));
+            }
         }
+    }
+    if let Some(resolved) = resolved {
+        return Ok(resolved);
+    }
+    if matched_owner.is_some() {
+        return Err(LaunchError::NoLaunchCommand {
+            name: integration_id.to_owned(),
+        });
     }
     available.sort();
     available.dedup();
@@ -232,11 +303,13 @@ fn build_resolved(
         cwd,
         working_directory: launch.working_directory,
         plugin_root: plugin.plugin_root.clone(),
+        session_identity: template.session_identity.clone(),
     }
 }
 
 fn enabled_plugins(config_path: &Path) -> Result<Vec<EnabledPlugin>, LaunchError> {
     let cfg = config_loader::load_from(config_path)?;
+    let mut owners = BTreeMap::<String, PathBuf>::new();
     let mut out = Vec::new();
     for entry in cfg.plugins {
         if !entry.enabled {
@@ -250,6 +323,13 @@ fn enabled_plugins(config_path: &Path) -> Result<Vec<EnabledPlugin>, LaunchError
                     source,
                 }
             })?;
+        if let Some(first) = owners.insert(manifest.id.clone(), manifest.plugin_root.clone()) {
+            return Err(LaunchError::DuplicatePluginId {
+                id: manifest.id,
+                first,
+                second: manifest.plugin_root,
+            });
+        }
         out.push(EnabledPlugin {
             plugin_id: manifest.id,
             plugin_root: manifest.plugin_root,

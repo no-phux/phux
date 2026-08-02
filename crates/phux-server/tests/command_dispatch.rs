@@ -43,7 +43,7 @@ use phux_protocol::ids::{GroupId, InputOperationId, TerminalId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, StateScope, TYPE_ATTACHED,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, StateScope, TYPE_ATTACHED,
     TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_SNAPSHOT,
 };
 use portable_pty::CommandBuilder;
@@ -77,6 +77,49 @@ async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> Comma
         }
     }
     panic!("no COMMAND_RESULT with request_id={request_id} within deadline");
+}
+
+async fn read_metadata_value(
+    stream: &mut UnixStream,
+    request_id: u32,
+    scope: Scope,
+    key: &str,
+) -> Option<Vec<u8>> {
+    send_frame(
+        stream,
+        &FrameKind::GetMetadata {
+            request_id,
+            scope,
+            key: key.to_owned(),
+        },
+    )
+    .await;
+    loop {
+        let (_type_byte, frame) = recv_typed(stream).await;
+        if let FrameKind::MetadataValue {
+            request_id: got,
+            value,
+        } = frame
+            && got == request_id
+        {
+            return value;
+        }
+    }
+}
+
+async fn list_metadata_keys(stream: &mut UnixStream, request_id: u32, scope: Scope) -> Vec<String> {
+    send_frame(stream, &FrameKind::ListMetadata { request_id, scope }).await;
+    loop {
+        let (_type_byte, frame) = recv_typed(stream).await;
+        if let FrameKind::MetadataKeys {
+            request_id: got,
+            keys,
+        } = frame
+            && got == request_id
+        {
+            return keys;
+        }
+    }
 }
 
 #[test]
@@ -467,6 +510,7 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
                 term: None,
                 satellite: None,
                 owner_terminal: None,
+                agent_session: None,
             },
         )
         .await;
@@ -600,16 +644,22 @@ fn kill_terminals_skips_unknown_ids() {
 #[test]
 fn session_create_via_metadata_seeds_session_and_publishes_id() {
     run_local(async {
-        use phux_protocol::wire::frame::{SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, Scope};
+        use phux_protocol::wire::frame::{
+            SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, TERMINAL_AGENT_SESSION_KEY,
+        };
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
         let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
+        let agent_session =
+            br#"{"plugin_id":"com.phux.agents","integration_id":"codex","native_id":"session-42"}"#
+                .to_vec();
         let value = serde_json::to_vec(&serde_json::json!({
             "name": "scratch",
             "command": serde_json::Value::Null,
             "cwd": serde_json::Value::Null,
+            "agent_session": agent_session.clone(),
         }))
         .unwrap();
         send_frame(
@@ -646,33 +696,134 @@ fn session_create_via_metadata_seeds_session_and_publishes_id() {
         }
 
         // The result key carries {name, terminal_id} for the created session.
-        send_frame(
+        let bytes = read_metadata_value(&mut stream, 3, Scope::Global, SESSION_CREATE_RESULT_KEY)
+            .await
+            .expect("result key must be present after a successful create");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("scratch"));
+        let terminal_id = json
+            .get("terminal_id")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|id| u32::try_from(id).ok())
+            .map(phux_protocol::ids::TerminalId::local)
+            .expect("result must carry a local terminal_id");
+
+        let restored_record = read_metadata_value(
             &mut stream,
-            &FrameKind::GetMetadata {
-                request_id: 3,
+            4,
+            Scope::Terminal(terminal_id),
+            TERMINAL_AGENT_SESSION_KEY,
+        )
+        .await;
+        assert_eq!(
+            restored_record,
+            Some(agent_session),
+            "session creation must install resume provenance with its seed pane",
+        );
+    });
+}
+
+#[test]
+fn correlated_session_create_results_cannot_reuse_another_creators_success() {
+    run_local(async {
+        use phux_protocol::wire::frame::{SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY_PREFIX};
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
+        let mut winner = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut loser = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let winner_token = "11111111-1111-4111-8111-111111111111";
+        let loser_token = "22222222-2222-4222-8222-222222222222";
+
+        for (stream, request_id, token, command) in [
+            (&mut winner, 10, winner_token, "winner"),
+            (&mut loser, 20, loser_token, "loser"),
+        ] {
+            let value = serde_json::to_vec(&serde_json::json!({
+                "name": "contended",
+                "command": ["sh", "-c", format!("printf {command}")],
+                "cwd": serde_json::Value::Null,
+                "request_token": token,
+            }))
+            .unwrap();
+            send_frame(
+                stream,
+                &FrameKind::SetMetadata {
+                    request_id,
+                    scope: Scope::Global,
+                    key: SESSION_CREATE_KEY.to_owned(),
+                    value,
+                },
+            )
+            .await;
+            // A correlated command reply is an ordering barrier for the
+            // preceding fire-and-forget metadata write on this connection.
+            let _ = get_server_snapshot(stream, request_id + 1).await;
+        }
+
+        let listed = list_metadata_keys(&mut winner, 29, Scope::Global).await;
+        assert!(
+            listed
+                .iter()
+                .all(|key| !key.starts_with(SESSION_CREATE_RESULT_KEY_PREFIX)),
+            "one-shot create results must not disclose their nonces through LIST_METADATA",
+        );
+
+        assert!(
+            read_metadata_value(
+                &mut loser,
+                29,
+                Scope::Global,
+                &format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{winner_token}"),
+            )
+            .await
+            .is_none(),
+            "a different connection must not read or consume a known nonce result",
+        );
+
+        send_frame(
+            &mut loser,
+            &FrameKind::DeleteMetadata {
+                request_id: 30,
                 scope: Scope::Global,
-                key: SESSION_CREATE_RESULT_KEY.to_owned(),
+                key: format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{winner_token}"),
             },
         )
         .await;
-        let result = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::MetadataValue {
-                request_id: 3,
-                value,
-            } = frame
-            {
-                break value;
-            }
-        };
-        let bytes = result.expect("result key must be present after a successful create");
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("scratch"));
+        let _ = get_server_snapshot(&mut loser, 31).await;
+
+        let won_bytes = read_metadata_value(
+            &mut winner,
+            30,
+            Scope::Global,
+            &format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{winner_token}"),
+        )
+        .await
+        .expect("winner owns its correlated result");
+        let won: serde_json::Value = serde_json::from_slice(&won_bytes).unwrap();
+        assert_eq!(
+            won.get("request_token").and_then(serde_json::Value::as_str),
+            Some(winner_token)
+        );
         assert!(
-            json.get("terminal_id")
-                .and_then(serde_json::Value::as_u64)
-                .is_some(),
-            "result must carry a terminal_id; got {json:?}",
+            read_metadata_value(
+                &mut loser,
+                31,
+                Scope::Global,
+                &format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{loser_token}"),
+            )
+            .await
+            .is_none(),
+        );
+        assert!(
+            read_metadata_value(
+                &mut winner,
+                32,
+                Scope::Global,
+                &format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{winner_token}"),
+            )
+            .await
+            .is_none(),
         );
     });
 }

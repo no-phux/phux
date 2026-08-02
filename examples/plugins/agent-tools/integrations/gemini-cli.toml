@@ -3,7 +3,7 @@ id = "gemini-cli"
 display_name = "Gemini CLI"
 kind = "terminal-agent"
 description = "Gemini CLI running as a terminal-native coding assistant."
-package_version = "0.1.0"
+package_version = "0.2.0"
 package_status = "public"
 first_party = true
 capabilities = ["terminal-control", "code-editing", "human-question"]
@@ -21,6 +21,8 @@ default_session = "agent-bench-gemini-cli"
 mode = "native-or-phux"
 native_env = "PHUX_GEMINI_SESSION_ID"
 restore = "external-cli"
+resume_args = ["--resume", "${PHUX_AGENT_SESSION_ID}"]
+fresh_args = ["--session-id", "${PHUX_AGENT_SESSION_ID}"]
 
 # phux-r82.11: launch through the agent wrapper so the pane self-declares
 # a `phux.agent/v1` record (ADR-0040) — name + kind — instead of the

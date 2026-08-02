@@ -1288,6 +1288,7 @@ mod tests {
             term: None,
             satellite: Some(phux_protocol::ids::SatelliteHost::new("build-box")),
             owner_terminal: None,
+            agent_session: None,
         }
     }
 

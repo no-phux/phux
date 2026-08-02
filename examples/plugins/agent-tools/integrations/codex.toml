@@ -3,7 +3,7 @@ id = "codex"
 display_name = "Codex"
 kind = "terminal-agent"
 description = "OpenAI Codex CLI running inside a phux-managed terminal."
-package_version = "0.1.0"
+package_version = "0.2.0"
 package_status = "public"
 first_party = true
 capabilities = ["terminal-control", "code-editing", "human-question"]
@@ -21,6 +21,10 @@ default_session = "agent-bench-codex"
 mode = "native-or-phux"
 native_env = "PHUX_CODEX_SESSION_ID"
 restore = "external-cli"
+# Codex has no documented caller-supplied fresh interactive thread id. Setting
+# PHUX_CODEX_SESSION_ID explicitly resumes and persists an existing UUID/name;
+# a plain fresh Codex launch therefore remains non-restorable.
+resume_args = ["resume", "${PHUX_AGENT_SESSION_ID}"]
 
 # phux-r82.11: launch through the agent wrapper so the pane self-declares
 # a `phux.agent/v1` record (ADR-0040) — name + kind — instead of the

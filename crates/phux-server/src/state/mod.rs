@@ -33,7 +33,7 @@
 //! every section in this module is sync and finite — we never `.await`
 //! while holding it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -238,6 +238,13 @@ pub struct ServerState {
     /// nothing beyond per-key size limits (currently un-enforced; the
     /// SPEC §11.L3 recommended 256 KiB cap is a follow-up).
     metadata: MetadataStore,
+    /// Nonce-bearing session-create result keys owned by each connection.
+    ///
+    /// Results are one-shot and connection-scoped even though their transport
+    /// uses Global L3 metadata. Tracking ownership lets disconnect cleanup
+    /// remove abandoned results, while the per-client cap bounds a connected
+    /// client that submits creates without reading replies.
+    session_create_results: HashMap<ClientId, VecDeque<String>>,
     /// Per-client cache of the negotiated [`LayerSet`] from HELLO (SPEC
     /// §6.2). The dispatcher consults this before emitting any L3
     /// frame; non-L3 consumers MUST NOT see `METADATA_CHANGED` (SPEC
@@ -578,6 +585,50 @@ mod tests {
         assert_eq!(s.new_client_id(), ClientId(1));
         assert_eq!(s.new_client_id(), ClientId(2));
         assert_eq!(s.new_client_id(), ClientId(3));
+    }
+
+    #[test]
+    fn one_shot_session_create_results_are_bounded_and_connection_scoped() {
+        let mut state = ServerState::new();
+        let client_id = state.new_client_id();
+        let scope = Scope::Global;
+        for index in 0..257 {
+            let key = format!("phux.session.created/v1/{index}");
+            let _ = state.metadata_set(&scope, &key, vec![b'x']);
+            state.track_session_create_result(client_id, key);
+        }
+
+        assert!(
+            state
+                .metadata()
+                .get(&scope, "phux.session.created/v1/0")
+                .is_none(),
+            "the oldest unread result must be evicted at the cap",
+        );
+        assert_eq!(
+            state
+                .session_create_results
+                .get(&client_id)
+                .map(VecDeque::len),
+            Some(256),
+        );
+
+        state.consume_session_create_result("phux.session.created/v1/1");
+        assert!(
+            state
+                .metadata()
+                .get(&scope, "phux.session.created/v1/1")
+                .is_none(),
+        );
+        state.detach(client_id);
+        assert!(
+            state
+                .metadata()
+                .get(&scope, "phux.session.created/v1/256")
+                .is_none(),
+            "disconnect cleanup must remove abandoned one-shot results",
+        );
+        assert!(!state.session_create_results.contains_key(&client_id));
     }
 
     #[test]

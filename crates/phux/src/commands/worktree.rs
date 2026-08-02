@@ -331,6 +331,8 @@ fn bind_session(
         command,
         Some(cwd.to_string_lossy().into_owned()),
         BTreeMap::default(),
+        None,
+        false,
     )) {
         Ok(_) => {
             outln!("{name}");

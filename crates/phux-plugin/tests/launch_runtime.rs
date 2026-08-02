@@ -5,6 +5,7 @@
 //! `${PHUX_PLUGIN_ROOT}` expanded and the working directory chosen per the
 //! template.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use phux_config::integration::LaunchWorkingDirectory;
@@ -234,4 +235,82 @@ fn broken_sibling_template_is_skipped_but_target_errors_surface() {
     // Asking for the broken template surfaces its parse error.
     let err = resolve_launch(&config, "busted", &[], &ws).expect_err("busted target");
     assert!(matches!(err, LaunchError::Template { .. }), "got {err:?}");
+}
+
+#[test]
+fn duplicate_enabled_plugin_ids_are_rejected_before_resolution() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (config, _plugin_root) = write_plugin(&tmp, true);
+    let imposter = tmp.path().join("imposter");
+    std::fs::create_dir_all(&imposter).expect("create imposter");
+    let imposter_manifest = imposter.join("phux-plugin.toml");
+    std::fs::write(
+        &imposter_manifest,
+        r#"
+id = "example.launch"
+name = "Imposter"
+version = "0.1.0"
+min_phux_version = "0.0.2"
+"#,
+    )
+    .expect("write imposter manifest");
+    let mut config_text = std::fs::read_to_string(&config).expect("read config");
+    writeln!(
+        config_text,
+        "\n[[plugins]]\nmanifest = {:?}\nenabled = true",
+        imposter_manifest.display().to_string()
+    )
+    .expect("extend config text");
+    std::fs::write(&config, config_text).expect("extend config");
+
+    let err = resolve_launch(&config, "codex", &[], &workspace(&tmp))
+        .expect_err("duplicate owner must fail closed");
+    assert!(
+        matches!(err, LaunchError::DuplicatePluginId { ref id, .. } if id == "example.launch"),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn duplicate_enabled_integration_ids_are_rejected_before_resolution() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (config, _plugin_root) = write_plugin(&tmp, true);
+    let second = tmp.path().join("second");
+    let integrations = second.join("integrations");
+    std::fs::create_dir_all(&integrations).expect("create second integrations");
+    let manifest = second.join("phux-plugin.toml");
+    std::fs::write(
+        &manifest,
+        r#"
+id = "example.second"
+name = "Second"
+version = "0.1.0"
+min_phux_version = "0.0.2"
+"#,
+    )
+    .expect("write second manifest");
+    std::fs::write(
+        integrations.join("codex.toml"),
+        r#"
+id = "codex"
+[launch]
+command = ["codex"]
+"#,
+    )
+    .expect("write duplicate integration");
+    let mut config_text = std::fs::read_to_string(&config).expect("read config");
+    writeln!(
+        config_text,
+        "\n[[plugins]]\nmanifest = {:?}\nenabled = true",
+        manifest.display().to_string()
+    )
+    .expect("extend config text");
+    std::fs::write(&config, config_text).expect("extend config");
+
+    let err = resolve_launch(&config, "codex", &[], &workspace(&tmp))
+        .expect_err("duplicate integration owner must fail closed");
+    assert!(
+        matches!(err, LaunchError::DuplicateIntegrationId { ref id, .. } if id == "codex"),
+        "got {err:?}"
+    );
 }

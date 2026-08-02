@@ -2,6 +2,7 @@ mod config;
 mod detect;
 mod model;
 mod record;
+mod session;
 mod shim;
 
 use std::path::{Path, PathBuf};
@@ -22,6 +23,10 @@ use self::record::{run_agent_clear, run_agent_set};
 // the pipelined per-pane `phux.agent/v1` index and the pane formatter.
 pub(crate) use self::model::format_terminal;
 pub(crate) use self::record::fetch_agent_index;
+pub(crate) use self::session::{
+    AgentSessionRecord, PreparedAgentSession, fetch_record_index, persist_record, prepare,
+    prepare_for_launch,
+};
 
 #[derive(Debug, clap::Subcommand)]
 pub(crate) enum AgentAction {

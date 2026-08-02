@@ -97,6 +97,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0063](./0063-ephemeral-server-lifetime.md) | Ephemeral server lifetime | Accepted (an opt-in exit condition alongside the last-pane self-exit of [0003](./0003-server-process-model.md); survives re-exec via [0032](./0032-graceful-server-upgrade.md)) |
 | [0064](./0064-playback-as-a-pane.md) | Playback as a pane | Accepted (supersedes the "shipping a player" rejection in [0060](./0060-self-contained-session-recording.md) for the pane-shaped case only; takes no wire under [0061](./0061-capabilities-add-versions-break.md) and fits the pane with [0062](./0062-headless-resize-and-window-size-policy.md)) |
 | [0065](./0065-one-cli-grammar.md) | One CLI grammar | Accepted |
+| [0066](./0066-native-agent-session-restore.md) | Native agent-session restore | Accepted (bridges [0040](./0040-agent-identity-metadata.md), [0042](./0042-launch-executor.md), and workspace archives through bounded L3 provenance; adds no wire under [0061](./0061-capabilities-add-versions-break.md)) |
 
 ## When to write an ADR
 

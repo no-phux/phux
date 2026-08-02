@@ -271,9 +271,15 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
 - **`phux launch INTEGRATION [--list|--print] [--target TARGET
   [--split horizontal|vertical] [--ratio R]] [-c CWD] [--json] [--socket P]
   [-- ARGS...]`** — resolve an enabled plugin integration and spawn it through
-  its identity wrapper. `--list` inventories integrations; `--print`/`--dry-run`
-  resolves argv without a server; `--target` places the launched pane beside an
-  exact local pane. Successful `--json` launch shape is in §4.13.
+  its identity wrapper. A template may declare bounded native fresh/resume argv
+  through a dedicated `PHUX_*_SESSION_ID` environment name; the identity is one
+  opaque, non-option argv element and cannot become executable or evaluator
+  source. Fixed plugin-owned interpreter wrappers remain valid. Launch
+  atomically publishes and confirms the exact Terminal-scoped resume record
+  before succeeding. `--list` inventories integrations;
+  `--print`/`--dry-run` resolves the same final argv without a server;
+  `--target` places the launched pane beside an exact local pane. Successful
+  `--json` launch shape is in §4.13.
 - **`phux spawn [--satellite NAME] [--target TARGET [--split horizontal|vertical]
   [--ratio R]] [-c CWD] [-- COMMAND...] [--json] [--socket P]`** — spawn a
   terminal without attaching (`SPAWN_TERMINAL`). With `--target`, the new pane
@@ -322,11 +328,14 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   creating a session (`phux new -c <worktree>`) or mapping existing sessions and
   panes back to repo paths.
 - **`phux workspace save [--socket P] [--output PATH]`** — capture the running
-  phux workspace as a typed JSON archive. With no `--output`, the archive is
-  printed to stdout. This contacts the server but does not attach or resize.
+  phux workspace as a typed JSON archive. Native agent sessions established by
+  `phux launch` are copied from their exact Terminal into archive schema 2.
+  With no `--output`, the archive is printed to stdout. This contacts the
+  server but does not attach or resize.
 - **`phux workspace restore ARCHIVE [--socket P]`** — recreate sessions missing
-  from a saved archive. Restore starts new processes; it does not claim to
-  resurrect the original PTYs.
+  from a saved archive. A saved native agent identity is resumed only after the
+  current enabled integration resolves to the same owning plugin. Restore
+  starts new processes; it does not claim to resurrect the original PTYs.
 - **`phux satellite <list|add|remove> [--json]`** — manage the hub-side
   federation satellite registry. This never contacts a running server and never
   opens a satellite transport; it only edits `[[satellites]]` in local config.
@@ -350,7 +359,8 @@ session verb. Per
 the session lifecycle verbs were removed from L1 and decompose into substrate
 primitives plus L3 metadata: `new` is `SPAWN_TERMINAL` plus an L3 metadata
 write on the `phux.session.create/v1` key (the assigned identity is read back
-via `phux.session.created/v1`), and rename is an L3 metadata SET on the
+via a nonce-correlated `phux.session.created/v1/<request_token>` one-shot
+result), and rename is an L3 metadata SET on the
 `phux.session.name/v1` key. Grouping conventions are owned by
 [`../spec/L3.md`](../spec/L3.md). The user-facing UX of `new` is unchanged; the
 divergence is on the wire, where the migration to this decomposition is tracked
@@ -728,7 +738,7 @@ in git/plugin/provider territory rather than the terminal substrate.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "sessions": [
     {
       "name": "agent-bench-codex",
@@ -743,6 +753,11 @@ in git/plugin/provider territory rather than the terminal substrate.
               "title": "codex",
               "cwd": "/repo",
               "command": null,
+              "agent_session": {
+                "plugin_id": "com.phux.agent-tools",
+                "integration_id": "codex",
+                "native_id": "019c2f31-77d2-7a93-8931-47d27b46ceda"
+              },
               "cols": 120,
               "rows": 40
             }
@@ -756,9 +771,14 @@ in git/plugin/provider territory rather than the terminal substrate.
 
 `command` is nullable because process argv is not always known. Plugin-authored
 archives may fill it, and `workspace restore` uses it when present; otherwise it
-starts the default shell in the saved cwd when available. Existing session names
-are skipped, and restore prints a summary JSON document with `restored` and
-`skipped_existing` arrays.
+starts the default shell in the saved cwd when available. `agent_session` is
+also nullable. When present, it is inert provenance, not executable input:
+restore re-resolves the current integration, requires the same `plugin_id`, and
+builds structured resume argv from the current template. It never replays
+archived argv as resume authority. Existing session names are skipped, and
+restore prints a schema-2 summary JSON document with `restored` and
+`skipped_existing` arrays. Schema-1 archives remain readable and retain their
+fresh-process behavior.
 
 Restored sessions are fresh PTYs. The archive preserves window/pane metadata and
 split-layout shape for inspection and future replay, but the current restore
@@ -839,8 +859,9 @@ Stable codes include `invalid_selector`, `selector_miss`,
 
 ### 4.13 `phux launch --json`
 
-A successful launch returns the resolved integration identity, final argv, and
-new local terminal id:
+A successful launch returns the resolved integration identity, the final argv
+actually spawned (including a generated fresh identity or explicit resume
+identity when its template declares one), and the new local terminal id:
 
 ```json
 {
@@ -854,9 +875,10 @@ new local terminal id:
 
 `phux launch --list --json` instead returns
 `{ "schema_version": 1, "integrations": [...] }`; `--print --json` returns the
-resolved `cwd`, `working_directory`, and `argv` without spawning. Placement does
-not add a second result shape: `--target`, `--split`, and `--ratio` affect the
-persisted topology while the launch JSON remains the object above.
+resolved `cwd`, `working_directory`, and the same prepared `argv` without
+spawning. Placement does not add a second result shape: `--target`, `--split`,
+and `--ratio` affect the persisted topology while the launch JSON remains the
+object above.
 
 ### 4.14 `phux rec --json`
 

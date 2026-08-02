@@ -1127,6 +1127,7 @@ where
                 term,
                 satellite,
                 owner_terminal,
+                agent_session,
             } => {
                 handle_spawn_terminal(
                     &state,
@@ -1140,6 +1141,7 @@ where
                         term,
                         satellite,
                         owner_terminal,
+                        agent_session,
                     },
                     &out_tx,
                     &root_token,
@@ -1242,8 +1244,15 @@ pub(crate) async fn handle_get_metadata(
     key: &str,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
-    let (value, speaks_l3) =
-        state.with(|s| (s.metadata().get(scope, key), s.client_speaks_l3(client_id)));
+    let nonce_result = is_reserved_session_create_result(scope, key);
+    let (value, speaks_l3) = state.with(|s| {
+        let authorized = !nonce_result || s.owns_session_create_result(client_id, key);
+        (
+            authorized.then(|| s.metadata().get(scope, key)).flatten(),
+            s.client_speaks_l3(client_id),
+        )
+    });
+    let one_shot = value.is_some() && nonce_result;
     debug!(
         ?client_id,
         request_id,
@@ -1272,6 +1281,8 @@ pub(crate) async fn handle_get_metadata(
             ?client_id,
             request_id, "METADATA_VALUE send dropped: writer gone"
         );
+    } else if one_shot {
+        state.with_mut(|s| s.consume_session_create_result(key));
     }
 }
 
@@ -1282,11 +1293,155 @@ struct SessionCreateRequest {
     cwd: Option<String>,
     #[serde(default)]
     env: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    agent_session: Option<Vec<u8>>,
+    #[serde(default)]
+    request_token: Option<String>,
 }
 
 /// Parse the typed JSON body of a `SESSION_CREATE_KEY` write.
 fn parse_session_create_request(value: &[u8]) -> Option<SessionCreateRequest> {
     serde_json::from_slice(value).ok()
+}
+
+fn valid_session_create_token(token: &str) -> bool {
+    token.len() == 36
+        && token.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+fn is_reserved_session_create_result(scope: &phux_protocol::wire::frame::Scope, key: &str) -> bool {
+    matches!(scope, phux_protocol::wire::frame::Scope::Global)
+        && key.starts_with(phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX)
+}
+
+fn handle_session_create_metadata(
+    state: &SharedState,
+    client_id: ClientId,
+    request_id: u32,
+    value: &[u8],
+    root_token: &tokio_util::sync::CancellationToken,
+) {
+    use phux_protocol::wire::frame::{
+        MAX_AGENT_SESSION_RECORD_BYTES, SESSION_CREATE_RESULT_KEY,
+        SESSION_CREATE_RESULT_KEY_PREFIX, Scope,
+    };
+
+    let Some(SessionCreateRequest {
+        agent_session,
+        name,
+        command,
+        cwd,
+        env,
+        request_token,
+    }) = parse_session_create_request(value)
+    else {
+        warn!(
+            ?client_id,
+            request_id,
+            "SET_METADATA(session-create): malformed JSON value (want {{name, command?, cwd?, env?, request_token?, agent_session?}}); ignoring",
+        );
+        return;
+    };
+    if agent_session
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.len() > MAX_AGENT_SESSION_RECORD_BYTES)
+    {
+        warn!(
+            ?client_id,
+            request_id, "SET_METADATA(session-create): invalid agent session record size; ignoring"
+        );
+        return;
+    }
+    if request_token
+        .as_deref()
+        .is_some_and(|token| !valid_session_create_token(token))
+    {
+        warn!(
+            ?client_id,
+            request_id, "SET_METADATA(session-create): invalid request token; ignoring"
+        );
+        return;
+    }
+    let result_key = request_token.as_ref().map_or_else(
+        || SESSION_CREATE_RESULT_KEY.to_owned(),
+        |token| format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{token}"),
+    );
+    if request_token.is_some() && state.with(|s| s.session_create_result_is_pending(&result_key)) {
+        warn!(
+            ?client_id,
+            request_id,
+            "SET_METADATA(session-create): request token already has a pending result; ignoring"
+        );
+        return;
+    }
+    let outcome = crate::runtime::commands::create_named_session(
+        state,
+        &name,
+        command,
+        cwd.as_deref(),
+        env,
+        agent_session,
+        root_token,
+    );
+    if let Ok(wire) = &outcome {
+        // A nonce-bearing client gets a one-shot, request-specific result key.
+        // Legacy requests retain the original global key.
+        let payload = serde_json::json!({
+            "name": name,
+            "terminal_id": wire.local_id(),
+            "request_token": request_token,
+        });
+        if let Ok(bytes) = serde_json::to_vec(&payload) {
+            // `result_key` was reserved above before the synchronous create.
+            state.with_mut(|s| {
+                let _ = s.metadata_set(&Scope::Global, &result_key, bytes);
+                if request_token.is_some() {
+                    s.track_session_create_result(client_id, result_key);
+                }
+            });
+        }
+    }
+    debug!(
+        ?client_id,
+        request_id,
+        %name,
+        ok = outcome.is_ok(),
+        "SET_METADATA(session-create): create attempted",
+    );
+}
+/// Reject writes into a local Terminal namespace after its owner is gone.
+///
+/// Satellite scopes stay hub-owned metadata until that pre-existing routing
+/// contract is migrated.
+fn reject_unknown_local_terminal_scope(
+    state: &SharedState,
+    client_id: ClientId,
+    request_id: u32,
+    scope: &phux_protocol::wire::frame::Scope,
+    key: &str,
+) -> bool {
+    use phux_protocol::wire::frame::Scope;
+
+    let Scope::Terminal(terminal @ phux_protocol::ids::TerminalId::Local { .. }) = scope else {
+        return false;
+    };
+    if state.with(|s| s.terminal_from_wire(terminal)).is_some() {
+        return false;
+    }
+    warn!(
+        ?client_id,
+        request_id,
+        ?terminal,
+        %key,
+        "SET_METADATA: unknown terminal scope; ignoring",
+    );
+    true
 }
 
 pub(crate) fn handle_set_metadata(
@@ -1298,63 +1453,48 @@ pub(crate) fn handle_set_metadata(
     value: Vec<u8>,
     root_token: &tokio_util::sync::CancellationToken,
 ) {
-    use phux_protocol::wire::frame::{SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, Scope};
+    use phux_protocol::wire::frame::{
+        MAX_AGENT_SESSION_RECORD_BYTES, SESSION_CREATE_KEY, Scope, TERMINAL_AGENT_SESSION_KEY,
+    };
     debug!(?client_id, request_id, ?scope, %key, "SET_METADATA");
+    if is_reserved_session_create_result(scope, key) {
+        warn!(
+            ?client_id,
+            request_id, "SET_METADATA: reserved session-create result key; ignoring"
+        );
+        return;
+    }
+    // Terminal scope is an ownership address, not an arbitrary namespace.
+    if reject_unknown_local_terminal_scope(state, client_id, request_id, scope, key) {
+        return;
+    }
+    if key == TERMINAL_AGENT_SESSION_KEY
+        && (!matches!(
+            scope,
+            Scope::Terminal(phux_protocol::ids::TerminalId::Local { .. })
+        ) || value.is_empty()
+            || value.len() > MAX_AGENT_SESSION_RECORD_BYTES)
+    {
+        warn!(
+            ?client_id,
+            request_id,
+            ?scope,
+            value_len = value.len(),
+            "SET_METADATA(agent-session): want a local Terminal scope and 1..=4096 bytes; ignoring",
+        );
+        return;
+    }
     // v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027): a create-without-
     // attach is a `SET_METADATA` write of the conventional
     // `SESSION_CREATE_KEY` under `Scope::Global`, replacing the removed
-    // `CREATE_SESSION` verb. The value is a UTF-8 JSON object
-    // `{ name, command?, cwd?, env? }`. The server seeds the session + pane;
-    // the caller reads the seed-pane id back via `GET_STATE` (SET_METADATA
-    // has no reply frame). A malformed value or a duplicate name is a silent
-    // no-op (logged), matching the fire-and-forget shape of metadata writes.
+    // `CREATE_SESSION` verb. Its UTF-8 JSON object may carry
+    // `{ name, command?, cwd?, env?, request_token?, agent_session? }`.
+    // The server seeds the session + pane; a nonce-bearing caller reads its exact
+    // key because SET_METADATA has no reply frame. A malformed value or a
+    // duplicate name is a silent no-op (logged), matching the fire-and-forget
+    // shape of metadata writes.
     if key == SESSION_CREATE_KEY && matches!(scope, Scope::Global) {
-        match parse_session_create_request(&value) {
-            Some(SessionCreateRequest {
-                name,
-                command,
-                cwd,
-                env,
-            }) => {
-                let outcome = crate::runtime::commands::create_named_session(
-                    state,
-                    &name,
-                    command,
-                    cwd.as_deref(),
-                    env,
-                    root_token,
-                );
-                // Publish the result under the conventional result key so the
-                // caller can read the seed-pane id back (SET_METADATA has no
-                // reply frame). On failure we leave the result key untouched;
-                // the client surfaces "did not register" from its snapshot.
-                if let Ok(wire) = &outcome {
-                    let payload = serde_json::json!({
-                        "name": name,
-                        "terminal_id": wire.local_id(),
-                    });
-                    if let Ok(bytes) = serde_json::to_vec(&payload) {
-                        let _ = state.with_mut(|s| {
-                            s.metadata_set(&Scope::Global, SESSION_CREATE_RESULT_KEY, bytes)
-                        });
-                    }
-                }
-                debug!(
-                    ?client_id,
-                    request_id,
-                    %name,
-                    ok = outcome.is_ok(),
-                    "SET_METADATA(session-create): create attempted",
-                );
-            }
-            None => {
-                warn!(
-                    ?client_id,
-                    request_id,
-                    "SET_METADATA(session-create): malformed JSON value (want {{name, command?, cwd?, env?}}); ignoring",
-                );
-            }
-        }
+        handle_session_create_metadata(state, client_id, request_id, &value, root_token);
         return;
     }
     // v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027): a session rename is a
@@ -1429,6 +1569,13 @@ pub(crate) fn handle_delete_metadata(
     key: &str,
 ) {
     debug!(?client_id, request_id, ?scope, %key, "DELETE_METADATA");
+    if is_reserved_session_create_result(scope, key) {
+        warn!(
+            ?client_id,
+            request_id, "DELETE_METADATA: reserved session-create result key; ignoring"
+        );
+        return;
+    }
     let delivered = state.with_mut(|s| {
         // ADR-0046 §E: deleting the record withdraws any human declaration,
         // so the detector resumes ownership of this Terminal.
@@ -1458,8 +1605,13 @@ pub(crate) async fn handle_list_metadata(
     scope: &phux_protocol::wire::frame::Scope,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
-    let (keys, speaks_l3) =
+    let (mut keys, speaks_l3) =
         state.with(|s| (s.metadata().list(scope), s.client_speaks_l3(client_id)));
+    if matches!(scope, phux_protocol::wire::frame::Scope::Global) {
+        keys.retain(|key| {
+            !key.starts_with(phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX)
+        });
+    }
     debug!(
         ?client_id,
         request_id,
@@ -1493,6 +1645,13 @@ pub(crate) fn handle_subscribe_metadata(
     scope: phux_protocol::wire::frame::Scope,
     key: String,
 ) {
+    if is_reserved_session_create_result(&scope, &key) {
+        warn!(
+            ?client_id,
+            "SUBSCRIBE_METADATA: reserved session-create result key; ignoring"
+        );
+        return;
+    }
     state.with_mut(|s| {
         if !s.client_speaks_l3(client_id) {
             // SPEC §16.4: out-of-tier traffic from a non-L3 consumer.
@@ -1626,6 +1785,7 @@ pub(crate) fn broadcast_event(
 /// sender.
 pub(crate) async fn writer_task<W: FrameWriter>(
     mut writer: W,
+
     mut rx: tokio::sync::mpsc::Receiver<Outbound>,
     client_id: ClientId,
 ) {
@@ -1640,6 +1800,155 @@ pub(crate) async fn writer_task<W: FrameWriter>(
         }
     }
     debug!(?client_id, "writer task exiting (channel closed)");
+}
+#[cfg(test)]
+mod terminal_metadata_scope_tests {
+    use phux_protocol::ids::TerminalId as WireTerminalId;
+    use phux_protocol::wire::frame::Scope;
+    use tokio_util::sync::CancellationToken;
+
+    use super::handle_set_metadata;
+    use crate::state::{ClientId, SharedState};
+
+    #[test]
+    fn terminal_metadata_cannot_outlive_or_target_a_missing_terminal() {
+        let state = SharedState::new();
+        let (_session, _window, pane) = state.with_mut(|s| s.seed_session("scope-test"));
+        let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
+        let scope = Scope::Terminal(wire);
+        let token = CancellationToken::new();
+
+        handle_set_metadata(
+            &state,
+            ClientId(1),
+            1,
+            &scope,
+            "phux.test/v1",
+            b"live".to_vec(),
+            &token,
+        );
+        assert_eq!(
+            state.with(|s| s.metadata().get(&scope, "phux.test/v1")),
+            Some(b"live".to_vec())
+        );
+
+        for (request_id, invalid) in [(10, Vec::new()), (11, vec![b'x'; 4097])] {
+            handle_set_metadata(
+                &state,
+                ClientId(1),
+                request_id,
+                &scope,
+                phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY,
+                invalid,
+                &token,
+            );
+            assert!(
+                state
+                    .with(|s| {
+                        s.metadata().get(
+                            &scope,
+                            phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY,
+                        )
+                    })
+                    .is_none(),
+                "invalid reserved agent-session metadata must not be stored",
+            );
+        }
+
+        state.with_mut(|s| s.reap_terminal(pane));
+        handle_set_metadata(
+            &state,
+            ClientId(1),
+            2,
+            &scope,
+            "phux.test/v1",
+            b"orphan".to_vec(),
+            &token,
+        );
+        assert!(
+            state
+                .with(|s| s.metadata().get(&scope, "phux.test/v1"))
+                .is_none(),
+            "reaped Terminal metadata is deleted and a stale id cannot recreate it"
+        );
+
+        let missing = Scope::Terminal(WireTerminalId::local(u32::MAX));
+        handle_set_metadata(
+            &state,
+            ClientId(1),
+            3,
+            &missing,
+            "phux.test/v1",
+            b"missing".to_vec(),
+            &token,
+        );
+        assert!(
+            state
+                .with(|s| s.metadata().get(&missing, "phux.test/v1"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ordinary_metadata_cannot_write_the_owner_only_create_result_namespace() {
+        let state = SharedState::new();
+        let token = CancellationToken::new();
+        let reserved_key = format!(
+            "{}11111111-1111-4111-8111-111111111111",
+            phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX,
+        );
+        handle_set_metadata(
+            &state,
+            ClientId(2),
+            4,
+            &Scope::Global,
+            &reserved_key,
+            b"forged".to_vec(),
+            &token,
+        );
+        assert!(
+            state
+                .with(|s| s.metadata().get(&Scope::Global, &reserved_key))
+                .is_none(),
+            "the owner-only result namespace must reject ordinary metadata writes",
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pending_session_create_token_cannot_be_reused_by_another_connection() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let state = SharedState::new();
+                let root_token = CancellationToken::new();
+                let request_token = "11111111-1111-4111-8111-111111111111";
+                for (client_id, request_id, name) in
+                    [(ClientId(1), 1, "first"), (ClientId(2), 2, "collision")]
+                {
+                    let value = serde_json::to_vec(&serde_json::json!({
+                        "name": name,
+                        "request_token": request_token,
+                    }))
+                    .expect("request JSON");
+                    handle_set_metadata(
+                        &state,
+                        client_id,
+                        request_id,
+                        &Scope::Global,
+                        phux_protocol::wire::frame::SESSION_CREATE_KEY,
+                        value,
+                        &root_token,
+                    );
+                }
+
+                assert!(state.with(|s| s.session_by_name("first").is_some()));
+                assert!(
+                    state.with(|s| s.session_by_name("collision").is_none()),
+                    "a duplicate pending nonce must not create a session whose result cannot be correlated",
+                );
+                root_token.cancel();
+            })
+            .await;
+    }
 }
 
 #[cfg(test)]

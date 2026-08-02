@@ -26,13 +26,45 @@ pub(crate) fn seed_session_with_actor(
     history_limit: u32,
     root_token: &CancellationToken,
 ) -> Result<phux_core::ids::TerminalId, crate::terminal_actor::TerminalActorError> {
+    seed_session_with_actor_and_metadata(state, name, history_limit, root_token, None)
+}
+
+fn seed_session_with_actor_and_metadata(
+    state: &SharedState,
+    name: &str,
+    history_limit: u32,
+    root_token: &CancellationToken,
+    agent_session: Option<Vec<u8>>,
+) -> Result<phux_core::ids::TerminalId, crate::terminal_actor::TerminalActorError> {
     use phux_core::ids::TerminalId;
-    let terminal: TerminalId = state.with_mut(|s| s.seed_session(name).2);
+    let terminal: TerminalId = state.with_mut(|s| {
+        let terminal = s.seed_session(name).2;
+        if let Some(value) = agent_session {
+            let wire = s.intern_terminal_wire(terminal);
+            s.metadata_set(
+                &phux_protocol::wire::frame::Scope::Terminal(wire),
+                phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY,
+                value,
+            );
+        }
+        terminal
+    });
     // Default 80x24 — same as `phux_core::Pane::new`'s default dims.
     // Real resize wiring lands with VIEWPORT_RESIZE (phux-4hp).
     let terminal_token = root_token.child_token();
-    let bundle =
-        TerminalActor::build_with_token(80, 24, None, history_limit, terminal_token.clone())?;
+    let bundle = match TerminalActor::build_with_token(
+        80,
+        24,
+        None,
+        history_limit,
+        terminal_token.clone(),
+    ) {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            state.with_mut(|s| s.reap_terminal(terminal));
+            return Err(err);
+        }
+    };
     let crate::terminal_actor::TerminalActorBundle {
         actor,
         handle,
@@ -84,10 +116,30 @@ pub fn seed_session_with_pty(
 pub fn seed_session_with_pty_and_colors(
     state: &SharedState,
     name: &str,
+    cmd: portable_pty::CommandBuilder,
+    history_limit: u32,
+    root_token: &CancellationToken,
+    default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
+) -> Result<phux_core::ids::TerminalId, crate::terminal_actor::TerminalActorError> {
+    seed_session_with_pty_and_colors_and_metadata(
+        state,
+        name,
+        cmd,
+        history_limit,
+        root_token,
+        default_colors,
+        None,
+    )
+}
+
+fn seed_session_with_pty_and_colors_and_metadata(
+    state: &SharedState,
+    name: &str,
     mut cmd: portable_pty::CommandBuilder,
     history_limit: u32,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
+    agent_session: Option<Vec<u8>>,
 ) -> Result<phux_core::ids::TerminalId, crate::terminal_actor::TerminalActorError> {
     use phux_core::ids::TerminalId;
     // phux-p4vp: capture the spawn-time working directory before `cmd`
@@ -97,27 +149,33 @@ pub fn seed_session_with_pty_and_colors(
     let terminal: TerminalId = state.with_mut(|s| {
         let terminal = s.seed_session(name).2;
         stamp_spawn_cwd(s, terminal, spawn_cwd);
-        // phux-w7mj: intern the pane's wire id pre-spawn and inject it into
-        // the child's environment as PHUX_TERMINAL_ID so an in-pane process
-        // (e.g. the agent-record wrapper) self-targets with zero config.
-        // Interning is idempotent — `spawn_terminal_actor` below returns the
-        // same id.
-        crate::terminal_actor::apply_terminal_id(&mut cmd, &s.intern_terminal_wire(terminal));
-        // phux-cufw: the id names WHICH pane; the socket names WHICH
-        // server. Inject both so an in-pane `phux` hits this server even
-        // off the default socket path.
+        let wire = s.intern_terminal_wire(terminal);
+        crate::terminal_actor::apply_terminal_id(&mut cmd, &wire);
         crate::terminal_actor::apply_server_socket(&mut cmd, s.server_socket_path());
+        if let Some(value) = agent_session {
+            s.metadata_set(
+                &phux_protocol::wire::frame::Scope::Terminal(wire),
+                phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY,
+                value,
+            );
+        }
         terminal
     });
     let terminal_token = root_token.child_token();
-    let bundle = TerminalActor::build_with_token_and_colors(
+    let bundle = match TerminalActor::build_with_token_and_colors(
         80,
         24,
         Some(cmd),
         history_limit,
         terminal_token.clone(),
         default_colors,
-    )?;
+    ) {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            state.with_mut(|s| s.reap_terminal(terminal));
+            return Err(err);
+        }
+    };
     let crate::terminal_actor::TerminalActorBundle {
         mut actor,
         handle,
@@ -177,6 +235,7 @@ pub fn spawn_pane_with_pty(
         history_limit,
         root_token,
         None,
+        None,
     )
 }
 
@@ -198,6 +257,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     history_limit: u32,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
+    agent_session: Option<Vec<u8>>,
 ) -> Result<Option<phux_core::ids::TerminalId>, crate::terminal_actor::TerminalActorError> {
     use phux_core::ids::TerminalId;
     // phux-p4vp: same spawn-time cwd capture as `seed_session_with_pty`.
@@ -208,26 +268,35 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
             SpawnOwnership::Terminal(owner) => s.add_pane_to_terminal_owner(owner)?,
         };
         stamp_spawn_cwd(s, terminal, spawn_cwd);
-        // phux-w7mj: inject the pane's own local wire id as PHUX_TERMINAL_ID
-        // (see `seed_session_with_pty_and_colors`). Idempotent interning —
-        // `spawn_terminal_actor` below returns the same id.
-        crate::terminal_actor::apply_terminal_id(&mut cmd, &s.intern_terminal_wire(terminal));
-        // phux-cufw: pair the pane id with the server's own socket path
-        // (see `seed_session_with_pty_and_colors`).
+        let wire_terminal = s.intern_terminal_wire(terminal);
+        crate::terminal_actor::apply_terminal_id(&mut cmd, &wire_terminal);
         crate::terminal_actor::apply_server_socket(&mut cmd, s.server_socket_path());
+        if let Some(value) = agent_session {
+            s.metadata_set(
+                &phux_protocol::wire::frame::Scope::Terminal(wire_terminal),
+                phux_protocol::wire::frame::TERMINAL_AGENT_SESSION_KEY,
+                value,
+            );
+        }
         Some(terminal)
     }) else {
         return Ok(None);
     };
     let terminal_token = root_token.child_token();
-    let bundle = TerminalActor::build_with_token_and_colors(
+    let bundle = match TerminalActor::build_with_token_and_colors(
         80,
         24,
         Some(cmd),
         history_limit,
         terminal_token.clone(),
         default_colors,
-    )?;
+    ) {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            state.with_mut(|s| s.reap_terminal(terminal));
+            return Err(err);
+        }
+    };
     let crate::terminal_actor::TerminalActorBundle {
         mut actor,
         handle,
@@ -1454,6 +1523,7 @@ pub(crate) fn create_named_session(
     command: Option<Vec<String>>,
     cwd: Option<&str>,
     env: std::collections::BTreeMap<String, String>,
+    agent_session: Option<Vec<u8>>,
     root_token: &CancellationToken,
 ) -> Result<phux_protocol::ids::TerminalId, String> {
     if state.with(|s| s.session_by_name(name).is_some()) {
@@ -1498,9 +1568,17 @@ pub(crate) fn create_named_session(
             seed_cmd.env(key, value);
         }
         crate::terminal_actor::apply_term(&mut seed_cmd, &term);
-        seed_session_with_pty(state, name, seed_cmd, history_limit, root_token)
+        seed_session_with_pty_and_colors_and_metadata(
+            state,
+            name,
+            seed_cmd,
+            history_limit,
+            root_token,
+            None,
+            agent_session,
+        )
     } else {
-        seed_session_with_actor(state, name, history_limit, root_token)
+        seed_session_with_actor_and_metadata(state, name, history_limit, root_token, agent_session)
     };
 
     match seed_result {

@@ -196,6 +196,14 @@ pub const SESSION_CREATE_KEY: &str = "phux.session.create/v1";
 /// / ADR-0027).
 pub const SESSION_CREATE_RESULT_KEY: &str = "phux.session.created/v1";
 
+/// Prefix for one-shot, nonce-correlated session-create result keys.
+///
+/// New clients include a UUID `request_token` in [`SESSION_CREATE_KEY`]'s
+/// JSON value, then read `"{SESSION_CREATE_RESULT_KEY_PREFIX}{request_token}"`.
+/// The server consumes this ephemeral Global value on the first GET. The
+/// legacy uncorrelated [`SESSION_CREATE_RESULT_KEY`] remains for old clients.
+pub const SESSION_CREATE_RESULT_KEY_PREFIX: &str = "phux.session.created/v1/";
+
 /// Conventional L3 metadata key holding a Terminal's freeform string tags
 /// (ADR-0027 decision point 4, `phux-p0yq`).
 ///
@@ -238,6 +246,15 @@ pub const TERMINAL_LINK_KEY: &str = "phux.link/v1";
 /// the fallback when the key is absent. Set via `SET_METADATA`, cleared via
 /// `DELETE_METADATA`, observed via `GET_METADATA`/`SUBSCRIBE_METADATA`.
 pub const TERMINAL_AGENT_KEY: &str = "phux.agent/v1";
+
+/// Conventional Terminal-scoped provenance for provider-native session resume.
+///
+/// Value: bounded UTF-8 JSON `{plugin_id, integration_id, native_id}` owned by
+/// ADR-0066. `SPAWN_TERMINAL.agent_session` may install these opaque bytes
+/// atomically with a local spawn; ordinary L3 reads and writes use this key.
+pub const TERMINAL_AGENT_SESSION_KEY: &str = "phux.agent-session/v1";
+/// Maximum encoded `phux.agent-session/v1` record accepted by server mutations.
+pub const MAX_AGENT_SESSION_RECORD_BYTES: usize = 4 * 1024;
 
 /// Conventional L3 metadata key acting as the config-reload doorbell for
 /// attached consumers (phux-foz.5).
@@ -2074,6 +2091,11 @@ pub enum FrameKind {
         /// the legacy attached-client / most-recent-session policy. Encoded as
         /// additive optional field id 8.
         owner_terminal: Option<TerminalId>,
+        /// Opaque [`TERMINAL_AGENT_SESSION_KEY`] bytes to install atomically on
+        /// the new local Terminal before it becomes visible to other clients.
+        /// Additive optional field id 9; old servers ignore it, after which a
+        /// new launcher still performs its ordinary SET/GET confirmation.
+        agent_session: Option<Vec<u8>>,
     },
 
     /// `TERMINAL_SPAWNED` — server reply to a prior `SpawnTerminal`
@@ -2530,6 +2552,7 @@ impl FrameKind {
                 term,
                 satellite,
                 owner_terminal,
+                agent_session,
             } => {
                 enc.write_field_with(field::spawn_terminal::REQUEST_ID, |e| {
                     e.write_u32_be(*request_id);
@@ -2561,6 +2584,9 @@ impl FrameKind {
                     enc.write_field_with(field::spawn_terminal::OWNER_TERMINAL, |e| {
                         encode_terminal_id(owner, e);
                     });
+                }
+                if let Some(value) = agent_session {
+                    enc.write_field(field::spawn_terminal::AGENT_SESSION, value);
                 }
             }
             Self::TerminalSpawned { request_id, result } => {

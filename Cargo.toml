@@ -125,6 +125,13 @@ qrcode = { version = "0.14", default-features = false }
 # wrapper to count rows, which would drift from the renderer.
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+# Provider-native agent restoration needs a caller-chosen UUID before spawn:
+# Claude Code and Gemini both expose documented `--session-id` fresh-session
+# flags, and replay the same value through `--resume`. `uuid` supplies the
+# OS-random RFC 4122 v4 generation and formatting; it is already present in
+# Cargo.lock transitively, so this adds no package and avoids a collision-prone
+# timestamp/PID identifier.
+uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
