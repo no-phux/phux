@@ -394,14 +394,20 @@ fn same_session(
     let session = session_for(snapshot, first).ok_or_else(|| {
         SpatialError::new(
             "unknown_terminal_session",
-            format!("cannot determine the session containing {first:?}"),
+            format!(
+                "cannot determine the session containing {}",
+                crate::selector::format_terminal_id(first)
+            ),
         )
     })?;
     for terminal in &terminals[1..] {
         let other = session_for(snapshot, terminal).ok_or_else(|| {
             SpatialError::new(
                 "unknown_terminal_session",
-                format!("cannot determine the session containing {terminal:?}"),
+                format!(
+                    "cannot determine the session containing {}",
+                    crate::selector::format_terminal_id(terminal)
+                ),
             )
         })?;
         if other != session {

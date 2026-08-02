@@ -124,12 +124,16 @@ pub(crate) fn run_kill(target: &str, socket: Option<PathBuf>) -> ExitCode {
             {
                 Ok(CommandResult::Ok) => {}
                 Ok(CommandResult::Error { message, .. }) => {
-                    eprintln!("phux: kill refused for {terminal_id:?}: {message}");
+                    eprintln!(
+                        "phux: kill refused for {}: {message}",
+                        crate::selector::format_terminal_id(&terminal_id)
+                    );
                     refused = true;
                 }
                 Ok(other) => {
                     eprintln!(
-                        "phux: {terminal_id:?}: {}",
+                        "phux: {}: {}",
+                        crate::selector::format_terminal_id(&terminal_id),
                         phux_client::explain::explain_unexpected("kill", &other)
                     );
                     refused = true;
@@ -139,7 +143,10 @@ pub(crate) fn run_kill(target: &str, socket: Option<PathBuf>) -> ExitCode {
                 // Terminals are already gone, so this is success, not failure.
                 Err(AttachError::Disconnected) => break,
                 Err(err) => {
-                    eprintln!("phux: kill failed for {terminal_id:?}: {err}");
+                    eprintln!(
+                        "phux: kill failed for {}: {err}",
+                        crate::selector::format_terminal_id(&terminal_id)
+                    );
                     refused = true;
                 }
             }
