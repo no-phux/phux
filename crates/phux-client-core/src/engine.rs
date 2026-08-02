@@ -129,7 +129,14 @@ impl EngineEffectBuffer {
 ///
 /// Bootstrap and live payloads are borrowed directly from decoded protocol
 /// frames. Implementations own their replica allocation and must append all
-/// synchronous side effects to the supplied reusable buffer.
+/// synchronous side effects to the supplied reusable buffer. Bootstrap
+/// `Send` and `Damage` effects are suppressed because replay is not live PTY
+/// input and publication emits one full damage; bootstrap `Status` and `Job`
+/// effects are forwarded. All successful live effects are forwarded.
+///
+/// An error may have partially mutated the replica. The kernel therefore
+/// retires that exact generation immediately and never calls the adapter with
+/// the same object again; adapters need not provide transactional rollback.
 ///
 /// [`SessionKernel`]: crate::session::SessionKernel
 pub trait EngineAdapter {

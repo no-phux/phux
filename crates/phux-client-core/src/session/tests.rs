@@ -21,8 +21,10 @@ enum ReadyMode {
 
 #[derive(Debug, thiserror::Error)]
 enum FakeError {
-    #[error("fake adapter only accepts SynthesizedVtRaw")]
+    #[error("fake adapter only accepts synthesized VT profiles")]
     UnsupportedProfile,
+    #[error("fake adapter mutated before failing")]
+    MutatedThenFailed,
 }
 
 struct FakeAdapter {
@@ -32,6 +34,7 @@ struct FakeAdapter {
 struct FakeReplica {
     geometry: CanonicalGeometry,
     transcript: Vec<u8>,
+    finish_effects: bool,
 }
 
 impl EngineAdapter for FakeAdapter {
@@ -43,12 +46,17 @@ impl EngineAdapter for FakeAdapter {
         profile: BootstrapStreamProfile,
         geometry: CanonicalGeometry,
     ) -> Result<Self::Replica, Self::Error> {
-        if !matches!(profile, BootstrapStreamProfile::SynthesizedVtRaw) {
+        if !matches!(
+            profile,
+            BootstrapStreamProfile::SynthesizedVtRaw
+                | BootstrapStreamProfile::SynthesizedVtStateSync
+        ) {
             return Err(FakeError::UnsupportedProfile);
         }
         Ok(FakeReplica {
             geometry,
             transcript: Vec::new(),
+            finish_effects: false,
         })
     }
 
@@ -59,7 +67,21 @@ impl EngineAdapter for FakeAdapter {
         effects: &mut EngineEffectBuffer,
     ) -> Result<BootstrapProgress, Self::Error> {
         replica.transcript.extend_from_slice(payload);
-        effects.push(EngineEffect::Damage(EngineDamage::Full));
+        if payload == b"mutate-then-error" {
+            effects.push(EngineEffect::Damage(EngineDamage::Full));
+            return Err(FakeError::MutatedThenFailed);
+        }
+        if payload == b"bootstrap-effects" {
+            replica.finish_effects = true;
+            effects.push(EngineEffect::Send(EngineSend::PtyWrite(
+                b"suppressed-bootstrap-reply".to_vec(),
+            )));
+            effects.push(EngineEffect::Damage(EngineDamage::Full));
+            effects.push(EngineEffect::Status(EngineStatus::Bell));
+            effects.push(EngineEffect::Job(EngineJob::Wakeup));
+        } else {
+            effects.push(EngineEffect::Damage(EngineDamage::Full));
+        }
         if matches!(self.ready_mode, ReadyMode::ChunkFirst)
             && replica.transcript.ends_with(READY_MARKER)
         {
@@ -72,8 +94,22 @@ impl EngineAdapter for FakeAdapter {
     fn finish_bootstrap(
         &mut self,
         replica: &mut Self::Replica,
-        _effects: &mut EngineEffectBuffer,
+        effects: &mut EngineEffectBuffer,
     ) -> Result<BootstrapProgress, Self::Error> {
+        if replica.transcript.ends_with(b"<FINISH_ERROR>") {
+            replica.transcript.extend_from_slice(b"-mutated");
+            return Err(FakeError::MutatedThenFailed);
+        }
+        if replica.finish_effects {
+            effects.push(EngineEffect::Send(EngineSend::PtyWrite(
+                b"suppressed-finish-reply".to_vec(),
+            )));
+            effects.push(EngineEffect::Damage(EngineDamage::Full));
+            effects.push(EngineEffect::Status(EngineStatus::Title(
+                "bootstrap-finished".to_owned(),
+            )));
+            effects.push(EngineEffect::Job(EngineJob::Wakeup));
+        }
         if !replica.transcript.ends_with(READY_MARKER) {
             return Ok(BootstrapProgress::Pending);
         }
@@ -90,6 +126,10 @@ impl EngineAdapter for FakeAdapter {
         effects: &mut EngineEffectBuffer,
     ) -> Result<(), Self::Error> {
         replica.transcript.extend_from_slice(payload);
+        if payload == b"mutate-then-error" {
+            effects.push(EngineEffect::Damage(EngineDamage::Full));
+            return Err(FakeError::MutatedThenFailed);
+        }
         if payload == b"effects" {
             effects.push(EngineEffect::Send(EngineSend::PtyWrite(b"reply".to_vec())));
             effects.push(EngineEffect::Damage(EngineDamage::Rows {
@@ -131,10 +171,14 @@ fn geometry() -> CanonicalGeometry {
 }
 
 fn kernel(mode: ReadyMode) -> SessionKernel<FakeAdapter> {
-    SessionKernel::new(
-        FakeAdapter { ready_mode: mode },
-        BootstrapProfile::SynthesizedVtRaw,
-    )
+    kernel_with_profile(mode, BootstrapProfile::SynthesizedVtRaw)
+}
+
+fn kernel_with_profile(
+    mode: ReadyMode,
+    profile: BootstrapProfile,
+) -> SessionKernel<FakeAdapter> {
+    SessionKernel::new(FakeAdapter { ready_mode: mode }, profile)
 }
 
 fn begin(
@@ -760,7 +804,7 @@ fn engine_effects_are_drained_after_apply_in_order() {
                 terminal_id: terminal_id.clone(),
                 kind: KernelDamageKind::Rows { first: 2, last: 4 },
             }),
-            KernelEffect::Status(KernelStatus {
+            KernelEffect::Status(KernelStatus::Engine {
                 terminal_id: terminal_id.clone(),
                 status: EngineStatus::Bell,
             }),
@@ -925,4 +969,409 @@ fn effect_buffer_reuses_high_water_capacity() {
     assert_eq!(effects.capacity(), initial_capacity);
     effects.clear();
     assert_eq!(effects.capacity(), initial_capacity);
+}
+
+#[test]
+fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
+    let terminal_id = terminal(11);
+    let stream_id = stream(20);
+    let bootstrap_id = bootstrap(31);
+    let mut kernel = kernel_with_profile(
+        ReadyMode::ChunkFirst,
+        BootstrapProfile::SynthesizedVtStateSync,
+    );
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::BootstrapBegin {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtStateSync,
+                geometry: geometry(),
+                base_seq: 0,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    push_ready_transcript(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        &mut effects,
+    );
+    protocol_ready(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        &mut effects,
+    );
+
+    kernel
+        .update(
+            KernelInput::TerminalOutput {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq: 1,
+                payload: b"state-sync",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert_eq!(
+        effects.as_slice(),
+        &[
+            KernelEffect::Damage(KernelDamage {
+                terminal_id: terminal_id.clone(),
+                kind: KernelDamageKind::Full,
+            }),
+            KernelEffect::Send(KernelSend::FrameAck {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq: 1,
+            }),
+        ]
+    );
+
+    let raw_terminal = terminal(12);
+    let raw_stream = stream(21);
+    let raw_bootstrap = bootstrap(32);
+    let mut raw_kernel = kernel(ReadyMode::ChunkFirst);
+    publish_direct(
+        &mut raw_kernel,
+        &raw_terminal,
+        raw_stream,
+        raw_bootstrap,
+        0,
+        &mut effects,
+    );
+    raw_kernel
+        .update(
+            KernelInput::TerminalOutput {
+                terminal_id: &raw_terminal,
+                stream_id: raw_stream,
+                bootstrap_id: raw_bootstrap,
+                seq: 1,
+                payload: b"raw",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects
+        .as_slice()
+        .iter()
+        .all(|effect| !matches!(effect, KernelEffect::Send(KernelSend::FrameAck { .. }))));
+}
+
+#[test]
+fn mutating_adapter_errors_retire_staging_and_published_replicas() {
+    let mut kernel = kernel(ReadyMode::ProtocolFirst);
+    let mut effects = EffectBuffer::new();
+
+    let chunk_terminal = terminal(13);
+    let chunk_stream = stream(22);
+    let chunk_bootstrap = bootstrap(33);
+    begin(
+        &mut kernel,
+        &chunk_terminal,
+        chunk_stream,
+        chunk_bootstrap,
+        0,
+        &mut effects,
+    );
+    let chunk_error = kernel.update(
+        KernelInput::BootstrapChunk {
+            terminal_id: &chunk_terminal,
+            stream_id: chunk_stream,
+            bootstrap_id: chunk_bootstrap,
+            chunk_seq: 0,
+            payload: b"mutate-then-error",
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        chunk_error,
+        Err(KernelError::Engine(FakeError::MutatedThenFailed))
+    ));
+    assert!(kernel.staging(&chunk_terminal).is_none());
+    assert!(kernel
+        .tombstone(&chunk_terminal, chunk_stream, chunk_bootstrap)
+        .is_some());
+    assert_eq!(
+        effects.as_slice(),
+        &[KernelEffect::Status(KernelStatus::ResyncRequired {
+            terminal_id: chunk_terminal.clone(),
+            stream_id: chunk_stream,
+            bootstrap_id: chunk_bootstrap,
+            reason: TombstoneReason::CodecFailure,
+        })]
+    );
+    let chunk_retry = kernel.update(
+        KernelInput::BootstrapChunk {
+            terminal_id: &chunk_terminal,
+            stream_id: chunk_stream,
+            bootstrap_id: chunk_bootstrap,
+            chunk_seq: 0,
+            payload: b"retry",
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        chunk_retry,
+        Err(KernelError::RetiredGeneration { .. })
+    ));
+
+    let finish_terminal = terminal(14);
+    let finish_stream = stream(23);
+    let finish_bootstrap = bootstrap(34);
+    begin(
+        &mut kernel,
+        &finish_terminal,
+        finish_stream,
+        finish_bootstrap,
+        0,
+        &mut effects,
+    );
+    kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &finish_terminal,
+                stream_id: finish_stream,
+                bootstrap_id: finish_bootstrap,
+                chunk_seq: 0,
+                payload: b"<FINISH_ERROR>",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    let finish_error = kernel.update(
+        KernelInput::BootstrapReady {
+            terminal_id: &finish_terminal,
+            stream_id: finish_stream,
+            bootstrap_id: finish_bootstrap,
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        finish_error,
+        Err(KernelError::Engine(FakeError::MutatedThenFailed))
+    ));
+    assert!(kernel.staging(&finish_terminal).is_none());
+    assert!(kernel
+        .tombstone(&finish_terminal, finish_stream, finish_bootstrap)
+        .is_some());
+    let finish_retry = kernel.update(
+        KernelInput::BootstrapReady {
+            terminal_id: &finish_terminal,
+            stream_id: finish_stream,
+            bootstrap_id: finish_bootstrap,
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        finish_retry,
+        Err(KernelError::RetiredGeneration { .. })
+    ));
+
+    let live_terminal = terminal(15);
+    let live_stream = stream(24);
+    let live_bootstrap = bootstrap(35);
+    publish_direct(
+        &mut kernel,
+        &live_terminal,
+        live_stream,
+        live_bootstrap,
+        0,
+        &mut effects,
+    );
+    let live_error = kernel.update(
+        KernelInput::TerminalOutput {
+            terminal_id: &live_terminal,
+            stream_id: live_stream,
+            bootstrap_id: live_bootstrap,
+            seq: 1,
+            payload: b"mutate-then-error",
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        live_error,
+        Err(KernelError::Engine(FakeError::MutatedThenFailed))
+    ));
+    assert!(kernel.published(&live_terminal).is_none());
+    assert!(kernel
+        .tombstone(&live_terminal, live_stream, live_bootstrap)
+        .is_some());
+    assert_eq!(
+        effects.as_slice(),
+        &[
+            KernelEffect::Status(KernelStatus::ResyncRequired {
+                terminal_id: live_terminal.clone(),
+                stream_id: live_stream,
+                bootstrap_id: live_bootstrap,
+                reason: TombstoneReason::CodecFailure,
+            }),
+            KernelEffect::Damage(KernelDamage {
+                terminal_id: live_terminal.clone(),
+                kind: KernelDamageKind::Removed,
+            }),
+        ]
+    );
+    let live_retry = kernel.update(
+        KernelInput::TerminalOutput {
+            terminal_id: &live_terminal,
+            stream_id: live_stream,
+            bootstrap_id: live_bootstrap,
+            seq: 1,
+            payload: b"retry",
+        },
+        &mut effects,
+    );
+    assert!(matches!(
+        live_retry,
+        Err(KernelError::RetiredGeneration { .. })
+    ));
+}
+
+#[test]
+fn bootstrap_effects_forward_status_and_jobs_but_suppress_send_and_damage() {
+    let terminal_id = terminal(16);
+    let stream_id = stream(25);
+    let bootstrap_id = bootstrap(36);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    begin(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        0,
+        &mut effects,
+    );
+    kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: b"bootstrap-effects",
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert_eq!(
+        effects.as_slice(),
+        &[
+            KernelEffect::Status(KernelStatus::Engine {
+                terminal_id: terminal_id.clone(),
+                status: EngineStatus::Bell,
+            }),
+            KernelEffect::Job(KernelJob {
+                terminal_id: terminal_id.clone(),
+                job: EngineJob::Wakeup,
+            }),
+        ]
+    );
+
+    kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 1,
+                payload: READY_MARKER,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty());
+    protocol_ready(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        &mut effects,
+    );
+    assert_eq!(
+        effects.as_slice(),
+        &[
+            KernelEffect::Status(KernelStatus::Engine {
+                terminal_id: terminal_id.clone(),
+                status: EngineStatus::Title(\"bootstrap-finished\".to_owned()),
+            }),
+            KernelEffect::Job(KernelJob {
+                terminal_id: terminal_id.clone(),
+                job: EngineJob::Wakeup,
+            }),
+            KernelEffect::Damage(KernelDamage {
+                terminal_id,
+                kind: KernelDamageKind::Full,
+            }),
+        ]
+    );
+}
+
+#[test]
+fn replacement_attach_close_flushes_pending_removal_at_barrier() {
+    let terminal_id = terminal(17);
+    let stream_id = stream(26);
+    let bootstrap_id = bootstrap(37);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::AttachStarted {
+                attach_id: 40,
+                terminals: std::slice::from_ref(&terminal_id),
+            },
+            &mut effects,
+        )
+        .unwrap();
+    publish_direct(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        0,
+        &mut effects,
+    );
+    kernel
+        .update(KernelInput::AttachReady { attach_id: 40 }, &mut effects)
+        .unwrap();
+
+    kernel
+        .update(
+            KernelInput::AttachStarted {
+                attach_id: 41,
+                terminals: std::slice::from_ref(&terminal_id),
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(kernel.published(&terminal_id).is_some());
+    kernel
+        .update(
+            KernelInput::TerminalClosed {
+                terminal_id: &terminal_id,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.is_empty());
+    kernel
+        .update(KernelInput::AttachReady { attach_id: 41 }, &mut effects)
+        .unwrap();
+    assert_eq!(
+        effects.as_slice(),
+        &[KernelEffect::Damage(KernelDamage {
+            terminal_id,
+            kind: KernelDamageKind::Removed,
+        })]
+    );
 }

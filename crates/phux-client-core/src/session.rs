@@ -167,6 +167,17 @@ pub enum KernelSend {
         /// One response payload; batching and encoding remain outside.
         bytes: Vec<u8>,
     },
+    /// Acknowledge one successfully applied StateSync live frame.
+    FrameAck {
+        /// Terminal whose reference advanced.
+        terminal_id: TerminalId,
+        /// Logical StateSync subscription.
+        stream_id: StreamId,
+        /// Published replica generation.
+        bootstrap_id: BootstrapId,
+        /// Highest contiguous sequence applied.
+        seq: u64,
+    },
 }
 
 /// Frontend-neutral render invalidation.
@@ -194,13 +205,27 @@ pub enum KernelDamageKind {
     Removed,
 }
 
-/// Frontend-neutral terminal status.
+/// Frontend-neutral session or engine status.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KernelStatus {
-    /// Terminal reporting status.
-    pub terminal_id: TerminalId,
-    /// Engine status payload.
-    pub status: EngineStatus,
+pub enum KernelStatus {
+    /// Status emitted by a terminal engine.
+    Engine {
+        /// Terminal reporting status.
+        terminal_id: TerminalId,
+        /// Engine status payload.
+        status: EngineStatus,
+    },
+    /// The named generation was invalidated and requires a fresh bootstrap.
+    ResyncRequired {
+        /// Terminal requiring replacement.
+        terminal_id: TerminalId,
+        /// Invalid logical subscription.
+        stream_id: StreamId,
+        /// Invalid replica generation.
+        bootstrap_id: BootstrapId,
+        /// Protocol reason recorded in the local tombstone.
+        reason: TombstoneReason,
+    },
 }
 
 /// Cooperative work handed to the host executor.
@@ -575,6 +600,7 @@ impl<R> Default for TerminalState<R> {
 struct AttachParticipant {
     terminal_id: TerminalId,
     resolved: bool,
+    pending_removal: bool,
 }
 
 struct AttachState {
@@ -704,6 +730,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
     }
 
     /// Apply one normalized input and replace `effects` with its declarative result.
+    ///
+    /// An adapter error retires the possibly mutated generation before
+    /// returning and leaves a [`KernelStatus::ResyncRequired`] effect in the
+    /// buffer. The host must execute effects even when this method returns an
+    /// error.
     pub fn update(
         &mut self,
         input: KernelInput<'_>,
@@ -730,6 +761,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 profile,
                 geometry,
                 base_seq,
+                effects,
             ),
             KernelInput::BootstrapChunk {
                 terminal_id,
@@ -737,7 +769,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 bootstrap_id,
                 chunk_seq,
                 payload,
-            } => self.bootstrap_chunk(terminal_id, stream_id, bootstrap_id, chunk_seq, payload),
+            } => self.bootstrap_chunk(
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
+                payload,
+                effects,
+            ),
             KernelInput::BootstrapReady {
                 terminal_id,
                 stream_id,
@@ -821,6 +860,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                     .map(|terminal_id| AttachParticipant {
                         terminal_id,
                         resolved: false,
+                        pending_removal: false,
                     }),
             );
         Ok(())
@@ -860,18 +900,24 @@ impl<E: EngineAdapter> SessionKernel<E> {
 
         attach.released = true;
         for participant in &attach.terminals {
+            if participant.pending_removal {
+                effects.push(KernelEffect::Damage(KernelDamage {
+                    terminal_id: participant.terminal_id.clone(),
+                    kind: KernelDamageKind::Removed,
+                }));
+                continue;
+            }
             if self
                 .terminals
                 .get(&participant.terminal_id)
                 .and_then(|state| state.published.as_ref())
-                .is_none()
+                .is_some()
             {
-                continue;
+                effects.push(KernelEffect::Damage(KernelDamage {
+                    terminal_id: participant.terminal_id.clone(),
+                    kind: KernelDamageKind::Full,
+                }));
             }
-            effects.push(KernelEffect::Damage(KernelDamage {
-                terminal_id: participant.terminal_id.clone(),
-                kind: KernelDamageKind::Full,
-            }));
         }
         Ok(())
     }
@@ -884,6 +930,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         profile: BootstrapStreamProfile,
         geometry: CanonicalGeometry,
         base_seq: u64,
+        effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         if self.closed.contains(terminal_id) {
             return Err(KernelError::ClosedTerminal(terminal_id.clone()));
@@ -932,7 +979,22 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.engine_effects.clear();
         let engine = match self.adapter.start_replica(profile, geometry) {
             Ok(engine) => engine,
-            Err(error) => return Err(KernelError::Engine(error)),
+            Err(error) => {
+                state.retired.insert(
+                    generation,
+                    TombstoneRecord {
+                        reason: TombstoneReason::CodecFailure,
+                        last_valid_seq: base_seq,
+                    },
+                );
+                effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    reason: TombstoneReason::CodecFailure,
+                }));
+                return Err(KernelError::Engine(error));
+            }
         };
         if let Some(old_staging) = state.staging.replace(Staging {
             key: ReplicaKey {
@@ -966,6 +1028,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         bootstrap_id: BootstrapId,
         chunk_seq: u32,
         payload: &[u8],
+        effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
         self.ensure_open(terminal_id)?;
         let generation = GenerationId {
@@ -1011,15 +1074,28 @@ impl<E: EngineAdapter> SessionKernel<E> {
         ) {
             Ok(progress) => progress,
             Err(error) => {
+                let last_valid_seq = staging.base_seq;
                 self.engine_effects.clear();
+                state.staging = None;
+                state.retired.insert(
+                    generation,
+                    TombstoneRecord {
+                        reason: TombstoneReason::CodecFailure,
+                        last_valid_seq,
+                    },
+                );
+                effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    reason: TombstoneReason::CodecFailure,
+                }));
                 return Err(KernelError::Engine(error));
             }
         };
         staging.next_chunk_seq = chunk_seq.checked_add(1);
         staging.engine_ready |= progress.is_ready();
-        let mut captured = std::mem::take(&mut self.engine_effects);
-        captured.clear();
-        self.engine_effects = captured;
+        self.drain_bootstrap_effects(terminal_id, effects);
         Ok(())
     }
 
@@ -1050,8 +1126,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
         if staging.protocol_ready {
             return Err(KernelError::DuplicateProtocolReady);
         }
-        staging.protocol_ready = true;
-
         self.engine_effects.clear();
         let progress = match self
             .adapter
@@ -1059,15 +1133,47 @@ impl<E: EngineAdapter> SessionKernel<E> {
         {
             Ok(progress) => progress,
             Err(error) => {
+                let last_valid_seq = staging.base_seq;
                 self.engine_effects.clear();
+                state.staging = None;
+                state.retired.insert(
+                    generation,
+                    TombstoneRecord {
+                        reason: TombstoneReason::CodecFailure,
+                        last_valid_seq,
+                    },
+                );
+                effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    reason: TombstoneReason::CodecFailure,
+                }));
                 return Err(KernelError::Engine(error));
             }
         };
+        staging.protocol_ready = true;
         staging.engine_ready |= progress.is_ready();
-        let mut captured = std::mem::take(&mut self.engine_effects);
-        captured.clear();
-        self.engine_effects = captured;
-        if !staging.engine_ready {
+        let engine_ready = staging.engine_ready;
+        if !engine_ready {
+            let last_valid_seq = staging.base_seq;
+            state.staging = None;
+            state.retired.insert(
+                generation,
+                TombstoneRecord {
+                    reason: TombstoneReason::CodecFailure,
+                    last_valid_seq,
+                },
+            );
+        }
+        self.drain_bootstrap_effects(terminal_id, effects);
+        if !engine_ready {
+            effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                reason: TombstoneReason::CodecFailure,
+            }));
             return Err(KernelError::EngineNotReady);
         }
 
@@ -1161,11 +1267,38 @@ impl<E: EngineAdapter> SessionKernel<E> {
             self.adapter
                 .apply_output(&mut replica.engine, payload, &mut self.engine_effects)
         {
+            let last_valid_seq = replica.last_seq;
             self.engine_effects.clear();
+            state.published = None;
+            state.retired.insert(
+                generation,
+                TombstoneRecord {
+                    reason: TombstoneReason::CodecFailure,
+                    last_valid_seq,
+                },
+            );
+            let damage_blocked = self.attach_blocks(terminal_id);
+            self.mark_attach_unresolved(terminal_id, damage_blocked);
+            effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                reason: TombstoneReason::CodecFailure,
+            }));
+            if !damage_blocked {
+                effects.push(KernelEffect::Damage(KernelDamage {
+                    terminal_id: terminal_id.clone(),
+                    kind: KernelDamageKind::Removed,
+                }));
+            }
             return Err(KernelError::Engine(error));
         }
         replica.last_seq = seq;
         replica.next_seq = seq.checked_add(1);
+        let acknowledge = matches!(
+            replica.key.profile,
+            BootstrapStreamProfile::SynthesizedVtStateSync
+        );
 
         let damage_allowed = !self.attach_blocks(terminal_id);
         let mut captured = std::mem::take(&mut self.engine_effects);
@@ -1173,7 +1306,44 @@ impl<E: EngineAdapter> SessionKernel<E> {
             self.translate_engine_effect(terminal_id, effect, damage_allowed, effects);
         }
         self.engine_effects = captured;
+        if acknowledge {
+            effects.push(KernelEffect::Send(KernelSend::FrameAck {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                seq,
+            }));
+        }
         Ok(())
+    }
+
+    fn drain_bootstrap_effects(
+        &mut self,
+        terminal_id: &TerminalId,
+        effects: &mut EffectBuffer,
+    ) {
+        let mut captured = std::mem::take(&mut self.engine_effects);
+        for effect in captured.drain() {
+            match effect {
+                // Bootstrap is a replay into a staging engine, never live PTY
+                // input. Replies are suppressed and damage is represented by
+                // the eventual atomic full-replica publication.
+                EngineEffect::Send(_) | EngineEffect::Damage(_) => {}
+                EngineEffect::Status(status) => {
+                    effects.push(KernelEffect::Status(KernelStatus::Engine {
+                        terminal_id: terminal_id.clone(),
+                        status,
+                    }));
+                }
+                EngineEffect::Job(job) => {
+                    effects.push(KernelEffect::Job(KernelJob {
+                        terminal_id: terminal_id.clone(),
+                        job,
+                    }));
+                }
+            }
+        }
+        self.engine_effects = captured;
     }
 
     fn translate_engine_effect(
@@ -1203,7 +1373,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }
             EngineEffect::Damage(_) => {}
             EngineEffect::Status(status) => {
-                effects.push(KernelEffect::Status(KernelStatus {
+                effects.push(KernelEffect::Status(KernelStatus::Engine {
                     terminal_id: terminal_id.clone(),
                     status,
                 }));
@@ -1225,6 +1395,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         record: TombstoneRecord,
         effects: &mut EffectBuffer,
     ) {
+        let damage_blocked = self.attach_blocks(terminal_id);
         let generation = GenerationId {
             stream_id,
             bootstrap_id,
@@ -1244,8 +1415,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .is_some_and(|replica| generation_of(&replica.key) == generation);
         if removed_published {
             state.published = None;
-            self.mark_attach_unresolved(terminal_id);
-            if !self.attach_blocks(terminal_id) {
+            self.mark_attach_unresolved(terminal_id, damage_blocked);
+            if !damage_blocked {
                 effects.push(KernelEffect::Damage(KernelDamage {
                     terminal_id: terminal_id.clone(),
                     kind: KernelDamageKind::Removed,
@@ -1255,13 +1426,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
     }
 
     fn terminal_closed(&mut self, terminal_id: &TerminalId, effects: &mut EffectBuffer) {
+        let damage_blocked = self.attach_blocks(terminal_id);
         let had_published = self
             .terminals
             .remove(terminal_id)
             .is_some_and(|state| state.published.is_some());
         self.closed.insert(terminal_id.clone());
-        self.mark_attach_resolved(terminal_id);
-        if had_published && !self.attach_blocks(terminal_id) {
+        self.mark_attach_closed(terminal_id, had_published && damage_blocked);
+        if had_published && !damage_blocked {
             effects.push(KernelEffect::Damage(KernelDamage {
                 terminal_id: terminal_id.clone(),
                 kind: KernelDamageKind::Removed,
@@ -1318,10 +1490,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 .find(|participant| &participant.terminal_id == terminal_id)
         }) {
             participant.resolved = true;
+            participant.pending_removal = false;
         }
     }
 
-    fn mark_attach_unresolved(&mut self, terminal_id: &TerminalId) {
+    fn mark_attach_unresolved(&mut self, terminal_id: &TerminalId, pending_removal: bool) {
         if let Some(participant) = self.attach.as_mut().and_then(|attach| {
             attach
                 .terminals
@@ -1329,6 +1502,19 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 .find(|participant| &participant.terminal_id == terminal_id)
         }) {
             participant.resolved = false;
+            participant.pending_removal |= pending_removal;
+        }
+    }
+
+    fn mark_attach_closed(&mut self, terminal_id: &TerminalId, pending_removal: bool) {
+        if let Some(participant) = self.attach.as_mut().and_then(|attach| {
+            attach
+                .terminals
+                .iter_mut()
+                .find(|participant| &participant.terminal_id == terminal_id)
+        }) {
+            participant.resolved = true;
+            participant.pending_removal |= pending_removal;
         }
     }
 }
