@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-07-15
+last-reviewed: 2026-08-02
 ---
 
 # Pi integration
@@ -24,8 +24,16 @@ minimum compatible binary is `phux 0.1.0`; check it before loading the package:
 phux --version
 ```
 
-From a checkout of this repository, install the package directory, not the git
-root:
+A trusted checkout of this repository loads its local package automatically
+through [`.pi/settings.json`](../../.pi/settings.json), so a fresh clone has the
+integration without a separate install step. If `@phux/pi` is already configured
+in the user's global Pi settings, the checkout yields to the first global copy
+instead of registering duplicate tools. This lets contributors keep a preferred
+or in-development global checkout while preserving the out-of-box project
+integration for everyone else.
+
+To use this checkout's package in other repositories, install the package
+directory, not the git root:
 
 ```sh
 pi install ./integrations/pi
