@@ -927,12 +927,7 @@ impl RelaySession {
     )]
     pub(crate) fn handle_inbound(&mut self, framed: &[u8]) -> Result<(), String> {
         let frame = FrameKind::decode_with_limits(framed, self.bootstrap_limits)
-            .map_err(|err| {
-                format!(
-                    "satellite {} sent an undecodable frame: {err:?}",
-                    self.host
-                )
-            })?
+            .map_err(|err| format!("satellite {} sent an undecodable frame: {err:?}", self.host))?
             .0;
         match frame {
             FrameKind::CommandResult { request_id, result } => {
@@ -1838,14 +1833,18 @@ mod tests {
         assert_ne!(id_a, id_b, "link-side request ids must be distinct");
 
         // Resolve out of order: the remap must correlate, not FIFO.
-        session.handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id: id_b,
-            result: CommandResult::OkWith(CommandValue::Json("b".to_owned())),
-        })).expect("valid satellite frame");
-        session.handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id: id_a,
-            result: CommandResult::Ok,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::CommandResult {
+                request_id: id_b,
+                result: CommandResult::OkWith(CommandValue::Json("b".to_owned())),
+            }))
+            .expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::CommandResult {
+                request_id: id_a,
+                result: CommandResult::Ok,
+            }))
+            .expect("valid satellite frame");
 
         assert_eq!(rx_a.try_recv().expect("a resolved"), CommandResult::Ok);
         assert_eq!(
@@ -1866,11 +1865,13 @@ mod tests {
         let FrameKind::Command { request_id, .. } = decode(&wire) else {
             panic!("expected COMMAND");
         };
-        session.handle_inbound(&encode(&FrameKind::Error {
-            request_id: Some(request_id),
-            code: ErrorCode::TerminalNotFound,
-            message: "nope".to_owned(),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Error {
+                request_id: Some(request_id),
+                code: ErrorCode::TerminalNotFound,
+                message: "nope".to_owned(),
+            }))
+            .expect("valid satellite frame");
         assert_eq!(
             rx.try_recv().expect("resolved"),
             CommandResult::Error {
@@ -1912,10 +1913,12 @@ mod tests {
         );
         // The satellite answers with its Local id; the consumer sees it
         // re-tagged with this link's host.
-        session.handle_inbound(&encode(&FrameKind::TerminalSpawned {
-            request_id,
-            result: SpawnResult::Ok(TerminalId::local(42)),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalSpawned {
+                request_id,
+                result: SpawnResult::Ok(TerminalId::local(42)),
+            }))
+            .expect("valid satellite frame");
         assert_eq!(
             rx.try_recv().expect("spawn resolved"),
             SpawnResult::Ok(TerminalId::satellite("devbox", 42))
@@ -1931,10 +1934,12 @@ mod tests {
         let FrameKind::SpawnTerminal { request_id, .. } = decode(&wire) else {
             panic!("expected SPAWN_TERMINAL");
         };
-        session.handle_inbound(&encode(&FrameKind::TerminalSpawned {
-            request_id,
-            result: SpawnResult::Ok(TerminalId::satellite("nested", 7)),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalSpawned {
+                request_id,
+                result: SpawnResult::Ok(TerminalId::satellite("nested", 7)),
+            }))
+            .expect("valid satellite frame");
         assert!(matches!(
             rx.try_recv().expect("resolved"),
             SpawnResult::Err(SpawnError::SpawnFailed(_))
@@ -1945,10 +1950,12 @@ mod tests {
         let FrameKind::SpawnTerminal { request_id, .. } = decode(&wire) else {
             panic!("expected SPAWN_TERMINAL");
         };
-        session.handle_inbound(&encode(&FrameKind::TerminalSpawned {
-            request_id,
-            result: SpawnResult::Err(SpawnError::GroupNotFound),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalSpawned {
+                request_id,
+                result: SpawnResult::Err(SpawnError::GroupNotFound),
+            }))
+            .expect("valid satellite frame");
         assert_eq!(
             rx.try_recv().expect("resolved"),
             SpawnResult::Err(SpawnError::GroupNotFound)
@@ -1992,20 +1999,26 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
 
-        session.handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(TerminalId::local(9)),
-            event: AgentEvent::CommandStarted,
-        })).expect("valid satellite frame");
-        session.handle_inbound(&encode(&FrameKind::TerminalOutput {
-            terminal_id: TerminalId::local(9),
-            seq: 42,
-            bytes: bytes::Bytes::from_static(b"hi"),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(TerminalId::local(9)),
+                event: AgentEvent::CommandStarted,
+            }))
+            .expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalOutput {
+                terminal_id: TerminalId::local(9),
+                seq: 42,
+                bytes: bytes::Bytes::from_static(b"hi"),
+            }))
+            .expect("valid satellite frame");
         // A different terminal: nothing must reach the subscriber.
-        session.handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(TerminalId::local(10)),
-            event: AgentEvent::CommandStarted,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(TerminalId::local(10)),
+                event: AgentEvent::CommandStarted,
+            }))
+            .expect("valid satellite frame");
 
         let Outbound::Frame(first) = out_rx.try_recv().expect("event fanned out");
         assert_eq!(
@@ -2031,10 +2044,12 @@ mod tests {
         subscribe(&mut session, 9, ClientId(1), out_tx);
         // ADR-0007: satellites are unaware of each other; a nested
         // Satellite tag must never be re-relayed.
-        session.handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(TerminalId::satellite("nested", 9)),
-            event: AgentEvent::CommandStarted,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(TerminalId::satellite("nested", 9)),
+                event: AgentEvent::CommandStarted,
+            }))
+            .expect("valid satellite frame");
         assert!(out_rx.try_recv().is_err());
     }
 
@@ -2043,10 +2058,12 @@ mod tests {
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
-        session.handle_inbound(&encode(&FrameKind::TerminalClosed {
-            terminal_id: TerminalId::local(9),
-            exit_status: Some(0),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalClosed {
+                terminal_id: TerminalId::local(9),
+                exit_status: Some(0),
+            }))
+            .expect("valid satellite frame");
         let Outbound::Frame(frame) = out_rx.try_recv().expect("closed fanned out");
         assert_eq!(
             frame,
@@ -2056,10 +2073,12 @@ mod tests {
             }
         );
         // Subscription is gone: further frames for id 9 do not fan out.
-        session.handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(TerminalId::local(9)),
-            event: AgentEvent::CommandStarted,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(TerminalId::local(9)),
+                event: AgentEvent::CommandStarted,
+            }))
+            .expect("valid satellite frame");
         assert!(out_rx.try_recv().is_err());
     }
 
@@ -2103,7 +2122,9 @@ mod tests {
             .expect("filler two");
 
         // Snapshot arrives while saturated -> retained, nothing delivered.
-        session.handle_inbound(&encode(&snapshot_frame(9))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&snapshot_frame(9)))
+            .expect("valid satellite frame");
         // Free the mailbox.
         assert!(matches!(
             out_rx.try_recv().expect("filler one drains"),
@@ -2116,7 +2137,9 @@ mod tests {
 
         // A later OUTPUT delta must flush the retained snapshot FIRST and
         // only then ride after it.
-        session.handle_inbound(&encode(&output_frame(9, 1, b"delta"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 1, b"delta")))
+            .expect("valid satellite frame");
 
         let Outbound::Frame(first) = out_rx.try_recv().expect("snapshot delivered");
         assert!(
@@ -2147,8 +2170,12 @@ mod tests {
             .expect("filler");
 
         // Snapshot refused (retained), then a delta while still full.
-        session.handle_inbound(&encode(&snapshot_frame(9))).expect("valid satellite frame");
-        session.handle_inbound(&encode(&output_frame(9, 1, b"delta"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&snapshot_frame(9)))
+            .expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 1, b"delta")))
+            .expect("valid satellite frame");
 
         // Only the filler is queued: neither the snapshot nor the delta
         // reached the consumer (the delta was suppressed, not reordered).
@@ -2187,21 +2214,25 @@ mod tests {
             .expect("filler");
 
         // First snapshot refused and retained.
-        session.handle_inbound(&encode(&FrameKind::TerminalSnapshot {
-            terminal_id: TerminalId::local(9),
-            cols: 80,
-            rows: 24,
-            vt_replay_bytes: b"stale".to_vec(),
-            scrollback_bytes: None,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalSnapshot {
+                terminal_id: TerminalId::local(9),
+                cols: 80,
+                rows: 24,
+                vt_replay_bytes: b"stale".to_vec(),
+                scrollback_bytes: None,
+            }))
+            .expect("valid satellite frame");
         // A fresher snapshot arrives (still full) and must replace it.
-        session.handle_inbound(&encode(&FrameKind::TerminalSnapshot {
-            terminal_id: TerminalId::local(9),
-            cols: 80,
-            rows: 24,
-            vt_replay_bytes: b"fresh".to_vec(),
-            scrollback_bytes: None,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalSnapshot {
+                terminal_id: TerminalId::local(9),
+                cols: 80,
+                rows: 24,
+                vt_replay_bytes: b"fresh".to_vec(),
+                scrollback_bytes: None,
+            }))
+            .expect("valid satellite frame");
         assert!(matches!(
             out_rx.try_recv().expect("filler drains"),
             Outbound::Frame(FrameKind::Detach)
@@ -2234,7 +2265,9 @@ mod tests {
 
         // A attaches and its snapshot lands: A is now streaming (gate Open).
         attach(&mut session, 9, ClientId(1), tx_a);
-        session.handle_inbound(&encode(&snapshot_frame(9))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&snapshot_frame(9)))
+            .expect("valid satellite frame");
         let Outbound::Frame(a_snap) = rx_a.try_recv().expect("A's snapshot");
         assert!(matches!(a_snap, FrameKind::TerminalSnapshot { .. }));
 
@@ -2245,7 +2278,9 @@ mod tests {
         // A's stream produces a delta before B's snapshot arrives. It fans
         // out to both subscribers — A (Open) receives it; B (AwaitingFirst)
         // must have it suppressed.
-        session.handle_inbound(&encode(&output_frame(9, 1, b"a-stream"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 1, b"a-stream")))
+            .expect("valid satellite frame");
         let Outbound::Frame(a_delta) = rx_a.try_recv().expect("A sees the delta");
         assert!(matches!(a_delta, FrameKind::TerminalOutput { seq: 1, .. }));
         assert!(
@@ -2254,7 +2289,9 @@ mod tests {
         );
 
         // B's own snapshot finally lands: it is delivered, opening B's gate.
-        session.handle_inbound(&encode(&snapshot_frame(9))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&snapshot_frame(9)))
+            .expect("valid satellite frame");
         let Outbound::Frame(b_first) = rx_b.try_recv().expect("B's snapshot lands");
         assert!(
             matches!(b_first, FrameKind::TerminalSnapshot { .. }),
@@ -2262,7 +2299,9 @@ mod tests {
         );
 
         // A subsequent delta now rides after B's snapshot, in order.
-        session.handle_inbound(&encode(&output_frame(9, 2, b"after"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 2, b"after")))
+            .expect("valid satellite frame");
         let Outbound::Frame(b_delta) = rx_b.try_recv().expect("B sees the post-snapshot delta");
         assert!(
             matches!(
@@ -2286,17 +2325,21 @@ mod tests {
         attach(&mut session, 9, ClientId(2), tx_b);
 
         // A normal delta is still suppressed while gated...
-        session.handle_inbound(&encode(&output_frame(9, 1, b"suppressed"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 1, b"suppressed")))
+            .expect("valid satellite frame");
         assert!(
             rx_b.try_recv().is_err(),
             "a content delta is suppressed before the snapshot"
         );
 
         // ...but the terminal closing must reach B before it is reaped.
-        session.handle_inbound(&encode(&FrameKind::TerminalClosed {
-            terminal_id: TerminalId::local(9),
-            exit_status: Some(0),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalClosed {
+                terminal_id: TerminalId::local(9),
+                exit_status: Some(0),
+            }))
+            .expect("valid satellite frame");
         let Outbound::Frame(frame) = rx_b.try_recv().expect("close delivered past the gate");
         assert_eq!(
             frame,
@@ -2307,7 +2350,9 @@ mod tests {
             "a gated subscriber must still see TERMINAL_CLOSED"
         );
         // And the subscription is reaped: no further fan-out for the id.
-        session.handle_inbound(&encode(&output_frame(9, 2, b"after-close"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 2, b"after-close")))
+            .expect("valid satellite frame");
         assert!(
             rx_b.try_recv().is_err(),
             "subscription must be reaped on close"
@@ -2322,10 +2367,12 @@ mod tests {
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
-        session.handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(TerminalId::local(9)),
-            event: AgentEvent::CommandStarted,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(TerminalId::local(9)),
+                event: AgentEvent::CommandStarted,
+            }))
+            .expect("valid satellite frame");
         let Outbound::Frame(frame) = out_rx.try_recv().expect("event flows without a snapshot");
         assert_eq!(
             frame,
@@ -2351,10 +2398,12 @@ mod tests {
 
         // 1. Event-only subscribe: gate Open, an EVENT flows immediately.
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
-        session.handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(TerminalId::local(9)),
-            event: AgentEvent::CommandStarted,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(TerminalId::local(9)),
+                event: AgentEvent::CommandStarted,
+            }))
+            .expect("valid satellite frame");
         assert!(
             out_rx.try_recv().is_ok(),
             "the event-only stream must be flowing before the upgrade"
@@ -2365,14 +2414,18 @@ mod tests {
 
         // 3. A content delta arrives before the attach's snapshot. It must now
         //    be suppressed — the upgrade re-gated the stream.
-        session.handle_inbound(&encode(&output_frame(9, 1, b"pre-snapshot"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 1, b"pre-snapshot")))
+            .expect("valid satellite frame");
         assert!(
             out_rx.try_recv().is_err(),
             "the upgrade must gate deltas until its own snapshot (L1 §9.1)"
         );
 
         // 4. The attach's snapshot lands: delivered, re-opening the gate.
-        session.handle_inbound(&encode(&snapshot_frame(9))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&snapshot_frame(9)))
+            .expect("valid satellite frame");
         let Outbound::Frame(first) = out_rx.try_recv().expect("the attach snapshot lands");
         assert!(
             matches!(first, FrameKind::TerminalSnapshot { .. }),
@@ -2380,7 +2433,9 @@ mod tests {
         );
 
         // 5. A subsequent delta now rides after the snapshot, in order.
-        session.handle_inbound(&encode(&output_frame(9, 2, b"post-snapshot"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 2, b"post-snapshot")))
+            .expect("valid satellite frame");
         let Outbound::Frame(delta) = out_rx.try_recv().expect("post-snapshot delta rides");
         assert!(
             matches!(
@@ -2403,10 +2458,12 @@ mod tests {
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
         // A second event-only subscribe for the same client (idempotent).
         subscribe(&mut session, 9, ClientId(1), out_tx);
-        session.handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(TerminalId::local(9)),
-            event: AgentEvent::CommandStarted,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(TerminalId::local(9)),
+                event: AgentEvent::CommandStarted,
+            }))
+            .expect("valid satellite frame");
         assert!(
             out_rx.try_recv().is_ok(),
             "an event-only re-subscribe must not re-gate the flowing stream"
@@ -2425,16 +2482,20 @@ mod tests {
         attach(&mut session, 9, ClientId(2), tx);
 
         // A content delta is suppressed while gated...
-        session.handle_inbound(&encode(&output_frame(9, 1, b"suppressed"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 1, b"suppressed")))
+            .expect("valid satellite frame");
         assert!(
             rx.try_recv().is_err(),
             "a content delta is suppressed before the snapshot"
         );
 
         // ...but a bell rings through, re-tagged, past the gate.
-        session.handle_inbound(&encode(&FrameKind::Bell {
-            terminal_id: TerminalId::local(9),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Bell {
+                terminal_id: TerminalId::local(9),
+            }))
+            .expect("valid satellite frame");
         let Outbound::Frame(frame) = rx.try_recv().expect("bell delivered past the gate");
         assert_eq!(
             frame,
@@ -2446,7 +2507,9 @@ mod tests {
 
         // The gate is still closed: a further delta stays suppressed until the
         // snapshot lands (the bell bypass does not open the gate).
-        session.handle_inbound(&encode(&output_frame(9, 2, b"still-gated"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 2, b"still-gated")))
+            .expect("valid satellite frame");
         assert!(
             rx.try_recv().is_err(),
             "the bell bypass must not open the snapshot gate"
@@ -2499,10 +2562,12 @@ mod tests {
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
         let frames = session.handle_unsubscribe(Unsubscribe::Client(ClientId(1)));
-        session.handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(TerminalId::local(9)),
-            event: AgentEvent::CommandStarted,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(TerminalId::local(9)),
+                event: AgentEvent::CommandStarted,
+            }))
+            .expect("valid satellite frame");
         assert!(out_rx.try_recv().is_err());
         // phux-v45.11 finding 4: the last proxy subscriber left, so the
         // session tells the satellite to stop streaming the terminal.
@@ -2539,10 +2604,12 @@ mod tests {
             frames.is_empty(),
             "satellite-side detach must wait for the last subscriber"
         );
-        session.handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(TerminalId::local(9)),
-            event: AgentEvent::CommandStarted,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(TerminalId::local(9)),
+                event: AgentEvent::CommandStarted,
+            }))
+            .expect("valid satellite frame");
         let Outbound::Frame(_) = rx_b.try_recv().expect("client 2 still fanned out");
         // Now the last subscriber leaves: exactly one detach goes out.
         let frames = session.handle_unsubscribe(Unsubscribe::Terminal {
@@ -2583,11 +2650,13 @@ mod tests {
         );
 
         // The re-attached stream is intact.
-        session.handle_inbound(&encode(&FrameKind::TerminalOutput {
-            terminal_id: TerminalId::local(9),
-            seq: 7,
-            bytes: bytes::Bytes::from_static(b"live"),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalOutput {
+                terminal_id: TerminalId::local(9),
+                seq: 7,
+                bytes: bytes::Bytes::from_static(b"live"),
+            }))
+            .expect("valid satellite frame");
         let Outbound::Frame(frame) = out_rx.try_recv().expect("re-attached stream torn down");
         assert!(matches!(
             frame,
@@ -2692,23 +2761,27 @@ mod tests {
         let FrameKind::Command { request_id, .. } = decode(&wire) else {
             panic!("expected COMMAND");
         };
-        session.handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: "nope".to_owned(),
-            },
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::Error {
+                    code: ErrorCode::TerminalNotFound,
+                    message: "nope".to_owned(),
+                },
+            }))
+            .expect("valid satellite frame");
         assert!(matches!(
             reply_rx.try_recv().expect("resolved"),
             CommandResult::Error { .. }
         ));
         // The rolled-back registration must not fan anything out.
-        session.handle_inbound(&encode(&FrameKind::TerminalOutput {
-            terminal_id: TerminalId::local(9),
-            seq: 1,
-            bytes: bytes::Bytes::from_static(b"leak"),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalOutput {
+                terminal_id: TerminalId::local(9),
+                seq: 1,
+                bytes: bytes::Bytes::from_static(b"leak"),
+            }))
+            .expect("valid satellite frame");
         assert!(out_rx.try_recv().is_err(), "rolled-back subscriber leaked");
     }
 
@@ -2729,10 +2802,12 @@ mod tests {
 
         // B's event-only stream is established and demonstrably Open.
         subscribe(&mut session, 9, ClientId(2), tx_b.clone());
-        session.handle_inbound(&encode(&FrameKind::Event {
-            terminal: Some(TerminalId::local(9)),
-            event: AgentEvent::CommandStarted,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(TerminalId::local(9)),
+                event: AgentEvent::CommandStarted,
+            }))
+            .expect("valid satellite frame");
         assert!(rx_b.try_recv().is_ok(), "B's event stream must be open");
 
         // B upgrades. Keep its request id so the delayed error can arrive
@@ -2762,7 +2837,9 @@ mod tests {
             .expect("B filler one");
         tx_b.try_send(Outbound::Frame(FrameKind::Detach))
             .expect("B filler two");
-        session.handle_inbound(&encode(&snapshot_frame(9))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&snapshot_frame(9)))
+            .expect("valid satellite frame");
         assert!(matches!(
             rx_c.try_recv().expect("C receives its snapshot"),
             Outbound::Frame(FrameKind::TerminalSnapshot { .. })
@@ -2770,11 +2847,13 @@ mod tests {
 
         // The delayed transient error rolls back B's upgrade. It may only
         // undo AwaitingFirst; B's concurrently Retained snapshot must win.
-        session.handle_inbound(&encode(&FrameKind::Error {
-            request_id: Some(request_id),
-            code: ErrorCode::InternalError,
-            message: "transient".to_owned(),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Error {
+                request_id: Some(request_id),
+                code: ErrorCode::InternalError,
+                message: "transient".to_owned(),
+            }))
+            .expect("valid satellite frame");
         assert!(matches!(
             reply_rx_b.try_recv().expect("B's upgrade resolves"),
             CommandResult::Error { .. }
@@ -2791,7 +2870,9 @@ mod tests {
             rx_b.try_recv().expect("B filler two drains"),
             Outbound::Frame(FrameKind::Detach)
         ));
-        session.handle_inbound(&encode(&output_frame(9, 1, b"after-error"))).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&output_frame(9, 1, b"after-error")))
+            .expect("valid satellite frame");
         assert!(matches!(
             rx_b.try_recv().expect("B's retained snapshot flushes"),
             Outbound::Frame(FrameKind::TerminalSnapshot { .. })
@@ -2833,16 +2914,20 @@ mod tests {
         let FrameKind::Command { request_id, .. } = decode(&wire) else {
             panic!("expected COMMAND");
         };
-        session.handle_inbound(&encode(&FrameKind::Error {
-            request_id: Some(request_id),
-            code: ErrorCode::InternalError,
-            message: "transient".to_owned(),
-        })).expect("valid satellite frame");
-        session.handle_inbound(&encode(&FrameKind::TerminalOutput {
-            terminal_id: TerminalId::local(9),
-            seq: 1,
-            bytes: bytes::Bytes::from_static(b"still here"),
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::Error {
+                request_id: Some(request_id),
+                code: ErrorCode::InternalError,
+                message: "transient".to_owned(),
+            }))
+            .expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::TerminalOutput {
+                terminal_id: TerminalId::local(9),
+                seq: 1,
+                bytes: bytes::Bytes::from_static(b"still here"),
+            }))
+            .expect("valid satellite frame");
         assert!(
             out_rx.try_recv().is_ok(),
             "pre-existing subscription must survive the errored re-subscribe"
@@ -2917,10 +3002,12 @@ mod tests {
 
         // A late reply for the pruned id is dropped without touching the
         // still-live command; the live one still resolves (via teardown).
-        session.handle_inbound(&encode(&FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        })).expect("valid satellite frame");
+        session
+            .handle_inbound(&encode(&FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::Ok,
+            }))
+            .expect("valid satellite frame");
         assert!(live_rx.try_recv().is_err(), "live command still pending");
         session.teardown("done");
         assert!(matches!(

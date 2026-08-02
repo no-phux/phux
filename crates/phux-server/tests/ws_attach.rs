@@ -192,12 +192,8 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
         let closed = tokio::time::timeout(HANDSHAKE_DEADLINE, bad_ws.next())
             .await
             .expect("server closes websocket");
-        assert!(matches!(
-            closed,
-            None | Some(Ok(Message::Close(_)))
-        ));
+        assert!(matches!(closed, None | Some(Ok(Message::Close(_)))));
         shutdown.send(()).ok();
         server.await.unwrap().unwrap();
     });
 }
-

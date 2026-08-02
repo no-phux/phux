@@ -1089,10 +1089,10 @@ impl WsReader {
                 frame.len()
             )));
         }
-        let (decoded, rest) =
-            FrameKind::decode_with_limits(&frame, self.bootstrap_limits).map_err(
-                |err| AttachError::Protocol(format!("server sent undecodable frame: {err:?}")),
-            )?;
+        let (decoded, rest) = FrameKind::decode_with_limits(&frame, self.bootstrap_limits)
+            .map_err(|err| {
+                AttachError::Protocol(format!("server sent undecodable frame: {err:?}"))
+            })?;
         if !rest.is_empty() {
             return Err(AttachError::Protocol(
                 "server sent trailing bytes after WebSocket frame".to_owned(),
@@ -1128,10 +1128,8 @@ fn decode_buffered(
         // Body still in flight — wait for more bytes.
         return Ok(None);
     }
-    let (frame, _rest) =
-        FrameKind::decode_with_limits(&buf[..frame_len], bootstrap_limits).map_err(
-            |err| AttachError::Protocol(format!("server sent undecodable frame: {err:?}")),
-        )?;
+    let (frame, _rest) = FrameKind::decode_with_limits(&buf[..frame_len], bootstrap_limits)
+        .map_err(|err| AttachError::Protocol(format!("server sent undecodable frame: {err:?}")))?;
     buf.advance(frame_len);
     Ok(Some(frame))
 }

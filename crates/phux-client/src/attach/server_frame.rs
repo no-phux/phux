@@ -1857,14 +1857,8 @@ mod tests {
         focused: &mut Option<TerminalId>,
         panes: &mut HashMap<TerminalId, PaneSlot>,
     ) -> FrameOutcome {
-        try_drive_layout_frame(
-            frame,
-            pending_layout_request,
-            workspace,
-            focused,
-            panes,
-        )
-        .expect("handle layout frame")
+        try_drive_layout_frame(frame, pending_layout_request, workspace, focused, panes)
+            .expect("handle layout frame")
     }
 
     #[test]
