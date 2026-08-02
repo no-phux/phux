@@ -11,12 +11,10 @@ use std::time::Duration;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
 use phux_protocol::ids::FileUploadId;
-use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_DETACHED,
-    TYPE_ERROR, TYPE_HELLO_OK, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    TYPE_ERROR, TYPE_HELLO_OK, TYPE_TERMINAL_SNAPSHOT,
 };
-use portable_pty::CommandBuilder;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
@@ -24,8 +22,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use crate::common::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, spawn_server,
+    wait_for_socket,
 };
 
 /// Bounded join: every server task must terminate within this window
@@ -326,146 +324,13 @@ fn put_file_round_trip_publishes_only_the_verified_file() {
     });
 }
 
-#[test]
-fn attach_returns_snapshot() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
-
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut stream, &attach_by_name("default")).await;
-
-        let (type_byte, attached) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_ATTACHED);
-        match attached {
-            FrameKind::Attached {
-                snapshot,
-                initial_client_id,
-            } => {
-                assert_eq!(snapshot.sessions.len(), 1);
-                assert_eq!(snapshot.sessions[0].name, "default");
-                assert_eq!(snapshot.windows.len(), 1);
-                assert_eq!(snapshot.panes.len(), 1);
-                assert!(initial_client_id.get() >= 1);
-            }
-            other => panic!("expected Attached, got {other:?}"),
-        }
-
-        let (type_byte, snap) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
-        match snap {
-            FrameKind::TerminalSnapshot {
-                cols,
-                rows,
-                vt_replay_bytes,
-                ..
-            } => {
-                assert_eq!(cols, 80);
-                assert_eq!(rows, 24);
-                // The reset preamble is the load-bearing invariant for
-                // any client-side replay (see `byc_6_1_attach_snapshot`).
-                assert!(
-                    vt_replay_bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"),
-                    "snapshot must carry the reset preamble",
-                );
-            }
-            other => panic!("expected TerminalSnapshot, got {other:?}"),
-        }
-
-        drop(stream);
-        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
-    });
-}
-
-#[test]
-fn input_routes_to_pane() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        // `cat` is the deterministic echo fixture: cooked-mode PTY + a
-        // line-buffered reader. Mirrors `pty_pump` / `input_dispatch`.
-        let cmd = CommandBuilder::new("/bin/cat");
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "default", cmd);
-
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut stream, &attach_by_name("default")).await;
-
-        let (type_byte, attached) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_ATTACHED);
-        let wire_pane_id = match attached {
-            FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.panes.len(), 1);
-                snapshot.panes[0].id.clone()
-            }
-            other => panic!("expected Attached, got {other:?}"),
-        };
-
-        let (type_byte, _snap) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
-
-        send_frame(
-            &mut stream,
-            &FrameKind::InputKey {
-                terminal_id: wire_pane_id.clone(),
-                event: KeyEvent {
-                    action: KeyAction::Press,
-                    key: PhysicalKey::A,
-                    mods: ModSet::empty(),
-                    consumed_mods: ModSet::empty(),
-                    composing: false,
-                    text: Some("a".to_owned()),
-                    unshifted_codepoint: Some('a' as u32),
-                },
-            },
-        )
-        .await;
-        send_frame(
-            &mut stream,
-            &FrameKind::InputKey {
-                terminal_id: wire_pane_id,
-                event: KeyEvent {
-                    action: KeyAction::Press,
-                    key: PhysicalKey::Enter,
-                    mods: ModSet::empty(),
-                    consumed_mods: ModSet::empty(),
-                    composing: false,
-                    text: None,
-                    unshifted_codepoint: None,
-                },
-            },
-        )
-        .await;
-
-        // Accumulate TERMINAL_OUTPUT chunks until `b'a'` shows up or we
-        // hit the wire deadline. The PTY driver echoes the press itself
-        // (cooked mode) and `cat` re-echoes the line on Enter.
-        let mut acc: Vec<u8> = Vec::new();
-        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        while tokio::time::Instant::now() < deadline && !acc.contains(&b'a') {
-            let remaining = deadline - tokio::time::Instant::now();
-            let Ok((tb, frame)) = timeout(remaining, recv_typed(&mut stream)).await else {
-                break;
-            };
-            if tb == TYPE_TERMINAL_OUTPUT
-                && let FrameKind::TerminalOutput { bytes, .. } = frame
-            {
-                acc.extend_from_slice(&bytes);
-            }
-        }
-        assert!(
-            acc.contains(&b'a'),
-            "INPUT_KEY('a') must round-trip through the PTY and appear in TERMINAL_OUTPUT \
-             (got {} bytes: {:?})",
-            acc.len(),
-            acc,
-        );
-
-        drop(stream);
-        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
-    });
-}
+// NOTE: `attach_returns_snapshot` was removed as fully subsumed by
+// `byc_6_1_attach_snapshot::byc_6_1_attach_returns_session_id_and_round_trip_snapshot`
+// (same spawn_server path, identical assertions plus the ADR-0013 round-trip
+// fixed-point check). `input_routes_to_pane` was removed because the
+// cat-echo INPUT_KEY round-trip is asserted at Screen level in
+// `reconnect_scenario` and `multi_client_scenario` (and again in
+// `input_dispatch` / `pty_pump`).
 
 #[test]
 fn detach_clean_shutdown() {

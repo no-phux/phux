@@ -7,9 +7,11 @@
 //! `TERMINAL_SNAPSHOT` followed by resumed `TERMINAL_OUTPUT` once the PTY
 //! produces more bytes.
 //!
-//! This complements `byc_6_3_detach_clean_shutdown.rs`, which proves
-//! server-side cleanup (monotonic `ClientId`, fresh subscription). Here we
-//! add the renderer-level assertion: after reconnect, the **rendered**
+//! This test also absorbs the server-side cleanup assertions that used to
+//! live in `byc_6_3_detach_clean_shutdown.rs` (monotonic `ClientId`
+//! allocation across detach, reset preamble + no scrollback on the
+//! reattach snapshot). On top of those it makes the renderer-level
+//! assertion: after reconnect, the **rendered**
 //! `Screen` observes the post-reconnect echo (proving the snapshot+stream
 //! actually replays into a working VT) — that is the bit a user would
 //! notice if the pane actor were torn down or its subscribers list got
@@ -25,6 +27,10 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
+#![allow(
+    clippy::similar_names,
+    reason = "client_a_id vs client_b_id is the whole point of the folded byc_6_3 assertion"
+)]
 
 mod common;
 
@@ -119,10 +125,19 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
 
         let (type_byte, attached_a) = recv_typed(&mut client_a).await;
         assert_eq!(type_byte, TYPE_ATTACHED, "client A: first frame ATTACHED");
-        let terminal_id_a = match attached_a {
-            FrameKind::Attached { snapshot, .. } => snapshot.panes[0].id.clone(),
+        let (terminal_id_a, client_a_id) = match attached_a {
+            FrameKind::Attached {
+                snapshot,
+                initial_client_id,
+            } => (snapshot.panes[0].id.clone(), initial_client_id.get()),
             other => panic!("client A: expected Attached, got {other:?}"),
         };
+        // Folded from `byc_6_3_detach_clean_shutdown`: the id must be a
+        // real server allocation (monotonic from 1).
+        assert!(
+            client_a_id >= 1,
+            "client A: initial_client_id must be allocated, got {client_a_id}",
+        );
 
         let (type_byte, _snap_a) = recv_typed(&mut client_a).await;
         assert_eq!(
@@ -158,8 +173,8 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         );
 
         // Clean DETACH so the server runs the explicit detach path
-        // (vs. an EOF-only implicit detach, which is also tested in
-        // byc_6_3_detach_clean_shutdown). In-flight TERMINAL_OUTPUT
+        // (vs. an EOF-only implicit detach, which is covered in
+        // eof_detach.rs). In-flight TERMINAL_OUTPUT
         // from the pre-detach 'a' echo may still arrive before the
         // server processes the DETACH command — drain past them.
         send_frame(&mut client_a, &FrameKind::Detach).await;
@@ -193,18 +208,33 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
 
         let (type_byte, attached_b) = recv_typed(&mut client_b).await;
         assert_eq!(type_byte, TYPE_ATTACHED, "client B: first frame ATTACHED");
-        let terminal_id_b = match attached_b {
-            FrameKind::Attached { snapshot, .. } => {
+        let (terminal_id_b, client_b_id) = match attached_b {
+            FrameKind::Attached {
+                snapshot,
+                initial_client_id,
+            } => {
                 assert_eq!(snapshot.sessions.len(), 1, "client B: one session");
                 assert_eq!(snapshot.sessions[0].name, "default");
+                assert_eq!(snapshot.windows.len(), 1, "client B: one window");
                 assert_eq!(snapshot.panes.len(), 1, "client B: one pane (actor alive)");
-                snapshot.panes[0].id.clone()
+                (snapshot.panes[0].id.clone(), initial_client_id.get())
             }
             other => panic!("client B: expected Attached, got {other:?}"),
         };
         assert_eq!(
             terminal_id_a, terminal_id_b,
             "client B: terminal_id is stable across reconnect",
+        );
+
+        // Folded from `byc_6_3_detach_clean_shutdown`: monotonic ClientId
+        // allocation (`ServerState::new_client_id`). If B got the same id
+        // as A, either A's slot wasn't freed on detach (leaked mailbox /
+        // subscriber entry) or the allocator regressed. Either is a bug.
+        assert!(
+            client_b_id > client_a_id,
+            "client B id must be strictly greater than client A id \
+             (a/b = {client_a_id}/{client_b_id}); equal ids would mean detach \
+             didn't drop the slot",
         );
 
         // The fresh TERMINAL_SNAPSHOT is the resume-from-snapshot half
@@ -215,20 +245,28 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
             type_byte, TYPE_TERMINAL_SNAPSHOT,
             "client B: second frame TERMINAL_SNAPSHOT (post-reconnect)",
         );
-        let (snap_cols, snap_rows, snap_bytes) = match snap_b {
+        let (snap_cols, snap_rows, snap_bytes, snap_scrollback) = match snap_b {
             FrameKind::TerminalSnapshot {
                 cols,
                 rows,
                 vt_replay_bytes,
+                scrollback_bytes,
                 ..
-            } => (cols, rows, vt_replay_bytes),
+            } => (cols, rows, vt_replay_bytes, scrollback_bytes),
             other => panic!("client B: expected TerminalSnapshot, got {other:?}"),
         };
         assert_eq!(snap_cols, 80, "client B: snapshot cols");
         assert_eq!(snap_rows, 24, "client B: snapshot rows");
+        // Folded from `byc_6_3_detach_clean_shutdown`: the reattach
+        // snapshot must carry the reset preamble (never empty) and no
+        // scrollback (byc.8 never emits scrollback_bytes).
         assert!(
-            !snap_bytes.is_empty(),
-            "client B: snapshot must replay something (reset preamble at minimum)",
+            snap_bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"),
+            "client B: snapshot must carry the reset preamble",
+        );
+        assert!(
+            snap_scrollback.is_none(),
+            "client B: byc.8 never emits scrollback_bytes",
         );
 
         // Build a fresh Screen from the snapshot bytes — this is what a

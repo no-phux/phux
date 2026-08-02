@@ -1,7 +1,10 @@
 //! End-to-end over the WebSocket transport (phux-486.4/.5): a real client
 //! performs the attach handshake (HELLO -> ATTACH) and receives ATTACHED +
 //! TERMINAL_SNAPSHOT — exactly what the wasm browser client (phux-web) does.
-//! This exercises the full server-side wire path over WebSocket.
+//! This exercises the full server-side wire path over WebSocket. The test
+//! finishes with a typed PING/PONG round-trip on the same connection
+//! (absorbed from the former `ws_transport.rs`), pinning the RFC 6455
+//! handshake + bidirectional frame carriage in one binary.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -143,6 +146,35 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
 
         assert!(got_attached, "server sent ATTACHED");
         assert!(got_snapshot, "server sent TERMINAL_SNAPSHOT");
+
+        // Folded from `ws_transport.rs` (phux-486.4): the same WebSocket
+        // connection must still carry a typed PING/PONG round-trip after
+        // the attach handshake — proving the transport speaks the full
+        // length-prefixed FrameKind wire in both directions, not just the
+        // attach path.
+        let nonce = 0xCAFE_BABE_1234_5678_u64;
+        ws.send(Message::Binary(encode(&FrameKind::Ping { nonce })))
+            .await
+            .unwrap();
+        let pong_deadline = tokio::time::sleep(HANDSHAKE_DEADLINE);
+        tokio::pin!(pong_deadline);
+        let mut got_pong = false;
+        loop {
+            tokio::select! {
+                () = &mut pong_deadline => break,
+                msg = ws.next() => {
+                    let Some(Ok(Message::Binary(data))) = msg else { continue };
+                    let (frame, rest) = FrameKind::decode(&data).expect("decode server frame");
+                    assert!(rest.is_empty(), "decoder left trailing bytes");
+                    if let FrameKind::Pong { nonce: got } = frame {
+                        assert_eq!(got, nonce, "PONG nonce must match PING nonce");
+                        got_pong = true;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(got_pong, "server sent PONG over WebSocket");
 
         drop(ws);
         shutdown.send(()).ok();
