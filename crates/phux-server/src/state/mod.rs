@@ -519,7 +519,9 @@ mod tests {
 
     use super::*;
     use crate::terminal_actor::TerminalHandle;
-    use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
+    use phux_protocol::caps::{
+        BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, LayerSet,
+    };
 
     use phux_protocol::wire::frame::{FrameKind, Scope};
 
@@ -760,13 +762,40 @@ mod tests {
     }
 
     #[test]
-    fn second_attach_for_same_client_returns_already_attached() {
+    fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
+        let mut s = ServerState::new();
+        let (default, _, _) = s.seed_session("default");
+        let _ = s.seed_session("other");
+        let cid = s.new_client_id();
+        s.attach_default_caps(cid, "default", mk_tx()).unwrap();
+        assert_eq!(
+            s.attach_default_caps(cid, "default", mk_tx()).unwrap(),
+            default,
+            "same-connection recovery reuses the live session identity"
+        );
+        let err = s.attach_default_caps(cid, "other", mk_tx()).unwrap_err();
+        assert_eq!(err, AttachError::AlreadyAttached(cid));
+    }
+
+    #[test]
+    fn attach_stores_hello_selected_bootstrap_contract_unchanged() {
         let mut s = ServerState::new();
         let _ = s.seed_session("default");
         let cid = s.new_client_id();
-        s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-        let err = s.attach_default_caps(cid, "default", mk_tx()).unwrap_err();
-        assert_eq!(err, AttachError::AlreadyAttached(cid));
+        let profile = BootstrapProfile::SynthesizedVtStateSync;
+        let limits = BootstrapLimits::new(64 * 1024, 128 * 1024).unwrap();
+        s.attach(
+            cid,
+            "default",
+            mk_tx(),
+            ClientCapabilities::default(),
+            profile,
+            limits,
+        )
+        .unwrap();
+        let attached = &s.attached[&cid];
+        assert_eq!(attached.bootstrap_profile, profile);
+        assert_eq!(attached.bootstrap_limits, limits);
     }
 
     #[test]
@@ -1024,6 +1053,8 @@ mod tests {
             "default",
             mk_tx(),
             ClientCapabilities::new().with_color_support(ColorSupport::Indexed16),
+            BootstrapProfile::SynthesizedVtRaw,
+            BootstrapLimits::default(),
         )
         .unwrap();
         let client = s.attached.get(&cid).unwrap();

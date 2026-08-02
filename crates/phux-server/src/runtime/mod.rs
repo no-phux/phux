@@ -1759,7 +1759,8 @@ mod tests {
                 // haven't replied yet), so only the first request
                 // would land. With the concurrent fan-out all N land
                 // up front.
-                let mut replies: Vec<oneshot::Sender<SnapshotBytes>> = Vec::with_capacity(N);
+                let mut replies: Vec<oneshot::Sender<(SnapshotBytes, u64)>> =
+                    Vec::with_capacity(N);
                 for (i, rx) in snapshot_rxs.iter_mut().enumerate() {
                     let req = tokio::time::timeout(MAILBOX_DEADLINE, rx.recv())
                         .await
@@ -1779,7 +1780,7 @@ mod tests {
                         bytes: format!("snap-{i}").into_bytes(),
                         scrollback: Vec::new(),
                     };
-                    let _ = reply.send(payload);
+                    let _ = reply.send((payload, u64::try_from(i).unwrap()));
                 }
 
                 // Drain one BEGIN/CHUNK/READY sequence per pane.
@@ -1799,6 +1800,14 @@ mod tests {
                     }
                 }
                 assert_eq!((begins, chunks, ready), (N, N, N));
+                let attach_ready = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                    .await
+                    .expect("ATTACH_READY did not arrive")
+                    .expect("out_rx closed before ATTACH_READY");
+                assert!(matches!(
+                    attach_ready,
+                    Outbound::Frame(FrameKind::AttachReady { attach_id: 1 })
+                ));
 
                 attach_task.await.expect("attach task panicked");
             })
@@ -1888,6 +1897,7 @@ mod tests {
 
                 let state_for_task = state.clone();
                 let token = CancellationToken::new();
+                let first_out_tx = out_tx.clone();
                 let attach_task = tokio::task::spawn_local(async move {
                     let mut output_pumps = JoinSet::new();
                     handle_attach(
@@ -1898,9 +1908,9 @@ mod tests {
                         ViewportInfo::new(80, 24),
                         false,
                         0,
-                        &out_tx,
+                        &first_out_tx,
                         ClientCapabilities::default(),
-                        phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw,
+                        phux_protocol::caps::BootstrapProfile::SynthesizedVtStateSync,
                         phux_protocol::caps::BootstrapLimits::default(),
                         &token,
                         &mut output_pumps,
@@ -1924,8 +1934,9 @@ mod tests {
                     .await
                     .expect("ConsumerAttachRequest never arrived — register not wired?")
                     .expect("consumer_attach channel closed");
+                let attached_wire_client_id = attach_req.client_id;
                 assert_eq!(
-                    attach_req.client_id,
+                    attached_wire_client_id,
                     phux_protocol::ids::ClientId::new(
                         u32::try_from(client_id.0).unwrap_or(u32::MAX)
                     ),
@@ -1935,14 +1946,14 @@ mod tests {
                     attach_req.wire_terminal_id >= 1,
                     "wire terminal id assigned"
                 );
-                // phux-3uv: reply `tick_managed: false` so `handle_attach`
-                // keeps its broadcast pump (this stub actor never tick-
-                // emits). The test exercises the register/snapshot/detach
-                // lifecycle, not the emitter-selection branch.
+                let live_gate = attach_req.live_gate.clone();
+                assert!(!*live_gate.borrow(), "live output must wait for ATTACH_READY");
+                // A state-sync consumer is actor-managed; its watch gate is
+                // the only thing preventing pre-ATTACH_READY live deltas.
                 attach_req
                     .reply
                     .send(Ok(crate::terminal_actor::ConsumerAttachOutcome {
-                        tick_managed: false,
+                        tick_managed: true,
                     }))
                     .expect("send attach reply");
 
@@ -1953,15 +1964,140 @@ mod tests {
                     .expect("snapshot channel closed");
                 snap_req
                     .reply
-                    .send(SnapshotBytes {
-                        cols: 80,
-                        rows: 24,
-                        bytes: b"snap".to_vec(),
-                        scrollback: Vec::new(),
-                    })
+                    .send((
+                        SnapshotBytes {
+                            cols: 80,
+                            rows: 24,
+                            bytes: b"snap".to_vec(),
+                            scrollback: Vec::new(),
+                        },
+                        0,
+                    ))
                     .expect("send snapshot reply");
 
                 attach_task.await.expect("attach task panicked");
+                for expected in [
+                    "BOOTSTRAP_BEGIN",
+                    "BOOTSTRAP_CHUNK",
+                    "BOOTSTRAP_READY",
+                    "ATTACH_READY",
+                ] {
+                    let queued = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                        .await
+                        .expect("first bootstrap frame did not arrive")
+                        .expect("outbound closed during first bootstrap");
+                    let Outbound::Frame(frame) = queued;
+                    let observed = match frame {
+                        FrameKind::BootstrapBegin { .. } => "BOOTSTRAP_BEGIN",
+                        FrameKind::BootstrapChunk { .. } => "BOOTSTRAP_CHUNK",
+                        FrameKind::BootstrapReady { .. } => "BOOTSTRAP_READY",
+                        FrameKind::AttachReady { .. } => "ATTACH_READY",
+                        other => panic!("unexpected first-bootstrap frame: {other:?}"),
+                    };
+                    assert_eq!(observed, expected);
+                }
+
+                // A replacement ATTACH to the same session must first retire
+                // the prior actor-side state-sync emitter. It then allocates a
+                // fresh stream/bootstrap generation without allocating a new
+                // server ClientId or detaching the session.
+                let second_state = state.clone();
+                let second_out_tx = out_tx.clone();
+                let second_token = CancellationToken::new();
+                let second_attach = tokio::task::spawn_local(async move {
+                    let mut output_pumps = JoinSet::new();
+                    handle_attach(
+                        &second_state,
+                        client_id,
+                        2,
+                        AttachTarget::ByName("lifecycle".to_owned()),
+                        ViewportInfo::new(80, 24),
+                        false,
+                        0,
+                        &second_out_tx,
+                        ClientCapabilities::default(),
+                        phux_protocol::caps::BootstrapProfile::SynthesizedVtStateSync,
+                        phux_protocol::caps::BootstrapLimits::default(),
+                        &second_token,
+                        &mut output_pumps,
+                    )
+                    .await;
+                });
+                let retired = tokio::time::timeout(MAILBOX_DEADLINE, consumer_detach_rx.recv())
+                    .await
+                    .expect("replacement did not retire the prior consumer")
+                    .expect("consumer detach channel closed");
+                assert_eq!(retired.client_id, attached_wire_client_id);
+                assert!(
+                    out_rx.try_recv().is_err(),
+                    "replacement ATTACHED must wait until prior live emission is retired",
+                );
+                retired.reply.send(()).expect("ack prior consumer retirement");
+
+                let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                    .await
+                    .expect("replacement ATTACHED did not arrive")
+                    .expect("outbound closed before replacement ATTACHED");
+                assert!(matches!(
+                    attached,
+                    Outbound::Frame(FrameKind::Attached { attach_id: 2, .. })
+                ));
+                let replacement =
+                    tokio::time::timeout(MAILBOX_DEADLINE, consumer_attach_rx.recv())
+                        .await
+                        .expect("replacement ConsumerAttachRequest did not arrive")
+                        .expect("consumer attach channel closed");
+                let replacement_gate = replacement.live_gate.clone();
+                assert!(!*replacement_gate.borrow());
+                replacement
+                    .reply
+                    .send(Ok(crate::terminal_actor::ConsumerAttachOutcome {
+                        tick_managed: true,
+                    }))
+                    .expect("ack replacement consumer");
+                let replacement_snapshot =
+                    tokio::time::timeout(MAILBOX_DEADLINE, snapshot_rx.recv())
+                        .await
+                        .expect("replacement snapshot request did not arrive")
+                        .expect("snapshot channel closed");
+                replacement_snapshot
+                    .reply
+                    .send((
+                        SnapshotBytes {
+                            cols: 80,
+                            rows: 24,
+                            bytes: b"replacement".to_vec(),
+                            scrollback: Vec::new(),
+                        },
+                        0,
+                    ))
+                    .expect("send replacement snapshot");
+                for expected in [
+                    "BOOTSTRAP_BEGIN",
+                    "BOOTSTRAP_CHUNK",
+                    "BOOTSTRAP_READY",
+                    "ATTACH_READY",
+                ] {
+                    let queued = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
+                        .await
+                        .expect("replacement bootstrap frame did not arrive")
+                        .expect("outbound closed during replacement bootstrap");
+                    let Outbound::Frame(frame) = queued;
+                    let observed = match frame {
+                        FrameKind::BootstrapBegin { .. } => "BOOTSTRAP_BEGIN",
+                        FrameKind::BootstrapChunk { .. } => "BOOTSTRAP_CHUNK",
+                        FrameKind::BootstrapReady { .. } => "BOOTSTRAP_READY",
+                        FrameKind::AttachReady { .. } => "ATTACH_READY",
+                        other => panic!("unexpected replacement-bootstrap frame: {other:?}"),
+                    };
+                    assert_eq!(observed, expected);
+                }
+                second_attach.await.expect("replacement attach task panicked");
+                assert!(*replacement_gate.borrow());
+                assert!(
+                    *live_gate.borrow(),
+                    "aggregate completion must release live output"
+                );
 
                 // Now tear the client down. The helper must send a
                 // ConsumerDetachRequest for the subscribed pane.
@@ -2045,11 +2181,11 @@ mod tests {
         });
     }
 
-    /// docs/consumers/tui.md §9 (phux-r82.1): a routed `INPUT_FOCUS`
-    /// gained event fires `focus-changed`; a lost event (or a gated
-    /// frame) does not.
+    /// Input authority routes opaque emulator replies byte-for-byte while
+    /// rejecting an unsubscribed client. The same gate still fires the
+    /// focus-changed hook only for an authorized focus-gained event.
     #[test]
-    fn focus_gained_fires_focus_changed_hook_and_lost_does_not() {
+    fn input_authority_routes_terminal_replies_and_focus_hooks() {
         use phux_protocol::input::focus::FocusEvent;
         use tokio::sync::{broadcast, mpsc};
 
@@ -2067,11 +2203,12 @@ mod tests {
 
             // Hand-built handle: only the input channel matters here.
             let (input_tx, _input_rx) = mpsc::channel(8);
+            let (encoded_tx, mut encoded_rx) = mpsc::channel(8);
             let (output_tx, _output_rx_seed) =
                 broadcast::channel::<crate::terminal_actor::PaneOutput>(8);
             let handle = TerminalHandle {
                 input: input_tx,
-                encoded_input: mpsc::channel(8).0,
+                encoded_input: encoded_tx,
                 input_snapshot: tokio::sync::watch::channel(
                     crate::input::InputEncoderSnapshot::default(),
                 )
@@ -2108,6 +2245,19 @@ mod tests {
             state
                 .with_mut(|s| s.attach_default_caps(client_id, "focus", tx))
                 .expect("attach");
+            let reply = bytes::Bytes::from_static(b"\0\x1b[?1;2c\xff");
+            handle_terminal_reply(&state, client_id, &wire_terminal_id, reply.clone());
+            let routed = encoded_rx
+                .try_recv()
+                .expect("authorized terminal reply reaches the PTY byte lane");
+            assert_eq!(routed.bytes, reply, "opaque bytes, including NUL, are exact");
+
+            let stranger = ClientId(4242);
+            handle_terminal_reply(&state, stranger, &wire_terminal_id, reply);
+            assert!(
+                encoded_rx.try_recv().is_err(),
+                "an unsubscribed client cannot inject a terminal reply"
+            );
 
             // Focus gained → hook fires.
             handle_terminal_input(
@@ -2136,7 +2286,6 @@ mod tests {
             );
 
             // Focus gained from a non-attached client is gated → no hook.
-            let stranger = ClientId(4242);
             handle_terminal_input(
                 &state,
                 stranger,

@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use phux_core::ids::{SessionId, TerminalId, WindowId};
 use phux_core::registry::Registry;
 use phux_core::session::Session;
-use phux_protocol::caps::{ClientCapabilities, ColorSupport, Layer, LayerSet};
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, Layer, LayerSet,
+};
 use phux_protocol::ids::{TerminalId as WireTerminalId, WindowId as WireWindowId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use portable_pty::CommandBuilder;
@@ -673,24 +675,28 @@ impl ServerState {
     /// session's currently active pane (if any). Returns a borrow of the
     /// [`Session`] for callers that want to build an `ATTACHED` snapshot.
     ///
-    /// `client_caps` are the capabilities the client advertised in HELLO
-    /// (SPEC §6.1/§6.2).
-    /// Callers that never observed a HELLO (test scaffolding) MAY pass
-    /// [`ClientCapabilities::default`]; the convenience wrapper
-    /// [`Self::attach_default_caps`] does that for them.
+    /// `client_caps`, `bootstrap_profile`, and `bootstrap_limits` are the
+    /// immutable values selected while processing this connection's HELLO.
+    /// Callers without a negotiated connection should use
+    /// [`Self::attach_default_caps`] only for test scaffolding.
     pub fn attach(
         &mut self,
         client_id: ClientId,
         session_name: &str,
         tx: mpsc::Sender<Outbound>,
         client_caps: ClientCapabilities,
+        bootstrap_profile: BootstrapProfile,
+        bootstrap_limits: BootstrapLimits,
     ) -> Result<SessionId, AttachError> {
-        if self.attached.contains_key(&client_id) {
-            return Err(AttachError::AlreadyAttached(client_id));
-        }
         let session_id = self
             .find_session_by_name(session_name)
             .ok_or_else(|| AttachError::UnknownSession(session_name.to_owned()))?;
+        if let Some(existing) = self.attached.get(&client_id) {
+            if existing.session == session_id {
+                return Ok(session_id);
+            }
+            return Err(AttachError::AlreadyAttached(client_id));
+        }
 
         self.attached.insert(
             client_id,
@@ -699,6 +705,8 @@ impl ServerState {
                 session: session_id,
                 tx,
                 client_caps,
+                bootstrap_profile,
+                bootstrap_limits,
                 viewport: None,
                 viewport_seq: 0,
             },
@@ -750,7 +758,14 @@ impl ServerState {
         session_name: &str,
         tx: mpsc::Sender<Outbound>,
     ) -> Result<SessionId, AttachError> {
-        self.attach(client_id, session_name, tx, ClientCapabilities::default())
+        self.attach(
+            client_id,
+            session_name,
+            tx,
+            ClientCapabilities::default(),
+            BootstrapProfile::SynthesizedVtRaw,
+            BootstrapLimits::default(),
+        )
     }
 
     /// Detach `client_id`, removing it from `attached` and from every

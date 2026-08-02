@@ -804,6 +804,8 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
             &mut effects,
         )
         .unwrap();
+    assert!(kernel.prefetch_history(&terminal_id, 0, &mut effects));
+    assert!(!kernel.prefetch_history(&terminal_id, 0, &mut effects));
     kernel
         .update(
             KernelInput::HistoryPage {

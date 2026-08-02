@@ -4,7 +4,12 @@
 //! READY transfer, continuation replay, history retention, and FINISH are all
 //! delegated to libghostty's safe incremental wrapper.
 
-use std::{collections::{HashMap, VecDeque}, marker::PhantomData, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    marker::PhantomData,
+    rc::Rc,
+};
 
 use libghostty_vt::{
     Terminal as GhosttyTerminal, TerminalOptions,
@@ -318,7 +323,7 @@ impl EngineAdapter for GhosttyAdapter {
         let state = match profile {
             BootstrapStreamProfile::SynthesizedVtRaw
             | BootstrapStreamProfile::SynthesizedVtStateSync => {
-                let pty_responses = PtyResponses::default();
+                let pty_responses: PtyResponses = Rc::new(RefCell::new(Vec::new()));
                 let mut terminal = GhosttyTerminal::new(TerminalOptions {
                     cols: geometry.cols,
                     rows: geometry.rows,
@@ -330,6 +335,7 @@ impl EngineAdapter for GhosttyAdapter {
                 })?;
                 ReplicaState::Synthesized {
                     terminal,
+                    protocol_finished: false,
                     pty_responses,
                 }
             }
@@ -341,7 +347,7 @@ impl EngineAdapter for GhosttyAdapter {
                 ReplicaState::Native(NativeReplica {
                     decoder: NativeDecoderState::BeforeReady(decoder),
                     protocol_finished: false,
-                    pty_responses: PtyResponses::default(),
+                    pty_responses: Rc::new(RefCell::new(Vec::new())),
                 })
             }
             _ => return Err(GhosttyEngineError::UnsupportedProfile(profile)),

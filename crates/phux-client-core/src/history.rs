@@ -307,7 +307,9 @@ impl HistoryCache {
                     .min(self.config.request_max_bytes as usize),
             });
         }
-        if self.next_cursor.as_ref() != Some(cursor) {
+        if self.state != HistoryLoadState::Loading
+            || self.next_cursor.as_ref() != Some(cursor)
+        {
             return Err(HistoryCacheError::Gap);
         }
         Ok(HistoryPageCheck::New)
@@ -628,6 +630,8 @@ mod tests {
     fn two_clients_keep_independent_widths_and_tail_policy() {
         let mut first = HistoryCache::new(config(64, 64), Some(cursor(1)), 80);
         let mut second = HistoryCache::new(config(64, 64), Some(cursor(1)), 41);
+        assert_eq!(first.begin_fetch(), Some(cursor(1)));
+        assert_eq!(second.begin_fetch(), Some(cursor(1)));
         let page = first.accept_page(cursor(1), None, b"opaque").unwrap();
         second.accept_page(cursor(1), None, b"opaque").unwrap();
         let anchor = DocumentAnchorId::from_raw(7);
@@ -646,10 +650,13 @@ mod tests {
     #[test]
     fn budget_evicts_unpinned_oldest_never_visible_or_selected() {
         let mut cache = HistoryCache::new(config(8, 8), Some(cursor(1)), 80);
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         let newest = cache.accept_page(cursor(1), Some(cursor(2)), b"1111").unwrap();
+        assert_eq!(cache.begin_fetch(), Some(cursor(2)));
         let oldest = cache.accept_page(cursor(2), Some(cursor(3)), b"2222").unwrap();
         cache.set_visible_pages([oldest.clone()]).unwrap();
         cache.set_selection_pages([oldest.clone()]).unwrap();
+        assert_eq!(cache.begin_fetch(), Some(cursor(3)));
         cache.accept_page(cursor(3), None, b"3333").unwrap();
         assert!(cache.payload(&oldest).is_some());
         assert!(cache.payload(&newest).is_none());
@@ -658,7 +665,9 @@ mod tests {
     #[test]
     fn materialization_budget_drops_only_unpinned_adapter_projection() {
         let mut cache = HistoryCache::new(config(64, 2), Some(cursor(1)), 80);
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         let first = cache.accept_page(cursor(1), Some(cursor(2)), b"one").unwrap();
+        assert_eq!(cache.begin_fetch(), Some(cursor(2)));
         let second = cache.accept_page(cursor(2), None, b"two").unwrap();
         cache.set_visible_pages([second.clone()]).unwrap();
         cache.set_materialized_rows(&second, 2).unwrap();
@@ -680,6 +689,7 @@ mod tests {
     #[test]
     fn pinned_projection_cannot_overrun_row_budget() {
         let mut cache = HistoryCache::new(config(64, 2), Some(cursor(1)), 80);
+        assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         let page = cache.accept_page(cursor(1), None, b"opaque").unwrap();
         cache.set_visible_pages([page.clone()]).unwrap();
         assert_eq!(

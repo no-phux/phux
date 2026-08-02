@@ -21,8 +21,8 @@ use tracing::{debug, error, info, trace, warn};
 use super::input_lane::{InputLaneHandle, RoutedInput};
 use super::{
     STALE_PROBE_TIMEOUT, ServerError, SpawnRequest, handle_attach, handle_command,
-    handle_frame_ack, handle_spawn_terminal, handle_terminal_input, handle_terminal_resize,
-    handle_viewport_resize,
+    handle_frame_ack, handle_spawn_terminal, handle_terminal_input, handle_terminal_reply,
+    handle_terminal_resize, handle_viewport_resize,
 };
 use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState, TerminalInput};
 use crate::terminal_actor::ConsumerDetachRequest;
@@ -33,6 +33,46 @@ struct NegotiatedConnection {
     client_caps: ClientCapabilities,
     profile: BootstrapProfile,
     limits: BootstrapLimits,
+    server_features: ServerFeatureSet,
+}
+
+impl NegotiatedConnection {
+    const fn accepts_terminal_reply(self) -> bool {
+        self.server_features.contains(ServerFeature::TerminalReply)
+    }
+}
+const fn runtime_server_features() -> ServerFeatureSet {
+    ServerFeatureSet::with(&[
+        ServerFeature::AcknowledgedInput,
+        ServerFeature::FileUpload,
+        ServerFeature::TerminalReply,
+    ])
+}
+
+#[cfg(test)]
+mod negotiated_feature_tests {
+    use super::*;
+
+    fn connection(server_features: ServerFeatureSet) -> NegotiatedConnection {
+        NegotiatedConnection {
+            client_caps: ClientCapabilities::default(),
+            profile: BootstrapProfile::SynthesizedVtRaw,
+            limits: BootstrapLimits::default(),
+            server_features,
+        }
+    }
+
+    #[test]
+    fn old_07_without_terminal_reply_bit_rejects_terminal_reply() {
+        assert!(!connection(ServerFeatureSet::new()).accepts_terminal_reply());
+    }
+
+    #[test]
+    fn current_07_advertisement_enables_installed_terminal_reply_route() {
+        let advertised = runtime_server_features();
+        assert!(advertised.contains(ServerFeature::TerminalReply));
+        assert!(connection(advertised).accepts_terminal_reply());
+    }
 }
 
 pub(crate) fn spawn_pane_event_drain(
@@ -990,6 +1030,7 @@ where
                         // preference field.
                         phux_protocol::caps::OutputMode::Raw
                     };
+                let server_features = runtime_server_features();
 
                 // Cache all negotiated state exactly once before any stateful
                 // frame can be processed. Subsequent decoding immediately uses
@@ -999,6 +1040,7 @@ where
                     client_caps: effective_client_caps,
                     profile: selected_profile,
                     limits: bootstrap_limits,
+                    server_features,
                 });
                 state.with_mut(|s| {
                     // SPEC §6.2: cache the negotiated layer set. The L3
@@ -1011,10 +1053,7 @@ where
                     protocol_patch: PROTOCOL_VERSION.patch,
                     server_caps: ServerCapabilities::new()
                         .with_layers(LayerSet::all())
-                        .with_features(ServerFeatureSet::with(&[
-                            ServerFeature::AcknowledgedInput,
-                            ServerFeature::FileUpload,
-                        ])),
+                        .with_features(server_features),
                     server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
                     selected_profile,
                     bootstrap_limits,
@@ -1154,6 +1193,32 @@ where
                     TerminalInput::Paste(event),
                     "INPUT_PASTE",
                 );
+            }
+            FrameKind::InputTerminalReply { terminal_id, bytes } => {
+                let selection =
+                    negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
+                if !selection.accepts_terminal_reply() {
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::UnknownMessageType,
+                            message:
+                                "INPUT_TERMINAL_REPLY was not advertised for this connection"
+                                    .to_owned(),
+                        }))
+                        .await;
+                    abort_output_pumps(
+                        &mut output_pumps,
+                        client_id,
+                        "unnegotiated INPUT_TERMINAL_REPLY",
+                    )
+                    .await;
+                    detach_and_release_consumer_state(&state, client_id);
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
+                    return Ok(());
+                }
+                handle_terminal_reply(&state, client_id, &terminal_id, bytes);
             }
             FrameKind::FrameAck {
                 terminal_id,
@@ -1299,6 +1364,8 @@ where
                 owner_terminal,
                 agent_session,
             } => {
+                let selection =
+                    negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
                 handle_spawn_terminal(
                     &state,
                     client_id,
@@ -1314,6 +1381,8 @@ where
                         agent_session,
                     },
                     &out_tx,
+                    selection.profile,
+                    selection.limits,
                     &root_token,
                 )
                 .await;
@@ -1329,12 +1398,17 @@ where
                 request_id,
                 command,
             } => {
+                let selection =
+                    negotiated.expect("pre-HELLO stateful frames are rejected before dispatch");
                 handle_command(
                     &state,
                     client_id,
                     request_id,
                     command,
                     &out_tx,
+                    selection.client_caps,
+                    selection.profile,
+                    selection.limits,
                     input_lane.as_ref(),
                 )
                 .await;
