@@ -328,6 +328,9 @@ impl App {
     }
 
     fn paint(&self) {
+        if !self.session.render_visible() {
+            return;
+        }
         let grid = self.session.grid();
         // Keep the canvas sized to the grid (handles server-side resizes).
         let w = u32::from(grid.cols) * (self.metrics.cell_w as u32);

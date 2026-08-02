@@ -2,11 +2,13 @@
 
 use bytes::{Bytes, BytesMut};
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ImageProtocolSet,
+    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, EngineCodec, EngineFeatureSet,
+    ImageProtocolSet,
 };
 use phux_protocol::ids::{
     BootstrapId, ClientId, SessionId, StreamId, TerminalId, WindowId,
 };
+use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo};
 use phux_protocol::PROTOCOL_VERSION;
@@ -20,6 +22,18 @@ fn stream(raw: u64) -> StreamId {
 
 fn bootstrap(raw: u64) -> BootstrapId {
     BootstrapId::new(raw).expect("non-zero bootstrap")
+}
+
+fn key() -> KeyEvent {
+    KeyEvent {
+        action: KeyAction::Press,
+        key: PhysicalKey::A,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: Some("a".to_owned()),
+        unshifted_codepoint: Some(u32::from(b'a')),
+    }
 }
 
 fn hello_ok(profile: BootstrapProfile, limits: BootstrapLimits) -> FrameKind {
@@ -121,6 +135,9 @@ async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
             history_cursor: None,
         })
         .render);
+    assert!(!session.render_visible());
+    assert!(session.key_frame(key()).is_none());
+    assert!(!session.is_failed(), "input gate rejection is not protocol-fatal");
 
     let output = session.on_frame(FrameKind::TerminalOutput {
         terminal_id: terminal_id.clone(),
@@ -134,6 +151,8 @@ async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
 
     let ready = session.on_frame(FrameKind::AttachReady { attach_id: 1 });
     assert!(ready.render);
+    assert!(session.render_visible());
+    assert!(session.key_frame(key()).is_some());
     let grid = session.grid();
     let row0: String = grid.cells[..usize::from(grid.cols)]
         .iter()
@@ -315,6 +334,8 @@ async fn replacement_stages_without_touching_published_grid() {
         history_cursor: None,
     });
     session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    session.on_frame(attached(terminal_id.clone(), 10, 2));
+    assert!(!session.render_visible());
 
     session.on_frame(begin(
         terminal_id.clone(),
@@ -336,14 +357,52 @@ async fn replacement_stages_without_touching_published_grid() {
     assert!(before.starts_with("old"));
 
     let swapped = session.on_frame(FrameKind::BootstrapReady {
-        terminal_id,
+        terminal_id: terminal_id.clone(),
         stream_id,
         bootstrap_id: second_bootstrap,
         history_cursor: None,
     });
-    assert!(swapped.render);
+    assert!(!swapped.render);
+    assert!(!session.render_visible());
+    let released = session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    assert!(released.render);
+    assert!(session.render_visible());
     let after: String = session.grid().cells[..10].iter().map(|cell| cell.ch).collect();
     assert!(after.starts_with("new"));
+}
+
+#[wasm_bindgen_test]
+async fn hello_ok_rejects_version_profile_and_oversized_limits() {
+    let vt = Vt::load().await.expect("load engine");
+
+    let mut wrong_version = hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    );
+    let FrameKind::HelloOk { protocol_patch, .. } = &mut wrong_version else {
+        unreachable!();
+    };
+    *protocol_patch = protocol_patch.saturating_add(1);
+    let mut session = Session::new(&vt, 80, 24);
+    assert!(session.on_frame(wrong_version).fatal.is_some());
+
+    let native = BootstrapProfile::NativeState {
+        codec: EngineCodec::LibghosttyCheckpointV2,
+        features: EngineFeatureSet::required_native(),
+    };
+    let mut session = Session::new(&vt, 80, 24);
+    assert!(session
+        .on_frame(hello_ok(native, BootstrapLimits::default()))
+        .fatal
+        .is_some());
+
+    let oversized = BootstrapLimits::new(512 * 1024, 2 * 1024 * 1024)
+        .expect("within protocol hard limits");
+    let mut session = Session::new(&vt, 80, 24);
+    assert!(session
+        .on_frame(hello_ok(BootstrapProfile::SynthesizedVtRaw, oversized))
+        .fatal
+        .is_some());
 }
 
 #[wasm_bindgen_test]

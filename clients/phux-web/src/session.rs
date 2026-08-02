@@ -12,8 +12,8 @@ use phux_client_core::engine::{
     EngineEffectBuffer,
 };
 use phux_client_core::session::{
-    EffectBuffer, KernelAction, KernelDamageKind, KernelEffect, KernelInput, KernelSend,
-    SessionKernel,
+    EffectBuffer, InputEligibility, KernelAction, KernelDamageKind, KernelEffect, KernelInput,
+    KernelSend, SessionKernel,
 };
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
@@ -43,6 +43,44 @@ pub fn client_caps() -> ClientCapabilities {
     ClientCapabilities::new()
         .with_image_protocols(ImageProtocolSet::new())
         .with_bootstrap(BootstrapCapabilities::new().with_profiles(profiles))
+}
+
+fn validate_hello_ok(
+    protocol_major: u16,
+    protocol_minor: u16,
+    protocol_patch: u16,
+    selected_profile: BootstrapProfile,
+    bootstrap_limits: BootstrapLimits,
+) -> Result<(), &'static str> {
+    if (
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+    ) != (
+        PROTOCOL_VERSION.major,
+        PROTOCOL_VERSION.minor,
+        PROTOCOL_VERSION.patch,
+    ) {
+        return Err("HELLO_OK selected a different protocol version");
+    }
+    let profile_kind = match selected_profile {
+        BootstrapProfile::SynthesizedVtRaw => BootstrapProfileKind::SynthesizedVtRaw,
+        BootstrapProfile::SynthesizedVtStateSync => {
+            BootstrapProfileKind::SynthesizedVtStateSync
+        }
+        BootstrapProfile::NativeState { .. } => {
+            return Err("HELLO_OK selected an unadvertised native profile");
+        }
+        _ => return Err("HELLO_OK selected an unknown profile"),
+    };
+    let offered = client_caps().bootstrap;
+    if !offered.profiles.contains(profile_kind) {
+        return Err("HELLO_OK selected an unadvertised bootstrap profile");
+    }
+    if bootstrap_limits.intersect(offered.limits) != bootstrap_limits {
+        return Err("HELLO_OK selected bootstrap limits above the client offer");
+    }
+    Ok(())
 }
 
 /// The result of handling one incoming frame.
@@ -166,6 +204,7 @@ pub struct Session {
     history_cursors: HashMap<HistoryKey, Bytes>,
     bootstrap_limits: Option<BootstrapLimits>,
     failed: bool,
+    render_visible: bool,
 }
 
 impl Session {
@@ -184,6 +223,7 @@ impl Session {
             history_cursors: HashMap::new(),
             bootstrap_limits: None,
             failed: false,
+            render_visible: false,
         }
     }
     /// Negotiated decode limits after `HELLO_OK`.
@@ -224,6 +264,9 @@ impl Session {
         }
         match frame {
             FrameKind::HelloOk {
+                protocol_major,
+                protocol_minor,
+                protocol_patch,
                 selected_profile,
                 bootstrap_limits,
                 ..
@@ -231,12 +274,14 @@ impl Session {
                 if self.kernel.is_some() {
                     return self.protocol_failure("server sent duplicate HELLO_OK");
                 }
-                if !matches!(
+                if let Err(message) = validate_hello_ok(
+                    protocol_major,
+                    protocol_minor,
+                    protocol_patch,
                     selected_profile,
-                    BootstrapProfile::SynthesizedVtRaw
-                        | BootstrapProfile::SynthesizedVtStateSync
+                    bootstrap_limits,
                 ) {
-                    return self.protocol_failure("server selected an unadvertised native profile");
+                    return self.protocol_failure(message);
                 }
                 self.bootstrap_limits = Some(bootstrap_limits);
                 self.kernel = Some(SessionKernel::new(
@@ -282,6 +327,7 @@ impl Session {
                 if applied {
                     self.focused_terminal = Some(focused_terminal);
                     self.terminal_order = terminal_ids;
+                    self.render_visible = false;
                 }
                 outcome
             }
@@ -409,13 +455,12 @@ impl Session {
                 let was_focused = self.focused_terminal.as_ref() == Some(&terminal_id);
                 self.history_cursors
                     .retain(|key, _| key.terminal_id != terminal_id);
-                let (mut outcome, applied) =
+                let (outcome, applied) =
                     self.apply_kernel(KernelInput::TerminalClosed {
                         terminal_id: &terminal_id,
                     });
                 if applied && was_focused {
                     self.focused_terminal = self.first_published_terminal();
-                    outcome.render = true;
                 }
                 outcome
             }
@@ -433,6 +478,12 @@ impl Session {
             .map_or_else(|| self.blank.grid(), |terminal| terminal.grid())
     }
 
+    /// Whether canvas paint is allowed past the aggregate first-damage barrier.
+    #[must_use]
+    pub const fn render_visible(&self) -> bool {
+        self.render_visible
+    }
+
     /// Current published grid dimensions in cells.
     #[must_use]
     pub fn dims(&self) -> (u16, u16) {
@@ -445,10 +496,14 @@ impl Session {
     /// Encode an eligible structured key event for the focused published pane.
     #[must_use]
     pub fn key_frame(&mut self, event: KeyEvent) -> Option<Vec<u8>> {
-        if self.failed {
+        let terminal_id = self.first_published_terminal()?;
+        let kernel = self.kernel.as_ref()?;
+        if !matches!(
+            kernel.input_eligibility(&terminal_id),
+            InputEligibility::Eligible { .. }
+        ) {
             return None;
         }
-        let terminal_id = self.first_published_terminal()?;
         let (outcome, applied) = self.apply_kernel(KernelInput::Action(KernelAction::Input {
             terminal_id: &terminal_id,
             event: &InputEvent::Key(event),
@@ -561,6 +616,9 @@ impl Session {
                 }
                 KernelEffect::Status(_) | KernelEffect::Job(_) => {}
             }
+        }
+        if outcome.render {
+            self.render_visible = true;
         }
         match result {
             Ok(()) => (outcome, true),
