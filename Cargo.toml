@@ -152,7 +152,7 @@ serde_path_to_error = "0.1"
 # libghostty is our canonical terminal backend (ADR-0008). Both phux-protocol
 # and phux-server depend on it — phux-protocol re-exports types, phux-server
 # drives the emulator.
-libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "961323915d70ddcad09b8cb954d39a81a7b38472", default-features = false }
+libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "98ad1db59bad85877790353f11e2d6279e46727c", default-features = false }
 # PNG decoder used by the Kitty graphics replay bridge (ADR-0034). This
 # matches libghostty-vt's optional PNG dependency and is enabled only for
 # in-workspace/server-feature consumers that need to ingest `f=100` APC images.
