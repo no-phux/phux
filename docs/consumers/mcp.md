@@ -434,7 +434,7 @@ KiB, and kill the child on cancellation or deadline.
 | `phux_rename` | `phux rename` | Explicit current and new session names. |
 | `phux_agent` | `phux agent` | `list`/`show`/`explain` use canonical JSON; `set`/`clear` parse the confirmed agent record. |
 | `phux_insert_pane` | `phux insert-pane --json` | Existing pane only; no implicit spawn and no focus operation. |
-| `phux_move_pane` | `phux move-pane --json` | Exact local same-session panes, bounded ratio. |
+| `phux_move_pane` | `phux move-pane --json` | Exact local panes, including cross-session moves; bounded ratio. |
 | `phux_swap_pane` | `phux swap-pane --json` | Exact local same-session panes; preserves client-local focus. |
 | `phux_workspace` | `phux workspace` | `inspect`, `save`, or `restore`; bounded local paths and canonical JSON where the CLI provides it. |
 

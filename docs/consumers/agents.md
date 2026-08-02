@@ -301,11 +301,14 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   means a horizontal divider (stacked panes) and is the default. Shape in §4.12.
 - **`phux move-pane SOURCE TARGET [--horizontal|--vertical] [--ratio R]
   [--json] [--socket P]`** — collapse `SOURCE` out of its old position and
-  insert it beside `TARGET` in the same session. Shape in §4.12.
+  insert it beside `TARGET`. When the panes belong to different sessions, the
+  live Terminal is re-parented without restarting its process or changing its
+  id, then both sessions' layout envelopes are updated. Shape in §4.12.
 - **`phux swap-pane FIRST SECOND [--json] [--socket P]`** — exchange two leaf
   positions without changing split geometry. Shape in §4.12. All three spatial
-  verbs reject multi-match, satellite, and cross-session selectors and do not
-  change an attached client's local focus.
+  verbs reject multi-match and satellite selectors; `insert-pane` and
+  `swap-pane` also reject cross-session selectors. None changes an attached
+  client's local focus.
 - **`phux plugin <list|link|unlink|enable|disable|validate> [--json]`** —
   manage declarative plugin manifest entries in the local config registry.
   This never contacts a running server and never executes plugin commands.
@@ -834,10 +837,12 @@ nonzero with stdout empty and the typed diagnostic on stderr.
 Each successful `--json` spatial edit emits a `schema_version: 1` document.
 Common fields are `operation` and `session_id`; insert adds
 `target_terminal_id`, `new_terminal_id`, `direction`, and `ratio`; move adds
-`source_terminal_id`, `target_terminal_id`, `direction`, and `ratio`; swap adds
-`first_terminal_id` and `second_terminal_id`. `direction` retains the CLI's
-user-facing divider meaning (`vertical` = side-by-side, `horizontal` = stacked),
-not the layout tree's internal child-axis enum.
+`source_terminal_id`, `target_terminal_id`, `direction`, and `ratio`. A
+cross-session move also adds `source_session_id` and `cross_session: true`,
+while `session_id` names the destination. Swap adds `first_terminal_id` and
+`second_terminal_id`. `direction` retains the CLI's user-facing divider meaning
+(`vertical` = side-by-side, `horizontal` = stacked), not the layout tree's
+internal child-axis enum.
 
 ```json
 {
@@ -856,6 +861,10 @@ empty: `{ "schema_version": 1, "error": { "code": "...", "message": "..." } }`.
 Stable codes include `invalid_selector`, `selector_miss`,
 `selector_not_single`, `satellite_target`, `cross_session`, `invalid_ratio`,
 `layout_missing`, `pane_not_in_layout`, and `pane_already_in_layout`.
+Cross-session moves may also report `server_too_old`,
+`post_move_state_failed`, `destination_changed`, `destination_layout_failed`,
+or `source_layout_failed`; these are exit `1` because ownership or transport
+work has begun, while preflight selector and layout refusals remain exit `2`.
 
 ### 4.13 `phux launch --json`
 

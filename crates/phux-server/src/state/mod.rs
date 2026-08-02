@@ -901,6 +901,8 @@ mod tests {
         let mut s = ServerState::new();
         let (sid_a, wid_a, pid_a) = s.seed_session("a");
         let (sid_b, wid_b, _pid_b) = s.seed_session("b");
+        let attached = s.new_client_id();
+        s.attach_default_caps(attached, "a", mk_tx()).unwrap();
 
         s.registry
             .move_terminal(pid_a, wid_b)
@@ -910,6 +912,14 @@ mod tests {
         assert!(
             s.registry.session(sid_a).is_none(),
             "emptied session reaped"
+        );
+        assert_eq!(
+            s.attached_clients_in_session(sid_a)
+                .iter()
+                .map(|(client, _)| *client)
+                .collect::<Vec<_>>(),
+            vec![attached],
+            "session-attached clients remain discoverable by stable id after reap"
         );
         assert!(s.registry.session(sid_b).is_some());
         assert_eq!(

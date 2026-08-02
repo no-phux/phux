@@ -93,6 +93,14 @@ Rollback is best-effort. If the inverse move also fails, the Terminal is owned
 by the destination window with no leaf in either envelope. It is recoverable
 (`phux insert-pane` places it) and reported, not silent.
 
+When the moved Terminal was its source window's only pane, reaping leaves no
+`owner_terminal` in that window to address an inverse move. This is the
+deterministic edge of the same best-effort rule: the caller cannot issue an
+inverse, reports that ownership was not restored, and names inventory plus
+`insert-pane` as recovery. A session-scoped client observing a source session
+reaped by the move is detached; independent per-Terminal subscriptions survive
+the stable id.
+
 Moving the last pane out of a window leaves an empty window, which the server
 already reaps by its existing rules. No new lifecycle.
 

@@ -155,7 +155,7 @@ pub(crate) fn insert_schema() -> Value {
 pub(crate) fn move_schema() -> Value {
     spatial_schema(
         "phux_move_pane",
-        "Move one exact local pane beside another in the same session.",
+        "Move one exact local pane beside another, including across sessions.",
         &["source", "target"],
         true,
     )

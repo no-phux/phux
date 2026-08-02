@@ -231,11 +231,12 @@ wire path beneath them changed.
 
 ### 1.3 Headless spatial edits operate on existing panes
 
-`insert-pane`, `move-pane`, and `swap-pane` edit the session's persisted L3
-layout envelope; they do not attach and do not change another client's local
-focus. Every positional selector must resolve to exactly one local pane, and
-all panes named by one operation must belong to the same session. Satellite
-and cross-session topology edits are rejected.
+`insert-pane`, `move-pane`, and `swap-pane` edit persisted L3 layout envelopes;
+they do not attach and do not change another client's local focus. Every
+positional selector must resolve to exactly one local pane. Satellite topology
+edits are rejected. `insert-pane` and `swap-pane` require one session;
+`move-pane` may cross sessions, re-parenting the live Terminal on L1 before
+updating the source and destination envelopes.
 
 `insert-pane TARGET NEW_PANE [--horizontal|--vertical] [--ratio R]` is named
 for what it honestly does: `NEW_PANE` must already exist (for example from
@@ -244,7 +245,8 @@ spawn. The omitted direction is horizontal (a horizontal divider, so panes are
 stacked); `--vertical` means a vertical divider and side-by-side panes. `R`
 defaults to `0.5`; ratios must be finite and strictly between zero and one.
 `move-pane SOURCE TARGET` accepts the same user-facing direction and ratio
-flags. `swap-pane FIRST SECOND` preserves
+flags. A cross-session move preserves the Terminal's process, PTY, scrollback,
+metadata, and id. `swap-pane FIRST SECOND` preserves
 the existing split geometry. All three accept `--json` and `--socket`.
 
 Detach (`C-a d`) remains an interactive TUI-only action because it acts on the

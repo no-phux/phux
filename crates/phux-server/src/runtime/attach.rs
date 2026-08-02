@@ -557,42 +557,66 @@ pub(crate) async fn handle_move_terminal(
         "MOVE_TERMINAL",
     );
 
-    let result = if !matches!(terminal, phux_protocol::ids::TerminalId::Local { .. })
-        || !matches!(owner_terminal, phux_protocol::ids::TerminalId::Local { .. })
-    {
-        MoveResult::Err(MoveError::UnsupportedSatelliteRoute)
-    } else {
-        state.with_mut(|s| {
-            let Some(moved) = s.terminal_from_wire(&terminal) else {
-                return MoveResult::Err(MoveError::MoveFailed(
-                    "terminal was not found on this server".to_owned(),
-                ));
-            };
-            let Some(owner) = s.terminal_from_wire(&owner_terminal) else {
-                return MoveResult::Err(MoveError::MoveFailed(
-                    "owner terminal was not found on this server".to_owned(),
-                ));
-            };
-            let Some(dest_window) = s.registry.terminal(owner).map(|t| t.window) else {
-                return MoveResult::Err(MoveError::MoveFailed(
-                    "owner terminal has no window on this server".to_owned(),
-                ));
-            };
-            let source_window = s.registry.terminal(moved).map(|t| t.window);
-            match s.registry.move_terminal(moved, dest_window) {
-                Ok(()) => {
-                    // A move that emptied its source window leaves it for
-                    // the same cascade pane death uses (ADR-0056: "the
-                    // server already reaps by its existing rules").
-                    if let Some(source_window) = source_window {
-                        s.reap_window_if_empty(source_window);
+    let (result, clients_to_detach) =
+        if !matches!(terminal, phux_protocol::ids::TerminalId::Local { .. })
+            || !matches!(owner_terminal, phux_protocol::ids::TerminalId::Local { .. })
+        {
+            (
+                MoveResult::Err(MoveError::UnsupportedSatelliteRoute),
+                Vec::new(),
+            )
+        } else {
+            state.with_mut(|s| {
+                let Some(moved) = s.terminal_from_wire(&terminal) else {
+                    return (
+                        MoveResult::Err(MoveError::MoveFailed(
+                            "terminal was not found on this server".to_owned(),
+                        )),
+                        Vec::new(),
+                    );
+                };
+                let Some(owner) = s.terminal_from_wire(&owner_terminal) else {
+                    return (
+                        MoveResult::Err(MoveError::MoveFailed(
+                            "owner terminal was not found on this server".to_owned(),
+                        )),
+                        Vec::new(),
+                    );
+                };
+                let Some(dest_window) = s.registry.terminal(owner).map(|t| t.window) else {
+                    return (
+                        MoveResult::Err(MoveError::MoveFailed(
+                            "owner terminal has no window on this server".to_owned(),
+                        )),
+                        Vec::new(),
+                    );
+                };
+                let source_window = s.registry.terminal(moved).map(|t| t.window);
+                let source_session = source_window
+                    .and_then(|window| s.registry.window(window))
+                    .map(|window| window.session);
+                match s.registry.move_terminal(moved, dest_window) {
+                    Ok(()) => {
+                        // A move that emptied its source window leaves it for
+                        // the same cascade pane death uses (ADR-0056: "the
+                        // server already reaps by its existing rules").
+                        if let Some(source_window) = source_window {
+                            s.reap_window_if_empty(source_window);
+                        }
+                        let clients = source_session
+                            .filter(|session| s.registry.session(*session).is_none())
+                            .map_or_else(Vec::new, |session| {
+                                s.attached_clients_in_session(session)
+                            });
+                        (MoveResult::Ok(terminal), clients)
                     }
-                    MoveResult::Ok(terminal)
+                    Err(err) => (
+                        MoveResult::Err(MoveError::MoveFailed(err.to_string())),
+                        Vec::new(),
+                    ),
                 }
-                Err(err) => MoveResult::Err(MoveError::MoveFailed(err.to_string())),
-            }
-        })
-    };
+            })
+        };
 
     let _ = out_tx
         .send(Outbound::Frame(FrameKind::TerminalMoved {
@@ -600,6 +624,20 @@ pub(crate) async fn handle_move_terminal(
             result,
         }))
         .await;
+
+    // A session-scoped ATTACH cannot remain coherent after its session was
+    // reaped. Reply to the move first, then queue DETACHED for only those
+    // attached TUIs. Each delivery waits in its own task so a wedged client's
+    // full mailbox cannot block this command or the mover's follow-up requests.
+    // Headless ATTACH_TERMINAL subscriptions are not session-attached and keep
+    // streaming the stable TerminalId as ADR-0056 requires.
+    for (detached_client, tx) in clients_to_detach {
+        let detached_state = state.clone();
+        tokio::task::spawn_local(async move {
+            let _ = tx.send(Outbound::Frame(FrameKind::Detached)).await;
+            super::client::detach_and_release_consumer_state(&detached_state, detached_client);
+        });
+    }
 }
 
 /// Handle `SPAWN_TERMINAL` (phux-4li.11, SPEC §7.2 / §10.1).

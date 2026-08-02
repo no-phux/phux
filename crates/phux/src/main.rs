@@ -86,7 +86,7 @@ mod help_inventory;
           kill       Kill a session, window, or pane\n  \
           detach     Detach clients from a session\n  \
           insert-pane Insert an already-created pane into a layout\n  \
-          move-pane  Move an existing pane within a session layout\n  \
+          move-pane  Move an existing pane beside another, across sessions too\n  \
           swap-pane  Swap two existing pane leaves\n  \
           rename     Rename a session\n  \
           resize     Set a pane's grid size, with no TTY\n  \

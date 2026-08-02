@@ -12,13 +12,15 @@ use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
-use phux_client::layout::SplitDir;
-use phux_client::layout_ops::{LayoutMutation, LayoutOps, LayoutOpsError};
+use phux_client::layout::{LayoutNode, SplitDir, Workspace, leaves};
+use phux_client::layout_ops::{
+    DEFAULT_LAYOUT_GROUP_ID, LayoutMutation, LayoutOps, LayoutOpsError, layout_key,
+};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, ServerFeature};
-use phux_protocol::ids::{SessionId, TerminalId};
+use phux_protocol::caps::{ClientCapabilities, Layer, LayerSet, ServerFeature};
+use phux_protocol::ids::{SessionId, TerminalId, WindowId};
 use phux_protocol::wire::frame::{
-    Command as WireCommand, CommandResult, CommandValue, FrameKind, MoveError, MoveResult,
+    Command as WireCommand, CommandResult, CommandValue, FrameKind, MoveError, MoveResult, Scope,
     StateScope,
 };
 use phux_protocol::wire::info::SessionSnapshot;
@@ -105,6 +107,8 @@ struct Plan {
 struct CrossMovePlan {
     source: TerminalId,
     target: TerminalId,
+    source_window: WindowId,
+    dest_window: WindowId,
     source_session: SessionId,
     dest_session: SessionId,
     dir: SplitDir,
@@ -214,7 +218,7 @@ fn run(operation: RequestedOperation, json: bool, socket: Option<PathBuf>) -> Ex
             Ok(conn) => conn,
             Err(err) => return print_transport_error(json, &err, &socket_path),
         };
-        let snapshot = match read_snapshot(&mut conn).await {
+        let snapshot = match read_snapshot(&mut conn, 0).await {
             Ok(snapshot) => snapshot,
             Err(err) => return print_transport_or_protocol_error(json, &err, &socket_path),
         };
@@ -241,10 +245,9 @@ fn run(operation: RequestedOperation, json: bool, socket: Option<PathBuf>) -> Ex
 /// then write geometry — destination first, so a failed placement rolls
 /// back with a single inverse `MOVE_TERMINAL` and no layout repair.
 ///
-/// The source envelope's stale leaf is dropped last; a source session the
-/// move emptied is reaped server-side (envelope and all), so a failure
-/// there is reported as a warning, not an error — the pane is already
-/// owned and placed where the user asked.
+/// The source envelope's stale leaf is dropped last. If the move reaped the
+/// source session, its one-leaf envelope is deleted instead; cleanup failures
+/// are reported because the ownership move has already committed.
 async fn execute_cross_move(
     conn: &mut Connection,
     plan: &CrossMovePlan,
@@ -284,24 +287,48 @@ async fn execute_cross_move(
         return print_error(json, &err, ExitCode::FAILURE);
     }
 
+    // Reaping is authoritative server state, not a prediction from the
+    // preflight snapshot: another client may have added or removed a pane
+    // while the move and feature handshake were in flight.
+    let post_move_snapshot = match read_snapshot(conn, 201).await {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            let suffix = rollback_suffix(conn, plan).await;
+            return print_error(
+                json,
+                &SpatialError::new(
+                    "post_move_state_failed",
+                    format!(
+                        "the server moved the pane but its resulting ownership could not be read \
+                         ({err}); {suffix}"
+                    ),
+                ),
+                ExitCode::FAILURE,
+            );
+        }
+    };
+    if !snapshot_confirms_destination(&post_move_snapshot, plan) {
+        let suffix = rollback_suffix(conn, plan).await;
+        return print_error(
+            json,
+            &SpatialError::new(
+                "destination_changed",
+                format!(
+                    "the destination pane changed windows while the move was in flight; {suffix}"
+                ),
+            ),
+            ExitCode::FAILURE,
+        );
+    }
+    let source_session_reaped = !post_move_snapshot
+        .sessions
+        .iter()
+        .any(|session| session.id == plan.source_session);
+
     // Destination placement. On failure, ownership is restored with the
     // inverse move (best-effort — the spawn-placement rollback shape).
-    let placement = LayoutMutation::Split {
-        target: plan.target.clone(),
-        new_pane: plan.source.clone(),
-        dir: plan.dir,
-        ratio: plan.ratio,
-    };
-    if let Err(err) = LayoutOps::new(conn, plan.dest_session, 201)
-        .mutate(placement)
-        .await
-    {
-        let suffix = if rollback_move(conn, plan).await {
-            "the pane was moved back to its original window"
-        } else {
-            "the pane stays in the destination window without a layout leaf; \
-             place it with `phux insert-pane`"
-        };
+    if let Err(err) = publish_destination_layout(conn, plan).await {
+        let suffix = rollback_suffix(conn, plan).await;
         return print_error(
             json,
             &SpatialError::new(
@@ -312,22 +339,81 @@ async fn execute_cross_move(
         );
     }
 
-    // Drop the stale leaf from the source envelope. A move that emptied the
-    // source session reaped it server-side, so a failure here is expected
-    // and non-fatal.
-    if let Err(err) = LayoutOps::new(conn, plan.source_session, 203)
+    // Drop the stale leaf from the source envelope. The final pane cannot be
+    // represented as an empty Workspace, and its session was reaped by the
+    // ownership move, so delete that dead session's envelope instead.
+    if let Err(err) = cleanup_source_layout(conn, plan, source_session_reaped).await {
+        return print_error(
+            json,
+            &SpatialError::new(
+                "source_layout_failed",
+                format!(
+                    "the pane was moved and placed, but the source layout could not be cleaned up \
+                     ({err}); retry the layout edit before relying on either session's topology"
+                ),
+            ),
+            ExitCode::FAILURE,
+        );
+    }
+
+    print_success(json, &plan.output, &plan.human)
+}
+
+async fn publish_destination_layout(
+    conn: &mut Connection,
+    plan: &CrossMovePlan,
+) -> Result<(), String> {
+    let placement = LayoutMutation::Split {
+        target: plan.target.clone(),
+        new_pane: plan.source.clone(),
+        dir: plan.dir,
+        ratio: plan.ratio,
+    };
+    match LayoutOps::new(conn, plan.dest_session, 202)
+        .mutate(placement)
+        .await
+    {
+        Ok(workspace)
+            if workspace_has_placement(
+                &workspace,
+                &plan.target,
+                &plan.source,
+                plan.dir,
+                plan.ratio,
+            ) =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err(
+            "a concurrent layout writer replaced the requested destination placement during \
+             confirmation"
+                .to_owned(),
+        ),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+async fn cleanup_source_layout(
+    conn: &mut Connection,
+    plan: &CrossMovePlan,
+    source_session_reaped: bool,
+) -> Result<(), LayoutOpsError> {
+    if source_session_reaped {
+        return delete_layout(conn, plan.source_session, 206).await;
+    }
+
+    match LayoutOps::new(conn, plan.source_session, 206)
         .mutate(LayoutMutation::Close {
             target: plan.source.clone(),
         })
         .await
     {
-        eprintln!(
-            "phux: note: source session layout was not updated ({err}); \
-             harmless if the move emptied that session"
-        );
+        Ok(workspace) if !workspace_contains(&workspace, &plan.source) => Ok(()),
+        Ok(_) => Err(LayoutOpsError::Refused(
+            "a concurrent layout writer restored the source leaf during confirmation".to_owned(),
+        )),
+        Err(err) => Err(err),
     }
-
-    print_success(json, &plan.output, &plan.human)
 }
 
 /// The cross-session plan, when `operation` is a move whose two panes
@@ -355,6 +441,8 @@ fn cross_move_plan(
     Some(PlanKind::CrossMove(CrossMovePlan {
         source: source.clone(),
         target: target.clone(),
+        source_window: window_for(snapshot, source)?,
+        dest_window: window_for(snapshot, target)?,
         source_session,
         dest_session,
         dir: direction.wire(),
@@ -406,14 +494,113 @@ async fn rollback_move(conn: &mut Connection, plan: &CrossMovePlan) -> bool {
     let Some(owner) = &plan.rollback_owner else {
         return false;
     };
+    let owner_is_still_in_source = read_snapshot(conn, 209)
+        .await
+        .is_ok_and(|snapshot| window_for(&snapshot, owner) == Some(plan.source_window));
+    if !owner_is_still_in_source {
+        return false;
+    }
     let inverse = FrameKind::MoveTerminal {
-        request_id: 202,
+        request_id: 205,
         terminal: plan.source.clone(),
         owner_terminal: owner.clone(),
     };
-    match conn.request_move(&inverse).await {
-        Ok(reply) => matches!(reply.into_parts().0, Ok(MoveResult::Ok(_))),
-        Err(_) => false,
+    let moved = conn
+        .request_move(&inverse)
+        .await
+        .is_ok_and(|reply| matches!(reply.into_parts().0, Ok(MoveResult::Ok(_))));
+    if !moved {
+        return false;
+    }
+    read_snapshot(conn, 210)
+        .await
+        .is_ok_and(|snapshot| window_for(&snapshot, &plan.source) == Some(plan.source_window))
+}
+
+async fn rollback_suffix(conn: &mut Connection, plan: &CrossMovePlan) -> &'static str {
+    if rollback_move(conn, plan).await {
+        "the pane was moved back to its original window"
+    } else {
+        "the pane's current ownership could not be restored; inspect it with `phux ls` and \
+         place it with `phux insert-pane`"
+    }
+}
+
+fn workspace_contains(workspace: &Workspace, terminal: &TerminalId) -> bool {
+    workspace
+        .windows
+        .iter()
+        .filter_map(|window| window.state.tree.as_ref())
+        .any(|tree| leaves(tree).contains(terminal))
+}
+
+fn workspace_has_placement(
+    workspace: &Workspace,
+    target: &TerminalId,
+    moved: &TerminalId,
+    dir: SplitDir,
+    ratio: f32,
+) -> bool {
+    workspace
+        .windows
+        .iter()
+        .filter_map(|window| window.state.tree.as_ref())
+        .any(|tree| tree_has_placement(tree, target, moved, dir, ratio))
+}
+
+fn snapshot_confirms_destination(snapshot: &SessionSnapshot, plan: &CrossMovePlan) -> bool {
+    window_for(snapshot, &plan.source) == Some(plan.dest_window)
+        && window_for(snapshot, &plan.target) == Some(plan.dest_window)
+        && session_for(snapshot, &plan.source) == Some(plan.dest_session)
+        && session_for(snapshot, &plan.target) == Some(plan.dest_session)
+}
+
+fn tree_has_placement(
+    node: &LayoutNode,
+    target: &TerminalId,
+    moved: &TerminalId,
+    expected_dir: SplitDir,
+    expected_ratio: f32,
+) -> bool {
+    match node {
+        LayoutNode::Split {
+            dir,
+            ratio,
+            left,
+            right,
+        } => {
+            (*dir == expected_dir
+                && ratio.to_bits() == expected_ratio.to_bits()
+                && matches!(left.as_ref(), LayoutNode::Leaf(id) if id == target)
+                && matches!(right.as_ref(), LayoutNode::Leaf(id) if id == moved))
+                || tree_has_placement(left, target, moved, expected_dir, expected_ratio)
+                || tree_has_placement(right, target, moved, expected_dir, expected_ratio)
+        }
+        _ => false,
+    }
+}
+
+async fn delete_layout(
+    conn: &mut Connection,
+    session: SessionId,
+    request_id: u32,
+) -> Result<(), LayoutOpsError> {
+    conn.send(&FrameKind::DeleteMetadata {
+        request_id,
+        scope: Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
+        key: layout_key(session),
+    })
+    .await?;
+
+    match LayoutOps::new(conn, session, request_id.wrapping_add(1))
+        .read()
+        .await
+    {
+        Err(LayoutOpsError::MissingLayout) => Ok(()),
+        Ok(_) => Err(LayoutOpsError::Refused(
+            "source layout still exists after deletion".to_owned(),
+        )),
+        Err(err) => Err(err),
     }
 }
 
@@ -437,7 +624,7 @@ async fn server_supports_move(conn: &mut Connection) -> Result<bool, AttachError
         protocol_major: PROTOCOL_VERSION.major,
         protocol_minor: PROTOCOL_VERSION.minor,
         protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::default(),
+        client_caps: ClientCapabilities::new().with_layers(LayerSet::with(&[Layer::L3])),
     })
     .await?;
     // Nothing is attached or subscribed on this connection, so HELLO_OK is
@@ -502,10 +689,13 @@ impl RequestedOperation {
     }
 }
 
-async fn read_snapshot(conn: &mut Connection) -> Result<SessionSnapshot, AttachError> {
+async fn read_snapshot(
+    conn: &mut Connection,
+    request_id: u32,
+) -> Result<SessionSnapshot, AttachError> {
     match command_on(
         conn,
-        0,
+        request_id,
         WireCommand::GetState {
             scope: StateScope::Server,
         },
@@ -701,16 +891,20 @@ fn same_session(
 }
 
 fn session_for(snapshot: &SessionSnapshot, terminal: &TerminalId) -> Option<SessionId> {
-    let window = snapshot
-        .panes
-        .iter()
-        .find(|pane| &pane.id == terminal)?
-        .window_id;
+    let window = window_for(snapshot, terminal)?;
     snapshot
         .windows
         .iter()
         .find(|candidate| candidate.id == window)
         .map(|candidate| candidate.session_id)
+}
+
+fn window_for(snapshot: &SessionSnapshot, terminal: &TerminalId) -> Option<WindowId> {
+    snapshot
+        .panes
+        .iter()
+        .find(|pane| &pane.id == terminal)
+        .map(|pane| pane.window_id)
 }
 
 fn local_id(terminal: &TerminalId) -> u32 {
@@ -859,6 +1053,8 @@ mod tests {
             PlanKind::CrossMove(plan) => {
                 assert_eq!(plan.source, TerminalId::local(1));
                 assert_eq!(plan.target, TerminalId::local(3));
+                assert_eq!(plan.source_window, WindowId::new(10));
+                assert_eq!(plan.dest_window, WindowId::new(20));
                 assert_eq!(plan.source_session, SessionId::new(1));
                 assert_eq!(plan.dest_session, SessionId::new(2));
                 assert_eq!(plan.rollback_owner, Some(TerminalId::local(2)));
@@ -903,6 +1099,50 @@ mod tests {
         for ratio in [0.0, 1.0, -0.1, 1.1, f32::NAN, f32::INFINITY] {
             assert_eq!(validate_ratio(ratio).unwrap_err().code, "invalid_ratio");
         }
+    }
+
+    #[test]
+    fn destination_confirmation_requires_the_requested_split() {
+        let target = TerminalId::local(1);
+        let moved = TerminalId::local(2);
+        let expected = LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.4,
+            left: Box::new(LayoutNode::Leaf(target.clone())),
+            right: Box::new(LayoutNode::Leaf(moved.clone())),
+        };
+        let workspace = Workspace {
+            windows: vec![phux_client::layout::WindowState {
+                name: "1".to_owned(),
+                state: phux_client::layout::LayoutState {
+                    tree: Some(expected),
+                    focus: Some(moved.clone()),
+                },
+            }],
+            active: 0,
+        };
+
+        assert!(workspace_has_placement(
+            &workspace,
+            &target,
+            &moved,
+            SplitDir::Horizontal,
+            0.4,
+        ));
+        assert!(!workspace_has_placement(
+            &workspace,
+            &target,
+            &moved,
+            SplitDir::Vertical,
+            0.4,
+        ));
+        assert!(!workspace_has_placement(
+            &workspace,
+            &target,
+            &moved,
+            SplitDir::Horizontal,
+            0.6,
+        ));
     }
 
     #[test]

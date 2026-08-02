@@ -862,6 +862,24 @@ impl ServerState {
             .collect()
     }
 
+    /// Collect session-attached clients observing `session` by its stable id.
+    ///
+    /// Unlike [`Self::attached_clients_to_detach`], this remains usable after
+    /// the registry has reaped the session and its name can no longer resolve.
+    /// Per-terminal `ATTACH_TERMINAL` consumers are not in [`Self::attached`]
+    /// and are deliberately excluded.
+    #[must_use]
+    pub fn attached_clients_in_session(
+        &self,
+        session: SessionId,
+    ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
+        self.attached
+            .values()
+            .filter(|client| client.session == session)
+            .map(|client| (client.id, client.tx.clone()))
+            .collect()
+    }
+
     /// Record an agent-event subscription for `client_id` at `scope`
     /// (SPEC §7.5, phux-y2t). Idempotent: re-subscribing the same scope
     /// is a no-op (the per-client scope set absorbs the duplicate). A

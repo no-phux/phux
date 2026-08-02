@@ -126,9 +126,11 @@ phux move-pane @12 @14 --horizontal --ratio 0.5 --json
 phux swap-pane @11 @12 --json
 ```
 
-All selectors must resolve to distinct exact local panes in one session.
-`insert-pane` never spawns; `move-pane` never clones; `swap-pane` preserves
-split geometry. None is a focus command. Concurrent layout writers are
+All selectors must resolve to distinct exact local panes. `insert-pane` and
+`swap-pane` require one session; `move-pane` may cross sessions without
+restarting the moved pane. `insert-pane` never spawns; `move-pane` never
+clones; `swap-pane` preserves split geometry. None is a focus command.
+Concurrent layout writers are
 last-write-wins, so serialize edits in one orchestration process and re-read
 state after a contested update.
 

@@ -84,7 +84,7 @@ The extension registers exactly these nineteen model tools:
 | `phux_spawn` | Spawn a pane without attaching, optionally place it beside one exact local pane, and optionally save an alias. |
 | `phux_launch` | Launch a configured integration from the CLI's versioned machine result, with optional local placement. |
 | `phux_insert_pane` | Insert one already-created exact local pane beside another. |
-| `phux_move_pane` | Move one exact local pane beside another in the same session. |
+| `phux_move_pane` | Move one exact local pane beside another, including across sessions. |
 | `phux_swap_pane` | Swap two exact local pane leaves without changing geometry. |
 | `phux_kill` | With an explicit target and `confirm:true`, destroy a selector, alias, or the validated members of a named group. Selectors and groups may destroy multiple panes. |
 | `phux_signal` | Interrupt, freeze, or resume a pane's process group; terminate and kill require an explicit target and `confirm:true` because selectors may affect multiple processes or panes. |
