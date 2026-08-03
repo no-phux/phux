@@ -51,6 +51,9 @@ pub(crate) trait FrameReader {
 /// Write side: writes one complete pre-encoded frame.
 pub(crate) trait FrameWriter {
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()>;
+
+    /// Finish the server-to-client stream after its final frame.
+    async fn close(&mut self) -> io::Result<()>;
 }
 
 /// A listener that accepts connections, each split into a frame reader + writer.
@@ -111,6 +114,10 @@ impl FrameWriter for UdsWriter {
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
         self.writer.write_all(frame).await
     }
+
+    async fn close(&mut self) -> io::Result<()> {
+        self.writer.shutdown().await
+    }
 }
 
 /// UDS listener: a thin newtype around [`UnixListener`] so the `Incoming::accept`
@@ -137,7 +144,7 @@ impl Incoming for UdsListener {
 
     async fn accept(&self) -> io::Result<(UdsReader, UdsWriter, PeerIdentity)> {
         let (stream, _addr) = self.0.accept().await?;
-        let peer_identity = peer_identity_from_uds(&stream);
+        let peer_identity = peer_identity_from_uds(&stream)?;
         let (reader, writer) = stream.into_split();
         Ok((
             UdsReader {
@@ -154,35 +161,54 @@ impl Incoming for UdsListener {
     }
 }
 
-/// Extract peer identity from a Unix domain socket.
-#[cfg(target_os = "linux")]
-fn peer_identity_from_uds(stream: &tokio::net::UnixStream) -> PeerIdentity {
-    // `UCred::pid()` is `Option<i32>` (pid_t); `PeerIdentity.pid` is
-    // `Option<u32>`. A pid is non-negative, so `unsigned_abs` is exact.
-    let (uid, pid) = stream.peer_cred().map_or((0, None), |cred| {
-        (cred.uid(), cred.pid().map(i32::unsigned_abs))
-    });
-    PeerIdentity {
+fn peer_identity_from_credentials(
+    credentials: io::Result<(u32, Option<u32>)>,
+) -> io::Result<PeerIdentity> {
+    let (uid, pid) = credentials?;
+    Ok(PeerIdentity {
         uid,
         pid,
         exe_path: None,
         mcp_host_key: None,
         transport: TransportType::UnixSocket,
         source_addr: None,
-    }
+    })
 }
 
-/// Extract peer identity from a Unix domain socket (non-Linux fallback).
-#[cfg(not(target_os = "linux"))]
-const fn peer_identity_from_uds(_stream: &tokio::net::UnixStream) -> PeerIdentity {
-    PeerIdentity {
-        uid: 0,
-        pid: None,
-        exe_path: None,
-        mcp_host_key: None,
-        transport: TransportType::UnixSocket,
-        source_addr: None,
+/// Extract peer identity from a Unix domain socket.
+#[cfg(target_os = "linux")]
+fn peer_identity_from_uds(stream: &tokio::net::UnixStream) -> io::Result<PeerIdentity> {
+    peer_identity_from_credentials(stream.peer_cred().map(|cred| {
+        (
+            cred.uid(),
+            cred.pid().and_then(|pid| u32::try_from(pid).ok()),
+        )
+    }))
+}
+
+/// Extract peer identity from a Unix domain socket on Darwin.
+#[cfg(target_os = "macos")]
+fn peer_identity_from_uds(stream: &tokio::net::UnixStream) -> io::Result<PeerIdentity> {
+    use std::os::fd::AsRawFd as _;
+
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: both output pointers are valid for writes for the duration of
+    // the call, and `stream` owns a live Unix-domain socket descriptor.
+    let status = unsafe { libc::getpeereid(stream.as_raw_fd(), &raw mut uid, &raw mut gid) };
+    if status != 0 {
+        return Err(io::Error::last_os_error());
     }
+    peer_identity_from_credentials(Ok((uid, None)))
+}
+
+/// Reject UDS transports on targets without an authenticated peer credential API.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn peer_identity_from_uds(_stream: &tokio::net::UnixStream) -> io::Result<PeerIdentity> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "authenticated Unix peer credentials are unavailable",
+    ))
 }
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
@@ -332,6 +358,10 @@ impl FrameWriter for WsWriter {
             .send(Message::Binary(frame.to_vec()))
             .await
             .map_err(io::Error::other)
+    }
+
+    async fn close(&mut self) -> io::Result<()> {
+        self.tx.close().await.map_err(io::Error::other)
     }
 }
 
@@ -537,5 +567,15 @@ mod tests {
         let (server_res, client_res) = tokio::join!(server, client);
         assert!(server_res.is_err());
         assert!(client_res.is_err());
+    }
+
+    #[test]
+    fn uds_credential_failure_is_never_root_fallback() {
+        let error = peer_identity_from_credentials(Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "simulated peer credential failure",
+        )))
+        .expect_err("missing authenticated credentials must fail closed");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 }

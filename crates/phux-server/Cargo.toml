@@ -2,6 +2,7 @@
 name = "phux-server"
 description = "phux daemon: owns PTYs, terminal grids, and client IPC."
 publish = false
+autobenches = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +14,7 @@ authors.workspace = true
 workspace = true
 
 [features]
-default = ["webtransport"]
+default = ["webtransport", "native-engine"]
 # WebTransport (HTTP/3 over QUIC) listener for browser consumers
 # (phux-0wmf). Browsers cannot open raw QUIC, so this is their door to
 # QUIC-class transport; `phux-web` dials it, falling back to WebSocket.
@@ -26,6 +27,10 @@ webtransport = ["dep:wtransport"]
 #   RUSTFLAGS='--cfg tokio_unstable' cargo build --features tokio-console
 # Then `cargo install tokio-console` and `tokio-console` to attach.
 tokio-console = ["dep:console-subscriber"]
+# Incremental native checkpoint capture/advertisement. The compatibility
+# synthesizers remain available independently of this feature.
+native-engine = []
+
 
 [dependencies]
 phux-protocol = { workspace = true, features = ["server"] }
@@ -183,12 +188,17 @@ portable-pty-adopt.workspace = true
 # descriptors the re-exec'd image inherits (`rustix::io` fcntl), and carry the
 # handoff blob in an anonymous temp file (`tempfile`). `rustix` is libc-free
 # and cross-platform, unlike this crate's macOS-gated `libc`.
-rustix = { version = "0.38", default-features = false, features = ["std", "fs"] }
+rustix = { version = "0.38", default-features = false, features = ["std", "fs", "process"] }
 tempfile.workspace = true
 
-# libghostty-vt is workspace-pinned (see workspace Cargo.toml). Build
-# requires zig 0.16.x on PATH; the nix dev shell provides it.
+# libghostty-vt is workspace-pinned (see workspace Cargo.toml). It remains the
+# canonical native terminal backend for both synthesis and native checkpoints.
+# Build requires zig 0.16.x on PATH; the nix dev shell provides it.
+# Keeping the dependency target-qualified prevents a wasm dependency edge to
+# its C/Zig library.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libghostty-vt.workspace = true
+
 
 # `defaults.cwd-inheritance = inherit-focused` (phux-cs6) opens a new pane
 # in the focused pane's live CWD. No portable VT signal carries this (the
@@ -228,6 +238,14 @@ phux-server-testkit.workspace = true
 # HTTP/3 CONNECT are still exercised end-to-end). Test builds only.
 wtransport = { version = "0.7.1", default-features = false, features = ["ring", "dangerous-configuration"] }
 
+# Native capture tests inject allocator failures through libghostty's safe
+# allocator API to prove checkpoint cleanup. Keep those test-only features off
+# the wasm dependency graph with the same native target gate as production.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+libghostty-vt = { workspace = true, features = ["allocator_api"] }
+allocator-api2 = "0.4"
+
 [[bench]]
 name = "capture"
 harness = false
+required-features = ["native-engine"]

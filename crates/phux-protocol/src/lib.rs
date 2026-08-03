@@ -46,17 +46,23 @@ pub mod sgr;
 pub mod kitty_replay;
 
 pub use caps::{
-    ACKNOWLEDGED_INPUT, ClientCapabilities, ColorSupport, FILE_UPLOAD, ImageProtocol,
-    ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet, ServerFeature,
-    ServerFeatureSet, TerminalColor, TerminalDefaultColors,
+    ACKNOWLEDGED_INPUT, BootstrapCapabilities, BootstrapCodec, BootstrapLimits, BootstrapProfile,
+    BootstrapProfileKind, BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities,
+    CodecUnavailable, ColorSupport, DEFAULT_BOOTSTRAP_CHUNK_BYTES, DEFAULT_HISTORY_PAGE_BYTES,
+    EngineCodec, EngineCodecSet, EngineFeature, EngineFeatureSet, FILE_UPLOAD, ImageProtocol,
+    ImageProtocolSet, KeyboardProtocol, KeyboardProtocolSet, Layer, LayerSet,
+    MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES, MOVE_TERMINAL, OutputMode, ServerFeature,
+    ServerFeatureSet, TERMINAL_REPLY, TerminalColor, TerminalDefaultColors,
+    select_bootstrap_profile,
 };
 pub use ids::{
-    ClientId, FileUploadId, FrameId, GroupId, InputOperationId, SatelliteHost, SessionId,
-    TerminalId, WindowId,
+    BootstrapId, ClientId, FileUploadId, FrameId, GroupId, InputOperationId, SatelliteHost,
+    SessionId, StreamId, TerminalId, WindowId,
 };
 pub use wire::frame::{
     MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
-    MAX_FILE_UPLOAD_SIZE,
+    MAX_FILE_UPLOAD_SIZE, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS,
+    MAX_INPUT_TERMINAL_REPLY_BYTES,
 };
 
 /// Protocol version this crate implements.
@@ -96,9 +102,14 @@ pub use wire::frame::{
 /// chunked, acknowledged upload command and `FILE_UPLOAD` negotiation bit.
 /// Older clients and servers remain valid but MUST negotiate the capability
 /// before using the new command.
+///
+/// Bumped from `0.6.0` to `0.7.0` by ADR-0067: `TERMINAL_SNAPSHOT` (`0x91`)
+/// is permanently retired. Explicit native/compatibility profile negotiation,
+/// generation-bound bootstrap/history streams, and READY-fenced attach replace
+/// synthesized snapshot ordering. Protocol 0.6 and 0.7 peers reject each other.
 pub const PROTOCOL_VERSION: Version = Version {
     major: 0,
-    minor: 6,
+    minor: 7,
     patch: 0,
 };
 

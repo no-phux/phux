@@ -42,6 +42,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "allocator-api2"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c880a97d28a3681c0267bd29cff89621202715b065127cd445fa0f0fe0aa2880"
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1187,7 +1193,7 @@ version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
- "allocator-api2",
+ "allocator-api2 0.2.21",
  "equivalent",
  "foldhash 0.2.0",
 ]
@@ -1198,7 +1204,7 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
- "allocator-api2",
+ "allocator-api2 0.2.21",
  "equivalent",
  "foldhash 0.2.0",
 ]
@@ -1627,8 +1633,9 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=98ad1db59bad85877790353f11e2d6279e46727c#98ad1db59bad85877790353f11e2d6279e46727c"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=562e000e1ce8e623286b1be1fb1136bd43ff0040#562e000e1ce8e623286b1be1fb1136bd43ff0040"
 dependencies = [
+ "allocator-api2 0.4.0",
  "bitflags 2.13.0",
  "int-enum",
  "libghostty-vt-sys",
@@ -1638,7 +1645,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=98ad1db59bad85877790353f11e2d6279e46727c#98ad1db59bad85877790353f11e2d6279e46727c"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=562e000e1ce8e623286b1be1fb1136bd43ff0040#562e000e1ce8e623286b1be1fb1136bd43ff0040"
 
 [[package]]
 name = "libm"
@@ -2188,13 +2195,26 @@ name = "phux-client-core"
 version = "0.10.0"
 dependencies = [
  "ciborium",
+ "criterion",
  "insta",
+ "libghostty-vt",
  "phux-protocol",
  "proptest",
  "serde",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "phux-client-ffi"
+version = "0.10.0"
+dependencies = [
+ "bytes",
+ "libghostty-vt",
+ "phux-client-core",
+ "phux-protocol",
 ]
 
 [[package]]
@@ -2318,6 +2338,7 @@ dependencies = [
 name = "phux-server"
 version = "0.10.0"
 dependencies = [
+ "allocator-api2 0.4.0",
  "bytes",
  "chrono",
  "console-subscriber",

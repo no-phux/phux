@@ -42,7 +42,7 @@ use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, StateScope, TYPE_ATTACHED,
-    TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_SNAPSHOT,
+    TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_TERMINAL_CLOSED,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -1345,7 +1345,7 @@ fn detach_clients_force_detaches_attached_client() {
         let (t, _) = recv_typed(&mut victim).await;
         assert_eq!(t, TYPE_ATTACHED, "victim expected ATTACHED");
         let (t, _) = recv_typed(&mut victim).await;
-        assert_eq!(t, TYPE_TERMINAL_SNAPSHOT, "victim expected SNAPSHOT");
+        assert_eq!(t, TYPE_BOOTSTRAP_BEGIN, "victim expected SNAPSHOT");
 
         // Controller: a separate connection issues DETACH_CLIENTS { "work" }.
         let mut controller = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;

@@ -27,15 +27,16 @@
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_TERMINAL_OUTPUT,
-    TYPE_TERMINAL_SNAPSHOT, ViewportInfo,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
+    ViewportInfo,
 };
 use tempfile::TempDir;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, spawn_server,
-    spawn_server_seed_pty_no_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, attach_by_name_with_id, recv_typed,
+    recv_until_detached, run_local, send_frame, spawn_server, spawn_server_seed_pty_no_cmd,
+    wait_for_socket,
 };
 
 /// `ATTACH { CreateIfMissing { name } }` at the canonical 80x24 viewport.
@@ -47,6 +48,7 @@ fn create_if_missing(name: &str) -> FrameKind {
 
 fn create_if_missing_with_command(name: &str, command: Option<Vec<String>>) -> FrameKind {
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::CreateIfMissing {
             name: name.to_owned(),
             command,
@@ -78,12 +80,12 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
             let (type_byte, _attached) = recv_typed(&mut seed).await;
             assert_eq!(type_byte, TYPE_ATTACHED, "seed: ATTACHED for beta");
             let (type_byte, _snap) = recv_typed(&mut seed).await;
-            assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT, "seed: snapshot for beta");
+            assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN, "seed: snapshot for beta");
             // Detach cleanly so the server frees the seed connection's
             // consumer state before we drop the socket.
             send_frame(&mut seed, &FrameKind::Detach).await;
-            let (type_byte, _detached) = recv_typed(&mut seed).await;
-            assert_eq!(type_byte, TYPE_DETACHED, "seed: DETACHED");
+            let detached = recv_until_detached(&mut seed).await;
+            assert!(matches!(detached, FrameKind::Detached));
             drop(seed);
         }
 
@@ -112,7 +114,7 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
         };
         // Drain A's seed-pane snapshot.
         let (type_byte, _snap_a) = recv_typed(&mut client).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT, "A: snapshot");
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN, "A: snapshot");
 
         // ------------------------------------------------------------
         // In-process switch: DETACH from A, then ATTACH to B on the SAME
@@ -120,15 +122,11 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
         // when the user picks "beta" from the `<leader> a` picker.
         // ------------------------------------------------------------
         send_frame(&mut client, &FrameKind::Detach).await;
-        let (type_byte, detached) = recv_typed(&mut client).await;
-        assert_eq!(type_byte, TYPE_DETACHED, "switch: server replies DETACHED");
-        assert!(
-            matches!(detached, FrameKind::Detached),
-            "switch: payload is Detached",
-        );
+        let detached = recv_until_detached(&mut client).await;
+        assert!(matches!(detached, FrameKind::Detached));
 
         // Same connection, new target.
-        send_frame(&mut client, &attach_by_name("beta")).await;
+        send_frame(&mut client, &attach_by_name_with_id("beta", 2)).await;
         let (type_byte, attached_b) = recv_typed(&mut client).await;
         assert_eq!(
             type_byte, TYPE_ATTACHED,
@@ -160,32 +158,25 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
         // The pane actor for B is alive and serving: B's TERMINAL_SNAPSHOT
         // arrives, proving the re-attach reconstructs B's terminal (the
         // client repaints from this).
-        let (type_byte, snap_b) = recv_typed(&mut client).await;
-        assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
-            "B: snapshot for the re-attached session's seed pane",
-        );
-        match snap_b {
-            FrameKind::TerminalSnapshot {
+        let (type_byte, begin_b) = recv_typed(&mut client).await;
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
+        match begin_b {
+            FrameKind::BootstrapBegin {
                 terminal_id,
-                cols,
-                rows,
-                vt_replay_bytes,
+                cols: 80,
+                rows: 24,
                 ..
-            } => {
-                assert_eq!(
-                    terminal_id, b_focused_pane,
-                    "B: snapshot is for B's focused pane, not A's",
-                );
-                assert_eq!(cols, 80, "B: seed pane cols");
-                assert_eq!(rows, 24, "B: seed pane rows");
-                assert!(
-                    vt_replay_bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"),
-                    "B: snapshot carries the reset preamble (fresh paint base)",
-                );
-            }
-            other => panic!("B: expected TerminalSnapshot, got {other:?}"),
+            } => assert_eq!(terminal_id, b_focused_pane),
+            other => panic!("B: expected BootstrapBegin, got {other:?}"),
         }
+        let (_, chunk_b) = recv_typed(&mut client).await;
+        assert!(matches!(
+            chunk_b,
+            FrameKind::BootstrapChunk { ref payload, .. }
+                if payload.starts_with(b"\x1b[!p\x1b[2J\x1b[H")
+        ));
+        let (_, ready_b) = recv_typed(&mut client).await;
+        assert!(matches!(ready_b, FrameKind::BootstrapReady { .. }));
 
         drop(client);
         shutdown_tx.send(()).ok();
@@ -222,17 +213,10 @@ fn reattach_to_other_session_does_not_forward_old_session_output() {
             let (type_byte, _attached) = recv_typed(&mut seed).await;
             assert_eq!(type_byte, TYPE_ATTACHED, "seed {name}: ATTACHED");
             let (type_byte, _snap) = recv_typed(&mut seed).await;
-            assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT, "seed {name}: snapshot");
+            assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN, "seed {name}: snapshot");
             send_frame(&mut seed, &FrameKind::Detach).await;
-            loop {
-                let (type_byte, frame) = recv_typed(&mut seed).await;
-                if type_byte == TYPE_TERMINAL_OUTPUT {
-                    continue;
-                }
-                assert_eq!(type_byte, TYPE_DETACHED, "seed {name}: DETACHED");
-                assert!(matches!(frame, FrameKind::Detached));
-                break;
-            }
+            let detached = recv_until_detached(&mut seed).await;
+            assert!(matches!(detached, FrameKind::Detached));
         }
 
         let mut client = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
@@ -240,7 +224,7 @@ fn reattach_to_other_session_does_not_forward_old_session_output() {
         let (type_byte, _attached_a) = recv_typed(&mut client).await;
         assert_eq!(type_byte, TYPE_ATTACHED, "A: ATTACHED");
         let (type_byte, _snap_a) = recv_typed(&mut client).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT, "A: snapshot");
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN, "A: snapshot");
 
         // Prove the alpha raw-output pump is live before the switch.
         let mut saw_alpha = false;
@@ -257,21 +241,14 @@ fn reattach_to_other_session_does_not_forward_old_session_output() {
         assert!(saw_alpha, "A: expected live ALPHA output before detach");
 
         send_frame(&mut client, &FrameKind::Detach).await;
-        loop {
-            let (type_byte, frame) = recv_typed(&mut client).await;
-            if type_byte == TYPE_TERMINAL_OUTPUT {
-                continue;
-            }
-            assert_eq!(type_byte, TYPE_DETACHED, "switch: DETACHED");
-            assert!(matches!(frame, FrameKind::Detached));
-            break;
-        }
+        let detached = recv_until_detached(&mut client).await;
+        assert!(matches!(detached, FrameKind::Detached));
 
-        send_frame(&mut client, &attach_by_name("beta")).await;
+        send_frame(&mut client, &attach_by_name_with_id("beta", 2)).await;
         let (type_byte, _attached_b) = recv_typed(&mut client).await;
         assert_eq!(type_byte, TYPE_ATTACHED, "B: ATTACHED");
         let (type_byte, _snap_b) = recv_typed(&mut client).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT, "B: snapshot");
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN, "B: snapshot");
 
         // After B attaches on the same connection, only B's pump should feed this mailbox.
         // Before phux-lskb, A's orphaned pump could still forward ALPHA output here.

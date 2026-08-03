@@ -39,6 +39,7 @@
 #![allow(clippy::must_use_candidate, reason = "test scaffolding")]
 
 pub mod builder;
+pub mod fault;
 pub mod relay;
 pub mod screen;
 pub mod tracing_capture;
@@ -48,7 +49,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
+use phux_protocol::wire::frame::{AttachTarget, FrameKind, TYPE_HELLO_OK, ViewportInfo};
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -252,16 +255,39 @@ where
     local.block_on(&rt, fut);
 }
 
-/// Poll `UnixStream::connect(path)` until success or the deadline expires.
-/// `path.exists()` is racy with the "stale-socket unlink + bind" sequence
-/// the server performs at startup; only an actual connect is race-free.
+/// Poll for a connection and complete the mandatory protocol-0.7 handshake.
+///
+/// Most wire integration tests exercise post-negotiation behavior. Tests that
+/// target HELLO or pre-HELLO rejection must use [`wait_for_raw_socket`].
 pub async fn wait_for_socket(path: &Path, deadline: Duration) -> UnixStream {
+    let mut stream = wait_for_raw_socket(path, deadline).await;
+    send_frame(
+        &mut stream,
+        &FrameKind::Hello {
+            client_name: "phux-server-integration-test".to_owned(),
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            client_caps: ClientCapabilities::new()
+                .with_color_support(ColorSupport::TrueColor)
+                .with_layers(LayerSet::all()),
+        },
+    )
+    .await;
+    let (type_byte, frame) = recv_typed(&mut stream).await;
+    assert_eq!(type_byte, TYPE_HELLO_OK);
+    assert!(matches!(frame, FrameKind::HelloOk { .. }));
+    stream
+}
+
+/// Poll `UnixStream::connect(path)` without sending protocol frames.
+pub async fn wait_for_raw_socket(path: &Path, deadline: Duration) -> UnixStream {
     let start = Instant::now();
     let mut last_err: Option<std::io::Error> = None;
     while start.elapsed() < deadline {
         match UnixStream::connect(path).await {
-            Ok(s) => return s,
-            Err(e) => last_err = Some(e),
+            Ok(stream) => return stream,
+            Err(error) => last_err = Some(error),
         }
         sleep(Duration::from_millis(5)).await;
     }
@@ -321,6 +347,18 @@ pub async fn recv_typed(stream: &mut UnixStream) -> (u8, FrameKind) {
     assert!(rest.is_empty(), "decoder did not consume entire frame");
     (type_byte, frame)
 }
+/// Drain queued attach/bootstrap traffic until the server acknowledges DETACH.
+///
+/// Progressive bootstrap frames can already be in flight when a client sends
+/// DETACH; tests must not assume the acknowledgement is the next wire frame.
+pub async fn recv_until_detached(stream: &mut UnixStream) -> FrameKind {
+    loop {
+        let (_, frame) = recv_typed(stream).await;
+        if matches!(frame, FrameKind::Detached) {
+            return frame;
+        }
+    }
+}
 
 /// Like [`recv_typed`] but returns `None` on a clean connection close
 /// (`UnexpectedEof` on the length prefix) instead of panicking. Use this
@@ -365,7 +403,14 @@ pub fn encode_frame(frame: &FrameKind) -> BytesMut {
 /// the snapshot dimensions line up.
 #[must_use]
 pub fn attach_by_name(name: &str) -> FrameKind {
+    attach_by_name_with_id(name, 1)
+}
+
+/// Build an `ATTACH` with an explicit connection-unique correlation id.
+#[must_use]
+pub fn attach_by_name_with_id(name: &str, attach_id: u32) -> FrameKind {
     FrameKind::Attach {
+        attach_id,
         target: AttachTarget::ByName(name.to_owned()),
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,

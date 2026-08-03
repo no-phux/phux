@@ -84,7 +84,7 @@ use std::path::PathBuf;
 use phux_protocol::ids::TerminalId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -311,8 +311,9 @@ impl TuiProbe {
             }
             other => panic!("expected ATTACHED, got {other:?}"),
         };
-        let (type_byte, snap) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        let (type_byte, begin) = recv_typed(&mut stream).await;
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
+        assert!(matches!(begin, FrameKind::BootstrapBegin { .. }));
         let mut probe = Self {
             stream,
             terminal_id,
@@ -320,22 +321,16 @@ impl TuiProbe {
             raw: Vec::new(),
             closed: false,
         };
-        match snap {
-            FrameKind::TerminalSnapshot {
-                vt_replay_bytes,
-                scrollback_bytes,
-                ..
-            } => {
-                // Scrollback first, per the frame's documented ordering.
-                if let Some(scrollback) = scrollback_bytes {
-                    probe.raw.extend_from_slice(&scrollback);
-                    probe.screen.write(&scrollback);
-                }
-                probe.raw.extend_from_slice(&vt_replay_bytes);
-                probe.screen.write(&vt_replay_bytes);
+        let (_, chunk) = recv_typed(&mut probe.stream).await;
+        match chunk {
+            FrameKind::BootstrapChunk { payload, .. } => {
+                probe.raw.extend_from_slice(&payload);
+                probe.screen.write(&payload);
             }
-            other => panic!("expected TERMINAL_SNAPSHOT, got {other:?}"),
+            other => panic!("expected BOOTSTRAP_CHUNK, got {other:?}"),
         }
+        let (_, ready) = recv_typed(&mut probe.stream).await;
+        assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
         probe
     }
 

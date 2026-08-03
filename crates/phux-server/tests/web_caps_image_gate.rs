@@ -23,7 +23,7 @@
 
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ImageProtocolSet};
-use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_SNAPSHOT};
+use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -31,7 +31,7 @@ use tokio::time::timeout;
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 /// Kitty graphics transmit-and-display, base64 payload (`ESC _ G ... ESC \`).
@@ -86,7 +86,7 @@ async fn attach_with_caps(
     client_name: &str,
     caps: ClientCapabilities,
 ) -> UnixStream {
-    let mut stream = wait_for_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
+    let mut stream = wait_for_raw_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
     send_frame(
         &mut stream,
         &FrameKind::Hello {
@@ -107,7 +107,7 @@ async fn attach_with_caps(
     let (tb, _) = recv_typed(&mut stream).await;
     assert_eq!(tb, TYPE_ATTACHED, "expected ATTACHED after ATTACH");
     let (tb, _) = recv_typed(&mut stream).await;
-    assert_eq!(tb, TYPE_TERMINAL_SNAPSHOT, "expected opening snapshot");
+    assert_eq!(tb, TYPE_BOOTSTRAP_BEGIN, "expected opening snapshot");
     stream
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "phux-client-core"
-description = "phux TUI client substrate: pane-geometry layout, multi-pane composition, and predictive local echo. The ratatui-free pane-interior layer (ADR-0020)."
+description = "Frontend-neutral synchronous session kernel and reusable client-side terminal policies."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -12,12 +12,18 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# Safe native libghostty checkpoint host. The target-qualified optional
+# dependency below keeps wasm builds, including `--all-features`, off the
+# native C/Zig linkage graph.
+native-engine = ["dep:libghostty-vt"]
+
 [dependencies]
-# Stable IDs (`TerminalId`, `GroupId`), the input atoms (`KeyEvent`,
-# `MouseEvent`), and the wire `ViewportInfo` the layout math reasons about.
-# The `server` feature activates the full type surface (input atoms + wire
-# codec) every in-workspace consumer enables.
-phux-protocol = { workspace = true, features = ["server"] }
+# Stable IDs, ungated wire/input atoms, bootstrap profiles, and layout records.
+# Engine-specific server conversions remain disabled so the default core stays
+# native/wasm portable.
+phux-protocol.workspace = true
 # phux-9gw.1.4: width-aware UTF-8 prediction. The predict layer must know
 # how many terminal cells a Unicode scalar consumes before queueing a
 # prediction. `unicode-width` is the canonical zero-dep crate (Unicode 16).
@@ -35,7 +41,16 @@ ciborium = "0.2"
 # near-empty shell per ADR-0011), so this crate mirrors the shapes locally.
 serde = { workspace = true }
 thiserror.workspace = true
+sha2 = "0.10"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libghostty-vt = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
 insta.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "history"
+harness = false

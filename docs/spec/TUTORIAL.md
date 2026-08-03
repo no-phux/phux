@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-06-06
+last-reviewed: 2026-08-02
 ---
 
 # Protocol 101: a complete session walkthrough
@@ -14,47 +14,80 @@ last-reviewed: 2026-06-06
 
 A phux session, in one breath: a client connects to a server, negotiates capabilities, attaches to a terminal (or creates one), receives a stream of VT bytes as the PTY emits them, sends keypresses and mouse events back, and eventually detaches. The flow is asymmetric on purpose. The server sends opaque terminal **bytes**; the client sends **structured** input events. Both ends run the same terminal engine (libghostty), so neither side re-encodes terminal state into a second model — the bytes go straight onto the wire and are parsed once on each end.
 
-Protocol version for this walkthrough is `0.3.0`.
+Protocol version for this walkthrough is `0.7.0`.
 
 ---
 
 ## Step 1: HELLO negotiation
 
-**What happens:** the client connects over a Unix socket (or SSH stdin/stdout), declares the versions it speaks, and advertises its capabilities.
+**What happens:** the client connects over a Unix socket (or SSH stdin/stdout),
+sends the exact protocol version it speaks, and advertises its capabilities.
+Every top-level body field is tagged; `client_caps` itself is the required
+positional sub-record defined by [proto.md §6.2](./proto.md).
 
 ```
 Client sends (frame type 0x01):
   HELLO {
-    versions: [{ min: 0.3.0, max: 0.3.0 }],
-    client_caps: {
-      layers: 0x01,              // L1 only
+    client_name: "phux-tui",       // field 1
+    protocol_major: 0,             // field 2
+    protocol_minor: 7,             // field 3
+    protocol_patch: 0,             // field 4
+    client_caps: {                 // field 5
       color: TrueColor,
-      kbd_protocols: 0x03,       // kitty + modifyOtherKeys
-      mouse_protocols: 0x01,     // standard mouse
+      layers: 0x05,                // L1 + L3; L2 remains reserved
+      images: 0x00,
+      kbd_protocols: 0x03,         // kitty + modifyOtherKeys
       hyperlinks: true,
-      output_mode: Raw,          // byte-faithful PTY broadcast
+      output_mode: Raw,            // synthesized-profile preference only
+      default_colors: None,
+      bootstrap_profiles: 0x0e,    // synth raw/state-sync + native-v2 offer
+      native_codecs: 1 << 2,       // exact LibghosttyCheckpointV2
+      native_features: 0x0000000f, // all four required native features
+      max_chunk_bytes: 262144,
+      max_history_page_bytes: 1048576,
     }
   }
 
 Server replies (frame type 0x80):
   HELLO_OK {
-    version: 0.3.0,
-    server_caps: {
-      layers: 0x05,              // L1 + L3 implemented (no L2 tier)
-      features: 0x01,            // REATTACH_REPLAY enabled
-      max_message_size: 16777216,
+    protocol_major: 0,             // field 1
+    protocol_minor: 7,             // field 2
+    protocol_patch: 0,             // field 3
+    server_caps: {                 // field 4
+      layers: 0x05,
+      features: 0x00000000,
     },
-    server_id: "phux-server-abc123"
+    server_id: "phux-server-abc123", // field 5, opaque incarnation bytes
+    selected_profile: NativeState { // field 6; current native tag is 3
+      codec: LibghosttyCheckpointV2,
+      features: 0x0000000f,
+    },
+    max_chunk_bytes: 262144,        // field 7, negotiated minimum
+    max_history_page_bytes: 1048576, // field 8, negotiated minimum
   }
 ```
 
 **Wire shape:** see [proto.md §6.1](./proto.md). Key pieces:
 
-- `versions` lists the semantic version ranges the client accepts; the server selects the highest version that lies in some range and that it also supports, then echoes it back.
-- `layers` is a bitset: `0x01` is L1 only, `0x05` is L1+L3. The negotiated tier set is the intersection of the two `layers` fields; an agent declares L1, a TUI declares L1+L3. The L2 bit (`0x02`) is reserved but unused — there is no collection tier (see [L2.md](./L2.md)).
-- The capability fields (color, keyboard, mouse, hyperlinks) tell the server how to downsample the outbound byte stream. If the client advertises `Indexed256`, the server rewrites truecolor SGR codes to their 256-color equivalents before forwarding.
-
-`HELLO.client_caps` carries a legacy `rendering` field (`Diff` vs. `VtReplay`); it is deprecated and ignored. With `TERMINAL_OUTPUT` carrying VT bytes, every client renders by local libghostty parse, so there is no structured-diff alternative to select. See [proto.md §6.2](./proto.md).
+- `major.minor` must equal `0.7`; a `0.6` peer is rejected before session
+  state. Patch differences are compatible, and the server returns its current
+  patch.
+- `layers` is intersected once for the connection. `0x01` is L1 only and
+  `0x05` is L1+L3; L2's `0x02` bit remains reserved and unmounted (see
+  [L2.md](./L2.md)).
+- `BootstrapCapabilities::new()` offers only the two synthesized compatibility
+  profiles. Native is explicit opt-in after a successful engine probe: both
+  peers must share the exact checkpoint-v2 codec and all four required features
+  (`CONTINUATION`, `READY_BOUNDARY`, `HISTORY_PAGES`, and
+  `BOUNDED_HISTORY_CONTROL`). The current native offer bit is `0x08`; the
+  incomplete legacy `0x01` offer is permanently retired.
+- The server selects one advertised profile and the per-axis minimum of the
+  nonzero byte bounds. If native is unusable it may select only a synthesized
+  profile advertised by both peers; with no shared profile it sends
+  `CODEC_UNAVAILABLE`. There is no fallback after `HELLO_OK`.
+- Color/image/keyboard/hyperlink rewriting applies only to synthesized
+  compatibility profiles. Native checkpoint, history, cursor, and live PTY
+  bytes remain opaque and byte-identical.
 
 **Why it matters:** negotiation happens once and fixes the contract for the whole connection — version, capabilities, and which tiers the two sides will use.
 
@@ -67,6 +100,7 @@ Server replies (frame type 0x80):
 ```
 Client sends (frame type 0x02):
   ATTACH {
+    attach_id: 23,
     target: CREATE_IF_MISSING {
       name: "scratch",           // L3 name key, resolved client-side
       command: None,             // use the server's default shell
@@ -83,12 +117,13 @@ Client sends (frame type 0x02):
 
 Server replies (frame type 0x81):
   ATTACHED {
+    attach_id: 23,
     snapshot: SubstrateSnapshot { terminals: [...], collections: [], metadata_keys: [] },
     initial_client_id: ClientId(7),
   }
 ```
 
-**Wire shape:** [L1.md §state replay](./L1.md) defines `ATTACH`, its `AttachTarget` union, and `RolePolicy`. The target is a tagged union — `BY_TERMINAL_ID` to attach to one running terminal, `CREATE_IF_MISSING` to spawn one if absent, and others. `viewport` carries the client's drawable size so the server can size the terminal; `role_policy` chooses `PRIMARY` (input-capable) or `VIEWER` (watch-only). `ATTACHED` is metadata only: it carries a `SubstrateSnapshot` of the tier-visible state and the client's `initial_client_id`. It carries no terminal content yet — that arrives next.
+**Wire shape:** [L1.md §state replay](./L1.md) defines `ATTACH`, its `AttachTarget` union, and `RolePolicy`. `attach_id = 23` is client-chosen and echoed by both `ATTACHED` and `ATTACH_READY`, preventing concurrent attach replies from crossing. The target is a tagged union — `BY_TERMINAL_ID` to attach to one running terminal, `CREATE_IF_MISSING` to spawn one if absent, and others. `viewport` carries the client's drawable size so the server can size the terminal; `role_policy` chooses `PRIMARY` (input-capable) or `VIEWER` (watch-only). `ATTACHED` is metadata only: it carries a `SubstrateSnapshot` of the tier-visible state and the client's `initial_client_id`. It carries no terminal content yet — that arrives next.
 
 **Why it matters:** this is where the client says "I want to see and control this terminal," and which role it claims. The server then allocates a subscription and begins the replay sequence.
 
@@ -101,65 +136,70 @@ Server replies (frame type 0x81):
 
 ---
 
-## Step 3: Receive initial state (snapshot)
+## Step 3: Receive the negotiated bootstrap
 
-**What happens:** for each terminal the client attached to, the server sends a self-contained snapshot of the current grid. This is the bootstrap payload that brings the client's local engine up to date.
+**What happens:** for each terminal, the server sends the HELLO_OK-selected
+profile as a generation-scoped opaque stream:
 
 ```
-Server sends (frame type 0x91):
-  TERMINAL_SNAPSHOT {
-    terminal_id: TerminalId::LOCAL(42),
-    cols: 120,
-    rows: 40,
-    vt_replay_bytes: bytes,        // synthesized VT that reproduces the grid
-    scrollback_bytes: None,        // present iff request_scrollback was true
-  }
+Server sends BOOTSTRAP_BEGIN (0x93):
+  { terminal_id: LOCAL(42), stream_id: 9, bootstrap_id: 4,
+    codec: Native(LibghosttyCheckpointV2), cols: 120, rows: 40,
+    output_mode: Raw, base_seq: 1 }
+Server sends BOOTSTRAP_CHUNK (0x94):
+  { terminal_id: LOCAL(42), stream_id: 9, bootstrap_id: 4,
+    chunk_seq: 0, payload: opaque_bytes }
+Server sends BOOTSTRAP_READY (0x95):
+  { terminal_id: LOCAL(42), stream_id: 9, bootstrap_id: 4,
+    history_cursor: optional_opaque_bytes }
+Server sends ATTACH_READY (0x83):
+  { attach_id: 23 }
 ```
 
-**Wire shape:** [L1.md §2.4](./L1.md) describes the full shape. `vt_replay_bytes` is a Mosh-style, self-contained VT byte sequence the server synthesizes from its canonical terminal: written to a fresh `libghostty_vt::Terminal` of the declared `cols × rows`, it reproduces the server's grid at snapshot time. The bytes are opaque — the client feeds them to its engine and does not parse or rewrite them. `scrollback_bytes` is present only when the client set `request_scrollback`, bounded by `scrollback_limit_lines`, and is applied before `vt_replay_bytes`.
+**Wire shape:** [L1.md §4](./L1.md) defines the exact fields. Native bytes are
+an exact libghostty checkpoint and are never parsed or rewritten by phux.
+Chunks may split engine records. The client decodes into staging and publishes
+atomically at matching READY. History, when requested, is pulled in bounded
+pages afterward and never blocks live output or ATTACH_READY.
 
-Cursor position and terminal modes are not separate wire fields. They live inside each end's `libghostty_vt::Terminal`; a client that needs the cursor or modes queries its local engine ([L1.md §2.5](./L1.md)).
-
-**Why it matters:** after applying the snapshot, the client's local engine grid matches the server's canonical grid. From here the live byte stream continues.
+**Why it matters:** READY gives the client authenticated active state before
+history without pausing the PTY or adding a bootstrap-ACK round trip.
 
 ---
 
 ## Step 4: Stream terminal output
 
-**What happens:** every time the PTY produces bytes, the server collects them (paced at a configurable refresh rate, default 60 Hz) and forwards them.
+**What happens:** output continues in the same stream/generation, beginning
+exactly one sequence after BEGIN's inclusive cut:
 
 ```
-User types "ls" and presses Enter.
-
-Server sends (frame type 0x90):
-  TERMINAL_OUTPUT {
+Server sends TERMINAL_OUTPUT (0x90):
+  {
     terminal_id: TerminalId::LOCAL(42),
+    stream_id: StreamId(9),
+    bootstrap_id: BootstrapId(4),
     seq: 2,
-    bytes: b"ls\r\n"               // keyboard bytes, echoed by the PTY
+    bytes: b"ls\r\n"
   }
 
-A moment later, the shell replies:
-
-Server sends (frame type 0x90):
+A moment later:
   TERMINAL_OUTPUT {
     terminal_id: TerminalId::LOCAL(42),
+    stream_id: StreamId(9),
+    bootstrap_id: BootstrapId(4),
     seq: 3,
     bytes: b"Documents\r\nDownloads\r\n..."
   }
-
-The client parses these VT bytes into its local libghostty Terminal,
-renders to screen, then acknowledges:
-
-Client sends (frame type 0x21):
-  FRAME_ACK {
-    terminal_id: TerminalId::LOCAL(42),
-    seq: 3   // "I have applied all output up to seq 3"
-  }
 ```
 
-**Wire shape:** [L1.md §2](./L1.md) and [proto.md §8](./proto.md). The bytes are raw VT — no re-encoding, no structuring; the server forwards what the PTY emitted. The per-terminal `seq` is monotonic and drives flow control: a client that falls behind lets the server pace itself instead of buffering without bound. Note that `seq` does not carry across a snapshot boundary; the first `TERMINAL_OUTPUT` after a `TERMINAL_SNAPSHOT` is authoritative for the new base ([L1.md §7](./L1.md)).
+**Wire shape:** NativeState and SynthesizedVtRaw carry no live ACK.
+SynthesizedVtStateSync alone may send cumulative `FRAME_ACK` with the same
+terminal, stream, and bootstrap ids after applying the transition. A sequence
+gap or stale generation is repaired by `BOOTSTRAP_TOMBSTONE` plus a fresh cut,
+never by guessing a base.
 
-**Why it matters:** this is the hot path. Sending exactly the bytes the PTY emitted preserves every terminal feature without the server modeling any of them.
+**Why it matters:** raw native output remains byte-identical, and explicit
+generation/watermark identity prevents stale bytes from corrupting a replica.
 
 ---
 
@@ -257,7 +297,9 @@ Another client can attach to it later.
 
 **Wire shape:** [proto.md §7.2](./proto.md). `reason` is an enum: `REQUESTED` (clean client detach), `SERVER_SHUTDOWN`, `SESSION_KILLED` (a legacy name retained for wire compat), `REPLACED` (another client deliberately took over an exclusive attach), `PROTOCOL_ERROR`, and `INTERNAL_ERROR`.
 
-**Why it matters:** detach is clean and does not kill the terminal; the server just stops sending it output. The next client to attach receives the snapshot — and scrollback up to the configured limit if it asks — and picks up where the previous one left off. This is the property tmux does not provide: scrollback survives detach.
+**Why it matters:** detach is clean and does not kill the terminal. The next
+client receives a fresh profile-selected bootstrap, then may pull retained
+history incrementally.
 
 ---
 
@@ -273,18 +315,17 @@ Client                              Server                    Terminal (PTY)
   |                                   |                           |
   |------- ATTACH ------>             |                           |
   |                   <------ ATTACHED |                           |
-  |              <----- TERMINAL_SNAPSHOT (vt_replay_bytes)       |
-  |                                   |                           |
+  |              <----- BOOTSTRAP_BEGIN (base_seq 1)              |
+  |              <----- BOOTSTRAP_CHUNK (opaque checkpoint)       |
+  |              <----- BOOTSTRAP_READY                            |
+  |              <----- ATTACH_READY                               |
   |              <----- TERMINAL_OUTPUT (seq 2) -------- shell prompt
-  |                                   |                           |
   |              user types "ls\n" ----->                         |
   |------- INPUT_KEY ------>          |------- write VT bytes --->
   |                                   |                      <---- echo "ls"
   |              <----- TERMINAL_OUTPUT (seq 3) -------- ls output
-  |------- FRAME_ACK ------>          |                           |
   |                                   |                           |
   |              <----- TERMINAL_OUTPUT (seq 4) -------- prompt   |
-  |------- FRAME_ACK ------>          |                           |
   |                                   |                           |
   |------- DETACH ------>             |                           |
   |                   <------ DETACHED |                           |

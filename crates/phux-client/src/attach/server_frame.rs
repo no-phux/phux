@@ -7,11 +7,18 @@
 
 use std::collections::{HashMap, HashSet};
 
+use phux_client_core::engine::CanonicalGeometry;
+use phux_client_core::session::{
+    EffectBuffer as KernelEffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason,
+    HistoryUnavailableReason, KernelEffect, KernelInput, KernelSend,
+};
 use phux_protocol::ids::{ClientId, SessionId, TerminalId};
 use phux_protocol::wire::frame::{
-    AgentEvent, CONFIG_RELOAD_KEY, ErrorCode, FrameKind, Scope, SpawnError, SpawnResult,
+    AgentEvent, CONFIG_RELOAD_KEY, ErrorCode, FrameKind, HistoryRejectionReason,
+    HistoryTombstoneReason, Scope, SpawnError, SpawnResult,
 };
 use phux_protocol::wire::info::SessionInfo;
+use phux_protocol::{BootstrapId, StreamId};
 
 use super::actions::{self, PendingSplit, PendingWindow, apply_spawned_ok, apply_terminal_closed};
 use super::driver::{AttachEnd, AttachError, DEFAULT_GROUP_ID, PaneSlot};
@@ -147,15 +154,17 @@ pub(super) struct FrameOutcome {
     /// `layout_replaced` reconcile/broadcast paths (which already sized
     /// their panes and would otherwise thrash on attach).
     pub(super) reflow_panes: bool,
-    /// phux-3uv: `Some((terminal_id, seq))` ⇒ the client applied a
-    /// `TERMINAL_OUTPUT` frame and the driver must send a cumulative
-    /// `FRAME_ACK { terminal_id, seq }` back to the server. This closes
-    /// the ADR-0018 lazy-state-sync loop: the server's per-consumer
-    /// `SnapshotSynthesizer` calls `mark_synced` on receipt, clearing the
-    /// dirty bits that produced the acked frame so the next tick re-diffs
-    /// against the acked reference (rather than re-emitting an unbounded
-    /// unacked delta forever). Set ONLY by the `TerminalOutput` arm.
-    pub(super) ack: Option<(TerminalId, u64)>,
+    /// Exact cumulative `StateSync` acknowledgement emitted by the session kernel.
+    pub(super) ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
+    /// The engine rejected a generation after emitting a typed resync status.
+    ///
+    /// The driver issues a fresh in-connection ATTACH while this outcome leaves
+    /// the frozen published replica visible.
+    pub(super) resync_required: bool,
+    /// Pull the next opaque native history page after READY or a prior page.
+    pub(super) history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
+    /// Exact terminal-engine response writes to forward on the ordered PTY lane.
+    pub(super) pty_writes: Vec<(TerminalId, Vec<u8>)>,
     /// phux-4li.20: `Some((sessions, focused))` ⇒ ATTACHED just landed
     /// and carried the server's full session graph. The driver caches
     /// it so the `<leader> a` session picker can list the other
@@ -172,9 +181,9 @@ pub(super) struct FrameOutcome {
     /// lifecycle, input-lease holder (`TerminalControl`), or asked-attention
     /// flag (ADR-0035 `Asked`), so the driver must repaint the chrome
     /// (supervisory badge, attention hint, window-tab markers) even though no
-    /// grid content changed. Set by the `Event` arms, and (phux-foz.9) by the
-    /// `TerminalOutput` / `TerminalSnapshot` arms when the applied bytes moved
-    /// the pane's OSC 0/2 title — the title feeds the window-tab labels and
+    /// grid content changed. Set by the `Event`, bootstrap, and
+    /// `TerminalOutput` arms when the applied bytes moved the pane's OSC 0/2
+    /// title — the title feeds the window-tab labels and
     /// the sidebar's agents section (the only identity signal a plain
     /// `claude`/`codex` pane emits), and title bytes arrive on the ordinary
     /// content path that otherwise never refreshes the chrome.
@@ -217,7 +226,14 @@ pub(super) struct FrameOutcome {
 const fn frame_kind_label(frame: &FrameKind) -> &'static str {
     match frame {
         FrameKind::Attached { .. } => "attached",
-        FrameKind::TerminalSnapshot { .. } => "terminal_snapshot",
+        FrameKind::BootstrapBegin { .. } => "bootstrap_begin",
+        FrameKind::BootstrapChunk { .. } => "bootstrap_chunk",
+        FrameKind::BootstrapReady { .. } => "bootstrap_ready",
+        FrameKind::HistoryPage { .. } => "history_page",
+        FrameKind::HistoryTombstone { .. } => "history_tombstone",
+        FrameKind::HistoryRejected { .. } => "history_rejected",
+        FrameKind::BootstrapTombstone { .. } => "bootstrap_tombstone",
+        FrameKind::AttachReady { .. } => "attach_ready",
         FrameKind::TerminalOutput { .. } => "terminal_output",
         FrameKind::Detached => "detached",
         FrameKind::Bell { .. } => "bell",
@@ -267,6 +283,302 @@ fn pane_label(id: &TerminalId) -> String {
     }
 }
 
+#[derive(Default)]
+struct KernelRoute {
+    ack: Option<(TerminalId, StreamId, BootstrapId, u64)>,
+    history_request: Option<(TerminalId, StreamId, BootstrapId, bytes::Bytes, u32, u32)>,
+    pty_writes: Vec<(TerminalId, Vec<u8>)>,
+    damaged: HashSet<TerminalId>,
+    resync_required: bool,
+    ignored: bool,
+    failed: Option<String>,
+}
+impl KernelRoute {
+    fn damaged(&self, terminal_id: &TerminalId) -> bool {
+        self.damaged.contains(terminal_id)
+    }
+}
+
+const fn history_unavailable_reason(
+    reason: HistoryTombstoneReason,
+) -> Option<HistoryUnavailableReason> {
+    Some(match reason {
+        HistoryTombstoneReason::Stale => HistoryUnavailableReason::Stale,
+        HistoryTombstoneReason::Pruned => HistoryUnavailableReason::Pruned,
+        HistoryTombstoneReason::Reset => HistoryUnavailableReason::Reset,
+        HistoryTombstoneReason::Resize => HistoryUnavailableReason::Resize,
+        HistoryTombstoneReason::Expired => HistoryUnavailableReason::Expired,
+        HistoryTombstoneReason::Released => HistoryUnavailableReason::Released,
+        HistoryTombstoneReason::Limit => HistoryUnavailableReason::Limit,
+        HistoryTombstoneReason::CodecFailure => HistoryUnavailableReason::CodecFailure,
+        _ => return None,
+    })
+}
+
+const fn history_rejection_reason(
+    reason: HistoryRejectionReason,
+) -> Option<KernelHistoryRejectionReason> {
+    Some(match reason {
+        HistoryRejectionReason::ZeroLimit => KernelHistoryRejectionReason::ZeroLimit,
+        HistoryRejectionReason::TooSmall => KernelHistoryRejectionReason::TooSmall,
+        HistoryRejectionReason::Busy => KernelHistoryRejectionReason::Busy,
+        _ => return None,
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive translation of ordered wire-frame variants into session-kernel inputs and effects"
+)]
+fn route_engine_frame(
+    frame: &FrameKind,
+    kernel: &mut super::driver::AttachKernel,
+    effects: &mut KernelEffectBuffer,
+) -> KernelRoute {
+    let terminals;
+    let input = match frame {
+        FrameKind::Attached {
+            attach_id,
+            snapshot,
+            ..
+        } => {
+            terminals = snapshot
+                .panes
+                .iter()
+                .map(|pane| pane.id.clone())
+                .collect::<Vec<_>>();
+            Some(KernelInput::AttachStarted {
+                attach_id: *attach_id,
+                terminals: &terminals,
+            })
+        }
+        FrameKind::AttachReady { attach_id } => Some(KernelInput::AttachReady {
+            attach_id: *attach_id,
+        }),
+        FrameKind::BootstrapBegin {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            profile,
+            cols,
+            rows,
+            base_seq,
+        } => Some(KernelInput::BootstrapBegin {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            profile: *profile,
+            geometry: CanonicalGeometry {
+                cols: *cols,
+                rows: *rows,
+            },
+            base_seq: *base_seq,
+        }),
+        FrameKind::BootstrapChunk {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            chunk_seq,
+            payload,
+        } => Some(KernelInput::BootstrapChunk {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            chunk_seq: *chunk_seq,
+            payload,
+        }),
+        FrameKind::BootstrapReady {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            history_cursor,
+        } => Some(KernelInput::BootstrapReady {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            history_cursor: history_cursor.as_deref(),
+        }),
+        FrameKind::HistoryPage {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            rows,
+            page_seq,
+            cursor,
+            next_cursor,
+            payload,
+        } => Some(KernelInput::HistoryPage {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            rows: *rows,
+            page_seq: *page_seq,
+            payload,
+            cursor,
+            next_cursor: next_cursor.as_deref(),
+        }),
+        FrameKind::HistoryTombstone {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor,
+            reason,
+        } => Some(KernelInput::HistoryTombstone {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            cursor,
+            reason: match history_unavailable_reason(*reason) {
+                Some(reason) => reason,
+                None => {
+                    return KernelRoute {
+                        failed: Some("unsupported history tombstone reason".to_owned()),
+                        ..KernelRoute::default()
+                    };
+                }
+            },
+        }),
+        FrameKind::HistoryRejected {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor,
+            reason,
+            required_bytes,
+            required_rows,
+        } => Some(KernelInput::HistoryRejected {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            cursor,
+            reason: match history_rejection_reason(*reason) {
+                Some(reason) => reason,
+                None => {
+                    return KernelRoute {
+                        failed: Some("unsupported history rejection reason".to_owned()),
+                        ..KernelRoute::default()
+                    };
+                }
+            },
+            required_bytes: *required_bytes,
+            required_rows: *required_rows,
+        }),
+        FrameKind::TerminalOutput {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            seq,
+            bytes,
+        } => Some(KernelInput::TerminalOutput {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            seq: *seq,
+            payload: bytes,
+        }),
+        FrameKind::BootstrapTombstone {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            reason,
+            last_valid_seq,
+        } => Some(KernelInput::Tombstone {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            reason: *reason,
+            last_valid_seq: *last_valid_seq,
+        }),
+        FrameKind::TerminalClosed { terminal_id, .. } => {
+            Some(KernelInput::TerminalClosed { terminal_id })
+        }
+        _ => None,
+    };
+    let Some(input) = input else {
+        return KernelRoute::default();
+    };
+
+    effects.clear();
+    let result = kernel.update(input, effects);
+    let resync_required = result.is_err()
+        && effects.as_slice().iter().any(|effect| {
+            matches!(
+                effect,
+                KernelEffect::Status(
+                    phux_client_core::session::KernelStatus::ResyncRequired { .. }
+                )
+            )
+        });
+    let recovered_history_failure = result.is_err()
+        && matches!(frame, FrameKind::HistoryPage { .. })
+        && effects.as_slice().iter().any(|effect| {
+            matches!(
+                effect,
+                KernelEffect::Status(
+                    phux_client_core::session::KernelStatus::HistoryUnavailable { .. }
+                )
+            )
+        });
+    let ignored = matches!(
+        &result,
+        Err(phux_client_core::session::KernelError::RetiredGeneration { .. })
+    );
+    let failed = match result {
+        Ok(()) => None,
+        Err(_) if resync_required || ignored || recovered_history_failure => None,
+        Err(error) => Some(error.to_string()),
+    };
+    let mut route = KernelRoute {
+        resync_required,
+        ignored,
+        failed,
+        ..KernelRoute::default()
+    };
+    for effect in effects.as_slice() {
+        match effect {
+            KernelEffect::Send(KernelSend::FrameAck {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq,
+            }) => {
+                route.ack = Some((terminal_id.clone(), *stream_id, *bootstrap_id, *seq));
+            }
+            KernelEffect::Send(KernelSend::HistoryRequest {
+                key,
+                cursor,
+                max_bytes,
+                max_rows,
+            }) => {
+                route.history_request = Some((
+                    key.terminal_id.clone(),
+                    key.stream_id,
+                    key.bootstrap_id,
+                    bytes::Bytes::from(cursor.clone()),
+                    *max_bytes,
+                    *max_rows,
+                ));
+            }
+            KernelEffect::Send(KernelSend::PtyWrite { terminal_id, bytes }) => {
+                route.pty_writes.push((terminal_id.clone(), bytes.clone()));
+            }
+            KernelEffect::Damage(damage) => {
+                route.damaged.insert(damage.terminal_id.clone());
+            }
+            KernelEffect::Status(status) => {
+                tracing::warn!(?status, "session kernel status");
+            }
+            KernelEffect::Job(job) => {
+                tracing::debug!(?job, "session kernel cooperative job");
+            }
+            KernelEffect::Send(send) => {
+                tracing::warn!(?send, "unexpected synchronous engine send");
+            }
+        }
+    }
+    route
+}
+
 /// Process one server-to-client frame. Returns a [`FrameOutcome`]
 /// describing any follow-up the async driver needs to perform.
 ///
@@ -274,16 +586,16 @@ fn pane_label(id: &TerminalId) -> String {
 /// configured widgets pays nothing for the chrome path. `viewport_dims`
 /// is `(cols, rows)` of the outer terminal — used by the painter to
 /// pick the bottom row.
-#[allow(clippy::too_many_arguments)] // arg list bundles status-bar + predict state; follow-up to refactor into a context struct
-#[allow(
-    clippy::too_many_lines,
-    reason = "phux-4li.5 added L3 reconcile branches; refactor with the status-bar arg-list cleanup"
-)]
 #[allow(
     clippy::cognitive_complexity,
-    reason = "phux-4li.12 adds TerminalSpawned/TerminalClosed branches with full SpawnError matching; per-frame dispatcher is intentionally flat"
+    clippy::match_same_arms,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "cohesive ordered protocol dispatcher; keeping tombstones and request errors in their semantic groups preserves routing precedence"
 )]
 pub(super) fn handle_server_frame<W: super::RenderSink>(
+    engine_kernel: &mut super::driver::AttachKernel,
+    kernel_effects: &mut KernelEffectBuffer,
     out: &mut W,
     frame: FrameKind,
     panes: &mut HashMap<TerminalId, PaneSlot>,
@@ -336,12 +648,29 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
     // `overlay_active`, minus the modal semantics.
     defer_paint: bool,
 ) -> Result<FrameOutcome, AttachError> {
+    let apply_span =
+        matches!(frame, FrameKind::TerminalOutput { .. }).then(|| tracing::debug_span!("vt_apply"));
+    let apply_guard = apply_span.as_ref().map(tracing::Span::enter);
+    let kernel_route = route_engine_frame(&frame, engine_kernel, kernel_effects);
+    drop(apply_guard);
+    if let Some(error) = kernel_route.failed.as_ref() {
+        return Err(AttachError::Protocol(format!(
+            "session kernel rejected {}: {error}",
+            frame_kind_label(&frame),
+        )));
+    }
+    if kernel_route.resync_required {
+        return Ok(FrameOutcome {
+            resync_required: true,
+            ..FrameOutcome::default()
+        });
+    }
+    if kernel_route.ignored {
+        return Ok(FrameOutcome::default());
+    }
     // Per-inbound-frame dispatch span (debug; off under the default
-    // `phux=info` filter and free when disabled). For the content frames
-    // this function also paints (TERMINAL_SNAPSHOT / TERMINAL_OUTPUT) the
-    // span's CLOSE duration is the client-side apply+paint cost — the
-    // client lag signal the flywheel reads. `kind` is a payload-free label;
-    // `terminal_id` / `seq` / `bytes` are recorded inside the content arms
+    // `phux=info` filter). Content-frame CLOSE duration is client apply+paint
+    // cost, while identifiers and payload sizes are recorded in their arms.
     // below. Declared `Empty` so they exist for later `record`.
     let frame_span = tracing::debug_span!(
         "handle_server_frame",
@@ -353,6 +682,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
     .entered();
     match frame {
         FrameKind::Attached {
+            attach_id: _,
             snapshot,
             initial_client_id,
         } => {
@@ -371,7 +701,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             *workspace = Workspace::single(bootstrap.clone());
             // Seed client-side mirrors at their server-advertised sizes
             // before any TERMINAL_OUTPUT can race ahead of the per-pane
-            // TERMINAL_SNAPSHOT. VT interpretation is geometry-sensitive;
+            // bootstrap transcript. VT interpretation is geometry-sensitive;
             // starting at 80x24 and resizing later corrupts wraps, clips,
             // and absolute cursor movement for wider/taller viewports.
             for pane in &snapshot.panes {
@@ -416,8 +746,8 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             // a dedicated request/response frame would be redundant.
             let session_cache = (snapshot.sessions.clone(), snapshot.focused_session);
             // `ATTACHED` per SPEC §13 carries the session/window/pane
-            // graph; the per-pane initial cells arrive separately via
-            // TERMINAL_SNAPSHOT.
+            // graph; the per-pane initial cells arrive separately through each
+            // bootstrap transcript.
             //
             // phux-4li.5: signal the driver to emit GET_METADATA and
             // SUBSCRIBE_METADATA for the layout key so we (a) reconcile
@@ -434,260 +764,76 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 ..FrameOutcome::default()
             })
         }
-        FrameKind::TerminalSnapshot {
+        FrameKind::BootstrapBegin {
             terminal_id,
             cols,
             rows,
-            vt_replay_bytes,
-            scrollback_bytes,
+            ..
         } => {
-            // Correlate this apply with the pane + payload size; the span's
-            // CLOSE duration is the client-side snapshot-apply (vt_write +
-            // render) cost.
+            let slot = match panes.entry(terminal_id) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(PaneSlot::new_with_size(cols, rows)?)
+                }
+            };
+            slot.geometry = (cols.max(1), rows.max(1));
+            Ok(FrameOutcome::default())
+        }
+        FrameKind::BootstrapChunk {
+            terminal_id,
+            payload,
+            ..
+        } => {
             frame_span.record("terminal_id", tracing::field::debug(&terminal_id));
-            frame_span.record("bytes", vt_replay_bytes.len());
-            // phux-4li.4: route per-pane snapshots into per-pane slots.
-            // Allocate a fresh slot on first sight so output frames for
-            // pre-split panes don't drop on the floor.
-            let is_focused = Some(&terminal_id) == focused_pane.as_ref();
-            // Resolve the pane's outer-viewport Rect BEFORE the
-            // `panes.entry(terminal_id)` move. Multi-pane: ask the
-            // layout. Single-pane / no layout: anchor at (0,0).
-            let bar = status_bar.as_ref().map(|p| p.position());
-            let content = content_rect(viewport_dims, bar, sidebar);
-            // The pane's outer-viewport Rect: origin positions the paint,
-            // (w, h) clips it. Multi-pane: ask the layout. Single-pane / no
-            // layout: anchor at the content rect spanning the full pane area.
-            let rect = workspace
-                .render_window(zoomed.as_ref())
-                .filter(|ls| ls.tree.is_some())
-                .and_then(|ls| {
-                    super::multi_pane::compute_layout_in(ls.as_ref(), content, viewport_dims)
-                        .rects
-                        .get(&terminal_id)
-                        .copied()
-                })
-                .unwrap_or(content);
-            let origin = (rect.x, rect.y);
-            let slot = match panes.entry(terminal_id.clone()) {
-                std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(PaneSlot::new_with_size(cols, rows)?)
-                }
-            };
-            let prior_sync_output = slot.sync_output_since;
-            // The mirror grid size is server-authoritative: the TERMINAL_SNAPSHOT
-            // carries the server's `(cols, rows)` and this is the ONE place that
-            // resizes the pane's libghostty Terminal to them (alongside a future
-            // server resize-ack). The client layout rect clips and positions
-            // rendering but NEVER calls `resize()` on the mirror — resizing the
-            // alt-screen mirror to a transient client-rect size during a resize
-            // handshake strands previous-screen content (the ghost cells).
-            super::paint::safe_resize(&mut slot.terminal, cols, rows)?;
-            // phux-flywheel: time the snapshot VT-apply (scrollback +
-            // visible replay into the libghostty mirror) under its own
-            // child span, distinct from the render trigger below — same
-            // apply-vs-paint split as the `TerminalOutput` hot path. The
-            // `bytes` field counts the replay payload (the dominant term;
-            // scrollback is rarely present in the live attach path).
-            let (sync_output_active, title_changed) = {
-                let _apply =
-                    tracing::debug_span!("vt_apply", bytes = vt_replay_bytes.len()).entered();
-                // Apply scrollback first (if any), then the visible-state
-                // replay — order per SPEC §8.4 / §13.
-                if let Some(sb) = scrollback_bytes {
-                    slot.terminal.vt_write(&sb);
-                }
-                slot.terminal.vt_write(&vt_replay_bytes);
-                // phux-foz.9: a resync snapshot replays the pane's OSC 0/2
-                // title too; diff it so the outcome raises `chrome_dirty`
-                // exactly like the `TerminalOutput` hot path — the window
-                // labels and the sidebar's agents section derive from it.
-                let title_changed = slot.title_changed();
-                let active = slot.update_sync_output(tokio::time::Instant::now());
-                if let Some(since) = prior_sync_output {
-                    // A resync snapshot may reset DEC modes in its preamble,
-                    // but it must not tear down a raw transaction that began
-                    // before the snapshot. The matching live `?2026l` remains
-                    // the publication barrier.
-                    slot.sync_output_since = Some(since);
-                    slot.sync_output_dirty = true;
-                    (true, title_changed)
-                } else {
-                    (active, title_changed)
-                }
-            };
-            if is_focused {
-                // A fresh snapshot replaces the world — drop any
-                // outstanding predictions and resize the predict layer.
-                predict.set_viewport(cols, rows);
-                // phux-5ke.4: when an overlay is up, suppress the
-                // stdout flush. The libghostty mirror was already
-                // updated above via `vt_write`; this branch is just
-                // the outbound emit, which would scribble over the
-                // modal. On dismiss the driver triggers a full
-                // repaint and the user sees the latest content.
-                // The live coalescing path never defers a snapshot (the driver
-                // excludes `TerminalSnapshot` from the defer mask), so here
-                // `defer_paint` is set only by the headless ingest path, which
-                // suppresses all VT emission and composes once at the end.
-                if overlay_active || defer_paint || sync_output_active {
-                    let _ = overlay;
-                } else {
-                    // phux-flywheel: the snapshot paint trigger, timed
-                    // separately from the `vt_apply` above.
-                    let _paint_trigger =
-                        tracing::debug_span!("paint_trigger", rows = viewport_dims.1).entered();
-                    // A snapshot is authoritative full state, so force a full
-                    // redraw rather than trusting libghostty's per-row dirty
-                    // bits: a `safe_resize` + replay can leave rows the client
-                    // still needs marked clean (resize-grow, alt-screen
-                    // transitions), and a plain `render_at` would skip them,
-                    // leaving stale/garbage cells — the attach/reattach/resize
-                    // "mangled screen" bug.
-                    //
-                    // phux-foz.11: letterbox with the mirror dims, exactly as
-                    // `paint_full_frame` / `paint_focused_pane` do. The
-                    // `safe_resize` above may have left the mirror SMALLER
-                    // than the rect (a resize handshake in flight); painting
-                    // it pinned at the rect origin while every other paint
-                    // path centres it puts the same content at two origins —
-                    // the rapid-switch/control-spam text doubling. When the
-                    // mirror fills or exceeds the rect this is byte-identical
-                    // to the prior `render_at_full`.
-                    let mirror = super::paint::mirror_dims(&slot.terminal, rect);
-                    let _ = slot.renderer.render_at_letterboxed(
-                        &slot.terminal,
-                        out,
-                        origin,
-                        (rect.w, rect.h),
-                        mirror,
-                        true,
-                    );
-                    // Re-anchor the predict layer in PANE-LOCAL coordinates
-                    // (predictions are pane-local; the overlay re-adds the
-                    // origin). Feeding the outer-absolute `last_cursor` here
-                    // clamps a lower pane's cursor up into the wrong region —
-                    // the mid-screen ghost echo after a split (phux-7ry0).
-                    if let Some((row, col)) = slot.renderer.last_cursor_local() {
-                        predict.set_cursor(row, col);
-                    }
-                    // Snapshot is authoritative — predict-overlay only
-                    // repaints if new keystrokes arrived after the
-                    // snapshot was issued and before reconcile cleared
-                    // the queue. In v0 we simply leave the queue empty.
-                    let _ = overlay;
-                    // phux-nz4.5: the pane renderer just wrote to the
-                    // bottom row of its own grid; force a status-bar
-                    // repaint over it.
-                    let focused_cursor = slot.renderer.last_cursor();
-                    // phux-9xn: when libghostty's snapshot can't tell
-                    // us a cursor position (fresh attach with no PTY
-                    // output, alt-screen transitions, hidden cursor),
-                    // fall back to the focused pane's origin so the
-                    // host terminal cursor doesn't strand at the end
-                    // of the bar row (bottom-right).
-                    paint_bar_after_pane(
-                        status_bar,
-                        out,
-                        viewport_dims,
-                        sidebar,
-                        session_name,
-                        focused_cursor,
-                        Some(origin),
-                        // The pane render stays above the bar row; let the
-                        // painter's cache decide whether a re-emit is needed.
-                        false,
-                    );
-                }
-            } else if !overlay_active && !defer_paint && !sync_output_active {
-                // phux-paer: a NON-focused pane's snapshot must paint into its
-                // rect — the symmetric counterpart to the `TerminalOutput`
-                // non-focused branch (phux-2x9). Without it, re-attaching to a
-                // split leaves every non-focused pane blank: its libghostty
-                // mirror is warm (the `vt_write` above) but never rendered,
-                // while input still routes — exactly the "screens wiped but
-                // still typable" report. A pane absent from the active window's
-                // composition is off-screen and must NOT paint (off-screen
-                // invariant), so we render only when it has a rect.
-                let rects = workspace
-                    .render_window(zoomed.as_ref())
-                    .map(|ls| {
-                        super::multi_pane::compute_layout_in(ls.as_ref(), content, viewport_dims)
-                            .rects
-                    })
-                    .unwrap_or_default();
-                if let Some(rect) = rects.get(&terminal_id).copied() {
-                    if let Some(slot) = panes.get_mut(&terminal_id) {
-                        // Authoritative snapshot → force a full redraw of the
-                        // pane rect (see the focused branch above), letterboxed
-                        // with the mirror dims so an undersized mirror lands at
-                        // the same centred origin `paint_full_frame` uses
-                        // (phux-foz.11 — see the focused branch).
-                        let mirror = super::paint::mirror_dims(&slot.terminal, rect);
-                        let _ = slot.renderer.render_at_letterboxed(
-                            &slot.terminal,
-                            out,
-                            (rect.x, rect.y),
-                            (rect.w, rect.h),
-                            mirror,
-                            true,
-                        );
-                    }
-                    // The render above left the host cursor inside the
-                    // non-focused pane; restore the focused pane's cursor so it
-                    // stays where the user is typing.
-                    let focused_cursor = focused_pane
-                        .as_ref()
-                        .and_then(|fid| panes.get(fid))
-                        .and_then(|s| s.renderer.last_cursor());
-                    if status_bar.is_some() {
-                        let fallback = focused_pane
-                            .as_ref()
-                            .and_then(|fid| rects.get(fid))
-                            .map(|r| (r.x, r.y));
-                        paint_bar_after_pane(
-                            status_bar,
-                            out,
-                            viewport_dims,
-                            sidebar,
-                            session_name,
-                            focused_cursor,
-                            fallback,
-                            false,
-                        );
-                    } else if let Some((row, col)) = focused_cursor {
-                        let _ = write!(
-                            out,
-                            "\x1b[{};{}H\x1b[?25h",
-                            row.saturating_add(1),
-                            col.saturating_add(1)
-                        );
-                        let _ = out.flush();
-                    } else {
-                        let _ = out.flush();
-                    }
-                }
-            }
+            frame_span.record("bytes", payload.len());
             Ok(FrameOutcome {
-                chrome_dirty: title_changed,
+                pty_writes: kernel_route.pty_writes,
                 ..FrameOutcome::default()
             })
         }
+        FrameKind::BootstrapReady { terminal_id, .. } => {
+            frame_span.record("terminal_id", tracing::field::debug(&terminal_id));
+            let terminal = super::driver::published_terminal(engine_kernel, &terminal_id)
+                .ok_or_else(|| {
+                    AttachError::Protocol(format!(
+                        "BOOTSTRAP_READY did not publish {terminal_id:?}"
+                    ))
+                })?;
+            let slot = panes
+                .get_mut(&terminal_id)
+                .ok_or_else(|| AttachError::Protocol("READY without pane slot".to_owned()))?;
+            let title_changed = slot.title_changed(terminal);
+            slot.update_sync_output(terminal, tokio::time::Instant::now());
+            let damaged = kernel_route.damaged(&terminal_id);
+            Ok(FrameOutcome {
+                layout_replaced: damaged,
+                chrome_dirty: damaged && title_changed,
+                history_request: kernel_route.history_request,
+                pty_writes: kernel_route.pty_writes,
+                ..FrameOutcome::default()
+            })
+        }
+        FrameKind::HistoryPage { .. }
+        | FrameKind::HistoryTombstone { .. }
+        | FrameKind::HistoryRejected { .. } => Ok(FrameOutcome {
+            history_request: kernel_route.history_request,
+            pty_writes: kernel_route.pty_writes,
+            ..FrameOutcome::default()
+        }),
+        FrameKind::AttachReady { .. } => Ok(FrameOutcome {
+            layout_replaced: !kernel_route.damaged.is_empty(),
+            ..FrameOutcome::default()
+        }),
         FrameKind::TerminalOutput {
             terminal_id,
+            stream_id: _,
+            bootstrap_id: _,
             seq,
             bytes,
         } => {
-            // phux-3uv / ADR-0018: ack every applied frame. The bytes are
-            // written into the pane mirror below (vt_write) before any
-            // render branch, so by the time we return the cumulative
-            // application invariant holds regardless of focus/overlay
-            // state — emit the `FRAME_ACK` unconditionally on the outcome.
-            // `seq == 0` is the server's "empty initial frame" sentinel
-            // (see `LastAckedCursorMode`); never acking it keeps
-            // `last_acked_seq` at its `0` initial value, which is correct.
-            let ack = (seq != 0).then(|| (terminal_id.clone(), seq));
+            let damaged = kernel_route.damaged(&terminal_id);
+            let ack = kernel_route.ack;
+            let pty_writes = kernel_route.pty_writes;
             // Correlate this apply: which pane, which seq, how many bytes.
             // The span's CLOSE duration is the per-frame client paint cost
             // (vt_write + render_at for the focused pane) — the headline
@@ -696,67 +842,45 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             frame_span.record("terminal_id", tracing::field::debug(&terminal_id));
             frame_span.record("seq", seq);
             frame_span.record("bytes", bytes.len());
-            // phux-4li.4: ingest output into the matching pane's
-            // libghostty Terminal even when it's not focused, so the
-            // mirror stays warm for when the user focuses it. Render +
-            // predict-reconcile only fire for the focused pane.
-            let is_focused = Some(&terminal_id) == focused_pane.as_ref();
-            // Drop bytes into the slot's libghostty Terminal. Scoped so
-            // the mut borrow on `panes` releases before the focused-pane
-            // render path re-borrows it via `paint_focused_pane`. Clone
-            // the id into the entry so `terminal_id` survives for the
-            // non-focused repaint below.
-            //
-            // phux-flywheel: this VT-apply (feeding bytes into the
-            // libghostty mirror) is timed by its OWN child span, distinct
-            // from the paint trigger below. The parent
-            // `handle_server_frame` close-duration is apply+paint fused;
-            // splitting them lets a trace attribute client lag to the
-            // libghostty parse (`vt_apply`) versus the render
-            // (`paint_full_frame`, opened inside `paint_focused_pane`)
-            // separately. Debug-level + a lazy `bytes` field ⇒ free at the
-            // default `phux=info` filter.
-            let (sync_output_active, title_changed) = {
-                let _apply = tracing::debug_span!("vt_apply", bytes = bytes.len()).entered();
-                let bar = status_bar.as_ref().map(|p| p.position());
-                let content = content_rect(viewport_dims, bar, sidebar);
-                // Best-known dims for sizing a freshly-allocated slot only. An
-                // existing slot's libghostty grid is server-authoritative and
-                // must NOT be resized here: the server authored these bytes for
-                // its own grid size, and resizing the alt-screen mirror to a
-                // transient client-rect size during a resize handshake strands
-                // previous-screen content in the dropped columns (the ghost
-                // cells — the alt screen does not reflow). The mirror is resized
-                // only at the TERMINAL_SNAPSHOT resync (and a future resize-ack);
-                // here we just feed bytes in.
-                let initial_dims = workspace
-                    .render_window(zoomed.as_ref())
-                    .and_then(|ls| {
-                        super::multi_pane::compute_layout_in(ls.as_ref(), content, viewport_dims)
-                            .rects
-                            .get(&terminal_id)
-                            .map(|r| (r.w, r.h))
-                    })
-                    .unwrap_or((content.w, content.h));
-                let slot = match panes.entry(terminal_id.clone()) {
-                    std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-                    std::collections::hash_map::Entry::Vacant(v) => {
-                        v.insert(PaneSlot::new_with_size(initial_dims.0, initial_dims.1)?)
-                    }
-                };
-                slot.terminal.vt_write(&bytes);
-                // phux-foz.9: an OSC 0/2 title rides in these ordinary
-                // output bytes and is the only identity signal a plain
-                // `claude`/`codex` pane emits. Diff it here so the outcome
-                // below can raise `chrome_dirty` — otherwise the sidebar's
-                // agents section (and the window-tab label, phux-efj7)
-                // would go stale until an unrelated chrome event.
-                let title_changed = slot.title_changed();
-                (
-                    slot.update_sync_output(tokio::time::Instant::now()),
-                    title_changed,
-                )
+            // The kernel already applied these bytes to the published
+            // libghostty terminal, including for an off-screen pane. Refresh
+            // pane metadata from that authoritative terminal before deciding
+            // whether the aggregate attach barrier permits paint damage.
+            // A pre-barrier OSC title must update chrome caches even though
+            // its visible repaint remains suppressed until ATTACH_READY.
+            let terminal = super::driver::published_terminal(engine_kernel, &terminal_id)
+                .ok_or_else(|| {
+                    AttachError::Protocol(format!(
+                        "TERMINAL_OUTPUT targeted unpublished {terminal_id:?}"
+                    ))
+                })?;
+            let bar = status_bar.as_ref().map(|p| p.position());
+            let content = content_rect(viewport_dims, bar, sidebar);
+            let initial_dims = workspace
+                .render_window(zoomed.as_ref())
+                .and_then(|ls| {
+                    super::multi_pane::compute_layout_in(ls.as_ref(), content, viewport_dims)
+                        .rects
+                        .get(&terminal_id)
+                        .map(|r| (r.w, r.h))
+                })
+                .unwrap_or((content.w, content.h));
+            let is_focused = focused_pane.as_ref() == Some(&terminal_id);
+            let slot = match panes.entry(terminal_id.clone()) {
+                std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(PaneSlot::new_with_size(initial_dims.0, initial_dims.1)?)
+                }
             };
+            let title_changed = slot.title_changed(terminal);
+            let sync_output_active = slot.update_sync_output(terminal, tokio::time::Instant::now());
+            if !damaged {
+                return Ok(FrameOutcome {
+                    ack,
+                    pty_writes,
+                    ..FrameOutcome::default()
+                });
+            }
             // The libghostty mirror is now warm even for panes in a
             // non-active window (off-screen invariant). Rendering only
             // applies to the active window's composition; if there's no
@@ -767,6 +891,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             let Some(active_ls) = workspace.render_window(zoomed.as_ref()) else {
                 return Ok(FrameOutcome {
                     ack,
+                    pty_writes,
                     chrome_dirty: title_changed,
                     ..FrameOutcome::default()
                 });
@@ -792,6 +917,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                     out,
                     active_ls,
                     panes,
+                    engine_kernel,
                     fid,
                     viewport_dims,
                     bar,
@@ -824,7 +950,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                             // plus combining marks) reconcile against the
                             // whole painted cluster (phux-9gw.1.6).
                             s.renderer
-                                .read_grapheme_string_at(&s.terminal, r, c)
+                                .read_grapheme_string_at(terminal, r, c)
                                 .ok()
                                 .flatten()
                         })
@@ -886,9 +1012,9 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                         // rows then land offset from the full-frame rows and
                         // the pane shows doubled text until a full repaint.
                         // Mirror >= rect degrades to the prior `render_at`.
-                        let mirror = super::paint::mirror_dims(&slot.terminal, rect);
+                        let mirror = super::paint::mirror_dims(terminal, rect);
                         let _ = slot.renderer.render_at_letterboxed(
-                            &slot.terminal,
+                            terminal,
                             out,
                             (rect.x, rect.y),
                             (rect.w, rect.h),
@@ -935,9 +1061,11 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             Ok(FrameOutcome {
                 ack,
                 chrome_dirty: title_changed,
+                pty_writes,
                 ..FrameOutcome::default()
             })
         }
+        FrameKind::BootstrapTombstone { .. } => Ok(FrameOutcome::default()),
         FrameKind::Detached => Ok(FrameOutcome {
             exit: true,
             ..FrameOutcome::default()
@@ -1131,12 +1259,9 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                             } else {
                                 None
                             };
-                            // Seed a PaneSlot for the new Terminal so the
-                            // first TERMINAL_SNAPSHOT lands on a warm
-                            // mirror. Vacant-or-occupied — never overwrite
-                            // an existing slot (a TERMINAL_OUTPUT could
-                            // legally race ahead of TERMINAL_SPAWNED if
-                            // the server batched the spawn-then-output).
+                            // Seed pane metadata so the first bootstrap lands
+                            // on a warm rendering slot. Vacant-or-occupied —
+                            // never overwrite existing frontend metadata.
                             if let std::collections::hash_map::Entry::Vacant(v) =
                                 panes.entry(new_id)
                             {
@@ -1458,14 +1583,16 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 ..FrameOutcome::default()
             })
         }
-        other => {
-            // Anything else — `HELLO_OK`, `PONG`, future spec frames — is
-            // accepted-but-ignored. The protocol decoder rejects unknown
-            // discriminants; this branch handles known-but-not-yet-wired
-            // frames.
-            tracing::debug!(kind = ?other, "ignoring server frame");
-            Ok(FrameOutcome::default())
-        }
+        // Request-correlated errors are normally consumed by `Connection`'s
+        // request table. A raced reply that reaches the attached dispatcher is
+        // still direction-valid and must not mutate or retire terminal state.
+        FrameKind::Error {
+            request_id: Some(_),
+            ..
+        } => Ok(FrameOutcome::default()),
+        other => Err(AttachError::Protocol(format!(
+            "frame is not valid from a server in the attached phase: {other:?}",
+        ))),
     }
 }
 
@@ -1653,7 +1780,10 @@ fn reconcile_loaded_layout(state: &mut LayoutState, local_focus: Option<&Termina
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use super::{AgentMetaIndex, FrameOutcome, handle_server_frame};
+    use super::{
+        AgentMetaIndex, FrameOutcome, handle_server_frame as handle_server_frame_with_kernel,
+        route_engine_frame,
+    };
     use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
 
@@ -1661,7 +1791,7 @@ mod tests {
     use phux_protocol::wire::frame::FrameKind;
     use phux_protocol::wire::info::{LayoutNode, SessionSnapshot, SplitDir, TerminalInfo};
 
-    use crate::attach::driver::{AttachEnd, PaneSlot};
+    use crate::attach::driver::{AttachEnd, AttachError, PaneSlot};
     use crate::layout::{LayoutState, Workspace};
     use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 
@@ -1692,6 +1822,690 @@ mod tests {
 
     fn tid(id: u32) -> TerminalId {
         TerminalId::local(id)
+    }
+    fn stream() -> phux_protocol::StreamId {
+        phux_protocol::StreamId::new(1).expect("stream")
+    }
+
+    fn bootstrap() -> phux_protocol::BootstrapId {
+        phux_protocol::BootstrapId::new(1).expect("bootstrap")
+    }
+
+    fn begin_frame(terminal_id: &TerminalId) -> FrameKind {
+        FrameKind::BootstrapBegin {
+            terminal_id: terminal_id.clone(),
+            stream_id: stream(),
+            bootstrap_id: bootstrap(),
+            profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 80,
+            rows: 24,
+            base_seq: 0,
+        }
+    }
+
+    fn ready_frame(terminal_id: &TerminalId) -> FrameKind {
+        FrameKind::BootstrapReady {
+            terminal_id: terminal_id.clone(),
+            stream_id: stream(),
+            bootstrap_id: bootstrap(),
+            history_cursor: None,
+        }
+    }
+
+    #[test]
+    fn engine_damage_obeys_attach_barrier_and_ready_publication() {
+        let terminal_id = tid(90);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        kernel
+            .update(
+                phux_client_core::session::KernelInput::AttachStarted {
+                    attach_id: 7,
+                    terminals: std::slice::from_ref(&terminal_id),
+                },
+                &mut effects,
+            )
+            .expect("attach");
+        assert!(
+            route_engine_frame(&begin_frame(&terminal_id), &mut kernel, &mut effects)
+                .damaged
+                .is_empty()
+        );
+        assert!(
+            route_engine_frame(
+                &FrameKind::BootstrapChunk {
+                    terminal_id: terminal_id.clone(),
+                    stream_id: stream(),
+                    bootstrap_id: bootstrap(),
+                    chunk_seq: 0,
+                    payload: bytes::Bytes::from_static(b"seed"),
+                },
+                &mut kernel,
+                &mut effects,
+            )
+            .damaged
+            .is_empty()
+        );
+        assert!(
+            route_engine_frame(&ready_frame(&terminal_id), &mut kernel, &mut effects)
+                .damaged
+                .is_empty(),
+            "publication damage stays behind ATTACH_READY"
+        );
+        assert!(
+            route_engine_frame(
+                &FrameKind::TerminalOutput {
+                    terminal_id: terminal_id.clone(),
+                    stream_id: stream(),
+                    bootstrap_id: bootstrap(),
+                    seq: 1,
+                    bytes: bytes::Bytes::from_static(b"before-barrier"),
+                },
+                &mut kernel,
+                &mut effects,
+            )
+            .damaged
+            .is_empty(),
+            "pre-barrier live output must not paint directly"
+        );
+        let released = route_engine_frame(
+            &FrameKind::AttachReady { attach_id: 7 },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(released.damaged(&terminal_id));
+        let live = route_engine_frame(
+            &FrameKind::TerminalOutput {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                seq: 2,
+                bytes: bytes::Bytes::from_static(b"after-barrier"),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(live.damaged(&terminal_id));
+        let reply = route_engine_frame(
+            &FrameKind::TerminalOutput {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                seq: 3,
+                bytes: bytes::Bytes::from_static(b"\x1b[5n"),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert_eq!(reply.pty_writes, vec![(terminal_id, b"\x1b[0n".to_vec())]);
+    }
+
+    #[test]
+    fn ready_history_cursor_is_preserved_into_kernel_request() {
+        let terminal_id = tid(91);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        kernel
+            .update(
+                phux_client_core::session::KernelInput::AttachStarted {
+                    attach_id: 8,
+                    terminals: std::slice::from_ref(&terminal_id),
+                },
+                &mut effects,
+            )
+            .expect("attach");
+        route_engine_frame(&begin_frame(&terminal_id), &mut kernel, &mut effects);
+        route_engine_frame(
+            &FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"seed"),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        let routed = route_engine_frame(
+            &FrameKind::BootstrapReady {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                history_cursor: Some(bytes::Bytes::from_static(b"opaque-cursor")),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert_eq!(
+            routed.history_request,
+            Some((
+                terminal_id.clone(),
+                stream(),
+                bootstrap(),
+                bytes::Bytes::from_static(b"opaque-cursor"),
+                1024 * 1024,
+                1024,
+            ))
+        );
+        let rejected = route_engine_frame(
+            &FrameKind::HistoryRejected {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                cursor: bytes::Bytes::from_static(b"opaque-cursor"),
+                reason: phux_protocol::wire::frame::HistoryRejectionReason::TooSmall,
+                required_bytes: 1024 * 1024,
+                required_rows: 2048,
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(!rejected.resync_required);
+        assert_eq!(
+            rejected.history_request,
+            Some((
+                terminal_id.clone(),
+                stream(),
+                bootstrap(),
+                bytes::Bytes::from_static(b"opaque-cursor"),
+                1024 * 1024,
+                2048,
+            )),
+            "a valid larger row requirement retries within the client hard cap"
+        );
+        let tombstoned = route_engine_frame(
+            &FrameKind::HistoryTombstone {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                cursor: bytes::Bytes::from_static(b"opaque-cursor"),
+                reason: phux_protocol::wire::frame::HistoryTombstoneReason::Pruned,
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(!tombstoned.resync_required);
+        assert!(
+            kernel.published_engine(&terminal_id).is_some(),
+            "history-only invalidation preserves the live replica"
+        );
+    }
+
+    #[test]
+    fn off_window_ready_waits_for_every_snapshot_pane_and_attach_ready() {
+        let focused = tid(94);
+        let off_window = tid(95);
+        let focused_window = WindowId::new(70);
+        let other_window = WindowId::new(71);
+        let snapshot = SessionSnapshot::new(SessionId::new(72), focused_window, focused.clone())
+            .with_panes(vec![
+                TerminalInfo::new(focused.clone(), focused_window, 80, 24),
+                TerminalInfo::new(off_window.clone(), other_window, 80, 24),
+            ]);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        let attached = route_engine_frame(
+            &FrameKind::Attached {
+                attach_id: 9,
+                snapshot,
+                initial_client_id: ClientId::new(1),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(attached.damaged.is_empty());
+
+        for terminal_id in [&off_window, &focused] {
+            assert!(
+                route_engine_frame(&begin_frame(terminal_id), &mut kernel, &mut effects)
+                    .damaged
+                    .is_empty()
+            );
+            assert!(
+                route_engine_frame(
+                    &FrameKind::BootstrapChunk {
+                        terminal_id: terminal_id.clone(),
+                        stream_id: stream(),
+                        bootstrap_id: bootstrap(),
+                        chunk_seq: 0,
+                        payload: bytes::Bytes::from_static(b"seed"),
+                    },
+                    &mut kernel,
+                    &mut effects,
+                )
+                .damaged
+                .is_empty()
+            );
+            assert!(
+                route_engine_frame(&ready_frame(terminal_id), &mut kernel, &mut effects)
+                    .damaged
+                    .is_empty(),
+                "neither off-window nor focused READY may escape the aggregate barrier"
+            );
+        }
+        let released = route_engine_frame(
+            &FrameKind::AttachReady { attach_id: 9 },
+            &mut kernel,
+            &mut effects,
+        );
+        assert!(released.damaged(&focused));
+        assert!(released.damaged(&off_window));
+    }
+
+    #[test]
+    fn bootstrap_ready_surfaces_publication_damage_without_attach_barrier() {
+        let terminal_id = tid(91);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        route_engine_frame(&begin_frame(&terminal_id), &mut kernel, &mut effects);
+        route_engine_frame(
+            &FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"seed"),
+            },
+            &mut kernel,
+            &mut effects,
+        );
+        let ready = route_engine_frame(&ready_frame(&terminal_id), &mut kernel, &mut effects);
+        assert!(ready.damaged(&terminal_id));
+    }
+    fn dispatch_engine_frame(
+        kernel: &mut phux_client_core::session::SessionKernel<
+            phux_client_core::engine::ghostty::GhosttyAdapter,
+        >,
+        effects: &mut phux_client_core::session::EffectBuffer,
+        panes: &mut HashMap<TerminalId, PaneSlot>,
+        frame: FrameKind,
+    ) -> FrameOutcome {
+        let mut out = Vec::new();
+        let mut workspace = Workspace::default();
+        let mut focused_pane = None;
+        let mut zoomed = None;
+        let mut session_name = String::new();
+        let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
+        let overlay = Overlay;
+        let mut pending_splits = HashMap::new();
+        let mut pending_windows = HashMap::new();
+        let mut expected_closes = HashSet::new();
+        let mut agent_meta = AgentMetaIndex::default();
+        handle_server_frame_with_kernel(
+            kernel,
+            effects,
+            &mut out,
+            frame,
+            panes,
+            &mut workspace,
+            &mut focused_pane,
+            &mut zoomed,
+            &mut session_name,
+            None,
+            None,
+            (80, 24),
+            &mut predict,
+            &overlay,
+            None,
+            &mut pending_splits,
+            &mut pending_windows,
+            &mut expected_closes,
+            &mut agent_meta,
+            false,
+            true,
+        )
+        .expect("engine frame")
+    }
+
+    #[test]
+    fn pre_barrier_output_refreshes_title_cache_before_attach_ready() {
+        let ready_terminal = tid(92);
+        let pending_terminal = tid(93);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        let mut panes = HashMap::new();
+        kernel
+            .update(
+                phux_client_core::session::KernelInput::AttachStarted {
+                    attach_id: 8,
+                    terminals: &[ready_terminal.clone(), pending_terminal.clone()],
+                },
+                &mut effects,
+            )
+            .expect("attach");
+
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            begin_frame(&ready_terminal),
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapChunk {
+                terminal_id: ready_terminal.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"\x1b]2;shell\x07"),
+            },
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            ready_frame(&ready_terminal),
+        );
+        assert_eq!(panes[&ready_terminal].last_title, "shell");
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            begin_frame(&pending_terminal),
+        );
+
+        let pre_barrier = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::TerminalOutput {
+                terminal_id: ready_terminal.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                seq: 1,
+                bytes: bytes::Bytes::from_static(b"\x1b]2;vim\x07"),
+            },
+        );
+        assert!(!pre_barrier.chrome_dirty);
+        assert_eq!(
+            panes[&ready_terminal].last_title, "vim",
+            "damage suppression must not suppress engine-derived metadata refresh"
+        );
+
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapChunk {
+                terminal_id: pending_terminal.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"pending"),
+            },
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            ready_frame(&pending_terminal),
+        );
+        let released = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::AttachReady { attach_id: 8 },
+        );
+        assert!(released.layout_replaced);
+        assert_eq!(panes[&ready_terminal].last_title, "vim");
+    }
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn malformed_history_tombstones_only_history_and_replacement_publishes_atomically() {
+        let terminal_id = tid(96);
+        let replacement = phux_protocol::BootstrapId::new(2).expect("replacement");
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        let mut panes = HashMap::new();
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            begin_frame(&terminal_id),
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"\x1b]2;old\x07"),
+            },
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            ready_frame(&terminal_id),
+        );
+
+        let rejected = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::HistoryPage {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                rows: 1,
+                page_seq: 1,
+                cursor: bytes::Bytes::from_static(b"cursor"),
+                next_cursor: None,
+                payload: bytes::Bytes::from_static(b"malformed-history"),
+            },
+        );
+        assert!(!rejected.resync_required);
+        assert!(effects.as_slice().iter().any(|effect| matches!(
+            effect,
+            phux_client_core::session::KernelEffect::Status(
+                phux_client_core::session::KernelStatus::HistoryUnavailable { .. }
+            )
+        )));
+        assert_eq!(
+            kernel
+                .history_cache(&terminal_id)
+                .expect("published history")
+                .status()
+                .state,
+            phux_client_core::history::HistoryLoadState::Tombstoned
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::TerminalOutput {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                seq: 1,
+                bytes: bytes::Bytes::from_static(b"\x1b]2;old-live\x07"),
+            },
+        );
+        assert_eq!(
+            kernel
+                .published_engine(&terminal_id)
+                .unwrap()
+                .terminal()
+                .unwrap()
+                .title()
+                .unwrap(),
+            "old-live",
+            "history failure must not stop live terminal output"
+        );
+        let stale = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::HistoryPage {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                rows: 1,
+                page_seq: 1,
+                cursor: bytes::Bytes::from_static(b"stale"),
+                next_cursor: None,
+                payload: bytes::Bytes::from_static(b"queued-stale-page"),
+            },
+        );
+        assert!(!stale.resync_required);
+
+        kernel
+            .update(
+                phux_client_core::session::KernelInput::AttachStarted {
+                    attach_id: 10,
+                    terminals: std::slice::from_ref(&terminal_id),
+                },
+                &mut effects,
+            )
+            .expect("replacement attach");
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: replacement,
+                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            },
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: replacement,
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"\x1b]2;new\x07"),
+            },
+        );
+        assert_eq!(
+            kernel
+                .published_engine(&terminal_id)
+                .unwrap()
+                .terminal()
+                .unwrap()
+                .title()
+                .unwrap(),
+            "old-live",
+            "replacement remains staged until READY"
+        );
+        let replacement_ready = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::BootstrapReady {
+                terminal_id: terminal_id.clone(),
+                stream_id: stream(),
+                bootstrap_id: replacement,
+                history_cursor: None,
+            },
+        );
+        assert!(!replacement_ready.layout_replaced);
+        assert!(!replacement_ready.chrome_dirty);
+        assert_eq!(panes[&terminal_id].last_title, "new");
+        let released = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::AttachReady { attach_id: 10 },
+        );
+        assert!(released.layout_replaced);
+        assert_eq!(panes[&terminal_id].last_title, "new");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_server_frame<W: crate::attach::RenderSink>(
+        out: &mut W,
+        frame: FrameKind,
+        panes: &mut HashMap<TerminalId, PaneSlot>,
+        workspace: &mut Workspace,
+        focused_pane: &mut Option<TerminalId>,
+        zoomed: &mut Option<TerminalId>,
+        session_name: &mut String,
+        status_bar: Option<&mut crate::render::chrome::status_bar::StatusBarPainter>,
+        sidebar: Option<crate::attach::paint::SidebarReservation>,
+        viewport_dims: (u16, u16),
+        predict: &mut PredictionState,
+        overlay: &Overlay,
+        pending_layout_request: Option<u32>,
+        pending_splits: &mut HashMap<u32, crate::attach::actions::PendingSplit>,
+        pending_windows: &mut HashMap<u32, crate::attach::actions::PendingWindow>,
+        expected_closes: &mut HashSet<TerminalId>,
+        agent_meta: &mut AgentMetaIndex,
+        overlay_active: bool,
+        defer_paint: bool,
+    ) -> Result<FrameOutcome, AttachError> {
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        handle_server_frame_with_kernel(
+            &mut kernel,
+            &mut effects,
+            out,
+            frame,
+            panes,
+            workspace,
+            focused_pane,
+            zoomed,
+            session_name,
+            status_bar,
+            sidebar,
+            viewport_dims,
+            predict,
+            overlay,
+            pending_layout_request,
+            pending_splits,
+            pending_windows,
+            expected_closes,
+            agent_meta,
+            overlay_active,
+            defer_paint,
+        )
     }
 
     fn split2(a: u32, b: u32, focus: u32) -> LayoutState {
@@ -1816,14 +2630,26 @@ mod tests {
         panes
     }
 
-    /// Drive a layout metadata frame through the full dispatcher.
-    fn drive_layout_frame(
+    struct EngineFixture {
+        kernel: super::super::driver::AttachKernel,
+        effects: phux_client_core::session::EffectBuffer,
+    }
+
+    fn published_fixture(
+        entries: &[(&TerminalId, u16, u16, &[u8])],
+    ) -> (EngineFixture, HashMap<TerminalId, PaneSlot>) {
+        let (kernel, effects, panes) = super::super::driver::published_test_state(entries);
+        (EngineFixture { kernel, effects }, panes)
+    }
+
+    /// Drive any frame through the full attached-state dispatcher.
+    fn try_drive_layout_frame(
         frame: FrameKind,
         pending_layout_request: Option<u32>,
         workspace: &mut Workspace,
         focused: &mut Option<TerminalId>,
         panes: &mut HashMap<TerminalId, PaneSlot>,
-    ) -> FrameOutcome {
+    ) -> Result<FrameOutcome, AttachError> {
         let mut out: Vec<u8> = Vec::new();
         let mut session_name = String::new();
         let mut zoomed: Option<TerminalId> = None;
@@ -1852,7 +2678,45 @@ mod tests {
             false,
             false,
         )
-        .expect("handle layout frame")
+    }
+
+    fn drive_layout_frame(
+        frame: FrameKind,
+        pending_layout_request: Option<u32>,
+        workspace: &mut Workspace,
+        focused: &mut Option<TerminalId>,
+        panes: &mut HashMap<TerminalId, PaneSlot>,
+    ) -> FrameOutcome {
+        try_drive_layout_frame(frame, pending_layout_request, workspace, focused, panes)
+            .expect("handle layout frame")
+    }
+
+    #[test]
+    fn duplicate_hello_ok_is_fatal_in_attached_phase() {
+        let pane = tid(1);
+        let mut workspace = Workspace::single(pane.clone());
+        let mut focused = Some(pane.clone());
+        let mut panes = panes_for(&[&pane]);
+        let error = try_drive_layout_frame(
+            FrameKind::HelloOk {
+                protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+                protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+                protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+                server_caps: phux_protocol::caps::ServerCapabilities::new(),
+                server_id: Vec::new(),
+                selected_profile: phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: phux_protocol::caps::BootstrapLimits::default(),
+            },
+            None,
+            &mut workspace,
+            &mut focused,
+            &mut panes,
+        )
+        .expect_err("post-negotiation HELLO_OK must terminate the client");
+        assert!(matches!(
+            error,
+            AttachError::Protocol(message) if message.contains("not valid from a server")
+        ));
     }
 
     /// ADR-0049: a sibling's layout broadcast contributes topology only. Its
@@ -2090,6 +2954,7 @@ mod tests {
     }
 
     fn drive_output(
+        engine: &mut EngineFixture,
         out: &mut Vec<u8>,
         layout: &mut Workspace,
         focused: &mut Option<TerminalId>,
@@ -2097,12 +2962,21 @@ mod tests {
         terminal_id: &TerminalId,
         bytes: &[u8],
     ) {
-        let _ = drive_output_seq(out, layout, focused, panes, terminal_id, bytes, 1);
+        let seq = engine
+            .kernel
+            .published(terminal_id)
+            .expect("published terminal")
+            .last_seq()
+            .checked_add(1)
+            .expect("live sequence");
+        let _ = drive_output_seq(engine, out, layout, focused, panes, terminal_id, bytes, seq);
     }
 
     /// Like [`drive_output`] but stamps an explicit `seq` and returns the
     /// [`FrameOutcome`] so ack-emission tests can inspect `outcome.ack`.
+    #[allow(clippy::too_many_arguments)]
     fn drive_output_seq(
+        engine: &mut EngineFixture,
         out: &mut Vec<u8>,
         layout: &mut Workspace,
         focused: &mut Option<TerminalId>,
@@ -2112,6 +2986,7 @@ mod tests {
         seq: u64,
     ) -> FrameOutcome {
         drive_output_seq_with_viewport(
+            engine,
             out,
             layout,
             focused,
@@ -2128,6 +3003,7 @@ mod tests {
         reason = "test driver mirrors frame inputs"
     )]
     fn drive_output_seq_with_viewport(
+        engine: &mut EngineFixture,
         out: &mut Vec<u8>,
         layout: &mut Workspace,
         focused: &mut Option<TerminalId>,
@@ -2147,10 +3023,14 @@ mod tests {
         let overlay = Overlay;
         let mut pending_splits = HashMap::new();
         let mut pending_windows = HashMap::new();
-        handle_server_frame(
+        handle_server_frame_with_kernel(
+            &mut engine.kernel,
+            &mut engine.effects,
             out,
             FrameKind::TerminalOutput {
                 terminal_id: terminal_id.clone(),
+                stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+                bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
                 seq,
                 bytes: bytes::Bytes::copy_from_slice(bytes),
             },
@@ -2175,20 +3055,19 @@ mod tests {
         .expect("handle_server_frame")
     }
 
-    /// phux-ih39: a `TERMINAL_OUTPUT` that races ahead of
-    /// `TERMINAL_SNAPSHOT` must allocate the pane mirror at the current viewport width before
-    /// `vt_write`, not at the historical 80x24 placeholder. Absolute cursor
-    /// movement past column 80 is a compact regression oracle: if the slot
-    /// starts 80-wide, the `X` cannot land in column 100.
+    /// phux-ih39: live output that races ahead of bootstrap publication must
+    /// not be interpreted against placeholder geometry. Absolute cursor
+    /// movement past column 80 is the compact regression oracle.
     #[test]
     fn output_before_snapshot_uses_current_viewport_width() {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
         let mut focused = Some(pane.clone());
-        let mut panes = HashMap::new();
+        let (mut engine, mut panes) = published_fixture(&[(&pane, 120, 30, b"")]);
         let mut out: Vec<u8> = Vec::new();
 
         drive_output_seq_with_viewport(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2199,12 +3078,14 @@ mod tests {
             (120, 30),
         );
 
+        let terminal = super::super::driver::published_terminal(&engine.kernel, &pane)
+            .expect("published terminal");
+        assert_eq!(terminal.cols().expect("cols"), 120);
+        assert_eq!(terminal.rows().expect("rows"), 30);
         let slot = panes.get_mut(&pane).expect("slot allocated");
-        assert_eq!(slot.terminal.cols().expect("cols"), 120);
-        assert_eq!(slot.terminal.rows().expect("rows"), 30);
         let cell = slot
             .renderer
-            .read_grapheme_at(&slot.terminal, 0, 99)
+            .read_grapheme_at(terminal, 0, 99)
             .expect("read cell");
         assert_eq!(cell, Some('X'));
     }
@@ -2214,10 +3095,11 @@ mod tests {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
         let mut focused = Some(pane.clone());
-        let mut panes = panes_for(&[&pane]);
+        let (mut engine, mut panes) = published_fixture(&[(&pane, 80, 24, b"")]);
         let mut out = Vec::new();
 
         drive_output(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2229,6 +3111,7 @@ mod tests {
         assert!(panes[&pane].sync_output_since.is_some());
 
         drive_output(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2254,10 +3137,11 @@ mod tests {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
         let mut focused = Some(pane.clone());
-        let mut panes = panes_for(&[&pane]);
+        let (mut engine, mut panes) = published_fixture(&[(&pane, 80, 24, b"")]);
         let mut out: Vec<u8> = Vec::new();
 
         let plain = drive_output_seq(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2272,6 +3156,7 @@ mod tests {
         );
 
         let set = drive_output_seq(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2286,6 +3171,7 @@ mod tests {
         );
 
         let unchanged = drive_output_seq(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2300,6 +3186,7 @@ mod tests {
         );
 
         let cleared = drive_output_seq(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2314,19 +3201,19 @@ mod tests {
         );
     }
 
-    /// phux-foz.9: the symmetric snapshot path — a resync
-    /// `TERMINAL_SNAPSHOT` replays the pane's title too, so a title the
-    /// client has not seen yet must raise `chrome_dirty` exactly like the
-    /// output hot path, and an unchanged replay must not.
+    /// phux-foz.9: the symmetric bootstrap path — a resync
+    /// replays the pane's title too, so a previously unseen title raises
+    /// `chrome_dirty` exactly like the output hot path.
     #[test]
     fn snapshot_title_change_marks_chrome_dirty() {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
         let mut focused = Some(pane.clone());
-        let mut panes = panes_for(&[&pane]);
+        let (mut engine, mut panes) = published_fixture(&[(&pane, 80, 24, b"")]);
         let mut out: Vec<u8> = Vec::new();
 
         let first = drive_snapshot(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2343,6 +3230,7 @@ mod tests {
         );
 
         let repeat = drive_snapshot(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2364,10 +3252,11 @@ mod tests {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
         let mut focused = Some(pane.clone());
-        let mut panes = panes_for(&[&pane]);
+        let (mut engine, mut panes) = published_fixture(&[(&pane, 80, 24, b"")]);
         let mut out = Vec::new();
 
         drive_output(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2376,6 +3265,7 @@ mod tests {
             b"\x1b[?2026hpartial",
         );
         drive_snapshot(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2386,24 +3276,19 @@ mod tests {
             b"\x1b[!p\x1b[2J\x1b[Hstable snapshot",
             (80, 24),
         );
-        assert!(out.is_empty(), "snapshot must not break the transaction");
-        assert!(panes[&pane].sync_output_since.is_some());
-
-        drive_output(
-            &mut out,
-            &mut layout,
-            &mut focused,
-            &mut panes,
-            &pane,
-            b"\x1b[?2026l",
+        assert!(
+            !out.is_empty(),
+            "replacement publication must paint the new atomic replica"
         );
-        assert!(!out.is_empty());
-        assert!(panes[&pane].sync_output_since.is_none());
+        assert!(
+            panes[&pane].sync_output_since.is_none(),
+            "synchronized-output state belongs to the retired replica"
+        );
     }
 
     /// phux-ih39: the ATTACHED graph already carries per-pane dimensions.
-    /// Seed slots from that graph so output between ATTACHED and
-    /// `TERMINAL_SNAPSHOT` doesn't get interpreted at 80x24.
+    /// Seed slots from that graph so pre-bootstrap output doesn't get
+    /// interpreted at 80x24.
     #[test]
     fn attached_seeds_pane_slots_from_snapshot_dimensions() {
         let pane = tid(1);
@@ -2425,6 +3310,7 @@ mod tests {
         handle_server_frame(
             &mut out,
             FrameKind::Attached {
+                attach_id: 1,
                 snapshot,
                 initial_client_id: ClientId::new(1),
             },
@@ -2453,58 +3339,57 @@ mod tests {
         assert_eq!(slot.terminal.rows().expect("rows"), 43);
     }
 
-    /// phux-3uv: a `TERMINAL_OUTPUT` with a non-zero `seq` yields an
-    /// `ack` outcome carrying that frame's `(terminal_id, seq)`, so the
-    /// driver sends a cumulative `FRAME_ACK`. The ack is set regardless of
-    /// focus — the bytes are applied to the pane mirror before any render
-    /// branch — so we drive a NON-focused pane and still expect the ack.
+    /// `SynthesizedVtRaw` live output is applied but does not request an
+    /// acknowledgement; cumulative frame ACKs belong to state-sync streams.
     #[test]
-    fn terminal_output_yields_frame_ack_outcome() {
+    fn synthesized_raw_output_does_not_yield_frame_ack() {
         let left = tid(1);
         let right = tid(2);
         let mut layout = two_pane_workspace(&left, &right, &left);
         let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&left, 80, 24, b""), (&right, 80, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         let outcome = drive_output_seq(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
             &mut panes,
             &right,
             b"hi",
-            7,
+            1,
         );
         assert_eq!(
-            outcome.ack,
-            Some((right.clone(), 7)),
-            "non-zero seq must ack the delivering terminal's seq",
+            outcome.ack, None,
+            "raw synthesized output must not emit a state-sync acknowledgement"
         );
     }
 
-    /// phux-3uv: `seq == 0` is the server's "empty initial frame"
-    /// sentinel; the client must NOT ack it (acking 0 is meaningless and
-    /// would be a no-op against the server's `last_acked_seq == 0`).
+    /// A zero sequence is not a live output sentinel in the session kernel:
+    /// the published generation starts at `base_seq == 0` and therefore
+    /// requires its first live payload to carry sequence 1.
     #[test]
-    fn terminal_output_seq_zero_is_not_acked() {
-        let left = tid(1);
-        let right = tid(2);
-        let mut layout = two_pane_workspace(&left, &right, &left);
-        let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
-
-        let mut out: Vec<u8> = Vec::new();
-        let outcome = drive_output_seq(
-            &mut out,
-            &mut layout,
-            &mut focused,
-            &mut panes,
-            &right,
-            b"hi",
-            0,
+    fn terminal_output_seq_zero_is_rejected() {
+        let pane = tid(1);
+        let (mut engine, _) = published_fixture(&[(&pane, 80, 24, b"")]);
+        let route = route_engine_frame(
+            &FrameKind::TerminalOutput {
+                terminal_id: pane,
+                stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+                bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
+                seq: 0,
+                bytes: bytes::Bytes::from_static(b"hi"),
+            },
+            &mut engine.kernel,
+            &mut engine.effects,
         );
-        assert_eq!(outcome.ack, None, "seq=0 sentinel must not be acked");
+        assert!(
+            route.failed.is_some(),
+            "sequence zero must be rejected before rendering or acknowledgement"
+        );
+        assert_eq!(route.ack, None);
     }
 
     /// phux-2x9 via the injectable sink: a NON-focused pane must repaint
@@ -2518,10 +3403,12 @@ mod tests {
         let right = tid(2);
         let mut layout = two_pane_workspace(&left, &right, &left);
         let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&left, 80, 24, b""), (&right, 80, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         drive_output(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2555,6 +3442,7 @@ mod tests {
         reason = "test driver mirrors frame inputs"
     )]
     fn drive_snapshot(
+        engine: &mut EngineFixture,
         out: &mut Vec<u8>,
         layout: &mut Workspace,
         focused: &mut Option<TerminalId>,
@@ -2565,8 +3453,23 @@ mod tests {
         vt_replay_bytes: &[u8],
         viewport_dims: (u16, u16),
     ) -> FrameOutcome {
+        let published = engine
+            .kernel
+            .published(terminal_id)
+            .expect("published test generation");
+        let stream_id = published.key().stream_id;
+        let bootstrap_id = phux_protocol::BootstrapId::new(
+            published
+                .key()
+                .bootstrap_id
+                .get()
+                .checked_add(1)
+                .expect("bootstrap id"),
+        )
+        .expect("next bootstrap");
+        let base_seq = published.last_seq();
         let mut session_name = String::new();
-        let mut zoomed: Option<TerminalId> = None;
+        let mut zoomed = None;
         let mut predict = PredictionState::new(
             PredictiveConfig::disabled(),
             viewport_dims.0,
@@ -2575,40 +3478,81 @@ mod tests {
         let overlay = Overlay;
         let mut pending_splits = HashMap::new();
         let mut pending_windows = HashMap::new();
-        handle_server_frame(
-            out,
-            FrameKind::TerminalSnapshot {
+        let mut expected_closes = HashSet::new();
+        let mut agent_meta = AgentMetaIndex::default();
+        let outcome = {
+            let mut dispatch = |frame| {
+                handle_server_frame_with_kernel(
+                    &mut engine.kernel,
+                    &mut engine.effects,
+                    out,
+                    frame,
+                    panes,
+                    layout,
+                    focused,
+                    &mut zoomed,
+                    &mut session_name,
+                    None,
+                    None,
+                    viewport_dims,
+                    &mut predict,
+                    &overlay,
+                    None,
+                    &mut pending_splits,
+                    &mut pending_windows,
+                    &mut expected_closes,
+                    &mut agent_meta,
+                    false,
+                    false,
+                )
+                .expect("handle bootstrap frame")
+            };
+            dispatch(FrameKind::BootstrapBegin {
                 terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
                 cols,
                 rows,
-                vt_replay_bytes: vt_replay_bytes.to_vec(),
-                scrollback_bytes: None,
-            },
-            panes,
-            layout,
-            focused,
-            &mut zoomed,
-            &mut session_name,
-            None,
-            None,
-            viewport_dims,
-            &mut predict,
-            &overlay,
-            None,
-            &mut pending_splits,
-            &mut pending_windows,
-            &mut HashSet::new(),
-            &mut AgentMetaIndex::default(),
-            false,
-            false,
-        )
-        .expect("handle_server_frame")
+                base_seq,
+            });
+            dispatch(FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::copy_from_slice(vt_replay_bytes),
+            });
+            dispatch(FrameKind::BootstrapReady {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            })
+        };
+        if outcome.layout_replaced
+            && let Some(active) = layout.render_window(zoomed.as_ref())
+        {
+            super::super::paint::paint_full_frame(
+                out,
+                active.as_ref(),
+                panes,
+                &engine.kernel,
+                focused.as_ref(),
+                viewport_dims,
+                None,
+                None,
+                None,
+                &session_name,
+            );
+        }
+        outcome
     }
 
-    /// phux-paer: on re-attach the server sends a `TERMINAL_SNAPSHOT` per
-    /// pane; a NON-focused pane's snapshot must paint into its rect, or the
-    /// pane renders blank while input still routes — the "screens wiped but
-    /// still typable" report. The symmetric counterpart to
+    /// phux-paer: on re-attach the server sends a bootstrap per pane; a
+    /// NON-focused pane's publication must paint into its rect, or the pane
+    /// renders blank while input still routes — the "screens wiped but still
+    /// typable" report. The symmetric counterpart to
     /// [`non_focused_pane_repaints_on_output`].
     #[test]
     fn non_focused_pane_repaints_on_snapshot() {
@@ -2616,10 +3560,12 @@ mod tests {
         let right = tid(2);
         let mut layout = two_pane_workspace(&left, &right, &left);
         let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&left, 39, 24, b""), (&right, 39, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         drive_snapshot(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2653,10 +3599,12 @@ mod tests {
         let right = tid(2);
         let mut layout = two_pane_workspace(&left, &right, &left);
         let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&left, 39, 24, b""), (&right, 39, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         drive_snapshot(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2688,10 +3636,12 @@ mod tests {
         let right = tid(2);
         let mut layout = two_pane_workspace(&left, &right, &left);
         let mut focused = Some(left.clone());
-        let mut panes = panes_for(&[&left, &right]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&left, 80, 24, b""), (&right, 80, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         drive_output(
+            &mut engine,
             &mut out,
             &mut layout,
             &mut focused,
@@ -2729,10 +3679,12 @@ mod tests {
         // Re-select window 0 as active (add_window activated the new one).
         workspace.select(0);
         let mut focused = Some(active_pane.clone());
-        let mut panes = panes_for(&[&active_pane, &other_pane]);
+        let (mut engine, mut panes) =
+            published_fixture(&[(&active_pane, 80, 24, b""), (&other_pane, 80, 24, b"")]);
 
         let mut out: Vec<u8> = Vec::new();
         drive_output(
+            &mut engine,
             &mut out,
             &mut workspace,
             &mut focused,
@@ -2750,10 +3702,12 @@ mod tests {
         );
         // The mirror is warm: reading the grapheme grid back shows the
         // bytes landed in pane 2's libghostty Terminal.
+        let terminal = super::super::driver::published_terminal(&engine.kernel, &other_pane)
+            .expect("pane 2 terminal");
         let slot = panes.get_mut(&other_pane).expect("pane 2 slot");
         let cell = slot
             .renderer
-            .read_grapheme_at(&slot.terminal, 0, 0)
+            .read_grapheme_at(terminal, 0, 0)
             .expect("read cell");
         assert_eq!(cell, Some('o'), "pane 2 mirror should hold the output");
     }
@@ -2928,10 +3882,12 @@ mod tests {
             let right = tid(2);
             let mut layout = two_pane_workspace(&left, &right, &left);
             let mut focused = Some(left.clone());
-            let mut panes = panes_for(&[&left, &right]);
+            let (mut engine, mut panes) =
+                published_fixture(&[(&left, 80, 24, b""), (&right, 80, 24, b"")]);
             let mut out: Vec<u8> = Vec::new();
             // Drive the focused pane so the paint trigger fires.
             drive_output(
+                &mut engine,
                 &mut out,
                 &mut layout,
                 &mut focused,

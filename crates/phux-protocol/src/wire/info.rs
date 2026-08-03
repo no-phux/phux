@@ -8,9 +8,9 @@
 //! `phux-core`).
 //!
 //! The snapshot is the minimum a reconnecting client needs to render
-//! UI chrome, status bars, and pane layout — the grid contents themselves
-//! flow as separate `TERMINAL_SNAPSHOT` frames per SPEC §13's attach sequence
-//! (`ATTACHED` → N×`TERMINAL_SNAPSHOT` → diffs).
+//! UI chrome, status bars, and pane layout — terminal contents flow separately
+//! through protocol-0.7 bootstrap streams (`ATTACHED` → per-pane
+//! `BOOTSTRAP_BEGIN`/`CHUNK`/`READY` → `ATTACH_READY`).
 
 use crate::ids::{ClientId, SessionId, TerminalId, WindowId};
 
@@ -244,11 +244,10 @@ impl WindowInfo {
 /// Description of a single terminal, sufficient for layout chrome.
 ///
 /// Excludes grid contents, cursor state, scrollback, and process info.
-/// Grid contents and (optionally) scrollback flow as separate
-/// `TERMINAL_SNAPSHOT` frames per SPEC §13. Process info (PID, command, exit
-/// status) is not yet modeled in `phux_core::TerminalDescriptor`; adding wire fields the
-/// server can only send `None` for is premature. Revisit when core grows
-/// process tracking.
+/// Grid contents and retained history flow through separate bootstrap/history
+/// streams. Process info (PID, command, exit status) is not yet modeled in
+/// `phux_core::TerminalDescriptor`; adding wire fields the server can only send
+/// `None` for is premature. Revisit when core grows process tracking.
 ///
 /// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
 #[derive(Debug, Clone, PartialEq)]

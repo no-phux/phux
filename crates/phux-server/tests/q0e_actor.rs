@@ -49,14 +49,14 @@
 
 use std::time::Duration;
 
-use phux_protocol::ClientId;
 use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::{BootstrapId, ClientId, StreamId};
 use phux_server::state::Outbound;
 use phux_server::terminal_actor::{
     ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_TICK_INTERVAL,
     TerminalActor, TerminalHandle,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 
@@ -106,8 +106,15 @@ impl ActorFixture {
                     client_id: ClientId(i),
                     outbound: out_tx,
                     wire_terminal_id: WIRE_TID,
+                    stream_id: StreamId::new(u64::from(i)).expect("test stream id"),
+                    bootstrap_id: BootstrapId::new(1).expect("test bootstrap id"),
                     wants_state_sync: false,
+                    state_sync_scrollback: None,
+                    bootstrap_max_bytes: usize::MAX,
+                    bootstrap_max_frames: usize::MAX,
+                    bootstrap_chunk_bytes: 1,
                     loss_tolerant: false,
+                    live_gate: watch::channel(true).1,
                     reply: reply_tx,
                 })
                 .await
@@ -145,7 +152,12 @@ impl ActorFixture {
     async fn ack(&self, client_id: ClientId, seq: u64) {
         self.handle
             .consumer_ack
-            .send(ConsumerAckRequest { client_id, seq })
+            .send(ConsumerAckRequest {
+                client_id,
+                stream_id: StreamId::new(u64::from(client_id.0)).expect("test stream id"),
+                bootstrap_id: BootstrapId::new(1).expect("test bootstrap id"),
+                seq,
+            })
             .await
             .expect("send ack");
     }
@@ -186,12 +198,13 @@ fn terminal_outputs(items: &[Outbound]) -> Vec<(u32, u64, usize)> {
                 terminal_id,
                 seq,
                 bytes,
+                ..
             }) => Some((
                 terminal_id.local_id().expect("v0.1 local id"),
                 *seq,
                 bytes.len(),
             )),
-            Outbound::Frame(_) => None,
+            Outbound::Frame(_) | Outbound::TerminalError { .. } => None,
         })
         .collect()
 }

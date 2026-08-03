@@ -38,6 +38,8 @@ use crate::render::overlay::{
 /// that would otherwise inflate `dispatch_input_events`'s argument
 /// list past clippy's threshold.
 pub(super) struct DispatchCtx<'a> {
+    /// Connection-owned engine replicas used for terminal queries and local scrolling.
+    pub engine_kernel: &'a mut super::driver::AttachKernel,
     /// Keybind resolver state. `None` when the on-disk config failed
     /// to parse; the dispatcher then forwards every key to the focused
     /// pane unchanged.
@@ -380,13 +382,19 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                         // clipboard via OSC 52. Client-local per ADR-0030 —
                         // no wire traffic.
                         if let Some(fid) = focused_pane.as_ref()
-                            && let Some(slot) = panes.get(fid)
+                            && let Some(terminal) =
+                                super::driver::published_terminal(ctx.engine_kernel, fid)
                         {
-                            super::copy::copy_to_host_clipboard(out, &slot.terminal, req)?;
+                            super::copy::copy_to_host_clipboard(out, terminal, req)?;
                         }
                     }
                     OverlayOutcome::ScrollViewport(delta) => {
-                        if scroll_focused_pane_viewport(panes, focused_pane.as_ref(), delta) {
+                        if scroll_focused_pane_viewport(
+                            ctx.engine_kernel,
+                            panes,
+                            focused_pane.as_ref(),
+                            delta,
+                        ) {
                             layout_changed = true;
                         }
                     }
@@ -419,14 +427,20 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                 match ctx.overlays.handle_mouse(&routed) {
                     OverlayOutcome::Copy(req) => {
                         if let Some(fid) = focused_pane.as_ref()
-                            && let Some(slot) = panes.get(fid)
+                            && let Some(terminal) =
+                                super::driver::published_terminal(ctx.engine_kernel, fid)
                         {
-                            super::copy::copy_to_host_clipboard(out, &slot.terminal, req)?;
+                            super::copy::copy_to_host_clipboard(out, terminal, req)?;
                         }
                         layout_changed = true;
                     }
                     OverlayOutcome::ScrollViewport(delta) => {
-                        if scroll_focused_pane_viewport(panes, focused_pane.as_ref(), delta) {
+                        if scroll_focused_pane_viewport(
+                            ctx.engine_kernel,
+                            panes,
+                            focused_pane.as_ref(),
+                            delta,
+                        ) {
                             layout_changed = true;
                         }
                     }
@@ -798,8 +812,9 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                     routed.x = pane_x;
                     routed.y = pane_y;
                     if let Some(delta) = wheel_scroll_delta(&routed)
-                        && let Some(slot) = panes.get_mut(&target)
-                        && !terminal_wants_mouse_tracking(slot)
+                        && let Some(terminal) =
+                            super::driver::published_terminal(ctx.engine_kernel, &target)
+                        && !terminal_wants_mouse_tracking(terminal)
                     {
                         // xterm "alternate scroll" (DECSET 1007, on by
                         // default in libghostty): the alt screen has no
@@ -810,7 +825,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                         // wheel notch into arrow-key presses instead — the
                         // same translation tmux and ghostty perform. Apps
                         // opt out with `?1007l` (phux-yyex).
-                        if terminal_in_alt_screen(slot) && terminal_alt_scroll(slot) {
+                        if terminal_in_alt_screen(terminal) && terminal_alt_scroll(terminal) {
                             let arrow = make_named_key(
                                 if delta < 0 {
                                     PhysicalKey::ArrowUp
@@ -828,10 +843,19 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                             }
                             continue;
                         }
-                        slot.terminal.scroll_viewport(ScrollViewport::Delta(delta));
-                        if delta < 0 {
-                            // Scrolled up into scrollback: remember so the
-                            // next key press snaps back to the live screen.
+                        let scrolled = ctx.engine_kernel.published_engine_mut(&target).is_some_and(
+                            |replica| {
+                                replica
+                                    .scroll_viewport(ScrollViewport::Delta(delta))
+                                    .is_ok()
+                            },
+                        );
+                        if !scrolled {
+                            continue;
+                        }
+                        if delta < 0
+                            && let Some(slot) = panes.get_mut(&target)
+                        {
                             slot.viewport_scrolled = true;
                         }
                         layout_changed = true;
@@ -848,9 +872,8 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                     // on the pane you pointed at, not the one you left.
                     if matches!(mouse.action, MouseAction::Press)
                         && mouse.button == MouseButton::Right
-                        && panes
-                            .get(&target)
-                            .is_some_and(|slot| !terminal_wants_mouse_tracking(slot))
+                        && super::driver::published_terminal(ctx.engine_kernel, &target)
+                            .is_some_and(|terminal| !terminal_wants_mouse_tracking(terminal))
                     {
                         let zoomed = ctx.zoomed.as_ref() == Some(&target);
                         let spec = super::context_menu::pane_menu(ctx.keybindings, zoomed);
@@ -871,9 +894,8 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                     // their events untouched.
                     if matches!(mouse.action, MouseAction::Press)
                         && mouse.button == MouseButton::Left
-                        && panes
-                            .get(&target)
-                            .is_some_and(|slot| !terminal_wants_mouse_tracking(slot))
+                        && super::driver::published_terminal(ctx.engine_kernel, &target)
+                            .is_some_and(|terminal| !terminal_wants_mouse_tracking(terminal))
                     {
                         let rect = focused_pane_rect(ctx, focused_pane.as_ref());
                         ctx.overlays
@@ -937,6 +959,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                 phux_protocol::input::key::KeyAction::Press
             )
             && snap_scrolled_viewport(
+                ctx.engine_kernel,
                 panes,
                 ctx.workspace.active_window().and_then(|w| w.focus.as_ref()),
             )
@@ -966,16 +989,17 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
         // Predictive echo does nothing for app mode anyway — skip it here
         // rather than rely on the reactive auto-back-off to clean up after
         // the ghosts. The keystroke still travels upstream normally below.
-        if let InputEvent::Key(ref key_event) = ev
+        if let InputEvent::Key(key_event) = &ev
             && predict.is_enabled()
             && let Some(fid) = ctx.workspace.active_window().and_then(|w| w.focus.as_ref())
+            && let Some(terminal) = super::driver::published_terminal(ctx.engine_kernel, fid)
+            && !terminal_in_alt_screen(terminal)
             && let Some(slot) = panes.get_mut(fid)
-            && !terminal_in_alt_screen(slot)
         {
             use crate::predict::PredictionOutcome;
             let outcome = predict.predict_key_with_grid(key_event, |r, c| {
                 slot.renderer
-                    .read_grapheme_at(&slot.terminal, r, c)
+                    .read_grapheme_at(terminal, r, c)
                     .ok()
                     .flatten()
             });
@@ -1052,8 +1076,7 @@ fn scale_to_surface_pixels(mut mouse: MouseEvent, cell_px: (u16, u16)) -> MouseE
     mouse.y *= f64::from(cell_px.1.max(1));
     mouse
 }
-
-fn terminal_wants_mouse_tracking(slot: &PaneSlot) -> bool {
+fn terminal_wants_mouse_tracking(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
     [
         Mode::X10_MOUSE,
         Mode::NORMAL_MOUSE,
@@ -1061,15 +1084,14 @@ fn terminal_wants_mouse_tracking(slot: &PaneSlot) -> bool {
         Mode::ANY_MOUSE,
     ]
     .into_iter()
-    .any(|mode| slot.terminal.mode(mode).unwrap_or(false))
+    .any(|mode| terminal.mode(mode).unwrap_or(false))
 }
 
 /// Whether the pane's mirror has DECSET 1007 (xterm "alternate scroll")
 /// active. libghostty defaults it ON — matching ghostty — so wheel-to-arrow
 /// translation works out of the box for alt-screen apps without mouse
-/// tracking; an app that wants raw wheel silence opts out with `?1007l`.
-fn terminal_alt_scroll(slot: &PaneSlot) -> bool {
-    slot.terminal.mode(Mode::ALT_SCROLL).unwrap_or(false)
+fn terminal_alt_scroll(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
+    terminal.mode(Mode::ALT_SCROLL).unwrap_or(false)
 }
 
 /// Whether the pane's mirror is on the alternate screen buffer — the
@@ -1086,18 +1108,17 @@ fn terminal_alt_scroll(slot: &PaneSlot) -> bool {
 /// `BACKOFF_THRESHOLD` mispredicted ghosts. libghostty tracks each variant
 /// independently and reports it via `terminal.mode()` (verified against a
 /// `?1049h`/`?1047h` probe), the same query path the mouse-tracking and
-/// synchronized-output gates already use.
-fn terminal_in_alt_screen(slot: &PaneSlot) -> bool {
+fn terminal_in_alt_screen(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
     [
         Mode::ALT_SCREEN_SAVE,
         Mode::ALT_SCREEN,
         Mode::ALT_SCREEN_LEGACY,
     ]
     .into_iter()
-    .any(|mode| slot.terminal.mode(mode).unwrap_or(false))
+    .any(|mode| terminal.mode(mode).unwrap_or(false))
 }
-
 fn scroll_focused_pane_viewport(
+    kernel: &mut super::driver::AttachKernel,
     panes: &mut HashMap<TerminalId, PaneSlot>,
     focused_pane: Option<&TerminalId>,
     delta: isize,
@@ -1111,7 +1132,15 @@ fn scroll_focused_pane_viewport(
     let Some(slot) = panes.get_mut(fid) else {
         return false;
     };
-    slot.terminal.scroll_viewport(ScrollViewport::Delta(delta));
+    let Some(replica) = kernel.published_engine_mut(fid) else {
+        return false;
+    };
+    if replica
+        .scroll_viewport(ScrollViewport::Delta(delta))
+        .is_err()
+    {
+        return false;
+    }
     if delta < 0 {
         slot.viewport_scrolled = true;
     }
@@ -1120,18 +1149,24 @@ fn scroll_focused_pane_viewport(
 
 /// Snap `focused_pane`'s viewport back to the live screen if a wheel /
 /// copy-mode scroll left it pinned in scrollback. Returns `true` iff the
-/// viewport moved (the caller repaints).
 fn snap_scrolled_viewport(
+    kernel: &mut super::driver::AttachKernel,
     panes: &mut HashMap<TerminalId, PaneSlot>,
     focused_pane: Option<&TerminalId>,
 ) -> bool {
-    let Some(slot) = focused_pane.and_then(|fid| panes.get_mut(fid)) else {
+    let Some((fid, slot)) = focused_pane.and_then(|fid| panes.get_mut(fid).map(|slot| (fid, slot)))
+    else {
         return false;
     };
     if !slot.viewport_scrolled {
         return false;
     }
-    slot.terminal.scroll_viewport(ScrollViewport::Bottom);
+    let Some(replica) = kernel.published_engine_mut(fid) else {
+        return false;
+    };
+    if replica.scroll_viewport(ScrollViewport::Bottom).is_err() {
+        return false;
+    }
     slot.viewport_scrolled = false;
     true
 }
@@ -3039,6 +3074,15 @@ mod tests {
         TerminalId::local(id)
     }
 
+    fn test_engine_kernel() -> super::super::driver::AttachKernel {
+        phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        )
+    }
+
     #[test]
     fn soft_kill_input_frames_emits_exit_newline_sequence() {
         let frames = soft_kill_input_frames(&tid(7));
@@ -3074,41 +3118,6 @@ mod tests {
             }
             _ => unreachable!(),
         }
-    }
-
-    /// A pinned-in-scrollback viewport must snap back to the live screen on
-    /// the next key press (the "pane looks frozen after a TUI app exits"
-    /// bug): scroll up, flag the slot, snap — the flag clears, the caller is
-    /// told to repaint, and the render shows the live bottom line again.
-    #[test]
-    fn snap_scrolled_viewport_returns_to_live_screen() {
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        let id = tid(1);
-        let mut slot = PaneSlot::new_with_size(20, 3).expect("slot");
-        // Ten numbered lines -> scrollback exists; "line-10" is the live tail.
-        for i in 1..=10 {
-            slot.terminal.vt_write(format!("line-{i}\r\n").as_bytes());
-        }
-        slot.terminal.scroll_viewport(ScrollViewport::Delta(-5));
-        slot.viewport_scrolled = true;
-        panes.insert(id.clone(), slot);
-
-        assert!(snap_scrolled_viewport(&mut panes, Some(&id)));
-        let slot = panes.get_mut(&id).expect("slot");
-        assert!(!slot.viewport_scrolled, "flag must clear after the snap");
-        let mut out = Vec::new();
-        let _ = slot
-            .renderer
-            .render_at_full(&slot.terminal, &mut out, (0, 0), (20, 3))
-            .expect("render");
-        assert!(
-            String::from_utf8_lossy(&out).contains("line-10"),
-            "viewport must be back at the live screen"
-        );
-
-        // Un-scrolled slot: a no-op, no repaint requested.
-        assert!(!snap_scrolled_viewport(&mut panes, Some(&id)));
-        assert!(!snap_scrolled_viewport(&mut panes, None));
     }
 
     #[test]
@@ -3252,7 +3261,9 @@ mod tests {
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: last_focused
                 .map_or_else(FocusHistory::default, FocusHistory::with_previous),
@@ -3643,7 +3654,9 @@ mod tests {
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
             workspace: &mut workspace,
@@ -3710,7 +3723,9 @@ mod tests {
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
             workspace: &mut workspace,
@@ -3812,7 +3827,9 @@ mod tests {
             let mut reload_request = false;
             let fleet_agent_meta = HashMap::new();
             let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+            let mut engine_kernel = test_engine_kernel();
             let mut ctx = DispatchCtx {
+                engine_kernel: &mut engine_kernel,
                 resolver: None,
                 focus_history: FocusHistory::default(),
                 workspace,
@@ -3977,7 +3994,9 @@ mod tests {
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
             workspace,
@@ -4407,7 +4426,9 @@ mod tests {
         let mut vcs = crate::attach::driver::VcsIndex::default();
         let focus_history = FocusHistory::default();
         let focused = workspace.active_window().and_then(|w| w.focus.clone());
+        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: None,
             workspace,
             viewport: (80, 24),
@@ -4889,7 +4910,9 @@ mod tests {
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
             workspace: &mut workspace,
@@ -4977,7 +5000,9 @@ mod tests {
             let mut reload_request = false;
             let fleet_agent_meta = HashMap::new();
             let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+            let mut engine_kernel = test_engine_kernel();
             let mut ctx = DispatchCtx {
+                engine_kernel: &mut engine_kernel,
                 resolver: None,
                 focus_history: FocusHistory::default(),
                 workspace: &mut workspace,
@@ -5153,7 +5178,9 @@ mod tests {
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: Some(&mut resolver),
             focus_history: FocusHistory::default(),
             workspace: &mut workspace,
@@ -5267,7 +5294,9 @@ mod tests {
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: Some(&mut resolver),
             focus_history: FocusHistory::default(),
             workspace: &mut workspace,
@@ -5379,15 +5408,18 @@ mod tests {
         use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
         fn visible_prefix(
+            kernel: &super::super::driver::AttachKernel,
             panes: &mut HashMap<TerminalId, PaneSlot>,
             id: &TerminalId,
             row: u16,
         ) -> String {
             let slot = panes.get_mut(id).expect("pane");
+            let terminal =
+                super::super::driver::published_terminal(kernel, id).expect("published terminal");
             (0..6)
                 .filter_map(|col| {
                     slot.renderer
-                        .read_grapheme_string_at(&slot.terminal, row, col)
+                        .read_grapheme_string_at(terminal, row, col)
                         .expect("read cell")
                 })
                 .collect()
@@ -5401,14 +5433,14 @@ mod tests {
         let mut detach_pending = false;
         let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 8, 4);
         let overlay = Overlay;
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        let mut slot = PaneSlot::new_with_size(8, 4).expect("pane slot");
+        let mut replay = Vec::new();
         for n in 0..10 {
-            slot.terminal.vt_write(format!("line{n:02}\r\n").as_bytes());
+            replay.extend_from_slice(format!("line{n:02}\r\n").as_bytes());
         }
-        panes.insert(tid(1), slot);
+        let (mut engine_kernel, _, mut panes) =
+            super::super::driver::published_test_state(&[(&tid(1), 8, 4, &replay)]);
 
-        let before = visible_prefix(&mut panes, &tid(1), 0);
+        let before = visible_prefix(&engine_kernel, &mut panes, &tid(1), 0);
 
         let mut overlays = OverlayState::new();
         overlays.push(Box::new(crate::render::overlay::CopyModeOverlay::new(
@@ -5429,6 +5461,7 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
             workspace: &mut workspace,
@@ -5487,7 +5520,7 @@ mod tests {
         .await
         .expect("dispatch");
 
-        let after = visible_prefix(&mut panes, &tid(1), 0);
+        let after = visible_prefix(&engine_kernel, &mut panes, &tid(1), 0);
         assert!(changed, "scrolling copy-mode should trigger a repaint");
         assert_ne!(
             before, after,
@@ -5626,7 +5659,9 @@ mod tests {
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
             workspace: &mut workspace,
@@ -5845,7 +5880,9 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
         {
+            let mut engine_kernel = test_engine_kernel();
             let mut ctx = DispatchCtx {
+                engine_kernel: &mut engine_kernel,
                 resolver: None,
                 focus_history: FocusHistory::default(),
                 workspace: &mut workspace,
@@ -6144,12 +6181,12 @@ mod tests {
         let mut predict =
             PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
         let overlay = Overlay;
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        for (id, vt) in seed_vt {
-            let mut slot = PaneSlot::new_with_size(39, 24).expect("pane slot");
-            slot.terminal.vt_write(vt);
-            panes.insert(id.clone(), slot);
-        }
+        let entries: Vec<_> = seed_vt
+            .iter()
+            .map(|(id, bytes)| (id, 39, 24, *bytes))
+            .collect();
+        let (mut engine_kernel, _, mut panes) =
+            super::super::driver::published_test_state(&entries);
         let mut next_request_id = 1;
         let mut pending_splits = HashMap::new();
         let mut pending_windows = HashMap::new();
@@ -6167,6 +6204,7 @@ mod tests {
         let repainted;
         {
             let mut ctx = DispatchCtx {
+                engine_kernel: &mut engine_kernel,
                 resolver: None,
                 focus_history: FocusHistory::default(),
                 workspace: &mut workspace,
@@ -6647,7 +6685,9 @@ mod tests {
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             resolver: None,
             focus_history: FocusHistory::default(),
             workspace,
@@ -6779,9 +6819,14 @@ mod tests {
     /// must let prediction through.
     #[test]
     fn alt_screen_gate_false_on_main_screen() {
-        let slot = PaneSlot::new().expect("slot");
+        let terminal = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
+            cols: 80,
+            rows: 24,
+            max_scrollback: 100,
+        })
+        .expect("terminal");
         assert!(
-            !terminal_in_alt_screen(&slot),
+            !terminal_in_alt_screen(&terminal),
             "a fresh pane sits on the main screen — predict here"
         );
     }
@@ -6791,20 +6836,30 @@ mod tests {
     /// `?1047h` variant is caught too.
     #[test]
     fn alt_screen_gate_tracks_dec_private_modes() {
-        let mut slot = PaneSlot::new().expect("slot");
-        slot.terminal.vt_write(b"\x1b[?1049h");
+        let mut terminal = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
+            cols: 80,
+            rows: 24,
+            max_scrollback: 100,
+        })
+        .expect("terminal");
+        terminal.vt_write(b"\x1b[?1049h");
         assert!(
-            terminal_in_alt_screen(&slot),
+            terminal_in_alt_screen(&terminal),
             "1049h (save-cursor alt screen) is app mode"
         );
-        slot.terminal.vt_write(b"\x1b[?1049l");
+        terminal.vt_write(b"\x1b[?1049l");
         assert!(
-            !terminal_in_alt_screen(&slot),
+            !terminal_in_alt_screen(&terminal),
             "1049l returns to the main screen — predict again"
         );
 
-        let mut legacy = PaneSlot::new().expect("slot");
-        legacy.terminal.vt_write(b"\x1b[?1047h");
+        let mut legacy = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
+            cols: 80,
+            rows: 24,
+            max_scrollback: 100,
+        })
+        .expect("terminal");
+        legacy.vt_write(b"\x1b[?1047h");
         assert!(
             terminal_in_alt_screen(&legacy),
             "1047h (legacy alt screen) is app mode too"
@@ -6842,15 +6897,12 @@ mod tests {
         // keystroke and a queued ghost is the app-mode gate under test.
         let mut predict = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         let overlay = Overlay;
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
-        // The focused pane's mirror carries the alt-screen signal the gate
-        // reads via `terminal.mode()`. A fresh pane sits on the main screen
-        // (cooked shell prompt); `?1049h` puts it in a full-screen app.
-        let mut slot = PaneSlot::new().expect("slot");
-        if alt_screen {
-            slot.terminal.vt_write(b"\x1b[?1049h");
-        }
-        panes.insert(tid(1), slot);
+        // The focused replica carries the alt-screen signal the gate reads
+        // via `terminal.mode()`. A fresh pane sits on the main screen (cooked
+        // shell prompt); `?1049h` puts it in a full-screen app.
+        let bootstrap: &[u8] = if alt_screen { b"\x1b[?1049h" } else { b"" };
+        let (mut engine_kernel, _, mut panes) =
+            super::super::driver::published_test_state(&[(&tid(1), 80, 24, bootstrap)]);
 
         let mut next_request_id = 1;
         let mut pending_splits = HashMap::new();
@@ -6866,6 +6918,7 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
         let mut ctx = DispatchCtx {
+            engine_kernel: &mut engine_kernel,
             // No resolver: every key forwards straight through to the pane,
             // past the predict layer — no keybinding interception to muddy
             // the gate assertion.

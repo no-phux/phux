@@ -3,9 +3,8 @@
 //!
 //! Root cause: phux-7ubw made `paint_full_frame` / `paint_focused_pane`
 //! letterbox-centre an undersized mirror inside its render rect, but the
-//! `handle_server_frame` paints (`TERMINAL_SNAPSHOT` focused + non-focused,
-//! `TERMINAL_OUTPUT` non-focused) still painted the same mirror pinned at the
-//! rect origin. Whenever the server-authoritative mirror grid lags the
+//! bootstrap and live-output paint paths still painted the same mirror pinned
+//! at the rect origin. Whenever the server-authoritative mirror grid lags the
 //! client rect (any resize handshake in flight: sidebar toggle, zoom, split,
 //! attach from a larger terminal) the two paint families put the SAME
 //! content at TWO different origins — and because the incremental painter
@@ -25,9 +24,14 @@ use std::collections::HashMap;
 
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
+use phux_client_core::engine::ghostty::GhosttyAdapter;
+use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::info::{LayoutNode, SplitDir};
+use phux_protocol::{
+    BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, StreamId,
+};
 
 use super::driver::PaneSlot;
 use super::paint::{SidebarEdge, SidebarReservation, content_rect, paint_full_frame};
@@ -109,12 +113,37 @@ struct Rig {
     agent_meta: AgentMetaIndex,
     glass: GhosttyTerminal<'static, 'static>,
     viewport: (u16, u16),
-    seq: u64,
+    seq: HashMap<TerminalId, u64>,
+    kernel: SessionKernel<GhosttyAdapter>,
+    kernel_effects: KernelEffectBuffer,
+    bootstraps: HashMap<TerminalId, BootstrapId>,
+    next_bootstrap: u64,
+    attach_released: bool,
 }
 
 impl Rig {
     fn new(workspace: Workspace, viewport: (u16, u16)) -> Self {
         let focused = workspace.active_window().and_then(|ls| ls.focus.clone());
+        let terminals = workspace
+            .windows
+            .iter()
+            .filter_map(|window| window.state.tree.as_ref())
+            .flat_map(crate::layout::leaves)
+            .collect::<Vec<_>>();
+        let mut kernel = SessionKernel::new(
+            GhosttyAdapter::new(BootstrapLimits::default()),
+            BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut kernel_effects = KernelEffectBuffer::new();
+        kernel
+            .update(
+                KernelInput::AttachStarted {
+                    attach_id: 1,
+                    terminals: &terminals,
+                },
+                &mut kernel_effects,
+            )
+            .expect("attach started");
         Self {
             panes: HashMap::new(),
             workspace,
@@ -134,7 +163,12 @@ impl Rig {
             })
             .expect("glass terminal"),
             viewport,
-            seq: 0,
+            seq: HashMap::new(),
+            kernel,
+            kernel_effects,
+            bootstraps: HashMap::new(),
+            next_bootstrap: 1,
+            attach_released: false,
         }
     }
 
@@ -142,17 +176,21 @@ impl Rig {
     /// with initial content — the "resize handshake in flight" fixture when
     /// the size differs from the pane's layout rect.
     fn seed_pane(&mut self, id: &TerminalId, cols: u16, rows: u16, content: &[u8]) {
-        let mut slot = PaneSlot::new_with_size(cols, rows).expect("pane slot");
-        slot.terminal.vt_write(content);
-        self.panes.insert(id.clone(), slot);
+        self.panes.insert(
+            id.clone(),
+            PaneSlot::new_with_size(cols, rows).expect("pane slot"),
+        );
+        self.snapshot(id, cols, rows, content);
     }
 
     /// Run one inbound server frame through the REAL dispatcher and parse
     /// whatever it painted into the glass.
-    fn drive(&mut self, frame: FrameKind) {
+    fn drive(&mut self, frame: FrameKind) -> super::server_frame::FrameOutcome {
         let mut out: Vec<u8> = Vec::new();
         let overlay = Overlay;
-        let _ = handle_server_frame(
+        let outcome = handle_server_frame(
+            &mut self.kernel,
+            &mut self.kernel_effects,
             &mut out,
             frame,
             &mut self.panes,
@@ -175,38 +213,71 @@ impl Rig {
         )
         .expect("handle_server_frame");
         self.glass.vt_write(&out);
+        outcome
     }
 
     /// `TERMINAL_OUTPUT` for `pane` — the hot path.
     fn output(&mut self, pane: &TerminalId, bytes: &[u8]) {
-        self.seq += 1;
+        let seq = self.seq.entry(pane.clone()).or_insert(0);
+        *seq += 1;
+        let seq = *seq;
+        let bootstrap_id = *self.bootstraps.get(pane).expect("published bootstrap");
         self.drive(FrameKind::TerminalOutput {
             terminal_id: pane.clone(),
-            seq: self.seq,
+            stream_id: StreamId::new(1).expect("stream"),
+            bootstrap_id,
+            seq,
             bytes: bytes::Bytes::copy_from_slice(bytes),
         });
     }
 
-    /// `TERMINAL_SNAPSHOT` resync for `pane` at the server's grid size.
+    /// Negotiated synthesized-VT replacement bootstrap for one pane.
     fn snapshot(&mut self, pane: &TerminalId, cols: u16, rows: u16, replay: &[u8]) {
-        self.drive(FrameKind::TerminalSnapshot {
+        let bootstrap_id = BootstrapId::new(self.next_bootstrap).expect("bootstrap");
+        self.next_bootstrap += 1;
+        let stream_id = StreamId::new(1).expect("stream");
+        self.drive(FrameKind::BootstrapBegin {
             terminal_id: pane.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
             cols,
             rows,
-            vt_replay_bytes: replay.to_vec(),
-            scrollback_bytes: None,
+            base_seq: self.seq.get(pane).copied().unwrap_or(0),
         });
+        self.drive(FrameKind::BootstrapChunk {
+            terminal_id: pane.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: bytes::Bytes::copy_from_slice(replay),
+        });
+        let outcome = self.drive(FrameKind::BootstrapReady {
+            terminal_id: pane.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        });
+        if outcome.layout_replaced {
+            self.full_repaint();
+        }
+        self.bootstraps.insert(pane.clone(), bootstrap_id);
     }
 
     /// The driver's `layout_changed` repaint: full frame of the render
     /// window (ED2 + every pane + cursor), exactly as `main_loop` runs it.
     fn full_repaint(&mut self) {
+        if !self.attach_released {
+            self.drive(FrameKind::AttachReady { attach_id: 1 });
+            self.attach_released = true;
+        }
         let mut out: Vec<u8> = Vec::new();
         if let Some(ls) = self.workspace.render_window(self.zoomed.as_ref()) {
             paint_full_frame(
                 &mut out,
                 ls.as_ref(),
                 &mut self.panes,
+                &self.kernel,
                 self.focused.as_ref(),
                 self.viewport,
                 None,
@@ -290,10 +361,11 @@ impl Rig {
         let mut expected: Vec<Vec<Option<char>>> =
             vec![vec![None; usize::from(cols)]; usize::from(rows)];
         for (id, rect) in &rects {
-            let slot = self.panes.get(id).expect("pane slot for rect");
-            let mgrid = term_grid(&slot.terminal);
-            let mcols = slot.terminal.cols().expect("mirror cols");
-            let mrows = slot.terminal.rows().expect("mirror rows");
+            let terminal = super::driver::published_terminal(&self.kernel, id)
+                .expect("published pane terminal");
+            let mgrid = term_grid(terminal);
+            let mcols = terminal.cols().expect("mirror cols");
+            let mrows = terminal.rows().expect("mirror rows");
             // The letterbox placement contract: undersized mirror centred
             // with a floor split (extra cell on the trailing edge); mirror
             // >= rect clips at the rect origin.

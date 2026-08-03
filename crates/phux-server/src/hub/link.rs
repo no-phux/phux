@@ -78,7 +78,9 @@ use std::time::Duration;
 
 use phux_dial::{CertTrust, QuicDial, WsDial, WsTarget};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::ClientCapabilities;
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities,
+};
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::FrameKind;
 use tokio_util::sync::CancellationToken;
@@ -607,6 +609,11 @@ pub(crate) trait LinkTransport {
     async fn connect(&self, spec: &DialSpec, token: Option<String>) -> Result<Self::Conn, String>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NegotiatedBootstrap {
+    profile: BootstrapProfile,
+    limits: BootstrapLimits,
+}
 /// An established hub link: a duplex of complete encoded phux frames
 /// (length prefix included, the `FrameKind::encode`/`decode` unit) the
 /// relay session (phux-v45.4) pumps in both directions.
@@ -621,6 +628,18 @@ pub(crate) trait LinkConn {
     /// against the relay mailbox and the cancellation token, recreating
     /// the future each iteration.
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String>;
+
+    /// Exact bounds selected before this connection was returned.
+    ///
+    /// Returns an error if a transport violates the connection-construction
+    /// contract and returns before installing its negotiated selection.
+    fn bootstrap_limits(&self) -> Result<BootstrapLimits, String>;
+
+    /// Exact synchronization profile selected before this connection returned.
+    ///
+    /// Returns an error if a transport violates the connection-construction
+    /// contract and returns before installing its negotiated selection.
+    fn bootstrap_profile(&self) -> Result<BootstrapProfile, String>;
 
     /// Transport-level liveness probe, driven by the supervisor's
     /// [`LINK_KEEPALIVE_INTERVAL`] tick while the link is up. WS links
@@ -795,7 +814,16 @@ async fn run_relay_session<C: LinkConn>(
     unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<super::relay::Unsubscribe>,
     cancel: &CancellationToken,
 ) -> Option<String> {
-    let mut session = super::relay::RelaySession::new(host.clone());
+    let profile = match conn.bootstrap_profile() {
+        Ok(profile) => profile,
+        Err(error) => return Some(error),
+    };
+    let limits = match conn.bootstrap_limits() {
+        Ok(limits) => limits,
+        Err(error) => return Some(error),
+    };
+    info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
+    let mut session = super::relay::RelaySession::new_negotiated(host.clone(), limits, profile);
     // Housekeeping tick: transport keepalive + pending-map pruning. First
     // tick one interval out — the connection was live zero seconds ago.
     let mut keepalive = tokio::time::interval_at(
@@ -810,8 +838,9 @@ async fn run_relay_session<C: LinkConn>(
                 let Some(request) = request else {
                     break (false, "relay handles dropped".to_owned());
                 };
-                let frame = session.handle_request(request);
-                if let Err(error) = send_bounded(&mut conn, &frame).await {
+                if let Some(frame) = session.handle_request_checked(request)
+                    && let Err(error) = send_bounded(&mut conn, &frame).await
+                {
                     break (true, error);
                 }
             }
@@ -834,7 +863,11 @@ async fn run_relay_session<C: LinkConn>(
                 }
             }
             inbound = conn.recv_frame() => match inbound {
-                Ok(Some(frame)) => session.handle_inbound(&frame),
+                Ok(Some(frame)) => {
+                    if let Err(error) = session.handle_inbound(&frame) {
+                        break (true, error);
+                    }
+                }
                 Ok(None) => break (true, "connection closed by satellite".to_owned()),
                 Err(error) => break (true, error),
             },
@@ -879,14 +912,15 @@ async fn send_bounded<C: LinkConn>(conn: &mut C, frame: &[u8]) -> Result<(), Str
 
 /// Complete the mandatory network-transport version handshake before the
 /// relay session can send commands.
-async fn negotiate_link<C: LinkConn>(conn: &mut C) -> Result<(), String> {
+async fn negotiate_link<C: LinkConn>(conn: &mut C) -> Result<NegotiatedBootstrap, String> {
+    let offered = ClientCapabilities::default();
     let mut encoded = bytes::BytesMut::new();
     FrameKind::Hello {
         client_name: "phux-hub".to_owned(),
         protocol_major: PROTOCOL_VERSION.major,
         protocol_minor: PROTOCOL_VERSION.minor,
         protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::default(),
+        client_caps: offered,
     }
     .encode(&mut encoded);
     send_bounded(conn, &encoded).await?;
@@ -906,12 +940,86 @@ async fn negotiate_link<C: LinkConn>(conn: &mut C) -> Result<(), String> {
         return Err("satellite HELLO response contained trailing bytes".to_owned());
     }
     match frame {
-        FrameKind::HelloOk { .. } => Ok(()),
+        FrameKind::HelloOk {
+            protocol_major,
+            protocol_minor,
+            protocol_patch,
+            selected_profile,
+            bootstrap_limits,
+            ..
+        } => {
+            validate_link_hello_ok(
+                &offered,
+                protocol_major,
+                protocol_minor,
+                protocol_patch,
+                selected_profile,
+                bootstrap_limits,
+            )?;
+            Ok(NegotiatedBootstrap {
+                profile: selected_profile,
+                limits: bootstrap_limits,
+            })
+        }
         FrameKind::Error { code, message, .. } => {
             Err(format!("satellite rejected HELLO: {code:?}: {message}"))
         }
         other => Err(format!("expected HELLO_OK from satellite, got {other:?}")),
     }
+}
+
+fn validate_link_hello_ok(
+    offered: &ClientCapabilities,
+    protocol_major: u16,
+    protocol_minor: u16,
+    protocol_patch: u16,
+    selected_profile: BootstrapProfile,
+    selected_limits: BootstrapLimits,
+) -> Result<(), String> {
+    if (protocol_major, protocol_minor, protocol_patch)
+        != (
+            PROTOCOL_VERSION.major,
+            PROTOCOL_VERSION.minor,
+            PROTOCOL_VERSION.patch,
+        )
+    {
+        return Err(format!(
+            "satellite HELLO_OK selected unsupported protocol {protocol_major}.{protocol_minor}.{protocol_patch}",
+        ));
+    }
+    let profile_is_offered = match selected_profile {
+        BootstrapProfile::NativeState { codec, features } => {
+            offered
+                .bootstrap
+                .profiles
+                .contains(BootstrapProfileKind::NativeState)
+                && offered.bootstrap.native_codecs.contains(codec)
+                && features.supports_native()
+                && offered.bootstrap.native_features.intersect(features) == features
+        }
+        BootstrapProfile::SynthesizedVtRaw => offered
+            .bootstrap
+            .profiles
+            .contains(BootstrapProfileKind::SynthesizedVtRaw),
+        BootstrapProfile::SynthesizedVtStateSync => offered
+            .bootstrap
+            .profiles
+            .contains(BootstrapProfileKind::SynthesizedVtStateSync),
+        _ => false,
+    };
+    if !profile_is_offered {
+        return Err(format!(
+            "satellite HELLO_OK selected bootstrap profile outside the hub offer: {selected_profile:?}",
+        ));
+    }
+    if offered.bootstrap.limits.intersect(selected_limits) != selected_limits {
+        return Err(format!(
+            "satellite HELLO_OK selected bootstrap limits outside the hub offer: chunk={} history_page={}",
+            selected_limits.max_chunk_bytes(),
+            selected_limits.max_history_page_bytes(),
+        ));
+    }
+    Ok(())
 }
 
 /// Spawn one [`run_link`] supervisor per hub-table entry onto the current
@@ -981,6 +1089,8 @@ pub(crate) enum NetLinkConn {
         /// Reassembly buffer: reads land here (cancel-safely) and complete
         /// length-prefixed frames are peeled off the front.
         buf: bytes::BytesMut,
+        /// Exact selection installed once before `connect` returns.
+        negotiated: Option<NegotiatedBootstrap>,
     },
     /// WebSocket connection: one binary message is one complete frame.
     Ws {
@@ -992,6 +1102,8 @@ pub(crate) enum NetLinkConn {
         /// [`LinkConn::keepalive`]; without it a silent partition would
         /// leave the link `Connected` forever.
         last_inbound: std::time::Instant,
+        /// Exact selection installed once before `connect` returns.
+        negotiated: Option<NegotiatedBootstrap>,
     },
     /// SSH-stdio child (phux-v45.9): the running `ssh` process whose
     /// stdin/stdout carry the bridged, length-prefixed frame stream —
@@ -1019,7 +1131,33 @@ pub(crate) enum NetLinkConn {
         /// Reassembly buffer: same cancel-safe frame peeling as the
         /// QUIC path.
         buf: bytes::BytesMut,
+        /// Exact selection installed once before `connect` returns.
+        negotiated: Option<NegotiatedBootstrap>,
     },
+}
+
+impl NetLinkConn {
+    fn install_negotiated(&mut self, selection: NegotiatedBootstrap) -> Result<(), String> {
+        let slot = match self {
+            Self::Quic { negotiated, .. }
+            | Self::Ws { negotiated, .. }
+            | Self::Ssh { negotiated, .. } => negotiated,
+        };
+        if slot.replace(selection).is_some() {
+            return Err("satellite HELLO negotiation completed twice".to_owned());
+        }
+        Ok(())
+    }
+
+    fn negotiated(&self) -> Result<NegotiatedBootstrap, String> {
+        match self {
+            Self::Quic { negotiated, .. }
+            | Self::Ws { negotiated, .. }
+            | Self::Ssh { negotiated, .. } => negotiated.ok_or_else(|| {
+                "satellite connection returned before HELLO negotiation completed".to_owned()
+            }),
+        }
+    }
 }
 
 impl LinkTransport for NetLinkTransport {
@@ -1056,6 +1194,7 @@ impl LinkTransport for NetLinkTransport {
                     send,
                     recv,
                     buf: bytes::BytesMut::with_capacity(8192),
+                    negotiated: None,
                 })
             }
             DialSpec::Ws { url, trust, .. } => {
@@ -1071,6 +1210,7 @@ impl LinkTransport for NetLinkTransport {
                 Ok(NetLinkConn::Ws {
                     ws: Box::new(ws),
                     last_inbound: std::time::Instant::now(),
+                    negotiated: None,
                 })
             }
             DialSpec::Ssh { user, host, port } => {
@@ -1112,17 +1252,17 @@ impl LinkTransport for NetLinkTransport {
                     stdout,
                     stderr_reader,
                     buf: bytes::BytesMut::with_capacity(8192),
+                    negotiated: None,
                 })
             }
         };
         let mut conn = result?;
 
-        // Network listeners require version negotiation before any stateful
-        // frame. SSH terminates on the satellite's local UDS compatibility
-        // path, while QUIC and WebSocket must negotiate before the link is up.
-        if !matches!(spec, DialSpec::Ssh { .. }) {
-            negotiate_link(&mut conn).await?;
-        }
+        // HELLO/profile negotiation is mandatory over QUIC, WebSocket, and
+        // SSH-stdio alike. The remote UDS reached through the byte-transparent
+        // SSH bridge has no same-uid protocol exemption.
+        let selection = negotiate_link(&mut conn).await?;
+        conn.install_negotiated(selection)?;
         Ok(conn)
     }
 }
@@ -1150,6 +1290,14 @@ impl LinkConn for NetLinkConn {
         }
     }
 
+    fn bootstrap_limits(&self) -> Result<BootstrapLimits, String> {
+        self.negotiated().map(|selection| selection.limits)
+    }
+
+    fn bootstrap_profile(&self) -> Result<BootstrapProfile, String> {
+        self.negotiated().map(|selection| selection.profile)
+    }
+
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
         match self {
             Self::Quic { recv, buf, .. } => {
@@ -1171,7 +1319,9 @@ impl LinkConn for NetLinkConn {
                     }
                 }
             }
-            Self::Ws { ws, last_inbound } => loop {
+            Self::Ws {
+                ws, last_inbound, ..
+            } => loop {
                 match futures_util::StreamExt::next(ws.as_mut()).await {
                     None => return Ok(None),
                     Some(Ok(message)) => {
@@ -1241,7 +1391,9 @@ impl LinkConn for NetLinkConn {
             // reason. The bridged stream stays byte-transparent — there
             // is no in-band phux ping to originate on either.
             Self::Quic { .. } | Self::Ssh { .. } => Ok(()),
-            Self::Ws { ws, last_inbound } => {
+            Self::Ws {
+                ws, last_inbound, ..
+            } => {
                 if let Some(reason) = ws_idle_error(last_inbound.elapsed()) {
                     return Err(reason);
                 }
@@ -1774,6 +1926,14 @@ mod tests {
             Ok(())
         }
 
+        fn bootstrap_limits(&self) -> Result<BootstrapLimits, String> {
+            Ok(BootstrapLimits::default())
+        }
+
+        fn bootstrap_profile(&self) -> Result<BootstrapProfile, String> {
+            Ok(BootstrapProfile::SynthesizedVtRaw)
+        }
+
         async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
             match &mut self.closed {
                 Some(rx) => rx.recv().await.map_or(Ok(None), Err),
@@ -2217,18 +2377,10 @@ mod tests {
                         FrameKind::decode(&hello).expect("decode HELLO").0,
                         FrameKind::Hello { .. }
                     ));
-                    let mut hello_ok = bytes::BytesMut::new();
-                    FrameKind::HelloOk {
-                        protocol_major: PROTOCOL_VERSION.major,
-                        protocol_minor: PROTOCOL_VERSION.minor,
-                        protocol_patch: PROTOCOL_VERSION.patch,
-                        server_caps: phux_protocol::caps::ServerCapabilities::default(),
-                        server_id: vec![0; 16],
-                    }
-                    .encode(&mut hello_ok);
+                    let hello_ok = synthesized_hello_ok();
                     futures_util::SinkExt::send(
                         &mut ws,
-                        tokio_tungstenite::tungstenite::Message::Binary(hello_ok.to_vec()),
+                        tokio_tungstenite::tungstenite::Message::Binary(hello_ok),
                     )
                     .await
                     .expect("send HELLO_OK");
@@ -2277,6 +2429,31 @@ mod tests {
     // signal, exactly as an exiting ssh would be. The stdio *bridge* half
     // (bytes actually splicing to a UDS) is exercised in
     // `crates/phux/tests/stdio_bridge_e2e.rs` against the real binary.
+
+    fn synthesized_hello_ok() -> Vec<u8> {
+        let mut encoded = bytes::BytesMut::new();
+        FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: phux_protocol::caps::ServerCapabilities::default(),
+            server_id: vec![0; 16],
+            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            bootstrap_limits: BootstrapLimits::default(),
+        }
+        .encode(&mut encoded);
+        encoded.to_vec()
+    }
+
+    fn shell_octal(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+
+        let mut escaped = String::with_capacity(bytes.len() * 5);
+        for byte in bytes {
+            write!(escaped, "\\0{byte:03o}").expect("write to String");
+        }
+        escaped
+    }
 
     /// Write an executable stub script and return its path.
     fn write_stub(dir: &std::path::Path, body: &str) -> PathBuf {
@@ -2410,7 +2587,11 @@ mod tests {
                 // it stays up reading stdin (which the hub holds open) and
                 // exits only when the pipe closes or it is killed
                 // (kill_on_drop at cancellation).
-                let stub = write_stub(dir.path(), "exec cat > /dev/null");
+                let reply = shell_octal(&synthesized_hello_ok());
+                let stub = write_stub(
+                    dir.path(),
+                    &format!("printf '%b' '{reply}'\nexec cat > /dev/null"),
+                );
                 let transport = NetLinkTransport {
                     ssh_program: stub.into(),
                 };

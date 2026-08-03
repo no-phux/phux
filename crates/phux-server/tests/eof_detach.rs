@@ -33,7 +33,7 @@
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_SNAPSHOT,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_TERMINAL_CLOSED,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -140,7 +140,7 @@ fn pty_eof_drives_terminal_closed_to_attached_client() {
         // ---- TERMINAL_SNAPSHOT (one per pane in focused window) ----
         let (type_byte, _snap_frame) = recv_typed(&mut stream).await;
         assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
+            type_byte, TYPE_BOOTSTRAP_BEGIN,
             "second server-to-client frame must be TERMINAL_SNAPSHOT",
         );
 

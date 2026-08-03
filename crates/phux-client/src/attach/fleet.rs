@@ -90,9 +90,8 @@ pub(super) struct FleetPaneMeta {
 
 /// Snapshot the fleet-relevant metadata of every live pane.
 ///
-/// Reads each [`PaneSlot`]'s asked flag, OSC title (from the client-side
-/// libghostty mirror), and cwd; the branch resolves through the driver's
-/// memoized [`VcsIndex`] so repeated snapshots stay cheap. Called when the
+/// Reads each pane's asked flag, cached OSC title, and cwd; the branch resolves
+/// through the driver's memoized [`VcsIndex`] so repeated snapshots stay cheap.
 /// dashboard opens and on each live refresh — both human-paced.
 pub(super) fn collect_pane_meta(
     panes: &HashMap<TerminalId, PaneSlot>,
@@ -101,13 +100,8 @@ pub(super) fn collect_pane_meta(
     panes
         .iter()
         .map(|(id, slot)| {
-            let title = slot
-                .terminal
-                .title()
-                .ok()
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .map(ToOwned::to_owned);
+            let title =
+                (!slot.last_title.trim().is_empty()).then(|| slot.last_title.trim().to_owned());
             // Prefer the live cwd (refined by cwd_changed events); fall
             // back to the snapshot-seeded index the sidebar branch uses.
             let branch = slot

@@ -162,6 +162,7 @@ fn attach_racing_pty_eof_does_not_panic() {
             send_frame(
                 &mut stream,
                 &FrameKind::Attach {
+                    attach_id: 1,
                     target: AttachTarget::ByName("default".to_owned()),
                     viewport: ViewportInfo::new(80, 24),
                     request_scrollback: false,

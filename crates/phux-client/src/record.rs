@@ -19,22 +19,16 @@
 //! in. A recorder that attached would therefore silently shrink the user's
 //! live session to 80x24. `ATTACH_TERMINAL` is specified (L1 §5.1) as a
 //! non-resizing observer subscription: it registers the caller as an output
-//! subscriber, primes it with one authoritative `TERMINAL_SNAPSHOT`, streams
-//! `TERMINAL_OUTPUT` deltas, and is idempotent across simultaneous
-//! observers. That is the whole contract this module needs, and the
+//! subscriber, primes it through negotiated `BOOTSTRAP_BEGIN/CHUNK/READY`,
+//! then streams `TERMINAL_OUTPUT` deltas.
 //! `NEVER_SENDS_ATTACH_OR_VIEWPORT_RESIZE` test below is the regression
 //! guard.
 //!
-//! # Why this one *does* send `HELLO`
+//! # Recorder HELLO profile
 //!
-//! [`crate::watch::watch_events`] deliberately skips the handshake — a bare
-//! `SUBSCRIBE_EVENTS` stands alone. This path does not skip it, on purpose:
-//! sending `HELLO` puts the recorder through the server's protocol-version
-//! gate and its `authorize_hello` policy check rather than sneaking past
-//! them. A tool that writes files to disk should not inherit a handshake
-//! bypass. The advertised capabilities are the "recorder consumer" shape
-//! `phux_protocol::caps` already anticipates: the default L1-only
-//! `LayerSet`, the default `OutputMode::Raw`, and — load-bearing —
+//! Construction negotiates before any stateful frame, using the recorder
+//! consumer shape `phux_protocol::caps` already anticipates: the default
+//! L1-only `LayerSet`, the default `OutputMode::Raw`, and — load-bearing —
 //! [`ColorSupport::TrueColor`], which makes the server's per-client
 //! `downsample::rewrite_bytes` a no-op so the captured bytes are the PTY's
 //! verbatim.
@@ -55,10 +49,10 @@
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, ColorSupport};
+use phux_protocol::caps::{BootstrapStreamProfile, ClientCapabilities, ColorSupport};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{AgentEvent, Command, CommandResult, FrameKind};
+use phux_protocol::{BootstrapId, StreamId};
 use phux_record::cast::{CastEvent, EventCode};
 
 use crate::attach::AttachError;
@@ -79,10 +73,8 @@ const UNKNOWN_EXIT_STATUS: &str = "-1";
 
 /// A finished headless capture, ready to be serialized as an asciicast.
 ///
-/// `cols`/`rows` come from the first `TERMINAL_SNAPSHOT` (they are the
-/// dimensions the events must be replayed at, not the caller's terminal
-/// size), and `events` is on `phux-record`'s absolute-millisecond timebase
-/// with `t = 0` pinned to the opening snapshot.
+/// `cols`/`rows` come from the first `BOOTSTRAP_BEGIN`, and `events` use
+/// `phux-record`'s absolute-millisecond timebase with `t = 0` at bootstrap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadlessRecording {
     /// Grid width the recording must be replayed at.
@@ -121,7 +113,9 @@ pub async fn record_terminal(
     max_duration: Option<Duration>,
     progress: impl FnMut(Duration, usize),
 ) -> Result<HeadlessRecording, AttachError> {
-    let mut conn = Connection::connect(socket).await?;
+    let mut conn =
+        Connection::connect_with_hello(socket, recorder_client_name(), recorder_client_caps())
+            .await?;
     let outcome = record_on_connection(&mut conn, terminal_id, max_duration, progress).await;
     conn.shutdown().await;
     outcome
@@ -153,49 +147,22 @@ async fn record_on_connection(
     outcome
 }
 
-/// Handshake, then subscribe to the Terminal's content and event streams.
+/// Subscribe to the Terminal's content and event streams.
 ///
-/// The frame order is normative for this path and asserted by
-/// `sends_hello_then_attach_terminal_then_subscribe_events`: `HELLO` ->
-/// `COMMAND { AttachTerminal }` -> `SUBSCRIBE_EVENTS`. The event
-/// subscription comes last and is not optional — an `ATTACH_TERMINAL`-only
-/// observer is not in the server's `attached` map, so it never receives
-/// `TERMINAL_CLOSED`; the event stream is the only way this path learns the
-/// pane exited instead of blocking until EOF.
+/// The connection has already negotiated the recorder's custom profile. The
+/// stateful frame order asserted by the tests is therefore `HELLO` ->
+/// `COMMAND { AttachTerminal }` -> `SUBSCRIBE_EVENTS`.
 ///
-/// Returns the frames that arrived interleaved with the `COMMAND_RESULT` --
-/// in practice the priming `TERMINAL_SNAPSHOT`. They are already consumed off
+/// Returns frames that arrived interleaved with the `COMMAND_RESULT` -- in
+/// practice the priming bootstrap transcript. They are already consumed off
 /// the socket, so the caller must feed them to the capture; nothing re-sends
 /// them.
 async fn subscribe(
     conn: &mut Connection,
     terminal_id: &TerminalId,
 ) -> Result<Vec<FrameKind>, AttachError> {
-    let client_caps = ClientCapabilities::new().with_color_support(ColorSupport::TrueColor);
-    conn.send(&FrameKind::Hello {
-        client_name: format!("phux-rec/{}", env!("CARGO_PKG_VERSION")),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps,
-    })
-    .await?;
-    match conn.recv().await? {
-        FrameKind::HelloOk { .. } => {}
-        FrameKind::Error { message, .. } => return Err(AttachError::Refused(message)),
-        // A frame that is neither HELLO_OK nor ERROR here means the two
-        // binaries disagree about the handshake itself: version skew.
-        _ => {
-            return Err(AttachError::Protocol(crate::explain::unexpected_reply(
-                "HELLO",
-            )));
-        }
-    }
-
-    // SPEC §5 permits the priming TERMINAL_SNAPSHOT to arrive before the
-    // COMMAND_RESULT, and the reference server always sends it that way
-    // (crates/phux-server/src/runtime/commands.rs: the snapshot is pushed
-    // "before the pump's first delta and before the Ok reply"). So the
+    // SPEC §5 permits priming bootstrap frames to arrive before the
+    // COMMAND_RESULT, and the reference server sends them that way.
     // interleave is the normal case, not an edge case -- but a frame
     // observed here is CONSUMED, and the snapshot is never re-sent. Dropping
     // it silently is what made an entire capture come back as a 0x0 grid
@@ -220,6 +187,14 @@ async fn subscribe(
     })
     .await?;
     Ok(primed)
+}
+
+fn recorder_client_name() -> String {
+    format!("phux-rec/{}", env!("CARGO_PKG_VERSION"))
+}
+
+const fn recorder_client_caps() -> ClientCapabilities {
+    ClientCapabilities::new().with_color_support(ColorSupport::TrueColor)
 }
 
 /// Drain the subscription into asciicast events until a stop condition.
@@ -307,13 +282,15 @@ struct Capture {
     /// start at, and therefore the cast header's. Later resizes live in the
     /// timeline as `r` events, not here.
     opening: Option<(u16, u16)>,
-    /// `None` until the priming `TERMINAL_SNAPSHOT` lands; afterwards the
+    /// `None` until the priming bootstrap transcript lands; afterwards the
     /// last dimensions the server reported, which is what distinguishes a
     /// genuine resize from a lag-recovery resync.
     dims: Option<(u16, u16)>,
     events: Vec<CastEvent>,
     /// Bytes held back because they are an incomplete UTF-8 sequence.
     tail: Vec<u8>,
+    /// Active synthesized bootstrap and next required chunk sequence.
+    bootstrap: Option<(TerminalId, StreamId, BootstrapId, u32)>,
 }
 
 impl Capture {
@@ -324,6 +301,7 @@ impl Capture {
             dims: None,
             events: Vec::new(),
             tail: Vec::new(),
+            bootstrap: None,
         }
     }
 
@@ -332,13 +310,70 @@ impl Capture {
     /// Returns `Ok(true)` when the frame ends the recording.
     fn absorb(&mut self, frame: FrameKind, elapsed: Duration) -> Result<bool, AttachError> {
         match frame {
-            FrameKind::TerminalSnapshot {
+            FrameKind::BootstrapBegin {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
                 cols,
                 rows,
-                vt_replay_bytes,
                 ..
             } => {
-                self.snapshot(cols, rows, &vt_replay_bytes, elapsed);
+                self.snapshot(cols, rows, &[], elapsed);
+                self.bootstrap = Some((terminal_id, stream_id, bootstrap_id, 0));
+                Ok(false)
+            }
+            FrameKind::BootstrapBegin { profile, .. } => Err(AttachError::Protocol(format!(
+                "recorder requires synthesized raw VT bootstrap, got {profile:?}"
+            ))),
+            FrameKind::BootstrapChunk {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
+                payload,
+            } => {
+                let Some((expected_terminal, expected_stream, expected_bootstrap, next_chunk)) =
+                    self.bootstrap.as_mut()
+                else {
+                    return Err(AttachError::Protocol(
+                        "bootstrap chunk arrived before begin".to_owned(),
+                    ));
+                };
+                if terminal_id != *expected_terminal
+                    || stream_id != *expected_stream
+                    || bootstrap_id != *expected_bootstrap
+                    || chunk_seq != *next_chunk
+                {
+                    return Err(AttachError::Protocol(
+                        "bootstrap chunk generation or sequence mismatch".to_owned(),
+                    ));
+                }
+                *next_chunk = next_chunk.saturating_add(1);
+                self.output(&payload, elapsed);
+                Ok(false)
+            }
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            } => {
+                let Some((expected_terminal, expected_stream, expected_bootstrap, _)) =
+                    self.bootstrap.take()
+                else {
+                    return Err(AttachError::Protocol(
+                        "bootstrap ready arrived before begin".to_owned(),
+                    ));
+                };
+                if terminal_id != expected_terminal
+                    || stream_id != expected_stream
+                    || bootstrap_id != expected_bootstrap
+                {
+                    return Err(AttachError::Protocol(
+                        "bootstrap ready generation mismatch".to_owned(),
+                    ));
+                }
                 Ok(false)
             }
             // `seq` is the pump's per-consumer sequence id, not a timebase;
@@ -366,7 +401,7 @@ impl Capture {
         }
     }
 
-    /// Absorb a `TERMINAL_SNAPSHOT`.
+    /// Absorb a complete synthesized-VT bootstrap transcript.
     ///
     /// The first one seeds the header dimensions and lands at `t = 0` — the
     /// recording opens on the grid as it was, not on a blank screen. A later
@@ -506,19 +541,40 @@ mod tests {
         TerminalId::local(7)
     }
 
-    fn snapshot(cols: u16, rows: u16, replay: &[u8]) -> FrameKind {
-        FrameKind::TerminalSnapshot {
-            terminal_id: terminal(),
-            cols,
-            rows,
-            vt_replay_bytes: replay.to_vec(),
-            scrollback_bytes: None,
-        }
+    fn snapshot(cols: u16, rows: u16, replay: &[u8]) -> Vec<FrameKind> {
+        let stream_id = StreamId::new(1).expect("stream");
+        let bootstrap_id = BootstrapId::new(2).expect("bootstrap");
+        vec![
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols,
+                rows,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::copy_from_slice(replay),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: terminal(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ]
     }
 
     fn output(seq: u64, bytes: &[u8]) -> FrameKind {
         FrameKind::TerminalOutput {
             terminal_id: terminal(),
+            stream_id: StreamId::new(1).expect("stream"),
+            bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
             seq,
             bytes: bytes::Bytes::copy_from_slice(bytes),
         }
@@ -533,7 +589,7 @@ mod tests {
 
     /// A session whose client will attach a Terminal.
     ///
-    /// The priming `TERMINAL_SNAPSHOT` is not optional and is not a "script"
+    /// The priming bootstrap transcript is not optional and is not a "script"
     /// frame: [`crate::testkit`] sends it *before* the `ATTACH_TERMINAL` ack,
     /// because that is what `handle_attach_terminal` does. Every test below
     /// therefore exercises the interleave, not just the one guard that was
@@ -555,7 +611,7 @@ mod tests {
         assert_eq!(
             (recorded.cols, recorded.rows),
             (120, 40),
-            "the priming TERMINAL_SNAPSHOT arrives BEFORE the COMMAND_RESULT on \
+            "the priming bootstrap arrives BEFORE the COMMAND_RESULT on \
              a real server. A handshake that consumes and discards it leaves the \
              capture with no geometry (0x0) and no opening screen, so the whole \
              recording is unplayable. Feed pre-ack frames to the capture."
@@ -580,6 +636,10 @@ mod tests {
         let mut client = Connection::from_stream(client_stream);
         let server_side =
             tokio::task::spawn_local(ScriptedServer::on_stream(server_stream, spec).run());
+        client
+            .negotiate(recorder_client_name(), recorder_client_caps())
+            .await
+            .expect("recorder HELLO");
         let recorded = record_on_connection(&mut client, terminal(), max_duration, |_, _| {}).await;
         let seen = server_side.await.expect("server task");
         (recorded, seen)
@@ -675,7 +735,7 @@ mod tests {
         let (recorded, seen) = block_on(run(
             attached(120, 34, b"first")
                 .push(output(1, b"more"))
-                .push(snapshot(100, 30, b"repaint"))
+                .extend(snapshot(100, 30, b"repaint"))
                 .push(output(2, b"tail"))
                 .push(pane_closed(Some(0))),
             None,
@@ -722,7 +782,7 @@ mod tests {
     fn second_snapshot_with_new_dims_emits_r_then_o() {
         let (recorded, _seen) = block_on(run(
             attached(80, 24, b"a")
-                .push(snapshot(100, 30, b"b"))
+                .extend(snapshot(100, 30, b"b"))
                 .push(pane_closed(Some(0))),
             None,
         ));
@@ -751,7 +811,7 @@ mod tests {
         // repaint, not a resize.
         let (recorded, _seen) = block_on(run(
             attached(80, 24, b"a")
-                .push(snapshot(80, 24, b"resync"))
+                .extend(snapshot(80, 24, b"resync"))
                 .push(pane_closed(Some(0))),
             None,
         ));
@@ -941,6 +1001,10 @@ mod tests {
             let spec = attached(80, 24, b"grid").push(pane_closed(Some(0)));
             let server_side =
                 tokio::task::spawn_local(ScriptedServer::on_stream(server_stream, spec).run());
+            client
+                .negotiate(recorder_client_name(), recorder_client_caps())
+                .await
+                .expect("recorder HELLO");
             let mut calls: Vec<(Duration, usize)> = Vec::new();
             let recorded = record_on_connection(&mut client, terminal(), None, |at, count| {
                 calls.push((at, count));

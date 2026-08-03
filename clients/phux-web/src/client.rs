@@ -19,6 +19,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use phux_protocol::BootstrapProfile;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::FrameKind;
 use phux_vt_web::Vt;
@@ -46,20 +47,55 @@ pub async fn run(
     cols: u16,
     rows: u16,
 ) -> Result<Client, JsValue> {
+    run_websocket(ws_url, canvas, cols, rows, false).await
+}
+
+/// Connect over WebSocket while explicitly advertising synthesized
+/// compatibility profiles only.
+///
+/// # Errors
+/// Fails if the engine, canvas, or WebSocket cannot be initialized.
+pub async fn run_synthesized_compat(
+    ws_url: &str,
+    canvas: HtmlCanvasElement,
+    cols: u16,
+    rows: u16,
+) -> Result<Client, JsValue> {
+    run_websocket(ws_url, canvas, cols, rows, true).await
+}
+
+async fn run_websocket(
+    ws_url: &str,
+    canvas: HtmlCanvasElement,
+    cols: u16,
+    rows: u16,
+    synthesized_only: bool,
+) -> Result<Client, JsValue> {
     let ws = WebSocket::new(ws_url)?;
     ws.set_binary_type(BinaryType::Arraybuffer);
 
-    let app = build_app(WireTx::Ws(ws.clone()), canvas, cols, rows).await?;
+    let app = build_app(WireTx::Ws(ws.clone()), canvas, cols, rows, synthesized_only).await?;
 
-    // On open: send HELLO + ATTACH.
+    // `Vt::load()` above is asynchronous, so a local WebSocket may reach OPEN
+    // before this callback is installed. Check the current state after
+    // installation, and share a latch with the callback because an already
+    // queued open event may still be delivered afterward.
+    let hello_sent = Rc::new(Cell::new(false));
     {
         let app = Rc::clone(&app);
+        let hello_sent = Rc::clone(&hello_sent);
         let onopen = Closure::<dyn FnMut()>::new(move || {
-            let a = app.borrow();
-            a.send(a.session.handshake());
+            if !hello_sent.replace(true) {
+                let a = app.borrow();
+                a.send(a.session.handshake());
+            }
         });
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
         onopen.forget();
+    }
+    if ws.ready_state() == WebSocket::OPEN && !hello_sent.replace(true) {
+        let a = app.borrow();
+        a.send(a.session.handshake());
     }
 
     // On message: decode one frame, drive the session, ack, repaint. Each
@@ -68,10 +104,15 @@ pub async fn run(
         let app = Rc::clone(&app);
         let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
             let buf = js_sys::Uint8Array::new(&e.data()).to_vec();
-            let Ok((frame, _rest)) = FrameKind::decode(&buf) else {
+            if app.borrow().session.is_failed() {
                 return;
-            };
-            handle_frame(&app, frame);
+            }
+            match decode_server_frame(&app, &buf) {
+                Ok(frame) => {
+                    let _ = handle_frame(&app, frame);
+                }
+                Err(message) => close_with_protocol_error(&app, &message),
+            }
         });
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
         onmessage.forget();
@@ -147,10 +188,20 @@ pub async fn run_webtransport(
     let writer = WritableStreamDefaultWriter::new(&stream.writable())?;
     let reader = ReadableStreamDefaultReader::new(&stream.readable())?;
 
-    let app = build_app(WireTx::Wt(writer), canvas, cols, rows).await?;
+    let app = build_app(
+        WireTx::Wt {
+            writer,
+            session: wt.clone(),
+        },
+        canvas,
+        cols,
+        rows,
+        false,
+    )
+    .await?;
 
     // The session is already established (unlike the WebSocket path there is
-    // no onopen moment): send HELLO + ATTACH immediately.
+    // no onopen moment): send HELLO now; ATTACH follows HELLO_OK.
     {
         let a = app.borrow();
         a.send(a.session.handshake());
@@ -165,31 +216,60 @@ pub async fn run_webtransport(
             let _session = wt;
             let mut frames = FrameBuffer::new();
             loop {
-                let Ok(result) = JsFuture::from(reader.read()).await else {
-                    break;
+                let result = match JsFuture::from(reader.read()).await {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let message = format!("WebTransport read failed: {error:?}");
+                        let _ = webtransport_exit_flow(
+                            WebTransportExit::ReadError(&message),
+                            |message, protocol| {
+                                close_webtransport_exit(&app, message, protocol);
+                            },
+                        );
+                        return;
+                    }
                 };
                 let done = js_sys::Reflect::get(&result, &JsValue::from_str("done"))
                     .ok()
                     .and_then(|d| d.as_bool())
                     .unwrap_or(true);
                 if done {
-                    break;
+                    let exit = webtransport_eof_exit(&frames);
+                    let _ = webtransport_exit_flow(exit, |message, protocol| {
+                        close_webtransport_exit(&app, message, protocol);
+                    });
+                    return;
                 }
                 let Ok(value) = js_sys::Reflect::get(&result, &JsValue::from_str("value")) else {
-                    break;
+                    let _ = webtransport_exit_flow(
+                        WebTransportExit::MissingValue,
+                        |message, protocol| {
+                            close_webtransport_exit(&app, message, protocol);
+                        },
+                    );
+                    return;
                 };
                 frames.push(&js_sys::Uint8Array::new(&value).to_vec());
                 while let Some(framed) = frames.next_frame() {
-                    let Ok((frame, _rest)) = FrameKind::decode(&framed) else {
-                        continue;
-                    };
-                    handle_frame(&app, frame);
+                    match decode_server_frame(&app, &framed) {
+                        Ok(frame) => {
+                            if matches!(handle_frame(&app, frame), ReceiveFlow::Stop) {
+                                return;
+                            }
+                        }
+                        Err(message) => {
+                            close_with_protocol_error(&app, &message);
+                            return;
+                        }
+                    }
                 }
-                if frames.poisoned() {
-                    web_sys::console::error_1(&JsValue::from_str(
-                        "phux-web: WebTransport stream desynchronized; closing",
-                    ));
-                    break;
+                if matches!(
+                    poisoned_framing_flow(&frames, |message| {
+                        close_with_protocol_error(&app, message);
+                    }),
+                    ReceiveFlow::Stop
+                ) {
+                    return;
                 }
             }
         });
@@ -218,6 +298,12 @@ impl Client {
             .map(|row| row.iter().map(|c| c.ch).collect::<String>())
             .collect()
     }
+
+    /// Exact profile selected by the validated server handshake.
+    #[must_use]
+    pub fn selected_profile(&self) -> Option<BootstrapProfile> {
+        self.app.borrow().session.selected_profile()
+    }
 }
 
 /// The send half of whichever transport carried the connection. Both carry
@@ -226,7 +312,10 @@ enum WireTx {
     /// One binary message per frame.
     Ws(WebSocket),
     /// Length-prefixed frames over the session's single bidirectional stream.
-    Wt(WritableStreamDefaultWriter),
+    Wt {
+        writer: WritableStreamDefaultWriter,
+        session: WebTransport,
+    },
 }
 
 impl WireTx {
@@ -235,12 +324,27 @@ impl WireTx {
             Self::Ws(ws) => {
                 let _ = ws.send_with_u8_array(frame);
             }
-            Self::Wt(writer) => {
+            Self::Wt { writer, .. } => {
                 let chunk = js_sys::Uint8Array::from(frame);
                 // Writer chunks queue in call order; await the promise off
                 // the hot path only to observe (and drop) failures, so a
                 // rejected write never surfaces as an unhandled rejection.
                 let pending = writer.write_with_chunk(&chunk);
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = JsFuture::from(pending).await;
+                });
+            }
+        }
+    }
+
+    fn close(&self) {
+        match self {
+            Self::Ws(ws) => {
+                let _ = ws.close();
+            }
+            Self::Wt { writer, session } => {
+                session.close();
+                let pending = writer.close();
                 wasm_bindgen_futures::spawn_local(async move {
                     let _ = JsFuture::from(pending).await;
                 });
@@ -267,6 +371,9 @@ impl App {
     }
 
     fn paint(&self) {
+        if !self.session.render_visible() {
+            return;
+        }
         let grid = self.session.grid();
         // Keep the canvas sized to the grid (handles server-side resizes).
         let w = u32::from(grid.cols) * (self.metrics.cell_w as u32);
@@ -288,6 +395,7 @@ async fn build_app(
     canvas: HtmlCanvasElement,
     cols: u16,
     rows: u16,
+    synthesized_only: bool,
 ) -> Result<Rc<RefCell<App>>, JsValue> {
     let vt = Vt::load().await?;
     let ctx: CanvasRenderingContext2d = canvas
@@ -296,7 +404,11 @@ async fn build_app(
         .dyn_into()?;
 
     Ok(Rc::new(RefCell::new(App {
-        session: crate::Session::new(&vt, cols, rows),
+        session: if synthesized_only {
+            crate::Session::new_synthesized_compat(&vt, cols, rows)
+        } else {
+            crate::Session::new(&vt, cols, rows)
+        },
         tx,
         canvas,
         ctx,
@@ -305,17 +417,109 @@ async fn build_app(
     })))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiveFlow {
+    Continue,
+    Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebTransportExit<'a> {
+    CleanEof,
+    PartialEof,
+    ReadError(&'a str),
+    MissingValue,
+}
+
+fn webtransport_eof_exit(frames: &FrameBuffer) -> WebTransportExit<'static> {
+    if frames.pending_bytes() == 0 {
+        WebTransportExit::CleanEof
+    } else {
+        WebTransportExit::PartialEof
+    }
+}
+
+fn webtransport_exit_flow(
+    exit: WebTransportExit<'_>,
+    close: impl FnOnce(&str, bool),
+) -> ReceiveFlow {
+    let (message, protocol) = match exit {
+        WebTransportExit::CleanEof => ("WebTransport stream closed by peer", false),
+        WebTransportExit::PartialEof => {
+            ("WebTransport stream ended in the middle of a frame", true)
+        }
+        WebTransportExit::ReadError(message) => (message, false),
+        WebTransportExit::MissingValue => ("WebTransport read result omitted a chunk value", true),
+    };
+    close(message, protocol);
+    ReceiveFlow::Stop
+}
+
+fn poisoned_framing_flow(frames: &FrameBuffer, close: impl FnOnce(&str)) -> ReceiveFlow {
+    if frames.poisoned() {
+        close("WebTransport stream used a zero or oversized frame length");
+        ReceiveFlow::Stop
+    } else {
+        ReceiveFlow::Continue
+    }
+}
+
 /// Drive the session with one decoded server frame: ack and repaint as the
 /// session asks. Shared by both transports' receive paths.
-fn handle_frame(app: &Rc<RefCell<App>>, frame: FrameKind) {
+fn handle_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> ReceiveFlow {
     let mut a = app.borrow_mut();
     let outcome = a.session.on_frame(frame);
+    if let Some(message) = outcome.fatal {
+        web_sys::console::error_1(&JsValue::from_str(&format!(
+            "phux-web protocol error: {message}",
+        )));
+        a.tx.close();
+        return ReceiveFlow::Stop;
+    }
     if !outcome.send.is_empty() {
         a.send(outcome.send);
     }
     if outcome.render {
         a.paint();
     }
+    ReceiveFlow::Continue
+}
+
+fn decode_server_frame(app: &Rc<RefCell<App>>, framed: &[u8]) -> Result<FrameKind, String> {
+    if app.borrow().session.is_failed() {
+        return Err("web session already failed".to_owned());
+    }
+    let limits = app.borrow().session.bootstrap_limits();
+    let decoded = match limits {
+        Some(limits) => FrameKind::decode_with_limits(framed, limits),
+        None => FrameKind::decode(framed),
+    }
+    .map_err(|error| format!("server sent undecodable frame: {error:?}"))?;
+    if !decoded.1.is_empty() {
+        return Err("server frame contained trailing bytes".to_owned());
+    }
+    Ok(decoded.0)
+}
+
+fn close_with_protocol_error(app: &Rc<RefCell<App>>, message: &str) {
+    web_sys::console::error_1(&JsValue::from_str(&format!(
+        "phux-web protocol error: {message}",
+    )));
+    let mut app = app.borrow_mut();
+    app.session.fail_protocol(message);
+    app.tx.close();
+}
+
+fn close_webtransport_exit(app: &Rc<RefCell<App>>, message: &str, protocol: bool) {
+    let kind = if protocol {
+        "protocol error"
+    } else {
+        "transport closed"
+    };
+    web_sys::console::error_1(&JsValue::from_str(&format!("phux-web {kind}: {message}",)));
+    let mut app = app.borrow_mut();
+    app.session.fail_protocol(message);
+    app.tx.close();
 }
 
 /// Keyboard: each keydown becomes an `INPUT_KEY` for the attached terminal.
@@ -328,7 +532,7 @@ fn install_keyboard(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         let Some(event) = key_event_from_browser(&e) else {
             return;
         };
-        let a = app.borrow();
+        let mut a = app.borrow_mut();
         if let Some(frame) = a.session.key_frame(event) {
             a.tx.send(&frame);
             e.prevent_default();
@@ -439,5 +643,162 @@ fn code_to_physical_key(code: &str) -> PhysicalKey {
         "BracketRight" => K::BracketRight,
         "Backquote" => K::Backquote,
         _ => K::Unidentified,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::{
+        FrameBuffer, ReceiveFlow, WebTransportExit, poisoned_framing_flow, webtransport_eof_exit,
+        webtransport_exit_flow,
+    };
+    use phux_protocol::PROTOCOL_VERSION;
+    use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerCapabilities};
+    use phux_protocol::ids::{BootstrapId, ClientId, SessionId, StreamId, TerminalId, WindowId};
+    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+    use phux_protocol::wire::frame::{FrameKind, MAX_FRAME_LEN};
+    use phux_protocol::wire::info::{SessionSnapshot, TerminalInfo};
+    use phux_vt_web::Vt;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn poisoned_framing_stops_pump_and_invokes_close() {
+        for length in [0, MAX_FRAME_LEN + 1] {
+            let mut frames = FrameBuffer::new();
+            frames.push(&length.to_be_bytes());
+            assert!(frames.next_frame().is_none());
+
+            let mut closed = false;
+            let flow = poisoned_framing_flow(&frames, |_| closed = true);
+            assert_eq!(flow, ReceiveFlow::Stop);
+            assert!(closed, "poisoned framing must close its retained transport");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn every_webtransport_pump_exit_closes_and_disables_the_session() {
+        let vt = Vt::load().await.expect("load engine");
+        let mut partial = FrameBuffer::new();
+        partial.push(&[0, 0, 0, 3, 0xaa]);
+        let empty = FrameBuffer::new();
+        let exits = [
+            webtransport_eof_exit(&empty),
+            webtransport_eof_exit(&partial),
+            WebTransportExit::ReadError("read rejected"),
+            WebTransportExit::MissingValue,
+        ];
+        assert_eq!(exits[0], WebTransportExit::CleanEof);
+        assert_eq!(exits[1], WebTransportExit::PartialEof);
+
+        for exit in exits {
+            let terminal_id = TerminalId::local(1);
+            let mut session = crate::Session::new(&vt, 80, 24);
+            let hello = session.on_frame(FrameKind::HelloOk {
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                server_caps: ServerCapabilities::new(),
+                server_id: Vec::new(),
+                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: BootstrapLimits::default(),
+            });
+            assert_eq!(hello.send.len(), 1);
+            assert!(
+                session
+                    .on_frame(FrameKind::Attached {
+                        attach_id: 1,
+                        snapshot: SessionSnapshot::new(
+                            SessionId::new(1),
+                            WindowId::new(1),
+                            terminal_id.clone(),
+                        )
+                        .with_panes(vec![TerminalInfo::new(
+                            terminal_id.clone(),
+                            WindowId::new(1),
+                            80,
+                            24,
+                        )]),
+                        initial_client_id: ClientId::new(1),
+                    })
+                    .fatal
+                    .is_none()
+            );
+            let stream_id = StreamId::new(1).unwrap();
+            let bootstrap_id = BootstrapId::new(1).unwrap();
+            assert!(
+                session
+                    .on_frame(FrameKind::BootstrapBegin {
+                        terminal_id: terminal_id.clone(),
+                        stream_id,
+                        bootstrap_id,
+                        profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+                        cols: 80,
+                        rows: 24,
+                        base_seq: 0,
+                    })
+                    .fatal
+                    .is_none()
+            );
+            assert!(
+                session
+                    .on_frame(FrameKind::BootstrapChunk {
+                        terminal_id: terminal_id.clone(),
+                        stream_id,
+                        bootstrap_id,
+                        chunk_seq: 0,
+                        payload: bytes::Bytes::from_static(b"ready"),
+                    })
+                    .fatal
+                    .is_none()
+            );
+            assert!(
+                session
+                    .on_frame(FrameKind::BootstrapReady {
+                        terminal_id: terminal_id.clone(),
+                        stream_id,
+                        bootstrap_id,
+                        history_cursor: None,
+                    })
+                    .fatal
+                    .is_none()
+            );
+            assert!(
+                session
+                    .on_frame(FrameKind::AttachReady { attach_id: 1 })
+                    .fatal
+                    .is_none()
+            );
+            let key = KeyEvent {
+                action: KeyAction::Press,
+                key: PhysicalKey::A,
+                mods: ModSet::empty(),
+                consumed_mods: ModSet::empty(),
+                composing: false,
+                text: Some("a".to_owned()),
+                unshifted_codepoint: Some(u32::from(b'a')),
+            };
+            assert!(session.key_frame(key.clone()).is_some());
+
+            let mut retained_transport_closed = false;
+            let flow = webtransport_exit_flow(exit, |message, _protocol| {
+                retained_transport_closed = true;
+                session.fail_protocol(message);
+            });
+            assert_eq!(flow, ReceiveFlow::Stop);
+            assert!(retained_transport_closed);
+            assert!(session.is_failed());
+            assert!(session.key_frame(key).is_none());
+
+            let after_exit = session.on_frame(FrameKind::TerminalOutput {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq: 1,
+                bytes: bytes::Bytes::from_static(b"ignored"),
+            });
+            assert!(after_exit.send.is_empty());
+            assert!(!after_exit.render);
+        }
     }
 }

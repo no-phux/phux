@@ -36,6 +36,7 @@ use phux_server_testkit::{
 /// `attach_by_name` uses, so the two are otherwise wire-identical.
 const fn attach_last() -> FrameKind {
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::Last,
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
@@ -45,6 +46,7 @@ const fn attach_last() -> FrameKind {
 
 fn attach_create_if_missing(name: &str) -> FrameKind {
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::CreateIfMissing {
             name: name.to_owned(),
             command: None,

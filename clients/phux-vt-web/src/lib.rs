@@ -3,10 +3,9 @@
 //!
 //! The phux browser client renders terminals with the *same* VT engine native
 //! phux uses. Rather than link zig into the Rust wasm binary, we load
-//! `ghostty-vt.wasm` as a separate module — it is self-contained (its only
-//! import is `env.log`) and ships its own allocator — and drive its C ABI
-//! through the WebAssembly JS API. This module is the thin, safe Rust surface
-//! over that ABI.
+//! `ghostty-vt.wasm` as a separate module, providing only logging and secure
+//! entropy host imports, and drive its C ABI through the WebAssembly JS API.
+//! This module is the thin, safe Rust surface over that ABI.
 //!
 //! The ABI is the public `libghostty-vt` C surface (`include/ghostty/vt.h`).
 //! Pointers are offsets into the engine module's linear memory; by-value
@@ -16,7 +15,7 @@
 
 #![deny(missing_docs)]
 
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use js_sys::{Array, Function, Object, Reflect, Uint8Array, WebAssembly};
 use wasm_bindgen::JsCast;
@@ -35,6 +34,86 @@ static GHOSTTY_VT_WASM: &[u8] = include_bytes!(concat!(
 pub const fn engine_wasm_len() -> usize {
     GHOSTTY_VT_WASM.len()
 }
+
+/// Canonical incremental checkpoint codec identity implemented by protocol 0.7.
+pub const CHECKPOINT_CODEC_IDENTITY: &str = "ghostty.snapshot.v1-v2.incremental.v1";
+/// Exact immutable checkpoint envelope version implemented by protocol 0.7.
+pub const CHECKPOINT_CODEC_VERSION: u16 = 2;
+
+/// Runtime metadata reported by the embedded checkpoint-capable engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncrementalCapabilities {
+    /// Incremental C ABI version.
+    pub abi_version: u32,
+    /// Lowest accepted checkpoint envelope version.
+    pub min_decode_version: u16,
+    /// Highest accepted checkpoint envelope version.
+    pub max_decode_version: u16,
+    /// Checkpoint envelope version emitted by this engine.
+    pub default_encode_version: u16,
+    /// Whether the engine exposes incremental transitions.
+    pub incremental: bool,
+    /// Whether the engine exposes an authenticated READY boundary.
+    pub ready: bool,
+    /// Whether history can follow READY progressively.
+    pub history: bool,
+    /// Whether history cursors are authenticated.
+    pub authenticated_tokens: bool,
+    /// Whether record sizes are bounded by decoder options.
+    pub bounded_records: bool,
+    /// Whether page counts are bounded by decoder options.
+    pub bounded_pages: bool,
+    /// Whether imported history units are bounded.
+    pub bounded_units: bool,
+    /// Maximum supported record size.
+    pub max_record_bytes: usize,
+    /// Maximum supported page count.
+    pub max_pages: usize,
+    /// Maximum supported history-unit size.
+    pub max_unit_bytes: usize,
+    /// Maximum supported history rows.
+    pub max_rows: usize,
+    /// Stable codec ABI identity.
+    pub codec_identity: String,
+    /// Engine build identity, retained for diagnostics only.
+    pub build_identity: String,
+}
+
+impl IncrementalCapabilities {
+    /// Whether this runtime exactly implements protocol-0.7 native checkpoint v2.
+    #[must_use]
+    pub fn supports_protocol_07(&self, required_record_bytes: usize) -> bool {
+        self.abi_version == 1
+            && self.default_encode_version == CHECKPOINT_CODEC_VERSION
+            && self.min_decode_version <= CHECKPOINT_CODEC_VERSION
+            && self.max_decode_version >= CHECKPOINT_CODEC_VERSION
+            && self.incremental
+            && self.ready
+            && self.history
+            && self.authenticated_tokens
+            && self.bounded_records
+            && self.bounded_pages
+            && self.bounded_units
+            && self.max_record_bytes >= required_record_bytes
+            && self.max_pages > 0
+            && self.max_unit_bytes > 0
+            && self.max_rows > 0
+            && self.codec_identity == CHECKPOINT_CODEC_IDENTITY
+            && !self.build_identity.is_empty()
+    }
+}
+
+const SNAPSHOT_ABI_VERSION: u32 = 1;
+const SNAPSHOT_STATUS_SUCCESS: i32 = 0;
+const SNAPSHOT_STATUS_INVALID_STATE: i32 = -14;
+const CAPABILITIES_SIZE: u32 = 56;
+const DECODER_OPTIONS_SIZE: u32 = 20;
+const DECODE_EVENT_SIZE: u32 = 36;
+const TAKE_TERMINAL_SIZE: u32 = 16;
+const TERMINAL_OPT_SCROLLBACK_MAX_BYTES: f64 = 27.0;
+const TERMINAL_OPT_SCROLLBACK_MAX_LINES: f64 = 28.0;
+const TERMINAL_DATA_SCROLLBACK_MAX_BYTES: f64 = 34.0;
+const TERMINAL_DATA_SCROLLBACK_MAX_LINES: f64 = 35.0;
 
 // ── ABI constants (from include/ghostty/vt.h) ────────────────────────────────
 const GHOSTTY_SUCCESS: i32 = 0;
@@ -102,6 +181,46 @@ pub struct Grid {
     pub cursor_visible: bool,
 }
 
+struct NativeAbi {
+    capabilities: Function,
+    decoder_new: Function,
+    decoder_push: Function,
+    decoder_take_terminal: Function,
+    decoder_replay_continuation: Function,
+    decoder_free: Function,
+}
+
+fn secure_entropy(memory: &RefCell<Option<WebAssembly::Memory>>, ptr: u32, len: u32) -> i32 {
+    let Some(memory) = memory.borrow().as_ref().cloned() else {
+        return -1;
+    };
+    let Some(end) = ptr.checked_add(len) else {
+        return -1;
+    };
+    let bytes = Uint8Array::new(&memory.buffer());
+    if end > bytes.length() {
+        return -1;
+    }
+    let Ok(crypto) = Reflect::get(&js_sys::global(), &"crypto".into()) else {
+        return -1;
+    };
+    let Ok(get_random_values) = Reflect::get(&crypto, &"getRandomValues".into())
+        .and_then(|value| value.dyn_into::<Function>())
+    else {
+        return -1;
+    };
+    let mut offset = 0;
+    while offset < len {
+        let count = (len - offset).min(65_536);
+        let chunk = bytes.subarray(ptr + offset, ptr + offset + count);
+        if get_random_values.call1(&crypto, &chunk).is_err() {
+            return -1;
+        }
+        offset += count;
+    }
+    0
+}
+
 /// A loaded ghostty-vt engine instance. Holds the WebAssembly instance, its
 /// linear memory, and cached handles to the C ABI exports the client uses.
 pub struct Vt {
@@ -111,31 +230,52 @@ pub struct Vt {
     terminal_new: Function,
     terminal_free: Function,
     terminal_get: Function,
+    terminal_set: Function,
     vt_write: Function,
     resize: Function,
     rs_new: Function,
+    rs_free: Function,
     rs_update: Function,
     rs_get: Function,
     row_iter_new: Function,
+    row_iter_free: Function,
     row_iter_next: Function,
     row_get: Function,
     cells_new: Function,
+    cells_free: Function,
     cells_next: Function,
     cells_get: Function,
+    native: Option<NativeAbi>,
+    native_capabilities: Option<IncrementalCapabilities>,
+    _entropy: Closure<dyn FnMut(u32, u32) -> i32>,
 }
 
 impl Vt {
     /// Instantiate the engine module. Async because WebAssembly instantiation
-    /// is; the only host import the module needs is `env.log`.
+    /// is. The host supplies secure browser entropy required by authenticated
+    /// checkpoint history; an engine without the incremental ABI still loads
+    /// as a synthesized-VT-only renderer.
     ///
     /// # Errors
-    /// Returns the underlying `JsValue` if instantiation fails or an expected
-    /// export is missing.
+    /// Returns the underlying `JsValue` if instantiation fails or a required
+    /// baseline terminal/render export is missing.
     pub async fn load() -> Result<Rc<Self>, JsValue> {
         let env = Object::new();
         Reflect::set(&env, &"log".into(), &Function::new_no_args(""))?;
+        let entropy_memory = Rc::new(RefCell::new(None));
+        let entropy_memory_for_host = Rc::clone(&entropy_memory);
+        let entropy = Closure::<dyn FnMut(u32, u32) -> i32>::new(move |ptr, len| {
+            secure_entropy(&entropy_memory_for_host, ptr, len)
+        });
+        let ghostty = Object::new();
+        Reflect::set(
+            &ghostty,
+            &"host_entropy_fill".into(),
+            entropy.as_ref().unchecked_ref(),
+        )?;
         let imports = Object::new();
         Reflect::set(&imports, &"env".into(), &env)?;
+        Reflect::set(&imports, &"ghostty".into(), &ghostty)?;
 
         let result =
             JsFuture::from(WebAssembly::instantiate_buffer(GHOSTTY_VT_WASM, &imports)).await?;
@@ -143,65 +283,204 @@ impl Vt {
             Reflect::get(&result, &"instance".into())?.dyn_into()?;
         let exports = instance.exports();
         let memory: WebAssembly::Memory = Reflect::get(&exports, &"memory".into())?.dyn_into()?;
+        *entropy_memory.borrow_mut() = Some(memory.clone());
 
         let f = |name: &str| -> Result<Function, JsValue> {
             Reflect::get(&exports, &JsValue::from_str(name))?
                 .dyn_into::<Function>()
                 .map_err(|_| JsValue::from_str(&format!("missing export: {name}")))
         };
+        let optional = |name: &str| -> Option<Function> {
+            Reflect::get(&exports, &JsValue::from_str(name))
+                .ok()?
+                .dyn_into::<Function>()
+                .ok()
+        };
+        let native = (|| {
+            Some(NativeAbi {
+                capabilities: optional("ghostty_terminal_snapshot_incremental_capabilities")?,
+                decoder_new: optional("ghostty_terminal_snapshot_decoder_new")?,
+                decoder_push: optional("ghostty_terminal_snapshot_decoder_push")?,
+                decoder_take_terminal: optional("ghostty_terminal_snapshot_decoder_take_terminal")?,
+                decoder_replay_continuation: optional(
+                    "ghostty_terminal_snapshot_decoder_replay_continuation",
+                )?,
+                decoder_free: optional("ghostty_terminal_snapshot_decoder_free")?,
+            })
+        })();
 
-        Ok(Rc::new(Self {
+        let mut vt = Self {
             memory,
             alloc: f("ghostty_wasm_alloc_u8_array")?,
             free: f("ghostty_wasm_free_u8_array")?,
             terminal_new: f("ghostty_terminal_new")?,
             terminal_free: f("ghostty_terminal_free")?,
             terminal_get: f("ghostty_terminal_get")?,
+            terminal_set: f("ghostty_terminal_set")?,
             vt_write: f("ghostty_terminal_vt_write")?,
             resize: f("ghostty_terminal_resize")?,
             rs_new: f("ghostty_render_state_new")?,
+            rs_free: f("ghostty_render_state_free")?,
             rs_update: f("ghostty_render_state_update")?,
             rs_get: f("ghostty_render_state_get")?,
             row_iter_new: f("ghostty_render_state_row_iterator_new")?,
+            row_iter_free: f("ghostty_render_state_row_iterator_free")?,
             row_iter_next: f("ghostty_render_state_row_iterator_next")?,
             row_get: f("ghostty_render_state_row_get")?,
             cells_new: f("ghostty_render_state_row_cells_new")?,
+            cells_free: f("ghostty_render_state_row_cells_free")?,
             cells_next: f("ghostty_render_state_row_cells_next")?,
             cells_get: f("ghostty_render_state_row_cells_get")?,
-        }))
+            native,
+            native_capabilities: None,
+            _entropy: entropy,
+        };
+        vt.native_capabilities = vt.probe_incremental_capabilities();
+        Ok(Rc::new(vt))
+    }
+
+    /// Runtime checkpoint metadata when the embedded engine exposes the exact
+    /// incremental ABI. Missing or malformed metadata means synthesized-only.
+    #[must_use]
+    pub fn incremental_capabilities(&self) -> Option<&IncrementalCapabilities> {
+        self.native_capabilities.as_ref()
+    }
+
+    /// Construct a bounded incremental checkpoint decoder.
+    ///
+    /// # Errors
+    /// Fails closed when the embedded module lacks the exact incremental ABI,
+    /// rejects the configured bounds, or cannot allocate decoder state.
+    pub fn native_decoder(
+        self: &Rc<Self>,
+        max_continuation_bytes: usize,
+        max_record_bytes: usize,
+        max_pages: usize,
+    ) -> Result<NativeDecoder, NativeCodecError> {
+        let max_input_bytes = max_record_bytes;
+        let capabilities = self
+            .native_capabilities
+            .as_ref()
+            .filter(|capabilities| capabilities.supports_protocol_07(max_record_bytes))
+            .ok_or(NativeCodecError::Unavailable)?;
+        let max_pages = max_pages.min(capabilities.max_pages).max(1);
+        let max_continuation_bytes = to_wasm_usize(max_continuation_bytes)?;
+        let max_record_bytes = to_wasm_usize(max_record_bytes)?;
+        let max_pages = to_wasm_usize(max_pages)?;
+        let options = self.alloc_zeroed(DECODER_OPTIONS_SIZE)?;
+        self.w_u32(options, DECODER_OPTIONS_SIZE);
+        self.w_u32(options + 4, SNAPSHOT_ABI_VERSION);
+        self.w_u32(options + 8, max_continuation_bytes);
+        self.w_u32(options + 12, max_record_bytes);
+        self.w_u32(options + 16, max_pages);
+        let slot = match self.alloc_zeroed(4) {
+            Ok(slot) => slot,
+            Err(error) => {
+                self.wasm_free(options, DECODER_OPTIONS_SIZE);
+                return Err(error);
+            }
+        };
+        let native = self.native.as_ref().ok_or(NativeCodecError::Unavailable)?;
+        let status = self.call_i32(
+            &native.decoder_new,
+            &[0.0, f64::from(options), f64::from(slot)],
+        );
+        self.wasm_free(options, DECODER_OPTIONS_SIZE);
+        let status = match status {
+            Ok(status) => status,
+            Err(error) => {
+                self.wasm_free(slot, 4);
+                return Err(error);
+            }
+        };
+        if status != SNAPSHOT_STATUS_SUCCESS {
+            self.wasm_free(slot, 4);
+            return Err(NativeCodecError::Status {
+                code: status,
+                consumed: 0,
+            });
+        }
+        let handle = self.r_u32(slot);
+        self.wasm_free(slot, 4);
+        if handle == 0 {
+            return Err(NativeCodecError::InvalidHandle);
+        }
+        Ok(NativeDecoder {
+            vt: Rc::clone(self),
+            handle,
+            max_input_bytes,
+            terminal_taken: false,
+            finished: false,
+        })
+    }
+
+    fn probe_incremental_capabilities(&self) -> Option<IncrementalCapabilities> {
+        let native = self.native.as_ref()?;
+        let out = self.alloc_zeroed(CAPABILITIES_SIZE).ok()?;
+        self.w_u32(out, CAPABILITIES_SIZE);
+        let status = match self.call_i32(&native.capabilities, &[f64::from(out)]) {
+            Ok(status) => status,
+            Err(_) => {
+                self.wasm_free(out, CAPABILITIES_SIZE);
+                return None;
+            }
+        };
+        if status != SNAPSHOT_STATUS_SUCCESS {
+            self.wasm_free(out, CAPABILITIES_SIZE);
+            return None;
+        }
+        let codec_identity = self.r_string(out + 40);
+        let build_identity = self.r_string(out + 48);
+        let capabilities = IncrementalCapabilities {
+            abi_version: self.r_u32(out + 4),
+            min_decode_version: self.r_u16(out + 8),
+            max_decode_version: self.r_u16(out + 10),
+            default_encode_version: self.r_u16(out + 12),
+            incremental: self.r_u8(out + 14) != 0,
+            ready: self.r_u8(out + 15) != 0,
+            history: self.r_u8(out + 16) != 0,
+            authenticated_tokens: self.r_u8(out + 17) != 0,
+            bounded_records: self.r_u8(out + 18) != 0,
+            bounded_pages: self.r_u8(out + 19) != 0,
+            bounded_units: self.r_u8(out + 20) != 0,
+            max_record_bytes: self.r_u32(out + 24) as usize,
+            max_pages: self.r_u32(out + 28) as usize,
+            max_unit_bytes: self.r_u32(out + 32) as usize,
+            max_rows: self.r_u32(out + 36) as usize,
+            codec_identity: String::new(),
+            build_identity: String::new(),
+        };
+        self.wasm_free(out, CAPABILITIES_SIZE);
+        Some(IncrementalCapabilities {
+            codec_identity: codec_identity?,
+            build_identity: build_identity?,
+            ..capabilities
+        })
     }
 
     /// Open a terminal of `cols`×`rows`, with its own render state + reusable
     /// row/cell iterators and scratch buffers.
     #[must_use]
     pub fn terminal(self: &Rc<Self>, cols: u16, rows: u16) -> Terminal {
-        // GhosttyTerminalOptions (wasm32): cols u16@0, rows u16@2, scrollback u32@4.
-        let opts = self.wasm_alloc(8);
-        self.w_u16(opts, cols);
-        self.w_u16(opts + 2, rows);
-        self.w_u32(opts + 4, 5_000);
-
         let term_out = self.wasm_alloc(4);
         let _ = self.call(
             &self.terminal_new,
-            &[0.0, f64::from(term_out), f64::from(opts)],
+            &[0.0, f64::from(term_out), f64::from(cols), f64::from(rows)],
         );
         let term = self.r_u32(term_out);
+        self.wasm_free(term_out, 4);
+        self.terminal_from_handle(term)
+    }
 
+    fn terminal_from_handle(self: &Rc<Self>, term: u32) -> Terminal {
         let state_out = self.wasm_alloc(4);
         let _ = self.call(&self.rs_new, &[0.0, f64::from(state_out)]);
         let state = self.r_u32(state_out);
-
-        // iter_slot holds the row-iterator handle; rebound from the render
-        // state on every read (render_state_get rewrites it in place).
+        self.wasm_free(state_out, 4);
         let iter_slot = self.wasm_alloc(4);
         let _ = self.call(&self.row_iter_new, &[0.0, f64::from(iter_slot)]);
-
-        // cells_slot holds the cell-container handle; rebound per row via
-        // render_state_row_get(CELLS), which rewrites it in place (like iter_slot).
         let cells_slot = self.wasm_alloc(4);
         let _ = self.call(&self.cells_new, &[0.0, f64::from(cells_slot)]);
-
         Terminal {
             vt: Rc::clone(self),
             term,
@@ -226,6 +505,35 @@ impl Vt {
             .unwrap_or(0.0)
     }
 
+    fn call_i32(&self, func: &Function, args: &[f64]) -> Result<i32, NativeCodecError> {
+        let arr = Array::new();
+        for argument in args {
+            arr.push(&JsValue::from_f64(*argument));
+        }
+        func.apply(&JsValue::NULL, &arr)
+            .map_err(|error| NativeCodecError::Host(format!("{error:?}")))?
+            .as_f64()
+            .map(|value| value as i32)
+            .ok_or_else(|| NativeCodecError::Host("engine returned a non-number".to_owned()))
+    }
+
+    fn alloc_zeroed(&self, len: u32) -> Result<u32, NativeCodecError> {
+        let ptr = self.wasm_alloc(len);
+        if ptr == 0 {
+            return Err(NativeCodecError::OutOfMemory);
+        }
+        for offset in 0..len {
+            self.bytes().set_index(ptr + offset, 0);
+        }
+        Ok(ptr)
+    }
+
+    fn wasm_free(&self, ptr: u32, len: u32) {
+        if ptr != 0 {
+            let _ = self.call(&self.free, &[f64::from(ptr), f64::from(len)]);
+        }
+    }
+
     fn wasm_alloc(&self, len: u32) -> u32 {
         self.call(&self.alloc, &[f64::from(len)]) as u32
     }
@@ -234,12 +542,6 @@ impl Vt {
     // grows its memory, but offsets stay valid (wasm memory only grows).
     fn bytes(&self) -> Uint8Array {
         Uint8Array::new(&self.memory.buffer())
-    }
-
-    fn w_u16(&self, ptr: u32, v: u16) {
-        let b = self.bytes();
-        b.set_index(ptr, v as u8);
-        b.set_index(ptr + 1, (v >> 8) as u8);
     }
 
     fn w_u32(&self, ptr: u32, v: u32) {
@@ -257,6 +559,21 @@ impl Vt {
             | (u32::from(b.get_index(ptr + 3)) << 24)
     }
 
+    fn r_u16(&self, ptr: u32) -> u16 {
+        let bytes = self.bytes();
+        u16::from(bytes.get_index(ptr)) | (u16::from(bytes.get_index(ptr + 1)) << 8)
+    }
+
+    fn r_string(&self, ptr: u32) -> Option<String> {
+        let data = self.r_u32(ptr);
+        let len = self.r_u32(ptr + 4);
+        let end = data.checked_add(len)?;
+        if end > self.bytes().length() {
+            return None;
+        }
+        String::from_utf8(self.bytes().subarray(data, end).to_vec()).ok()
+    }
+
     fn r_u8(&self, ptr: u32) -> u8 {
         self.bytes().get_index(ptr)
     }
@@ -265,6 +582,313 @@ impl Vt {
         self.bytes()
             .subarray(ptr, ptr + data.len() as u32)
             .copy_from(data);
+    }
+}
+
+fn to_wasm_usize(value: usize) -> Result<u32, NativeCodecError> {
+    u32::try_from(value).map_err(|_| NativeCodecError::LimitExceeded)
+}
+
+/// Typed failure from the embedded incremental checkpoint engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeCodecError {
+    /// The exact checkpoint ABI or runtime capability set is unavailable.
+    Unavailable,
+    /// A host-to-engine call threw or returned a non-numeric value.
+    Host(String),
+    /// The engine rejected a checkpoint transition.
+    Status {
+        /// Exact incremental status code.
+        code: i32,
+        /// Bytes consumed from the submitted fragment before rejection.
+        consumed: usize,
+    },
+    /// A configured or submitted size cannot be represented by wasm32.
+    LimitExceeded,
+    /// The module allocator returned null.
+    OutOfMemory,
+    /// The module returned a null decoder or terminal handle.
+    InvalidHandle,
+    /// The module returned an unknown decode transition.
+    InvalidEvent(i32),
+    /// Decoder-reported accounting exceeded the supplied fragment.
+    InvalidProgress {
+        /// Bytes the engine reported consumed.
+        consumed: usize,
+        /// Bytes supplied by the caller.
+        available: usize,
+    },
+    /// The authenticated envelope used a different exact codec version.
+    WrongCodecVersion {
+        /// Required immutable checkpoint version.
+        expected: u16,
+        /// Version reported by the decoder.
+        actual: u16,
+    },
+}
+
+impl std::fmt::Display for NativeCodecError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable => formatter.write_str("native checkpoint codec unavailable"),
+            Self::Host(message) => write!(formatter, "checkpoint host call failed: {message}"),
+            Self::Status { code, consumed } => {
+                write!(formatter, "checkpoint status {code} after {consumed} bytes")
+            }
+            Self::LimitExceeded => formatter.write_str("checkpoint limit exceeded"),
+            Self::OutOfMemory => formatter.write_str("checkpoint engine allocation failed"),
+            Self::InvalidHandle => formatter.write_str("checkpoint engine returned a null handle"),
+            Self::InvalidEvent(kind) => write!(formatter, "unknown checkpoint event {kind}"),
+            Self::InvalidProgress {
+                consumed,
+                available,
+            } => write!(
+                formatter,
+                "invalid checkpoint progress: consumed {consumed} of {available}"
+            ),
+            Self::WrongCodecVersion { expected, actual } => {
+                write!(
+                    formatter,
+                    "checkpoint codec mismatch: expected {expected}, got {actual}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for NativeCodecError {}
+
+/// One bounded transition produced by the incremental decoder.
+pub struct NativeDecodeEvent {
+    /// Decoder lifecycle transition.
+    pub kind: NativeDecodeKind,
+    /// Bytes consumed from the caller's fragment.
+    pub consumed: usize,
+    /// Additional bytes currently needed, when known.
+    pub needed: usize,
+    /// Exact checkpoint envelope version, or zero before the envelope header.
+    pub codec_version: u16,
+    /// Whether an imported history page fit the configured engine budget.
+    pub retained: bool,
+    /// Authenticated terminal transferred exactly at READY.
+    pub terminal: Option<Terminal>,
+}
+
+/// Incremental checkpoint decoder transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeDecodeKind {
+    /// The decoder retained a fragment and needs more bytes.
+    NeedInput,
+    /// One bounded prefix transition completed.
+    Progress,
+    /// The terminal is authenticated and renderable.
+    Ready,
+    /// Progressive history metadata began.
+    HistoryBegin,
+    /// One progressive history page was imported.
+    HistoryPage,
+    /// The complete checkpoint transcript finished.
+    Finish,
+}
+
+/// Engine-owned incremental decoder retained from bootstrap through history.
+pub struct NativeDecoder {
+    vt: Rc<Vt>,
+    handle: u32,
+    max_input_bytes: usize,
+    terminal_taken: bool,
+    finished: bool,
+}
+
+impl NativeDecoder {
+    /// Consume at most one bounded transition from an arbitrary fragment.
+    ///
+    /// # Errors
+    /// Returns the exact engine status and consumed-byte count on malformed,
+    /// oversized, truncated, or otherwise invalid checkpoint input.
+    pub fn push(&mut self, data: &[u8]) -> Result<NativeDecodeEvent, NativeCodecError> {
+        if self.finished {
+            return Err(NativeCodecError::Status {
+                code: SNAPSHOT_STATUS_INVALID_STATE,
+                consumed: 0,
+            });
+        }
+        if data.len() > self.max_input_bytes {
+            return Err(NativeCodecError::LimitExceeded);
+        }
+        let len = to_wasm_usize(data.len())?;
+        let input = if len == 0 {
+            0
+        } else {
+            let input = self.vt.alloc_zeroed(len)?;
+            self.vt.w_bytes(input, data);
+            input
+        };
+        let event = match self.vt.alloc_zeroed(DECODE_EVENT_SIZE) {
+            Ok(event) => event,
+            Err(error) => {
+                if input != 0 {
+                    self.vt.wasm_free(input, len);
+                }
+                return Err(error);
+            }
+        };
+        self.vt.w_u32(event, DECODE_EVENT_SIZE);
+        self.vt.w_u32(event + 4, SNAPSHOT_ABI_VERSION);
+        let native = self
+            .vt
+            .native
+            .as_ref()
+            .ok_or(NativeCodecError::Unavailable)?;
+        let status = self.vt.call_i32(
+            &native.decoder_push,
+            &[
+                f64::from(self.handle),
+                f64::from(input),
+                f64::from(len),
+                f64::from(event),
+            ],
+        );
+        if input != 0 {
+            self.vt.wasm_free(input, len);
+        }
+        let consumed = self.vt.r_u32(event + 28) as usize;
+        let status = match status {
+            Ok(status) => status,
+            Err(error) => {
+                self.vt.wasm_free(event, DECODE_EVENT_SIZE);
+                return Err(error);
+            }
+        };
+        if status != SNAPSHOT_STATUS_SUCCESS {
+            self.vt.wasm_free(event, DECODE_EVENT_SIZE);
+            return Err(NativeCodecError::Status {
+                code: status,
+                consumed,
+            });
+        }
+        if consumed > data.len() {
+            self.vt.wasm_free(event, DECODE_EVENT_SIZE);
+            return Err(NativeCodecError::InvalidProgress {
+                consumed,
+                available: data.len(),
+            });
+        }
+        let raw_kind = self.vt.r_u32(event + 8) as i32;
+        let kind = match raw_kind {
+            0 => NativeDecodeKind::NeedInput,
+            1 => NativeDecodeKind::Progress,
+            2 => NativeDecodeKind::Ready,
+            3 => NativeDecodeKind::HistoryBegin,
+            4 => NativeDecodeKind::HistoryPage,
+            5 => NativeDecodeKind::Finish,
+            _ => {
+                self.vt.wasm_free(event, DECODE_EVENT_SIZE);
+                return Err(NativeCodecError::InvalidEvent(raw_kind));
+            }
+        };
+        let codec_version = self.vt.r_u16(event + 12);
+        let retained = self.vt.r_u8(event + 24) != 0;
+        let needed = self.vt.r_u32(event + 32) as usize;
+        self.vt.wasm_free(event, DECODE_EVENT_SIZE);
+        if codec_version != 0 && codec_version != CHECKPOINT_CODEC_VERSION {
+            return Err(NativeCodecError::WrongCodecVersion {
+                expected: CHECKPOINT_CODEC_VERSION,
+                actual: codec_version,
+            });
+        }
+        let terminal = if kind == NativeDecodeKind::Ready {
+            Some(self.take_ready_terminal(codec_version)?)
+        } else {
+            None
+        };
+        if kind == NativeDecodeKind::Finish {
+            self.finished = true;
+        }
+        Ok(NativeDecodeEvent {
+            kind,
+            consumed,
+            needed,
+            codec_version,
+            retained,
+            terminal,
+        })
+    }
+
+    fn take_ready_terminal(&mut self, event_version: u16) -> Result<Terminal, NativeCodecError> {
+        if self.terminal_taken {
+            return Err(NativeCodecError::Status {
+                code: SNAPSHOT_STATUS_INVALID_STATE,
+                consumed: 0,
+            });
+        }
+        let result = self.vt.alloc_zeroed(TAKE_TERMINAL_SIZE)?;
+        self.vt.w_u32(result, TAKE_TERMINAL_SIZE);
+        self.vt.w_u32(result + 4, SNAPSHOT_ABI_VERSION);
+        let native = self
+            .vt
+            .native
+            .as_ref()
+            .ok_or(NativeCodecError::Unavailable)?;
+        let status = match self.vt.call_i32(
+            &native.decoder_take_terminal,
+            &[f64::from(self.handle), f64::from(result)],
+        ) {
+            Ok(status) => status,
+            Err(error) => {
+                self.vt.wasm_free(result, TAKE_TERMINAL_SIZE);
+                return Err(error);
+            }
+        };
+        if status != SNAPSHOT_STATUS_SUCCESS {
+            self.vt.wasm_free(result, TAKE_TERMINAL_SIZE);
+            return Err(NativeCodecError::Status {
+                code: status,
+                consumed: 0,
+            });
+        }
+        let terminal = self.vt.r_u32(result + 8);
+        let codec_version = self.vt.r_u16(result + 12);
+        self.vt.wasm_free(result, TAKE_TERMINAL_SIZE);
+        if terminal == 0 {
+            return Err(NativeCodecError::InvalidHandle);
+        }
+        if codec_version != CHECKPOINT_CODEC_VERSION || event_version != CHECKPOINT_CODEC_VERSION {
+            let _ = self.vt.call(&self.vt.terminal_free, &[f64::from(terminal)]);
+            return Err(NativeCodecError::WrongCodecVersion {
+                expected: CHECKPOINT_CODEC_VERSION,
+                actual: codec_version,
+            });
+        }
+        let status = match self.vt.call_i32(
+            &native.decoder_replay_continuation,
+            &[f64::from(self.handle), f64::from(terminal)],
+        ) {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = self.vt.call(&self.vt.terminal_free, &[f64::from(terminal)]);
+                return Err(error);
+            }
+        };
+        if status != SNAPSHOT_STATUS_SUCCESS {
+            let _ = self.vt.call(&self.vt.terminal_free, &[f64::from(terminal)]);
+            return Err(NativeCodecError::Status {
+                code: status,
+                consumed: 0,
+            });
+        }
+        self.terminal_taken = true;
+        Ok(self.vt.terminal_from_handle(terminal))
+    }
+}
+
+impl Drop for NativeDecoder {
+    fn drop(&mut self) {
+        if let Some(native) = self.vt.native.as_ref() {
+            let _ = self
+                .vt
+                .call(&native.decoder_free, &[f64::from(self.handle)]);
+        }
     }
 }
 
@@ -293,9 +917,69 @@ impl Terminal {
             &self.vt.vt_write,
             &[f64::from(self.term), f64::from(ptr), data.len() as f64],
         );
-        let _ = self
-            .vt
-            .call(&self.vt.free, &[f64::from(ptr), data.len() as f64]);
+        self.vt.wasm_free(ptr, data.len() as u32);
+    }
+
+    /// Apply strict client-local scrollback byte and row budgets.
+    ///
+    /// # Errors
+    /// Fails if a bound cannot fit wasm32 or the engine rejects either option.
+    pub fn set_history_budget(
+        &self,
+        max_bytes: usize,
+        max_lines: usize,
+    ) -> Result<(), NativeCodecError> {
+        self.set_usize_option(
+            TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+            to_wasm_usize(max_bytes.max(1))?,
+        )?;
+        self.set_usize_option(
+            TERMINAL_OPT_SCROLLBACK_MAX_LINES,
+            to_wasm_usize(max_lines.max(1))?,
+        )
+    }
+
+    fn set_usize_option(&self, option: f64, value: u32) -> Result<(), NativeCodecError> {
+        self.vt.w_u32(self.scratch, value);
+        let status = self.vt.call_i32(
+            &self.vt.terminal_set,
+            &[f64::from(self.term), option, f64::from(self.scratch)],
+        )?;
+        if status == GHOSTTY_SUCCESS {
+            Ok(())
+        } else {
+            Err(NativeCodecError::Status {
+                code: status,
+                consumed: 0,
+            })
+        }
+    }
+
+    /// Read back the engine's active scrollback byte and row budgets.
+    ///
+    /// # Errors
+    /// Fails if either option is unavailable from the terminal.
+    pub fn history_budget(&self) -> Result<(usize, usize), NativeCodecError> {
+        Ok((
+            self.get_usize(TERMINAL_DATA_SCROLLBACK_MAX_BYTES)?,
+            self.get_usize(TERMINAL_DATA_SCROLLBACK_MAX_LINES)?,
+        ))
+    }
+
+    fn get_usize(&self, data: f64) -> Result<usize, NativeCodecError> {
+        self.vt.w_u32(self.scratch, 0);
+        let status = self.vt.call_i32(
+            &self.vt.terminal_get,
+            &[f64::from(self.term), data, f64::from(self.scratch)],
+        )?;
+        if status == GHOSTTY_SUCCESS {
+            Ok(self.vt.r_u32(self.scratch) as usize)
+        } else {
+            Err(NativeCodecError::Status {
+                code: status,
+                consumed: 0,
+            })
+        }
     }
 
     /// Resize the terminal grid to `cols`×`rows` (cell pixel size is advisory).
@@ -513,8 +1197,19 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        let row_iterator = self.vt.r_u32(self.iter_slot);
+        let cells = self.vt.r_u32(self.cells_slot);
+        let _ = self
+            .vt
+            .call(&self.vt.row_iter_free, &[f64::from(row_iterator)]);
+        let _ = self.vt.call(&self.vt.cells_free, &[f64::from(cells)]);
+        let _ = self.vt.call(&self.vt.rs_free, &[f64::from(self.state)]);
         let _ = self
             .vt
             .call(&self.vt.terminal_free, &[f64::from(self.term)]);
+        self.vt.wasm_free(self.iter_slot, 4);
+        self.vt.wasm_free(self.cells_slot, 4);
+        self.vt.wasm_free(self.scratch, 8);
+        self.vt.wasm_free(self.grapheme_buf, 256);
     }
 }
