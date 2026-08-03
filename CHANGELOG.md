@@ -9,6 +9,37 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.11.0](https://github.com/phall1/phux/compare/v0.10.0...v0.11.0) (2026-08-03)
+
+
+### Features
+
+* **cli:** table-driven deprecation audit and generated deprecations page ([d2f7c59](https://github.com/phall1/phux/commit/d2f7c591b40d0390a595da61f818659ff5207020))
+* **docs:** generated hooks, exit-codes, and file-locations reference ([2b752c7](https://github.com/phall1/phux/commit/2b752c723f3ac4745f04eac61c09873921b021ca))
+
+
+### Bug Fixes
+
+* **cli:** allowlist stdio-bridge in the deprecation-table tree audit ([8af07a1](https://github.com/phall1/phux/commit/8af07a1d1f5f66a6ad816df241bba44b1fd8c695))
+* **client:** render refusal codes as words, not the wire enum's debug ([8234e79](https://github.com/phall1/phux/commit/8234e79543500fb7e0830d28c47346b430cc163a))
+* **cli:** hide stdio-bridge, teach attach shadowing, doc agent args ([ac33723](https://github.com/phall1/phux/commit/ac3372349e0dcca7307b00946925cb9e4a592e28))
+* **cli:** hoist a mid-function import clippy flags in the bridge test ([86c8ac7](https://github.com/phall1/phux/commit/86c8ac72510fa137aa4647990ba7d210dfa5f187))
+* **cli:** prune hidden args from generated completions ([38b326e](https://github.com/phall1/phux/commit/38b326ee8d1d7f3f689777a29910ededd4c230d5))
+* **cli:** prune hidden args from shell completions, not just hidden verbs ([e4bdab5](https://github.com/phall1/phux/commit/e4bdab5e8fbbb6b68b642e1e8d33126bcd4d0e28))
+* **cli:** prune hidden verbs from generated completions ([40a9620](https://github.com/phall1/phux/commit/40a96201c0fd0725cd0155b0738badb319eb1161))
+* **release:** check binary portability on every target, not just macOS ([#365](https://github.com/phall1/phux/issues/365)) ([e1734f2](https://github.com/phall1/phux/commit/e1734f2cd33b14bebd9521117ea136fe42955e3d))
+* **release:** re-pin Zig 0.16.0 tarball digests and gate the pins in CI ([85ebad9](https://github.com/phall1/phux/commit/85ebad9d7c61f51692a3144eebc60717c127f2c6))
+
+
+### Performance
+
+* **ci:** extract phux-server's tests/common into a crate, ~11x less compile ([#367](https://github.com/phall1/phux/issues/367)) ([15cea5a](https://github.com/phall1/phux/commit/15cea5a7fdacb312a2a5d6edc50879ae94903ee8))
+
+
+### Documentation
+
+* **ux:** curated-docs truth pass -- INSTALL, vision, CONCEPTS; status --json help exception ([6968cf0](https://github.com/phall1/phux/commit/6968cf0665c2f72981962e1f6e3d44be1a8d780d))
+
 ## [0.10.0](https://github.com/phall1/phux/compare/v0.9.0...v0.10.0) (2026-08-03)
 
 
