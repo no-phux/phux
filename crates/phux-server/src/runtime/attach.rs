@@ -64,7 +64,7 @@ pub(crate) async fn resolve_attach_target(
             let resolved = state
                 .with(|s| s.idspace.resolve_session(id))
                 .and_then(|sid| {
-                    state.with(|s| s.registry.session(sid).map(|sess| sess.name.clone()))
+                    state.with(|s| s.registry().session(sid).map(|sess| sess.name.clone()))
                 });
             if resolved.is_none() {
                 send_error(
@@ -93,7 +93,7 @@ pub(crate) async fn resolve_attach_target(
             // ErrorCode work is intentionally out of scope here.
             let resolved = state.with(|s| {
                 s.most_recently_touched_session()
-                    .and_then(|sid| s.registry.session(sid).map(|sess| sess.name.clone()))
+                    .and_then(|sid| s.registry().session(sid).map(|sess| sess.name.clone()))
             });
             if resolved.is_none() {
                 send_error(
@@ -318,7 +318,7 @@ pub(crate) async fn resolve_inherited_cwd(
             // runs on the same LocalSet; `with` must not be held across
             // the await).
             let handle = state.with(|s| {
-                let session = s.attached.get(&client_id)?.session;
+                let session = s.attached().get(&client_id)?.session;
                 let focused = s.active_pane_of_session(session)?;
                 s.terminal_handle(focused).cloned()
             })?;
@@ -332,7 +332,7 @@ pub(crate) async fn resolve_inherited_cwd(
             // query is redundant). The freeze happens in `with_mut` after
             // the off-lock query so a concurrent spawn cannot move it.
             let (session, handle) = state.with(|s| {
-                let session = s.attached.get(&client_id)?.session;
+                let session = s.attached().get(&client_id)?.session;
                 if let Some(root) = s.session_root(session) {
                     // Already frozen — return it without a live query.
                     return Some((session, FrozenOrQuery::Frozen(path_to_string(root)?)));
@@ -361,7 +361,7 @@ pub(crate) async fn resolve_inherited_cwd(
             // window has no live active pane, fall back to the last value we
             // recorded for that window.
             let (window, handle) = state.with(|s| {
-                let session = s.attached.get(&client_id)?.session;
+                let session = s.attached().get(&client_id)?.session;
                 let window = s.active_window_of_session(session)?;
                 let handle = s
                     .active_pane_of_session(session)
@@ -444,7 +444,7 @@ pub(crate) async fn refresh_registry_cwds(state: &SharedState) {
     const CWD_REFRESH_DEADLINE: std::time::Duration = std::time::Duration::from_millis(250);
 
     let handles: Vec<(TerminalId, crate::terminal_actor::TerminalHandle)> =
-        state.with(|s| s.terminals.iter().map(|(id, h)| (*id, h.clone())).collect());
+        state.with(crate::state::ServerState::all_terminal_handles);
     if handles.is_empty() {
         return;
     }
@@ -471,7 +471,7 @@ pub(crate) async fn refresh_registry_cwds(state: &SharedState) {
     }
     state.with_mut(|s| {
         for (id, cwd) in resolved {
-            if let Some(desc) = s.registry.terminal_mut(id) {
+            if let Some(desc) = s.registry_mut().terminal_mut(id) {
                 desc.cwd = cwd;
             }
         }
@@ -583,7 +583,7 @@ pub(crate) async fn handle_move_terminal(
                         Vec::new(),
                     );
                 };
-                let Some(dest_window) = s.registry.terminal(owner).map(|t| t.window) else {
+                let Some(dest_window) = s.registry().terminal(owner).map(|t| t.window) else {
                     return (
                         MoveResult::Err(MoveError::MoveFailed(
                             "owner terminal has no window on this server".to_owned(),
@@ -591,11 +591,11 @@ pub(crate) async fn handle_move_terminal(
                         Vec::new(),
                     );
                 };
-                let source_window = s.registry.terminal(moved).map(|t| t.window);
+                let source_window = s.registry().terminal(moved).map(|t| t.window);
                 let source_session = source_window
-                    .and_then(|window| s.registry.window(window))
+                    .and_then(|window| s.registry().window(window))
                     .map(|window| window.session);
-                match s.registry.move_terminal(moved, dest_window) {
+                match s.registry_mut().move_terminal(moved, dest_window) {
                     Ok(()) => {
                         // A move that emptied its source window leaves it for
                         // the same cascade pane death uses (ADR-0056: "the
@@ -604,7 +604,7 @@ pub(crate) async fn handle_move_terminal(
                             s.reap_window_if_empty(source_window);
                         }
                         let clients = source_session
-                            .filter(|session| s.registry.session(*session).is_none())
+                            .filter(|session| s.registry().session(*session).is_none())
                             .map_or_else(Vec::new, |session| {
                                 s.attached_clients_in_session(session)
                             });
@@ -824,7 +824,7 @@ pub(crate) async fn handle_spawn_terminal(
 
     // phux-i9zl: a split spawns into the spawning client's CURRENT session's
     // window, not a fresh `spawn-N` wrapper session. Resolve that session
-    // from the client's attachment (the same `s.attached` lookup the cwd
+    // from the client's attachment (the same `s.attached()` lookup the cwd
     // inheritance above uses). A non-attached spawner — the headless
     // `phux spawn` CLI, or a hub's relayed spawn arriving over the link
     // (phux-v45.6; the hub's link consumer never attaches) — falls back to
@@ -832,11 +832,11 @@ pub(crate) async fn handle_spawn_terminal(
     // `GET_STATE` snapshots use). Only a server with no session at all
     // refuses, rather than orphan a PTY nothing can list.
     let session = state.with(|s| {
-        s.attached
+        s.attached()
             .get(&client_id)
             .map(|c| c.session)
             .or_else(|| s.most_recently_touched_session())
-            .or_else(|| s.registry.sessions().next().map(|(id, _)| id))
+            .or_else(|| s.registry().sessions().next().map(|(id, _)| id))
     });
     let ownership = if let Some(owner) = owner_terminal {
         if !matches!(owner, phux_protocol::ids::TerminalId::Local { .. })
@@ -870,7 +870,7 @@ pub(crate) async fn handle_spawn_terminal(
     let (history_limit, default_colors) = state.with(|s| {
         (
             s.history_limit(),
-            s.attached
+            s.attached()
                 .get(&client_id)
                 .and_then(|client| client.client_caps.default_colors),
         )
@@ -933,7 +933,7 @@ pub(crate) async fn handle_spawn_terminal(
     )> = state.with_mut(|s| {
         let wire_terminal_id = s.intern_terminal_wire(core_terminal_id);
         let client_caps = s
-            .attached
+            .attached()
             .get(&client_id)
             .map(|c| c.client_caps)
             .unwrap_or_default();
@@ -941,11 +941,8 @@ pub(crate) async fn handle_spawn_terminal(
         // a bare `SPAWN_TERMINAL` from a non-attached client is legal
         // wire-wise (the frame doesn't require ATTACH first) but the
         // subscription would have no `attached` slot to live in.
-        if s.attached.contains_key(&client_id) {
-            let subs = s.terminal_subscribers.entry(core_terminal_id).or_default();
-            if !subs.contains(&client_id) {
-                subs.push(client_id);
-            }
+        if s.attached().contains_key(&client_id) {
+            s.subscribe_terminal(client_id, core_terminal_id);
         }
         s.terminal_handle(core_terminal_id)
             .cloned()
@@ -1496,7 +1493,7 @@ pub(crate) fn apply_attach_viewport(
             else {
                 continue;
             };
-            if let Some(pane_entry) = s.registry.terminal_mut(pane.terminal_id) {
+            if let Some(pane_entry) = s.registry_mut().terminal_mut(pane.terminal_id) {
                 pane_entry.dims = (cols, rows);
             }
             // ATTACH-time resize: do NOT resync — the attach handshake

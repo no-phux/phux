@@ -1,11 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ids::{GroupId, TerminalId as WireTerminalId};
-use phux_protocol::wire::frame::{FrameKind, Scope};
+use phux_protocol::wire::frame::Scope;
 
 use super::ServerState;
 use super::client::ClientId;
-use super::input_log::Outbound;
 
 /// Per-scope K/V store for L3 metadata (SPEC §7.4 / §11.L3) plus the
 /// matching subscription registry.
@@ -202,7 +201,9 @@ impl ServerState {
             return Vec::new();
         }
         let subscribers = self.metadata.subscribers_for(scope, key);
-        let delivered = self.broadcast_metadata_changed(&subscribers, scope, key, Some(&value));
+        let delivered =
+            self.clients
+                .broadcast_metadata_changed(&subscribers, scope, key, Some(&value));
         // Commit the write last; `MetadataSetOutcome` is now redundant
         // here but kept on the lower-level API for direct callers.
         let _ = self.metadata.set(scope, key, value);
@@ -217,7 +218,8 @@ impl ServerState {
             return Vec::new();
         }
         let subscribers = self.metadata.subscribers_for(scope, key);
-        self.broadcast_metadata_changed(&subscribers, scope, key, None)
+        self.clients
+            .broadcast_metadata_changed(&subscribers, scope, key, None)
     }
 
     /// Publish ownership of a one-shot session-create result.
@@ -226,8 +228,14 @@ impl ServerState {
     /// results are retained per connection; the oldest is evicted first.
     pub fn track_session_create_result(&mut self, client_id: ClientId, key: String) {
         const MAX_PENDING_PER_CLIENT: usize = 256;
+        // The block deliberately scopes the map borrow so the following
+        // `self.metadata_delete` can take `&mut self`.
         let evicted = {
-            let keys = self.session_create_results.entry(client_id).or_default();
+            let keys = self
+                .clients
+                .session_create_results
+                .entry(client_id)
+                .or_default();
             let evicted = (keys.len() >= MAX_PENDING_PER_CLIENT)
                 .then(|| keys.pop_front())
                 .flatten();
@@ -242,26 +250,23 @@ impl ServerState {
     /// Whether any live connection owns an unread result at `key`.
     #[must_use]
     pub fn session_create_result_is_pending(&self, key: &str) -> bool {
-        self.session_create_results
-            .values()
-            .any(|keys| keys.iter().any(|candidate| candidate == key))
+        self.clients.session_create_result_is_pending(key)
     }
 
     /// Whether `client_id` owns the unread nonce-bearing result at `key`.
     #[must_use]
     pub fn owns_session_create_result(&self, client_id: ClientId, key: &str) -> bool {
-        self.session_create_results
-            .get(&client_id)
-            .is_some_and(|keys| keys.iter().any(|candidate| candidate == key))
+        self.clients.owns_session_create_result(client_id, key)
     }
 
     /// Consume a one-shot session-create result and forget its owner.
     pub fn consume_session_create_result(&mut self, key: &str) {
         let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, key);
-        for keys in self.session_create_results.values_mut() {
+        for keys in self.clients.session_create_results.values_mut() {
             keys.retain(|candidate| candidate != key);
         }
-        self.session_create_results
+        self.clients
+            .session_create_results
             .retain(|_, keys| !keys.is_empty());
     }
 
@@ -270,41 +275,5 @@ impl ServerState {
     /// [`Self::client_speaks_l3`] before invoking this).
     pub fn metadata_subscribe(&mut self, client_id: ClientId, scope: Scope, key: String) {
         self.metadata.subscribe(client_id, scope, key);
-    }
-
-    /// Helper: fan a `MetadataChanged` frame out to every subscriber in
-    /// `subscribers` that is (a) still attached, (b) L3-capable, and
-    /// (c) drainable (mailbox not closed). Returns the actually-targeted
-    /// client list.
-    fn broadcast_metadata_changed(
-        &self,
-        subscribers: &[ClientId],
-        scope: &Scope,
-        key: &str,
-        value: Option<&[u8]>,
-    ) -> Vec<ClientId> {
-        let mut delivered = Vec::with_capacity(subscribers.len());
-        for client_id in subscribers {
-            if !self.client_speaks_l3(*client_id) {
-                continue;
-            }
-            let Some(client) = self.attached.get(client_id) else {
-                continue;
-            };
-            let frame = FrameKind::MetadataChanged {
-                scope: scope.clone(),
-                key: key.to_owned(),
-                value: value.map(<[u8]>::to_vec),
-            };
-            // `try_send`: the mailbox is bounded (DEFAULT_CLIENT_MAILBOX)
-            // and we hold the state mutex synchronously; awaiting on a
-            // full mailbox would deadlock the per-client read loop. A
-            // dropped notification is acceptable per SPEC §7.4 — the
-            // subscriber can re-`GET_METADATA` on next attach.
-            if client.tx.try_send(Outbound::Frame(frame)).is_ok() {
-                delivered.push(*client_id);
-            }
-        }
-        delivered
     }
 }

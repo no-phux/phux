@@ -321,9 +321,9 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     spawn_terminal_exit_watcher(state.clone(), terminal, exit_notify, root_token.clone());
     // docs/consumers/tui.md §9 (phux-r82.1): the split pane's actor is live.
     let session_name = state.with(|s| {
-        let window = s.registry.terminal(terminal)?.window;
-        let session = s.registry.window(window)?.session;
-        s.registry.session(session).map(|sess| sess.name.clone())
+        let window = s.registry().terminal(terminal)?.window;
+        let session = s.registry().window(window)?.session;
+        s.registry().session(session).map(|sess| sess.name.clone())
     });
     crate::hooks::fire_hook(
         state,
@@ -359,7 +359,7 @@ fn stamp_spawn_cwd(
     cwd: Option<std::path::PathBuf>,
 ) {
     if let Some(cwd) = cwd
-        && let Some(desc) = s.registry.terminal_mut(terminal)
+        && let Some(desc) = s.registry_mut().terminal_mut(terminal)
     {
         desc.cwd = cwd;
     }
@@ -457,10 +457,10 @@ pub(crate) fn handle_terminal_resize(
         // Keep the registry's recorded dims in sync so future
         // `TERMINAL_SNAPSHOT` payloads report the post-resize cols/rows.
         // Mirrors what `handle_viewport_resize` does for VIEWPORT_RESIZE.
-        if let Some(pane) = s.registry.terminal_mut(terminal) {
+        if let Some(pane) = s.registry_mut().terminal_mut(terminal) {
             pane.dims = (cols, rows);
         }
-        let Some(handle) = s.terminals.get(&terminal) else {
+        let Some(handle) = s.terminal_handle(terminal) else {
             debug!(
                 ?client_id,
                 ?terminal,
@@ -846,14 +846,11 @@ async fn handle_attach_terminal(
         let core = s.terminal_from_wire(terminal_id)?;
         let handle = s.terminal_handle(core).cloned()?;
         let caps = s
-            .attached
+            .attached()
             .get(&client_id)
             .map(|c| c.client_caps)
             .unwrap_or_default();
-        let subs = s.terminal_subscribers.entry(core).or_default();
-        if !subs.contains(&client_id) {
-            subs.push(client_id);
-        }
+        s.subscribe_terminal(client_id, core);
         Some((core, handle, caps))
     });
     let Some((core, handle, client_caps)) = resolved else {
@@ -1617,7 +1614,7 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
             let snapshot = state.with_mut(|s| {
                 let focus = s
                     .most_recently_touched_session()
-                    .or_else(|| s.registry.sessions().next().map(|(id, _)| id));
+                    .or_else(|| s.registry().sessions().next().map(|(id, _)| id));
                 focus.and_then(|sid| s.build_session_snapshot(sid))
             });
             CommandResult::OkWith(CommandValue::State(
@@ -2486,7 +2483,7 @@ pub(crate) fn handle_viewport_resize(
     viewport: &ViewportInfo,
 ) {
     state.with_mut(|s| {
-        let Some(client) = s.attached.get(&client_id) else {
+        let Some(client) = s.attached().get(&client_id) else {
             debug!(
                 ?client_id,
                 "VIEWPORT_RESIZE from non-attached client; ignoring"
@@ -2494,7 +2491,7 @@ pub(crate) fn handle_viewport_resize(
             return;
         };
         let session_id = client.session;
-        let Some(session) = s.registry.session(session_id) else {
+        let Some(session) = s.registry().session(session_id) else {
             debug!(?client_id, "VIEWPORT_RESIZE: client's session vanished");
             return;
         };
@@ -2502,7 +2499,7 @@ pub(crate) fn handle_viewport_resize(
             debug!(?client_id, "VIEWPORT_RESIZE: no active window in session");
             return;
         };
-        let Some(window) = s.registry.window(window_id) else {
+        let Some(window) = s.registry().window(window_id) else {
             return;
         };
         let Some(terminal_id) = window.active else {
@@ -2522,7 +2519,7 @@ pub(crate) fn handle_viewport_resize(
             );
             return;
         };
-        if let Some(pane) = s.registry.terminal_mut(terminal_id) {
+        if let Some(pane) = s.registry_mut().terminal_mut(terminal_id) {
             pane.dims = (cols, rows);
         }
         // Pixel geometry rides along: the most recent usable pixel report
@@ -2544,7 +2541,7 @@ pub(crate) fn handle_viewport_resize(
         // dropped resize is recoverable (the next resize, or the
         // next snapshot, re-syncs) and SPEC §10.5 explicitly classes
         // VIEWPORT_RESIZE as best-effort.
-        if let Some(handle) = s.terminals.get(&terminal_id) {
+        if let Some(handle) = s.terminal_handle(terminal_id) {
             // Live viewport resize (SIGWINCH): resync clients (phux-8v1).
             match handle.resize.try_send(ResizeRequest {
                 cols,
@@ -2711,8 +2708,11 @@ pub(crate) fn with_attached_input_destination<R>(
             );
             return None;
         }
-        if let Some(attached) = s.attached.get(&client_id) {
-            s.touch_session(attached.session);
+        // Bind the session id out of the shared borrow first: `attached()`
+        // borrows all of `s`, and `touch_session` needs `&mut s`.
+        let touched_session = s.attached().get(&client_id).map(|c| c.session);
+        if let Some(session) = touched_session {
+            s.touch_session(session);
         }
         let Some(handle) = s.terminal_handle(pane).cloned() else {
             warn!(

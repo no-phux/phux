@@ -8,8 +8,7 @@ impl ServerState {
     /// here means *unattended*, not *silent* — a human parked in an attached
     /// pane reading a log for an hour must never be reaped.
     pub fn note_connection_opened(&mut self) {
-        self.live_connections = self.live_connections.saturating_add(1);
-        self.idle_since = None;
+        self.lifecycle.note_connection_opened();
     }
 
     /// Record that a client connection ended (clean EOF, error, or drop).
@@ -21,27 +20,24 @@ impl ServerState {
     /// prevent. Saturating instead pins the count at zero, which fails
     /// *toward* exiting and is therefore the safe direction.
     pub fn note_connection_closed(&mut self) {
-        self.live_connections = self.live_connections.saturating_sub(1);
-        if self.live_connections == 0 {
-            self.idle_since = Some(std::time::Instant::now());
-        }
+        self.lifecycle.note_connection_closed();
     }
 
     /// Instant the server became unattended, or `None` while a client
     /// connection is open. See [`Self::note_connection_opened`].
     #[must_use]
     pub const fn idle_since(&self) -> Option<std::time::Instant> {
-        self.idle_since
+        self.lifecycle.idle_since()
     }
 
     /// Arm tmux-model last-session self-exit.
     pub(crate) const fn arm_self_exit(&mut self) {
-        self.has_served_client = true;
+        self.lifecycle.arm_self_exit();
     }
 
     /// Whether last-session self-exit has been armed.
     #[must_use]
     pub const fn has_served_client(&self) -> bool {
-        self.has_served_client
+        self.lifecycle.has_served_client()
     }
 }

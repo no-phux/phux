@@ -12,9 +12,17 @@ impl ServerState {
     /// clients are currently observing the pane.
     #[must_use]
     pub fn subscribers_for_terminal(&self, terminal: TerminalId) -> &[ClientId] {
-        self.terminal_subscribers
-            .get(&terminal)
-            .map_or(&[], Vec::as_slice)
+        self.terminal_table.subscribers_for(terminal)
+    }
+
+    /// Subscribe `client` to `terminal`'s output fanout, deduplicating so a
+    /// re-attach cannot double-register.
+    ///
+    /// The `ATTACH_TERMINAL` / `SPAWN_TERMINAL` counterpart of
+    /// [`Self::unsubscribe_terminal`]; whole-session subscription happens
+    /// inside [`Self::attach`].
+    pub fn subscribe_terminal(&mut self, client: ClientId, terminal: TerminalId) {
+        self.terminal_table.subscribe(client, terminal);
     }
 
     /// Clone the [`TerminalHandle`] of every pane `client_id` currently
@@ -27,11 +35,7 @@ impl ServerState {
     /// runtime to avoid awaiting inside `with_mut`.
     #[must_use]
     pub fn subscribed_terminal_handles(&self, client_id: ClientId) -> Vec<TerminalHandle> {
-        self.terminal_subscribers
-            .iter()
-            .filter(|(_, subs)| subs.contains(&client_id))
-            .filter_map(|(terminal, _)| self.terminal_handle(*terminal).cloned())
-            .collect()
+        self.terminal_table.subscribed_handles(client_id)
     }
 
     /// Record a freshly-spawned [`TerminalHandle`] against `pane` and
@@ -41,7 +45,7 @@ impl ServerState {
     /// `build_with_token`. Subsequent attaches use
     /// [`Self::terminal_handle`] to look the handle up.
     ///
-    /// `token` is stashed in `terminal_tokens`; cancelling it (e.g. via
+    /// `token` is stashed alongside the handle; cancelling it (e.g. via
     /// [`Self::detach_terminal_actor`]) fires the actor's shutdown branch.
     ///
     /// This method does NOT spawn the actor — pair it with
@@ -52,6 +56,10 @@ impl ServerState {
     /// same `pane` returns the same wire id) but overwrites the
     /// `TerminalHandle` / token. In practice the runtime calls this
     /// exactly once per pane lifetime.
+    ///
+    /// Stays on `ServerState` rather than moving onto the terminal table:
+    /// the wire-id mint and the two table writes are one atomic step the
+    /// runtime depends on, and the id space is a different concern.
     pub fn register_terminal_handle(
         &mut self,
         terminal: TerminalId,
@@ -59,8 +67,7 @@ impl ServerState {
         token: CancellationToken,
     ) -> WireTerminalId {
         let wire = self.intern_terminal_wire(terminal);
-        self.terminals.insert(terminal, handle);
-        self.terminal_tokens.insert(terminal, token);
+        self.terminal_table.register(terminal, handle, token);
         wire
     }
 
@@ -82,7 +89,7 @@ impl ServerState {
         F: Future<Output = ()> + 'static,
     {
         let wire = self.register_terminal_handle(terminal, handle, token);
-        self.terminal_tasks.spawn_local(actor_future);
+        self.terminal_table.spawn_actor(actor_future);
         wire
     }
 
@@ -91,18 +98,23 @@ impl ServerState {
     /// pane-close lifecycle paths; not exercised by `phux-byc.8`.
     ///
     /// The actor task itself is drained from the per-server `JoinSet`
-    /// when it returns from `run`; we don't need to touch
-    /// `terminal_tasks` here.
+    /// when it returns from `run`; we don't need to touch the pane-task
+    /// set here.
     pub fn detach_terminal_actor(&mut self, terminal: TerminalId) {
-        if let Some(token) = self.terminal_tokens.remove(&terminal) {
-            token.cancel();
-        }
+        self.terminal_table.detach_actor(terminal);
     }
 
     /// Look up the [`TerminalHandle`] for `pane`, if registered.
     #[must_use]
     pub fn terminal_handle(&self, terminal: TerminalId) -> Option<&TerminalHandle> {
-        self.terminals.get(&terminal)
+        self.terminal_table.handle(terminal)
+    }
+
+    /// Clone every registered `(pane, handle)` pair so the caller can talk
+    /// to the actors outside the `ServerState` lock (the `Arc<Mutex<_>>`
+    /// must not be held across an await).
+    pub(crate) fn all_terminal_handles(&self) -> Vec<(TerminalId, TerminalHandle)> {
+        self.terminal_table.all_handles()
     }
 
     /// Register (and return the token for) an `ATTACH_TERMINAL` output
@@ -113,34 +125,19 @@ impl ServerState {
         &mut self,
         client: ClientId,
         terminal: TerminalId,
-    ) -> Option<tokio_util::sync::CancellationToken> {
-        use std::collections::hash_map::Entry;
-        match self.attach_terminal_pumps.entry((client, terminal)) {
-            Entry::Occupied(_) => None,
-            Entry::Vacant(slot) => {
-                let token = tokio_util::sync::CancellationToken::new();
-                slot.insert(token.clone());
-                Some(token)
-            }
-        }
+    ) -> Option<CancellationToken> {
+        self.terminal_table.register_pump(client, terminal)
     }
 
     /// Cancel and forget the `ATTACH_TERMINAL` pump for `(client,
     /// terminal)`, if one is live. Idempotent.
     pub fn cancel_attach_terminal_pump(&mut self, client: ClientId, terminal: TerminalId) {
-        if let Some(token) = self.attach_terminal_pumps.remove(&(client, terminal)) {
-            token.cancel();
-        }
+        self.terminal_table.cancel_pump(client, terminal);
     }
 
     /// Remove `client` from `terminal`'s subscriber list (the
     /// `DETACH_TERMINAL` counterpart of the attach-time registration).
     pub fn unsubscribe_terminal(&mut self, client: ClientId, terminal: TerminalId) {
-        if let Some(subs) = self.terminal_subscribers.get_mut(&terminal) {
-            subs.retain(|c| *c != client);
-            if subs.is_empty() {
-                self.terminal_subscribers.remove(&terminal);
-            }
-        }
+        self.terminal_table.unsubscribe(client, terminal);
     }
 }

@@ -56,15 +56,7 @@ impl ServerState {
         terminal: Option<WireTerminalId>,
         tx: mpsc::Sender<Outbound>,
     ) {
-        let scope = terminal.map_or(EventScope::Server, EventScope::Terminal);
-        let entry = self
-            .event_subscriptions
-            .entry(client_id)
-            .or_insert_with(|| EventSubscription {
-                tx,
-                scopes: HashSet::new(),
-            });
-        entry.scopes.insert(scope);
+        self.clients.subscribe_events(client_id, terminal, tx);
     }
 
     /// Collect the outbound mailbox of every client subscribed to an agent
@@ -81,15 +73,7 @@ impl ServerState {
     /// attach) is still reached.
     #[must_use]
     pub fn event_targets(&self, terminal: Option<&WireTerminalId>) -> Vec<mpsc::Sender<Outbound>> {
-        self.event_subscriptions
-            .values()
-            .filter(|sub| {
-                sub.scopes.contains(&EventScope::Server)
-                    || terminal
-                        .is_some_and(|tid| sub.scopes.contains(&EventScope::Terminal(tid.clone())))
-            })
-            .map(|sub| sub.tx.clone())
-            .collect()
+        self.clients.event_targets(terminal)
     }
 
     /// Drop `client`'s per-terminal agent-event subscription for `wire`
@@ -97,11 +81,6 @@ impl ServerState {
     /// other terminals' scopes are untouched; an empty scope set drops
     /// the whole entry so the map stays bounded.
     pub fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireTerminalId) {
-        if let Some(sub) = self.event_subscriptions.get_mut(&client) {
-            sub.scopes.remove(&EventScope::Terminal(wire.clone()));
-            if sub.scopes.is_empty() {
-                self.event_subscriptions.remove(&client);
-            }
-        }
+        self.clients.unsubscribe_terminal_events(client, wire);
     }
 }

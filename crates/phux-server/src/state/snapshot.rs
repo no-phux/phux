@@ -27,7 +27,7 @@ impl ServerState {
 
         let attached_counts: HashMap<SessionId, u16> = {
             let mut counts: HashMap<SessionId, u16> = HashMap::new();
-            for c in self.attached.values() {
+            for c in self.clients.attached.values() {
                 *counts.entry(c.session).or_insert(0) = counts
                     .get(&c.session)
                     .copied()
@@ -38,6 +38,7 @@ impl ServerState {
         };
 
         let session_pairs: Vec<(SessionId, Session)> = self
+            .sessions
             .registry
             .sessions()
             .map(|(id, s)| (id, s.clone()))
@@ -65,7 +66,7 @@ impl ServerState {
             );
 
             for (index, wid) in session.windows.iter().enumerate() {
-                let Some(window) = self.registry.window(*wid).cloned() else {
+                let Some(window) = self.sessions.registry.window(*wid).cloned() else {
                     continue;
                 };
                 let window_wire = self.intern_window_wire(*wid);
@@ -82,7 +83,7 @@ impl ServerState {
                 );
 
                 for pid in &window.panes {
-                    let Some(terminal) = self.registry.terminal(*pid).cloned() else {
+                    let Some(terminal) = self.sessions.registry.terminal(*pid).cloned() else {
                         continue;
                     };
                     let terminal_wire = self.intern_terminal_wire(*pid);
@@ -102,9 +103,9 @@ impl ServerState {
             }
         }
 
-        let session = self.registry.session(focus_session)?;
+        let session = self.sessions.registry.session(focus_session)?;
         let focused_window = session.active?;
-        let focused_pane = self.registry.window(focused_window)?.active?;
+        let focused_pane = self.sessions.registry.window(focused_window)?.active?;
 
         let focused_session_wire = self.idspace.intern_session(focus_session);
         let focused_window_wire = self.intern_window_wire(focused_window);
@@ -125,6 +126,7 @@ impl ServerState {
     #[must_use]
     pub fn attach_snapshot_panes(&mut self, session: SessionId) -> Vec<AttachSnapshotPane> {
         let window_ids = self
+            .sessions
             .registry
             .session(session)
             .map(|s| s.windows.clone())
@@ -132,6 +134,7 @@ impl ServerState {
         let mut panes = Vec::new();
         for wid in window_ids {
             let window_panes = self
+                .sessions
                 .registry
                 .window(wid)
                 .map(|w| w.panes.clone())

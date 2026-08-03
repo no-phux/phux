@@ -1450,7 +1450,7 @@ mod tests {
 
         // Sanity: starts at 80x24 (default core::Pane::dims).
         let before = state
-            .with(|s| s.registry.terminal(pid).map(|p| p.dims))
+            .with(|s| s.registry().terminal(pid).map(|p| p.dims))
             .expect("pane exists");
         assert_eq!(before, (80, 24));
 
@@ -1458,12 +1458,12 @@ mod tests {
         handle_viewport_resize(&state, client_id, &viewport);
 
         let after = state
-            .with(|s| s.registry.terminal(pid).map(|p| p.dims))
+            .with(|s| s.registry().terminal(pid).map(|p| p.dims))
             .expect("pane exists");
         assert_eq!(after, (132, 50));
 
         // Sanity: the session linkage didn't get clobbered.
-        let attached_session = state.with(|s| s.attached.get(&client_id).map(|c| c.session));
+        let attached_session = state.with(|s| s.attached().get(&client_id).map(|c| c.session));
         assert_eq!(attached_session, Some(sid));
     }
 
@@ -1609,15 +1609,15 @@ mod tests {
                 // `seed_session` made one pane already; we want N total.
                 let mut terminal_ids: Vec<CoreTerminalId> = Vec::with_capacity(N);
                 state.with_mut(|s| {
-                    let session = s.registry.session(sid).cloned().expect("session");
+                    let session = s.registry().session(sid).cloned().expect("session");
                     let window = s
-                        .registry
+                        .registry()
                         .window(session.windows[0])
                         .cloned()
                         .expect("window");
                     terminal_ids.push(window.panes[0]);
                     for _ in 1..N {
-                        let pid = s.registry.new_terminal(wid).expect("new_pane");
+                        let pid = s.registry_mut().new_terminal(wid).expect("new_pane");
                         terminal_ids.push(pid);
                     }
                 });
@@ -1921,7 +1921,7 @@ mod tests {
 
                 // And the client is gone from ServerState.
                 assert!(
-                    state.with(|s| !s.attached.contains_key(&client_id)),
+                    state.with(|s| !s.attached().contains_key(&client_id)),
                     "detach helper must remove the client from ServerState",
                 );
             })
@@ -2133,11 +2133,11 @@ mod tests {
         let (_sid, _wid, pid) = state.with_mut(|s| s.seed_session("session"));
         let bogus_client = ClientId(9999);
         let before = state
-            .with(|s| s.registry.terminal(pid).map(|p| p.dims))
+            .with(|s| s.registry().terminal(pid).map(|p| p.dims))
             .expect("pane exists");
         handle_viewport_resize(&state, bogus_client, &ViewportInfo::new(200, 60));
         let after = state
-            .with(|s| s.registry.terminal(pid).map(|p| p.dims))
+            .with(|s| s.registry().terminal(pid).map(|p| p.dims))
             .expect("pane exists");
         assert_eq!(before, after, "no mutation expected for unattached client");
     }

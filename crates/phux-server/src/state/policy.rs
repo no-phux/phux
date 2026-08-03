@@ -18,7 +18,7 @@ impl ServerState {
         client_id: ClientId,
         identity: phux_protocol::policy::PeerIdentity,
     ) {
-        self.peer_identities.insert(client_id, identity);
+        self.clients.set_peer_identity(client_id, identity);
     }
 
     /// Look up a peer identity by client id.
@@ -27,11 +27,11 @@ impl ServerState {
         &self,
         client_id: ClientId,
     ) -> Option<&phux_protocol::policy::PeerIdentity> {
-        self.peer_identities.get(&client_id)
+        self.clients.peer_identity(client_id)
     }
 
     /// Remove a peer identity when a client disconnects.
     pub fn remove_peer_identity(&mut self, client_id: ClientId) {
-        self.peer_identities.remove(&client_id);
+        self.clients.remove_peer_identity(client_id);
     }
 }

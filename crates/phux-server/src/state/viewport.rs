@@ -23,10 +23,18 @@ impl ServerState {
         client: ClientId,
         viewport: phux_protocol::wire::frame::ViewportInfo,
     ) {
-        if let Some(c) = self.attached.get_mut(&client) {
-            self.viewport_clock += 1;
+        // Direct field access, not an accessor: `clients` and
+        // `lifecycle` are disjoint fields, so the borrow checker splits
+        // them. A `&mut self` accessor for the clock would borrow all of
+        // `ServerState` and this would stop compiling.
+        //
+        // The stamp must tick inside the `if let`, not above it: an
+        // announcement from an unattached client is a no-op and must not
+        // burn a sequence number.
+        if let Some(c) = self.clients.attached.get_mut(&client) {
+            self.lifecycle.viewport_clock += 1;
             c.viewport = Some(viewport);
-            c.viewport_seq = self.viewport_clock;
+            c.viewport_seq = self.lifecycle.viewport_clock;
         }
     }
 
@@ -59,7 +67,7 @@ impl ServerState {
                 let viewports = self
                     .subscribers_for_terminal(terminal)
                     .iter()
-                    .filter_map(|cid| self.attached.get(cid).and_then(|c| c.viewport))
+                    .filter_map(|cid| self.clients.attached.get(cid).and_then(|c| c.viewport))
                     .filter(|v| v.cols > 0 && v.rows > 0);
                 let mut acc: Option<(u16, u16)> = None;
                 for v in viewports {
@@ -94,7 +102,7 @@ impl ServerState {
     pub fn resolve_terminal_cell_px(&self, terminal: TerminalId) -> Option<(u16, u16)> {
         self.subscribers_for_terminal(terminal)
             .iter()
-            .filter_map(|cid| self.attached.get(cid))
+            .filter_map(|cid| self.clients.attached.get(cid))
             .filter_map(|c| Some((c.viewport_seq, viewport_cell_px(c.viewport.as_ref()?)?)))
             .max_by_key(|&(seq, _)| seq)
             .map(|(_, cell)| cell)

@@ -21,17 +21,17 @@ impl ServerState {
     /// interning, and per-Terminal L3 metadata).
     pub fn reap_terminal(&mut self, pane: TerminalId) -> bool {
         // Resolve the parent window before the registry drops the pane.
-        let window_id = self.registry.terminal(pane).map(|t| t.window);
-        if self.registry.remove_terminal(pane).is_some() {
+        let window_id = self.sessions.registry.terminal(pane).map(|t| t.window);
+        if self.sessions.registry.remove_terminal(pane).is_some() {
             self.forget_terminal_bookkeeping(pane);
         }
         let Some(window_id) = window_id else {
-            return self.registry.session_count() == 0;
+            return self.sessions.registry.session_count() == 0;
         };
 
         self.reap_window_if_empty(window_id);
 
-        self.registry.session_count() == 0
+        self.sessions.registry.session_count() == 0
     }
 
     /// Cascade the `window → session` half of [`Self::reap_terminal`]:
@@ -42,20 +42,22 @@ impl ServerState {
     /// pane dying.
     pub fn reap_window_if_empty(&mut self, window_id: WindowId) {
         let window_empty = self
+            .sessions
             .registry
             .window(window_id)
             .is_some_and(|w| w.panes.is_empty());
         if window_empty {
-            let session_id = self.registry.window(window_id).map(|w| w.session);
-            if self.registry.remove_window(window_id).is_some() {
+            let session_id = self.sessions.registry.window(window_id).map(|w| w.session);
+            if self.sessions.registry.remove_window(window_id).is_some() {
                 self.forget_window_bookkeeping(window_id);
             }
             if let Some(session_id) = session_id {
                 let session_empty = self
+                    .sessions
                     .registry
                     .session(session_id)
                     .is_some_and(|s| s.windows.is_empty());
-                if session_empty && self.registry.remove_session(session_id).is_some() {
+                if session_empty && self.sessions.registry.remove_session(session_id).is_some() {
                     self.forget_session_bookkeeping(session_id);
                 }
             }
@@ -68,23 +70,13 @@ impl ServerState {
     /// exited by the time we reap, but a still-live token is cleanly
     /// resolved by the cancel) and retires the wire id without reuse.
     fn forget_terminal_bookkeeping(&mut self, pane: TerminalId) {
-        self.terminals.remove(&pane);
-        if let Some(token) = self.terminal_tokens.remove(&pane) {
-            token.cancel();
-        }
-        self.terminal_subscribers.remove(&pane);
-        // Cancel the pane's ATTACH_TERMINAL pumps (phux-v45.7): the
-        // broadcast channel is closing anyway, but the cancel keeps the
-        // token map bounded and the teardown prompt.
-        self.attach_terminal_pumps.retain(|(_, terminal), token| {
-            if *terminal == pane {
-                token.cancel();
-                false
-            } else {
-                true
-            }
-        });
-        self.agent_asked.clear_terminal(pane);
+        // Handle, actor token, subscribers, and the pane's ATTACH_TERMINAL
+        // pumps (phux-v45.7) all go in one step.
+        self.terminal_table.forget_terminal(pane);
+        // The asked-detector is keyed by core pane id, so it clears before
+        // the wire id is retired; the arbiter half is keyed by wire id and
+        // clears after.
+        self.agent.clear_asked(pane);
         // The retired wire id is the key the per-Terminal metadata scope and
         // the agent-record arbiter are filed under, so `retire_terminal`
         // hands it back rather than dropping it.
@@ -93,7 +85,7 @@ impl ServerState {
             // The record died with the per-Terminal metadata scope; the
             // arbiter's bookkeeping about who owned it must not outlive it,
             // or a recycled wire id would inherit a stale declaration.
-            self.agent_records.forget(&wire);
+            self.agent.forget_record(&wire);
         }
     }
 
@@ -102,15 +94,14 @@ impl ServerState {
         self.idspace.retire_window(window);
         // Drop the last-cwd-per-window ledger entry (phux-nyx) so a reused
         // window id can never inherit a dead window's directory.
-        self.window_last_cwd.remove(&window);
+        self.sessions.forget_window(window);
     }
 
     /// Forget a removed session's wire id and last-touch ordering entry.
     fn forget_session_bookkeeping(&mut self, session: SessionId) {
         self.idspace.forget_session(session);
-        self.session_last_touched.remove(&session);
-        // Drop the frozen session-root entry (phux-nyx) alongside the rest
-        // of the session's bookkeeping.
-        self.session_root.remove(&session);
+        // Drops the last-touch stamp and the frozen session-root entry
+        // (phux-nyx) alongside the rest of the session's bookkeeping.
+        self.sessions.forget_session(session);
     }
 }

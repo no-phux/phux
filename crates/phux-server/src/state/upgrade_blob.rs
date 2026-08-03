@@ -61,7 +61,7 @@ impl ServerState {
     /// re-adopt for it.
     pub async fn build_upgrade_blob(&self, listener_fd: RawFd) -> StateBlob {
         let mut handoffs = HashMap::new();
-        let tids: Vec<TerminalId> = self.terminals.keys().copied().collect();
+        let tids: Vec<TerminalId> = self.terminal_table.terminal_ids();
         for tid in tids {
             if let Some(handoff) = self.request_pane_handoff(tid).await {
                 handoffs.insert(tid, handoff);
@@ -79,7 +79,8 @@ impl ServerState {
         socket_path: PathBuf,
         flags: crate::runtime::RuntimeFlags,
     ) {
-        self.upgrade_ctx = Some((listener_fd, socket_path, flags));
+        self.lifecycle
+            .set_upgrade_context(listener_fd, socket_path, flags);
     }
 
     /// The upgrade context `(listener_fd, socket_path, runtime_flags)`, if
@@ -87,9 +88,7 @@ impl ServerState {
     pub(crate) fn upgrade_context(
         &self,
     ) -> Option<(RawFd, &std::path::Path, crate::runtime::RuntimeFlags)> {
-        self.upgrade_ctx
-            .as_ref()
-            .map(|(fd, path, flags)| (*fd, path.as_path(), flags.clone()))
+        self.lifecycle.upgrade_context()
     }
 
     /// Clone every pane's [`TerminalHandle`] so the runtime can query each
@@ -97,10 +96,7 @@ impl ServerState {
     /// the `Arc<Mutex<_>>` across the await; see
     /// [`Self::assemble_upgrade_blob`]).
     pub(crate) fn upgrade_handles(&self) -> Vec<(TerminalId, TerminalHandle)> {
-        self.terminals
-            .iter()
-            .map(|(tid, handle)| (*tid, handle.clone()))
-            .collect()
+        self.all_terminal_handles()
     }
 
     /// Assemble the [`StateBlob`] from the live tree plus a pre-fetched map of
@@ -115,7 +111,7 @@ impl ServerState {
         let mut windows = Vec::new();
         let mut panes = Vec::new();
 
-        for (sid, session) in self.registry.sessions() {
+        for (sid, session) in self.sessions.registry.sessions() {
             let Some(session_wire) = self.session_wire(sid) else {
                 continue;
             };
@@ -133,13 +129,13 @@ impl ServerState {
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_nanos())
                     .unwrap_or(0),
-                last_touched: self.session_last_touched.get(&sid).copied(),
-                root: self.session_root.get(&sid).cloned(),
+                last_touched: self.sessions.last_touched_at(sid),
+                root: self.sessions.root(sid).cloned(),
             });
 
             for &wid in &session.windows {
                 let (Some(window), Some(window_wire)) =
-                    (self.registry.window(wid), self.window_wire(wid))
+                    (self.sessions.registry.window(wid), self.window_wire(wid))
                 else {
                     continue;
                 };
@@ -153,13 +149,14 @@ impl ServerState {
                         .collect(),
                     active_pane: window.active.and_then(|t| self.terminal_wire(t)),
                     layout: window.layout.as_ref().and_then(|l| self.layout_to_blob(l)),
-                    last_cwd: self.window_last_cwd.get(&wid).cloned(),
+                    last_cwd: self.sessions.last_cwd(wid).cloned(),
                 });
 
                 for &tid in &window.panes {
-                    let (Some(desc), Some(pane_wire)) =
-                        (self.registry.terminal(tid), self.terminal_wire(tid))
-                    else {
+                    let (Some(desc), Some(pane_wire)) = (
+                        self.sessions.registry.terminal(tid),
+                        self.terminal_wire(tid),
+                    ) else {
                         continue;
                     };
                     let handoff = handoffs.get(&tid).cloned();
@@ -181,7 +178,7 @@ impl ServerState {
                 next_session_wire_id: self.idspace.next_session_wire(),
                 next_terminal_wire_id: self.idspace.next_terminal_wire(),
                 next_window_wire_id: self.idspace.next_window_wire(),
-                next_touch_timestamp: self.next_touch_timestamp,
+                next_touch_timestamp: self.sessions.next_touch_timestamp(),
             },
             sessions,
             windows,
@@ -192,7 +189,7 @@ impl ServerState {
     /// Ask one pane's actor for its upgrade handoff. `None` when the pane has
     /// no registered handle or the actor has gone away.
     async fn request_pane_handoff(&self, tid: TerminalId) -> Option<PaneUpgradeHandle> {
-        let handle = self.terminals.get(&tid)?;
+        let handle = self.terminal_handle(tid)?;
         let (reply, rx) = oneshot::channel();
         handle
             .upgrade
@@ -311,19 +308,19 @@ impl ServerState {
         let mut exit_watchers = Vec::with_capacity(blob.panes.len());
 
         for s in &blob.sessions {
-            let core = self.registry.new_session(s.name.clone());
+            let core = self.sessions.registry.new_session(s.name.clone());
             self.idspace
                 .bind_session(core, WireSessionId::new(s.wire_id));
-            if let Some(sess) = self.registry.session_mut(core)
+            if let Some(sess) = self.sessions.registry.session_mut(core)
                 && let Some(created) = unix_nanos_to_systemtime(s.created_at_unix_nanos)
             {
                 sess.created_at = created;
             }
             if let Some(ts) = s.last_touched {
-                self.session_last_touched.insert(core, ts);
+                self.sessions.bind_last_touched(core, ts);
             }
             if let Some(root) = &s.root {
-                self.session_root.insert(core, root.clone());
+                self.sessions.bind_root(core, root.clone());
             }
             session_core.insert(s.wire_id, core);
         }
@@ -336,10 +333,10 @@ impl ServerState {
                         kind: "session",
                         id: w.session_wire_id,
                     })?;
-            let core = self.registry.new_window(session)?;
+            let core = self.sessions.registry.new_window(session)?;
             self.idspace.bind_window(core, WireWindowId::new(w.wire_id));
             if let Some(cwd) = &w.last_cwd {
-                self.window_last_cwd.insert(core, cwd.clone());
+                self.sessions.bind_last_cwd(core, cwd.clone());
             }
             window_core.insert(w.wire_id, core);
         }
@@ -351,8 +348,8 @@ impl ServerState {
                     kind: "window",
                     id: p.window_wire_id,
                 })?;
-            let core = self.registry.new_terminal(window)?;
-            if let Some(desc) = self.registry.terminal_mut(core) {
+            let core = self.sessions.registry.new_terminal(window)?;
+            if let Some(desc) = self.sessions.registry.terminal_mut(core) {
                 desc.dims = (p.cols, p.rows);
                 desc.cwd.clone_from(&p.cwd);
                 desc.title.clone_from(&p.title);
@@ -402,7 +399,7 @@ impl ServerState {
                 .layout
                 .as_ref()
                 .and_then(|l| layout_from_blob(l, &pane_core));
-            if let Some(win) = self.registry.window_mut(core) {
+            if let Some(win) = self.sessions.registry.window_mut(core) {
                 win.panes = panes;
                 win.active = active;
                 win.layout = layout;
@@ -416,7 +413,7 @@ impl ServerState {
             };
             let windows = resolve_ids(&s.window_wire_ids, &window_core);
             let active = s.active_window.and_then(|id| window_core.get(&id).copied());
-            if let Some(sess) = self.registry.session_mut(core) {
+            if let Some(sess) = self.sessions.registry.session_mut(core) {
                 sess.windows = windows;
                 sess.active = active;
             }
@@ -429,7 +426,8 @@ impl ServerState {
             .set_next_terminal_wire(blob.counters.next_terminal_wire_id);
         self.idspace
             .set_next_window_wire(blob.counters.next_window_wire_id);
-        self.next_touch_timestamp = blob.counters.next_touch_timestamp;
+        self.sessions
+            .set_next_touch_timestamp(blob.counters.next_touch_timestamp);
 
         Ok(exit_watchers)
     }
@@ -500,9 +498,12 @@ mod tests {
                 let mut state = ServerState::new();
 
                 // A session/window/pane in the registry.
-                let sid = state.registry.new_session("main".to_owned());
-                let wid = state.registry.new_window(sid).expect("new_window");
-                let tid = state.registry.new_terminal(wid).expect("new_terminal");
+                let sid = state.registry_mut().new_session("main".to_owned());
+                let wid = state.registry_mut().new_window(sid).expect("new_window");
+                let tid = state
+                    .registry_mut()
+                    .new_terminal(wid)
+                    .expect("new_terminal");
                 let session_wire = state.idspace.intern_session(sid).get();
                 let window_wire = state.intern_window_wire(wid).get();
 
@@ -561,9 +562,12 @@ mod tests {
         local
             .run_until(async {
                 let mut state = ServerState::new();
-                let sid = state.registry.new_session("main".to_owned());
-                let wid = state.registry.new_window(sid).expect("new_window");
-                let tid = state.registry.new_terminal(wid).expect("new_terminal");
+                let sid = state.registry_mut().new_session("main".to_owned());
+                let wid = state.registry_mut().new_window(sid).expect("new_window");
+                let tid = state
+                    .registry_mut()
+                    .new_terminal(wid)
+                    .expect("new_terminal");
                 state.idspace.intern_session(sid);
                 state.intern_window_wire(wid);
                 let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");

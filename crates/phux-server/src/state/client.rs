@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use phux_core::ids::{SessionId, TerminalId};
-use phux_protocol::caps::{ClientCapabilities, ColorSupport, Layer, LayerSet};
+use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::ids::TerminalId as WireTerminalId;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -84,11 +86,21 @@ pub enum AttachError {
 }
 
 impl ServerState {
+    /// Borrow the currently attached clients, keyed by server-assigned id.
+    ///
+    /// Read-only by construction: every write to the map goes through
+    /// [`Self::attach`], [`Self::detach`], the capability setters, or
+    /// [`Self::set_client_viewport`], all of which live in `state`.
+    #[must_use]
+    pub const fn attached(&self) -> &HashMap<ClientId, AttachedClient> {
+        &self.clients.attached
+    }
+
     /// Record the layer set advertised by `client_id` in HELLO. Called
     /// from the runtime's HELLO handler. Re-set is idempotent (the
     /// most recent HELLO wins, matching `ColorSupport`).
     pub fn set_client_layers(&mut self, client_id: ClientId, layers: LayerSet) {
-        self.client_layers.insert(client_id, layers);
+        self.clients.set_layers(client_id, layers);
     }
 
     /// Look up the layer set advertised by `client_id`. Defaults to
@@ -96,17 +108,14 @@ impl ServerState {
     /// permissive default matches test scaffolding that skips HELLO.
     #[must_use]
     pub fn client_layers(&self, client_id: ClientId) -> LayerSet {
-        self.client_layers
-            .get(&client_id)
-            .copied()
-            .unwrap_or_else(LayerSet::all)
+        self.clients.layers(client_id)
     }
 
     /// `true` iff `client_id` has L3 in its negotiated `HELLO.layers`.
     /// Gates emission of `METADATA_CHANGED` per SPEC §16.4.
     #[must_use]
     pub fn client_speaks_l3(&self, client_id: ClientId) -> bool {
-        self.client_layers(client_id).contains(Layer::L3)
+        self.clients.speaks_l3(client_id)
     }
 
     /// Allocate the next monotonic [`ClientId`].
@@ -114,9 +123,7 @@ impl ServerState {
     /// Ids are never reused. `0` is intentionally skipped so log entries
     /// printing `client=0` are obviously a placeholder, not a real client.
     pub const fn new_client_id(&mut self) -> ClientId {
-        let id = ClientId(self.next_client_id);
-        self.next_client_id = self.next_client_id.saturating_add(1);
-        id
+        self.clients.new_client_id()
     }
 
     /// Attach a client to the session with `session_name`.
@@ -138,14 +145,14 @@ impl ServerState {
         tx: mpsc::Sender<Outbound>,
         client_caps: ClientCapabilities,
     ) -> Result<SessionId, AttachError> {
-        if self.attached.contains_key(&client_id) {
+        if self.clients.attached.contains_key(&client_id) {
             return Err(AttachError::AlreadyAttached(client_id));
         }
         let session_id = self
             .find_session_by_name(session_name)
             .ok_or_else(|| AttachError::UnknownSession(session_name.to_owned()))?;
 
-        self.attached.insert(
+        self.clients.attached.insert(
             client_id,
             AttachedClient {
                 id: client_id,
@@ -172,23 +179,22 @@ impl ServerState {
         // actor fan out live output to this client (terminal_actor's
         // subscriber loop), so non-focused panes stay live too.
         let session_panes: Vec<TerminalId> = self
+            .sessions
             .registry
             .session(session_id)
             .map(|s| s.windows.clone())
             .unwrap_or_default()
             .into_iter()
             .flat_map(|wid| {
-                self.registry
+                self.sessions
+                    .registry
                     .window(wid)
                     .map(|w| w.panes.clone())
                     .unwrap_or_default()
             })
             .collect();
         for pane in session_panes {
-            let subs = self.terminal_subscribers.entry(pane).or_default();
-            if !subs.contains(&client_id) {
-                subs.push(client_id);
-            }
+            self.terminal_table.subscribe(client_id, pane);
         }
         Ok(session_id)
     }
@@ -217,12 +223,7 @@ impl ServerState {
         client_id: ClientId,
         client_caps: ClientCapabilities,
     ) -> bool {
-        self.attached
-            .get_mut(&client_id)
-            .map(|c| {
-                c.client_caps = client_caps;
-            })
-            .is_some()
+        self.clients.set_capabilities(client_id, client_caps)
     }
 
     /// Compatibility wrapper for tests that still update color only.
@@ -231,12 +232,7 @@ impl ServerState {
         client_id: ClientId,
         color_support: ColorSupport,
     ) -> bool {
-        self.attached
-            .get_mut(&client_id)
-            .map(|c| {
-                c.client_caps = c.client_caps.with_color_support(color_support);
-            })
-            .is_some()
+        self.clients.set_color_support(client_id, color_support)
     }
 
     /// Detach `client_id`, removing it from `attached` and from every
@@ -245,47 +241,35 @@ impl ServerState {
     /// Silent no-op if the client is not currently attached — detach must be
     /// idempotent for the EOF cleanup path in `handle_client`.
     pub fn detach(&mut self, client_id: ClientId) {
-        self.attached.remove(&client_id);
+        self.clients.attached.remove(&client_id);
         // Release any input leases this client held (ADR-0033) so a
-        // disconnect never strands the wheel. The runtime broadcasts the
-        // `Released` events (via `leases_held_by`) before calling detach;
-        // this clears the state regardless of that path running.
-        self.input_leases.retain(|_, holder| *holder != client_id);
-        // Hub-side satellite leases follow the same rule (phux-v45.7): the
-        // runtime relays the detached RELEASE_INPUT before calling detach;
-        // this clears the ledger regardless of that path running.
-        self.satellite_leases
-            .retain(|_, lease| lease.holder != client_id);
+        // disconnect never strands the wheel, local and hub-side satellite
+        // (phux-v45.7) in one step. The runtime broadcasts the `Released`
+        // events (via `leases_held_by`) and relays the detached
+        // RELEASE_INPUT (via `satellite_leases_held_by`) before calling
+        // detach; this clears both ledgers regardless of those paths
+        // running.
+        self.leases.release_all_for(client_id);
         // Cancel every ATTACH_TERMINAL output pump this client owns
-        // (phux-v45.7) so no task keeps streaming into a dead mailbox.
-        self.attach_terminal_pumps.retain(|(owner, _), token| {
-            if *owner == client_id {
-                token.cancel();
-                false
-            } else {
-                true
-            }
-        });
-        for subs in self.terminal_subscribers.values_mut() {
-            subs.retain(|c| *c != client_id);
-        }
-        // Drop entries that became empty so the map doesn't grow unboundedly
-        // across attach/detach churn.
-        self.terminal_subscribers.retain(|_, subs| !subs.is_empty());
+        // (phux-v45.7) so no task keeps streaming into a dead mailbox, then
+        // drop it from every subscriber list (empty lists are GC'd so the
+        // map doesn't grow unboundedly across attach/detach churn).
+        self.terminal_table.cancel_pumps_for_client(client_id);
+        self.terminal_table.drop_client_subscriptions(client_id);
         // Drop any L3 metadata subscriptions this client owned (SPEC §7.4
         // says subscriptions are connection-scoped) plus its cached layer
         // negotiation. Keeps the maps bounded across attach churn.
         self.metadata.drop_client(client_id);
-        if let Some(keys) = self.session_create_results.remove(&client_id) {
+        if let Some(keys) = self.clients.session_create_results.remove(&client_id) {
             for key in keys {
                 let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, &key);
             }
         }
-        self.client_layers.remove(&client_id);
+        self.clients.layers.remove(&client_id);
         // Agent-event subscriptions are connection-scoped (SPEC §7.5),
         // same as L3 metadata subscriptions above. Drop them so the map
         // stays bounded across attach churn.
-        self.event_subscriptions.remove(&client_id);
+        self.clients.event_subscriptions.remove(&client_id);
     }
 
     /// Collect the `(client, outbound mailbox)` pairs to force-detach for the
@@ -308,7 +292,8 @@ impl ServerState {
             },
             None => None,
         };
-        self.attached
+        self.clients
+            .attached
             .values()
             .filter(|c| target_session.is_none_or(|sid| c.session == sid))
             .map(|c| (c.id, c.tx.clone()))
@@ -326,10 +311,6 @@ impl ServerState {
         &self,
         session: SessionId,
     ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
-        self.attached
-            .values()
-            .filter(|client| client.session == session)
-            .map(|client| (client.id, client.tx.clone()))
-            .collect()
+        self.clients.attached_in_session(session)
     }
 }
