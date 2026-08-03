@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use bytes::{Buf, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities, ServerFeatureSet,
+    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities, Layer, LayerSet,
+    ServerFeatureSet,
 };
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, MAX_FRAME_LEN, MoveResult, Scope, SpawnResult,
@@ -230,8 +231,8 @@ fn default_client_name() -> String {
 impl Connection {
     /// Open the UDS at `socket` and negotiate the current L1 protocol.
     ///
-    /// Control-plane callers use the generic phux client identity and default
-    /// L1 capabilities. Consumers with a richer profile (the TUI and recorder)
+    /// Control-plane callers advertise L3 because the shared command surface
+    /// includes metadata requests. Consumers with a narrower or richer profile
     /// use [`Self::connect_with_hello`] instead.
     ///
     /// # Errors
@@ -239,7 +240,7 @@ impl Connection {
     /// Surfaces `AttachError::Io` on any connect failure and handshake errors
     /// when the server refuses or does not acknowledge `HELLO`.
     pub async fn connect(socket: &Path) -> Result<Self, AttachError> {
-        Self::connect_with_hello(socket, default_client_name(), ClientCapabilities::new()).await
+        Self::connect_with_hello(socket, default_client_name(), control_client_caps()).await
     }
 
     /// Open the UDS and negotiate with the supplied client profile.
@@ -290,7 +291,7 @@ impl Connection {
     ///
     /// Returns transport, protocol, or server-refusal errors from negotiation.
     pub async fn connect_quic(dial: &QuicDial) -> Result<Self, AttachError> {
-        Self::connect_quic_with_hello(dial, default_client_name(), ClientCapabilities::new()).await
+        Self::connect_quic_with_hello(dial, default_client_name(), control_client_caps()).await
     }
 
     /// Dial QUIC and negotiate with the supplied client profile.
@@ -336,7 +337,7 @@ impl Connection {
     ///
     /// Returns transport, protocol, or server-refusal errors from negotiation.
     pub async fn connect_ws(dial: &WsDial) -> Result<Self, AttachError> {
-        Self::connect_ws_with_hello(dial, default_client_name(), ClientCapabilities::new()).await
+        Self::connect_ws_with_hello(dial, default_client_name(), control_client_caps()).await
     }
 
     /// Dial WebSocket and negotiate with the supplied client profile.
@@ -406,7 +407,7 @@ impl Connection {
     ///
     /// Returns transport, protocol, or server-refusal errors from negotiation.
     pub async fn connect_dial(dial: &Dial) -> Result<Self, AttachError> {
-        Self::connect_dial_with_hello(dial, default_client_name(), ClientCapabilities::new()).await
+        Self::connect_dial_with_hello(dial, default_client_name(), control_client_caps()).await
     }
 
     /// Connect over `dial` and negotiate with the supplied client profile.
@@ -1208,6 +1209,10 @@ fn decode_buffered(
     Ok(Some(frame))
 }
 
+const fn control_client_caps() -> ClientCapabilities {
+    ClientCapabilities::new().with_layers(LayerSet::with(&[Layer::L3]))
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
@@ -1278,6 +1283,7 @@ mod tests {
     }
 
     #[test]
+
     fn decode_buffered_holds_partial_frame() {
         // A frame split across reads must not decode early: the prefix says
         // more bytes are coming, so decode_buffered returns None and retains

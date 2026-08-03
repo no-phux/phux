@@ -417,8 +417,8 @@ mod tests {
         assert!(client_name.starts_with("phux-client/"));
         assert_eq!(
             client_caps.layers,
-            phux_protocol::caps::LayerSet::new(),
-            "control commands advertise only the default L1 profile"
+            phux_protocol::caps::LayerSet::with(&[phux_protocol::caps::Layer::L3]),
+            "control commands advertise the metadata tier used by the shared connection API"
         );
         assert!(
             matches!(
