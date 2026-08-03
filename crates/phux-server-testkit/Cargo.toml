@@ -1,0 +1,53 @@
+[package]
+name = "phux-server-testkit"
+description = "Shared scaffolding for phux-server's wire integration tests: server/PTY fixtures, fault injection, screen assertions, and tracing capture. Dev-only; never a runtime dependency."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# This crate exists for BUILD TIME, not for tidiness.
+#
+# It was `crates/phux-server/tests/common/`, pulled into each integration
+# binary with `mod common;`. Cargo compiles every `tests/*.rs` as its own
+# crate, so those 2,203 lines were compiled from scratch once per binary —
+# 46 times. Each phux-server test binary measured ~19s of CPU, and ~86% of
+# what it compiled was this shared module rather than the test itself.
+#
+# As a real crate it compiles ONCE and the test binaries link the rlib.
+# Measured on the extraction commit: a forced rebuild of every phux-server
+# test binary went from 1015s of CPU across 65 units to 88s across 62.
+
+[dependencies]
+phux-protocol.workspace = true
+# The helpers drive the server through its PUBLIC `ServerRuntime` surface
+# only — never its internals. That invariant is what let this move out of
+# `tests/` at all, and it is what keeps the tests honest: a regression that
+# only shows up over the wire still shows up here.
+phux-server.workspace = true
+# The relay fixture runs the production `RelayRuntime` between a real server
+# and a consumer. One-directional by ADR-0051 invariant 4: phux-relay must
+# never depend on phux-server, so the dependency points this way.
+phux-relay.workspace = true
+# `CwdInheritance` on the server-builder fixture.
+phux-config.workspace = true
+bytes.workspace = true
+# `ScreenError`'s derive; its `#[from]` is what makes the `?` conversions in
+# screen.rs compile.
+thiserror.workspace = true
+libghostty-vt.workspace = true
+portable-pty.workspace = true
+tempfile.workspace = true
+# `test-util` for the virtual-time helpers (`tokio::time::pause`/`advance`)
+# the scheduler fixtures hand to their callers.
+tokio = { workspace = true, features = ["test-util"] }
+tracing.workspace = true
+# The tracing-capture fixture installs a subscriber and asserts on emitted
+# spans/events.
+tracing-subscriber.workspace = true

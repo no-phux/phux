@@ -31,8 +31,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
@@ -43,7 +41,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -194,7 +192,7 @@ fn subscribed_client_receives_asked_event_from_ask_title() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")
@@ -255,7 +253,7 @@ fn report_asked_command_emits_asked_event() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")
@@ -305,7 +303,7 @@ fn report_asked_rejects_empty_question() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")

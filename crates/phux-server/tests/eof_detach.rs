@@ -30,8 +30,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
@@ -42,7 +40,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -186,7 +184,7 @@ fn pty_eof_drives_terminal_closed_to_attached_client() {
         // server already exited.
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")

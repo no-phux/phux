@@ -14,8 +14,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT};
@@ -23,7 +21,7 @@ use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -140,6 +138,6 @@ fn live_output_is_delivered_exactly_once() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        let _ = timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle).await;
+        let _ = timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle).await;
     });
 }

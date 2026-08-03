@@ -24,13 +24,13 @@
 //!   * [`ClientHandle::detach`] / [`ClientHandle::reattach`] — drop the
 //!     stream / open a fresh one against the same session.
 //!
-//! Everything is built on the existing [`crate::common`] helpers
+//! Everything is built on the existing [`crate`] helpers
 //! (`spawn_server*`, `wait_for_socket`, `recv_typed`, `send_frame`) so a
 //! regression that only shows over the wire still shows here.
 //!
 //! `!Send` note: the inner `Screen` owns a `!Send` libghostty `Terminal`
 //! and the server runs on a `LocalSet`. Drive the builder from inside
-//! [`crate::common::run_local`].
+//! [`crate::run_local`].
 
 #![allow(
     clippy::future_not_send,
@@ -62,7 +62,7 @@ use super::{
 };
 use phux_server::ServerError;
 
-/// Default oracle viewport. Matches [`attach_by_name`] (80x24) so the
+/// Default oracle viewport. Matches [`crate::attach_by_name`] (80x24) so the
 /// `Screen` dimensions line up with the `ATTACH` the harness sends.
 pub const DEFAULT_COLS: u16 = 80;
 /// See [`DEFAULT_COLS`].
@@ -149,7 +149,7 @@ impl E2eBuilder {
     /// Spin the server, attach the requested clients, run `body`, then
     /// drive a clean shutdown and assert the socket was unlinked.
     ///
-    /// MUST be called from inside [`crate::common::run_local`] (the server
+    /// MUST be called from inside [`crate::run_local`] (the server
     /// + oracle are `!Send`).
     ///
     /// # Panics

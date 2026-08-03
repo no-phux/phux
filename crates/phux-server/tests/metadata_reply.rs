@@ -29,13 +29,11 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{FrameKind, Scope, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE};
 use tempfile::TempDir;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, recv_typed, run_local, send_frame, spawn_server, wait_for_socket,
 };
 

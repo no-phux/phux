@@ -25,8 +25,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -34,7 +32,7 @@ use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };

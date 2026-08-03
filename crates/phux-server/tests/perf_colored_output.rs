@@ -8,7 +8,7 @@
 //! settle of a moderately-colored burst. This gate is the dedicated
 //! wall-clock sibling for the WORST-case colored shape: an SGR change
 //! roughly every other column (built by
-//! [`common::builder::colored_burst_command`]), driven against the REAL
+//! [`phux_server_testkit::builder::colored_burst_command`]), driven against the REAL
 //! server over the wire, with the client-applied result captured by the
 //! libghostty [`Screen`] oracle.
 //!
@@ -38,13 +38,11 @@
     reason = "perf gate prints the measured latency for triage on failure"
 )]
 
-mod common;
-
 use std::time::Duration;
 
-use crate::common::builder::{DEFAULT_IDLE_MS, E2eBuilder, colored_burst_command};
-use crate::common::run_local;
-use crate::common::tracing_capture::TracingCapture;
+use phux_server_testkit::builder::{DEFAULT_IDLE_MS, E2eBuilder, colored_burst_command};
+use phux_server_testkit::run_local;
+use phux_server_testkit::tracing_capture::TracingCapture;
 
 /// Burst geometry. 80x40 matches the alloc gate / `perf_latency` shape; a
 /// full-width SGR-per-cell row at this size is ~80 color runs * 40 rows =

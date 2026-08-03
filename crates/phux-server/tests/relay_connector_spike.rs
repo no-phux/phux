@@ -57,8 +57,6 @@
     reason = "current-thread LocalSet runtime (ADR-0003/0014); Rc/RefCell shared state is deliberate"
 )]
 
-mod common;
-
 use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -79,7 +77,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, encode_frame, run_local,
     spawn_server, spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -855,7 +853,7 @@ fn consumers_attach_through_relay_to_dialed_out_server() {
         consumer_a.conn.close(0u32.into(), b"done");
         consumer_b.conn.close(0u32.into(), b"done");
         shutdown.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")
@@ -1009,7 +1007,7 @@ fn relay_admission_is_not_authorization_for_consumers() {
 
         good.conn.close(0u32.into(), b"done");
         shutdown.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")

@@ -218,6 +218,10 @@ tempfile.workspace = true
 # phux-server (ADR-0051 invariant 4 — the relay shares no code with the
 # daemon), so the test dependency points the other way.
 phux-relay.workspace = true
+# Integration-test scaffolding, formerly `tests/common/`. Cargo compiles each
+# `tests/*.rs` as its own crate, so that module was rebuilt once per test
+# binary (46 times, ~86% of each binary's compile). As an rlib it is built once.
+phux-server-testkit.workspace = true
 # The WebTransport tests dial the listener with wtransport's native client;
 # `dangerous-configuration` unlocks `with_no_cert_validation` so the test
 # client trusts the throwaway self-signed leaf (the TLS handshake and full

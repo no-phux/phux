@@ -3,8 +3,6 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -18,7 +16,7 @@ use phux_server::{ServerConfig, ServerRuntime};
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 
-use common::relay::RelayHarness;
+use phux_server_testkit::relay::RelayHarness;
 const ROUTE: &str = "connector-test";
 const PING_NONCE: u64 = 0xC011_EC70;
 const TUNNEL_TOKEN: [u8; 32] = [0x11; 32];
@@ -132,7 +130,7 @@ fn connector_bridges_consumers_rejects_bad_auth_and_redials() {
     unsafe { std::env::set_var("PHUX_WS_TOKENS", &consumer_tokens) };
 
     let socket_path: PathBuf = dir.path().join("phux.sock");
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let initial_config = relay_config(
             dir.path(),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),

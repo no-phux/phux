@@ -31,15 +31,13 @@
     reason = "perf gate prints the measured latency for triage on failure"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use portable_pty::CommandBuilder;
 
-use crate::common::builder::{DEFAULT_IDLE_MS, E2eBuilder};
-use crate::common::run_local;
-use crate::common::tracing_capture::TracingCapture;
+use phux_server_testkit::builder::{DEFAULT_IDLE_MS, E2eBuilder};
+use phux_server_testkit::run_local;
+use phux_server_testkit::tracing_capture::TracingCapture;
 
 /// Time-to-settle ceiling for a single heavy-output burst. Measured on
 /// this machine (M-series, nix devshell) at ~330-360 ms end-to-end (first

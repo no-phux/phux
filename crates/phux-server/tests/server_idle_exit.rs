@@ -29,8 +29,7 @@ use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
-mod common;
-use crate::common::{SOCKET_CONNECT_DEADLINE, run_local, wait_for_socket};
+use phux_server_testkit::{SOCKET_CONNECT_DEADLINE, run_local, wait_for_socket};
 
 /// The idle interval every server in this file is configured with.
 ///

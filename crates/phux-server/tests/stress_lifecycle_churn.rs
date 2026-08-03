@@ -24,16 +24,14 @@
 #![allow(clippy::panic, reason = "tests")]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
-mod common;
-
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use portable_pty::CommandBuilder;
 use tokio::time::timeout;
 
-use crate::common::builder::E2eBuilder;
-use crate::common::{
+use phux_server_testkit::builder::E2eBuilder;
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, run_local, send_frame, tracing_capture::TracingCapture,
     try_connect_socket, try_recv_typed,
 };

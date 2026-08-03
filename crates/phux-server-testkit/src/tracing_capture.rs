@@ -4,7 +4,7 @@
 //! A failing repro is only useful if you can see what the server was doing
 //! when it broke. This module installs a process-local `tracing`
 //! subscriber whose `fmt` layer writes into a shared in-memory buffer, and
-//! returns a [`CaptureGuard`]. If the guard is dropped during a panic
+//! returns a [`TracingCapture`]. If the guard is dropped during a panic
 //! (the normal way a `#[test]` fails an assertion), it dumps the captured
 //! log — plus an optional last-screen snapshot — to stderr AND to a
 //! `/tmp/phux-repro-*.log` file, so the failing run is immediately

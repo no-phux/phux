@@ -1,4 +1,4 @@
-//! Demonstrates the `common::screen::Screen` helper end-to-end.
+//! Demonstrates the `phux_server_testkit::screen::Screen` helper end-to-end.
 //!
 //! Companion to `input_dispatch.rs` (which counts `b'a'` bytes in the
 //! emitted `TERMINAL_OUTPUT` stream). This test does the same wire dance —
@@ -20,8 +20,6 @@
 // the integration tests run on a `LocalSet` so non-Send futures are fine.
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
-mod common;
-
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
@@ -31,8 +29,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::screen::Screen;
-use crate::common::{
+use phux_server_testkit::screen::Screen;
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -156,7 +154,7 @@ fn screen_helper_observes_pty_echo_through_wire() {
         // Teardown.
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server didn't shut down")
             .expect("server join")
@@ -164,12 +162,15 @@ fn screen_helper_observes_pty_echo_through_wire() {
     });
 }
 
-/// Unit tests for the `common::screen::Screen` oracle itself. They live here
-/// (one binary) rather than inside `tests/common/screen.rs`, where a
-/// `#[cfg(test)] mod tests` would compile and re-run in every integration
-/// binary that declares `mod common`.
+/// Unit tests for the `phux_server_testkit::screen::Screen` oracle itself.
+///
+/// They live here for historical reasons: the oracle used to be
+/// `tests/common/screen.rs`, where a `#[cfg(test)] mod tests` would have
+/// compiled and re-run inside every integration binary that declared
+/// `mod common`. Now that the helpers are their own crate that no longer
+/// applies — these could move into `phux-server-testkit` and compile once.
 mod screen_oracle_tests {
-    use super::common::screen::Screen;
+    use phux_server_testkit::screen::Screen;
 
     #[test]
     fn write_ascii_then_read_row_zero() {

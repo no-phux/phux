@@ -79,8 +79,6 @@
     reason = "test code"
 )]
 
-mod common;
-
 use std::time::{Duration, Instant};
 
 use phux_protocol::ids::TerminalId;
@@ -93,7 +91,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -315,7 +313,7 @@ fn concurrent_attach_l2_identical_state() {
         // ============================================================
 
         // No wall-clock ceiling here: per the repo's timing philosophy
-        // (see common/mod.rs on WIRE_RECV_TIMEOUT), latency gates live in
+        // (see phux_server_testkit on WIRE_RECV_TIMEOUT), latency gates live in
         // the perf lane; a hard 200ms assert on a loaded runner flaked as
         // phux-br1f. Hang detection is recv_typed's own timeout. The
         // measured latencies still print below for eyeballing.

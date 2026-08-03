@@ -35,8 +35,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use phux_protocol::wire::frame::{
     AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
     ViewportInfo,
@@ -46,7 +44,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -157,7 +155,7 @@ fn attach_resizes_seed_pty_to_client_viewport() {
         // shutdown_tx + JoinHandle cancellation cascade is what kills it.
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")

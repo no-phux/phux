@@ -36,7 +36,7 @@ use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
 use phux_server::grid::SnapshotSynthesizer;
 
 /// Allocate a fresh `Terminal` with a small scrollback budget — matches
-/// the existing `tests/common/screen.rs` shape so behaviour is
+/// the existing `phux_server_testkit::screen` shape so behaviour is
 /// representative.
 fn fresh(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
     GhosttyTerminal::new(TerminalOptions {

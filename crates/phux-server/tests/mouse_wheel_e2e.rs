@@ -20,8 +20,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::time::Duration;
 
 use phux_protocol::input::key::ModSet;
@@ -31,7 +29,7 @@ use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, try_recv_typed, wait_for_socket,
 };
@@ -114,6 +112,6 @@ fn wheel_input_mouse_reaches_a_mouse_tracking_pane() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        let _ = timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle).await;
+        let _ = timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle).await;
     });
 }

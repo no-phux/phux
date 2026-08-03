@@ -20,14 +20,12 @@
 #![allow(clippy::panic, reason = "tests")]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
-mod common;
-
 use phux_protocol::wire::frame::ViewportInfo;
 use portable_pty::CommandBuilder;
 
-use crate::common::builder::E2eBuilder;
-use crate::common::run_local;
-use crate::common::tracing_capture::TracingCapture;
+use phux_server_testkit::builder::E2eBuilder;
+use phux_server_testkit::run_local;
+use phux_server_testkit::tracing_capture::TracingCapture;
 
 /// Rapid attach→observe→detach churn must not panic, leak client slots, or
 /// kill the pane. A survivor (anchor) client sees correct state at the end.

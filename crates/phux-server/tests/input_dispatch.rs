@@ -9,8 +9,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
@@ -20,7 +18,7 @@ use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -167,7 +165,7 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
         // Clean teardown.
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")

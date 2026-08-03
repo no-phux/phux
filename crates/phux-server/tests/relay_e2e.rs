@@ -23,8 +23,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -39,7 +37,7 @@ use phux_relay::{AUTH_FAILED_CODE, RelayConfig, RelayRuntime};
 use tempfile::TempDir;
 use tokio::time::{sleep, timeout};
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, encode_frame, run_local,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -389,7 +387,7 @@ fn hello_attach_echo_through_relay_to_real_server() {
         // and connector tasks drop with the runtime.
         consumer.conn.close(0u32.into(), b"done");
         shutdown.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")

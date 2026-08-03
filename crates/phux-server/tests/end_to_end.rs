@@ -4,8 +4,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::time::Duration;
 
 use phux_protocol::PROTOCOL_VERSION;
@@ -21,7 +19,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, spawn_server,
     wait_for_socket,
 };
@@ -29,8 +27,8 @@ use crate::common::{
 /// Bounded join: every server task must terminate within this window
 /// once the shutdown signal has been sent. Aliases the shared constant so
 /// this file cannot drift back to a hand-picked number (phux-br1f) — see
-/// `common::SERVER_JOIN_DEADLINE` for why the value is not load-bearing.
-const SERVER_JOIN_DEADLINE: Duration = common::SERVER_JOIN_DEADLINE;
+/// `phux_server_testkit::SERVER_JOIN_DEADLINE` for why the value is not load-bearing.
+const SERVER_JOIN_DEADLINE: Duration = phux_server_testkit::SERVER_JOIN_DEADLINE;
 
 /// Build the canonical HELLO payload for these tests. Mirrors the
 /// `phux-client::attach::driver::handshake` shape: `TrueColor` + all

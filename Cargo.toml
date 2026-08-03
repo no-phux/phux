@@ -49,6 +49,9 @@ phux-dial = { path = "crates/phux-dial" }
 phux-relay = { path = "crates/phux-relay" }
 phux-plugin = { path = "crates/phux-plugin" }
 phux-mcp = { path = "crates/phux-mcp" }
+# Dev-only: phux-server's integration-test scaffolding, extracted from
+# `tests/common/` so it compiles once instead of once per test binary.
+phux-server-testkit = { path = "crates/phux-server-testkit" }
 portable-pty-adopt = { path = "crates/portable-pty-adopt" }
 
 # External.

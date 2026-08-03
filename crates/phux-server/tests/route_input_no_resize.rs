@@ -34,8 +34,6 @@
     reason = "test narrative uses bare wire-frame names (ROUTE_INPUT, GET_SCREEN, …)"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use phux_protocol::input::InputEvent;
@@ -49,8 +47,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::tracing_capture::TracingCapture;
-use crate::common::{
+use phux_server_testkit::tracing_capture::TracingCapture;
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };

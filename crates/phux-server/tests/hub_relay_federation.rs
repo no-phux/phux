@@ -52,12 +52,9 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use common::{encode_frame, recv_typed, send_frame, wait_for_socket};
 use futures_util::{SinkExt, StreamExt};
 use phux_config::SatelliteConfigEntry;
 use phux_protocol::PROTOCOL_VERSION;
@@ -67,13 +64,14 @@ use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError, SpawnResult,
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
+use phux_server_testkit::{encode_frame, recv_typed, send_frame, wait_for_socket};
 use tempfile::TempDir;
 use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 
-/// Generous per-step deadline, mirroring `common::WIRE_RECV_TIMEOUT`'s
+/// Generous per-step deadline, mirroring `phux_server_testkit::WIRE_RECV_TIMEOUT`'s
 /// rationale (the hub link dials with backoff under full-parallel nextest).
 const STEP_DEADLINE: Duration = Duration::from_secs(15);
 
@@ -298,7 +296,7 @@ async fn get_screen_until_ok(hub: &mut UnixStream, sat_pane: u32) -> CommandResu
     reason = "one linear federation scenario: boot both servers, relay a command, prove re-tagging, then observe teardown; splitting would re-boot the topology per step"
 )]
 fn command_round_trip_and_stream_retagging() {
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
         let ws_port = free_port();
         let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
@@ -526,7 +524,7 @@ async fn spawn_via_stream(
     reason = "one linear spawn-routing scenario: boot the topology once, spawn on the satellite, prove the returned id routes, then the typed refusals"
 )]
 fn satellite_targeted_spawn_round_trips_and_routes() {
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
         let ws_port = free_port();
         let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
@@ -636,9 +634,10 @@ fn satellite_targeted_spawn_round_trips_and_routes() {
 
 #[test]
 fn non_hub_server_refuses_satellite_spawn() {
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let (shutdown, task) = common::spawn_server(tmp.path().join("plain.sock"), Some("s"));
+        let (shutdown, task) =
+            phux_server_testkit::spawn_server(tmp.path().join("plain.sock"), Some("s"));
         let mut plain = wait_for_socket(&tmp.path().join("plain.sock"), STEP_DEADLINE).await;
         let result = spawn_via_stream(&mut plain, 1, Some("sat"), None).await;
         assert!(
@@ -659,7 +658,7 @@ fn non_hub_server_refuses_satellite_spawn() {
     reason = "one linear aggregation scenario over a three-server topology; splitting re-boots it per assertion"
 )]
 fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
         let ws_port = free_port();
         let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
@@ -840,7 +839,7 @@ fn ssh_stub_link_relays_commands_end_to_end() {
     // thread exists yet — the runtime is built inside run_local below.
     unsafe { std::env::set_var("PHUX_SSH", &stub) };
 
-    common::run_local(async move {
+    phux_server_testkit::run_local(async move {
         let ws_port = free_port();
         let sat_sock = tmp.path().join("sat.sock");
         let (sat_shutdown, sat_task) = spawn_satellite(sat_sock.clone(), ws_port);
@@ -919,7 +918,7 @@ fn ssh_stub_link_relays_commands_end_to_end() {
 
 #[test]
 fn down_satellite_fails_fast_with_typed_error() {
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
         // A registry entry pointing at a port nothing listens on: the
         // link supervisor dials and backs off forever.
@@ -1091,7 +1090,7 @@ async fn await_satellite_echo(hub: &mut UnixStream, sat_id: &TerminalId, needle:
     reason = "one linear two-hop attach scenario: boot the topology once, then walk attach -> snapshot -> input echo -> ack -> detach -> re-attach in order; splitting re-boots both servers per step"
 )]
 fn two_hop_attach_snapshot_output_input_ack_and_detach() {
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
         let ws_port = free_port();
         let (sat_shutdown, sat_task) =
@@ -1183,7 +1182,7 @@ fn two_hop_attach_snapshot_output_input_ack_and_detach() {
 
 #[test]
 fn satellite_input_lease_excludes_other_hub_consumers() {
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
         let ws_port = free_port();
         let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
@@ -1299,7 +1298,7 @@ fn satellite_seize_takeover_notifies_evicted_hub_consumer() {
     // notify the evicted hub consumer — the satellite cannot, because every
     // hub consumer shares its link identity, so the lease change reads there
     // as a same-identity re-acquire. Mirrors the local takeover broadcast.
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
         let ws_port = free_port();
         let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
@@ -1415,9 +1414,10 @@ fn acquire_and_release_input_off_hub_are_unsupported_routes() {
     // handle_acquire_input / handle_release_input were dead code — the
     // shared route interception owns that dispatch. This pins the wire
     // behavior their removal must preserve.
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let (shutdown, task) = common::spawn_server(tmp.path().join("plain.sock"), Some("s"));
+        let (shutdown, task) =
+            phux_server_testkit::spawn_server(tmp.path().join("plain.sock"), Some("s"));
         let mut plain = wait_for_socket(&tmp.path().join("plain.sock"), STEP_DEADLINE).await;
         for (request_id, command) in [
             (
@@ -1454,7 +1454,7 @@ fn acquire_and_release_input_off_hub_are_unsupported_routes() {
 
 #[test]
 fn unknown_satellite_host_is_unsupported_route() {
-    common::run_local(async {
+    phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
         // Hub with a registry for "sat" only: host "nowhere" has no route.
         let (hub_shutdown, hub_task) = spawn_hub(
@@ -1478,7 +1478,8 @@ fn unknown_satellite_host_is_unsupported_route() {
 
         // And a plain non-hub server refuses every satellite id the same
         // way — the pre-relay contract is unchanged off-hub.
-        let (shutdown, task) = common::spawn_server(tmp.path().join("plain.sock"), Some("s"));
+        let (shutdown, task) =
+            phux_server_testkit::spawn_server(tmp.path().join("plain.sock"), Some("s"));
         let mut plain = wait_for_socket(&tmp.path().join("plain.sock"), STEP_DEADLINE).await;
         let result = get_screen_via_hub(&mut plain, 2, TerminalId::satellite("sat", 1)).await;
         assert!(

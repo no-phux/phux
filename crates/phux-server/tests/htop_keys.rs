@@ -29,8 +29,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::time::Duration;
 
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
@@ -45,7 +43,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, try_recv_typed, wait_for_socket,
 };
@@ -200,7 +198,7 @@ fn plain_q_press_round_trips_as_legacy_ascii_byte() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")
@@ -287,7 +285,7 @@ fn ctrl_c_round_trips_as_legacy_etx_byte() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        let _ = timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle).await;
+        let _ = timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle).await;
     });
 }
 

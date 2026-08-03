@@ -17,8 +17,6 @@
 #![allow(clippy::doc_markdown, reason = "test narrative uses bare wire names")]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
-mod common;
-
 use phux_protocol::wire::frame::{
     Command, CommandResult, FrameKind, SpawnResult, TYPE_COMMAND_RESULT, TYPE_TERMINAL_SPAWNED,
 };
@@ -26,7 +24,7 @@ use phux_server::DEFAULT_GROUP_ID;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_seed_pty_no_cmd, wait_for_socket,
 };
@@ -177,7 +175,7 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server task join")
@@ -225,7 +223,7 @@ fn kill_last_pane_reaps_session_cleanly() {
         // join confirms a clean exit (no panic in the reap/self-exit path);
         // a hang would trip the timeout.
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down within 5s after kill-last-pane")
             .expect("server task join")

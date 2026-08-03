@@ -27,8 +27,6 @@
     reason = "client_a / client_b are the test's vocabulary"
 )]
 
-mod common;
-
 use phux_protocol::TerminalId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
@@ -39,8 +37,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::screen::Screen;
-use crate::common::{
+use phux_server_testkit::screen::Screen;
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -164,7 +162,7 @@ fn byc_6_5_keystroke_merge_arrival_order_preserved() {
         drop(client_a);
         drop(client_b);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server didn't shut down")
             .expect("server join")

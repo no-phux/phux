@@ -105,7 +105,7 @@ impl Screen {
 
     /// Return every viewport row as a `Vec<String>`. Rows are padded
     /// to the configured width with spaces, then right-trimmed; this
-    /// matches the contract of [`row`].
+    /// matches the contract of [`Screen::row`].
     pub fn rows(&mut self) -> Vec<String> {
         self.rows_internal()
     }

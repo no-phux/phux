@@ -35,8 +35,6 @@
     reason = "test narrative uses bare wire-frame names (COMMAND, GET_STATE, …) for symmetry with sibling tests"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use phux_protocol::ids::{GroupId, InputOperationId, TerminalId};
@@ -51,7 +49,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server, spawn_server_seed_pty_no_cmd, try_recv_typed, wait_for_socket,
 };
@@ -133,7 +131,7 @@ fn apply_input_acks_after_real_pty_write_and_flush() {
             "IFS= read -r line; printf 'APPLIED:%s\\n' \"$line\"; sleep 1",
         ]);
         let (_shutdown_tx, _server) =
-            crate::common::spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
+            phux_server_testkit::spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
         send_frame(&mut stream, &attach_by_name("work")).await;
@@ -1022,7 +1020,7 @@ fn session_create_honors_valid_wire_cwd() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")
@@ -1094,7 +1092,7 @@ fn session_create_invalid_wire_cwd_falls_back_without_failing() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")
@@ -1159,7 +1157,7 @@ fn session_create_unenterable_wire_cwd_falls_back_without_failing() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server did not shut down after the shutdown signal")
             .expect("server join")

@@ -44,14 +44,12 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use phux_protocol::wire::frame::{
     AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_SNAPSHOT, ViewportInfo,
 };
 use tempfile::TempDir;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, recv_typed, run_local, send_frame, spawn_server,
     spawn_server_seed_pty_no_cmd, wait_for_socket,
 };

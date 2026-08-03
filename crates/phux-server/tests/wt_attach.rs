@@ -17,7 +17,7 @@ use std::time::Duration;
 ///
 /// Not load-bearing: the assertions are that ATTACHED and TERMINAL_SNAPSHOT
 /// both arrive and that the snapshot carries a real grid — never how fast.
-/// This file has no `mod common;`, so it cannot borrow the shared
+/// This file does not use `phux_server_testkit`, so it cannot borrow the shared
 /// `WIRE_RECV_TIMEOUT`; the value matches it deliberately. The 5s it replaces
 /// was generous on an idle laptop and a measurement of the scheduler on a
 /// saturated one (phux-br1f). A server that never attaches still fails.

@@ -32,8 +32,6 @@
     reason = "client_a_id vs client_b_id is the whole point of the folded byc_6_3 assertion"
 )]
 
-mod common;
-
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
     FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
@@ -43,8 +41,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::screen::Screen;
-use crate::common::{
+use phux_server_testkit::screen::Screen;
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -313,7 +311,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         // ============================================================
         drop(client_b);
         shutdown_tx.send(()).ok();
-        timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle)
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
             .await
             .expect("server didn't shut down")
             .expect("server join")

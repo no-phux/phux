@@ -28,8 +28,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-mod common;
-
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
@@ -39,7 +37,7 @@ use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_socket,
 };
@@ -202,6 +200,6 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
 
         drop(stream);
         shutdown_tx.send(()).ok();
-        let _ = timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle).await;
+        let _ = timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle).await;
     });
 }

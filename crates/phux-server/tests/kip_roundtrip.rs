@@ -79,8 +79,6 @@
 // kitty-activity forensics on stderr — that reporting is the point.
 #![allow(clippy::print_stderr, reason = "skip markers + KIP forensics")]
 
-mod common;
-
 use std::path::PathBuf;
 
 use phux_protocol::ids::TerminalId;
@@ -93,8 +91,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::common::screen::Screen;
-use crate::common::{
+use phux_server_testkit::screen::Screen;
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd_and_term, try_recv_typed, wait_for_socket,
 };
@@ -477,7 +475,7 @@ where
 
         drop(probe);
         shutdown_tx.send(()).ok();
-        let _ = timeout(crate::common::SERVER_JOIN_DEADLINE, server_handle).await;
+        let _ = timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle).await;
     });
 }
 

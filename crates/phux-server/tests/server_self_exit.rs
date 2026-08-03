@@ -20,8 +20,7 @@ use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
-mod common;
-use crate::common::{
+use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, wait_for_socket,
 };
 
@@ -67,7 +66,7 @@ fn server_self_exits_after_serving_a_client() {
         );
 
         // The pane exits ~0.3s in; the reap then self-exits the server.
-        let run = timeout(crate::common::SERVER_JOIN_DEADLINE, handle)
+        let run = timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, handle)
             .await
             .expect("server did not self-exit within 5s after its only pane died")
             .expect("server task join");

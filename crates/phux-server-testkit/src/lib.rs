@@ -1,36 +1,42 @@
-//! Shared scaffolding for the `phux-byc.6.*` wire integration tests.
+//! Shared scaffolding for phux-server's wire integration tests.
 //!
-//! Each `tests/*.rs` file in this crate compiles to its own integration
-//! binary. Cargo's convention for sharing helper code across binaries is
-//! a `tests/common/mod.rs` that gets pulled in via `mod common;` from
-//! each binary. The module name `common` is special-cased by Cargo:
-//! files under `tests/common/` are NOT compiled as standalone test
-//! binaries (avoiding the "unused dead code" warnings that would
-//! otherwise appear in any binary that doesn't use a given helper).
+//! This was `crates/phux-server/tests/common/`, included with `mod common;`
+//! from each `tests/*.rs`. Cargo compiles every one of those files as its
+//! own crate, so the module was compiled from scratch once per test binary —
+//! 46 times. Each phux-server test binary measured ~19s of CPU, and ~86% of
+//! what it compiled was this shared code rather than the test. As a real
+//! crate it is compiled once and linked as an rlib.
 //!
-//! The helpers here intentionally avoid touching `phux-server`'s
-//! internals — every interaction goes through the public `ServerRuntime`
-//! API plus the wire-frame surface from `phux_protocol`. That keeps the
-//! tests honest: a regression that only shows up over the wire will
-//! show up here, even if `ServerState` unit tests keep passing.
+//! The helpers intentionally avoid touching `phux-server`'s internals —
+//! every interaction goes through the public `ServerRuntime` API plus the
+//! wire-frame surface from `phux_protocol`. That is what made this
+//! extractable, and it is what keeps the tests honest: a regression that
+//! only shows up over the wire will show up here, even if `ServerState`
+//! unit tests keep passing.
 //!
 //! All `recv` paths in these helpers are wrapped in `tokio::time::timeout`
 //! (`WIRE_RECV_TIMEOUT`). A hang is a failure, not a wait-for-Godot.
 
-#![allow(dead_code, reason = "shared helpers; some binaries use a subset")]
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
-#![allow(clippy::missing_panics_doc, reason = "tests")]
-// `unreachable_pub` and `clippy::redundant_pub_crate` are mutually
-// exclusive on this file: `pub(crate)` triggers the latter (module is
-// private, so the restriction is "redundant"), while `pub` triggers
-// the former (no re-export path). The cargo `tests/common/` pattern is
-// non-negotiable — each integration binary `mod common;`s the file in
-// fresh, so `pub` is the only visibility that actually exports helpers
-// to the binaries that need them. Suppress `unreachable_pub` here and
-// keep `pub`.
-#![allow(unreachable_pub, reason = "tests/common shared-helpers pattern")]
+// Test scaffolding: the assertion helpers panic by contract, and a caller
+// that misuses a fixture should fail loudly rather than thread a Result.
+#![allow(clippy::expect_used, reason = "test scaffolding")]
+#![allow(clippy::unwrap_used, reason = "test scaffolding")]
+#![allow(clippy::panic, reason = "test scaffolding")]
+#![allow(clippy::missing_panics_doc, reason = "test scaffolding")]
+// These fixtures were private `tests/common/` types, so the workspace's
+// `missing_debug_implementations` never applied to them; as a real crate's
+// public surface it does. Several wrap foreign guards that are not Debug
+// (`tracing`'s `DefaultGuard`, PTY handles), and no test formats a fixture
+// with `{:?}` — a hand-written Debug per fixture would be pure ceremony.
+#![allow(missing_debug_implementations, reason = "test scaffolding")]
+// Same cause: these are public-API style lints, and this code only became a
+// public API by being extracted. The crate is `publish = false` with exactly
+// one consumer (phux-server's tests), so a rustdoc-listing summary convention
+// and `#[must_use]` on fixture accessors buy nothing here — and reflowing 13
+// doc comments to satisfy them would bury the change this commit is actually
+// making. The prose itself is unchanged from when it lived in tests/common/.
+#![allow(clippy::too_long_first_doc_paragraph, reason = "test scaffolding")]
+#![allow(clippy::must_use_candidate, reason = "test scaffolding")]
 
 pub mod builder;
 pub mod relay;
