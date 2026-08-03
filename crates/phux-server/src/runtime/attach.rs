@@ -159,6 +159,23 @@ pub(crate) const fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
     }
 }
 
+struct OutputPumpStart {
+    published_cut: u64,
+    replay: Vec<(u64, bytes::Bytes)>,
+    live: Option<tokio::sync::broadcast::Receiver<PaneOutput>>,
+}
+
+struct SnapshotGate {
+    terminal_id: TerminalId,
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    wire_terminal_id: phux_protocol::ids::TerminalId,
+    handle: crate::terminal_actor::TerminalHandle,
+    gate: oneshot::Sender<OutputPumpStart>,
+    cut: Option<u64>,
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    native_cursor: Option<crate::native_state::OpaqueHistoryCursor>,
+}
+
 /// Connection-wide retention ceiling for an aggregate ATTACH preflight.
 ///
 /// A session can contain many panes, but the server must hold every pane's
@@ -250,11 +267,38 @@ impl BootstrapStagingBudget {
 pub(crate) async fn publish_native_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     reply: crate::terminal_actor::NativeBootstrapReply,
-) -> Result<u64, ()> {
+) -> Result<(u64, crate::native_state::OpaqueHistoryCursor), ()> {
+    let cut = reply.base_seq;
+    let cursor = reply.publication_cursor;
     for frame in reply.frames {
         out_tx.send(Outbound::Frame(frame)).await.map_err(|_| ())?;
     }
-    Ok(reply.base_seq)
+    Ok((cut, cursor))
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+pub(crate) async fn activate_native_publication(
+    handle: &crate::terminal_actor::TerminalHandle,
+    owner: u64,
+    terminal_id: phux_protocol::ids::TerminalId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    cursor: crate::native_state::OpaqueHistoryCursor,
+) -> Result<crate::terminal_actor::NativePublicationReply, ()> {
+    let (reply, publication) = oneshot::channel();
+    handle
+        .native_publication
+        .send(crate::terminal_actor::NativePublicationRequest {
+            owner,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor,
+            reply,
+        })
+        .await
+        .map_err(|_| ())?;
+    publication.await.map_err(|_| ())?.map_err(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1378,14 +1422,39 @@ pub(crate) async fn handle_spawn_terminal(
         let pump_core_terminal_id = core_terminal_id;
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_native_bootstrap = handle.native_bootstrap.clone();
-        let (bootstrap_gate_tx, bootstrap_gate_rx) = oneshot::channel::<u64>();
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let pump_native_handle = handle.clone();
+        let (bootstrap_gate_tx, bootstrap_gate_rx) = oneshot::channel::<OutputPumpStart>();
         output_pumps.spawn_local(async move {
-            let Ok(mut published_cut) = bootstrap_gate_rx.await else {
+            let Ok(start) = bootstrap_gate_rx.await else {
                 return;
             };
+            let mut published_cut = start.published_cut;
             let mut last_forwarded_seq = published_cut;
             let mut bootstrap_id = initial_bootstrap_id();
             let mut generation_active = true;
+            if let Some(live) = start.live {
+                output_rx = live;
+            }
+            for (seq, bytes) in start.replay {
+                if seq <= published_cut {
+                    continue;
+                }
+                if pump_out_tx
+                    .send(Outbound::Frame(FrameKind::TerminalOutput {
+                        terminal_id: pump_wire_terminal_id.clone(),
+                        stream_id,
+                        bootstrap_id,
+                        seq,
+                        bytes: downsample_for_caps(&bytes, client_caps),
+                    }))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                last_forwarded_seq = seq;
+            }
             loop {
                 match output_rx.recv().await {
                     Ok(PaneOutput::Live { seq, bytes }) => {
@@ -1519,7 +1588,8 @@ pub(crate) async fn handle_spawn_terminal(
                                 pump_connection_token.cancel();
                                 break;
                             };
-                            let Ok(cut) = publish_native_bootstrap(&pump_out_tx, reply).await
+                            let Ok((cut, cursor)) =
+                                publish_native_bootstrap(&pump_out_tx, reply).await
                             else {
                                 pump_state.with_mut(|s| {
                                     s.reap_terminal(pump_core_terminal_id);
@@ -1527,8 +1597,38 @@ pub(crate) async fn handle_spawn_terminal(
                                 pump_connection_token.cancel();
                                 break;
                             };
+                            let Ok(publication) = activate_native_publication(
+                                &pump_native_handle,
+                                client_id.0,
+                                pump_wire_terminal_id.clone(),
+                                stream_id,
+                                bootstrap_id,
+                                cursor,
+                            )
+                            .await
+                            else {
+                                pump_connection_token.cancel();
+                                break;
+                            };
                             published_cut = cut;
                             last_forwarded_seq = cut;
+                            output_rx = publication.live;
+                            for (seq, bytes) in publication.replay {
+                                if pump_out_tx
+                                    .send(Outbound::Frame(FrameKind::TerminalOutput {
+                                        terminal_id: pump_wire_terminal_id.clone(),
+                                        stream_id,
+                                        bootstrap_id,
+                                        seq,
+                                        bytes: downsample_for_caps(&bytes, client_caps),
+                                    }))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                last_forwarded_seq = seq;
+                            }
                             generation_active = true;
                             continue;
                         }
@@ -1632,6 +1732,7 @@ pub(crate) async fn handle_spawn_terminal(
                 return;
             };
             let cut = reply.base_seq;
+            let cursor = reply.publication_cursor;
             if out_tx
                 .send(Outbound::Frame(FrameKind::TerminalSpawned {
                     request_id,
@@ -1653,7 +1754,29 @@ pub(crate) async fn handle_spawn_terminal(
                     return;
                 }
             }
-            let _ = bootstrap_gate_tx.send(cut);
+            let publication = match activate_native_publication(
+                &handle,
+                client_id.0,
+                wire_terminal_id.clone(),
+                stream_id,
+                initial_bootstrap_id(),
+                cursor,
+            )
+            .await
+            {
+                Ok(publication) => publication,
+                Err(()) => {
+                    state.with_mut(|s| {
+                        s.reap_terminal(core_terminal_id);
+                    });
+                    return;
+                }
+            };
+            let _ = bootstrap_gate_tx.send(OutputPumpStart {
+                published_cut: cut,
+                replay: publication.replay,
+                live: Some(publication.live),
+            });
             broadcast_event(state, Some(&wire_terminal_id), &AgentEvent::PaneSpawned);
             return;
         }
@@ -1744,7 +1867,11 @@ pub(crate) async fn handle_spawn_terminal(
                 return;
             }
         }
-        let _ = bootstrap_gate_tx.send(cut);
+        let _ = bootstrap_gate_tx.send(OutputPumpStart {
+            published_cut: cut,
+            replay: Vec::new(),
+            live: None,
+        });
         // phux-y2t: fan a `pane_spawned` agent event to event-stream
         // subscribers (SPEC §7.5). The new pane's wire id rides the
         // `EVENT` envelope; server-wide subscribers and any per-pane
@@ -1989,7 +2116,7 @@ pub(crate) async fn handle_attach(
     // frame 2 = OUTPUT instead of SNAPSHOT. The pump parks on `gate_rx`;
     // the barrier releases every pump only after every pane has queued READY
     // (or a close outcome) and the aggregate ATTACH_READY has been queued.
-    let mut snapshot_gates: Vec<(TerminalId, oneshot::Sender<u64>, Option<u64>)> = Vec::new();
+    let mut snapshot_gates: Vec<SnapshotGate> = Vec::new();
     // A failed replacement is connection-fatal: preserving an older producer
     // would allow output to overtake the terminal ERROR.
     let mut staged_output_pumps = JoinSet::new();
@@ -2155,19 +2282,50 @@ pub(crate) async fn handle_attach(
             let pump_resize = handle.resize.clone();
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             let pump_native_bootstrap = handle.native_bootstrap.clone();
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            let pump_native_handle = handle.clone();
             let pump_state = state.clone();
             let pump_connection_token = connection_token.clone();
             // phux-7w1j: hold this pump's first forward until the pane's
             // snapshot has been sent (the drain loop fires `gate_tx`).
-            let (gate_tx, gate_rx) = oneshot::channel::<u64>();
-            snapshot_gates.push((terminal_id, gate_tx, None));
+            let (gate_tx, gate_rx) = oneshot::channel::<OutputPumpStart>();
+            snapshot_gates.push(SnapshotGate {
+                terminal_id,
+                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                wire_terminal_id: wire_terminal_id.clone(),
+                handle: handle.clone(),
+                gate: gate_tx,
+                cut: None,
+                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                native_cursor: None,
+            });
             staged_output_pumps.spawn_local(async move {
-                let Ok(mut published_cut) = gate_rx.await else {
+                let Ok(start) = gate_rx.await else {
                     return;
                 };
+                let mut published_cut = start.published_cut;
                 let mut last_forwarded_seq = published_cut;
                 let mut bootstrap_id = bootstrap_id;
                 let mut generation_active = true;
+                if let Some(live) = start.live {
+                    output_rx = live;
+                }
+                for (seq, bytes) in start.replay {
+                    if seq <= published_cut {
+                        continue;
+                    }
+                    let frame = FrameKind::TerminalOutput {
+                        terminal_id: pump_wire_terminal_id.clone(),
+                        stream_id,
+                        bootstrap_id,
+                        seq,
+                        bytes: downsample_for_caps(&bytes, pump_client_caps),
+                    };
+                    if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
+                        return;
+                    }
+                    last_forwarded_seq = seq;
+                }
                 loop {
                     match output_rx.recv().await {
                         Ok(PaneOutput::Live { seq, bytes }) => {
@@ -2308,7 +2466,7 @@ pub(crate) async fn handle_attach(
                                     pump_connection_token.cancel();
                                     break;
                                 };
-                                let Ok(cut) =
+                                let Ok((cut, cursor)) =
                                     publish_native_bootstrap(&pump_out_tx, reply).await
                                 else {
                                     crate::runtime::client::detach_and_release_consumer_state(
@@ -2318,8 +2476,41 @@ pub(crate) async fn handle_attach(
                                     pump_connection_token.cancel();
                                     break;
                                 };
+                                let Ok(publication) = activate_native_publication(
+                                    &pump_native_handle,
+                                    client_id.0,
+                                    pump_wire_terminal_id.clone(),
+                                    stream_id,
+                                    bootstrap_id,
+                                    cursor,
+                                )
+                                .await
+                                else {
+                                    pump_connection_token.cancel();
+                                    break;
+                                };
                                 published_cut = cut;
                                 last_forwarded_seq = cut;
+                                output_rx = publication.live;
+                                for (seq, bytes) in publication.replay {
+                                    if pump_out_tx
+                                        .send(Outbound::Frame(FrameKind::TerminalOutput {
+                                            terminal_id: pump_wire_terminal_id.clone(),
+                                            stream_id,
+                                            bootstrap_id,
+                                            seq,
+                                            bytes: downsample_for_caps(
+                                                &bytes,
+                                                pump_client_caps,
+                                            ),
+                                        }))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                    last_forwarded_seq = seq;
+                                }
                                 generation_active = true;
                                 continue;
                             }
@@ -2438,6 +2629,7 @@ pub(crate) async fn handle_attach(
             match reply_rx.await {
                 Ok(Ok(mut reply)) => {
                     let cut = reply.base_seq;
+                    let publication_cursor = reply.publication_cursor;
                     if staging_budget
                         .append_accounted(
                             &mut bootstrap_frames,
@@ -2448,11 +2640,12 @@ pub(crate) async fn handle_attach(
                     {
                         fail_prepublication!("aggregate bootstrap staging budget exceeded");
                     }
-                    if let Some((_, _, gate_cut)) = snapshot_gates
+                    if let Some(gate) = snapshot_gates
                         .iter_mut()
-                        .find(|(tid, _, _)| *tid == terminal_id)
+                        .find(|gate| gate.terminal_id == terminal_id)
                     {
-                        *gate_cut = Some(cut);
+                        gate.cut = Some(cut);
+                        gate.native_cursor = Some(publication_cursor);
                     }
                 }
                 Ok(Err(error)) => {
@@ -2529,11 +2722,11 @@ pub(crate) async fn handle_attach(
         {
             fail_prepublication!("aggregate bootstrap staging budget exceeded");
         }
-        if let Some((_, _, gate_cut)) = snapshot_gates
+        if let Some(gate) = snapshot_gates
             .iter_mut()
-            .find(|(tid, _, _)| *tid == terminal_id)
+            .find(|gate| gate.terminal_id == terminal_id)
         {
-            *gate_cut = Some(cut);
+            gate.cut = Some(cut);
         }
     }
 
@@ -2579,10 +2772,45 @@ pub(crate) async fn handle_attach(
         return;
     }
     let _ = live_gate_tx.send(true);
-    for (_, gate, cut) in snapshot_gates {
-        if let Some(cut) = cut {
-            let _ = gate.send(cut);
+    for gate in snapshot_gates {
+        let Some(cut) = gate.cut else {
+            continue;
+        };
+        let mut start = OutputPumpStart {
+            published_cut: cut,
+            replay: Vec::new(),
+            live: None,
+        };
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        if let Some(cursor) = gate.native_cursor {
+            let (reply, publication) = oneshot::channel();
+            if gate
+                .handle
+                .native_publication
+                .send(crate::terminal_actor::NativePublicationRequest {
+                    owner: client_id.0,
+                    terminal_id: gate.wire_terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    cursor,
+                    reply,
+                })
+                .await
+                .is_err()
+            {
+                crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+                connection_token.cancel();
+                return;
+            }
+            let Ok(Ok(publication)) = publication.await else {
+                crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+                connection_token.cancel();
+                return;
+            };
+            start.replay = publication.replay;
+            start.live = Some(publication.live);
         }
+        let _ = gate.gate.send(start);
     }
 }
 
@@ -3015,12 +3243,14 @@ mod tests {
         crate::terminal_actor::TerminalHandle,
         tokio::sync::mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
         tokio::sync::mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
+        tokio::sync::mpsc::Receiver<crate::terminal_actor::NativePublicationRequest>,
     ) {
         use tokio::sync::{broadcast, mpsc, watch};
 
         let (output, _seed) = broadcast::channel(8);
         let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
         let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
+        let (native_publication, native_publication_rx) = mpsc::channel(8);
         (
             crate::terminal_actor::TerminalHandle {
                 input: mpsc::channel(8).0,
@@ -3028,6 +3258,7 @@ mod tests {
                 input_snapshot: watch::channel(crate::input::InputEncoderSnapshot::default()).1,
                 snapshot: mpsc::channel(8).0,
                 native_bootstrap,
+                native_publication,
                 native_history: mpsc::channel(8).0,
                 native_release: mpsc::channel(8).0,
                 set_default_colors: mpsc::channel(8).0,
@@ -3047,6 +3278,7 @@ mod tests {
             },
             consumer_attach_rx,
             native_bootstrap_rx,
+            native_publication_rx,
         )
     }
 
@@ -3057,6 +3289,9 @@ mod tests {
         >,
         native_bootstrap_rx: &mut tokio::sync::mpsc::Receiver<
             crate::terminal_actor::NativeBootstrapRequest,
+        >,
+        native_publication_rx: &mut tokio::sync::mpsc::Receiver<
+            crate::terminal_actor::NativePublicationRequest,
         >,
         succeed: bool,
     ) {
@@ -3111,8 +3346,21 @@ mod tests {
                 ],
                 retained_bytes: b"opaque".len(),
                 base_seq: 0,
+                publication_cursor: [7; 32],
             }))
             .expect("native success reply");
+        let publication = native_publication_rx
+            .recv()
+            .await
+            .expect("native publication fence");
+        assert_eq!(publication.cursor, [7; 32]);
+        publication
+            .reply
+            .send(Ok(crate::terminal_actor::NativePublicationReply {
+                replay: Vec::new(),
+                live: tokio::sync::broadcast::channel(1).1,
+            }))
+            .expect("native publication reply");
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -3132,8 +3380,12 @@ mod tests {
                 let state = SharedState::new();
                 let (_session, _window, terminal) =
                     state.with_mut(|s| s.seed_session("fresh-failure"));
-                let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) =
-                    native_attach_handle();
+                let (
+                    handle,
+                    mut consumer_attach_rx,
+                    mut native_bootstrap_rx,
+                    mut native_publication_rx,
+                ) = native_attach_handle();
                 state.with_mut(|s| {
                     let _ = s.register_terminal_handle(terminal, handle, CancellationToken::new());
                 });
@@ -3160,8 +3412,12 @@ mod tests {
                     &mut output_pumps,
                     &connection_token,
                 );
-                let actor =
-                    answer_native_attach(&mut consumer_attach_rx, &mut native_bootstrap_rx, false);
+                let actor = answer_native_attach(
+                    &mut consumer_attach_rx,
+                    &mut native_bootstrap_rx,
+                    &mut native_publication_rx,
+                    false,
+                );
                 tokio::join!(attach, actor);
 
                 assert!(matches!(
@@ -3192,8 +3448,12 @@ mod tests {
                 let state = SharedState::new();
                 let (_session, _window, terminal) =
                     state.with_mut(|s| s.seed_session("replacement-failure"));
-                let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) =
-                    native_attach_handle();
+                let (
+                    handle,
+                    mut consumer_attach_rx,
+                    mut native_bootstrap_rx,
+                    mut native_publication_rx,
+                ) = native_attach_handle();
                 state.with_mut(|s| {
                     let _ = s.register_terminal_handle(terminal, handle, CancellationToken::new());
                 });
@@ -3222,7 +3482,12 @@ mod tests {
                 );
                 tokio::join!(
                     first,
-                    answer_native_attach(&mut consumer_attach_rx, &mut native_bootstrap_rx, true)
+                    answer_native_attach(
+                        &mut consumer_attach_rx,
+                        &mut native_bootstrap_rx,
+                        &mut native_publication_rx,
+                        true,
+                    )
                 );
                 for _ in 0..5 {
                     out_rx.recv().await.expect("initial attach publication");
@@ -3247,7 +3512,12 @@ mod tests {
                 );
                 tokio::join!(
                     replacement,
-                    answer_native_attach(&mut consumer_attach_rx, &mut native_bootstrap_rx, false)
+                    answer_native_attach(
+                        &mut consumer_attach_rx,
+                        &mut native_bootstrap_rx,
+                        &mut native_publication_rx,
+                        false,
+                    )
                 );
                 assert!(matches!(
                     out_rx.recv().await,

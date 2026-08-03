@@ -1513,6 +1513,8 @@ mod tests {
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_bootstrap: mpsc::channel(8).0,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_publication: mpsc::channel(8).0,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_history: mpsc::channel(8).0,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_release: mpsc::channel(8).0,
@@ -1654,6 +1656,8 @@ mod tests {
                         snapshot: snapshot_tx,
                         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                         native_bootstrap: mpsc::channel(8).0,
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        native_publication: mpsc::channel(8).0,
                         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                         native_history: mpsc::channel(8).0,
                         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -1830,6 +1834,8 @@ mod tests {
                     snapshot: snapshot_tx,
                     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                     native_bootstrap: mpsc::channel(8).0,
+                    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                    native_publication: mpsc::channel(8).0,
                     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                     native_history: mpsc::channel(8).0,
                     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -2177,6 +2183,8 @@ mod tests {
                 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                 native_bootstrap: mpsc::channel(8).0,
                 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                native_publication: mpsc::channel(8).0,
+                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                 native_history: mpsc::channel(8).0,
                 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                 native_release: mpsc::channel(8).0,
@@ -2345,6 +2353,7 @@ mod tests {
                     state.with_mut(|s| s.seed_session("native-fatal"));
                 let (output_tx, _output_seed) = broadcast::channel::<PaneOutput>(8);
                 let (native_bootstrap_tx, mut native_bootstrap_rx) = mpsc::channel(8);
+                let (native_publication_tx, mut native_publication_rx) = mpsc::channel(8);
                 let (consumer_attach_tx, mut consumer_attach_rx) = mpsc::channel(8);
                 let (consumer_detach_tx, mut consumer_detach_rx) = mpsc::channel(8);
                 let handle = TerminalHandle {
@@ -2356,6 +2365,7 @@ mod tests {
                     .1,
                     snapshot: mpsc::channel(8).0,
                     native_bootstrap: native_bootstrap_tx,
+                    native_publication: native_publication_tx,
                     native_history: mpsc::channel(8).0,
                     native_release: mpsc::channel(8).0,
                     set_default_colors: mpsc::channel(8).0,
@@ -2462,8 +2472,22 @@ mod tests {
                         ],
                         retained_bytes: b"opaque-checkpoint".len(),
                         base_seq: 0,
+                        publication_cursor: [9; 32],
                     }))
                     .expect("initial native reply");
+                let publication =
+                    tokio::time::timeout(MAILBOX_DEADLINE, native_publication_rx.recv())
+                        .await
+                        .expect("initial native publication timed out")
+                        .expect("native publication sender closed");
+                assert_eq!(publication.cursor, [9; 32]);
+                publication
+                    .reply
+                    .send(Ok(crate::terminal_actor::NativePublicationReply {
+                        replay: Vec::new(),
+                        live: output_tx.subscribe(),
+                    }))
+                    .expect("initial native publication reply");
 
                 for expected in ["ATTACHED", "BEGIN", "CHUNK", "READY", "ATTACH_READY"] {
                     let Outbound::Frame(frame) =

@@ -363,6 +363,8 @@ mod tests {
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_bootstrap: mpsc::channel(8).0,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_publication: mpsc::channel(8).0,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_history: mpsc::channel(8).0,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_release: mpsc::channel(8).0,
