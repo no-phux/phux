@@ -625,9 +625,9 @@ fn spawn_terminal_lands_in_attached_session_not_a_new_session() {
 /// server's `defaults.term` baseline. The wire frame is authoritative for
 /// the Terminal it creates.
 ///
-/// The spawned command prints `$TERM` and blocks; the value comes back as
-/// TERMINAL_OUTPUT. The override is a sentinel string distinct from any
-/// real terminfo entry so the assertion can't pass by accident.
+/// After the spawn reply, the test releases the command to print `$TERM`;
+/// this avoids racing an immediate PTY output frame against
+/// `TERMINAL_SPAWNED`.
 #[test]
 fn spawn_terminal_env_term_overrides_default() {
     run_local(async {
@@ -642,9 +642,9 @@ fn spawn_terminal_env_term_overrides_default() {
                 command: Some(vec![
                     "/bin/sh".to_owned(),
                     "-c".to_owned(),
-                    // `read _` (a builtin) blocks so the pane stays alive
-                    // after printing; `exec read _` would die immediately.
-                    "printf 'TERMIS=%s\\n' \"$TERM\"; read _".to_owned(),
+                    // Wait until the test has received TERMINAL_SPAWNED so
+                    // the TERM output cannot be consumed while finding it.
+                    "read _; printf 'TERMIS=%s\\n' \"$TERM\"; read _".to_owned(),
                 ]),
                 cwd: None,
                 env: Some(vec![("TERM".to_owned(), "phux-spawn-override".to_owned())]),
@@ -660,6 +660,14 @@ fn spawn_terminal_env_term_overrides_default() {
             SpawnResult::Ok(id) => id,
             other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
         };
+        send_frame(
+            &mut stream,
+            &FrameKind::InputKey {
+                terminal_id: new_id.clone(),
+                event: enter_key(),
+            },
+        )
+        .await;
 
         let needle = b"TERMIS=phux-spawn-override";
         let acc = await_output_contains(&mut stream, &new_id, needle).await;
@@ -700,7 +708,7 @@ fn spawn_terminal_default_term_is_xterm_256color() {
                 command: Some(vec![
                     "/bin/sh".to_owned(),
                     "-c".to_owned(),
-                    "printf 'TERMIS=%s\\n' \"$TERM\"; read _".to_owned(),
+                    "read _; printf 'TERMIS=%s\\n' \"$TERM\"; read _".to_owned(),
                 ]),
                 cwd: None,
                 env: None,
@@ -716,6 +724,14 @@ fn spawn_terminal_default_term_is_xterm_256color() {
             SpawnResult::Ok(id) => id,
             other => panic!("SPAWN_TERMINAL did not succeed: {other:?}"),
         };
+        send_frame(
+            &mut stream,
+            &FrameKind::InputKey {
+                terminal_id: new_id.clone(),
+                event: enter_key(),
+            },
+        )
+        .await;
 
         let needle = b"TERMIS=xterm-256color";
         let acc = await_output_contains(&mut stream, &new_id, needle).await;
