@@ -219,23 +219,26 @@ pub async fn get_state_on(conn: &mut Connection) -> Result<StateView, AttachErro
 /// Send `HELLO` on `conn` and return the protocol version triple the server
 /// selected in `HELLO_OK`.
 ///
-/// The one-shot CLI verbs skip the handshake entirely (the server does not
-/// require it before commands), so the negotiated protocol version is
-/// invisible to them; this probe performs the same `HELLO`/`HELLO_OK`
-/// exchange the attach path does, minus the terminal capability sniffing a
-/// headless caller has no terminal for. Purely client-side: no wire change,
-/// and any server that can attach a client answers it.
-///
-/// Call it first on a fresh connection — `HELLO` is the opening frame of the
-/// handshake, and the same connection can carry commands afterwards (the
-/// attach path's exact sequence).
+/// Production [`Connection`] constructors already complete that exchange.
+/// This helper returns the version they validated without emitting a second
+/// `HELLO`; crate-internal raw connections still perform the exchange here.
 ///
 /// # Errors
 ///
-/// Returns a transport error when the connection fails mid-exchange, a
-/// refusal carrying the server's message when it answers `ERROR` (version
-/// incompatibility), or a protocol error on any other reply.
+/// Returns a transport error when an unnegotiated raw connection fails
+/// mid-exchange, a refusal carrying the server's message when it answers
+/// `ERROR` (version incompatibility), or a protocol error on any other reply.
+///
+/// Callers may use this on either a production-negotiated connection or a
+/// crate-internal raw connection.
 pub async fn probe_hello(conn: &mut Connection) -> Result<(u16, u16, u16), AttachError> {
+    if conn.negotiated_bootstrap().is_some() {
+        return Ok((
+            phux_protocol::PROTOCOL_VERSION.major,
+            phux_protocol::PROTOCOL_VERSION.minor,
+            phux_protocol::PROTOCOL_VERSION.patch,
+        ));
+    }
     conn.send(&FrameKind::Hello {
         client_name: format!("phux-cli/{}", env!("CARGO_PKG_VERSION")),
         protocol_major: phux_protocol::PROTOCOL_VERSION.major,
@@ -538,6 +541,13 @@ mod tests {
             matches!(seen.first(), Some(FrameKind::Hello { .. })),
             "the probe's first frame must be HELLO; got {:?}",
             seen.first()
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|frame| matches!(frame, FrameKind::Hello { .. }))
+                .count(),
+            1,
+            "probing an already-negotiated connection must not emit a second HELLO",
         );
     }
 
