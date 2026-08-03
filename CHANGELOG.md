@@ -9,6 +9,40 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.9.0](https://github.com/phall1/phux/compare/v0.8.0...v0.9.0) (2026-08-03)
+
+
+### Features
+
+* **cli:** add phux status -- pid, up-since, protocol, clients, sessions, logs ([b13a2f6](https://github.com/phall1/phux/commit/b13a2f66e840860e7d0be77c1aa483f044a8679c))
+* **cli:** alias parity, tag --json, error-contract rollout to registry verbs ([1b50b76](https://github.com/phall1/phux/commit/1b50b76fdd003a395fe9fde39d97441e6b75d813))
+* **client:** onboarding teaches detach/reattach; drop the invisible attach banner ([95a5159](https://github.com/phall1/phux/commit/95a5159f9e0e9bf373036455f6f1787e79931adc))
+* **cli:** generate reference docs from the binary via a hidden subcommand ([8acada8](https://github.com/phall1/phux/commit/8acada8631b5088f0ab2318a884834a7c0cc0f2f))
+* **cli:** make the reconnect window visible -- countdown, distinct failures, in-TUI notice ([2601965](https://github.com/phall1/phux/commit/26019652543878d0e8f82f077487097af9f0afd7))
+* **cli:** stable JSON error contract with a shared emitter across core verbs ([45359f4](https://github.com/phall1/phux/commit/45359f4a803f0d4a8c3c1440bc898c9408da5ea0))
+* **cli:** unify --split on insert-pane/move-pane, clap-level requires, --quic type parity ([f177ccc](https://github.com/phall1/phux/commit/f177ccc37e8b49cdaae3ca3d15b6263b7cc8b808))
+* **cli:** unmangle example blocks, add EXIT STATUS, scrub internal doc paths ([eb2948a](https://github.com/phall1/phux/commit/eb2948afc6c89d8667f7674ff96e8153248f83e4))
+* **docs:** generate the actions and widgets reference; retire the tui.md hand tables ([e54caa0](https://github.com/phall1/phux/commit/e54caa0b210fa2bfa1ad6ed1cffa26ff4793bfc2))
+* **docs:** generated config reference from the annotated default.toml ([dfa003e](https://github.com/phall1/phux/commit/dfa003e07ce83c88ced4644c3fbc7d72dd6f9777))
+
+
+### Bug Fixes
+
+* **client:** resolve the help-overlay dismiss hint from both binding tables ([3784a3d](https://github.com/phall1/phux/commit/3784a3dfdf15319e25805939b67b16e83a5faa32))
+* **cli:** reconcile the JSON error contract with the demo-plugin test and the help leak guard ([fe0ef9f](https://github.com/phall1/phux/commit/fe0ef9f8dcbdcc7a8e7c3bbcc5994dbeaa1b88e0))
+* **docs:** de-link a private rustdoc ref; retire the last phantom widget kinds in tui.md ([a0e1ac3](https://github.com/phall1/phux/commit/a0e1ac32985c1eacae91ade80870a8209d9005a7))
+
+
+### Documentation
+
+* **consumers:** tag --json shapes, registry error-contract rollout, alias mentions ([ff790f5](https://github.com/phall1/phux/commit/ff790f599c3ae3ba346508d56f5ca43513e6b214))
+
+
+### Build System
+
+* move to Zig 0.16 and bump libghostty-vt past the terminal-new ABI fix ([40fcf5e](https://github.com/phall1/phux/commit/40fcf5e047c7930cdff93bc198b456a01cd1ba21))
+* re-pin libghostty-vt to fork master (98ad1db) now that phall1/libghostty-rs[#11](https://github.com/phall1/phux/issues/11) merged ([441192b](https://github.com/phall1/phux/commit/441192ba8730b416cc25dc1a9ffb8e3e1e00ac3c))
+
 ## [0.8.0](https://github.com/phall1/phux/compare/v0.7.0...v0.8.0) (2026-08-02)
 
 
