@@ -9,6 +9,33 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.10.0](https://github.com/phall1/phux/compare/v0.9.0...v0.10.0) (2026-08-03)
+
+
+### Features
+
+* **cli:** add `phux host enroll` — one role-aware enrollment verb ([e18c8a7](https://github.com/phall1/phux/commit/e18c8a7d93331d84560a6b8018a6793c01048528))
+* **cli:** add the phux host namespace over the remote and satellite registries ([baf6b43](https://github.com/phall1/phux/commit/baf6b43471e306c27b0bb0ac976bf4d97920a61d))
+* **cli:** hide remote/satellite/enroll as deprecated aliases of host ([ed692a4](https://github.com/phall1/phux/commit/ed692a42fda50b097522760919ead0a3ed0e92a0))
+
+
+### Bug Fixes
+
+* **cli:** host enroll failure remedies carry the requested role ([2b1ae29](https://github.com/phall1/phux/commit/2b1ae2986461f471f6f3d7b1f6632d7234725f01))
+* **docs:** finish the host-grammar sweep -- scaffold, doctor and hub remedies, ADR schema note ([decde86](https://github.com/phall1/phux/commit/decde863199d598eeaf6bd74d4ced87b473cf638))
+
+
+### Refactors
+
+* **cli:** split the alias table into per-family helpers ([254a989](https://github.com/phall1/phux/commit/254a9892eb08ea55aeb49769a7f7dd2079ba087f))
+
+
+### Documentation
+
+* **config:** truth-pass CONFIG.md; point schema, actions, and widgets at the generated reference ([622c211](https://github.com/phall1/phux/commit/622c211fb86eae35fbb2d0af090c63cbb9b77ad0))
+* **reference:** regenerate cli.md for `phux host enroll`; rustfmt pass ([d0ebf67](https://github.com/phall1/phux/commit/d0ebf673c72857d843a0a67a1d8c647a5365bdf8))
+* sweep curated docs and in-code strings to the host grammar ([afc9862](https://github.com/phall1/phux/commit/afc986274981057b598f183a796e307728d0c6cd))
+
 ## [0.9.0](https://github.com/phall1/phux/compare/v0.8.0...v0.9.0) (2026-08-03)
 
 
