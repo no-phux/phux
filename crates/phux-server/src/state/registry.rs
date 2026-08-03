@@ -759,7 +759,7 @@ impl ServerState {
     }
 
     /// Convenience wrapper around [`Self::attach`] that passes
-    /// [`ColorSupport::default`] for the client tier. Intended for test
+    /// [`ClientCapabilities::default`] for the client tier. Intended for test
     /// scaffolding and in-tree call sites that don't carry a HELLO-derived
     /// capability value.
     pub fn attach_default_caps(

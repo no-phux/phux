@@ -512,7 +512,7 @@ impl Connection {
     ///
     /// Production constructors cannot return a connection without this value.
     /// The `Option` exposes the unnegotiated state only to crate-internal raw
-    /// transport tests built with [`Self::from_stream`].
+    /// transport tests built with `Self::from_stream`.
     #[must_use]
     pub const fn negotiated_bootstrap(&self) -> Option<NegotiatedBootstrap> {
         self.negotiated_bootstrap
