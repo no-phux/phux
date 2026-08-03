@@ -86,7 +86,27 @@
           # backs the `-fuse-ld=mold` rustflags in .cargo/config.toml for the
           # linux-gnu targets; it has no mach-o backend, so it is Linux-only
           # and macOS keeps Apple's default linker (already the fast path).
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.mold ];
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.mold ]
+          # `nmedit`, for macOS cold builds of libghostty-vt.
+          #
+          # ghostty's Darwin-only src/build/libsystem_override.sh rewrites the
+          # static archive so consumers bind memcpy/sin/cos to Apple's
+          # libSystem instead of Zig's compiler-rt. It shells out to
+          # `xcrun nmedit`. Inside this devshell `xcode-select -p` resolves to
+          # the nix apple-sdk, whose XcodeDefault toolchain ships `nm` but NOT
+          # `nmedit` — so a macOS contributor's first (uncached) libghostty
+          # build died with "error: tool 'nmedit' not found", and only that
+          # build: everything else was already in the store.
+          #
+          # `cctools-binutils-darwin`, which the clang wrapper already pulls
+          # in, does not carry nmedit either. The full `cctools` does. xcrun
+          # falls back to PATH when the toolchain lacks a tool, so putting it
+          # on PATH is enough — no DEVELOPER_DIR override, which would swap the
+          # whole pinned SDK out for whatever Xcode the host happens to have.
+          #
+          # Linux is unaffected: the script is guarded Darwin-only, so CI and
+          # the Linux release legs never invoke it.
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.cctools ];
 
           env.RUST_BACKTRACE = "1";
 
