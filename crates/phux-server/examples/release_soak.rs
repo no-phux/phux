@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use phux_protocol::caps::ClientCapabilities;
+use phux_protocol::caps::{
+    BootstrapCapabilities, BootstrapProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
+};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_protocol::{BootstrapId, PROTOCOL_VERSION, StreamId, TerminalId};
 use phux_server::{ServerConfig, ServerRuntime};
@@ -530,6 +532,10 @@ async fn client_loop(
 
 async fn connect(client: usize, socket: &Path) -> Result<(UnixStream, Generation), String> {
     let mut stream = common::wait_for_raw_socket(socket, Duration::from_secs(15)).await;
+    let native = BootstrapCapabilities::new().with_native(
+        EngineCodec::LibghosttyCheckpointV2,
+        EngineFeatureSet::required_native(),
+    );
     common::send_frame(
         &mut stream,
         &FrameKind::Hello {
@@ -537,13 +543,19 @@ async fn connect(client: usize, socket: &Path) -> Result<(UnixStream, Generation
             protocol_major: PROTOCOL_VERSION.major,
             protocol_minor: PROTOCOL_VERSION.minor,
             protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: ClientCapabilities::new(),
+            client_caps: ClientCapabilities::new().with_bootstrap(native),
         },
     )
     .await;
     let (_, hello) = common::recv_typed(&mut stream).await;
-    if !matches!(hello, FrameKind::HelloOk { .. }) {
-        return Err(format!("expected HELLO_OK, got {hello:?}"));
+    if !matches!(
+        hello,
+        FrameKind::HelloOk {
+            selected_profile: BootstrapProfile::NativeState { .. },
+            ..
+        }
+    ) {
+        return Err(format!("expected native HELLO_OK, got {hello:?}"));
     }
     common::send_frame(
         &mut stream,
