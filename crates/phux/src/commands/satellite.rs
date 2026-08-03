@@ -3,7 +3,6 @@ mod json;
 // delegates to this registry module rather than growing a merged store.
 pub(crate) mod registry;
 
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::commands::SatelliteAction;
@@ -78,59 +77,55 @@ fn run_enroll(
         outln!("Enrolling satellite {ssh_host}...");
     }
 
-    if let Err(err) = crate::commands::enroll::remote_phux_version(ssh_host) {
-        if json {
-            return crate::commands::json_err::emit(
-                true,
-                &crate::commands::json_err::CliError::new(
-                    crate::commands::json_err::codes::REGISTRY,
-                    format!("satellite enroll: {err}"),
-                    format!(
-                        "install phux on {ssh_host} first, or use \
-                         `phux satellite enroll {ssh_host} --ssh-only`"
-                    ),
-                ),
-                1,
-            );
-        }
-        eprintln!("phux satellite enroll: {err}");
-        eprintln!(
-            "      Install phux on {ssh_host} first, or use \
-             `phux satellite enroll {ssh_host} --ssh-only`."
-        );
-        return ExitCode::FAILURE;
-    }
-
-    if install_service {
-        let quic_bind = format!("0.0.0.0:{quic_port}");
-        match crate::commands::enroll::ssh_capture(
-            ssh_host,
-            &["phux", "service", "install", "--quic", &quic_bind],
-        ) {
-            Ok(_) if !json => {
+    let outcome = crate::commands::enroll::enroll_over_ssh(
+        ssh_host,
+        endpoint_override,
+        quic_port,
+        install_service,
+        &mut |event| match event {
+            crate::commands::enroll::EnrollEvent::ServiceInstalled { quic_bind } if !json => {
                 outln!("  service installed on {ssh_host} (quic {quic_bind})");
             }
-            Ok(_) => {}
-            Err(err) => {
+            crate::commands::enroll::EnrollEvent::ServiceInstalled { .. } => {}
+            crate::commands::enroll::EnrollEvent::ServiceInstallFailed { error } => {
                 eprintln!(
-                    "phux satellite enroll: warning: could not install the remote service: {err}"
+                    "phux satellite enroll: warning: could not install the remote service: {error}"
                 );
             }
+        },
+    );
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(crate::commands::enroll::EnrollFailure::MissingPhux(err)) => {
+            if json {
+                return crate::commands::json_err::emit(
+                    true,
+                    &crate::commands::json_err::CliError::new(
+                        crate::commands::json_err::codes::REGISTRY,
+                        format!("satellite enroll: {err}"),
+                        format!(
+                            "install phux on {ssh_host} first, or use \
+                             `phux satellite enroll {ssh_host} --ssh-only`"
+                        ),
+                    ),
+                    1,
+                );
+            }
+            eprintln!("phux satellite enroll: {err}");
+            eprintln!(
+                "      Install phux on {ssh_host} first, or use \
+                 `phux satellite enroll {ssh_host} --ssh-only`."
+            );
+            return ExitCode::FAILURE;
         }
-    }
-
-    let stdout = match crate::commands::enroll::ssh_capture(ssh_host, &["phux", "pair", "--json"]) {
-        Ok(stdout) => stdout,
-        Err(err) => return enroll_failure(json, &err),
+        Err(crate::commands::enroll::EnrollFailure::Pair(err)) => {
+            return enroll_failure(json, &err);
+        }
     };
-    let report = match crate::commands::enroll::PairReport::parse(&stdout) {
-        Ok(report) => report,
-        Err(err) => return enroll_failure(json, &err),
-    };
-    let endpoint =
-        crate::commands::enroll::choose_endpoint(ssh_host, &report, endpoint_override, quic_port);
-    let token_file = (!endpoint.starts_with("ssh://"))
-        .then(|| satellite_token_path(&phux_server::telemetry::state_dir(), &name));
+    let crate::commands::enroll::EnrollOutcome { endpoint, report } = outcome;
+    let token_file = (!endpoint.starts_with("ssh://")).then(|| {
+        crate::commands::enroll::satellite_token_path(&phux_server::telemetry::state_dir(), &name)
+    });
     let new = match NewSatellite::new(
         &name,
         &endpoint,
@@ -175,10 +170,6 @@ fn enroll_failure(json: bool, message: &str) -> ExitCode {
     }
     eprintln!("phux satellite enroll: {message}");
     ExitCode::FAILURE
-}
-
-fn satellite_token_path(state_dir: &Path, name: &str) -> PathBuf {
-    state_dir.join("satellites").join(format!("{name}.token"))
 }
 
 fn run_list(json: bool) -> ExitCode {

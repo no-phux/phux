@@ -112,6 +112,7 @@ phux gen-reference-docs
 phux give
 phux host
 phux host add
+phux host enroll
 phux host ls
 phux host rm
 phux insert-pane

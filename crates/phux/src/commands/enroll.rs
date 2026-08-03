@@ -132,6 +132,16 @@ pub(crate) fn token_path(state_dir: &Path, name: &str) -> PathBuf {
     state_dir.join("remotes").join(format!("{name}.token"))
 }
 
+/// The local path a satellite's token is written to.
+///
+/// A deliberate sibling of [`token_path`], not a merge: the `remotes/` and
+/// `satellites/` directories mirror the split registries (ADR-0066 keeps the
+/// trust directions apart), so an entry's role is readable from where its
+/// credential lives.
+pub(crate) fn satellite_token_path(state_dir: &Path, name: &str) -> PathBuf {
+    state_dir.join("satellites").join(format!("{name}.token"))
+}
+
 /// The local label for an enrolled host: the ssh destination with any
 /// `user@` and trailing path stripped, so `phux enroll me@mini` registers
 /// `mini`.
@@ -144,6 +154,85 @@ pub(crate) fn default_name(ssh_host: &str) -> String {
         .next()
         .unwrap_or(ssh_host)
         .to_owned()
+}
+
+/// A progress event from the shared ssh middle of an enrollment.
+///
+/// The middle does not print: the three callers (`phux enroll`,
+/// `phux satellite enroll`, `phux host enroll`) each own an output contract
+/// — different prefixes, different `--json` suppression rules — so events
+/// carry the facts and the caller renders them.
+pub(crate) enum EnrollEvent<'a> {
+    /// The remote's service unit was installed, listening on `quic_bind`.
+    ServiceInstalled { quic_bind: &'a str },
+    /// The service install failed. Not fatal: an operator may supervise the
+    /// server another way, and pairing is still worth doing.
+    ServiceInstallFailed { error: &'a str },
+}
+
+/// Why the shared ssh middle of an enrollment stopped.
+///
+/// Two variants, because the callers phrase exactly two remedies: a missing
+/// `phux` on the remote has an install-it fix, everything else on the ssh
+/// path shares one retry-or-`--ssh-only` fix.
+pub(crate) enum EnrollFailure {
+    /// `phux --version` failed on the host — phux is not on the remote
+    /// `PATH` (or ssh itself failed before anything phux-related ran).
+    MissingPhux(String),
+    /// Pairing failed: `phux pair --json` did not run, or its output did
+    /// not parse.
+    Pair(String),
+}
+
+/// What the shared ssh middle of an enrollment produced: the endpoint to
+/// register and the pairing material behind it.
+pub(crate) struct EnrollOutcome {
+    /// The endpoint chosen by [`choose_endpoint`] — `quic://` when the host
+    /// is dialable and pinned, `ssh://HOST` otherwise.
+    pub(crate) endpoint: String,
+    /// The parsed `phux pair --json` document (token, fingerprint, overlay
+    /// addresses).
+    pub(crate) report: PairReport,
+}
+
+/// The shared middle of every ssh enrollment (ADR-0055, ADR-0066): confirm
+/// phux is installed on the host, install its service unit, mint pairing
+/// material there, and choose the endpoint to register.
+///
+/// Role-agnostic on purpose — nothing here touches a registry or writes a
+/// token. The role-specific tails (remote vs satellite) own the token path
+/// and the registry entry, so this one flow cannot drift into deciding
+/// trust direction.
+pub(crate) fn enroll_over_ssh(
+    ssh_host: &str,
+    endpoint_override: Option<&str>,
+    quic_port: u16,
+    install_service: bool,
+    on_event: &mut dyn FnMut(EnrollEvent<'_>),
+) -> Result<EnrollOutcome, EnrollFailure> {
+    remote_phux_version(ssh_host).map_err(EnrollFailure::MissingPhux)?;
+
+    if install_service {
+        let quic_bind = format!("0.0.0.0:{quic_port}");
+        match ssh_capture(
+            ssh_host,
+            &["phux", "service", "install", "--quic", &quic_bind],
+        ) {
+            Ok(_) => on_event(EnrollEvent::ServiceInstalled {
+                quic_bind: &quic_bind,
+            }),
+            Err(err) => on_event(EnrollEvent::ServiceInstallFailed { error: &err }),
+        }
+    }
+
+    // `phux pair` writes the token store the server reads at startup, so it
+    // must run after the service install — which is also what makes
+    // PHUX_QUIC_ADDR visible to the pair invocation's overlay-derived link.
+    let stdout =
+        ssh_capture(ssh_host, &["phux", "pair", "--json"]).map_err(EnrollFailure::Pair)?;
+    let report = PairReport::parse(&stdout).map_err(EnrollFailure::Pair)?;
+    let endpoint = choose_endpoint(ssh_host, &report, endpoint_override, quic_port);
+    Ok(EnrollOutcome { endpoint, report })
 }
 
 /// `phux enroll HOST`.
@@ -179,50 +268,36 @@ pub(crate) fn run_enroll(
 
     outln!("Enrolling {ssh_host}...");
 
-    if let Err(err) = remote_phux_version(ssh_host) {
-        eprintln!("phux enroll: {err}");
-        eprintln!(
-            "      Install phux on {ssh_host} first, or run \
-             `phux enroll {ssh_host} --ssh-only` to register it anyway."
-        );
-        return ExitCode::FAILURE;
-    }
-
-    if install_service {
-        let quic_bind = format!("0.0.0.0:{quic_port}");
-        match ssh_capture(
-            ssh_host,
-            &["phux", "service", "install", "--quic", &quic_bind],
-        ) {
-            Ok(_) => outln!("  service installed on {ssh_host} (quic {quic_bind})"),
-            Err(err) => {
-                // Not fatal: an operator may supervise the server another
-                // way, and pairing is still worth doing.
-                eprintln!("phux enroll: warning: could not install the remote service: {err}");
+    let outcome = enroll_over_ssh(
+        ssh_host,
+        host_override,
+        quic_port,
+        install_service,
+        &mut |event| match event {
+            EnrollEvent::ServiceInstalled { quic_bind } => {
+                outln!("  service installed on {ssh_host} (quic {quic_bind})");
             }
+            EnrollEvent::ServiceInstallFailed { error } => {
+                eprintln!("phux enroll: warning: could not install the remote service: {error}");
+            }
+        },
+    );
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(EnrollFailure::MissingPhux(err)) => {
+            eprintln!("phux enroll: {err}");
+            eprintln!(
+                "      Install phux on {ssh_host} first, or run \
+                 `phux enroll {ssh_host} --ssh-only` to register it anyway."
+            );
+            return ExitCode::FAILURE;
         }
-    }
-
-    // `phux pair` writes the token store the server reads at startup, so it
-    // must run after the service install — which is also what makes
-    // PHUX_QUIC_ADDR visible to the pair invocation's overlay-derived link.
-    let stdout = match ssh_capture(ssh_host, &["phux", "pair", "--json"]) {
-        Ok(stdout) => stdout,
-        Err(err) => {
+        Err(EnrollFailure::Pair(err)) => {
             eprintln!("phux enroll: {err}");
             return ExitCode::FAILURE;
         }
     };
-
-    let report = match PairReport::parse(&stdout) {
-        Ok(report) => report,
-        Err(err) => {
-            eprintln!("phux enroll: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let endpoint = choose_endpoint(ssh_host, &report, host_override, quic_port);
+    let EnrollOutcome { endpoint, report } = outcome;
 
     // The token is only meaningful for a dialed transport; an ssh:// entry
     // rides ssh trust and must not leave a stray credential on disk.

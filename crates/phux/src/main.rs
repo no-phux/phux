@@ -1384,6 +1384,91 @@ mod tests {
         );
     }
 
+    /// `phux host enroll` (ADR-0066 pt. 4, phux-i0e8.12.3): one role-aware
+    /// enrollment verb. `--role` defaults to remote, `--json` parses on both
+    /// roles, `--session` parses (its satellite-role refusal is post-parse,
+    /// where the value of `--role` is known), and `--ssh-only` conflicts
+    /// with the flags whose work it skips.
+    #[test]
+    fn host_enroll_parses_role_aware() {
+        use crate::commands::host::{HostAction, HostRole};
+
+        let Command::Host {
+            action:
+                HostAction::Enroll {
+                    host,
+                    role,
+                    session,
+                    ..
+                },
+        } = parsed(&["phux", "host", "enroll", "mini"])
+        else {
+            panic!("expected Host Enroll");
+        };
+        assert_eq!(host, "mini");
+        assert_eq!(role, HostRole::Remote, "--role defaults to remote");
+        assert_eq!(session, None);
+
+        let Command::Host {
+            action: HostAction::Enroll { role, json, .. },
+        } = parsed(&[
+            "phux",
+            "host",
+            "enroll",
+            "--role",
+            "satellite",
+            "--json",
+            "edge",
+        ])
+        else {
+            panic!("expected Host Enroll");
+        };
+        assert_eq!(role, HostRole::Satellite);
+        assert!(json.json, "--json parses on the satellite role");
+
+        let Command::Host {
+            action: HostAction::Enroll { session, json, .. },
+        } = parsed(&[
+            "phux", "host", "enroll", "--session", "work", "--json", "mini",
+        ])
+        else {
+            panic!("expected Host Enroll");
+        };
+        assert_eq!(session.as_deref(), Some("work"));
+        assert!(json.json, "--json parses on the remote role");
+
+        // `--session --role satellite` still PARSES: the refusal is
+        // post-parse (exit 2, remedy-naming), because clap cannot condition
+        // one flag's validity on another flag's value.
+        assert!(matches!(
+            parsed(&[
+                "phux",
+                "host",
+                "enroll",
+                "--role",
+                "satellite",
+                "--session",
+                "work",
+                "edge",
+            ]),
+            Command::Host {
+                action: HostAction::Enroll { .. }
+            }
+        ));
+
+        // `--ssh-only` contacts nothing, so the flags that only matter when
+        // the host is contacted are refused at parse time.
+        for conflicting in [
+            ["phux", "host", "enroll", "--ssh-only", "--endpoint", "x:1", "mini"].as_slice(),
+            ["phux", "host", "enroll", "--ssh-only", "--no-service", "mini"].as_slice(),
+        ] {
+            assert!(
+                Cli::try_parse_from(conflicting).is_err(),
+                "{conflicting:?} must be refused at parse time"
+            );
+        }
+    }
+
     /// `phux tag` carries the shared `--json` flag on all three actions
     /// (phux-i0e8.8.3), through the canonical spelling and the alias alike.
     #[test]

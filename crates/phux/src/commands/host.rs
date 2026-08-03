@@ -33,16 +33,25 @@
 //!
 //! `enabled` is `null` for remotes (the schema has no enabled bit) and
 //! `session` is `null` for satellites (a hub-dialed link has no arrival to
-//! attach). `host add --json` wraps one such object under `"host"`;
-//! `host rm --json` emits `{"schema_version":1,"removed":{"name":..,"role":..}}`.
+//! attach). `host add --json` and `host enroll --json` wrap one such object
+//! under `"host"`; `host rm --json` emits
+//! `{"schema_version":1,"removed":{"name":..,"role":..}}`.
 //! Failures follow the shared JSON error contract in [`super::json_err`].
+//!
+//! `host enroll` (phux-i0e8.12.3) is the role-aware successor to the split
+//! `phux enroll` / `phux satellite enroll` pair: one ssh-bootstrapped flow
+//! ([`super::enroll::enroll_over_ssh`]) with a role-specific tail that
+//! writes the token under the role-correct directory (`remotes/` vs
+//! `satellites/`) and registers into the matching registry. Under `--json`
+//! all progress is suppressed and stdout carries only the document.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Subcommand, ValueEnum};
 
 use super::JsonOpt;
+use super::enroll;
 use super::json_err::{self, CliError, codes};
 use super::remote;
 use super::satellite::registry as satellite_registry;
@@ -125,6 +134,58 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
+    /// Set up a machine over ssh, end to end, and register it.
+    ///
+    /// Confirms phux is installed on HOST, installs its service unit so the
+    /// server survives reboot, mints a pairing token there, and registers
+    /// the result in the role-correct registry — `--role remote` (the
+    /// default) yields an entry `phux attach <name>` dials with no flags
+    /// and no hex strings typed by hand; `--role satellite` a peer this hub
+    /// dials for its users. Uses the ssh trust you already have; it grants
+    /// nothing ssh did not already grant.
+    ///
+    /// A host with no reachable listener falls back to an ssh:// entry,
+    /// which still gives you sessions that outlive the connection.
+    Enroll {
+        /// ssh destination, exactly as you would type it after `ssh`
+        /// (`mini`, `me@mini`, or a `~/.ssh/config` alias).
+        host: String,
+
+        /// Which registry the enrolled machine lands in.
+        #[arg(long, value_enum, default_value = "remote")]
+        role: HostRole,
+
+        /// Local label to register. Defaults to HOST without any `user@`.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+
+        /// Address to register instead of the remote's detected overlay
+        /// address. Accepts `HOST:PORT` (dialed over QUIC) or a full
+        /// `quic://`/`wss://` URI.
+        #[arg(long, value_name = "HOST:PORT")]
+        endpoint: Option<String>,
+
+        /// QUIC port to configure on the remote and register.
+        #[arg(long, value_name = "PORT", default_value_t = super::enroll::default_quic_port())]
+        quic_port: u16,
+
+        /// Skip installing the remote's service unit. The server will not
+        /// come back on its own after a reboot.
+        #[arg(long)]
+        no_service: bool,
+
+        /// Register an ssh:// entry without contacting the host at all.
+        #[arg(long, conflicts_with_all = ["endpoint", "no_service"])]
+        ssh_only: bool,
+
+        /// Session to attach on arrival (`--role remote` only).
+        #[arg(long, value_name = "NAME")]
+        session: Option<String>,
+
+        #[command(flatten)]
+        json: JsonOpt,
+    },
+
     /// List registered machines from both registries.
     ///
     /// With no `--role`, remotes and satellites are merged into one table
@@ -176,6 +237,27 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
             cert_fingerprint: cert_fingerprint.as_deref(),
             session: session.as_deref(),
             disabled: *disabled,
+            json: json.json,
+        }),
+        HostAction::Enroll {
+            host,
+            role,
+            name,
+            endpoint,
+            quic_port,
+            no_service,
+            ssh_only,
+            session,
+            json,
+        } => run_enroll(&EnrollArgs {
+            ssh_host: host,
+            role: *role,
+            name: name.as_deref(),
+            endpoint_override: endpoint.as_deref(),
+            quic_port: *quic_port,
+            install_service: !no_service,
+            ssh_only: *ssh_only,
+            session: session.as_deref(),
             json: json.json,
         }),
         HostAction::List { role, json } => run_list(*role, json.json),
@@ -354,6 +436,244 @@ fn registry_failure(message: String) -> CliError {
         "fix the reported [[remote]] / [[satellites]] entry; \
          `phux config path` names the config file",
     )
+}
+
+/// One `host enroll` invocation, bundled like [`AddArgs`].
+struct EnrollArgs<'a> {
+    ssh_host: &'a str,
+    role: HostRole,
+    name: Option<&'a str>,
+    endpoint_override: Option<&'a str>,
+    quic_port: u16,
+    install_service: bool,
+    ssh_only: bool,
+    session: Option<&'a str>,
+    json: bool,
+}
+
+/// Refuse `--session` under `--role satellite`, naming the remedy.
+///
+/// Checked before any ssh traffic on purpose: a refusal that has already
+/// installed a service and minted a token on the remote host would leave the
+/// operator cleaning up after an error they were refused over.
+fn enroll_role_mismatch(role: HostRole, has_session: bool) -> Option<CliError> {
+    (role == HostRole::Satellite && has_session).then(|| {
+        CliError::new(
+            codes::REGISTRY,
+            "--session applies to --role remote only: a satellite link is \
+             hub-dialed, so there is no arrival to attach",
+            "drop --session, or enroll the machine as a remote \
+             (`phux host enroll HOST --session NAME`)",
+        )
+    })
+}
+
+/// Map a failure from the shared ssh middle onto the CLI error contract,
+/// with a `host enroll`-flavored remedy per failure class.
+fn enroll_failure_error(ssh_host: &str, failure: &enroll::EnrollFailure) -> CliError {
+    match failure {
+        enroll::EnrollFailure::MissingPhux(message) => CliError::new(
+            codes::REGISTRY,
+            message.clone(),
+            format!(
+                "install phux on {ssh_host} first, or run \
+                 `phux host enroll {ssh_host} --ssh-only` to register it anyway"
+            ),
+        ),
+        enroll::EnrollFailure::Pair(message) => CliError::new(
+            codes::REGISTRY,
+            message.clone(),
+            format!(
+                "retry once the ssh path works, or register the entry without \
+                 probing via `phux host enroll {ssh_host} --ssh-only`"
+            ),
+        ),
+    }
+}
+
+/// A field the target registry rejected during enrollment (bad endpoint
+/// scheme, missing pin, sigil name): the registry's message names the fix.
+fn reject_enrollment(message: String) -> CliError {
+    CliError::new(
+        codes::REGISTRY,
+        message,
+        "fix the flagged field and rerun `phux host enroll`",
+    )
+}
+
+/// `phux host enroll`.
+fn run_enroll(args: &EnrollArgs<'_>) -> ExitCode {
+    if let Some(err) = enroll_role_mismatch(args.role, args.session.is_some()) {
+        return json_err::emit(args.json, &err, 2);
+    }
+    let name = args
+        .name
+        .map_or_else(|| enroll::default_name(args.ssh_host), str::to_owned);
+
+    // `--ssh-only` skips the host entirely: no pairing, no service, just a
+    // registry entry riding existing ssh trust.
+    if args.ssh_only {
+        let endpoint = format!("ssh://{}", args.ssh_host);
+        return match finish_enroll(args.role, &name, &endpoint, None, args.session) {
+            Ok(row) => report_enrolled(&row, args.json),
+            Err(err) => json_err::emit(args.json, &err, 1),
+        };
+    }
+
+    let (ssh_host, json) = (args.ssh_host, args.json);
+    if !json {
+        outln!("Enrolling {ssh_host}...");
+    }
+    let outcome = enroll::enroll_over_ssh(
+        ssh_host,
+        args.endpoint_override,
+        args.quic_port,
+        args.install_service,
+        // Progress is suppressed under `--json` (stdout is the document);
+        // the service-install warning stays — stderr, and worth acting on.
+        &mut |event| match event {
+            enroll::EnrollEvent::ServiceInstalled { quic_bind } if !json => {
+                outln!("  service installed on {ssh_host} (quic {quic_bind})");
+            }
+            enroll::EnrollEvent::ServiceInstalled { .. } => {}
+            enroll::EnrollEvent::ServiceInstallFailed { error } => {
+                eprintln!(
+                    "phux host enroll: warning: could not install the remote service: {error}"
+                );
+            }
+        },
+    );
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(failure) => {
+            return json_err::emit(json, &enroll_failure_error(ssh_host, &failure), 1);
+        }
+    };
+
+    match finish_enroll(
+        args.role,
+        &name,
+        &outcome.endpoint,
+        Some(&outcome.report),
+        args.session,
+    ) {
+        Ok(row) => report_enrolled(&row, json),
+        Err(err) => json_err::emit(json, &err, 1),
+    }
+}
+
+/// The role-specific tail of `host enroll`: validate the entry, write the
+/// pairing token under the role-correct directory (`remotes/` vs
+/// `satellites/`), and register into the matching registry. `pairing` is
+/// `None` on the `--ssh-only` path.
+///
+/// Validation runs BEFORE the token hits disk: a rejected name (`../x`
+/// would escape the token directory via its join) or a quic endpoint
+/// missing its fingerprint must not leave an orphaned bearer token behind.
+fn finish_enroll(
+    role: HostRole,
+    name: &str,
+    endpoint: &str,
+    pairing: Option<&enroll::PairReport>,
+    session: Option<&str>,
+) -> Result<HostRow, CliError> {
+    // The token is only meaningful for a dialed transport; an ssh:// entry
+    // rides ssh trust and must not leave a stray credential on disk.
+    let token_file = (pairing.is_some() && !endpoint.starts_with("ssh://")).then(|| {
+        let state_dir = phux_server::telemetry::state_dir();
+        match role {
+            HostRole::Remote => enroll::token_path(&state_dir, name),
+            HostRole::Satellite => enroll::satellite_token_path(&state_dir, name),
+        }
+    });
+    let cert_fingerprint = pairing.and_then(|report| report.cert_fingerprint.as_deref());
+
+    match role {
+        HostRole::Remote => {
+            let new =
+                remote::NewRemote::new(name, endpoint, token_file.as_deref(), cert_fingerprint, session)
+                    .map_err(reject_enrollment)?;
+            write_pairing_token(token_file.as_deref(), pairing)?;
+            remote::add_or_update(&new).map_err(registry_failure)?;
+            Ok(HostRow {
+                name: new.name,
+                role: HostRole::Remote,
+                endpoint: new.endpoint,
+                enabled: None,
+                token_file: new.token_file,
+                cert_fingerprint: new.cert_fingerprint,
+                session: new.session,
+            })
+        }
+        HostRole::Satellite => {
+            let new = satellite_registry::NewSatellite::new(
+                name,
+                endpoint,
+                true,
+                token_file.as_deref(),
+                cert_fingerprint,
+            )
+            .map_err(reject_enrollment)?;
+            write_pairing_token(token_file.as_deref(), pairing)?;
+            let entry = satellite_registry::add_or_update(&new).map_err(registry_failure)?;
+            Ok(HostRow::from_satellite(entry))
+        }
+    }
+}
+
+/// Write the pairing token owner-only, when the entry has one to write.
+fn write_pairing_token(
+    path: Option<&Path>,
+    pairing: Option<&enroll::PairReport>,
+) -> Result<(), CliError> {
+    if let (Some(path), Some(report)) = (path, pairing) {
+        enroll::write_token(path, &report.token).map_err(|err| {
+            CliError::new(
+                codes::REGISTRY,
+                err,
+                "check the phux state directory is writable, then rerun \
+                 `phux host enroll`",
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Report a completed enrollment: the `"host"` document under `--json`
+/// (the same shape `host add --json` wraps), the human summary otherwise.
+fn report_enrolled(row: &HostRow, json: bool) -> ExitCode {
+    if json {
+        return print_doc(&serde_json::json!({
+            "schema_version": 1,
+            "host": row_json(row),
+        }));
+    }
+    outln!();
+    outln!(
+        "Enrolled {} {:?} -> {}",
+        row.role.as_str(),
+        row.name,
+        row.endpoint
+    );
+    if row.endpoint.starts_with("ssh://") {
+        outln!(
+            "  No listener to dial, so this rides ssh. Sessions still live on the\n  \
+             server and survive the connection dropping. Add `--quic` on the\n  \
+             remote's service and re-run enroll to upgrade the transport."
+        );
+    } else {
+        outln!("  certificate pinned, token stored 0600");
+    }
+    match row.role {
+        HostRole::Remote => {
+            outln!();
+            outln!("  phux attach {}", row.name);
+        }
+        HostRole::Satellite => {
+            outln!("  Hub route ready once this host runs `phux service install --hub`.");
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// `phux host ls`.
@@ -624,9 +944,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        HostRole, HostRow, auth_display, empty_state, render_table, resolve_rm_role,
-        role_flag_mismatch, sort_rows,
+        HostRole, HostRow, auth_display, empty_state, enroll_failure_error, enroll_role_mismatch,
+        render_table, resolve_rm_role, role_flag_mismatch, sort_rows,
     };
+    use crate::commands::enroll::EnrollFailure;
     use crate::commands::json_err::codes;
 
     fn row(name: &str, role: HostRole) -> HostRow {
@@ -669,6 +990,65 @@ mod tests {
         assert!(role_flag_mismatch(HostRole::Remote, true, false).is_none());
         assert!(role_flag_mismatch(HostRole::Satellite, false, true).is_none());
         assert!(role_flag_mismatch(HostRole::Remote, false, false).is_none());
+    }
+
+    /// `host enroll --role satellite --session X` is refused before any ssh
+    /// traffic, with a remedy naming both ways out; every other pairing
+    /// passes.
+    #[test]
+    fn enroll_session_refused_under_satellite_role() {
+        let err = enroll_role_mismatch(HostRole::Satellite, true)
+            .expect("--session under --role satellite must be refused");
+        assert_eq!(err.code, codes::REGISTRY);
+        assert!(
+            err.message.contains("no arrival to attach"),
+            "the message explains WHY: {}",
+            err.message
+        );
+        assert!(
+            err.remedy.contains("drop --session")
+                && err.remedy.contains("phux host enroll HOST --session NAME"),
+            "the remedy names both ways out: {}",
+            err.remedy
+        );
+
+        assert!(enroll_role_mismatch(HostRole::Remote, true).is_none());
+        assert!(enroll_role_mismatch(HostRole::Satellite, false).is_none());
+        assert!(enroll_role_mismatch(HostRole::Remote, false).is_none());
+    }
+
+    /// The two shared-middle failure classes map onto the error contract
+    /// with distinct remedies, both naming the `--ssh-only` escape hatch as
+    /// a `host enroll` invocation.
+    #[test]
+    fn enroll_failures_carry_host_enroll_remedies() {
+        let err = enroll_failure_error(
+            "mini",
+            &EnrollFailure::MissingPhux("`ssh mini phux --version` failed: not found".to_owned()),
+        );
+        assert_eq!(err.code, codes::REGISTRY);
+        assert!(
+            err.remedy.contains("install phux on mini")
+                && err.remedy.contains("`phux host enroll mini --ssh-only`"),
+            "got {}",
+            err.remedy
+        );
+
+        let err = enroll_failure_error(
+            "mini",
+            &EnrollFailure::Pair("remote `phux pair --json` reported no token".to_owned()),
+        );
+        assert_eq!(err.code, codes::REGISTRY);
+        assert!(
+            err.remedy.contains("`phux host enroll mini --ssh-only`"),
+            "got {}",
+            err.remedy
+        );
+        assert!(
+            err.message.contains("no token"),
+            "the middle's message passes through: {}",
+            err.message
+        );
     }
 
     /// `host rm` with no `--role`: unique names resolve, a doubly-registered
