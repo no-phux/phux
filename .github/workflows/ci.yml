@@ -262,6 +262,14 @@ jobs:
       # it while it is still fixable. Skips itself if ziglang.org is unreachable.
       - name: zig-pin-check
         run: nix develop -c bash scripts/check-zig-pins.sh
+      # This one existed for a long time and CI never ran it — it was reachable
+      # only from `just release-preflight` and the manual parity gate, so it
+      # rotted in place: two of its docs/INSTALL.md contracts went stale in the
+      # curated-docs truth pass and `release-preflight` was already red on main
+      # before anyone tried to cut a release. A release-path gate that runs only
+      # on the release path is a gate you discover during a release.
+      - name: install-surface check
+        run: nix develop -c bash scripts/check-install-surface.sh
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true
