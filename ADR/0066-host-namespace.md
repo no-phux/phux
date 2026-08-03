@@ -70,7 +70,7 @@ different objects that merely collide in name.
    | `phux enroll HOST` | `phux host enroll HOST` |
 
    Each alias still works, is hidden from `--help`, and prints a one-line
-   stderr note naming its replacement. Shell completions are generated from
+   stderr note naming its replacement. Alias `--json` output moves to the host document schemas immediately (the `"satellites"`/`"satellite"`/`"remotes"` shapes are retired on day one, before the aliases themselves are removed); release notes must flag this as the breaking part of the flip. Shell completions are generated from
    the visible tree only, so the old verbs stop completing immediately.
 4. **Enroll flag asymmetry is resolved, not preserved.** `--json` becomes
    valid on both roles — remote-role enroll gains stable JSON output, a

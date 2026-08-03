@@ -238,7 +238,7 @@ fn check_server(socket_path: &std::path::Path) -> Check {
                         view.degradation().notices().join("; "),
                     ),
                     "the pane inventory above is incomplete — check the satellite links \
-                     with `phux satellite ls`",
+                     with `phux host ls --role satellite`",
                 )
             }
         }

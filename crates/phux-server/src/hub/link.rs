@@ -303,7 +303,7 @@ impl core::fmt::Display for LinkRefusal {
                 f,
                 "{endpoint}: refusing to dial a routable satellite without a token-file; run \
                  `phux pair` on the satellite host and register the token file with \
-                 `phux satellite add`"
+                 `phux host add --role satellite`"
             ),
             Self::MissingFingerprint { endpoint } => write!(
                 f,

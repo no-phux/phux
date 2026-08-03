@@ -386,7 +386,7 @@ which-key-delay-ms = 600
 
 # Remote phux servers this machine attaches TO (ADR-0055): `phux attach
 # mini` resolves the endpoint, certificate pin, and token recorded here, so
-# you never retype them. `phux enroll` and `phux remote add` write these
+# you never retype them. `phux host enroll` and `phux host add` write these
 # entries for you; edit by hand only to relabel or retarget one. As with
 # satellites, the token itself never goes in this file — token-file points
 # at an owner-only file holding one hex token on one line. `session` picks
