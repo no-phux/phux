@@ -300,7 +300,13 @@ fn invalid_endpoint_fails_without_stdout() {
 
     let (code, stdout, stderr) = run_with_xdg(
         &[
-            "host", "add", "--role", "satellite", "devbox", "devbox", "--json",
+            "host",
+            "add",
+            "--role",
+            "satellite",
+            "devbox",
+            "devbox",
+            "--json",
         ],
         tmp.path(),
     );

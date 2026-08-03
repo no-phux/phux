@@ -1555,21 +1555,29 @@ mod tests {
         }
     }
 
-    /// Each hidden alias still parses — full arg surface — and maps onto
-    /// the `host` action named by the ADR-0066 alias table, with a
-    /// deprecation line naming that exact replacement.
-    #[test]
-    fn deprecated_aliases_map_to_host_actions_per_the_alias_table() {
-        use crate::commands::host::{HostAction, HostRole, deprecated_alias};
+    /// The alias-mapping helper for the three dispatch tests below: parse
+    /// a legacy argv (proving the hidden verb still parses) and map it.
+    fn mapped_alias(argv: &[&str]) -> (crate::commands::host::HostAction, String) {
+        crate::commands::host::deprecated_alias(parsed(argv))
+            .unwrap_or_else(|| panic!("{argv:?} must map to a host action"))
+    }
 
-        let mapped = |argv: &[&str]| {
-            deprecated_alias(parsed(argv))
-                .unwrap_or_else(|| panic!("{argv:?} must map to a host action"))
-        };
+    /// `phux remote add|list|remove` still parse — full arg surface — and
+    /// map onto the `host` actions named by the ADR-0066 alias table, each
+    /// with a deprecation line naming that exact replacement.
+    #[test]
+    fn deprecated_remote_verbs_map_per_the_alias_table() {
+        use crate::commands::host::{HostAction, HostRole};
 
         // phux remote add NAME ENDPOINT -> phux host add NAME ENDPOINT
-        let (action, note) = mapped(&[
-            "phux", "remote", "add", "mini", "ssh://mini", "--session", "work",
+        let (action, note) = mapped_alias(&[
+            "phux",
+            "remote",
+            "add",
+            "mini",
+            "ssh://mini",
+            "--session",
+            "work",
         ]);
         let HostAction::Add {
             name,
@@ -1590,7 +1598,7 @@ mod tests {
         assert!(note.contains("`phux remote add`") && note.contains("`phux host add`"));
 
         // phux remote list -> phux host ls (role-filtered)
-        let (action, note) = mapped(&["phux", "remote", "list", "--json"]);
+        let (action, note) = mapped_alias(&["phux", "remote", "list", "--json"]);
         assert!(
             matches!(
                 action,
@@ -1604,7 +1612,7 @@ mod tests {
         assert!(note.contains("`phux host ls`"));
 
         // phux remote remove NAME -> phux host rm NAME (role-filtered)
-        let (action, note) = mapped(&["phux", "remote", "rm", "mini"]);
+        let (action, note) = mapped_alias(&["phux", "remote", "rm", "mini"]);
         assert!(
             matches!(
                 &action,
@@ -1618,8 +1626,21 @@ mod tests {
         );
         assert!(note.contains("`phux host rm`"));
 
+        // A visible verb is not an alias.
+        assert!(
+            crate::commands::host::deprecated_alias(parsed(&["phux", "host", "ls"])).is_none(),
+            "`host` itself must not map as a deprecated alias"
+        );
+    }
+
+    /// The `phux satellite` rows of the alias table: every mapped action
+    /// carries the satellite role and every note carries `--role satellite`.
+    #[test]
+    fn deprecated_satellite_verbs_map_per_the_alias_table() {
+        use crate::commands::host::{HostAction, HostRole};
+
         // phux satellite add NAME ENDPOINT -> phux host add --role satellite
-        let (action, note) = mapped(&[
+        let (action, note) = mapped_alias(&[
             "phux",
             "satellite",
             "add",
@@ -1644,7 +1665,7 @@ mod tests {
         assert!(note.contains("`phux host add --role satellite`"));
 
         // phux satellite list -> phux host ls --role satellite
-        let (action, note) = mapped(&["phux", "satellite", "ls"]);
+        let (action, note) = mapped_alias(&["phux", "satellite", "ls"]);
         assert!(matches!(
             action,
             HostAction::List {
@@ -1655,7 +1676,7 @@ mod tests {
         assert!(note.contains("`phux host ls --role satellite`"));
 
         // phux satellite remove NAME -> phux host rm --role satellite NAME
-        let (action, note) = mapped(&["phux", "satellite", "remove", "edge", "--json"]);
+        let (action, note) = mapped_alias(&["phux", "satellite", "remove", "edge", "--json"]);
         assert!(
             matches!(
                 &action,
@@ -1670,7 +1691,7 @@ mod tests {
         assert!(note.contains("`phux host rm --role satellite`"));
 
         // phux satellite enroll HOST -> phux host enroll --role satellite
-        let (action, note) = mapped(&[
+        let (action, note) = mapped_alias(&[
             "phux",
             "satellite",
             "enroll",
@@ -1696,9 +1717,16 @@ mod tests {
         assert!(ssh_only);
         assert_eq!(session, None);
         assert!(note.contains("`phux host enroll --role satellite`"));
+    }
 
-        // phux enroll HOST -> phux host enroll HOST
-        let (action, note) = mapped(&["phux", "enroll", "me@mini", "--session", "work"]);
+    /// The top-level `phux enroll` row: role defaults to remote, `--session`
+    /// survives, and the legacy surface (which had no `--json`) maps with
+    /// the json bit off so the note prints.
+    #[test]
+    fn deprecated_enroll_maps_per_the_alias_table() {
+        use crate::commands::host::{HostAction, HostRole};
+
+        let (action, note) = mapped_alias(&["phux", "enroll", "me@mini", "--session", "work"]);
         let HostAction::Enroll {
             host,
             role,
@@ -1714,12 +1742,6 @@ mod tests {
         assert_eq!(session.as_deref(), Some("work"));
         assert!(!json.json, "the legacy enroll has no --json flag");
         assert!(note.contains("`phux enroll`") && note.contains("`phux host enroll`"));
-
-        // A visible verb is not an alias.
-        assert!(
-            deprecated_alias(parsed(&["phux", "host", "ls"])).is_none(),
-            "`host` itself must not map as a deprecated alias"
-        );
     }
 
     #[test]

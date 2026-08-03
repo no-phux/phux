@@ -49,7 +49,8 @@ fn run_with_xdg(args: &[&str], xdg_config_home: &std::path::Path) -> (i32, Strin
 
 /// Assert `stderr` carries the deprecation note for `new_form` exactly once.
 fn assert_one_note(stderr: &str, old_form: &str, new_form: &str) {
-    let expected = format!("phux: `{old_form}` is deprecated and will be removed; use `{new_form}`");
+    let expected =
+        format!("phux: `{old_form}` is deprecated and will be removed; use `{new_form}`");
     let count = stderr.lines().filter(|line| *line == expected).count();
     assert_eq!(
         count, 1,
@@ -101,7 +102,11 @@ fn satellite_verbs_run_via_host_with_one_stderr_note() {
 
     let (code, stdout, stderr) = run_with_xdg(&["satellite", "add", "edge", "ssh://edge"], &xdg);
     assert_eq!(code, 0, "stderr={stderr}");
-    assert_one_note(&stderr, "phux satellite add", "phux host add --role satellite");
+    assert_one_note(
+        &stderr,
+        "phux satellite add",
+        "phux host add --role satellite",
+    );
     assert!(
         stdout.contains("Registered satellite \"edge\""),
         "got {stdout:?}"
@@ -111,7 +116,11 @@ fn satellite_verbs_run_via_host_with_one_stderr_note() {
 
     let (code, stdout, stderr) = run_with_xdg(&["satellite", "list"], &xdg);
     assert_eq!(code, 0, "stderr={stderr}");
-    assert_one_note(&stderr, "phux satellite list", "phux host ls --role satellite");
+    assert_one_note(
+        &stderr,
+        "phux satellite list",
+        "phux host ls --role satellite",
+    );
     assert!(
         stdout.contains("edge") && stdout.contains("satellite"),
         "the role-filtered host table answers: {stdout:?}"
@@ -119,7 +128,11 @@ fn satellite_verbs_run_via_host_with_one_stderr_note() {
 
     let (code, stdout, stderr) = run_with_xdg(&["satellite", "rm", "edge"], &xdg);
     assert_eq!(code, 0, "stderr={stderr}");
-    assert_one_note(&stderr, "phux satellite remove", "phux host rm --role satellite");
+    assert_one_note(
+        &stderr,
+        "phux satellite remove",
+        "phux host rm --role satellite",
+    );
     assert!(
         stdout.contains("Removed satellite \"edge\""),
         "got {stdout:?}"
@@ -174,7 +187,11 @@ fn json_paths_suppress_the_note_and_emit_the_host_schema() {
     assert!(!stderr.contains("deprecated"), "stderr={stderr:?}");
     let doc: serde_json::Value = serde_json::from_str(&stdout).expect("stdout is one JSON doc");
     assert_eq!(doc["schema_version"], 1);
-    assert_eq!(doc["hosts"].as_array().expect("hosts").len(), 0, "role-filtered");
+    assert_eq!(
+        doc["hosts"].as_array().expect("hosts").len(),
+        0,
+        "role-filtered"
+    );
 
     // A provoked failure under `--json`: one stderr line, still no note.
     let (code, stdout, stderr) = run_with_xdg(&["satellite", "remove", "ghost", "--json"], &xdg);

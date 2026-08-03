@@ -1008,7 +1008,7 @@ fn deprecation_line(old: &str, new: &str) -> String {
 /// aliases. `pub(crate)` so the dispatch tests in `main.rs` can pin the
 /// table against parsed invocations.
 pub(crate) fn deprecated_alias(command: super::Command) -> Option<(HostAction, String)> {
-    use super::{Command, RemoteAction, SatelliteAction};
+    use super::Command;
     match command {
         Command::Enroll {
             host,
@@ -1032,102 +1032,117 @@ pub(crate) fn deprecated_alias(command: super::Command) -> Option<(HostAction, S
             },
             deprecation_line("phux enroll", "phux host enroll"),
         )),
-        Command::Remote { action } => Some(match action {
-            RemoteAction::Add {
+        Command::Remote { action } => Some(remote_alias(action)),
+        Command::Satellite { action } => Some(satellite_alias(action)),
+        _ => None,
+    }
+}
+
+/// The `phux remote` rows of the alias table (role `remote`, the default,
+/// so the replacement spellings carry no `--role` flag).
+fn remote_alias(action: super::RemoteAction) -> (HostAction, String) {
+    use super::RemoteAction;
+    match action {
+        RemoteAction::Add {
+            name,
+            endpoint,
+            token_file,
+            cert_fingerprint,
+            session,
+        } => (
+            HostAction::Add {
                 name,
                 endpoint,
+                role: HostRole::Remote,
                 token_file,
                 cert_fingerprint,
                 session,
-            } => (
-                HostAction::Add {
-                    name,
-                    endpoint,
-                    role: HostRole::Remote,
-                    token_file,
-                    cert_fingerprint,
-                    session,
-                    disabled: false,
-                    json: JsonOpt { json: false },
-                },
-                deprecation_line("phux remote add", "phux host add"),
-            ),
-            RemoteAction::List { json } => (
-                HostAction::List {
-                    role: Some(HostRole::Remote),
-                    json: JsonOpt { json },
-                },
-                deprecation_line("phux remote list", "phux host ls"),
-            ),
-            RemoteAction::Remove { name } => (
-                HostAction::Remove {
-                    name,
-                    role: Some(HostRole::Remote),
-                    json: JsonOpt { json: false },
-                },
-                deprecation_line("phux remote remove", "phux host rm"),
-            ),
-        }),
-        Command::Satellite { action } => Some(match action {
-            SatelliteAction::List { json } => (
-                HostAction::List {
-                    role: Some(HostRole::Satellite),
-                    json: JsonOpt { json },
-                },
-                deprecation_line("phux satellite list", "phux host ls --role satellite"),
-            ),
-            SatelliteAction::Enroll {
+                disabled: false,
+                json: JsonOpt { json: false },
+            },
+            deprecation_line("phux remote add", "phux host add"),
+        ),
+        RemoteAction::List { json } => (
+            HostAction::List {
+                role: Some(HostRole::Remote),
+                json: JsonOpt { json },
+            },
+            deprecation_line("phux remote list", "phux host ls"),
+        ),
+        RemoteAction::Remove { name } => (
+            HostAction::Remove {
+                name,
+                role: Some(HostRole::Remote),
+                json: JsonOpt { json: false },
+            },
+            deprecation_line("phux remote remove", "phux host rm"),
+        ),
+    }
+}
+
+/// The `phux satellite` rows of the alias table: every replacement carries
+/// `--role satellite`, and the satellite-only surface (`--disabled`, no
+/// `--session`) maps unchanged.
+fn satellite_alias(action: super::SatelliteAction) -> (HostAction, String) {
+    use super::SatelliteAction;
+    match action {
+        SatelliteAction::List { json } => (
+            HostAction::List {
+                role: Some(HostRole::Satellite),
+                json: JsonOpt { json },
+            },
+            deprecation_line("phux satellite list", "phux host ls --role satellite"),
+        ),
+        SatelliteAction::Enroll {
+            host,
+            name,
+            endpoint,
+            quic_port,
+            no_service,
+            ssh_only,
+            json,
+        } => (
+            HostAction::Enroll {
                 host,
+                role: HostRole::Satellite,
                 name,
                 endpoint,
                 quic_port,
                 no_service,
                 ssh_only,
-                json,
-            } => (
-                HostAction::Enroll {
-                    host,
-                    role: HostRole::Satellite,
-                    name,
-                    endpoint,
-                    quic_port,
-                    no_service,
-                    ssh_only,
-                    session: None,
-                    json: JsonOpt { json },
-                },
-                deprecation_line("phux satellite enroll", "phux host enroll --role satellite"),
-            ),
-            SatelliteAction::Add {
+                session: None,
+                json: JsonOpt { json },
+            },
+            deprecation_line("phux satellite enroll", "phux host enroll --role satellite"),
+        ),
+        SatelliteAction::Add {
+            name,
+            endpoint,
+            disabled,
+            token_file,
+            cert_fingerprint,
+            json,
+        } => (
+            HostAction::Add {
                 name,
                 endpoint,
-                disabled,
+                role: HostRole::Satellite,
                 token_file,
                 cert_fingerprint,
-                json,
-            } => (
-                HostAction::Add {
-                    name,
-                    endpoint,
-                    role: HostRole::Satellite,
-                    token_file,
-                    cert_fingerprint,
-                    session: None,
-                    disabled,
-                    json: JsonOpt { json },
-                },
-                deprecation_line("phux satellite add", "phux host add --role satellite"),
-            ),
-            SatelliteAction::Remove { name, json } => (
-                HostAction::Remove {
-                    name,
-                    role: Some(HostRole::Satellite),
-                    json: JsonOpt { json },
-                },
-                deprecation_line("phux satellite remove", "phux host rm --role satellite"),
-            ),
-        }),
-        _ => None,
+                session: None,
+                disabled,
+                json: JsonOpt { json },
+            },
+            deprecation_line("phux satellite add", "phux host add --role satellite"),
+        ),
+        SatelliteAction::Remove { name, json } => (
+            HostAction::Remove {
+                name,
+                role: Some(HostRole::Satellite),
+                json: JsonOpt { json },
+            },
+            deprecation_line("phux satellite remove", "phux host rm --role satellite"),
+        ),
     }
 }
 
