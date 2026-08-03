@@ -25,3 +25,4 @@ Every file in this directory is rendered from the compiled `phux` binary by `jus
 | [hooks.md](hooks.md) | Every hook event the server fires, with its context keys, environment projection, and matching rules. |
 | [exit-codes.md](exit-codes.md) | Every exit code the binary uses and what each one means. |
 | [files.md](files.md) | The symbolic path rule for every file phux reads or writes: socket, config, logs, TLS material, tokens. |
+| [deprecations.md](deprecations.md) | Every deprecated spelling, its replacement, and its removal release. |

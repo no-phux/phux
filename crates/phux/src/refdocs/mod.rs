@@ -26,6 +26,7 @@
 pub(crate) mod actions;
 pub(crate) mod cli;
 pub(crate) mod config;
+pub(crate) mod deprecations;
 pub(crate) mod exit_codes;
 pub(crate) mod files;
 pub(crate) mod hooks;
@@ -105,6 +106,7 @@ pub(crate) fn pages() -> Vec<Page> {
         hooks::page(),
         exit_codes::page(),
         files::page(),
+        deprecations::page(),
     ];
     let mut pages = Vec::with_capacity(content.len() + 1);
     pages.push(index_page(&content));

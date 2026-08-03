@@ -48,6 +48,7 @@ use commands::Command;
 mod output;
 
 mod commands;
+mod deprecations;
 mod exit_codes;
 mod refdocs;
 mod selector;
@@ -2002,6 +2003,140 @@ mod tests {
                 !help.contains("--horizontal") && !help.contains("--vertical"),
                 "{verb} help must hide the deprecated booleans:\n{help}"
             );
+        }
+    }
+
+    /// The bidirectional deprecation-table <-> clap-tree consistency check
+    /// (phux-i0e8.13.4). One side: walk the parser and collect every hidden
+    /// subcommand and hidden long flag that is not on the named internal
+    /// allowlist — each must be a row of `deprecations::DEPRECATED`, so a
+    /// spelling cannot be hidden without being registered as deprecated
+    /// (and thereby tested, documented, and scheduled for removal). Other
+    /// side: set equality means every table row must still exist as a
+    /// hidden surface, so a removed alias forces its stale row out of the
+    /// table (and off the generated deprecations page) in the same change.
+    ///
+    /// Verified to fail in both directions: deleting the `phux remote add`
+    /// row and adding a bogus `phux remote frobnicate` row each break the
+    /// set equality (noted in the bead).
+    #[test]
+    fn deprecation_table_matches_the_clap_tree_bidirectionally() {
+        use std::collections::BTreeSet;
+
+        use clap::CommandFactory;
+
+        use crate::deprecations::DEPRECATED;
+
+        /// Hidden surfaces that are machine plumbing, not deprecations:
+        /// each is hidden because no human should type it, and none has a
+        /// replacement spelling to migrate to.
+        const INTERNAL: &[&str] = &[
+            // The refdocs generator (ADR-0069): machine-only since it
+            // shipped.
+            "phux gen-reference-docs",
+            // Auto-spawn / upgrade plumbing on `phux server`.
+            "phux server --daemonize",
+            "phux server --seed-command",
+            "phux server --resume",
+            // `phux play`'s in-pane writer half.
+            "phux play --pty-writer",
+        ];
+
+        /// Collect every hidden row of the tree under `path`: hidden long
+        /// flags as `<path> --<flag>`, hidden subcommands expanded to one
+        /// row per leaf action (matching the table's `old` spellings).
+        fn walk(cmd: &clap::Command, path: &str, rows: &mut BTreeSet<String>) {
+            for arg in cmd.get_arguments() {
+                if arg.is_hide_set()
+                    && let Some(long) = arg.get_long()
+                {
+                    rows.insert(format!("{path} --{long}"));
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                let sub_path = format!("{path} {}", sub.get_name());
+                if sub.is_hide_set() {
+                    let mut leaves = sub.get_subcommands().peekable();
+                    if leaves.peek().is_none() {
+                        rows.insert(sub_path);
+                    } else {
+                        for leaf in leaves {
+                            rows.insert(format!("{sub_path} {}", leaf.get_name()));
+                        }
+                    }
+                } else {
+                    walk(sub, &sub_path, rows);
+                }
+            }
+        }
+
+        let mut tree_rows = BTreeSet::new();
+        walk(&Cli::command(), "phux", &mut tree_rows);
+        for internal in INTERNAL {
+            assert!(
+                tree_rows.remove(*internal),
+                "{internal} is allowlisted as internal but no longer hidden \
+                 in the tree; prune the allowlist"
+            );
+        }
+
+        let table_rows: BTreeSet<String> =
+            DEPRECATED.iter().map(|row| row.old.to_owned()).collect();
+        assert_eq!(
+            table_rows.len(),
+            DEPRECATED.len(),
+            "duplicate `old` spellings in the deprecation table"
+        );
+        assert_eq!(
+            tree_rows, table_rows,
+            "hidden clap surface and the deprecation table must agree: a \
+             row only in the tree is an unregistered hidden alias (add it \
+             to deprecations::DEPRECATED); a row only in the table is \
+             stale (the alias is gone — delete the row and regenerate \
+             docs/reference/deprecations.md)"
+        );
+    }
+
+    /// Every verb row's stderr line is the alias table's exact rendering of
+    /// its own `old`/`new` columns, and every flag row's line names the
+    /// deprecated flag and its `--split` replacement — so the generated
+    /// deprecations page, the warning, and the audit test all say the same
+    /// thing.
+    #[test]
+    fn deprecation_rows_render_their_own_notes() {
+        use crate::deprecations::{DEPRECATED, DeprecatedSurface};
+
+        for row in DEPRECATED {
+            match row.surface {
+                DeprecatedSurface::Verb => assert_eq!(
+                    row.note,
+                    format!(
+                        "phux: `{}` is deprecated and will be removed; use `{}`",
+                        row.old, row.new
+                    ),
+                    "verb row {} must render its note from its own columns",
+                    row.old
+                ),
+                DeprecatedSurface::Flag => {
+                    let flag = row.old_flag().expect("flag rows end in a long flag");
+                    let axis = flag.trim_start_matches("--");
+                    assert_eq!(
+                        row.note,
+                        format!(
+                            "phux: {flag} is deprecated and will be removed; \
+                             use `--split {axis}` (or `--split {short}`)",
+                            short = &axis[..1]
+                        ),
+                        "flag row {} must warn toward its --split replacement",
+                        row.old
+                    );
+                    assert!(
+                        row.new.ends_with(&format!("--split {axis}")),
+                        "flag row {} must advertise the --split spelling",
+                        row.old
+                    );
+                }
+            }
         }
     }
 
