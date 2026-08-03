@@ -91,9 +91,13 @@ explicit-attach paths.
 
 ### 1.1 The shipped verbs
 
-These are the main interactive and control entrypoints. `phux --help` is the
-complete generated inventory, including supervision, upgrade, tags, pairing,
-agents, and workspace commands:
+These are the main interactive and control entrypoints, annotated for
+narrative. The complete inventory — every invocation path with its flags,
+defaults, and help text — is the generated
+[`docs/reference/cli.md`](../reference/cli.md) (the same content
+`phux --help` renders, including supervision, upgrade, tags, pairing,
+agents, and workspace commands); consult it when a flag below looks
+abbreviated, and trust it over this list on any disagreement:
 
 ```
 phux                          # attach to default session, autostart server
@@ -166,6 +170,8 @@ phux config <init|path|show>  # scaffold + inspect config
 phux config check [PATH] [--json]
                               # report every unknown key / wrong value with
                               # its full dotted path and originating layer
+phux config reload            # validate, then apply the config to running
+                              # clients in place (§4.3)
 phux config plugins [--json]  # compatibility alias: inspect plugin manifests
 phux config agents [--json]   # inspect configured plugin agent states
 phux config run PLUGIN ACTION # execute a configured plugin action

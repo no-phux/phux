@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-07-09
+last-reviewed: 2026-08-02
 ---
 
 # Configuration and keybindings
@@ -42,6 +42,13 @@ phux config show --layers   # provenance: which layer (defaults, an
                             # effective key; --json for the stable
                             # machine-readable form
 
+phux config check        # validate: every unknown key and wrong value,
+                         # each with its full dotted path and the layer
+                         # file that introduced it
+
+phux config reload       # apply edits to running clients in place
+                         # (see "Applying changes" below)
+
 phux plugin link ./my-plugin/phux-plugin.toml --json
                          # add or update a plugin manifest entry
 
@@ -61,9 +68,24 @@ phux config run PLUGIN ACTION --json  # execute a configured plugin action
 
 ### Applying changes
 
-There is no live-reload verb today. To apply edits to the interactive client, restart it — detach and re-attach, or relaunch `phux` — so it re-reads the file on the next start. Local config/plugin subcommands (`init`, `path`, `show`, `plugins`, `agents`, `plugin ...`, and plugin action `run`) read the file fresh on each invocation.
+The edit loop is edit, check, reload:
 
-Reload is deliberately not automatic, even as design intent: the file is not watched, because watch-reload introduces papercuts ("saved-mid-edit, now my keybindings are gone"). An explicit reload path may land later (see `docs/consumers/tui.md` §4.3).
+```sh
+$EDITOR ~/.config/phux/config.toml
+
+phux config check        # every problem in one pass, with full dotted
+                         # paths and the layer file that introduced each
+
+phux config reload       # apply to running clients in place
+```
+
+`phux config reload` validates the layered config locally first — a broken file fails right there with the parse error and signals nothing — then rings a reload doorbell on the server so every attached client re-reads its own config file and atomically rebuilds keybindings, the theme, the status-bar composition, and plugin palette rows. On any parse or validation error a client keeps its previous config fully in effect and surfaces the error as a dismissable toast — never a half-applied mix. The same reload is available inside the TUI as the `reload-config` action: a command-palette row ("Reload the config file"), bindable to any chord (unbound by default). See `docs/consumers/tui.md` §4.3 for the full reload semantics.
+
+A few settings are read once at attach and still need a client restart (detach and re-attach, or relaunch `phux`): `[experimental]` flags, `[sidebar]` geometry, and `[defaults]` (which the server owns anyway).
+
+Reload is explicit, never automatic: the file is not watched, because watch-reload introduces papercuts ("saved-mid-edit, now my keybindings are gone"). An explicit verb keeps a broken intermediate save inert until you ask for it.
+
+Local config/plugin subcommands (`init`, `path`, `show`, `check`, `plugins`, `agents`, `plugin ...`, and plugin action `run`) read the file fresh on each invocation.
 
 ---
 
@@ -150,17 +172,7 @@ A bundled name `n` resolves to `<dir>/n/n.toml` across, in order: `$PHUX_DISTROS
 
 ## Schema overview
 
-The config TOML has these main sections:
-
-```toml
-[defaults]             # Server-wide behavior: shell, history, spawning
-[keybindings]          # Prefix key + prefix-table + global chords
-[status]               # Status bar widget composition
-[hooks]                # Event-driven actions (array-of-tables)
-[[plugins]]            # Declarative plugin manifests
-[theme]                # Color slots for chrome and overlays
-[experimental]         # Opt-in flags subject to change
-```
+The complete schema is a generated reference: [`docs/reference/config.md`](./reference/config.md) lists every section, every scalar knob with its shipped default, and the annotated default config embedded in the binary. It renders from the compiled binary and is byte-pinned by a freshness test, so it cannot drift from the code. The subsections below cover only the material that benefits from narrative — keybindings, widgets, hooks, and plugins.
 
 ### Keybindings
 
@@ -180,7 +192,7 @@ The keybindings section has three keys:
 
 **Resolution:** After pressing the prefix, the *next* keystroke is matched against `prefix-table`. If it matches, the action runs; else the keystroke goes to the pane. Global bindings are checked for every keystroke; they fire if they match, else the keystroke goes to the pane.
 
-**Actions** are typed commands with optional parameters. See `docs/consumers/tui.md` §5.4 for the full action catalog. A bare string is shorthand for a no-parameter action:
+**Actions** are typed commands with optional parameters. The full action catalog is a generated reference: [`docs/reference/actions.md`](./reference/actions.md). A bare string is shorthand for a no-parameter action:
 
 ```toml
 [keybindings.prefix-table]
@@ -202,21 +214,13 @@ right  = ["session-name", { kind = "time", format = "%H:%M" }]
 
 A bare string like `"session-name"` is shorthand for `{ kind = "session-name" }`. Widgets that take parameters use inline table syntax.
 
-**Shipped widgets** (the kinds implemented today; from `docs/consumers/tui.md` §8.3):
+The widget catalog is a generated reference: [`docs/reference/widgets.md`](./reference/widgets.md) lists every registered kind — `session-name`, `windows`, `time`, `cwd`, `exit`, `exec`, `help-hints` — with the exact options and defaults each factory accepts, plus the universal `style` table for colors, attributes, and separators. A kind or option is listed there exactly when the binary accepts it. `phux config check` validates `[status]` through the same build path, so a typo'd kind or option surfaces as a located finding.
 
-- `"session-name"` — current session name
-- `"windows"` — tab bar, one tab per window
-- `{ kind = "time", format = "..." }` — wall-clock time (strftime format)
-
-Further kinds (`cwd`, `exit`, `exec`, and more) are catalogued in `docs/consumers/tui.md` §8.3 as design intent, not yet implemented.
-
-All are **optional**. The default ships with windows on the left and session name + time on the right. Extend by using styled variants — see `phux config show --default` for examples with custom colors and separators.
+All are **optional**. The default ships with windows on the left and session name + time on the right. See `phux config show --default` for styled examples with custom colors and separators.
 
 ### Hooks (events and actions)
 
-> **Status:** Schema only. The `[[hooks.<name>]]` tables parse, but the runtime that fires them is design intent (`docs/consumers/tui.md` §9); the shipped defaults define no hooks.
-
-Hooks are event-driven actions. You could, for example, declare two `pane-exit` hooks — one for success (exit code 0), one for any other exit code:
+Hooks are event-driven actions, fired by the server-side dispatcher (`phux-server::hooks`). A starter set of real events ships today — `after-new-pane`, `pane-exit`, `focus-changed`, `client-attached`, `client-detached`, and `agent-state-changed` — and the shipped defaults define no hooks. You could, for example, declare two `pane-exit` hooks — one for success (exit code 0), one that logs any other exit:
 
 ```toml
 [[hooks.pane-exit]]
@@ -225,10 +229,10 @@ action = "noop"
 
 [[hooks.pane-exit]]
 when   = { exit-code = "*" }
-action = { kind = "notify", text = "pane {pane} exited with {exit-code}" }
+action = { kind = "run", command = "echo pane exited >> ~/.cache/phux/hooks.log" }
 ```
 
-Each `[[hooks.<name>]]` entry is an array-of-tables entry; multiple entries are allowed and evaluated in order. See `docs/consumers/tui.md` §9 for the full event and action catalog as it stabilizes.
+Each `[[hooks.<name>]]` entry is an array-of-tables entry; multiple entries are allowed and the first match wins per event. `phux config check` validates the whole surface — event names, `when` keys, and actions — and the server warns again at startup about a hook that can never fire. See `docs/consumers/tui.md` §9 for the full event table, context keys, and execution semantics.
 
 ### Plugins
 
@@ -372,7 +376,7 @@ The shipped default is `C-a` to avoid conflicts with readline and screen. To cha
 prefix = "C-b"
 ```
 
-Then restart the client (detach and re-attach, or relaunch `phux`). Every prefix-table binding (`c`, `%`, `x`, etc.) now fires after `Ctrl-B`.
+Then run `phux config reload` (or the `reload-config` palette action). Every prefix-table binding (`c`, `%`, `x`, etc.) now fires after `Ctrl-B` in every attached client, no restart needed.
 
 Or use `Ctrl-Space`:
 
@@ -393,7 +397,7 @@ right = [
 ]
 ```
 
-Restart the client to apply it. The status bar now shows the session name and a 12-hour time on the right. For styling (color, bold, underline), use the styled widget forms in `docs/consumers/tui.md` §8.2.
+Run `phux config reload` to apply it. The status bar now shows the session name and a 12-hour time on the right. For styling (color, bold, underline), use the universal `style` table documented in [`docs/reference/widgets.md`](./reference/widgets.md).
 
 ### Example 3: Customize the prefix-table to use Vim-style bindings
 
@@ -413,18 +417,20 @@ prefix = "C-a"
 "-" = { action = "split-pane", direction = "horizontal" }
 ```
 
-Your file overrides the matching keys in the shipped defaults; all other bindings remain active. Restart the client to apply it. Now `Ctrl-A H` resizes the pane left by 5 columns, and `Ctrl-A -` splits horizontally.
+Your file overrides the matching keys in the shipped defaults; all other bindings remain active. Run `phux config reload` to apply it. Now `Ctrl-A H` resizes the pane left by 5 columns, and `Ctrl-A -` splits horizontally.
 
 ---
 
 ## Links and next steps
 
-**Dive deeper:**
-- **Action catalog and widget types** → [`docs/consumers/tui.md`](./consumers/tui.md) (§5.4 for actions, §8 for widgets)
-- **Full schema** → the `phux-config` crate (`crates/phux-config/src/schema.rs`)
-- **Lifecycle and event types** → [`docs/consumers/tui.md`](./consumers/tui.md) §9
+**Dive deeper (generated, cannot drift):**
+- **Full schema and annotated defaults** → [`docs/reference/config.md`](./reference/config.md)
+- **Action catalog** → [`docs/reference/actions.md`](./reference/actions.md)
+- **Widget catalog** → [`docs/reference/widgets.md`](./reference/widgets.md)
+- **CLI inventory** → [`docs/reference/cli.md`](./reference/cli.md)
 
-**Common workflows:**
+**Narrative:**
+- **Hook events and execution semantics** → [`docs/consumers/tui.md`](./consumers/tui.md) §9
 - **Getting started** → [`docs/QUICKSTART.md`](./QUICKSTART.md)
 - **Understanding the TUI model** → [`docs/consumers/tui.md`](./consumers/tui.md) §2–3
-- **Reference** → `phux config show --default` (the shipped config with comments)
+- **Shipped defaults with comments** → `phux config show --default`
