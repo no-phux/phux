@@ -257,6 +257,11 @@ pub(crate) enum Command {
     ///
     /// With no name, attaches to the most-recently-focused session,
     /// auto-spawning a server if none is running. Requires a TTY.
+    ///
+    /// A name enrolled in the host registry (`phux host enroll`, `phux
+    /// host add`) shadows a local session of the same name: `phux attach
+    /// NAME` dials the registered host instead of the local socket.
+    /// Pass `--socket` to force the local reading of the name.
     #[command(group = clap::ArgGroup::new("remote").args(["quic", "ws"]).multiple(false))]
     #[command(visible_alias = "a")]
     Attach {
@@ -1274,7 +1279,11 @@ pub(crate) enum Command {
     /// `ssh://` satellites through it. The bridge neither
     /// parses nor injects bytes; stdout is protocol-only and diagnostics
     /// go to stderr. Exits when either side closes.
-    #[command(name = "stdio-bridge")]
+    // Hidden: machine-only plumbing that `ssh HOST phux stdio-bridge`
+    // invokes — a human never types it, so it stays out of `--help`, the
+    // generated completions, and the docs/reference pages while continuing
+    // to parse (phux-i0e8.12.5, re-landed by phux-06nn).
+    #[command(name = "stdio-bridge", hide = true)]
     StdioBridge {},
 
     /// Run a standalone relay, or enroll a route with it.

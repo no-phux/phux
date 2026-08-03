@@ -114,8 +114,7 @@ mod help_inventory;
           worktree   Create, open, list, and remove worktree-bound sessions\n\n\
         FEDERATION\n  \
           pair       Mint a pairing token for a remote consumer\n  \
-          relay      Run a standalone relay, or enroll a route with it\n  \
-          stdio-bridge  Bridge stdio to the local server socket (SSH-stdio)\n\n\
+          relay      Run a standalone relay, or enroll a route with it\n\n\
         TARGET is the selector grammar: a session name, `name:window`,\n\
         `name:window.pane`, `@id`, or `.` (focused). `=` is reserved for the attached TUI's client-local focus MRU. The same\n\
         grammar works across kill/snapshot/send-keys/run/wait/ask.",
@@ -1562,6 +1561,11 @@ mod tests {
                 "Deprecated alias",
                 // The machine-only doc generator, hidden since it shipped.
                 "gen-reference-docs",
+                // The machine-only SSH bridge verb's about text. Matched on
+                // the about string rather than the verb name because
+                // `server --hub`'s option description legitimately mentions
+                // `ssh HOST phux stdio-bridge` in prose.
+                "Bridge stdin/stdout",
             ] {
                 assert!(
                     !script.contains(legacy),

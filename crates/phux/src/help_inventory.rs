@@ -344,6 +344,89 @@ fn example_blocks_render_one_example_per_line() {
     }
 }
 
+/// `stdio-bridge` is machine-only plumbing — the remote end of the
+/// SSH-stdio transport that `ssh HOST phux stdio-bridge` invokes. No human
+/// types it, so the curated help must not advertise it, while the verb
+/// itself keeps parsing (hiding it must never break deployed `ssh` bridge
+/// invocations).
+#[test]
+fn top_level_help_hides_stdio_bridge_but_it_still_parses() {
+    let mut root = Cli::command();
+    let long = root.render_long_help().to_string();
+    assert!(
+        !long.contains("stdio-bridge"),
+        "top-level `phux --help` still advertises the machine-only \
+         `stdio-bridge`:\n{long}"
+    );
+
+    use clap::Parser as _;
+    assert!(
+        Cli::try_parse_from(["phux", "stdio-bridge"]).is_ok(),
+        "`phux stdio-bridge` must keep parsing while hidden"
+    );
+}
+
+/// `phux attach NAME` resolves NAME against the host registry first — an
+/// enrolled host shadows a local session of the same name — and `--socket`
+/// is the escape hatch that forces the local reading. Both halves of that
+/// rule must be taught in the attach long help. Matched on
+/// whitespace-normalized text because clap reflows doc-comment paragraphs.
+#[test]
+fn attach_long_help_documents_registry_shadowing_and_socket() {
+    let root = Cli::command();
+    let attach = root
+        .get_subcommands()
+        .find(|sub| sub.get_name() == "attach")
+        .expect("no `attach` subcommand in the tree");
+    let long = attach.clone().render_long_help().to_string();
+    let flat = long.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "phux host enroll",
+        "shadows a local session",
+        "--socket` to force the local reading",
+    ] {
+        assert!(
+            flat.contains(needle),
+            "`phux attach --help` no longer documents registry-name \
+             shadowing ({needle:?} missing):\n{long}"
+        );
+    }
+}
+
+/// Every `phux agent` subcommand and every one of its args carries help
+/// text visible in `--help` — no bare `target:`/`json:` fields whose
+/// meaning the operator has to guess.
+#[test]
+fn agent_args_all_carry_doc_comments() {
+    let root = Cli::command();
+    let agent = root
+        .get_subcommands()
+        .find(|sub| sub.get_name() == "agent")
+        .expect("no `agent` subcommand in the tree");
+    for sub in agent.get_subcommands() {
+        if sub.get_name() == "help" {
+            continue;
+        }
+        assert!(
+            sub.get_about().is_some(),
+            "`phux agent {}` has no about/doc comment",
+            sub.get_name()
+        );
+        for arg in sub.get_arguments() {
+            if matches!(arg.get_id().as_str(), "help" | "version") {
+                continue;
+            }
+            assert!(
+                arg.get_help().is_some(),
+                "`phux agent {}` arg `{}` carries no doc comment visible \
+                 in --help",
+                sub.get_name(),
+                arg.get_id()
+            );
+        }
+    }
+}
+
 #[test]
 fn root_help_documents_exit_status() {
     let mut root = Cli::command();

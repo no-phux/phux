@@ -30,26 +30,36 @@ pub(crate) use self::session::{
 
 #[derive(Debug, clap::Subcommand)]
 pub(crate) enum AgentAction {
-    #[command(about = "List inferred agent state for every pane")]
+    /// List inferred agent state for every pane.
     #[command(visible_alias = "ls")]
     List {
+        /// Emit machine-readable JSON instead of the table.
         #[arg(long)]
         json: bool,
     },
-    #[command(about = "Show inferred state for one pane")]
+    /// Show inferred state for one pane.
     Show {
+        /// Target selector (resolves to one pane). Omit for the focused
+        /// pane.
         target: Option<String>,
+        /// Emit machine-readable JSON instead of the table.
         #[arg(long)]
         json: bool,
     },
-    #[command(about = "Explain the evidence behind one pane's state")]
+    /// Explain the evidence behind one pane's state.
     Explain {
+        /// Target selector (resolves to one pane). Omit for the focused
+        /// pane.
         target: Option<String>,
+        /// Emit machine-readable JSON instead of the table.
         #[arg(long)]
         json: bool,
     },
-    #[command(about = "Declare a pane's agent identity (writes the phux.agent/v1 L3 record)")]
+    /// Declare a pane's agent identity (writes the phux.agent/v1 L3
+    /// record).
     Set {
+        /// Target selector (resolves to one pane). Omit for the focused
+        /// pane.
         target: Option<String>,
         /// Human-facing agent name (required, non-empty).
         #[arg(long)]
@@ -67,9 +77,13 @@ pub(crate) enum AgentAction {
         #[arg(long)]
         session: Option<String>,
     },
-    #[command(about = "Clear a pane's declared agent identity (deletes phux.agent/v1)")]
-    Clear { target: Option<String> },
-    #[command(about = "Make plain `claude` launch inside phux and publish lifecycle state")]
+    /// Clear a pane's declared agent identity (deletes phux.agent/v1).
+    Clear {
+        /// Target selector (resolves to one pane). Omit for the focused
+        /// pane.
+        target: Option<String>,
+    },
+    /// Make plain `claude` launch inside phux and publish lifecycle state.
     InstallClaude {
         /// Shell rc file to activate (auto-detected from SHELL).
         #[arg(long, value_parser = ["zsh", "bash", "fish"])]
@@ -78,7 +92,7 @@ pub(crate) enum AgentAction {
         #[arg(long, value_name = "PATH")]
         real: Option<PathBuf>,
     },
-    #[command(about = "Remove the claude-in-phux shim and shell activation")]
+    /// Remove the claude-in-phux shim and shell activation.
     UninstallClaude,
 }
 

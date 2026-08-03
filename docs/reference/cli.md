@@ -74,7 +74,6 @@ ORGANIZE
 FEDERATION
   pair       Mint a pairing token for a remote consumer
   relay      Run a standalone relay, or enroll a route with it
-  stdio-bridge  Bridge stdio to the local server socket (SSH-stdio)
 
 TARGET is the selector grammar: a session name, `name:window`,
 `name:window.pane`, `@id`, or `.` (focused). `=` is reserved for the attached TUI's client-local focus MRU. The same
@@ -83,48 +82,47 @@ grammar works across kill/snapshot/send-keys/run/wait/ask.
 Usage: phux [OPTIONS] [COMMAND]
 
 Commands:
-  attach        Attach to a session (interactive) [aliases: a]
-  server        Run a phux server in the foreground
-  ls            List sessions on the running server [aliases: list]
-  status        Report the running server: pid, up since, protocol, clients, logs
-  new           Create a new session and attach to it
-  spawn         Spawn a Terminal without attaching (`SPAWN_TERMINAL`)
-  launch        Launch an agent integration in a new pane
-  kill          Kill a session, window, or pane
-  insert-pane   Insert an already-created pane into a session layout
-  move-pane     Move one existing pane beside another, even across sessions
-  swap-pane     Swap two existing pane leaves in the same session layout
-  resize        Set a pane's grid size, with no TTY
-  detach        Detach clients from a session, from outside the attach UI
-  take          Take the input wheel of a pane
-  give          Give back the input wheel of a pane
-  signal        Signal a pane's process group
-  upgrade       Graceful-upgrade the running server in place
-  rename        Rename a session
-  snapshot      Capture a pane's screen as JSON or a boxed text view
-  send-keys     Send keys to a pane
-  paste         Paste text into a pane (bracketed when the pane asks for it)
-  wait          Block until a pane meets a condition
-  watch         Stream a pane's live events (bell, title, dirty/idle, lifecycle)
-  rec           Record a pane and export it as a cast, GIF, or APNG
-  play          Play a recording back as a live pane
-  ask           Report an agent ask event for a pane
-  agent         List, show, explain, set, or clear per-pane agent state
-  run           Run a command in a pane and capture its exit code
-  config        Inspect, scaffold, and reload the phux config file
-  plugin        Manage local plugin manifests in the phux config registry
-  workspace     Inspect a git workspace and its worktrees for agent orchestration
-  tag           Read and write a Terminal's L3 tags
-  stdio-bridge  Bridge stdin/stdout to the local server socket for SSH-stdio transport
-  relay         Run a standalone relay, or enroll a route with it
-  pair          Mint a pairing token for a remote consumer
-  host          Register the machines phux talks to: remotes and satellites
-  service       Keep a server running across logout and reboot
-  completion    Print a shell completion script on stdout
-  doctor        Diagnose a phux install: config, socket, server, plugins
-  worktree      Manage git worktrees and the sessions bound to them
-  logs          Show where phux's logs live, or tail one of them
-  help          Print this message or the help of the given subcommand(s)
+  attach       Attach to a session (interactive) [aliases: a]
+  server       Run a phux server in the foreground
+  ls           List sessions on the running server [aliases: list]
+  status       Report the running server: pid, up since, protocol, clients, logs
+  new          Create a new session and attach to it
+  spawn        Spawn a Terminal without attaching (`SPAWN_TERMINAL`)
+  launch       Launch an agent integration in a new pane
+  kill         Kill a session, window, or pane
+  insert-pane  Insert an already-created pane into a session layout
+  move-pane    Move one existing pane beside another, even across sessions
+  swap-pane    Swap two existing pane leaves in the same session layout
+  resize       Set a pane's grid size, with no TTY
+  detach       Detach clients from a session, from outside the attach UI
+  take         Take the input wheel of a pane
+  give         Give back the input wheel of a pane
+  signal       Signal a pane's process group
+  upgrade      Graceful-upgrade the running server in place
+  rename       Rename a session
+  snapshot     Capture a pane's screen as JSON or a boxed text view
+  send-keys    Send keys to a pane
+  paste        Paste text into a pane (bracketed when the pane asks for it)
+  wait         Block until a pane meets a condition
+  watch        Stream a pane's live events (bell, title, dirty/idle, lifecycle)
+  rec          Record a pane and export it as a cast, GIF, or APNG
+  play         Play a recording back as a live pane
+  ask          Report an agent ask event for a pane
+  agent        List, show, explain, set, or clear per-pane agent state
+  run          Run a command in a pane and capture its exit code
+  config       Inspect, scaffold, and reload the phux config file
+  plugin       Manage local plugin manifests in the phux config registry
+  workspace    Inspect a git workspace and its worktrees for agent orchestration
+  tag          Read and write a Terminal's L3 tags
+  relay        Run a standalone relay, or enroll a route with it
+  pair         Mint a pairing token for a remote consumer
+  host         Register the machines phux talks to: remotes and satellites
+  service      Keep a server running across logout and reboot
+  completion   Print a shell completion script on stdout
+  doctor       Diagnose a phux install: config, socket, server, plugins
+  worktree     Manage git worktrees and the sessions bound to them
+  logs         Show where phux's logs live, or tail one of them
+  help         Print this message or the help of the given subcommand(s)
 
 Options:
       --rec <PATH>
@@ -229,7 +227,7 @@ Usage: phux agent clear [OPTIONS] [TARGET]
 
 Arguments:
   [TARGET]
-          
+          Target selector (resolves to one pane). Omit for the focused pane
 
 Options:
       --socket <PATH>
@@ -248,11 +246,11 @@ Usage: phux agent explain [OPTIONS] [TARGET]
 
 Arguments:
   [TARGET]
-          
+          Target selector (resolves to one pane). Omit for the focused pane
 
 Options:
       --json
-          
+          Emit machine-readable JSON instead of the table
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
@@ -293,7 +291,7 @@ Usage: phux agent list [OPTIONS]
 
 Options:
       --json
-          
+          Emit machine-readable JSON instead of the table
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
@@ -311,7 +309,7 @@ Usage: phux agent set [OPTIONS] --name <NAME> [TARGET]
 
 Arguments:
   [TARGET]
-          
+          Target selector (resolves to one pane). Omit for the focused pane
 
 Options:
       --name <NAME>
@@ -349,11 +347,11 @@ Usage: phux agent show [OPTIONS] [TARGET]
 
 Arguments:
   [TARGET]
-          
+          Target selector (resolves to one pane). Omit for the focused pane
 
 Options:
       --json
-          
+          Emit machine-readable JSON instead of the table
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
@@ -425,6 +423,8 @@ Options:
 Attach to a session (interactive).
 
 With no name, attaches to the most-recently-focused session, auto-spawning a server if none is running. Requires a TTY.
+
+A name enrolled in the host registry (`phux host enroll`, `phux host add`) shadows a local session of the same name: `phux attach NAME` dials the registered host instead of the local socket. Pass `--socket` to force the local reading of the name.
 
 Usage: phux attach [OPTIONS] [SESSION]
 
@@ -2116,23 +2116,6 @@ Options:
       --json
           Emit stable, versioned JSON on stdout instead of the human view. Exception to the shared failure contract: with no server running, stdout carries the `{"running": false, ...}` document (still exiting non-zero); any other failure leaves stdout empty and puts one JSON error object on stderr
 
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-  -h, --help
-          Print help (see a summary with '-h')
-```
-
-## `phux stdio-bridge`
-
-```text
-Bridge stdin/stdout to the local server socket for SSH-stdio transport.
-
-The remote end of the SSH-stdio transport: `ssh HOST phux stdio-bridge` gives the dialing side a byte-transparent pipe to the phux server's Unix socket on HOST — the federation hub dials `ssh://` satellites through it. The bridge neither parses nor injects bytes; stdout is protocol-only and diagnostics go to stderr. Exits when either side closes.
-
-Usage: phux stdio-bridge [OPTIONS]
-
-Options:
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
