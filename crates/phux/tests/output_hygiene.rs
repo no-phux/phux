@@ -682,6 +682,10 @@ fn json_error_contract_holds_across_registry_verbs() {
             "registry",
             1,
         ),
+        // `remote` and `satellite` are hidden deprecated aliases of `host`
+        // (ADR-0066); they stay in this table on purpose, proving the
+        // one-line contract holds THROUGH the alias path — the deprecation
+        // note is suppressed under `--json`, never a second stderr line.
         (
             "remote",
             vec!["remote", "list", "--json"],
@@ -693,6 +697,13 @@ fn json_error_contract_holds_across_registry_verbs() {
             "satellite",
             vec!["satellite", "remove", "no-such-name", "--json"],
             Some(&empty_xdg),
+            "registry",
+            1,
+        ),
+        (
+            "host",
+            vec!["host", "ls", "--json"],
+            Some(&broken_xdg),
             "registry",
             1,
         ),

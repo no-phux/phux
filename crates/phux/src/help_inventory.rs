@@ -211,6 +211,25 @@ fn top_level_help_lists_every_subcommand() {
     }
 }
 
+/// The deprecated machine-registry aliases (`remote`, `satellite`,
+/// top-level `enroll`) are hidden: neither clap's generated command list
+/// nor the curated `long_about` inventory may advertise them. Matched as a
+/// line-leading verb column so prose mentions of e.g. "remotes and
+/// satellites" in `host`'s row stay legal.
+#[test]
+fn top_level_help_hides_the_deprecated_aliases() {
+    let mut root = Cli::command();
+    let long = root.render_long_help().to_string();
+    for verb in ["enroll", "remote", "satellite"] {
+        assert!(
+            !long
+                .lines()
+                .any(|line| line.trim_start().starts_with(&format!("{verb} "))),
+            "top-level `phux --help` still advertises the hidden alias `{verb}`:\n{long}"
+        );
+    }
+}
+
 #[test]
 fn help_leaks_no_internal_ids() {
     let mut buf = String::new();

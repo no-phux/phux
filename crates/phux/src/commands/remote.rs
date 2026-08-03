@@ -1,17 +1,22 @@
-//! `phux remote` — the client-side registry of phux servers this machine
-//! attaches to (ADR-0055).
+//! The remote half of the machine registries (ADR-0055, ADR-0066).
 //!
 //! `phux attach mini` should not require the operator to retype a 64-hex
 //! token and a 64-hex fingerprint. A `[[remote]]` entry stores the endpoint,
 //! the certificate pin, and a path to the token file once; attach resolves
 //! the name through it.
 //!
+//! The user-facing verbs live in [`super::host`]: `phux host add|ls|rm`
+//! (role `remote`, the default) operates on this registry. The old
+//! `phux remote` spelling survives one release as a hidden deprecated alias
+//! that dispatches through the same `host` implementation.
+//!
 //! Three endpoint schemes, in increasing order of setup cost:
 //!
 //! * `ssh://HOST` — no pairing at all. Attach re-execs `ssh -t HOST phux
 //!   attach`, so the session still lives on the remote server and survives
 //!   the ssh connection dropping. This is the zero-ceremony path, and it is
-//!   what `phux enroll` falls back to when a host has no reachable listener.
+//!   what `phux host enroll` falls back to when a host has no reachable
+//!   listener.
 //! * `quic://HOST:PORT` — the real remote transport (ADR-0031). Needs a
 //!   token and a pin.
 //! * `wss://HOST:PORT` — the same, for networks that block UDP.
@@ -22,7 +27,6 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use phux_config::loader as config_loader;
 use toml_edit::{Table, value};
@@ -169,7 +173,7 @@ impl NewRemote {
         if parsed.needs_pairing() && cert_fingerprint.is_none() {
             return Err(format!(
                 "{endpoint} needs --cert-fingerprint (run `phux pair` on the remote host, \
-                 or let `phux enroll` fetch it over ssh)"
+                 or let `phux host enroll` fetch it over ssh)"
             ));
         }
 
@@ -299,134 +303,6 @@ pub(crate) fn read_token(entry: &RemoteEntry) -> Result<Option<String>, String> 
         .find(|line| !line.is_empty() && !line.starts_with('#'))
         .ok_or_else(|| format!("token file {} has no token line", path.display()))?;
     Ok(Some(token.to_owned()))
-}
-
-/// `phux remote add`.
-pub(crate) fn run_add(
-    name: &str,
-    endpoint: &str,
-    token_file: Option<&Path>,
-    cert_fingerprint: Option<&str>,
-    session: Option<&str>,
-) -> ExitCode {
-    let new = match NewRemote::new(name, endpoint, token_file, cert_fingerprint, session) {
-        Ok(new) => new,
-        Err(err) => {
-            eprintln!("phux remote: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match add_or_update(&new) {
-        Ok(()) => {
-            outln!("Registered remote {:?} -> {}", new.name, new.endpoint);
-            outln!("Attach with `phux attach {}`.", new.name);
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("phux remote: {err}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-/// `phux remote list`.
-pub(crate) fn run_list(json: bool) -> ExitCode {
-    use crate::commands::json_err::{self, CliError, codes};
-
-    let entries = match load_registry() {
-        Ok(entries) => entries,
-        Err(err) => {
-            // Under `--json`, the shared error contract (phux-i0e8.8.3);
-            // without it, the historical prose line, byte-identical.
-            if json {
-                return json_err::emit(
-                    true,
-                    &CliError::new(
-                        codes::REGISTRY,
-                        format!("remote: {err}"),
-                        "fix the reported [[remote]] entry; `phux config path` \
-                         names the config file",
-                    ),
-                    1,
-                );
-            }
-            eprintln!("phux remote: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    if json {
-        let rows: Vec<_> = entries
-            .iter()
-            .map(|entry| {
-                serde_json::json!({
-                    "name": entry.name,
-                    "endpoint": entry.endpoint,
-                    "token_file": entry.token_file.as_ref().map(|p| p.display().to_string()),
-                    "cert_fingerprint": entry.cert_fingerprint,
-                    "session": entry.session,
-                })
-            })
-            .collect();
-        match serde_json::to_string_pretty(&serde_json::json!({ "remotes": rows })) {
-            Ok(text) => outln!("{text}"),
-            Err(err) => {
-                return json_err::emit(
-                    true,
-                    &CliError::new(
-                        codes::JSON_SERIALIZE,
-                        format!("could not encode remote JSON: {err}"),
-                        "this is a phux bug; run `phux doctor` and report it",
-                    ),
-                    1,
-                );
-            }
-        }
-        return ExitCode::SUCCESS;
-    }
-
-    if entries.is_empty() {
-        outln!("No remotes registered.");
-        outln!("Add one with `phux enroll HOST`, or `phux remote add NAME ENDPOINT`.");
-        return ExitCode::SUCCESS;
-    }
-    for entry in &entries {
-        let pinned = if entry.cert_fingerprint.is_some() {
-            "pinned"
-        } else {
-            "no pin"
-        };
-        outln!("{:<16} {:<40} {pinned}", entry.name, entry.endpoint);
-    }
-    ExitCode::SUCCESS
-}
-
-/// `phux remote remove`.
-pub(crate) fn run_remove(name: &str) -> ExitCode {
-    let entry = match load_registry() {
-        Ok(entries) => entries.into_iter().find(|entry| entry.name == name),
-        Err(err) => {
-            eprintln!("phux remote: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let Some(entry) = entry else {
-        eprintln!("phux remote: {name:?} is not registered");
-        return ExitCode::FAILURE;
-    };
-    match remove_at(entry.index) {
-        Ok(()) => {
-            outln!("Removed remote {name:?}.");
-            if let Some(path) = &entry.token_file {
-                outln!("Its token file is still at {}.", path.display());
-            }
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("phux remote: {err}");
-            ExitCode::FAILURE
-        }
-    }
 }
 
 #[cfg(test)]

@@ -1,3 +1,8 @@
+//! Satellite-registry lifecycle through the visible `phux host` verbs
+//! (ADR-0066). Formerly `satellite_lifecycle.rs`, driving the deprecated
+//! `phux satellite` spellings; the alias behavior itself is pinned in
+//! `deprecated_aliases.rs`.
+
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
@@ -29,35 +34,42 @@ fn add_list_update_remove_json_is_machine_readable() {
     let xdg = tmp.path().join("xdg");
 
     let (code, stdout, stderr) = run_with_xdg(
-        &["satellite", "add", "devbox", "ssh://devbox", "--json"],
+        &[
+            "host",
+            "add",
+            "--role",
+            "satellite",
+            "devbox",
+            "ssh://devbox",
+            "--json",
+        ],
         &xdg,
     );
-    assert_eq!(
-        code, 0,
-        "`satellite add --json` should exit 0; stderr={stderr}"
-    );
+    assert_eq!(code, 0, "`host add --json` should exit 0; stderr={stderr}");
     assert!(
         !stdout.contains(BANNER_FRAGMENT) && !stderr.contains(BANNER_FRAGMENT),
-        "`satellite add --json` must be banner-free; stdout={stdout:?} stderr={stderr:?}"
+        "`host add --json` must be banner-free; stdout={stdout:?} stderr={stderr:?}"
     );
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("add stdout is JSON");
     assert_eq!(value["schema_version"], 1);
-    assert_eq!(value["satellite"]["name"], "devbox");
-    assert_eq!(value["satellite"]["endpoint"], "ssh://devbox");
-    assert_eq!(value["satellite"]["enabled"], true);
+    assert_eq!(value["host"]["name"], "devbox");
+    assert_eq!(value["host"]["role"], "satellite");
+    assert_eq!(value["host"]["endpoint"], "ssh://devbox");
+    assert_eq!(value["host"]["enabled"], true);
 
-    let (code, stdout, stderr) = run_with_xdg(&["satellite", "list", "--json"], &xdg);
-    assert_eq!(
-        code, 0,
-        "`satellite list --json` should exit 0; stderr={stderr}"
-    );
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("list stdout is JSON");
-    assert_eq!(value["satellites"][0]["name"], "devbox");
+    let (code, stdout, stderr) =
+        run_with_xdg(&["host", "ls", "--role", "satellite", "--json"], &xdg);
+    assert_eq!(code, 0, "`host ls --json` should exit 0; stderr={stderr}");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("ls stdout is JSON");
+    assert_eq!(value["hosts"][0]["name"], "devbox");
+    assert_eq!(value["hosts"][0]["role"], "satellite");
 
     let (code, stdout, stderr) = run_with_xdg(
         &[
-            "satellite",
+            "host",
             "add",
+            "--role",
+            "satellite",
             "devbox",
             "quic://devbox.example:8788",
             "--disabled",
@@ -67,11 +79,11 @@ fn add_list_update_remove_json_is_machine_readable() {
     );
     assert_eq!(
         code, 0,
-        "`satellite add` should update existing entries; stderr={stderr}"
+        "`host add` should update existing entries; stderr={stderr}"
     );
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("update stdout is JSON");
-    assert_eq!(value["satellite"]["endpoint"], "quic://devbox.example:8788");
-    assert_eq!(value["satellite"]["enabled"], false);
+    assert_eq!(value["host"]["endpoint"], "quic://devbox.example:8788");
+    assert_eq!(value["host"]["enabled"], false);
 
     let config = std::fs::read_to_string(xdg.join("phux").join("config.toml"))
         .expect("read config after update");
@@ -79,22 +91,23 @@ fn add_list_update_remove_json_is_machine_readable() {
     assert!(config.contains(r#"endpoint = "quic://devbox.example:8788""#));
     assert!(config.contains("enabled = false"));
 
-    let (code, stdout, stderr) = run_with_xdg(&["satellite", "remove", "devbox", "--json"], &xdg);
-    assert_eq!(
-        code, 0,
-        "`satellite remove --json` should exit 0; stderr={stderr}"
+    let (code, stdout, stderr) = run_with_xdg(
+        &["host", "rm", "--role", "satellite", "devbox", "--json"],
+        &xdg,
     );
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("remove stdout is JSON");
+    assert_eq!(code, 0, "`host rm --json` should exit 0; stderr={stderr}");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("rm stdout is JSON");
     assert_eq!(value["removed"]["name"], "devbox");
+    assert_eq!(value["removed"]["role"], "satellite");
 
-    let (code, stdout, stderr) = run_with_xdg(&["satellite", "list", "--json"], &xdg);
+    let (code, stdout, stderr) =
+        run_with_xdg(&["host", "ls", "--role", "satellite", "--json"], &xdg);
     assert_eq!(
         code, 0,
-        "`satellite list --json` should exit 0 after removal; stderr={stderr}"
+        "`host ls --json` should exit 0 after removal; stderr={stderr}"
     );
-    let value: serde_json::Value =
-        serde_json::from_str(&stdout).expect("empty list stdout is JSON");
-    assert_eq!(value["satellites"].as_array().expect("satellites").len(), 0);
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("empty ls stdout is JSON");
+    assert_eq!(value["hosts"].as_array().expect("hosts").len(), 0);
 }
 
 #[test]
@@ -109,8 +122,10 @@ fn auth_material_is_stored_by_reference_and_cleared_on_bare_update() {
 
     let (code, stdout, stderr) = run_with_xdg(
         &[
-            "satellite",
+            "host",
             "add",
+            "--role",
+            "satellite",
             "lab",
             "quic://lab.example:8788",
             "--token-file",
@@ -126,8 +141,8 @@ fn auth_material_is_stored_by_reference_and_cleared_on_bare_update() {
         "add with auth material should exit 0; stderr={stderr}"
     );
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("add stdout is JSON");
-    assert_eq!(value["satellite"]["token_file"], token_file_str);
-    assert_eq!(value["satellite"]["cert_fingerprint"], fingerprint);
+    assert_eq!(value["host"]["token_file"], token_file_str);
+    assert_eq!(value["host"]["cert_fingerprint"], fingerprint);
     assert!(
         !stdout.contains(secret),
         "the token secret must never be printed: {stdout}"
@@ -143,21 +158,26 @@ fn auth_material_is_stored_by_reference_and_cleared_on_bare_update() {
         "the token secret must never land in config.toml: {config}"
     );
 
-    // Human list shows auth material by reference only.
-    let (code, stdout, stderr) = run_with_xdg(&["satellite", "list"], &xdg);
-    assert_eq!(code, 0, "list should exit 0; stderr={stderr}");
-    assert!(stdout.contains(&format!("token-file={token_file_str}")));
-    assert!(stdout.contains(&format!("cert-fingerprint={fingerprint}")));
+    // The human table classifies the auth material (`token+pin`) and never
+    // reads or prints the token itself.
+    let (code, stdout, stderr) = run_with_xdg(&["host", "ls", "--role", "satellite"], &xdg);
+    assert_eq!(code, 0, "ls should exit 0; stderr={stderr}");
+    assert!(
+        stdout.contains("token+pin"),
+        "the AUTH column classifies the material: {stdout}"
+    );
     assert!(
         !stdout.contains(secret),
-        "list must not read or print the token"
+        "ls must not read or print the token"
     );
 
     // `add` replaces the whole entry: omitting the auth flags clears them.
     let (code, stdout, stderr) = run_with_xdg(
         &[
-            "satellite",
+            "host",
             "add",
+            "--role",
+            "satellite",
             "lab",
             "quic://lab.example:8788",
             "--json",
@@ -166,11 +186,8 @@ fn auth_material_is_stored_by_reference_and_cleared_on_bare_update() {
     );
     assert_eq!(code, 0, "bare re-add should exit 0; stderr={stderr}");
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("update stdout is JSON");
-    assert_eq!(value["satellite"]["token_file"], serde_json::Value::Null);
-    assert_eq!(
-        value["satellite"]["cert_fingerprint"],
-        serde_json::Value::Null
-    );
+    assert_eq!(value["host"]["token_file"], serde_json::Value::Null);
+    assert_eq!(value["host"]["cert_fingerprint"], serde_json::Value::Null);
     let config = std::fs::read_to_string(&config_path).expect("read config after bare update");
     assert!(
         !config.contains("token-file") && !config.contains("cert-fingerprint"),
@@ -184,8 +201,10 @@ fn relative_token_file_is_rejected() {
 
     let (code, stdout, stderr) = run_with_xdg(
         &[
-            "satellite",
+            "host",
             "add",
+            "--role",
+            "satellite",
             "lab",
             "quic://lab.example:8788",
             "--token-file",
@@ -207,8 +226,10 @@ fn malformed_cert_fingerprint_is_rejected() {
     for bad in ["AB:CD", "not-a-fingerprint", ""] {
         let (code, stdout, stderr) = run_with_xdg(
             &[
-                "satellite",
+                "host",
                 "add",
+                "--role",
+                "satellite",
                 "lab",
                 "quic://lab.example:8788",
                 "--cert-fingerprint",
@@ -247,7 +268,8 @@ endpoint = "ssh://devbox-b"
     )
     .expect("write config");
 
-    let (code, stdout, stderr) = run_with_xdg(&["satellite", "list", "--json"], &xdg);
+    let (code, stdout, stderr) =
+        run_with_xdg(&["host", "ls", "--role", "satellite", "--json"], &xdg);
 
     assert_ne!(code, 0, "duplicate satellite names should be refused");
     assert!(stdout.is_empty());
@@ -266,7 +288,7 @@ endpoint = "ssh://devbox-b"
 
     // The same refusal without `--json` keeps the prose spelling scripts
     // already grep for.
-    let (code, stdout, stderr) = run_with_xdg(&["satellite", "list"], &xdg);
+    let (code, stdout, stderr) = run_with_xdg(&["host", "ls", "--role", "satellite"], &xdg);
     assert_ne!(code, 0, "duplicate satellite names should be refused");
     assert!(stdout.is_empty());
     assert!(stderr.contains(r#"duplicate satellite name "devbox""#));
@@ -277,7 +299,9 @@ fn invalid_endpoint_fails_without_stdout() {
     let tmp = TempDir::new().expect("tempdir");
 
     let (code, stdout, stderr) = run_with_xdg(
-        &["satellite", "add", "devbox", "devbox", "--json"],
+        &[
+            "host", "add", "--role", "satellite", "devbox", "devbox", "--json",
+        ],
         tmp.path(),
     );
 
@@ -298,7 +322,15 @@ fn lifecycle_refuses_to_overwrite_symlinked_config() {
     std::os::unix::fs::symlink(&victim, config_dir.join("config.toml")).expect("symlink config");
 
     let (code, stdout, stderr) = run_with_xdg(
-        &["satellite", "add", "devbox", "ssh://devbox", "--json"],
+        &[
+            "host",
+            "add",
+            "--role",
+            "satellite",
+            "devbox",
+            "ssh://devbox",
+            "--json",
+        ],
         &xdg,
     );
 

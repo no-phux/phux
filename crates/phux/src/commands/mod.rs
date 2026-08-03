@@ -1227,11 +1227,14 @@ pub(crate) enum Command {
         action: WorkspaceAction,
     },
 
-    /// Manage configured federation satellites.
+    /// Deprecated alias of `phux host --role satellite`.
     ///
-    /// This is a local config operation: it edits `[[satellites]]` entries and
-    /// never contacts a running server. Hub routing consumes the registry in a
-    /// later federation slice.
+    /// Every `satellite` action still parses and runs through the `host`
+    /// implementation, printing a one-line deprecation note on stderr. Use
+    /// `phux host add|ls|rm|enroll --role satellite` instead; this spelling
+    /// will be removed after one release cycle.
+    // Hidden per ADR-0066's deprecation contract (phux-i0e8.12.4).
+    #[command(hide = true)]
     Satellite {
         #[command(subcommand)]
         action: SatelliteAction,
@@ -1326,16 +1329,14 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Set up a remote server over ssh, end to end.
+    /// Deprecated alias of `phux host enroll`.
     ///
-    /// Confirms phux is installed on HOST, installs its service unit so the
-    /// server survives reboot, mints a pairing token there, and registers
-    /// the result locally — so `phux attach HOST` works afterwards with no
-    /// flags and no hex strings typed by hand. Uses the ssh trust you
-    /// already have; it grants nothing ssh did not already grant.
-    ///
-    /// A host with no reachable listener falls back to an ssh:// entry,
-    /// which still gives you sessions that outlive the connection.
+    /// Still parses and runs through the `host enroll` implementation,
+    /// printing a one-line deprecation note on stderr. Use
+    /// `phux host enroll HOST` instead; this spelling will be removed after
+    /// one release cycle.
+    // Hidden per ADR-0066's deprecation contract (phux-i0e8.12.4).
+    #[command(hide = true)]
     Enroll {
         /// ssh destination, exactly as you would type it after `ssh`
         /// (`mini`, `me@mini`, or a `~/.ssh/config` alias).
@@ -1369,11 +1370,14 @@ pub(crate) enum Command {
         session: Option<String>,
     },
 
-    /// Manage the registry of remote phux servers this machine attaches to.
+    /// Deprecated alias of `phux host` (role `remote`).
     ///
-    /// A registered name is what `phux attach <name>` resolves: endpoint,
-    /// certificate pin, and a path to the pairing token, stored once.
-    /// `phux enroll HOST` writes these entries for you over ssh.
+    /// Every `remote` action still parses and runs through the `host`
+    /// implementation, printing a one-line deprecation note on stderr. Use
+    /// `phux host add|ls|rm` instead; this spelling will be removed after
+    /// one release cycle.
+    // Hidden per ADR-0066's deprecation contract (phux-i0e8.12.4).
+    #[command(hide = true)]
     Remote {
         #[command(subcommand)]
         action: RemoteAction,
@@ -1387,8 +1391,9 @@ pub(crate) enum Command {
     /// The two registries stay separate in config (`[[remote]]` vs
     /// `[[satellites]]`) because they encode opposite trust directions;
     /// this verb absorbs the split into a flag.
-    // The visible successor to `remote` and `satellite` (ADR-0066); those
-    // verbs stay visible until the E4 deprecation slice hides them.
+    // The visible successor to `remote`, `satellite`, and top-level
+    // `enroll` (ADR-0066); those verbs are hidden deprecated aliases for
+    // one release cycle and dispatch through this implementation.
     Host {
         #[command(subcommand)]
         action: host::HostAction,

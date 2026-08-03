@@ -29,7 +29,6 @@ ATTACH / SERVE
   attach     Attach to a session (interactive)
   server     Run a server in the foreground
   host       Register the machines phux talks to: remotes and satellites
-  remote     Register the servers `phux attach <name>` can reach
   service    Keep a server running across logout and reboot
   upgrade    Hot-swap the running server binary, keeping sessions alive
 
@@ -73,9 +72,7 @@ ORGANIZE
   worktree   Create, open, list, and remove worktree-bound sessions
 
 FEDERATION
-  satellite  Manage configured federation satellites
   pair       Mint a pairing token for a remote consumer
-  enroll     Set up a remote server over ssh, end to end
   relay      Run a standalone relay, or enroll a route with it
   stdio-bridge  Bridge stdio to the local server socket (SSH-stdio)
 
@@ -117,13 +114,10 @@ Commands:
   config        Inspect, scaffold, and reload the phux config file
   plugin        Manage local plugin manifests in the phux config registry
   workspace     Inspect a git workspace and its worktrees for agent orchestration
-  satellite     Manage configured federation satellites
   tag           Read and write a Terminal's L3 tags
   stdio-bridge  Bridge stdin/stdout to the local server socket for SSH-stdio transport
   relay         Run a standalone relay, or enroll a route with it
   pair          Mint a pairing token for a remote consumer
-  enroll        Set up a remote server over ssh, end to end
-  remote        Manage the registry of remote phux servers this machine attaches to
   host          Register the machines phux talks to: remotes and satellites
   service       Keep a server running across logout and reboot
   completion    Print a shell completion script on stdout
@@ -751,49 +745,6 @@ Options:
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-  -h, --help
-          Print help (see a summary with '-h')
-```
-
-## `phux enroll`
-
-```text
-Set up a remote server over ssh, end to end.
-
-Confirms phux is installed on HOST, installs its service unit so the server survives reboot, mints a pairing token there, and registers the result locally — so `phux attach HOST` works afterwards with no flags and no hex strings typed by hand. Uses the ssh trust you already have; it grants nothing ssh did not already grant.
-
-A host with no reachable listener falls back to an ssh:// entry, which still gives you sessions that outlive the connection.
-
-Usage: phux enroll [OPTIONS] <HOST>
-
-Arguments:
-  <HOST>
-          ssh destination, exactly as you would type it after `ssh` (`mini`, `me@mini`, or a `~/.ssh/config` alias)
-
-Options:
-      --name <NAME>
-          Local label to register. Defaults to HOST without any `user@`
-
-      --endpoint <HOST:PORT>
-          Address to register instead of the remote's detected overlay address. Accepts `HOST:PORT` (dialed over QUIC) or a full `quic://`/`wss://` URI
-
-      --quic-port <PORT>
-          QUIC port to configure on the remote and register
-          
-          [default: 8788]
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-      --no-service
-          Skip installing the remote's service unit. The server will not come back on its own after a reboot
-
-      --ssh-only
-          Register an ssh:// entry without contacting the host at all
-
-      --session <NAME>
-          Session to attach on arrival
 
   -h, --help
           Print help (see a summary with '-h')
@@ -1735,99 +1686,6 @@ Options:
           Print help (see a summary with '-h')
 ```
 
-## `phux remote`
-
-```text
-Manage the registry of remote phux servers this machine attaches to.
-
-A registered name is what `phux attach <name>` resolves: endpoint, certificate pin, and a path to the pairing token, stored once. `phux enroll HOST` writes these entries for you over ssh.
-
-Usage: phux remote [OPTIONS] <COMMAND>
-
-Commands:
-  add     Register a remote server, or replace an entry with the same name
-  list    List registered remotes [aliases: ls]
-  remove  Remove a registered remote. Its token file is left in place [aliases: rm]
-  help    Print this message or the help of the given subcommand(s)
-
-Options:
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-  -h, --help
-          Print help (see a summary with '-h')
-```
-
-## `phux remote add`
-
-```text
-Register a remote server, or replace an entry with the same name
-
-Usage: phux remote add [OPTIONS] <NAME> <ENDPOINT>
-
-Arguments:
-  <NAME>
-          Local label. This is what `phux attach <name>` resolves
-
-  <ENDPOINT>
-          `quic://HOST:PORT`, `wss://HOST:PORT`, or `ssh://HOST`.
-          
-          `ssh://` needs no pairing — it rides your existing ssh trust and re-execs `ssh -t HOST phux attach`. The other two need a token and a certificate pin.
-
-Options:
-      --token-file <PATH>
-          Absolute path to a file holding the pairing token minted by `phux pair` on the remote host
-
-      --cert-fingerprint <FP>
-          The remote's TLS certificate SHA-256 fingerprint, as printed by `phux pair`. Required for `quic://` and `wss://`
-
-      --session <NAME>
-          Session to attach on arrival. Omitted: the remote server's own last-attach memory decides
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-  -h, --help
-          Print help (see a summary with '-h')
-```
-
-## `phux remote list`
-
-```text
-List registered remotes
-
-Usage: phux remote list [OPTIONS]
-
-Options:
-      --json
-          Emit JSON on stdout instead of the table
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-  -h, --help
-          Print help
-```
-
-## `phux remote remove`
-
-```text
-Remove a registered remote. Its token file is left in place
-
-Usage: phux remote remove [OPTIONS] <NAME>
-
-Arguments:
-  <NAME>
-          Registered name
-
-Options:
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-  -h, --help
-          Print help
-```
-
 ## `phux rename`
 
 ```text
@@ -1919,147 +1777,6 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
-```
-
-## `phux satellite`
-
-```text
-Manage configured federation satellites.
-
-This is a local config operation: it edits `[[satellites]]` entries and never contacts a running server. Hub routing consumes the registry in a later federation slice.
-
-Usage: phux satellite [OPTIONS] <COMMAND>
-
-Commands:
-  list    List configured satellites [aliases: ls]
-  enroll  Bootstrap a satellite over SSH and register it on this hub
-  add     Add or update a satellite endpoint in `config.toml`
-  remove  Remove a configured satellite by name [aliases: rm]
-  help    Print this message or the help of the given subcommand(s)
-
-Options:
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-  -h, --help
-          Print help (see a summary with '-h')
-```
-
-## `phux satellite add`
-
-```text
-Add or update a satellite endpoint in `config.toml`.
-
-Updating replaces the whole entry, so repeat `--token-file` / `--cert-fingerprint` when re-adding a name or the auth material is cleared.
-
-Usage: phux satellite add [OPTIONS] <NAME> <ENDPOINT>
-
-Arguments:
-  <NAME>
-          Hub-local satellite name
-
-  <ENDPOINT>
-          Endpoint URI, e.g. `<ssh://devbox>`, `<quic://host:8788>`, or `<wss://host:8787>`
-
-Options:
-      --disabled
-          Register the satellite but leave it disabled
-
-      --token-file <PATH>
-          Path to a file holding the pairing bearer token for this satellite, minted by running `phux pair` on the satellite host. The file holds one hex token and should be owner-only (0600); only the path lands in `config.toml` — the token itself is never written to config or printed
-
-      --cert-fingerprint <FINGERPRINT>
-          SHA-256 fingerprint of the satellite server's TLS certificate, as printed by `phux pair` on the satellite host. Pins the certificate for routable endpoints; not a secret
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-      --json
-          Emit a stable JSON document instead of human text
-
-  -h, --help
-          Print help (see a summary with '-h')
-```
-
-## `phux satellite enroll`
-
-```text
-Bootstrap a satellite over SSH and register it on this hub.
-
-Confirms phux is installed on HOST, installs its always-on service, mints and stores its transport credentials, then writes the complete `[[satellites]]` entry locally. If no routable listener is available, the route falls back to `ssh://HOST`.
-
-Usage: phux satellite enroll [OPTIONS] <HOST>
-
-Arguments:
-  <HOST>
-          SSH destination, e.g. `devbox` or `user@cloud.example`
-
-Options:
-      --name <NAME>
-          Hub-local satellite name. Defaults to HOST without user or domain punctuation that is not valid in a satellite name
-
-      --endpoint <URI>
-          Dialable satellite endpoint. Bare values become `quic://...`; full `ssh://`, `quic://`, `ws://`, and `wss://` URIs are accepted
-
-      --quic-port <PORT>
-          QUIC port used for service installation and overlay discovery
-          
-          [default: 8788]
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-      --no-service
-          Skip installing the satellite's always-on service
-
-      --ssh-only
-          Register `ssh://HOST` without probing, pairing, or installing
-
-      --json
-          Emit a stable JSON document instead of human text
-
-  -h, --help
-          Print help (see a summary with '-h')
-```
-
-## `phux satellite list`
-
-```text
-List configured satellites
-
-Usage: phux satellite list [OPTIONS]
-
-Options:
-      --json
-          Emit a stable JSON document instead of human text
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-  -h, --help
-          Print help
-```
-
-## `phux satellite remove`
-
-```text
-Remove a configured satellite by name
-
-Usage: phux satellite remove [OPTIONS] <NAME>
-
-Arguments:
-  <NAME>
-          Hub-local satellite name
-
-Options:
-      --json
-          Emit a stable JSON document instead of human text
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
-  -h, --help
-          Print help
 ```
 
 ## `phux send-keys`

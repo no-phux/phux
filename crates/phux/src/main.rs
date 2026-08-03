@@ -73,7 +73,6 @@ mod help_inventory;
           attach     Attach to a session (interactive)\n  \
           server     Run a server in the foreground\n  \
           host       Register the machines phux talks to: remotes and satellites\n  \
-          remote     Register the servers `phux attach <name>` can reach\n  \
           service    Keep a server running across logout and reboot\n  \
           upgrade    Hot-swap the running server binary, keeping sessions alive\n\n\
         INSPECT\n  \
@@ -112,9 +111,7 @@ mod help_inventory;
           workspace  Inspect worktrees and save/restore session archives\n  \
           worktree   Create, open, list, and remove worktree-bound sessions\n\n\
         FEDERATION\n  \
-          satellite  Manage configured federation satellites\n  \
           pair       Mint a pairing token for a remote consumer\n  \
-          enroll     Set up a remote server over ssh, end to end\n  \
           relay      Run a standalone relay, or enroll a route with it\n  \
           stdio-bridge  Bridge stdio to the local server socket (SSH-stdio)\n\n\
         TARGET is the selector grammar: a session name, `name:window`,\n\
@@ -687,7 +684,6 @@ fn main() -> ExitCode {
         Some(Command::Config { action }) => commands::config::run_config(&action, socket),
         Some(Command::Plugin { action }) => commands::plugin::run_plugin(&action),
         Some(Command::Workspace { action }) => commands::workspace::run_workspace(&action, socket),
-        Some(Command::Satellite { action }) => commands::satellite::run_satellite(&action),
         Some(Command::Tag { action }) => commands::tag::run_tag(&action, socket),
         Some(Command::StdioBridge {}) => commands::stdio_bridge::run_stdio_bridge(socket),
         Some(Command::Relay { action }) => commands::relay::run_relay(action),
@@ -710,40 +706,11 @@ fn main() -> ExitCode {
             lines,
             json,
         }) => commands::logs::run_logs(server, client, pid, follow, lines, json),
-        Some(Command::Enroll {
-            host,
-            name,
-            endpoint,
-            quic_port,
-            no_service,
-            ssh_only,
-            session,
-        }) => commands::enroll::run_enroll(
-            &host,
-            name.as_deref(),
-            endpoint.as_deref(),
-            quic_port,
-            !no_service,
-            ssh_only,
-            session.as_deref(),
-        ),
-        Some(Command::Remote { action }) => match action {
-            commands::RemoteAction::Add {
-                name,
-                endpoint,
-                token_file,
-                cert_fingerprint,
-                session,
-            } => commands::remote::run_add(
-                &name,
-                &endpoint,
-                token_file.as_deref(),
-                cert_fingerprint.as_deref(),
-                session.as_deref(),
-            ),
-            commands::RemoteAction::List { json } => commands::remote::run_list(json),
-            commands::RemoteAction::Remove { name } => commands::remote::run_remove(&name),
-        },
+        // The three hidden deprecation aliases (ADR-0066): each runs the
+        // `host` implementation behind one stderr deprecation note.
+        Some(
+            command @ (Command::Enroll { .. } | Command::Remote { .. } | Command::Satellite { .. }),
+        ) => commands::host::run_deprecated_alias(command),
         Some(Command::Host { action }) => commands::host::run_host(&action),
         Some(Command::Service { action }) => match action {
             commands::ServiceAction::Install {
@@ -1559,6 +1526,199 @@ mod tests {
         assert!(
             script.contains("--socket"),
             "bash completions lost --socket after the root-settings rework"
+        );
+    }
+
+    /// The three deprecated aliases (ADR-0066) are hidden, so the generated
+    /// completions — built from the visible tree only — carry `host` and
+    /// none of the legacy top-level verbs.
+    #[test]
+    fn completions_carry_host_and_not_the_deprecated_verbs() {
+        use clap::CommandFactory;
+        for shell in [clap_complete::Shell::Bash, clap_complete::Shell::Zsh] {
+            let mut buf = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "phux", &mut buf);
+            let script = String::from_utf8(buf).expect("completion script is UTF-8");
+            assert!(
+                script.contains("host"),
+                "{shell} completions must offer the `host` verb"
+            );
+            // The per-subcommand markers clap_complete generates: bash
+            // emits `phux__<verb>` state names, zsh `phux <verb>` case
+            // patterns via the same joined token.
+            for legacy in ["phux__remote", "phux__satellite", "phux__enroll"] {
+                assert!(
+                    !script.contains(legacy),
+                    "{shell} completions still offer the hidden alias {legacy}"
+                );
+            }
+        }
+    }
+
+    /// Each hidden alias still parses — full arg surface — and maps onto
+    /// the `host` action named by the ADR-0066 alias table, with a
+    /// deprecation line naming that exact replacement.
+    #[test]
+    fn deprecated_aliases_map_to_host_actions_per_the_alias_table() {
+        use crate::commands::host::{HostAction, HostRole, deprecated_alias};
+
+        let mapped = |argv: &[&str]| {
+            deprecated_alias(parsed(argv))
+                .unwrap_or_else(|| panic!("{argv:?} must map to a host action"))
+        };
+
+        // phux remote add NAME ENDPOINT -> phux host add NAME ENDPOINT
+        let (action, note) = mapped(&[
+            "phux", "remote", "add", "mini", "ssh://mini", "--session", "work",
+        ]);
+        let HostAction::Add {
+            name,
+            endpoint,
+            role,
+            session,
+            disabled,
+            json,
+            ..
+        } = action
+        else {
+            panic!("expected Add, got {action:?}");
+        };
+        assert_eq!((name.as_str(), endpoint.as_str()), ("mini", "ssh://mini"));
+        assert_eq!(role, HostRole::Remote);
+        assert_eq!(session.as_deref(), Some("work"));
+        assert!(!disabled && !json.json);
+        assert!(note.contains("`phux remote add`") && note.contains("`phux host add`"));
+
+        // phux remote list -> phux host ls (role-filtered)
+        let (action, note) = mapped(&["phux", "remote", "list", "--json"]);
+        assert!(
+            matches!(
+                action,
+                HostAction::List {
+                    role: Some(HostRole::Remote),
+                    json: crate::commands::JsonOpt { json: true },
+                }
+            ),
+            "got {action:?}"
+        );
+        assert!(note.contains("`phux host ls`"));
+
+        // phux remote remove NAME -> phux host rm NAME (role-filtered)
+        let (action, note) = mapped(&["phux", "remote", "rm", "mini"]);
+        assert!(
+            matches!(
+                &action,
+                HostAction::Remove {
+                    name,
+                    role: Some(HostRole::Remote),
+                    ..
+                } if name == "mini"
+            ),
+            "got {action:?}"
+        );
+        assert!(note.contains("`phux host rm`"));
+
+        // phux satellite add NAME ENDPOINT -> phux host add --role satellite
+        let (action, note) = mapped(&[
+            "phux",
+            "satellite",
+            "add",
+            "edge",
+            "ssh://edge",
+            "--disabled",
+            "--json",
+        ]);
+        let HostAction::Add {
+            role,
+            disabled,
+            session,
+            json,
+            ..
+        } = action
+        else {
+            panic!("expected Add, got {action:?}");
+        };
+        assert_eq!(role, HostRole::Satellite);
+        assert!(disabled && json.json);
+        assert_eq!(session, None, "a satellite entry has no session");
+        assert!(note.contains("`phux host add --role satellite`"));
+
+        // phux satellite list -> phux host ls --role satellite
+        let (action, note) = mapped(&["phux", "satellite", "ls"]);
+        assert!(matches!(
+            action,
+            HostAction::List {
+                role: Some(HostRole::Satellite),
+                ..
+            }
+        ));
+        assert!(note.contains("`phux host ls --role satellite`"));
+
+        // phux satellite remove NAME -> phux host rm --role satellite NAME
+        let (action, note) = mapped(&["phux", "satellite", "remove", "edge", "--json"]);
+        assert!(
+            matches!(
+                &action,
+                HostAction::Remove {
+                    name,
+                    role: Some(HostRole::Satellite),
+                    json: crate::commands::JsonOpt { json: true },
+                } if name == "edge"
+            ),
+            "got {action:?}"
+        );
+        assert!(note.contains("`phux host rm --role satellite`"));
+
+        // phux satellite enroll HOST -> phux host enroll --role satellite
+        let (action, note) = mapped(&[
+            "phux",
+            "satellite",
+            "enroll",
+            "edge",
+            "--quic-port",
+            "9000",
+            "--ssh-only",
+        ]);
+        let HostAction::Enroll {
+            host,
+            role,
+            quic_port,
+            ssh_only,
+            session,
+            ..
+        } = action
+        else {
+            panic!("expected Enroll, got {action:?}");
+        };
+        assert_eq!(host, "edge");
+        assert_eq!(role, HostRole::Satellite);
+        assert_eq!(quic_port, 9000);
+        assert!(ssh_only);
+        assert_eq!(session, None);
+        assert!(note.contains("`phux host enroll --role satellite`"));
+
+        // phux enroll HOST -> phux host enroll HOST
+        let (action, note) = mapped(&["phux", "enroll", "me@mini", "--session", "work"]);
+        let HostAction::Enroll {
+            host,
+            role,
+            session,
+            json,
+            ..
+        } = action
+        else {
+            panic!("expected Enroll, got {action:?}");
+        };
+        assert_eq!(host, "me@mini");
+        assert_eq!(role, HostRole::Remote);
+        assert_eq!(session.as_deref(), Some("work"));
+        assert!(!json.json, "the legacy enroll has no --json flag");
+        assert!(note.contains("`phux enroll`") && note.contains("`phux host enroll`"));
+
+        // A visible verb is not an alias.
+        assert!(
+            deprecated_alias(parsed(&["phux", "host", "ls"])).is_none(),
+            "`host` itself must not map as a deprecated alias"
         );
     }
 

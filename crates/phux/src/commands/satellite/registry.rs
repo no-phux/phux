@@ -63,13 +63,6 @@ pub(crate) fn load_registry() -> Result<Vec<SatelliteEntry>, String> {
     Ok(entries)
 }
 
-pub(crate) fn find_entry(name: &str) -> Result<SatelliteEntry, String> {
-    load_registry()?
-        .into_iter()
-        .find(|entry| entry.name == name)
-        .ok_or_else(|| format!("satellite {name:?} is not registered"))
-}
-
 pub(crate) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String> {
     let config_path = config_loader::config_path();
     toml_registry::reject_symlink(&config_path)?;
@@ -138,8 +131,9 @@ fn registry_endpoint(endpoint: &str) -> Result<String, String> {
 }
 
 /// The token file is referenced from `config.toml` and later read by the hub
-/// daemon, whose working directory is unrelated to where `phux satellite add`
-/// ran — so a relative path would silently point somewhere else. Require an
+/// daemon, whose working directory is unrelated to where
+/// `phux host add --role satellite` ran — so a relative path would silently
+/// point somewhere else. Require an
 /// absolute path. Existence is NOT required: pairing material may land after
 /// registration, mirroring how the server token store tolerates a
 /// not-yet-created path.

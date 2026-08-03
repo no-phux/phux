@@ -740,12 +740,12 @@ const fn empty_state(role: Option<HostRole>) -> &'static str {
     match role {
         None => {
             "No hosts registered.\n\
-             Add a server to attach to with `phux host add NAME ENDPOINT` (or `phux enroll HOST`).\n\
+             Add a server to attach to with `phux host add NAME ENDPOINT` (or `phux host enroll HOST`).\n\
              Add a satellite this hub dials with `phux host add --role satellite NAME ENDPOINT`."
         }
         Some(HostRole::Remote) => {
             "No remote hosts registered.\n\
-             Add one with `phux host add NAME ENDPOINT` (or `phux enroll HOST`)."
+             Add one with `phux host add NAME ENDPOINT` (or `phux host enroll HOST`)."
         }
         Some(HostRole::Satellite) => {
             "No satellite hosts registered.\n\
@@ -956,6 +956,179 @@ fn run_remove(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
         outln!("Its token file is still at {}.", path.display());
     }
     ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
+// Deprecated aliases (ADR-0066, phux-i0e8.12.4): `phux remote`,
+// `phux satellite`, and top-level `phux enroll` are hidden spellings of
+// `phux host` for one release cycle. Each dispatches through `run_host`
+// after printing ONE stderr deprecation line naming the visible
+// replacement — suppressed under `--json`, where stderr is reserved for the
+// one-line error contract and stdout for the document.
+// ---------------------------------------------------------------------------
+
+/// Run a deprecated top-level spelling through its `host` implementation.
+///
+/// `main`'s dispatch routes exactly the three hidden aliases here; anything
+/// else is an internal wiring error, reported rather than panicked on.
+pub(crate) fn run_deprecated_alias(command: super::Command) -> ExitCode {
+    let Some((action, note)) = deprecated_alias(command) else {
+        eprintln!("phux: internal error: verb routed as a deprecated alias has no host mapping");
+        return ExitCode::FAILURE;
+    };
+    if !action_json(&action) {
+        eprintln!("{note}");
+    }
+    run_host(&action)
+}
+
+/// The `--json` bit of a mapped action. The deprecation note is suppressed
+/// under `--json`: stdout must carry only the document, and a failure must
+/// be ONE stderr contract line — a prose note would contaminate both
+/// consumers' parsers.
+const fn action_json(action: &HostAction) -> bool {
+    match action {
+        HostAction::Add { json, .. }
+        | HostAction::Enroll { json, .. }
+        | HostAction::List { json, .. }
+        | HostAction::Remove { json, .. } => json.json,
+    }
+}
+
+/// The one-line stderr warning for a deprecated spelling, naming the exact
+/// visible replacement. Pinned to one line so scripts see a single,
+/// greppable warning (the `--split` precedent).
+fn deprecation_line(old: &str, new: &str) -> String {
+    format!("phux: `{old}` is deprecated and will be removed; use `{new}`")
+}
+
+/// Map a deprecated top-level spelling onto the `host` action it aliases,
+/// plus its deprecation line. The mapping is the ADR-0066 alias table,
+/// row for row. `None` for a command that is not one of the three hidden
+/// aliases. `pub(crate)` so the dispatch tests in `main.rs` can pin the
+/// table against parsed invocations.
+pub(crate) fn deprecated_alias(command: super::Command) -> Option<(HostAction, String)> {
+    use super::{Command, RemoteAction, SatelliteAction};
+    match command {
+        Command::Enroll {
+            host,
+            name,
+            endpoint,
+            quic_port,
+            no_service,
+            ssh_only,
+            session,
+        } => Some((
+            HostAction::Enroll {
+                host,
+                role: HostRole::Remote,
+                name,
+                endpoint,
+                quic_port,
+                no_service,
+                ssh_only,
+                session,
+                json: JsonOpt { json: false },
+            },
+            deprecation_line("phux enroll", "phux host enroll"),
+        )),
+        Command::Remote { action } => Some(match action {
+            RemoteAction::Add {
+                name,
+                endpoint,
+                token_file,
+                cert_fingerprint,
+                session,
+            } => (
+                HostAction::Add {
+                    name,
+                    endpoint,
+                    role: HostRole::Remote,
+                    token_file,
+                    cert_fingerprint,
+                    session,
+                    disabled: false,
+                    json: JsonOpt { json: false },
+                },
+                deprecation_line("phux remote add", "phux host add"),
+            ),
+            RemoteAction::List { json } => (
+                HostAction::List {
+                    role: Some(HostRole::Remote),
+                    json: JsonOpt { json },
+                },
+                deprecation_line("phux remote list", "phux host ls"),
+            ),
+            RemoteAction::Remove { name } => (
+                HostAction::Remove {
+                    name,
+                    role: Some(HostRole::Remote),
+                    json: JsonOpt { json: false },
+                },
+                deprecation_line("phux remote remove", "phux host rm"),
+            ),
+        }),
+        Command::Satellite { action } => Some(match action {
+            SatelliteAction::List { json } => (
+                HostAction::List {
+                    role: Some(HostRole::Satellite),
+                    json: JsonOpt { json },
+                },
+                deprecation_line("phux satellite list", "phux host ls --role satellite"),
+            ),
+            SatelliteAction::Enroll {
+                host,
+                name,
+                endpoint,
+                quic_port,
+                no_service,
+                ssh_only,
+                json,
+            } => (
+                HostAction::Enroll {
+                    host,
+                    role: HostRole::Satellite,
+                    name,
+                    endpoint,
+                    quic_port,
+                    no_service,
+                    ssh_only,
+                    session: None,
+                    json: JsonOpt { json },
+                },
+                deprecation_line("phux satellite enroll", "phux host enroll --role satellite"),
+            ),
+            SatelliteAction::Add {
+                name,
+                endpoint,
+                disabled,
+                token_file,
+                cert_fingerprint,
+                json,
+            } => (
+                HostAction::Add {
+                    name,
+                    endpoint,
+                    role: HostRole::Satellite,
+                    token_file,
+                    cert_fingerprint,
+                    session: None,
+                    disabled,
+                    json: JsonOpt { json },
+                },
+                deprecation_line("phux satellite add", "phux host add --role satellite"),
+            ),
+            SatelliteAction::Remove { name, json } => (
+                HostAction::Remove {
+                    name,
+                    role: Some(HostRole::Satellite),
+                    json: JsonOpt { json },
+                },
+                deprecation_line("phux satellite remove", "phux host rm --role satellite"),
+            ),
+        }),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1232,7 +1405,7 @@ mod tests {
         let merged = empty_state(None);
         assert!(merged.contains("phux host add NAME ENDPOINT"));
         assert!(merged.contains("--role satellite"));
-        assert!(merged.contains("phux enroll HOST"));
+        assert!(merged.contains("phux host enroll HOST"));
 
         let remotes = empty_state(Some(HostRole::Remote));
         assert!(remotes.contains("phux host add NAME ENDPOINT"));

@@ -1,5 +1,5 @@
-//! `phux enroll HOST` — bootstrap a remote server's credentials over ssh
-//! (ADR-0055).
+//! The shared ssh middle of `phux host enroll` — bootstrap another
+//! machine's credentials over ssh (ADR-0055, ADR-0066).
 //!
 //! The remote path already worked and was still unusable: `phux pair` prints
 //! a 64-hex token and a 64-hex fingerprint, and the operator retypes both
@@ -19,7 +19,8 @@
 //! 2. install the remote's service unit, so the server survives reboot;
 //! 3. run `phux pair --json` there and read back token + fingerprint;
 //! 4. pick a dialable endpoint from the remote's detected overlay address;
-//! 5. write the token locally 0o600 and register the `[[remote]]` entry.
+//! 5. write the token locally 0o600 and register the role-correct entry
+//!    (`[[remote]]` or `[[satellites]]`, per `--role`).
 //!
 //! Step 4 is the one that can fail benignly: a host with no overlay address
 //! and no configured listener has nothing to dial. That is not an error — it
@@ -27,9 +28,6 @@
 //! `phux attach HOST` against a server whose sessions outlive the connection.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
-
-use super::remote::{self, NewRemote};
 
 /// Default QUIC port for an enrolled server. Matches the port
 /// `docs/remote-access.md` uses throughout.
@@ -232,131 +230,6 @@ pub(crate) fn enroll_over_ssh(
     let report = PairReport::parse(&stdout).map_err(EnrollFailure::Pair)?;
     let endpoint = choose_endpoint(ssh_host, &report, endpoint_override, quic_port);
     Ok(EnrollOutcome { endpoint, report })
-}
-
-/// `phux enroll HOST`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "CLI entry point; every argument is one documented flag"
-)]
-pub(crate) fn run_enroll(
-    ssh_host: &str,
-    name: Option<&str>,
-    host_override: Option<&str>,
-    quic_port: u16,
-    install_service: bool,
-    ssh_only: bool,
-    session: Option<&str>,
-) -> ExitCode {
-    let name = name.map_or_else(|| default_name(ssh_host), str::to_owned);
-
-    // `--ssh-only` skips the remote entirely: no pairing, no service, just a
-    // registry entry. Useful when the operator does not want a listener at
-    // all, and as an escape hatch when pairing misbehaves.
-    if ssh_only {
-        let endpoint = format!("ssh://{ssh_host}");
-        let new = match NewRemote::new(&name, &endpoint, None, None, session) {
-            Ok(new) => new,
-            Err(err) => {
-                eprintln!("phux enroll: {err}");
-                return ExitCode::FAILURE;
-            }
-        };
-        return finish(&new, &name, &endpoint);
-    }
-
-    outln!("Enrolling {ssh_host}...");
-
-    let outcome = enroll_over_ssh(
-        ssh_host,
-        host_override,
-        quic_port,
-        install_service,
-        &mut |event| match event {
-            EnrollEvent::ServiceInstalled { quic_bind } => {
-                outln!("  service installed on {ssh_host} (quic {quic_bind})");
-            }
-            EnrollEvent::ServiceInstallFailed { error } => {
-                eprintln!("phux enroll: warning: could not install the remote service: {error}");
-            }
-        },
-    );
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(EnrollFailure::MissingPhux(err)) => {
-            eprintln!("phux enroll: {err}");
-            eprintln!(
-                "      Install phux on {ssh_host} first, or run \
-                 `phux enroll {ssh_host} --ssh-only` to register it anyway."
-            );
-            return ExitCode::FAILURE;
-        }
-        Err(EnrollFailure::Pair(err)) => {
-            eprintln!("phux enroll: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let EnrollOutcome { endpoint, report } = outcome;
-
-    // The token is only meaningful for a dialed transport; an ssh:// entry
-    // rides ssh trust and must not leave a stray credential on disk.
-    let token_file = if endpoint.starts_with("ssh://") {
-        None
-    } else {
-        Some(token_path(&phux_server::telemetry::state_dir(), &name))
-    };
-
-    // Validate the whole registry entry BEFORE the token hits disk: a
-    // rejected name (`../x` would escape <state>/remotes via token_path's
-    // join) or a quic endpoint missing its fingerprint must not leave an
-    // orphaned bearer token behind. `validate_token_file` accepts a
-    // not-yet-written path by design.
-    let new = match NewRemote::new(
-        &name,
-        &endpoint,
-        token_file.as_deref(),
-        report.cert_fingerprint.as_deref(),
-        session,
-    ) {
-        Ok(new) => new,
-        Err(err) => {
-            eprintln!("phux enroll: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    if let Some(path) = &token_file
-        && let Err(err) = write_token(path, &report.token)
-    {
-        eprintln!("phux enroll: {err}");
-        return ExitCode::FAILURE;
-    }
-
-    finish(&new, &name, &endpoint)
-}
-
-/// Register the (already validated) entry and report what an operator can
-/// now type.
-fn finish(new: &NewRemote, name: &str, endpoint: &str) -> ExitCode {
-    if let Err(err) = remote::add_or_update(new) {
-        eprintln!("phux enroll: {err}");
-        return ExitCode::FAILURE;
-    }
-
-    outln!();
-    outln!("Enrolled {name} -> {endpoint}");
-    if endpoint.starts_with("ssh://") {
-        outln!(
-            "  No listener to dial, so this rides ssh. Sessions still live on the\n  \
-             server and survive the connection dropping. Add `--quic` on the\n  \
-             remote's service and re-run enroll to upgrade the transport."
-        );
-    } else {
-        outln!("  certificate pinned, token stored 0600");
-    }
-    outln!();
-    outln!("  phux attach {name}");
-    ExitCode::SUCCESS
 }
 
 /// Write a pairing token owner-only, creating the directory it lives in.
