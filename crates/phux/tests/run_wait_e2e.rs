@@ -529,6 +529,44 @@ fn tag_round_trips_and_drives_the_hash_selector() {
         "`phux tag ls work` should list the tags; got: {listed}",
     );
 
+    // `tag ls --json` emits the documented schema_version-1 document
+    // (agents.md §4.17) against a live server: `schema_version` 1 and one
+    // row per Terminal, the canonical selector under `terminal` and the
+    // full tag list under `tags` (phux-i0e8.8.5).
+    let json_listed = run_stdout(&server, &["tag", "ls", SESSION, "--json"]);
+    let doc: serde_json::Value =
+        serde_json::from_str(&json_listed).expect("`phux tag ls --json` should emit valid JSON");
+    assert_eq!(doc["schema_version"], 1, "document: {doc}");
+    let terminals = doc["terminals"]
+        .as_array()
+        .expect("`terminals` should be an array");
+    assert_eq!(
+        terminals.len(),
+        1,
+        "one seed pane means one row; document: {doc}"
+    );
+    let row = &terminals[0];
+    assert!(
+        row["terminal"].as_str().is_some_and(|t| !t.is_empty()),
+        "each row names its Terminal by canonical selector; document: {doc}"
+    );
+    let tags: Vec<&str> = row["tags"]
+        .as_array()
+        .expect("`tags` should be an array")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert_eq!(
+        tags,
+        ["build", "ci"],
+        "the stored tags come back sorted; document: {doc}"
+    );
+    assert_eq!(
+        doc.as_object().map(serde_json::Map::len),
+        Some(2),
+        "exactly the two documented top-level keys; document: {doc}"
+    );
+
     // The `#tag` selector resolves the tagged pane — `wait` against it sees
     // the live shell (a wait on `#build` for a prompt-ish idle settles).
     assert_eq!(
