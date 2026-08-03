@@ -302,10 +302,14 @@ existing SSH trust:
 
 ```sh
 phux service install --hub
-phux satellite enroll user@devbox
+phux host enroll --role satellite user@devbox
 ```
 
-`satellite enroll` verifies the remote binary, installs its service, runs
+(Formerly `phux satellite enroll`; the old spelling remains a hidden
+deprecated alias for one release cycle — see
+[ADR-0066](../ADR/0066-host-namespace.md).)
+
+`host enroll --role satellite` verifies the remote binary, installs its service, runs
 `phux pair --json`, stores the bearer token owner-only, pins the certificate,
 and writes the complete local `[[satellites]]` entry. When the satellite has no
 dialable listener it falls back to `ssh://user@devbox`; sessions still live on

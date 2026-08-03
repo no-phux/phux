@@ -9,7 +9,7 @@
 //! pinned TLS transport," but the trust direction is opposite — a satellite
 //! is a peer a *hub* dials on behalf of its users, a remote is a server *this
 //! consumer* dials on behalf of itself. Collapsing them would let
-//! `phux enroll` edit federation topology.
+//! `phux host enroll` edit federation topology.
 
 use std::path::PathBuf;
 

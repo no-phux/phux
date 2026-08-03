@@ -344,11 +344,16 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   from a saved archive. A saved native agent identity is resumed only after the
   current enabled integration resolves to the same owning plugin. Restore
   starts new processes; it does not claim to resurrect the original PTYs.
-- **`phux satellite <list|add|remove> [--json]`** — manage the hub-side
-  federation satellite registry. This never contacts a running server and never
-  opens a satellite transport; it only edits `[[satellites]]` in local config.
-  `--json` emits the satellite registry document (§4.10); failure paths leave
-  stdout empty and report diagnostics on stderr.
+- **`phux host <add|ls|rm> [--role remote|satellite] [--json]`** — manage
+  both machine registries through one namespace (`--role remote`, the
+  default, edits `[[remote]]`; `--role satellite` edits `[[satellites]]`).
+  These never contact a running server and never open a transport; they only
+  edit local config. `--json` emits the host registry document (§4.10);
+  failure paths leave stdout empty and report one contract line on stderr.
+  Formerly the separate `phux remote` and `phux satellite` verbs, which
+  remain hidden deprecated aliases for one release cycle: they run the
+  `host` implementation, print a stderr deprecation note on the human path,
+  and suppress it under `--json` (ADR-0066).
 
 `insert-pane` is intentionally not named `split`: it edits topology around a
 pane that already exists and performs no implicit spawn. Spawn-and-place remains
@@ -795,30 +800,44 @@ command only recreates missing sessions and their seed process. Use `phux
 upgrade` for live PTY handoff across a server re-exec; do not present workspace
 restore as resurrecting already-running processes.
 
-### 4.10 Satellite registry — `phux satellite ... --json`
+### 4.10 Host registry — `phux host ... --json`
 
-The satellite lifecycle surface is config-local. It edits or reads
-`[[satellites]]` entries and does not dial remote hosts.
+The machine-registry surface is config-local (`host enroll` excepted — it
+drives ssh). `add`, `ls`, and `rm` edit or read `[[remote]]` and
+`[[satellites]]` entries and do not dial remote hosts.
 
-`phux satellite list --json` emits:
+`phux host ls --json` emits one merged document:
 
 ```json
 {
   "schema_version": 1,
-  "satellites": [
+  "hosts": [
     {
       "name": "devbox",
+      "role": "satellite",
       "endpoint": "ssh://devbox",
-      "enabled": true
+      "enabled": true,
+      "token_file": null,
+      "cert_fingerprint": null,
+      "session": null
     }
   ]
 }
 ```
 
-`add --json` wraps the same satellite object under `"satellite"`; `remove
---json` wraps the removed object under `"removed"`. Invalid names, invalid
-endpoint URIs, duplicate configured names, and refused registry writes are hard
-failures: exit nonzero, stdout empty, stderr diagnostic.
+`enabled` is `null` for `role: "remote"` entries (the schema has no enabled
+bit) and `session` is `null` for satellites (a hub-dialed link has no
+arrival to attach). `--role` filters the array to one registry. `add --json`
+and `enroll --json` wrap one such object under `"host"`; `rm --json` emits
+`{"schema_version": 1, "removed": {"name": ..., "role": ...}}`. Invalid
+names, invalid endpoint URIs, duplicate configured names, and refused
+registry writes are hard failures: exit nonzero, stdout empty, one contract
+line (§5.3) on stderr.
+
+The deprecated `phux satellite ... --json` and `phux remote ... --json`
+spellings emit these same host-shaped documents while they last; the
+retired per-verb shapes (`"satellites"`, `"satellite"`, `"remotes"`) are
+gone.
 
 ### 4.11 `phux spawn --json`
 

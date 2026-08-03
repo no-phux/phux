@@ -141,8 +141,8 @@ pub(crate) fn satellite_token_path(state_dir: &Path, name: &str) -> PathBuf {
 }
 
 /// The local label for an enrolled host: the ssh destination with any
-/// `user@` and trailing path stripped, so `phux enroll me@mini` registers
-/// `mini`.
+/// `user@` and trailing path stripped, so `phux host enroll me@mini`
+/// registers `mini`.
 pub(crate) fn default_name(ssh_host: &str) -> String {
     ssh_host
         .rsplit('@')
@@ -156,9 +156,8 @@ pub(crate) fn default_name(ssh_host: &str) -> String {
 
 /// A progress event from the shared ssh middle of an enrollment.
 ///
-/// The middle does not print: the three callers (`phux enroll`,
-/// `phux satellite enroll`, `phux host enroll`) each own an output contract
-/// — different prefixes, different `--json` suppression rules — so events
+/// The middle does not print: `phux host enroll`'s two role tails each own
+/// an output contract — different `--json` suppression rules — so events
 /// carry the facts and the caller renders them.
 pub(crate) enum EnrollEvent<'a> {
     /// The remote's service unit was installed, listening on `quic_bind`.

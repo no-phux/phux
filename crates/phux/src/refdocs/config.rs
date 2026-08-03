@@ -97,7 +97,7 @@ const SECTIONS: &[Section] = &[
         key: "remote",
         header: "[[remote]]",
         summary: "Remote phux servers this machine attaches to, written by \
-                  `phux enroll` / `phux remote add` and resolved by \
+                  `phux host enroll` / `phux host add` and resolved by \
                   `phux attach <name>` (ADR-0055).",
     },
     Section {

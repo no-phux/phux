@@ -688,7 +688,7 @@ pub(crate) fn run_attach_rec(
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
     // A name in the registry is a deliberate operator statement — they ran
-    // `phux enroll` or `phux remote add` for it — so it wins over the
+    // `phux host enroll` or `phux host add` for it — so it wins over the
     // local-session reading of the same word. `--socket` is an explicit
     // local intent and suppresses the lookup.
     if socket.is_none()

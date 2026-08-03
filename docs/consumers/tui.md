@@ -177,8 +177,6 @@ phux config agents [--json]   # inspect configured plugin agent states
 phux config run PLUGIN ACTION # execute a configured plugin action
 phux plugin <COMMAND>         # install/update/link/list/toggle/unlink/validate plugins
                               # (list alias: ls; unlink aliases: rm, remove)
-phux satellite <COMMAND>      # enroll/add/list/remove federation satellites
-                              # (aliases: ls, rm)
 phux stdio-bridge             # splice stdin/stdout to the local server socket
                               # (the remote end of the SSH-stdio transport)
 phux worktree list [--json]   # worktrees + their bound session and liveness
@@ -196,17 +194,27 @@ phux completion SHELL         # print a shell completion script on stdout
                               # (bash, elvish, fish, powershell, zsh);
                               # generated from this binary's own parser, so it
                               # never advertises a verb the build lacks
-phux enroll HOST [--name N] [--endpoint HOST:PORT] [--quic-port P]
-                 [--no-service] [--ssh-only] [--session N]
-                              # set up a remote server over ssh end to end
+phux host enroll HOST [--role remote|satellite] [--name N]
+                 [--endpoint HOST:PORT] [--quic-port P]
+                 [--no-service] [--ssh-only] [--session N] [--json]
+                              # set up a machine over ssh end to end
                               # (ADR-0055): confirm phux is installed there,
                               # install its service unit, mint a pairing
-                              # token, and register the result locally, so
-                              # `phux attach HOST` needs no flags afterwards.
-                              # Falls back to an ssh:// entry when the host
-                              # has nothing dialable
-phux remote <add|list|remove> # the registry `phux attach NAME` resolves
-                              # (aliases: ls, rm)
+                              # token, and register the result in the
+                              # role-correct registry, so
+                              # `phux attach HOST` needs no flags afterwards
+                              # (--role remote, the default). Falls back to
+                              # an ssh:// entry when the host has nothing
+                              # dialable
+phux host <add|ls|rm>         # one namespace over both machine registries
+                              # (--role remote, the default, is what
+                              # `phux attach NAME` resolves; --role
+                              # satellite the peers a federation hub dials;
+                              # aliases: list, remove). Formerly the
+                              # separate `phux remote`, `phux satellite`,
+                              # and top-level `phux enroll` verbs, which
+                              # remain hidden deprecated aliases for one
+                              # release cycle (ADR-0066)
 phux service <install|uninstall|status|logs|prune-logs>
                               # per-user service unit (launchd LaunchAgent on
                               # macOS, systemd user unit on Linux) that keeps
@@ -1035,21 +1043,21 @@ The normal path is one capture-free command per box. Run it on the hub:
 
 ```
 phux service install --hub
-phux satellite enroll user@devbox
+phux host enroll --role satellite user@devbox
 ```
 
-`enroll` verifies the satellite's `phux`, installs its always-on service,
-mints and stores its credentials, and writes the complete registry entry. It
-prefers pinned QUIC on a detected overlay address and falls back to
-`ssh://user@devbox`; `--ssh-only` selects that fallback without probing.
-The lower-level `add` form remains available for externally provisioned
-credentials:
+`host enroll --role satellite` verifies the satellite's `phux`, installs its
+always-on service, mints and stores its credentials, and writes the complete
+registry entry. It prefers pinned QUIC on a detected overlay address and
+falls back to `ssh://user@devbox`; `--ssh-only` selects that fallback
+without probing. The lower-level `add` form remains available for
+externally provisioned credentials:
 ```
-phux satellite add devbox quic://devbox.example:8788 \
+phux host add --role satellite devbox quic://devbox.example:8788 \
     --token-file /home/me/.local/state/phux/satellites/devbox.token \
     --cert-fingerprint AB:CD:...
-phux satellite list --json
-phux satellite remove devbox
+phux host ls --role satellite --json
+phux host rm --role satellite devbox
 ```
 
 `add` is add-or-update and replaces the whole entry, so repeat the auth

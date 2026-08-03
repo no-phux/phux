@@ -156,8 +156,8 @@ pub(crate) fn run_pair(
 
     // `--json` keeps stdout a single document (the repo-wide contract in
     // docs/consumers/agents.md): the human blocks below are suppressed and
-    // every diagnostic still goes to stderr. `phux enroll` consumes this
-    // over ssh, which is what keeps a 64-hex token out of human hands.
+    // every diagnostic still goes to stderr. `phux host enroll` consumes
+    // this over ssh, which is what keeps a 64-hex token out of human hands.
     if !json {
         outln!("Pairing token (a secret — give it to the device once):");
         outln!("  {token}");
@@ -240,7 +240,7 @@ pub(crate) fn run_pair(
 /// (from the environment the listener reads), not a dialable address — the
 /// consumer pairs them with an overlay address to build an endpoint. They are
 /// null when this host has no listener configured, which is exactly the
-/// signal `phux enroll` uses to fall back to `ssh://`.
+/// signal `phux host enroll` uses to fall back to `ssh://`.
 fn print_pair_json(
     token: &str,
     fingerprint: Option<&str>,

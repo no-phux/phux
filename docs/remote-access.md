@@ -1,14 +1,14 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-07-21
+last-reviewed: 2026-08-02
 ---
 
 # Remote access over an overlay network
 
-**TL;DR.** Run `phux enroll HOST` from the client and you are done: it drives
-the whole setup over ssh and registers the result, so `phux attach HOST` works
-with no flags. The manual path — put both ends on a WireGuard-class overlay,
+**TL;DR.** Run `phux host enroll HOST` from the client and you are done: it
+drives the whole setup over ssh and registers the result, so `phux attach
+HOST` works with no flags. The manual path — put both ends on a WireGuard-class overlay,
 mint credentials with phux pair, attach to the overlay address over QUIC or TLS
 WebSocket — is documented below for Tailscale, Headscale, and raw WireGuard,
 plus troubleshooting for routing, auth, and fingerprint failures. A fourth
@@ -37,14 +37,19 @@ model and environment knobs live in
 [operations.md](./operations.md#connecting-from-another-network-overlay-reachability);
 this page owns the step-by-step task.
 
-## The short way: `phux enroll`
+## The short way: `phux host enroll`
 
 If you can already `ssh` to the host, skip everything below and run one
 command from the client:
 
 ```sh
-phux enroll mini
+phux host enroll mini
 ```
+
+(Before the `phux host` namespace this verb was spelled `phux enroll`; the
+old spelling still works for one release cycle as a hidden alias that
+prints a deprecation note. See
+[ADR-0066](../ADR/0066-host-namespace.md).)
 
 It confirms phux is installed on `mini`, installs the host's service unit so
 the server survives reboot, mints a pairing token there, reads back the
@@ -63,8 +68,8 @@ A host with no overlay address, or one whose certificate could not be read,
 has nothing dialable; enrollment says so and registers an `ssh://` entry
 instead. That still gives you `phux attach mini` against a server whose
 sessions outlive the connection — it just tunnels through ssh rather than
-dialing QUIC. Re-run `phux enroll` once the overlay is up to upgrade the
-transport.
+dialing QUIC. Re-run `phux host enroll` once the overlay is up to upgrade
+the transport.
 
 The rest of this page is the manual path: what `enroll` automates, and what
 to do when it cannot reach the host.

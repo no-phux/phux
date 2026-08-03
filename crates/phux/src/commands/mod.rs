@@ -494,7 +494,8 @@ pub(crate) enum Command {
     /// satellite-capable verb. Does not auto-start a server.
     Spawn {
         /// Route the spawn to a configured federation satellite (a name
-        /// from `phux satellite list`, on a server running `--hub`).
+        /// from `phux host ls --role satellite`, on a server running
+        /// `--hub`).
         #[arg(long, value_name = "NAME")]
         satellite: Option<String>,
 
@@ -1324,7 +1325,8 @@ pub(crate) enum Command {
         name: Option<String>,
 
         /// Emit the pairing material as JSON on stdout instead of the
-        /// human-readable report. This is what `phux enroll` reads over ssh.
+        /// human-readable report. This is what `phux host enroll` reads
+        /// over ssh.
         #[arg(long)]
         json: bool,
     },

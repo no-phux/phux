@@ -1233,7 +1233,7 @@ Options:
           Human-readable server name to embed in the connect link, shown by the device in its server list. Omitted: the device picks a default
 
       --json
-          Emit the pairing material as JSON on stdout instead of the human-readable report. This is what `phux enroll` reads over ssh
+          Emit the pairing material as JSON on stdout instead of the human-readable report. This is what `phux host enroll` reads over ssh
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2074,7 +2074,7 @@ Arguments:
 
 Options:
       --satellite <NAME>
-          Route the spawn to a configured federation satellite (a name from `phux satellite list`, on a server running `--hub`)
+          Route the spawn to a configured federation satellite (a name from `phux host ls --role satellite`, on a server running `--hub`)
 
       --target <TARGET>
           Existing local pane beside which to place the new pane

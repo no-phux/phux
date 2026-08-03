@@ -28,7 +28,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[plugins]]` | Declarative plugin manifests composed into this config; each entry names a `phux-plugin.toml` path and an enabled flag. |
 | `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, and certificate pin (ADR-0038). |
 | `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin (ADR-0052). |
-| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux enroll` / `phux remote add` and resolved by `phux attach <name>` (ADR-0055). |
+| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host enroll` / `phux host add` and resolved by `phux attach <name>` (ADR-0055). |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
 

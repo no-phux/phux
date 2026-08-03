@@ -383,7 +383,8 @@ pub(crate) fn report_spawn_error(err: &SpawnError) {
         SpawnError::UnsupportedSatelliteRoute => {
             eprintln!(
                 "phux: spawn failed: no route to that satellite \
-                 (is the server running with --hub, and the name in `phux satellite list`?)"
+                 (is the server running with --hub, and the name in \
+                 `phux host ls --role satellite`?)"
             );
         }
         SpawnError::SatelliteUnreachable(reason) => {
