@@ -351,6 +351,8 @@ fn example_blocks_render_one_example_per_line() {
 /// invocations).
 #[test]
 fn top_level_help_hides_stdio_bridge_but_it_still_parses() {
+    use clap::Parser as _;
+
     let mut root = Cli::command();
     let long = root.render_long_help().to_string();
     assert!(
@@ -359,7 +361,6 @@ fn top_level_help_hides_stdio_bridge_but_it_still_parses() {
          `stdio-bridge`:\n{long}"
     );
 
-    use clap::Parser as _;
     assert!(
         Cli::try_parse_from(["phux", "stdio-bridge"]).is_ok(),
         "`phux stdio-bridge` must keep parsing while hidden"
