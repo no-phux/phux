@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput};
+use libghostty_vt::build_info::{self, OptimizeMode};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
@@ -94,6 +95,14 @@ fn criterion_fanout(c: &mut Criterion) {
 }
 
 fn checked_capture_gates() {
+    let optimize_mode = build_info::optimize_mode().expect("libghostty build mode");
+    assert_eq!(
+        optimize_mode,
+        OptimizeMode::ReleaseFast,
+        "performance gates require a ReleaseFast libghostty build"
+    );
+    println!("metric=libghostty-optimize-mode mode={optimize_mode:?}");
+    let ready_only = std::env::var_os("PHUX_CAPTURE_READY_ONLY").is_some();
     let mut history_ready_p95 = None;
     for corpus in Corpus::ALL {
         let mut terminal = build_terminal(corpus);
@@ -149,7 +158,7 @@ fn checked_capture_gates() {
             history_ready_p95 = Some(native_p95);
         }
 
-        if corpus == Corpus::Unicode50k {
+        if corpus == Corpus::Unicode50k && !ready_only {
             let mut slice_latencies = Vec::with_capacity(WARMUP_SAMPLES);
             let mut full_latencies = Vec::with_capacity(WARMUP_SAMPLES);
             let mut max_slice_bytes = 0_usize;
@@ -204,6 +213,9 @@ fn checked_capture_gates() {
             .check()
             .unwrap_or_else(|error| panic!("{error}"));
         }
+    }
+    if ready_only {
+        return;
     }
 
     let history = history_ready_p95.expect("50k history READY sample");
@@ -429,6 +441,10 @@ fn dhat_allocation_probe() {
 fn main() {
     if std::env::var_os("PHUX_CAPTURE_DHAT").is_some() {
         dhat_allocation_probe();
+        return;
+    }
+    if std::env::var_os("PHUX_CAPTURE_READY_ONLY").is_some() {
+        checked_capture_gates();
         return;
     }
     if std::env::var_os("PHUX_CAPTURE_CHECK_ONLY").is_some() {
