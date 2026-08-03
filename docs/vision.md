@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-06-06
+last-reviewed: 2026-08-02
 ---
 
 # Vision
@@ -54,9 +54,12 @@ A satellite is a phux server running on another machine. A hub
 federates them: an authenticated consumer connecting to the hub can
 list Terminals on any satellite, spawn new Terminals on any
 satellite, observe and drive them. The transport between hub and
-satellite is whatever works. Direct consumer attach over QUIC and WSS ships
-today; hub-to-satellite routing and SSH-stdio do not. The wire is oblivious to
-the transport beneath it.
+satellite is whatever works. Direct consumer attach over QUIC and WSS
+ships today, and a hub routes Terminal-scoped operations to enrolled
+satellites — including over SSH-stdio (`ssh HOST phux stdio-bridge`).
+Satellite session/window joins are intentionally not federated;
+satellites stay Terminal-scoped. The wire is oblivious to the transport
+beneath it.
 
 This shape is the answer to "what is this for, beyond a better tmux." A
 fleet of agents working on a fleet of cloud boxes needs terminals as
@@ -87,9 +90,13 @@ splits, status bar, keybindings, prefix table. The user-facing
 vocabulary is tmux's because it's what people know.
 [`consumers/tui.md`](./consumers/tui.md) is the surface doc.
 
-The command palette and session/window pickers ship. Remaining TUI work includes
-a tab strip if multi-window juggling warrants it and deeper prefix-discoverable
-hooks. None of this touches the wire; it is client chrome over the substrate.
+The command palette, the session/window pickers, the window tab strip in the
+status bar (default-on, with a toggleable sidebar window list), and which-key
+prefix discovery all ship. What remains is the polish the 2026-08 UX audit
+named: a copy-mode search affordance over the shipped server-side
+find-in-scrollback primitive, and finishing the one-grammar consistency work
+across the CLI surface. None of this touches the wire; it is client chrome
+over the substrate.
 
 ### The agent surface
 
@@ -122,15 +129,19 @@ surface (verb set and JSON contracts);
 What works today and the current substrate state are in
 [`CONCEPTS.md`](./CONCEPTS.md); this list is the forward arc only.
 
-- **v0.2 — federation real.** Hubs route to satellites. QUIC
-  transport. Lazy state sync replaces pass-through bytes per ADR-0018.
+- **Federation deepens.** Hub-to-satellite routing, QUIC, WSS, and
+  SSH-stdio ship today; what remains is lazy state sync as the
+  federation default per ADR-0018 and richer joins beyond
+  Terminal-scoped relay.
 - **v0.x and beyond — second consumer.** A native GUI consumer
-  would show the substrate isn't TUI-shaped; a recorder, that it isn't
-  consumer-shaped; a tmux control-mode adapter
+  would show the substrate isn't TUI-shaped; a tmux control-mode adapter
   ([ADR-0010](../ADR/0010-frontend-agnostic-tmux-cc-reserved.md)), that
-  it isn't phux-shaped. phux-web ([`consumers/web.md`](./consumers/web.md))
-  is the first such consumer: a browser client that carries its own
-  engine and projects locally, which is the reference shape for the rest.
+  it isn't phux-shaped. Two such consumers already exist: phux-web
+  ([`consumers/web.md`](./consumers/web.md)), a browser client that
+  carries its own engine and projects locally — the reference shape for
+  the rest — and the recorder (`phux rec`,
+  [`consumers/recording.md`](./consumers/recording.md)), which showed
+  the substrate isn't consumer-shaped.
 
 ---
 

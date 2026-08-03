@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-07-12
+last-reviewed: 2026-08-02
 ---
 
 # Install
@@ -55,18 +55,20 @@ uses the latest GitHub release.
 Every portable tarball and installer path includes `phux-mcp`; there is no
 separate MCP package to install.
 
-To pin a specific release:
+To pin a specific release, pass any tag from the
+[releases page](https://github.com/phall1/phux/releases):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/phall1/phux/main/scripts/install.sh | bash -s -- --version v0.0.3
+curl -fsSL https://raw.githubusercontent.com/phall1/phux/main/scripts/install.sh | bash -s -- --version vX.Y.Z
 ```
 
 ## Release tarball
 
-Release tags include target-specific tarballs and checksum sidecars:
+Release tags include target-specific tarballs and checksum sidecars. Pick a
+tag from the [releases page](https://github.com/phall1/phux/releases):
 
 ```sh
-tag=v0.0.3
+tag=vX.Y.Z    # a tag from https://github.com/phall1/phux/releases
 target=aarch64-apple-darwin
 base="https://github.com/phall1/phux/releases/download/${tag}"
 curl -LO "${base}/phux-${tag}-${target}.tar.gz"
@@ -75,9 +77,10 @@ shasum -a 256 -c "phux-${tag}-${target}.tar.gz.sha256"
 tar -xzf "phux-${tag}-${target}.tar.gz"
 ```
 
-Put the extracted `phux` and `phux-mcp` binaries somewhere on `PATH`. Avoid the
-seeded `v0.0.1` Linux tarball outside Nix environments; it was built with a
-Nix-store dynamic loader and is not portable.
+Put the extracted `phux` and `phux-mcp` binaries somewhere on `PATH`. Avoid
+the very first seeded Linux tarball outside Nix environments; it was built
+with a Nix-store dynamic loader and is not portable. Every later release is
+a portable CI build.
 
 ## From source
 
@@ -128,7 +131,7 @@ crates.io is for the wire library, not for installing the `phux` binary:
 cargo add phux-protocol
 ```
 
-`cargo install phux is unsupported`. The binary crate and internal
+`cargo install phux` is unsupported. The binary crate and internal
 workspace crates are `publish = false`; install the CLI through Homebrew,
 the curl installer, release tarballs, or a source build.
 

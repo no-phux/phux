@@ -2114,7 +2114,7 @@ Usage: phux status [OPTIONS]
 
 Options:
       --json
-          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+          Emit stable, versioned JSON on stdout instead of the human view. Exception to the shared failure contract: with no server running, stdout carries the `{"running": false, ...}` document (still exiting non-zero); any other failure leaves stdout empty and puts one JSON error object on stderr
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)

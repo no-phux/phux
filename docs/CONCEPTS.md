@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents, consumers
 stability: evolving
-last-reviewed: 2026-07-09
+last-reviewed: 2026-08-02
 ---
 
 # How phux works
@@ -31,7 +31,7 @@ project structure locally from the real stream.
 
 ## Maturity: pre-alpha, spec-first
 
-phux is pre-alpha. The protocol is at version 0.5.0 and the spec leads the code: several behaviors are designed and written down before they are built, and a few shipped behaviors still diverge from the target the spec describes. This document distinguishes what runs today from a stated direction. Where they disagree, the divergence is marked inline and pointed at the ADR that decides it.
+phux is pre-alpha. The protocol is pre-1.0 (the current version is pinned in `phux-protocol` and mirrored by [`spec/`](./spec/README.md); a CI gate keeps the two in sync) and the spec leads the code: several behaviors are designed and written down before they are built, and a few shipped behaviors still diverge from the target the spec describes. This document distinguishes what runs today from a stated direction. Where they disagree, the divergence is marked inline and pointed at the ADR that decides it.
 
 What runs today: a server that spawns PTY-backed terminals and parses them with libghostty, a reference TUI that attaches over the wire, a browser client (phux-web), and a headless verb set a script or an agent can drive. The shipped CLI verbs are catalogued in [`QUICKSTART.md`](./QUICKSTART.md). Hub-and-spoke federation can dial configured satellites, aggregate their Terminal inventory, spawn there, and relay Terminal-scoped operations; satellite sessions/windows are intentionally not joined into the hub's local model.
 
@@ -104,7 +104,7 @@ The reference TUI, the browser client, and the agent surface are peers. None has
 
 The reference pattern for a consumer that wants structured state is to carry its own engine and project locally. phux-web is that pattern in shipping code: it compiles to WASM, loads `ghostty-vt.wasm`, speaks the exact wire codec over WebSocket, and computes its rendered view from engine state it owns. An agent SDK should follow the same shape — run the engine, project to structured state locally — rather than ask the wire for a structured-state service. See [ADR-0025 (browser web client)](../ADR/0025-browser-web-client.md), [ADR-0030](../ADR/0030-engine-delegated-wire-and-projection-consumers.md), and the consumer docs: [`consumers/web.md`](./consumers/web.md), [`consumers/tui.md`](./consumers/tui.md), [`consumers/agents.md`](./consumers/agents.md).
 
-The agent surface today is the headless CLI verb set plus the 21-tool [`phux-mcp`](./consumers/mcp.md) adapter over it. An agent reads structured state through versioned JSON, creates and explicitly places terminals with `new`/`launch`/`spawn`, and may serialize existing-pane topology edits through the shared L3 layout convention. Observation is bounded `wait` plus event `watch`; a blocked human question reuses the advisory `Asked` event. The TUI alone applies `next-attention`/return navigation to its client-local focus, so neither CLI nor MCP can move a human's viewport. These are consumer projections, not wire contracts or scheduler semantics. The library behind the CLI is the `phux-client` crate over `phux-protocol`; it exists today rather than being a future SDK. The verb catalog, JSON contracts, and orchestration safety rules are owned by [`consumers/agents.md`](./consumers/agents.md) and the runnable [`phux-agent-cli` skill](../examples/skills/phux-agent-cli/SKILL.md).
+The agent surface today is the headless CLI verb set plus the [`phux-mcp`](./consumers/mcp.md) adapter over it (its `tools/list` catalog is the authoritative tool inventory). An agent reads structured state through versioned JSON, creates and explicitly places terminals with `new`/`launch`/`spawn`, and may serialize existing-pane topology edits through the shared L3 layout convention. Observation is bounded `wait` plus event `watch`; a blocked human question reuses the advisory `Asked` event. The TUI alone applies `next-attention`/return navigation to its client-local focus, so neither CLI nor MCP can move a human's viewport. These are consumer projections, not wire contracts or scheduler semantics. The library behind the CLI is the `phux-client` crate over `phux-protocol`; it exists today rather than being a future SDK. The verb catalog, JSON contracts, and orchestration safety rules are owned by [`consumers/agents.md`](./consumers/agents.md) and the runnable [`phux-agent-cli` skill](../examples/skills/phux-agent-cli/SKILL.md).
 
 Some L1 commands return engine-derived snapshots a consumer could also compute locally — `GET_SCREEN`, `GET_TERMINAL_STATE`, `SUBSCRIBE_TERMINAL_EVENTS`, and the pushed `AgentEvent` frame. Read these as a convenience for consumers that have not yet adopted the carry-your-own-engine pattern, not as a normative structured contract and not as license to grow new structured wire surface. [`spec/L1.md`](./spec/L1.md) owns that surface.
 

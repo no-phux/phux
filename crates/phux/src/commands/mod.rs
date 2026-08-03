@@ -423,6 +423,20 @@ pub(crate) enum Command {
     /// versioned machine shape instead of the human text; with no server
     /// that shape is `{"running": false, ...}` on stdout, still exiting
     /// non-zero.
+    // `status` is the one verb whose JSON failure shape differs from the
+    // shared `JsonOpt` contract: "no server" is an answer, not an error, so
+    // it lands on stdout as `{"running": false, ...}`. The flattened struct
+    // cannot carry per-verb help, so the arg's help is overridden here to
+    // state the exception next to the flag (phux-i0e8.11.6 wave-8 nit).
+    #[command(mut_arg("json", |a| a
+        .help("Emit stable, versioned JSON on stdout instead of the human view")
+        .long_help(
+            "Emit stable, versioned JSON on stdout instead of the human view. \
+             Exception to the shared failure contract: with no server running, \
+             stdout carries the `{\"running\": false, ...}` document (still \
+             exiting non-zero); any other failure leaves stdout empty and puts \
+             one JSON error object on stderr",
+        )))]
     Status {
         #[command(flatten)]
         json: JsonOpt,
