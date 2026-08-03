@@ -1025,12 +1025,19 @@ async fn handle_attach_terminal(
     }
 
     let mut snapshot_gate: Option<oneshot::Sender<u64>> = None;
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    let (native_publication_gate_tx, native_publication_gate_rx) =
+        oneshot::channel::<crate::terminal_actor::NativePublicationReply>();
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    let mut native_publication_gate = Some(native_publication_gate_tx);
     if !tick_managed {
         let pump_out_tx = out_tx.clone();
         let pump_wire_terminal_id = terminal_id.clone();
         let pump_resize = handle.resize.clone();
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let pump_native_bootstrap = handle.native_bootstrap.clone();
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let pump_native_handle = handle.clone();
         let pump_state = state.clone();
         let pump_connection_token = connection_token.clone();
         let (gate_tx, gate_rx) = oneshot::channel::<u64>();
@@ -1052,8 +1059,37 @@ async fn handle_attach_terminal(
                     cut
                 }
             };
-            pump_generation_last_seq.store(published_cut, std::sync::atomic::Ordering::Release);
             let mut last_forwarded_seq = published_cut;
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            if matches!(
+                stream_profile,
+                phux_protocol::caps::BootstrapStreamProfile::NativeState {
+                    codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+                }
+            ) {
+                let Ok(publication) = native_publication_gate_rx.await else {
+                    return;
+                };
+                output_rx = publication.live;
+                for (seq, bytes) in publication.replay {
+                    if pump_out_tx
+                        .send(Outbound::Frame(FrameKind::TerminalOutput {
+                            terminal_id: pump_wire_terminal_id.clone(),
+                            stream_id,
+                            bootstrap_id,
+                            seq,
+                            bytes: crate::runtime::attach::downsample_for_caps(&bytes, client_caps),
+                        }))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    last_forwarded_seq = seq;
+                }
+            }
+            pump_generation_last_seq
+                .store(last_forwarded_seq, std::sync::atomic::Ordering::Release);
             let mut bootstrap_id = bootstrap_id;
             let mut generation_active = true;
             loop {
@@ -1200,11 +1236,12 @@ async fn handle_attach_terminal(
                                 pump_connection_token.cancel();
                                 break;
                             };
-                            let Ok(cut) = crate::runtime::attach::publish_native_bootstrap(
-                                &pump_out_tx,
-                                reply,
-                            )
-                            .await
+                            let Ok((cut, cursor)) =
+                                crate::runtime::attach::publish_native_bootstrap(
+                                    &pump_out_tx,
+                                    reply,
+                                )
+                                .await
                             else {
                                 crate::runtime::client::detach_and_release_consumer_state(
                                     &pump_state,
@@ -1213,10 +1250,44 @@ async fn handle_attach_terminal(
                                 pump_connection_token.cancel();
                                 break;
                             };
+                            let Ok(publication) =
+                                crate::runtime::attach::activate_native_publication(
+                                    &pump_native_handle,
+                                    client_id.0,
+                                    pump_wire_terminal_id.clone(),
+                                    stream_id,
+                                    bootstrap_id,
+                                    cursor,
+                                )
+                                .await
+                            else {
+                                pump_connection_token.cancel();
+                                break;
+                            };
                             published_cut = cut;
                             last_forwarded_seq = cut;
+                            output_rx = publication.live;
+                            for (seq, bytes) in publication.replay {
+                                if pump_out_tx
+                                    .send(Outbound::Frame(FrameKind::TerminalOutput {
+                                        terminal_id: pump_wire_terminal_id.clone(),
+                                        stream_id,
+                                        bootstrap_id,
+                                        seq,
+                                        bytes: crate::runtime::attach::downsample_for_caps(
+                                            &bytes,
+                                            client_caps,
+                                        ),
+                                    }))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                last_forwarded_seq = seq;
+                            }
                             pump_generation_last_seq
-                                .store(cut, std::sync::atomic::Ordering::Release);
+                                .store(last_forwarded_seq, std::sync::atomic::Ordering::Release);
                             generation_active = true;
                             continue;
                         }
@@ -1343,7 +1414,8 @@ async fn handle_attach_terminal(
         }
         match reply_rx.await {
             Ok(Ok(reply)) => {
-                let Ok(cut) = crate::runtime::attach::publish_native_bootstrap(out_tx, reply).await
+                let Ok((cut, cursor)) =
+                    crate::runtime::attach::publish_native_bootstrap(out_tx, reply).await
                 else {
                     rollback();
                     return CommandResult::Error {
@@ -1351,6 +1423,37 @@ async fn handle_attach_terminal(
                         message: "consumer went away during native ATTACH_TERMINAL".to_owned(),
                     };
                 };
+                let Ok(publication) = crate::runtime::attach::activate_native_publication(
+                    &handle,
+                    client_id.0,
+                    terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    cursor,
+                )
+                .await
+                else {
+                    rollback();
+                    return CommandResult::Error {
+                        code: ErrorCode::InternalError,
+                        message: "pane actor unavailable at native publication fence".to_owned(),
+                    };
+                };
+                let Some(publication_gate) = native_publication_gate.take() else {
+                    rollback();
+                    return CommandResult::Error {
+                        code: ErrorCode::InternalError,
+                        message: "native publication gate already consumed".to_owned(),
+                    };
+                };
+                if publication_gate.send(publication).is_err() {
+                    rollback();
+                    return CommandResult::Error {
+                        code: ErrorCode::InternalError,
+                        message: "native ATTACH_TERMINAL pump went away before publication"
+                            .to_owned(),
+                    };
+                }
                 generation_last_seq.store(cut, std::sync::atomic::Ordering::Release);
                 let _ = live_gate_tx.send(true);
                 if let Some(gate) = snapshot_gate {

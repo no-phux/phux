@@ -2432,6 +2432,7 @@ mod fatal_preflight_close_tests {
                 .1,
                 snapshot: mpsc::channel(8).0,
                 native_bootstrap,
+                native_publication: mpsc::channel(8).0,
                 native_history: mpsc::channel(8).0,
                 native_release,
                 set_default_colors: mpsc::channel(8).0,

@@ -365,6 +365,36 @@ pub struct NativeBootstrapReply {
     pub retained_bytes: usize,
     /// Actor-global raw output cut included by the checkpoint.
     pub base_seq: u64,
+    /// Actor-private generation key used only for the publication fence.
+    pub(crate) publication_cursor: crate::native_state::OpaqueHistoryCursor,
+}
+
+/// Live bytes captured after a native checkpoint fence and the broadcast
+/// receiver installed atomically after the replay cut.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativePublicationReply {
+    pub(crate) replay: Vec<(u64, Bytes)>,
+    pub(crate) live: broadcast::Receiver<PaneOutput>,
+}
+
+/// Complete the READY/ATTACH_READY publication fence for one owner.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativePublicationRequest {
+    /// Server-local lease owner completing publication.
+    pub owner: u64,
+    /// Wire terminal identity for the published replica.
+    pub terminal_id: phux_protocol::ids::TerminalId,
+    /// Logical stream identity for the published replica.
+    pub stream_id: StreamId,
+    /// Replica generation whose READY frame was just sent.
+    pub bootstrap_id: BootstrapId,
+    /// Authenticated actor-private generation cursor returned with READY.
+    pub cursor: crate::native_state::OpaqueHistoryCursor,
+    /// Completion carrying replay bytes and the post-replay live receiver.
+    pub reply:
+        oneshot::Sender<Result<NativePublicationReply, crate::native_state::NativeStateError>>,
 }
 
 /// Native checkpoint capture request serialized by the terminal actor.
@@ -602,6 +632,9 @@ pub struct TerminalHandle {
     /// Actor-serialized native checkpoint capture.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub native_bootstrap: mpsc::Sender<NativeBootstrapRequest>,
+    /// Actor-serialized transition from staged READY to replay/live delivery.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pub native_publication: mpsc::Sender<NativePublicationRequest>,
     /// Actor-serialized native history paging.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub native_history: mpsc::Sender<NativeHistoryRequest>,
