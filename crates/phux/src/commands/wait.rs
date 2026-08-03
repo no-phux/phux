@@ -71,7 +71,7 @@ pub(crate) fn run_wait(
             WaitOutcome::Met => ExitCode::SUCCESS,
             WaitOutcome::TimedOut => {
                 eprintln!("phux: wait timed out after {} polls", result.polls);
-                ExitCode::from(124)
+                ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
             }
         }
     })

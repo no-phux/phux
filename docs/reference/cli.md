@@ -159,12 +159,12 @@ EXIT STATUS
   1     Failure: no server, no such target, or the verb itself failed.
   2     Usage error, or the server refused the request.
   3     Unanswerable: the selector was resolved against a partial view
-          of the fleet (a federation satellite was unreachable). Retry
-          once the link is back — unlike 1, the target may exist.
+        of the fleet (a federation satellite was unreachable). Retry
+        once the link is back — unlike 1, the target may exist.
   124   `phux wait` gave up because `--timeout` expired.
   125   `phux run` gave up because `--timeout` expired; otherwise
-          `run` mirrors the exit code of the command it ran, so
-          `phux run … && next` composes like a shell.
+        `run` mirrors the exit code of the command it ran, so
+        `phux run … && next` composes like a shell.
 
 ENVIRONMENT
   PHUX_SOCKET        UDS path for the CLI verbs and the server. A `--socket`

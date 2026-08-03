@@ -48,6 +48,7 @@ use commands::Command;
 mod output;
 
 mod commands;
+mod exit_codes;
 mod refdocs;
 mod selector;
 
@@ -117,45 +118,14 @@ mod help_inventory;
         TARGET is the selector grammar: a session name, `name:window`,\n\
         `name:window.pane`, `@id`, or `.` (focused). `=` is reserved for the attached TUI's client-local focus MRU. The same\n\
         grammar works across kill/snapshot/send-keys/run/wait/ask.",
-    // The EXIT STATUS semantics are the ones `commands::partial` documents:
-    // 3 is distinct from 1 so a script can branch — retry is right for 3 and
-    // wrong for 1. `run` mirrors the child's code, which is why its timeout
-    // is 125 and not wait's 124.
-    after_long_help = "EXIT STATUS\n  \
-        0     Success.\n  \
-        1     Failure: no server, no such target, or the verb itself failed.\n  \
-        2     Usage error, or the server refused the request.\n  \
-        3     Unanswerable: the selector was resolved against a partial view\n  \
-        \x20       of the fleet (a federation satellite was unreachable). Retry\n  \
-        \x20       once the link is back — unlike 1, the target may exist.\n  \
-        124   `phux wait` gave up because `--timeout` expired.\n  \
-        125   `phux run` gave up because `--timeout` expired; otherwise\n  \
-        \x20       `run` mirrors the exit code of the command it ran, so\n  \
-        \x20       `phux run … && next` composes like a shell.\n\n\
-        ENVIRONMENT\n  \
-        PHUX_SOCKET        UDS path for the CLI verbs and the server. A `--socket`\n  \
-        \x20                 flag overrides it; default is\n  \
-        \x20                 $XDG_RUNTIME_DIR/phux/phux.sock (or /tmp/phux-$USER/...).\n  \
-        PHUX_WS_ADDR       Also accept WebSocket clients on HOST:PORT. Equivalent to\n  \
-        \x20                 `phux server --listen`, which overrides it.\n  \
-        PHUX_WS_SECURE     Force TLS + token auth on a loopback --listen address\n  \
-        \x20                 (exercise the remote path locally).\n  \
-        PHUX_WS_TLS_CERT   Operator-supplied server cert/key (PEM), instead of the\n  \
-        PHUX_WS_TLS_KEY    auto-provisioned self-signed pair used off-loopback.\n  \
-        PHUX_WS_TOKENS     Pairing-token store the server reads and `phux pair` writes.\n  \
-        PHUX_QUIC_ADDR     Also accept QUIC clients on HOST:PORT. Equivalent to\n  \
-        \x20                 `phux server --quic`, which overrides it.\n  \
-        PHUX_WT_ADDR       Also accept WebTransport (HTTP/3 over QUIC) clients on\n  \
-        \x20                 HOST:PORT. Equivalent to `phux server --webtransport`.\n  \
-        PHUX_SSH           OpenSSH-compatible program a federation hub spawns to\n  \
-        \x20                 dial ssh:// satellites (default: `ssh` on PATH).\n  \
-        PHUX_TAILSCALE     Tailscale-compatible CLI `phux pair` runs to detect the\n  \
-        \x20                 overlay address (default: `tailscale` on PATH).\n  \
-        PHUX_LOG           Write logs to this file (server tees; client writes here).\n  \
-        PHUX_LOG_FORMAT    text (default) or json — log line format.\n  \
-        RUST_LOG           tracing level filter, e.g. phux=debug.\n\n\
-        Run `phux server --listen 127.0.0.1:8787` to expose a port; see\n  \
-        `phux help server` for the remote/TLS details."
+    // The EXIT STATUS section renders from the canonical table in
+    // `exit_codes.rs` (phux-i0e8.11.4) — the same source the generated
+    // `docs/reference/exit-codes.md` page uses, so `--help` and the docs
+    // cannot disagree. The semantics are the ones `commands::partial`
+    // documents: 3 is distinct from 1 so a script can branch — retry is
+    // right for 3 and wrong for 1. `run` mirrors the child's code, which
+    // is why its timeout is 125 and not wait's 124.
+    after_long_help = root_after_long_help()
 )]
 struct Cli {
     /// Recording options for the naked `phux` attach. `phux attach` carries
@@ -178,6 +148,41 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 }
+
+/// The root `--help` epilogue: the EXIT STATUS section rendered from the
+/// canonical `exit_codes` table, then the static ENVIRONMENT section.
+fn root_after_long_help() -> String {
+    format!(
+        "{}\n\n{ENVIRONMENT_HELP}",
+        exit_codes::exit_status_section()
+    )
+}
+
+/// The ENVIRONMENT section of the root `--help` epilogue.
+const ENVIRONMENT_HELP: &str = "ENVIRONMENT\n  \
+        PHUX_SOCKET        UDS path for the CLI verbs and the server. A `--socket`\n  \
+        \x20                 flag overrides it; default is\n  \
+        \x20                 $XDG_RUNTIME_DIR/phux/phux.sock (or /tmp/phux-$USER/...).\n  \
+        PHUX_WS_ADDR       Also accept WebSocket clients on HOST:PORT. Equivalent to\n  \
+        \x20                 `phux server --listen`, which overrides it.\n  \
+        PHUX_WS_SECURE     Force TLS + token auth on a loopback --listen address\n  \
+        \x20                 (exercise the remote path locally).\n  \
+        PHUX_WS_TLS_CERT   Operator-supplied server cert/key (PEM), instead of the\n  \
+        PHUX_WS_TLS_KEY    auto-provisioned self-signed pair used off-loopback.\n  \
+        PHUX_WS_TOKENS     Pairing-token store the server reads and `phux pair` writes.\n  \
+        PHUX_QUIC_ADDR     Also accept QUIC clients on HOST:PORT. Equivalent to\n  \
+        \x20                 `phux server --quic`, which overrides it.\n  \
+        PHUX_WT_ADDR       Also accept WebTransport (HTTP/3 over QUIC) clients on\n  \
+        \x20                 HOST:PORT. Equivalent to `phux server --webtransport`.\n  \
+        PHUX_SSH           OpenSSH-compatible program a federation hub spawns to\n  \
+        \x20                 dial ssh:// satellites (default: `ssh` on PATH).\n  \
+        PHUX_TAILSCALE     Tailscale-compatible CLI `phux pair` runs to detect the\n  \
+        \x20                 overlay address (default: `tailscale` on PATH).\n  \
+        PHUX_LOG           Write logs to this file (server tees; client writes here).\n  \
+        PHUX_LOG_FORMAT    text (default) or json — log line format.\n  \
+        RUST_LOG           tracing level filter, e.g. phux=debug.\n\n\
+        Run `phux server --listen 127.0.0.1:8787` to expose a port; see\n  \
+        `phux help server` for the remote/TLS details.";
 
 /// The teaching error for a root `--rec` in front of a verb.
 ///

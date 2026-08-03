@@ -58,6 +58,79 @@ pub use phux_config::vocab::{
     AFTER_NEW_PANE, AGENT_STATE_CHANGED, CLIENT_ATTACHED, CLIENT_DETACHED, FOCUS_CHANGED, PANE_EXIT,
 };
 
+/// One hook event as the generated reference documents it: the canonical
+/// name and context keys from [`phux_config::vocab`], plus the per-event
+/// prose only this dispatcher can vouch for (phux-i0e8.11.4).
+///
+/// This is a *documentation* projection, not a dispatch structure: the
+/// name list and key lists are owned by the vocab (the validators' single
+/// source of truth); [`hook_event_specs`] adds the "fires when" sentence
+/// per event. The `spec_table_roundtrips_through_the_constructors` test
+/// pins the whole table to the real [`HookEvent`] constructors, so the
+/// reference page regenerated from this table cannot describe an event
+/// the server does not fire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookEventSpec {
+    /// Canonical event name, a member of [`phux_config::vocab::HOOK_EVENTS`].
+    pub name: &'static str,
+    /// When the server fires the event — one sentence of prose.
+    pub doc: &'static str,
+    /// The context keys the event can carry, sorted ascending
+    /// ([`phux_config::vocab::hook_context_keys`]). Optional keys are
+    /// included; a firing may omit them.
+    pub context_keys: &'static [&'static str],
+}
+
+/// Every hook event the server fires, in [`vocab::HOOK_EVENTS`] order.
+///
+/// Names and context keys come from the vocab; only the prose is added
+/// here. Consumed by the generated `docs/reference/hooks.md` renderer in
+/// the `phux` binary.
+#[must_use]
+pub fn hook_event_specs() -> Vec<HookEventSpec> {
+    vocab::HOOK_EVENTS
+        .iter()
+        .map(|&name| HookEventSpec {
+            name,
+            doc: event_doc(name),
+            context_keys: vocab::hook_context_keys(name).unwrap_or(&[]),
+        })
+        .collect()
+}
+
+/// The one-sentence "fires when" prose for a canonical event name.
+///
+/// Exhaustive over [`vocab::HOOK_EVENTS`] by the roundtrip test: a new
+/// vocab event without a sentence here panics the test suite, not a
+/// reader.
+fn event_doc(name: &str) -> &'static str {
+    match name {
+        AFTER_NEW_PANE => {
+            "A pane's actor spawned: fires right after pane creation, \
+             before the inner process has produced output."
+        }
+        PANE_EXIT => {
+            "A pane's inner process exited. `exit-code` is present only \
+             when the OS reported a code (absent for a signal-killed \
+             child)."
+        }
+        FOCUS_CHANGED => "A client's focus landed on a pane.",
+        CLIENT_ATTACHED => "A client's attach completed.",
+        CLIENT_DETACHED => {
+            "An attached client detached for any reason (explicit detach \
+             or transport drop). `session` is absent if the session was \
+             reaped before the detach ran."
+        }
+        AGENT_STATE_CHANGED => {
+            "The detector's published agent state for a pane actually \
+             changed (ADR-0046). `from` is absent on a first sighting; \
+             `agent-name` is absent for an anonymous agent; a withdrawn \
+             record arrives as `to = \"unknown\"`."
+        }
+        other => unreachable!("no doc prose for hook event `{other}`"),
+    }
+}
+
 /// The `to` value the agent hook reports when the detector withdraws a
 /// record: the agent is gone, so its state is no longer knowable.
 ///
@@ -547,7 +620,7 @@ fn matched_runs(
 fn event_env(event: &HookEvent, server_socket: Option<&Path>) -> Vec<(String, String)> {
     let mut env = vec![("PHUX_EVENT".to_owned(), event.name.clone())];
     for (key, value) in &event.context {
-        env.push((env_var_name(key), value.clone()));
+        env.push((context_env_var(key), value.clone()));
     }
     if let Some(path) = server_socket {
         env.push(("PHUX_SOCKET".to_owned(), path.display().to_string()));
@@ -555,8 +628,15 @@ fn event_env(event: &HookEvent, server_socket: Option<&Path>) -> Vec<(String, St
     env
 }
 
-/// `exit-code` → `PHUX_EXIT_CODE`.
-fn env_var_name(key: &str) -> String {
+/// The environment variable a context key rides into a hook child as:
+/// `exit-code` → `PHUX_EXIT_CODE` (upper-cased, `-` → `_`, `PHUX_`
+/// prefix).
+///
+/// Public so the generated hooks reference (phux-i0e8.11.4) renders the
+/// projection from the same function the dispatcher injects with — the
+/// doc column and the child's real environment cannot disagree.
+#[must_use]
+pub fn context_env_var(key: &str) -> String {
     let mut name = String::with_capacity(key.len() + 5);
     name.push_str("PHUX_");
     for ch in key.chars() {
@@ -888,9 +968,64 @@ mod tests {
 
     #[test]
     fn env_var_naming_uppercases_and_underscores() {
-        assert_eq!(env_var_name("exit-code"), "PHUX_EXIT_CODE");
-        assert_eq!(env_var_name("terminal-id"), "PHUX_TERMINAL_ID");
-        assert_eq!(env_var_name("session"), "PHUX_SESSION");
+        assert_eq!(context_env_var("exit-code"), "PHUX_EXIT_CODE");
+        assert_eq!(context_env_var("terminal-id"), "PHUX_TERMINAL_ID");
+        assert_eq!(context_env_var("session"), "PHUX_SESSION");
+    }
+
+    /// Roundtrip pin for the documentation table (phux-i0e8.11.4): the
+    /// spec table and the real event constructors must describe the same
+    /// surface. Full const coverage — one spec per [`vocab::HOOK_EVENTS`]
+    /// name, in order, each with doc prose; name membership — every
+    /// constructor-built event's name has exactly that spec; context-key
+    /// subset — a constructor-built event's keys (every optional key
+    /// present) are exactly the spec's documented keys, so no firing can
+    /// carry a key the reference does not list.
+    #[test]
+    fn spec_table_roundtrips_through_the_constructors() {
+        let specs = hook_event_specs();
+        assert_eq!(
+            specs.iter().map(|spec| spec.name).collect::<Vec<_>>(),
+            vocab::HOOK_EVENTS,
+            "one spec per vocab event, in vocab order",
+        );
+        for spec in &specs {
+            assert!(!spec.doc.is_empty(), "no doc prose for `{}`", spec.name);
+            assert_eq!(
+                Some(spec.context_keys),
+                vocab::hook_context_keys(spec.name),
+                "spec keys for `{}` must come from the vocab",
+                spec.name,
+            );
+        }
+
+        let terminal = phux_protocol::ids::TerminalId::local(7);
+        let client = crate::state::ClientId(3);
+        let events = [
+            HookEvent::after_new_pane(&terminal, Some("work")),
+            HookEvent::pane_exit(&terminal, Some(0)),
+            HookEvent::focus_changed(&terminal, client),
+            HookEvent::client_attached(client, "work"),
+            HookEvent::client_detached(client, Some("work")),
+            HookEvent::agent_state_changed(&terminal, "claude", "reviewer", Some("busy"), "idle"),
+        ];
+        assert_eq!(
+            events.len(),
+            specs.len(),
+            "a constructor is missing from this roundtrip",
+        );
+        for event in events {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.name == event.name)
+                .unwrap_or_else(|| panic!("constructor built unspecced event `{}`", event.name));
+            let got: Vec<&str> = event.context.keys().map(String::as_str).collect();
+            assert_eq!(
+                got, spec.context_keys,
+                "context keys drifted for `{}`",
+                event.name,
+            );
+        }
     }
 
     fn catalog_from_toml(hooks_toml: &str) -> HookCatalog {

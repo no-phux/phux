@@ -26,6 +26,9 @@
 pub(crate) mod actions;
 pub(crate) mod cli;
 pub(crate) mod config;
+pub(crate) mod exit_codes;
+pub(crate) mod files;
+pub(crate) mod hooks;
 pub(crate) mod widgets;
 
 /// The `last-reviewed` date stamped into every generated page's frontmatter.
@@ -99,6 +102,9 @@ pub(crate) fn pages() -> Vec<Page> {
         config::page(),
         actions::page(),
         widgets::page(),
+        hooks::page(),
+        exit_codes::page(),
+        files::page(),
     ];
     let mut pages = Vec::with_capacity(content.len() + 1);
     pages.push(index_page(&content));

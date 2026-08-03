@@ -582,25 +582,11 @@ Config is read from `$XDG_CONFIG_HOME/phux/config.toml` (or
 `~/.config/phux/config.toml`). Set `XDG_CONFIG_HOME` to isolate configuration
 for a test or alternate environment; there is no global config-path flag.
 
-Runtime and persistent state are split. The Unix socket lives in the
-runtime dir (where it's expected to disappear on reboot); persistent
-state lives in the state dir.
-
-```
-$XDG_RUNTIME_DIR/phux/phux.sock     # SOCK_STREAM, parent dir mode 0o700
-                                    #   (fallback: /tmp/phux-$UID/phux.sock)
-
-$XDG_STATE_HOME/phux/
-├── server.log                      # canonical server log (both spawn paths)
-├── client-<pid>.log                # default interactive-client log
-├── remote-cert.pem                 # auto-provisioned remote certificate
-├── remote-key.pem                  # owner-only private key
-└── remote-tokens                   # owner-only pairing tokens
-```
-
-These files are real today. A server PID file, rotated server-log directory,
-and per-terminal PTY journal remain design intent; workspace archives are
-written only when requested with `phux workspace save`.
+The full path map — socket, config, logs, TLS material, token store, and
+the not-yet-implemented paths — is the generated
+[file locations reference](../reference/files.md), rendered from the
+resolving functions themselves and pinned by unit tests, so it cannot
+drift from the code.
 
 ### 4.2 Format
 

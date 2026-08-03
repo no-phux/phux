@@ -15,7 +15,8 @@ const RUN_DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 /// Exit code `run` returns when it gives up waiting for the sentinel.
 /// Distinct from a mirrored child code (the wrapper-failure convention).
-const RUN_TIMEOUT_EXIT_CODE: u8 = 125;
+/// Canonical value in `crate::exit_codes` (phux-i0e8.11.4).
+const RUN_TIMEOUT_EXIT_CODE: u8 = crate::exit_codes::EXIT_RUN_TIMEOUT;
 
 /// `phux run TARGET CMD...` — run a command in a pane and report its exit
 /// code, output, and duration (ADR-0022 §3). The process exits with the

@@ -60,8 +60,10 @@ use crate::commands::json_err::{self, CliError, codes};
 /// this client declines to give because the world it was resolved against was
 /// incomplete. A retry once the satellite link is back is the right response
 /// to `3` and the wrong response to `1`, which is the whole reason they are
-/// not the same number.
-pub(crate) const EXIT_PARTIAL_VIEW: u8 = 3;
+/// not the same number. The value lives in the canonical table
+/// (`crate::exit_codes`, phux-i0e8.11.4); this is the historical name the
+/// selector paths consume it under.
+pub(crate) use crate::exit_codes::EXIT_PARTIAL_VIEW;
 
 /// Warn on stderr, once per unreachable satellite, that `verb` acted on a
 /// partial view of the fleet.

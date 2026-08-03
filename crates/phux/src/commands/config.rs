@@ -603,6 +603,9 @@ fn action_exit_code(output: &phux_plugin::PluginActionOutput) -> ExitCode {
             .exit_code
             .and_then(|code| u8::try_from(code).ok())
             .map_or(ExitCode::FAILURE, ExitCode::from),
-        phux_plugin::PluginActionOutcome::TimedOut => ExitCode::from(125),
+        phux_plugin::PluginActionOutcome::TimedOut => {
+            // `run`'s timeout convention (canonical table: exit_codes.rs).
+            ExitCode::from(crate::exit_codes::EXIT_RUN_TIMEOUT)
+        }
     }
 }
