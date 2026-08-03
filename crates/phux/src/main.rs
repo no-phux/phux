@@ -1519,42 +1519,52 @@ mod tests {
     /// single global `--socket` declaration must still reach them.
     #[test]
     fn completions_still_carry_socket() {
-        use clap::CommandFactory;
-        let mut buf = Vec::new();
-        clap_complete::generate(
+        let script = String::from_utf8(crate::commands::completion::completion_script(
             clap_complete::Shell::Bash,
-            &mut Cli::command(),
-            "phux",
-            &mut buf,
-        );
-        let script = String::from_utf8(buf).expect("completion script is UTF-8");
+        ))
+        .expect("completion script is UTF-8");
         assert!(
             script.contains("--socket"),
             "bash completions lost --socket after the root-settings rework"
         );
     }
 
-    /// The three deprecated aliases (ADR-0066) are hidden, so the generated
-    /// completions — built from the visible tree only — carry `host` and
-    /// none of the legacy top-level verbs.
+    /// The three deprecated aliases (ADR-0066) are hidden, so the shipped
+    /// completion scripts — generated from the pruned visible tree — carry
+    /// `host` and none of the legacy top-level verbs.
+    ///
+    /// The G3 gate (phux-i0e8.13.2) found the original spelling of this
+    /// test vacuous: it grepped `phux__remote`, but `clap_complete` 4.6.7
+    /// joins command paths as `phux__subcmd__remote`, and its generators
+    /// copy hidden subcommands into the root command lists wholesale. The
+    /// assertions below grep the markers 4.6.7 actually emits, plus the
+    /// aliases' help text, which no marker format can dodge.
     #[test]
     fn completions_carry_host_and_not_the_deprecated_verbs() {
-        use clap::CommandFactory;
         for shell in [clap_complete::Shell::Bash, clap_complete::Shell::Zsh] {
-            let mut buf = Vec::new();
-            clap_complete::generate(shell, &mut Cli::command(), "phux", &mut buf);
-            let script = String::from_utf8(buf).expect("completion script is UTF-8");
+            let script = String::from_utf8(crate::commands::completion::completion_script(shell))
+                .expect("completion script is UTF-8");
             assert!(
                 script.contains("host"),
                 "{shell} completions must offer the `host` verb"
             );
-            // The per-subcommand markers clap_complete generates: bash
-            // emits `phux__<verb>` state names, zsh `phux <verb>` case
-            // patterns via the same joined token.
-            for legacy in ["phux__remote", "phux__satellite", "phux__enroll"] {
+            for legacy in [
+                // The joined path markers clap_complete 4.6.7 emits (bash
+                // state names, zsh function names). These cannot collide
+                // with the legitimate `phux__subcmd__host__subcmd__enroll`:
+                // its path segment after the root is `host`, not `enroll`.
+                "phux__subcmd__remote",
+                "phux__subcmd__satellite",
+                "phux__subcmd__enroll",
+                // The aliases' about strings, as rendered into the zsh
+                // root command descriptors.
+                "Deprecated alias",
+                // The machine-only doc generator, hidden since it shipped.
+                "gen-reference-docs",
+            ] {
                 assert!(
                     !script.contains(legacy),
-                    "{shell} completions still offer the hidden alias {legacy}"
+                    "{shell} completions still offer the hidden surface {legacy}"
                 );
             }
         }

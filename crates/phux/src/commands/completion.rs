@@ -21,6 +21,40 @@ use crate::Cli;
 /// not whatever path happened to invoke the generator.
 const BIN_NAME: &str = "phux";
 
+/// The command tree completions are generated from: the real parser minus
+/// its hidden top-level verbs.
+///
+/// `clap_complete`'s shell generators (4.6.7) copy every subcommand into
+/// the emitted script -- `is_hide_set` is only consulted for possible
+/// values -- so generating straight from [`Cli::command`] offers the
+/// hidden ADR-0066 deprecation aliases (`remote`, `satellite`, `enroll`)
+/// and the machine-only `gen-reference-docs` right next to `host`
+/// (phux-i0e8.13.2). Since `clap::Command` has no subcommand-removal API,
+/// this rebuilds the root -- same name, version, and root args -- and
+/// re-adds only the visible verbs. The hidden verbs still parse; they are
+/// just never offered.
+///
+/// Root-level pruning only: no nested subcommand is hidden today, and the
+/// tests in `main.rs` pin the generated scripts, so a future nested hidden
+/// verb that leaks will fail there rather than ship silently.
+fn completion_tree() -> clap::Command {
+    let root = Cli::command();
+    // The version the derive stamped on the real root (`--version` still
+    // completes); `env!` because `clap::builder::Str` wants `'static`.
+    let mut pruned = clap::Command::new(BIN_NAME).version(env!("CARGO_PKG_VERSION"));
+    if let Some(about) = root.get_about() {
+        pruned = pruned.about(about.clone());
+    }
+    for arg in root.get_arguments() {
+        pruned = pruned.arg(arg.clone());
+    }
+    pruned.subcommands(
+        root.get_subcommands()
+            .filter(|sub| !sub.is_hide_set())
+            .cloned(),
+    )
+}
+
 /// Render the completion script for `shell` to stdout.
 ///
 /// Always exits 0 on a successful write. A broken pipe (the common case
@@ -37,11 +71,18 @@ const BIN_NAME: &str = "phux";
 /// `output::bytes`, which owns the decision. The extra allocation is one
 /// script, once, in a verb that runs at shell-rc time.
 pub(crate) fn run_completion(shell: Shell) -> ExitCode {
-    let mut cmd = Cli::command();
+    crate::output::bytes(&completion_script(shell));
+    ExitCode::SUCCESS
+}
+
+/// The completion script for `shell`, exactly as `phux completion` prints
+/// it. Shared with the leak tests in `main.rs` so they pin the shipped
+/// script, not a lookalike tree.
+pub(crate) fn completion_script(shell: Shell) -> Vec<u8> {
+    let mut cmd = completion_tree();
     let mut script: Vec<u8> = Vec::new();
     clap_complete::generate(shell, &mut cmd, BIN_NAME, &mut script);
-    crate::output::bytes(&script);
-    ExitCode::SUCCESS
+    script
 }
 
 #[cfg(test)]
@@ -56,11 +97,8 @@ mod tests {
     #[test]
     fn every_shell_variant_renders_a_nonempty_script() {
         for shell in Shell::value_variants() {
-            let mut cmd = Cli::command();
-            let mut buf: Vec<u8> = Vec::new();
-            clap_complete::generate(*shell, &mut cmd, BIN_NAME, &mut buf);
             assert!(
-                !buf.is_empty(),
+                !completion_script(*shell).is_empty(),
                 "`phux completion {shell}` rendered an empty script"
             );
         }
@@ -70,10 +108,8 @@ mod tests {
     /// harness that produced it.
     #[test]
     fn generated_script_names_the_phux_binary() {
-        let mut cmd = Cli::command();
-        let mut buf: Vec<u8> = Vec::new();
-        clap_complete::generate(Shell::Zsh, &mut cmd, BIN_NAME, &mut buf);
-        let script = String::from_utf8(buf).expect("zsh completion is utf-8");
+        let script =
+            String::from_utf8(completion_script(Shell::Zsh)).expect("zsh completion is utf-8");
         assert!(
             script.contains(BIN_NAME),
             "generated zsh completion never mentions `{BIN_NAME}`"
@@ -84,14 +120,34 @@ mod tests {
     /// is the canary because it is the surface agents drive phux through.
     #[test]
     fn generated_script_covers_a_known_subcommand() {
-        let mut cmd = Cli::command();
-        let mut buf: Vec<u8> = Vec::new();
-        clap_complete::generate(Shell::Bash, &mut cmd, BIN_NAME, &mut buf);
-        let script = String::from_utf8(buf).expect("bash completion is utf-8");
+        let script =
+            String::from_utf8(completion_script(Shell::Bash)).expect("bash completion is utf-8");
         assert!(
             script.contains("snapshot"),
             "generated bash completion omits the `snapshot` verb"
         );
+    }
+
+    /// The pruned tree drops exactly the hidden top-level verbs and keeps
+    /// everything else, so completions can never offer a verb `--help`
+    /// hides. `Cli::command()` is the source of truth for both sides.
+    #[test]
+    fn completion_tree_is_the_visible_half_of_the_parser() {
+        let real: Vec<(String, bool)> = Cli::command()
+            .get_subcommands()
+            .map(|sub| (sub.get_name().to_owned(), sub.is_hide_set()))
+            .collect();
+        let offered: Vec<String> = completion_tree()
+            .get_subcommands()
+            .map(|sub| sub.get_name().to_owned())
+            .collect();
+        for (name, hidden) in real {
+            assert_eq!(
+                !hidden,
+                offered.contains(&name),
+                "`{name}` (hidden: {hidden}) is on the wrong side of the completion tree"
+            );
+        }
     }
 
     /// The four shells the docs tell users to install for must all be
