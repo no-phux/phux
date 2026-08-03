@@ -546,10 +546,13 @@ mod tests {
         // The listener lives in this test process, so the peer credentials
         // of a connection to it name this very pid — on both Linux
         // (SO_PEERCRED) and macOS (LOCAL_PEEREPID), the two platforms phux
-        // ships on. Purely an OS fact: no server code participates.
+        // ships on. The scripted peer only completes the production
+        // constructor's mandatory HELLO negotiation.
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("pid.sock");
-        let _listener = UnixListener::bind(&socket).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server =
+            tokio::spawn(async move { ScriptedServer::accept(&listener, ScriptSpec::new()).await });
 
         let conn = Connection::connect(&socket).await.unwrap();
         assert_eq!(
@@ -557,6 +560,8 @@ mod tests {
             Some(i32::try_from(std::process::id()).unwrap()),
             "a UDS connection's peer pid must be the listening process"
         );
+        drop(conn);
+        server.await.unwrap();
     }
 
     #[test]
