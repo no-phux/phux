@@ -2065,6 +2065,10 @@ mod tests {
             // The refdocs generator (ADR-0069): machine-only since it
             // shipped.
             "phux gen-reference-docs",
+            // The SSH remoting shim (`ssh HOST phux stdio-bridge`): machine
+            // -invoked by `attach --host`, hidden from humans (phux-06nn),
+            // not deprecated.
+            "phux stdio-bridge",
             // Auto-spawn / upgrade plumbing on `phux server`.
             "phux server --daemonize",
             "phux server --seed-command",
