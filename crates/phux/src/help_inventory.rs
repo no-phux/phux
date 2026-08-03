@@ -110,6 +110,10 @@ phux doctor
 phux enroll
 phux gen-reference-docs
 phux give
+phux host
+phux host add
+phux host ls
+phux host rm
 phux insert-pane
 phux kill
 phux launch

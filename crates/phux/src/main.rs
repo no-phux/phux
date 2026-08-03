@@ -72,6 +72,7 @@ mod help_inventory;
         ATTACH / SERVE\n  \
           attach     Attach to a session (interactive)\n  \
           server     Run a server in the foreground\n  \
+          host       Register the machines phux talks to: remotes and satellites\n  \
           remote     Register the servers `phux attach <name>` can reach\n  \
           service    Keep a server running across logout and reboot\n  \
           upgrade    Hot-swap the running server binary, keeping sessions alive\n\n\
@@ -743,6 +744,7 @@ fn main() -> ExitCode {
             commands::RemoteAction::List { json } => commands::remote::run_list(json),
             commands::RemoteAction::Remove { name } => commands::remote::run_remove(&name),
         },
+        Some(Command::Host { action }) => commands::host::run_host(&action),
         Some(Command::Service { action }) => match action {
             commands::ServiceAction::Install {
                 quic,
@@ -1304,6 +1306,82 @@ mod tests {
                 }
             ));
         }
+    }
+
+    /// The `phux host` namespace (ADR-0066, phux-i0e8.12.2): `ls`/`list` and
+    /// `rm`/`remove` are one variant each, `add` defaults `--role` to
+    /// remote, and every action parses an explicit `--role satellite`.
+    #[test]
+    fn host_actions_parse_with_aliases_and_role_default() {
+        use crate::commands::host::{HostAction, HostRole};
+
+        for argv in [
+            ["phux", "host", "ls"].as_slice(),
+            ["phux", "host", "list"].as_slice(),
+            ["phux", "host", "ls", "--role", "satellite"].as_slice(),
+        ] {
+            assert!(
+                matches!(
+                    parsed(argv),
+                    Command::Host {
+                        action: HostAction::List { .. }
+                    }
+                ),
+                "{argv:?} must parse to the canonical List"
+            );
+        }
+
+        for argv in [
+            ["phux", "host", "rm", "mini"].as_slice(),
+            ["phux", "host", "remove", "mini"].as_slice(),
+            ["phux", "host", "rm", "--role", "remote", "mini"].as_slice(),
+        ] {
+            assert!(
+                matches!(
+                    parsed(argv),
+                    Command::Host {
+                        action: HostAction::Remove { .. }
+                    }
+                ),
+                "{argv:?} must parse to the canonical Remove"
+            );
+        }
+
+        let Command::Host {
+            action: HostAction::Add { role, .. },
+        } = parsed(&["phux", "host", "add", "mini", "ssh://mini"])
+        else {
+            panic!("expected Host Add");
+        };
+        assert_eq!(role, HostRole::Remote, "--role defaults to remote");
+
+        let Command::Host {
+            action: HostAction::Add { role, disabled, .. },
+        } = parsed(&[
+            "phux",
+            "host",
+            "add",
+            "--role",
+            "satellite",
+            "--disabled",
+            "edge",
+            "ssh://edge",
+        ])
+        else {
+            panic!("expected Host Add");
+        };
+        assert_eq!(role, HostRole::Satellite);
+        assert!(disabled);
+
+        // `host` is socketless: a provided --socket must be refused.
+        let cli = Cli::try_parse_from(["phux", "host", "ls", "--socket", "/tmp/x.sock"])
+            .expect("the global --socket always parses");
+        let command = cli.command.as_ref().expect("a verb was given");
+        assert_eq!(
+            crate::commands::socketless_verb(command),
+            Some("host"),
+            "host never dials a server"
+        );
     }
 
     /// `phux tag` carries the shared `--json` flag on all three actions

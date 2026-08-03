@@ -11,20 +11,20 @@ use crate::commands::toml_registry;
 const KEY: &str = "satellites";
 
 #[derive(Debug, Clone)]
-pub(super) struct SatelliteEntry {
-    pub(super) index: usize,
-    pub(super) name: String,
-    pub(super) endpoint: String,
-    pub(super) enabled: bool,
+pub(crate) struct SatelliteEntry {
+    pub(crate) index: usize,
+    pub(crate) name: String,
+    pub(crate) endpoint: String,
+    pub(crate) enabled: bool,
     /// Path to the pairing-token file (ADR-0038). The path is displayable;
     /// the token bytes behind it are the secret and are never read here.
-    pub(super) token_file: Option<PathBuf>,
+    pub(crate) token_file: Option<PathBuf>,
     /// TLS certificate SHA-256 pin, as printed by `phux pair`. Not a secret.
-    pub(super) cert_fingerprint: Option<String>,
+    pub(crate) cert_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct NewSatellite {
+pub(crate) struct NewSatellite {
     name: String,
     endpoint: String,
     enabled: bool,
@@ -33,7 +33,7 @@ pub(super) struct NewSatellite {
 }
 
 impl NewSatellite {
-    pub(super) fn new(
+    pub(crate) fn new(
         name: &str,
         endpoint: &str,
         enabled: bool,
@@ -50,7 +50,7 @@ impl NewSatellite {
     }
 }
 
-pub(super) fn load_registry() -> Result<Vec<SatelliteEntry>, String> {
+pub(crate) fn load_registry() -> Result<Vec<SatelliteEntry>, String> {
     let cfg = config_loader::load().map_err(|err| err.to_string())?;
     let mut seen = BTreeSet::new();
     let mut entries = Vec::with_capacity(cfg.satellites.len());
@@ -63,14 +63,14 @@ pub(super) fn load_registry() -> Result<Vec<SatelliteEntry>, String> {
     Ok(entries)
 }
 
-pub(super) fn find_entry(name: &str) -> Result<SatelliteEntry, String> {
+pub(crate) fn find_entry(name: &str) -> Result<SatelliteEntry, String> {
     load_registry()?
         .into_iter()
         .find(|entry| entry.name == name)
         .ok_or_else(|| format!("satellite {name:?} is not registered"))
 }
 
-pub(super) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String> {
+pub(crate) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String> {
     let config_path = config_loader::config_path();
     toml_registry::reject_symlink(&config_path)?;
     let mut doc = toml_registry::read_document(&config_path)?;
@@ -96,7 +96,7 @@ pub(super) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String
     })
 }
 
-pub(super) fn remove_entry(index: usize) -> Result<(), String> {
+pub(crate) fn remove_entry(index: usize) -> Result<(), String> {
     let config_path = config_loader::config_path();
     toml_registry::reject_symlink(&config_path)?;
     let mut doc = toml_registry::read_document(&config_path)?;

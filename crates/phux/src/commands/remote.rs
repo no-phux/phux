@@ -135,13 +135,17 @@ pub(crate) fn find(name: &str) -> Option<RemoteEntry> {
 }
 
 /// Validated fields for a new or updated entry.
+///
+/// Fields are `pub(crate)` so `phux host add --role remote` (the ADR-0066
+/// umbrella) can report what it just registered without re-deriving the
+/// trimmed name from raw input.
 #[derive(Debug, Clone)]
 pub(crate) struct NewRemote {
-    name: String,
-    endpoint: String,
-    token_file: Option<PathBuf>,
-    cert_fingerprint: Option<String>,
-    session: Option<String>,
+    pub(crate) name: String,
+    pub(crate) endpoint: String,
+    pub(crate) token_file: Option<PathBuf>,
+    pub(crate) cert_fingerprint: Option<String>,
+    pub(crate) session: Option<String>,
 }
 
 impl NewRemote {

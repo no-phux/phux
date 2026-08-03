@@ -148,6 +148,7 @@ pub(crate) mod detach;
 pub(crate) mod doctor;
 pub(crate) mod enroll;
 pub(crate) mod gen_reference_docs;
+pub(crate) mod host;
 pub(crate) mod json_err;
 pub(crate) mod kill;
 pub(crate) mod launch;
@@ -239,6 +240,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Plugin { .. } => Some("plugin"),
         Command::Satellite { .. } => Some("satellite"),
         Command::Remote { .. } => Some("remote"),
+        Command::Host { .. } => Some("host"),
         Command::Relay { .. } => Some("relay"),
         Command::Pair { .. } => Some("pair"),
         Command::Enroll { .. } => Some("enroll"),
@@ -1375,6 +1377,21 @@ pub(crate) enum Command {
     Remote {
         #[command(subcommand)]
         action: RemoteAction,
+    },
+
+    /// Register the machines phux talks to: remotes and satellites.
+    ///
+    /// One namespace over both machine registries. `--role remote` (the
+    /// default) manages the servers `phux attach <name>` dials; `--role
+    /// satellite` manages the peers a federation hub dials for its users.
+    /// The two registries stay separate in config (`[[remote]]` vs
+    /// `[[satellites]]`) because they encode opposite trust directions;
+    /// this verb absorbs the split into a flag.
+    // The visible successor to `remote` and `satellite` (ADR-0066); those
+    // verbs stay visible until the E4 deprecation slice hides them.
+    Host {
+        #[command(subcommand)]
+        action: host::HostAction,
     },
 
     /// Keep a server running across logout and reboot.

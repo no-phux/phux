@@ -28,6 +28,7 @@ TTY, and most accept `--json` for clean, scriptable output.
 ATTACH / SERVE
   attach     Attach to a session (interactive)
   server     Run a server in the foreground
+  host       Register the machines phux talks to: remotes and satellites
   remote     Register the servers `phux attach <name>` can reach
   service    Keep a server running across logout and reboot
   upgrade    Hot-swap the running server binary, keeping sessions alive
@@ -123,6 +124,7 @@ Commands:
   pair          Mint a pairing token for a remote consumer
   enroll        Set up a remote server over ssh, end to end
   remote        Manage the registry of remote phux servers this machine attaches to
+  host          Register the machines phux talks to: remotes and satellites
   service       Keep a server running across logout and reboot
   completion    Print a shell completion script on stdout
   doctor        Diagnose a phux install: config, socket, server, plugins
@@ -811,6 +813,135 @@ Arguments:
           Target selector (resolves to one pane)
 
 Options:
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux host`
+
+```text
+Register the machines phux talks to: remotes and satellites.
+
+One namespace over both machine registries. `--role remote` (the default) manages the servers `phux attach <name>` dials; `--role satellite` manages the peers a federation hub dials for its users. The two registries stay separate in config (`[[remote]]` vs `[[satellites]]`) because they encode opposite trust directions; this verb absorbs the split into a flag.
+
+Usage: phux host [OPTIONS] <COMMAND>
+
+Commands:
+  add   Register a machine, or replace an entry with the same name
+  ls    List registered machines from both registries [aliases: list]
+  rm    Remove a registered machine. Its token file is left in place [aliases: remove]
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux host add`
+
+```text
+Register a machine, or replace an entry with the same name.
+
+`--role remote` (the default) registers a server `phux attach <name>` can dial; `--role satellite` registers a peer this hub dials for its users. Updating replaces the whole entry, so repeat `--token-file` / `--cert-fingerprint` when re-adding a name or the auth material is cleared.
+
+Usage: phux host add [OPTIONS] <NAME> <ENDPOINT>
+
+Arguments:
+  <NAME>
+          Local label for the machine
+
+  <ENDPOINT>
+          Endpoint URI: `quic://HOST:PORT`, `wss://HOST:PORT`, or `ssh://HOST`. `ssh://` rides your existing ssh trust and needs no pairing; the other two need a token and a certificate pin
+
+Options:
+      --role <ROLE>
+          Which registry the entry lands in
+
+          Possible values:
+          - remote:    A server this machine attaches to — a `[[remote]]` entry
+          - satellite: A peer this hub dials for its users — a `[[satellites]]` entry
+          
+          [default: remote]
+
+      --token-file <PATH>
+          Absolute path to a file holding the pairing token minted by `phux pair` on the other machine
+
+      --cert-fingerprint <FP>
+          The other machine's TLS certificate SHA-256 fingerprint, as printed by `phux pair`. Required for `quic://` and `wss://`
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --session <NAME>
+          Session to attach on arrival (`--role remote` only). Omitted: the remote server's own last-attach memory decides
+
+      --disabled
+          Register the entry but leave it disabled (`--role satellite` only)
+
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux host ls`
+
+```text
+List registered machines from both registries.
+
+With no `--role`, remotes and satellites are merged into one table with a ROLE column; `--role` filters to one registry.
+
+Usage: phux host ls [OPTIONS]
+
+Options:
+      --role <ROLE>
+          Show only this registry
+
+          Possible values:
+          - remote:    A server this machine attaches to — a `[[remote]]` entry
+          - satellite: A peer this hub dials for its users — a `[[satellites]]` entry
+
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux host rm`
+
+```text
+Remove a registered machine. Its token file is left in place.
+
+With no `--role`, the name is resolved across both registries; a name registered in both is refused until `--role` disambiguates.
+
+Usage: phux host rm [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          Registered name
+
+Options:
+      --role <ROLE>
+          Which registry to remove from. Omitted: both are searched
+
+          Possible values:
+          - remote:    A server this machine attaches to — a `[[remote]]` entry
+          - satellite: A peer this hub dials for its users — a `[[satellites]]` entry
+
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 

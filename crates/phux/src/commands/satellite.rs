@@ -1,5 +1,7 @@
 mod json;
-mod registry;
+// `pub(crate)` (not private): `phux host` — the ADR-0066 umbrella verb —
+// delegates to this registry module rather than growing a merged store.
+pub(crate) mod registry;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
