@@ -70,9 +70,12 @@ predictions with the freshly rendered authoritative cells and cursor:
 | Pending | Keep the overlay; authoritative output has not reached that prediction yet. |
 | Contradicted | Remove that prediction and every prediction behind it. |
 
-A full `TERMINAL_SNAPSHOT` replaces the viewport and clears the pending
-overlay. Reconciliation follows terminal output, not `FRAME_ACK`; acknowledgments
-are flow control and carry no rendering truth.
+`BOOTSTRAP_TOMBSTONE` clears pending predictions for the invalidated
+generation. The replacement remains staged until `BOOTSTRAP_READY`, whose
+atomic publication replaces the viewport and clears the overlay. Reconciliation
+follows authoritative terminal output, not acknowledgements. `FRAME_ACK` exists
+only for `SynthesizedVtStateSync`, after applying its transition; native and
+synthesized-raw streams never send it.
 
 Repeated contradictions trigger adaptive backoff. Prediction pauses after a
 short run of misses and resumes only after clean authoritative confirmations.

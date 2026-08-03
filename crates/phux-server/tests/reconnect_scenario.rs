@@ -4,21 +4,21 @@
 //! from the user-visible perspective: a single client drives a real PTY
 //! through input, observes echoed `TERMINAL_OUTPUT`, drops the stream
 //! mid-conversation, then a fresh client re-attaches and sees a usable
-//! `TERMINAL_SNAPSHOT` followed by resumed `TERMINAL_OUTPUT` once the PTY
+//! protocol-0.7 bootstrap followed by resumed `TERMINAL_OUTPUT` once the PTY
 //! produces more bytes.
 //!
 //! This test also absorbs the server-side cleanup assertions that used to
 //! live in `byc_6_3_detach_clean_shutdown.rs` (monotonic `ClientId`
-//! allocation across detach, reset preamble + no scrollback on the
-//! reattach snapshot). On top of those it makes the renderer-level
+//! allocation across detach, reset preamble + no retained-history cursor on
+//! the reattach bootstrap). On top of those it makes the renderer-level
 //! assertion: after reconnect, the **rendered**
-//! `Screen` observes the post-reconnect echo (proving the snapshot+stream
+//! `Screen` observes the post-reconnect echo (proving the bootstrap+stream
 //! actually replays into a working VT) — that is the bit a user would
 //! notice if the pane actor were torn down or its subscribers list got
 //! corrupted on detach.
 //!
 //! AC mapping (salvaged from the `phux-a87` epic):
-//!   * Reconnect after detach with fresh `TERMINAL_SNAPSHOT`.
+//!   * Reconnect after detach with a fresh protocol-0.7 bootstrap.
 //!   * Subsequent `TERMINAL_OUTPUT` lands on the new client.
 //!   * Cross-platform smoke teardown: the socket file MUST be unlinked
 //!     after the server shuts down (`TempDir` cleanup is independent).
@@ -36,7 +36,7 @@ mod common;
 
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_DETACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_TERMINAL_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -129,6 +129,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
             FrameKind::Attached {
                 snapshot,
                 initial_client_id,
+                ..
             } => (snapshot.panes[0].id.clone(), initial_client_id.get()),
             other => panic!("client A: expected Attached, got {other:?}"),
         };
@@ -141,8 +142,8 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
 
         let (type_byte, _snap_a) = recv_typed(&mut client_a).await;
         assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
-            "client A: second frame TERMINAL_SNAPSHOT",
+            type_byte, TYPE_BOOTSTRAP_BEGIN,
+            "client A: second frame BOOTSTRAP_BEGIN",
         );
 
         // Send 'a' + Enter, observe the echo through a Screen.
@@ -199,7 +200,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
         // ============================================================
         // Phase 2 — client B reconnects to the same session. MUST get:
         //   (a) fresh ATTACHED whose snapshot still shows the pane,
-        //   (b) fresh TERMINAL_SNAPSHOT (proves the actor survived),
+        //   (b) fresh bootstrap (proves the actor survived),
         //   (c) on new keystrokes, fresh TERMINAL_OUTPUT carrying the
         //       PTY echo (proves the subscriber rewire actually streams).
         // ============================================================
@@ -212,6 +213,7 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
             FrameKind::Attached {
                 snapshot,
                 initial_client_id,
+                ..
             } => {
                 assert_eq!(snapshot.sessions.len(), 1, "client B: one session");
                 assert_eq!(snapshot.sessions[0].name, "default");
@@ -237,36 +239,35 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
              didn't drop the slot",
         );
 
-        // The fresh TERMINAL_SNAPSHOT is the resume-from-snapshot half
-        // of SPEC §13: the client must be able to reconstruct the
-        // pre-reconnect grid without any backfilled TERMINAL_OUTPUT.
-        let (type_byte, snap_b) = recv_typed(&mut client_b).await;
-        assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
-            "client B: second frame TERMINAL_SNAPSHOT (post-reconnect)",
-        );
-        let (snap_cols, snap_rows, snap_bytes, snap_scrollback) = match snap_b {
-            FrameKind::TerminalSnapshot {
-                cols,
-                rows,
-                vt_replay_bytes,
-                scrollback_bytes,
-                ..
-            } => (cols, rows, vt_replay_bytes, scrollback_bytes),
-            other => panic!("client B: expected TerminalSnapshot, got {other:?}"),
+        // The fresh bootstrap is the resume-from-snapshot half of SPEC §13:
+        // the client must be able to reconstruct the pre-reconnect grid
+        // without any backfilled TERMINAL_OUTPUT.
+        let (type_byte, begin_b) = recv_typed(&mut client_b).await;
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
+        let (snap_cols, snap_rows) = match begin_b {
+            FrameKind::BootstrapBegin { cols, rows, .. } => (cols, rows),
+            other => panic!("client B: expected BootstrapBegin, got {other:?}"),
+        };
+        let (_, chunk_b) = recv_typed(&mut client_b).await;
+        let snap_bytes = match chunk_b {
+            FrameKind::BootstrapChunk { payload, .. } => payload,
+            other => panic!("client B: expected BootstrapChunk, got {other:?}"),
+        };
+        let history_cursor = match recv_typed(&mut client_b).await.1 {
+            FrameKind::BootstrapReady { history_cursor, .. } => history_cursor,
+            other => panic!("client B: expected BootstrapReady, got {other:?}"),
         };
         assert_eq!(snap_cols, 80, "client B: snapshot cols");
         assert_eq!(snap_rows, 24, "client B: snapshot rows");
         // Folded from `byc_6_3_detach_clean_shutdown`: the reattach
-        // snapshot must carry the reset preamble (never empty) and no
-        // scrollback (byc.8 never emits scrollback_bytes).
+        // bootstrap must carry the reset preamble (never empty).
         assert!(
             snap_bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"),
-            "client B: snapshot must carry the reset preamble",
+            "client B: bootstrap must carry the reset preamble",
         );
         assert!(
-            snap_scrollback.is_none(),
-            "client B: byc.8 never emits scrollback_bytes",
+            history_cursor.is_none(),
+            "client B: no history cursor when scrollback was not requested",
         );
 
         // Build a fresh Screen from the snapshot bytes — this is what a

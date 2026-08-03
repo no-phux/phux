@@ -201,6 +201,7 @@ const fn enter_key() -> KeyEvent {
 fn attach_create_if_missing(name: &str) -> FrameKind {
     use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::CreateIfMissing {
             name: name.to_owned(),
             command: None,
@@ -224,7 +225,7 @@ async fn spawn_and_attach(
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
 ) {
-    use phux_protocol::wire::frame::{TYPE_ATTACHED, TYPE_TERMINAL_SNAPSHOT};
+    use phux_protocol::wire::frame::{TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
 
     let socket_path = tmp.path().join("phux.sock");
     let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), None);
@@ -236,7 +237,7 @@ async fn spawn_and_attach(
     // TERMINAL_SNAPSHOT for the seed pane
     let (type_byte, _snap) = recv_typed(&mut stream).await;
     assert_eq!(
-        type_byte, TYPE_TERMINAL_SNAPSHOT,
+        type_byte, TYPE_BOOTSTRAP_BEGIN,
         "expected TERMINAL_SNAPSHOT",
     );
     (stream, shutdown_tx, server_handle)
@@ -441,7 +442,7 @@ fn failed_actor_build_reaps_atomic_agent_session_provenance() {
 #[test]
 fn explicit_owner_terminal_selects_exact_session_window() {
     run_local(async {
-        use phux_protocol::wire::frame::{TYPE_ATTACHED, TYPE_TERMINAL_SNAPSHOT};
+        use phux_protocol::wire::frame::{TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
 
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
@@ -455,12 +456,12 @@ fn explicit_owner_terminal_selects_exact_session_window() {
             FrameKind::Attached { snapshot, .. } => snapshot.focused_pane,
             other => panic!("expected Attached, got {other:?}"),
         };
-        assert_eq!(recv_typed(&mut first).await.0, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(recv_typed(&mut first).await.0, TYPE_BOOTSTRAP_BEGIN);
 
         let mut second = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         send_frame(&mut second, &attach_create_if_missing("second")).await;
         assert_eq!(recv_typed(&mut second).await.0, TYPE_ATTACHED);
-        assert_eq!(recv_typed(&mut second).await.0, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(recv_typed(&mut second).await.0, TYPE_BOOTSTRAP_BEGIN);
 
         let mut headless = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         send_frame(
@@ -950,7 +951,7 @@ fn spawn_terminal_emits_terminal_closed_on_pty_exit() {
 fn terminal_resize_updates_pane_dims_observable_on_reattach() {
     run_local(async {
         use phux_protocol::wire::frame::{
-            AttachTarget, TYPE_ATTACHED, TYPE_TERMINAL_SNAPSHOT, ViewportInfo,
+            AttachTarget, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, ViewportInfo,
         };
 
         let tmp = TempDir::new().unwrap();
@@ -963,7 +964,7 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
         let (type_byte, _attached) = recv_typed(&mut stream_a).await;
         assert_eq!(type_byte, TYPE_ATTACHED);
         let (type_byte, _snap) = recv_typed(&mut stream_a).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         // Use /bin/cat so the actor stays alive for the duration of the
         // resize round-trip. A short-lived command would race with the
@@ -1019,6 +1020,7 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
         send_frame(
             &mut stream_b,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::ByName("resize-test".to_owned()),
                 viewport: ViewportInfo::new(80, 24),
                 request_scrollback: false,
@@ -1124,11 +1126,11 @@ async fn await_snapshot_or_output_contains(
             FrameKind::TerminalOutput {
                 terminal_id, bytes, ..
             } if &terminal_id == pane => acc.extend_from_slice(&bytes),
-            FrameKind::TerminalSnapshot {
+            FrameKind::BootstrapChunk {
                 terminal_id,
-                vt_replay_bytes,
+                payload,
                 ..
-            } if &terminal_id == pane => acc.extend_from_slice(&vt_replay_bytes),
+            } if &terminal_id == pane => acc.extend_from_slice(&payload),
             _ => continue,
         }
         if acc.windows(needle.len()).any(|w| w == needle) {
@@ -1219,6 +1221,7 @@ fn attach_create_seed_pane_injects_matching_terminal_id_env() {
         send_frame(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::CreateIfMissing {
                     name: "seed-id".to_owned(),
                     command: Some(vec![
@@ -1345,6 +1348,7 @@ fn attach_create_seed_pane_injects_server_socket_env() {
         send_frame(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::CreateIfMissing {
                     name: "seed-sock".to_owned(),
                     command: Some(vec!["/bin/sh".to_owned(), "-c".to_owned(), probe]),
@@ -1426,7 +1430,7 @@ fn spawn_terminal_inherits_focused_pane_live_cwd() {
         let (type_byte, _snap) = recv_typed(&mut stream).await;
         assert_eq!(
             type_byte,
-            phux_protocol::wire::frame::TYPE_TERMINAL_SNAPSHOT,
+            phux_protocol::wire::frame::TYPE_BOOTSTRAP_BEGIN,
             "expected TERMINAL_SNAPSHOT",
         );
 
@@ -1513,6 +1517,7 @@ fn create_if_missing_seeds_pane_in_wire_cwd() {
         send_frame(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::CreateIfMissing {
                     name: "proj".to_owned(),
                     command: Some(vec![
@@ -1599,7 +1604,7 @@ fn spawn_terminal_session_root_inherits_seed_pane_dir() {
         let (type_byte, _snap) = recv_typed(&mut stream).await;
         assert_eq!(
             type_byte,
-            phux_protocol::wire::frame::TYPE_TERMINAL_SNAPSHOT,
+            phux_protocol::wire::frame::TYPE_BOOTSTRAP_BEGIN,
             "expected TERMINAL_SNAPSHOT",
         );
 
@@ -1689,7 +1694,7 @@ fn spawn_terminal_last_cwd_per_window_inherits_active_pane_dir() {
         let (type_byte, _snap) = recv_typed(&mut stream).await;
         assert_eq!(
             type_byte,
-            phux_protocol::wire::frame::TYPE_TERMINAL_SNAPSHOT,
+            phux_protocol::wire::frame::TYPE_BOOTSTRAP_BEGIN,
             "expected TERMINAL_SNAPSHOT",
         );
 

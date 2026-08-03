@@ -1,8 +1,10 @@
-//! phux TUI client substrate — the ratatui-free pane-interior layer.
+//! Frontend-neutral client session and pane-interior substrate.
 //!
-//! This crate holds the parts of the phux TUI client that paint and
-//! reason about **pane interiors**, never chrome:
+//! This crate owns synchronous terminal-session state and the reusable client
+//! policies that must compile unchanged for native and wasm frontends:
 //!
+//! - [`engine`] and [`session`] — the generic terminal adapter and synchronous
+//!   protocol-0.7 session kernel.
 //! - [`layout`] — the pane-geometry layout tree, split math, and the CBOR
 //!   metadata envelope that persists it server-side.
 //! - [`multi_pane`] — layout tree → per-pane rectangles + the divider
@@ -10,20 +12,20 @@
 //!   `DividerCell`s to VT).
 //! - [`predict`] — Mosh-class predictive local echo over the pane mirror.
 //!
-//! # Why a separate crate (ADR-0020)
+//! # Frontend boundary
 //!
-//! phux-client composites two renderers: `ratatui` chrome (status bar,
-//! dividers, overlays) over libghostty pane interiors. The architectural
-//! invariant is that pane-interior code — layout math, the pane mirror,
-//! and predictive echo — stays `ratatui`-free so libghostty owns the hot
-//! path unmodified. This crate carries **no `ratatui` dependency**, so the
-//! boundary is enforced by the compiler: a `use ratatui` here fails to
-//! build. The chrome and the attach loop live in `phux-client`, which
-//! depends on this crate (never the reverse).
+//! Transport, async execution, timers, rendering, clipboard delivery, and
+//! frontend event parsing stay in host crates. This crate carries no
+//! `ratatui`, `crossterm`, `tokio`, `web-sys`, or DOM dependency. The kernel
+//! exposes borrowed adapter-owned replicas and declarative effects; hosts
+//! execute those effects without re-entering an update.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod engine;
+pub mod history;
 pub mod layout;
 pub mod multi_pane;
 pub mod predict;
+pub mod session;

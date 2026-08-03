@@ -9,21 +9,25 @@ mod common;
 use std::time::Duration;
 
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
-use phux_protocol::ids::FileUploadId;
+use phux_protocol::caps::{
+    BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
+    BootstrapProfileSet, ClientCapabilities, ColorSupport, EngineCodecSet, EngineFeatureSet,
+    LayerSet, ServerFeature,
+};
+use phux_protocol::ids::{BootstrapId, FileUploadId, StreamId, TerminalId};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_DETACHED,
-    TYPE_ERROR, TYPE_HELLO_OK, TYPE_TERMINAL_SNAPSHOT,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACHED,
+    TYPE_BOOTSTRAP_BEGIN, TYPE_ERROR, TYPE_HELLO_OK,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use crate::common::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, spawn_server,
-    wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, recv_until_detached,
+    run_local, send_frame, spawn_server, wait_for_raw_socket,
 };
 
 /// Bounded join: every server task must terminate within this window
@@ -44,15 +48,36 @@ fn hello_frame() -> FrameKind {
 }
 
 fn hello_for_version(major: u16, minor: u16, patch: u16) -> FrameKind {
+    hello_with_caps(
+        major,
+        minor,
+        patch,
+        ClientCapabilities::new()
+            .with_color_support(ColorSupport::TrueColor)
+            .with_layers(LayerSet::all()),
+    )
+}
+
+fn hello_with_caps(
+    major: u16,
+    minor: u16,
+    patch: u16,
+    client_caps: ClientCapabilities,
+) -> FrameKind {
     FrameKind::Hello {
         client_name: "phux-end-to-end-test".to_owned(),
         protocol_major: major,
         protocol_minor: minor,
         protocol_patch: patch,
-        client_caps: ClientCapabilities::new()
-            .with_color_support(ColorSupport::TrueColor)
-            .with_layers(LayerSet::all()),
+        client_caps,
     }
+}
+
+async fn negotiate(stream: &mut UnixStream) {
+    send_frame(stream, &hello_frame()).await;
+    let (type_byte, frame) = recv_typed(stream).await;
+    assert_eq!(type_byte, TYPE_HELLO_OK);
+    assert!(matches!(frame, FrameKind::HelloOk { .. }));
 }
 
 /// Drive shutdown and assert clean teardown: server task joins ok,
@@ -85,6 +110,15 @@ async fn recv_command_result(stream: &mut UnixStream, expected_request: u32) -> 
     }
 }
 
+async fn assert_server_closed(stream: &mut UnixStream) {
+    let mut byte = [0_u8; 1];
+    let read = timeout(WIRE_RECV_TIMEOUT, stream.read(&mut byte))
+        .await
+        .expect("server must close after flushing the protocol error")
+        .expect("read after protocol error");
+    assert_eq!(read, 0, "server must close after the error frame");
+}
+
 #[test]
 fn handshake_hello_round_trip() {
     // SPEC §6.1: HELLO must be acknowledged with HELLO_OK before ATTACH.
@@ -93,7 +127,7 @@ fn handshake_hello_round_trip() {
         let socket_path = tmp.path().join("phux.sock");
         let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
 
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
         send_frame(&mut stream, &hello_frame()).await;
         let (type_byte, hello_ok) = recv_typed(&mut stream).await;
@@ -109,6 +143,8 @@ fn handshake_hello_round_trip() {
                 protocol_minor,
                 server_caps,
                 server_id,
+                selected_profile,
+                bootstrap_limits,
                 ..
             } => {
                 assert_eq!(
@@ -134,13 +170,15 @@ fn handshake_hello_round_trip() {
                     server_caps.features.contains(ServerFeature::FileUpload),
                     "reference server advertises sandboxed file upload",
                 );
+                assert_eq!(selected_profile, BootstrapProfile::SynthesizedVtRaw);
+                assert_eq!(bootstrap_limits, BootstrapLimits::default());
                 assert_eq!(server_id.len(), 16);
                 server_id
             }
             other => panic!("expected HELLO_OK, got {other:?}"),
         };
 
-        let mut second_stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut second_stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         send_frame(&mut second_stream, &hello_frame()).await;
         let (_, second_hello) = recv_typed(&mut second_stream).await;
         match second_hello {
@@ -160,9 +198,11 @@ fn handshake_hello_round_trip() {
         );
         match attached {
             FrameKind::Attached {
+                attach_id,
                 snapshot,
                 initial_client_id,
             } => {
+                assert_eq!(attach_id, 1);
                 assert_eq!(snapshot.sessions.len(), 1);
                 assert_eq!(snapshot.sessions[0].name, "default");
                 assert!(initial_client_id.get() >= 1);
@@ -171,9 +211,201 @@ fn handshake_hello_round_trip() {
         }
 
         let (type_byte, _snap) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         drop(stream);
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn zero_attach_id_is_rejected_before_attached_state() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        negotiate(&mut stream).await;
+
+        send_frame(
+            &mut stream,
+            &FrameKind::Attach {
+                attach_id: 0,
+                target: phux_protocol::wire::frame::AttachTarget::ByName("default".to_owned()),
+                viewport: phux_protocol::wire::frame::ViewportInfo::new(80, 24),
+                request_scrollback: false,
+                scrollback_limit_lines: 0,
+            },
+        )
+        .await;
+        let (_, response) = recv_typed(&mut stream).await;
+        assert!(matches!(
+            response,
+            FrameKind::Error {
+                code: ErrorCode::MalformedMessage,
+                message,
+                ..
+            } if message.contains("attach_id must be nonzero")
+        ));
+        assert_server_closed(&mut stream).await;
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn client_sent_hello_ok_is_fatal_after_negotiation() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        negotiate(&mut stream).await;
+
+        send_frame(
+            &mut stream,
+            &FrameKind::HelloOk {
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                server_caps: phux_protocol::caps::ServerCapabilities::new(),
+                server_id: Vec::new(),
+                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: BootstrapLimits::default(),
+            },
+        )
+        .await;
+        let (_, response) = recv_typed(&mut stream).await;
+        assert!(matches!(
+            response,
+            FrameKind::Error {
+                code: ErrorCode::InvalidCommand,
+                ..
+            }
+        ));
+        assert_server_closed(&mut stream).await;
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn handshake_selects_explicit_synth_fallback_and_intersects_bounds() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let offered_limits = BootstrapLimits::new(64 * 1024, 128 * 1024).unwrap();
+        let bootstrap = BootstrapCapabilities::new()
+            .with_profiles(BootstrapProfileSet::with(&[
+                BootstrapProfileKind::SynthesizedVtRaw,
+            ]))
+            .with_native_codecs(EngineCodecSet::new())
+            .with_native_features(EngineFeatureSet::new())
+            .with_limits(offered_limits);
+        send_frame(
+            &mut stream,
+            &hello_with_caps(
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch,
+                ClientCapabilities::new().with_bootstrap(bootstrap),
+            ),
+        )
+        .await;
+        let (_, response) = recv_typed(&mut stream).await;
+        assert!(matches!(
+            response,
+            FrameKind::HelloOk {
+                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits,
+                ..
+            } if bootstrap_limits == offered_limits
+        ));
+        drop(stream);
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn native_required_without_common_codec_fails_before_attach() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let native_only = BootstrapCapabilities::new()
+            .with_profiles(BootstrapProfileSet::with(&[
+                BootstrapProfileKind::NativeState,
+            ]))
+            .with_native_codecs(EngineCodecSet::new());
+        send_frame(
+            &mut stream,
+            &hello_with_caps(
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch,
+                ClientCapabilities::new().with_bootstrap(native_only),
+            ),
+        )
+        .await;
+        let (_, response) = recv_typed(&mut stream).await;
+        match response {
+            FrameKind::Error { code, message, .. } => {
+                assert_eq!(code, ErrorCode::CodecUnavailable);
+                assert!(message.contains("exact common codec"));
+                assert!(message.contains("SynthesizedVtRaw"));
+            }
+            other => panic!("expected CODEC_UNAVAILABLE, got {other:?}"),
+        }
+        assert_server_closed(&mut stream).await;
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn negotiated_chunk_limit_rejects_oversized_payload_at_runtime_decode() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let offered_limits = BootstrapLimits::new(1024, 2048).unwrap();
+        let bootstrap = BootstrapCapabilities::new()
+            .with_profiles(BootstrapProfileSet::with(&[
+                BootstrapProfileKind::SynthesizedVtRaw,
+            ]))
+            .with_native_codecs(EngineCodecSet::new())
+            .with_native_features(EngineFeatureSet::new())
+            .with_limits(offered_limits);
+        send_frame(
+            &mut stream,
+            &hello_with_caps(
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch,
+                ClientCapabilities::new().with_bootstrap(bootstrap),
+            ),
+        )
+        .await;
+        assert!(matches!(
+            recv_typed(&mut stream).await.1,
+            FrameKind::HelloOk {
+                bootstrap_limits,
+                ..
+            } if bootstrap_limits == offered_limits
+        ));
+        send_frame(
+            &mut stream,
+            &FrameKind::BootstrapChunk {
+                terminal_id: TerminalId::local(1),
+                stream_id: StreamId::new(1).unwrap(),
+                bootstrap_id: BootstrapId::new(1).unwrap(),
+                chunk_seq: 0,
+                payload: bytes::Bytes::from(vec![0; 1025]),
+            },
+        )
+        .await;
+        assert_server_closed(&mut stream).await;
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });
 }
@@ -198,7 +430,7 @@ fn incompatible_handshake_returns_actionable_error() {
             ),
         ];
         for (minor, remediation, label) in cases {
-            let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+            let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
             send_frame(
                 &mut stream,
                 &hello_for_version(PROTOCOL_VERSION.major, minor, 0),
@@ -223,7 +455,103 @@ fn incompatible_handshake_returns_actionable_error() {
                 }
                 other => panic!("expected VERSION_INCOMPATIBLE, got {other:?}"),
             }
+            assert_server_closed(&mut stream).await;
         }
+
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn uds_requires_hello_for_stateful_frames_but_ping_remains_stateless() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+
+        let mut attach_stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut attach_stream, &attach_by_name("default")).await;
+        let (_, response) = recv_typed(&mut attach_stream).await;
+        assert!(matches!(
+            response,
+            FrameKind::Error {
+                code: ErrorCode::VersionIncompatible,
+                ..
+            }
+        ));
+        assert_server_closed(&mut attach_stream).await;
+
+        let mut ping_stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut ping_stream, &FrameKind::Ping { nonce: 0x5eed }).await;
+        let (_, pong) = recv_typed(&mut ping_stream).await;
+        assert!(matches!(pong, FrameKind::Pong { nonce: 0x5eed }));
+
+        send_frame(
+            &mut ping_stream,
+            &FrameKind::Command {
+                request_id: 7,
+                command: Command::GetState {
+                    scope: phux_protocol::wire::frame::StateScope::Server,
+                },
+            },
+        )
+        .await;
+        let (_, response) = recv_typed(&mut ping_stream).await;
+        assert!(matches!(
+            response,
+            FrameKind::Error {
+                code: ErrorCode::VersionIncompatible,
+                ..
+            }
+        ));
+        assert_server_closed(&mut ping_stream).await;
+
+        shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
+    });
+}
+
+#[test]
+fn post_attach_duplicate_hello_is_rejected_and_flushed() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut stream, &hello_frame()).await;
+        assert!(matches!(
+            recv_typed(&mut stream).await.1,
+            FrameKind::HelloOk { .. }
+        ));
+        send_frame(&mut stream, &attach_by_name("default")).await;
+        assert!(matches!(
+            recv_typed(&mut stream).await.1,
+            FrameKind::Attached { .. }
+        ));
+        let _ = recv_typed(&mut stream).await;
+
+        let changed_caps = FrameKind::Hello {
+            client_name: "mutating-duplicate".to_owned(),
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            client_caps: ClientCapabilities::new(),
+        };
+        send_frame(&mut stream, &changed_caps).await;
+        let response = loop {
+            let (_, frame) = recv_typed(&mut stream).await;
+            if matches!(frame, FrameKind::Error { .. }) {
+                break frame;
+            }
+        };
+        match response {
+            FrameKind::Error { code, message, .. } => {
+                assert_eq!(code, ErrorCode::InvalidCommand);
+                assert!(message.contains("HELLO already completed"));
+            }
+            other => panic!("expected duplicate HELLO error, got {other:?}"),
+        }
+        assert_server_closed(&mut stream).await;
 
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });
@@ -240,7 +568,7 @@ fn put_file_round_trip_publishes_only_the_verified_file() {
         unsafe { std::env::set_var("PHUX_UPLOAD_DIR", &upload_dir) };
         let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
 
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         send_frame(&mut stream, &hello_frame()).await;
         let (_, hello) = recv_typed(&mut stream).await;
         assert!(matches!(hello, FrameKind::HelloOk { .. }));
@@ -339,26 +667,24 @@ fn detach_clean_shutdown() {
         let socket_path = tmp.path().join("phux.sock");
         let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
 
-        let mut client_a = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut client_a = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        negotiate(&mut client_a).await;
         send_frame(&mut client_a, &attach_by_name("default")).await;
 
         let (type_byte, _attached_a) = recv_typed(&mut client_a).await;
         assert_eq!(type_byte, TYPE_ATTACHED);
         let (type_byte, _snap_a) = recv_typed(&mut client_a).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         send_frame(&mut client_a, &FrameKind::Detach).await;
-        let (type_byte, detached) = recv_typed(&mut client_a).await;
-        assert_eq!(type_byte, TYPE_DETACHED);
-        assert!(
-            matches!(detached, FrameKind::Detached),
-            "expected Detached, got {detached:?}",
-        );
+        let detached = recv_until_detached(&mut client_a).await;
+        assert!(matches!(detached, FrameKind::Detached));
         drop(client_a);
 
         // Server still accepting: a fresh client must complete an
         // ATTACH against the same runtime instance.
-        let mut client_b = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut client_b = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        negotiate(&mut client_b).await;
         send_frame(&mut client_b, &attach_by_name("default")).await;
         let (type_byte, _attached_b) = recv_typed(&mut client_b).await;
         assert_eq!(
@@ -366,7 +692,7 @@ fn detach_clean_shutdown() {
             "post-detach reattach must succeed",
         );
         let (type_byte, _snap_b) = recv_typed(&mut client_b).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         drop(client_b);
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
@@ -383,12 +709,13 @@ fn shutdown_with_live_real_clients_releases_input_lane_handles() {
         let socket_path = tmp.path().join("phux.sock");
         let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
 
-        let mut client_a = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        let mut client_b = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut client_a = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut client_b = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         for client in [&mut client_a, &mut client_b] {
+            negotiate(client).await;
             send_frame(client, &attach_by_name("default")).await;
             assert_eq!(recv_typed(client).await.0, TYPE_ATTACHED);
-            assert_eq!(recv_typed(client).await.0, TYPE_TERMINAL_SNAPSHOT);
+            assert_eq!(recv_typed(client).await.0, TYPE_BOOTSTRAP_BEGIN);
         }
 
         // Deliberately keep both real sockets alive across server shutdown.
@@ -409,7 +736,7 @@ fn server_survives_mid_frame_disconnect() {
         // of 64 bytes, then close without sending the body. The server
         // must observe EOF mid-frame and tear the per-client task down
         // without panicking.
-        let mut partial = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut partial = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         let bogus_header: [u8; 4] = 64u32.to_be_bytes();
         partial.write_all(&bogus_header).await.unwrap();
         partial.flush().await.unwrap();
@@ -422,7 +749,9 @@ fn server_survives_mid_frame_disconnect() {
         // Connection 2: a real client. If the server task crashed or
         // the accept loop is wedged this will never complete the
         // attach handshake.
-        let mut healthy: UnixStream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut healthy: UnixStream =
+            wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        negotiate(&mut healthy).await;
         send_frame(&mut healthy, &attach_by_name("default")).await;
         let (type_byte, _attached) = recv_typed(&mut healthy).await;
         assert_eq!(
@@ -430,7 +759,7 @@ fn server_survives_mid_frame_disconnect() {
             "server must keep accepting after a mid-frame disconnect",
         );
         let (type_byte, _snap) = recv_typed(&mut healthy).await;
-        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
 
         drop(healthy);
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;

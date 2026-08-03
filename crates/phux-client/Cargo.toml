@@ -13,6 +13,12 @@ authors.workspace = true
 workspace = true
 
 [features]
+default = ["native-engine"]
+# Safe native libghostty replica/capability host. Synthesis profiles remain
+# available as negotiated fallback; wasm consumers depend on client-core
+# directly and never enable this native TUI feature.
+native-engine = ["phux-client-core/native-engine"]
+
 # phux-h5hj.3: exposes `phux_client::testkit`, the single scripted server the
 # workspace's client-side unit tests speak to. Off by default because it is
 # test scaffolding, not product surface; this crate's own `#[cfg(test)]` build

@@ -60,14 +60,17 @@ async fn collect_until(
         let mut acc: Vec<u8> = Vec::new();
         loop {
             match rx.recv().await {
-                Ok(PaneOutput::Live(chunk) | PaneOutput::Resync { bytes: chunk, .. }) => {
+                Ok(
+                    PaneOutput::Live { bytes: chunk, .. } | PaneOutput::Resync { bytes: chunk, .. },
+                ) => {
                     acc.extend_from_slice(&chunk);
                     if needle.is_empty() || acc.windows(needle.len()).any(|w| w == needle) {
                         return acc;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    // Slow subscriber; resume rather than fail.
+                Ok(PaneOutput::Control { .. })
+                | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // Control frames carry no bytes; slow subscribers resume after lag.
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     return acc;
@@ -122,14 +125,18 @@ fn pty_output_reaches_broadcast_and_terminal() {
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
+                max_bytes: usize::MAX,
+                max_frames: usize::MAX,
+                chunk_bytes: 1,
                 reply: tx,
             })
             .await
             .expect("snapshot send");
-        let snap = timeout(PUMP_DEADLINE, rx)
+        let (snap, _base_seq) = timeout(PUMP_DEADLINE, rx)
             .await
             .expect("snapshot timeout")
-            .expect("snapshot reply");
+            .expect("snapshot reply")
+            .expect("snapshot synthesis");
         let snap_body = String::from_utf8_lossy(&snap.bytes);
         assert!(
             snap_body.contains("hello") && snap_body.contains("world"),
@@ -277,14 +284,18 @@ fn snapshot_after_pty_output_round_trips_through_fresh_terminal() {
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
+                max_bytes: usize::MAX,
+                max_frames: usize::MAX,
+                chunk_bytes: 1,
                 reply: tx,
             })
             .await
             .expect("snapshot send");
-        let snap = timeout(PUMP_DEADLINE, rx)
+        let (snap, _base_seq) = timeout(PUMP_DEADLINE, rx)
             .await
             .expect("snapshot timeout")
-            .expect("snapshot reply");
+            .expect("snapshot reply")
+            .expect("snapshot synthesis");
 
         // Round-trip: write the snapshot into a fresh Terminal and
         // confirm libghostty parses it without panic. We can't easily

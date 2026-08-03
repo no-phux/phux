@@ -39,7 +39,7 @@
         devShells.default = pkgs.mkShell {
           packages = [
             toolchain
-            # libghostty-vt-sys builds the C library via Zig at build time.
+            # libghostty-vt-sys requires the exact Zig 0.16.0 toolchain.
             pkgs.zig_0_16
             pkgs.pkg-config
             # Developer ergonomics.
@@ -90,9 +90,18 @@
 
           env.RUST_BACKTRACE = "1";
 
-          shellHook = ''
-            echo "phux dev shell — $(rustc --version)"
-          '';
+          # Ghostty's Darwin build needs both Zig SDK discovery and Xcode tools
+          # such as `nmedit`. Discard the nix cc hook's SDK-only
+          # DEVELOPER_DIR, then resolve the host Xcode installation exactly as
+          # xcrun does; calling xcode-select after the unset is load-bearing.
+          shellHook =
+            pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              unset DEVELOPER_DIR
+              export DEVELOPER_DIR="$(/usr/bin/xcode-select -p)"
+            ''
+            + ''
+              echo "phux dev shell — $(rustc --version)"
+            '';
         };
 
         formatter = pkgs.nixfmt-rfc-style;

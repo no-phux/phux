@@ -1,7 +1,0 @@
----
-source: crates/phux-protocol/tests/frame_wire_snapshots.rs
-expression: "dump_frame(&hello_with_color(ColorSupport::Indexed16))"
----
-00000000 | 00 00 00 2c 01 01 04 10  70 68 75 78 2d 63 6c 69 |...,....phux-cli
-00000010 | 65 6e 74 2f 74 65 73 74  02 04 02 00 00 03 04 02 |ent/test........
-00000020 | 00 02 04 04 02 00 00 05  04 06 02 01 07 03 01 00 |................

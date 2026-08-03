@@ -69,6 +69,12 @@ impl FrameBuffer {
     pub const fn poisoned(&self) -> bool {
         self.poisoned
     }
+
+    /// Bytes retained for an incomplete frame.
+    #[must_use]
+    pub fn pending_bytes(&self) -> usize {
+        self.buf.len()
+    }
 }
 
 #[cfg(test)]

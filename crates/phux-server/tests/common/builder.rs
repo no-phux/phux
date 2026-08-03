@@ -46,7 +46,8 @@ use phux_protocol::TerminalId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT, ViewportInfo,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
+    TYPE_TERMINAL_OUTPUT, ViewportInfo,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -311,6 +312,7 @@ impl ClientHandle {
         send_frame(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: phux_protocol::wire::frame::AttachTarget::ByName(session.to_owned()),
                 viewport,
                 request_scrollback: false,
@@ -327,9 +329,11 @@ impl ClientHandle {
         }
         let (client_id, terminal_id) = match attached {
             FrameKind::Attached {
+                attach_id,
                 snapshot,
                 initial_client_id,
             } => {
+                assert_eq!(attach_id, 1, "ATTACHED must echo ATTACH.attach_id");
                 let pane = snapshot
                     .panes
                     .first()
@@ -339,23 +343,53 @@ impl ClientHandle {
             other => return Err(format!("expected Attached, got {other:?}")),
         };
 
-        // The opening snapshot for the focused pane. Feed it into the
-        // oracle so `screenshot()` reflects initial state, not a blank
-        // grid. There is one snapshot per pane in the focused window; for
-        // the single-pane seed sessions this harness drives that is one
-        // frame. Any extras are drained opportunistically below.
+        // Drain BEGIN -> CHUNK* -> READY and replay each synthesized VT
+        // chunk into the oracle in wire order.
         let mut screen = Screen::new(viewport.cols, viewport.rows).expect("Screen::new");
-        let (snap_tb, snap) = recv_typed(&mut stream).await;
-        if snap_tb != TYPE_TERMINAL_SNAPSHOT {
-            return Err(format!(
-                "expected TERMINAL_SNAPSHOT (0x91), got type byte {snap_tb:#x}"
-            ));
+        let (begin_tb, begin) = recv_typed(&mut stream).await;
+        if begin_tb != TYPE_BOOTSTRAP_BEGIN {
+            return Err(format!("expected BOOTSTRAP_BEGIN, got {begin_tb:#x}"));
         }
-        if let FrameKind::TerminalSnapshot {
-            vt_replay_bytes, ..
-        } = snap
-        {
-            screen.write(&vt_replay_bytes);
+        let (stream_id, bootstrap_id) = match begin {
+            FrameKind::BootstrapBegin {
+                stream_id,
+                bootstrap_id,
+                ..
+            } => (stream_id, bootstrap_id),
+            other => return Err(format!("expected BootstrapBegin, got {other:?}")),
+        };
+        loop {
+            let (type_byte, frame) = recv_typed(&mut stream).await;
+            match frame {
+                FrameKind::BootstrapChunk {
+                    stream_id: incoming_stream,
+                    bootstrap_id: incoming_bootstrap,
+                    payload,
+                    ..
+                } => {
+                    if type_byte != TYPE_BOOTSTRAP_CHUNK
+                        || incoming_stream != stream_id
+                        || incoming_bootstrap != bootstrap_id
+                    {
+                        return Err("mismatched bootstrap chunk generation".to_owned());
+                    }
+                    screen.write(&payload);
+                }
+                FrameKind::BootstrapReady {
+                    stream_id: incoming_stream,
+                    bootstrap_id: incoming_bootstrap,
+                    ..
+                } => {
+                    if type_byte != TYPE_BOOTSTRAP_READY
+                        || incoming_stream != stream_id
+                        || incoming_bootstrap != bootstrap_id
+                    {
+                        return Err("mismatched bootstrap READY generation".to_owned());
+                    }
+                    break;
+                }
+                other => return Err(format!("expected BOOTSTRAP_CHUNK/READY, got {other:?}")),
+            }
         }
 
         Ok(Self {

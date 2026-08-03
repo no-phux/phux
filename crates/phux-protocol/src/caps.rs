@@ -130,6 +130,570 @@ impl OutputMode {
         }
     }
 }
+// -----------------------------------------------------------------------------
+// Native bootstrap negotiation — ADR-0067 / protocol 0.7.
+// -----------------------------------------------------------------------------
+
+/// Hard upper bound for one `BOOTSTRAP_CHUNK.payload`.
+///
+/// The 8 MiB ceiling leaves deterministic envelope headroom below the 16 MiB
+/// frame cap while permitting efficient checkpoint streaming.
+pub const MAX_BOOTSTRAP_CHUNK_BYTES: u32 = 8 * 1024 * 1024;
+/// Hard upper bound for one `HISTORY_PAGE.payload`.
+pub const MAX_HISTORY_PAGE_BYTES: u32 = 8 * 1024 * 1024;
+/// Default advertised maximum for one bootstrap chunk (256 KiB).
+pub const DEFAULT_BOOTSTRAP_CHUNK_BYTES: u32 = 256 * 1024;
+/// Default advertised maximum for one history page (1 MiB).
+pub const DEFAULT_HISTORY_PAGE_BYTES: u32 = 1024 * 1024;
+
+/// Negotiated per-frame byte bounds for bootstrap and history payloads.
+///
+/// Construction rejects zero and values above the protocol hard caps. The
+/// negotiated result is the per-axis minimum of the two peers' advertised
+/// values; runtime implementations MUST additionally reject a payload above
+/// that connection's negotiated value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BootstrapLimits {
+    max_chunk_bytes: u32,
+    max_history_page_bytes: u32,
+}
+
+impl BootstrapLimits {
+    /// Construct validated limits.
+    #[must_use]
+    pub const fn new(max_chunk_bytes: u32, max_history_page_bytes: u32) -> Option<Self> {
+        if max_chunk_bytes == 0
+            || max_chunk_bytes > MAX_BOOTSTRAP_CHUNK_BYTES
+            || max_history_page_bytes == 0
+            || max_history_page_bytes > MAX_HISTORY_PAGE_BYTES
+        {
+            return None;
+        }
+        Some(Self {
+            max_chunk_bytes,
+            max_history_page_bytes,
+        })
+    }
+
+    /// Maximum bytes permitted in one `BOOTSTRAP_CHUNK.payload`.
+    #[must_use]
+    pub const fn max_chunk_bytes(self) -> u32 {
+        self.max_chunk_bytes
+    }
+
+    /// Maximum bytes permitted in one `HISTORY_PAGE.payload`.
+    #[must_use]
+    pub const fn max_history_page_bytes(self) -> u32 {
+        self.max_history_page_bytes
+    }
+
+    /// Intersect two advertisements by taking the lower bound on each axis.
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Self {
+        Self {
+            max_chunk_bytes: if self.max_chunk_bytes < other.max_chunk_bytes {
+                self.max_chunk_bytes
+            } else {
+                other.max_chunk_bytes
+            },
+            max_history_page_bytes: if self.max_history_page_bytes < other.max_history_page_bytes {
+                self.max_history_page_bytes
+            } else {
+                other.max_history_page_bytes
+            },
+        }
+    }
+}
+
+impl Default for BootstrapLimits {
+    fn default() -> Self {
+        Self {
+            max_chunk_bytes: DEFAULT_BOOTSTRAP_CHUNK_BYTES,
+            max_history_page_bytes: DEFAULT_HISTORY_PAGE_BYTES,
+        }
+    }
+}
+
+/// One synchronization profile a peer can bootstrap.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BootstrapProfileKind {
+    /// Exact libghostty checkpoint state followed by byte-identical raw PTY output.
+    ///
+    /// Wire bit `0x01` is permanently retired: pre-bounded-history 0.7 peers
+    /// used it for an incomplete native contract. The versioned `0x08` offer
+    /// makes mixed peers select synthesized VT or fail before attach.
+    NativeState = 1 << 3,
+    /// Server-synthesized VT bootstrap followed by raw compatibility output.
+    SynthesizedVtRaw = 1 << 1,
+    /// Server-synthesized VT bootstrap followed by `StateSync` output.
+    SynthesizedVtStateSync = 1 << 2,
+}
+
+/// Additive bit-set of synchronization profiles supported by a peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BootstrapProfileSet(u8);
+
+impl BootstrapProfileSet {
+    const KNOWN: u8 = (BootstrapProfileKind::NativeState as u8)
+        | (BootstrapProfileKind::SynthesizedVtRaw as u8)
+        | (BootstrapProfileKind::SynthesizedVtStateSync as u8);
+
+    /// Empty set.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Set containing all protocol-0.7 profiles.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self(Self::KNOWN)
+    }
+
+    /// Build a set from profile kinds.
+    #[must_use]
+    pub const fn with(profiles: &[BootstrapProfileKind]) -> Self {
+        let mut bits = 0;
+        let mut index = 0;
+        while index < profiles.len() {
+            bits |= profiles[index] as u8;
+            index += 1;
+        }
+        Self(bits)
+    }
+
+    /// Whether the set contains `profile`.
+    #[must_use]
+    pub const fn contains(self, profile: BootstrapProfileKind) -> bool {
+        self.0 & (profile as u8) != 0
+    }
+
+    /// Known wire bits.
+    #[must_use]
+    pub const fn as_wire(self) -> u8 {
+        self.0 & Self::KNOWN
+    }
+
+    /// Decode known bits and ignore future bits.
+    #[must_use]
+    pub const fn from_wire(bits: u8) -> Self {
+        Self(bits & Self::KNOWN)
+    }
+}
+
+impl Default for BootstrapProfileSet {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+/// An immutable libghostty checkpoint codec version.
+///
+/// Versions are exact capabilities, not a min/max range: a future codec gets a
+/// distinct enum value and set bit so negotiation cannot infer compatibility.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum EngineCodec {
+    /// libghostty terminal checkpoint format version 2.
+    LibghosttyCheckpointV2 = 2,
+}
+
+impl EngineCodec {
+    /// Exact checkpoint envelope version selected on the wire.
+    #[must_use]
+    pub const fn as_wire(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode an exact checkpoint version.
+    #[must_use]
+    pub const fn from_wire(value: u8) -> Option<Self> {
+        match value {
+            2 => Some(Self::LibghosttyCheckpointV2),
+            _ => None,
+        }
+    }
+}
+/// Concrete encoding carried by one bootstrap stream.
+///
+/// This is distinct from [`BootstrapProfile`]: compatibility uses its named VT
+/// grammar, while native mode names the exact immutable engine codec selected
+/// during negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BootstrapCodec {
+    /// Protocol-defined synthesized VT replay grammar version 1.
+    SynthesizedVtV1,
+    /// Exact libghostty checkpoint grammar.
+    Native(EngineCodec),
+}
+
+impl BootstrapCodec {
+    /// Wire tag for synthesized VT v1.
+    pub const SYNTHESIZED_VT_V1_TAG: u8 = 0;
+    /// Wire tag for a native engine codec followed by its exact version byte.
+    pub const NATIVE_TAG: u8 = 1;
+}
+
+/// Additive set of exact native engine codecs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct EngineCodecSet(u64);
+
+impl EngineCodecSet {
+    const V2_BIT: u64 = 1 << 2;
+    const KNOWN: u64 = Self::V2_BIT;
+
+    /// Empty codec set.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// All exact native codecs implemented by protocol 0.7.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self(Self::KNOWN)
+    }
+
+    /// Build a set from exact codec versions.
+    #[must_use]
+    pub const fn with(codecs: &[EngineCodec]) -> Self {
+        let mut bits = 0;
+        let mut index = 0;
+        while index < codecs.len() {
+            bits |= 1u64 << (codecs[index] as u8);
+            index += 1;
+        }
+        Self(bits)
+    }
+
+    /// Whether this set contains an exact codec.
+    #[must_use]
+    pub const fn contains(self, codec: EngineCodec) -> bool {
+        self.0 & (1u64 << (codec as u8)) != 0
+    }
+
+    /// Known wire bits.
+    #[must_use]
+    pub const fn as_wire(self) -> u64 {
+        self.0 & Self::KNOWN
+    }
+
+    /// Decode known bits and ignore future bits.
+    #[must_use]
+    pub const fn from_wire(bits: u64) -> Self {
+        Self(bits & Self::KNOWN)
+    }
+
+    /// Highest exact codec shared by both sets.
+    #[must_use]
+    pub const fn highest_common(self, other: Self) -> Option<EngineCodec> {
+        if self.0 & other.0 & Self::V2_BIT != 0 {
+            Some(EngineCodec::LibghosttyCheckpointV2)
+        } else {
+            None
+        }
+    }
+}
+
+/// libghostty checkpoint capabilities required by native synchronization.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EngineFeature {
+    /// Parser continuation state is serialized.
+    Continuation = 1 << 0,
+    /// The codec exposes an incremental READY publication boundary.
+    ReadyBoundary = 1 << 1,
+    /// History can continue in independently delivered pages after READY.
+    HistoryPages = 1 << 2,
+    /// Bounded history requests, sequenced pages, and cursor-scoped statuses.
+    BoundedHistoryControl = 1 << 3,
+}
+
+/// Additive set of libghostty checkpoint features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct EngineFeatureSet(u32);
+
+impl EngineFeatureSet {
+    const KNOWN: u32 = (EngineFeature::Continuation as u32)
+        | (EngineFeature::ReadyBoundary as u32)
+        | (EngineFeature::HistoryPages as u32)
+        | (EngineFeature::BoundedHistoryControl as u32);
+
+    /// Empty feature set.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// All features required by the protocol-0.7 native profile.
+    #[must_use]
+    pub const fn required_native() -> Self {
+        Self(Self::KNOWN)
+    }
+
+    /// Build a feature set.
+    #[must_use]
+    pub const fn with(features: &[EngineFeature]) -> Self {
+        let mut bits = 0;
+        let mut index = 0;
+        while index < features.len() {
+            bits |= features[index] as u32;
+            index += 1;
+        }
+        Self(bits)
+    }
+
+    /// Whether `feature` is present.
+    #[must_use]
+    pub const fn contains(self, feature: EngineFeature) -> bool {
+        self.0 & (feature as u32) != 0
+    }
+
+    /// Whether every native-required feature is present.
+    #[must_use]
+    pub const fn supports_native(self) -> bool {
+        self.0 & Self::KNOWN == Self::KNOWN
+    }
+
+    /// Known wire bits.
+    #[must_use]
+    pub const fn as_wire(self) -> u32 {
+        self.0 & Self::KNOWN
+    }
+
+    /// Decode known bits and ignore future bits.
+    #[must_use]
+    pub const fn from_wire(bits: u32) -> Self {
+        Self(bits & Self::KNOWN)
+    }
+
+    /// Feature intersection.
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Self {
+        Self((self.0 & other.0) & Self::KNOWN)
+    }
+}
+
+/// Bootstrap negotiation capabilities advertised by a peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BootstrapCapabilities {
+    /// Supported explicit synchronization profiles.
+    pub profiles: BootstrapProfileSet,
+    /// Supported exact libghostty checkpoint versions for `NativeState`.
+    pub native_codecs: EngineCodecSet,
+    /// Supported libghostty checkpoint features for `NativeState`.
+    pub native_features: EngineFeatureSet,
+    /// Maximum payload bounds this peer accepts.
+    pub limits: BootstrapLimits,
+}
+
+impl BootstrapCapabilities {
+    /// Protocol-0.7 synthesized VT compatibility profiles.
+    ///
+    /// Native engine state is never assumed from a protocol build. A native
+    /// host must probe its linked engine and opt in through [`Self::with_native`].
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            profiles: BootstrapProfileSet::with(&[
+                BootstrapProfileKind::SynthesizedVtRaw,
+                BootstrapProfileKind::SynthesizedVtStateSync,
+            ]),
+            native_codecs: EngineCodecSet::new(),
+            native_features: EngineFeatureSet::new(),
+            limits: BootstrapLimits {
+                max_chunk_bytes: DEFAULT_BOOTSTRAP_CHUNK_BYTES,
+                max_history_page_bytes: DEFAULT_HISTORY_PAGE_BYTES,
+            },
+        }
+    }
+
+    /// Advertise one exact native codec after a successful engine probe.
+    ///
+    /// Native support is indivisible: callers must provide every feature
+    /// required by protocol 0.7. A partial feature set removes any existing
+    /// native advertisement rather than publishing a misleading subset.
+    #[must_use]
+    pub const fn with_native(mut self, codec: EngineCodec, features: EngineFeatureSet) -> Self {
+        if !features.supports_native() {
+            self.profiles = BootstrapProfileSet::from_wire(
+                self.profiles.as_wire() & !(BootstrapProfileKind::NativeState as u8),
+            );
+            self.native_codecs = EngineCodecSet::new();
+            self.native_features = EngineFeatureSet::new();
+            return self;
+        }
+
+        self.profiles = BootstrapProfileSet::from_wire(
+            self.profiles.as_wire() | BootstrapProfileKind::NativeState as u8,
+        );
+        self.native_codecs = EngineCodecSet::with(&[codec]);
+        self.native_features = EngineFeatureSet::required_native();
+        self
+    }
+
+    /// Replace the profile set.
+    #[must_use]
+    pub const fn with_profiles(mut self, profiles: BootstrapProfileSet) -> Self {
+        self.profiles = profiles;
+        self
+    }
+
+    /// Replace the exact native codec set.
+    #[must_use]
+    pub const fn with_native_codecs(mut self, codecs: EngineCodecSet) -> Self {
+        self.native_codecs = codecs;
+        self
+    }
+
+    /// Replace the native feature set.
+    #[must_use]
+    pub const fn with_native_features(mut self, features: EngineFeatureSet) -> Self {
+        self.native_features = features;
+        self
+    }
+
+    /// Replace payload limits.
+    #[must_use]
+    pub const fn with_limits(mut self, limits: BootstrapLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+}
+
+impl Default for BootstrapCapabilities {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The exact synchronization profile selected in `HELLO_OK`.
+///
+/// The three variants are the entire legal mode matrix. Native has no output
+/// mode field and therefore always means raw, byte-identical PTY continuation;
+/// `NativeState + StateSync` is unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BootstrapProfile {
+    /// Exact libghostty engine checkpoint plus raw live bytes.
+    NativeState {
+        /// Exact immutable checkpoint format.
+        codec: EngineCodec,
+        /// Negotiated feature intersection; includes all native-required bits.
+        features: EngineFeatureSet,
+    },
+    /// Synthesized VT bootstrap plus raw compatibility output.
+    SynthesizedVtRaw,
+    /// Synthesized VT bootstrap plus `StateSync` output.
+    SynthesizedVtStateSync,
+}
+
+impl BootstrapProfile {
+    /// Wire tag for bounded-history `NativeState`.
+    ///
+    /// Tag `0` is permanently retired with the incomplete legacy native
+    /// profile; a current peer never decodes it as native.
+    pub const NATIVE_STATE_TAG: u8 = 3;
+    /// Wire tag for `SynthesizedVtRaw`.
+    pub const SYNTHESIZED_VT_RAW_TAG: u8 = 1;
+    /// Wire tag for `SynthesizedVtStateSync`.
+    pub const SYNTHESIZED_VT_STATE_SYNC_TAG: u8 = 2;
+}
+
+/// Failure to select an explicit synchronization profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodecUnavailable;
+
+/// Per-stream profile repeated in `BOOTSTRAP_BEGIN`.
+///
+/// This is the stream-local projection of the connection's selected
+/// [`BootstrapProfile`]. The three variants are the legal codec/output-mode
+/// matrix, so a native `StateSync` stream cannot be constructed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BootstrapStreamProfile {
+    /// Exact native checkpoint followed by raw PTY bytes.
+    NativeState {
+        /// Exact native checkpoint grammar carried by the stream.
+        codec: EngineCodec,
+    },
+    /// Synthesized VT bootstrap followed by raw compatibility bytes.
+    SynthesizedVtRaw,
+    /// Synthesized VT bootstrap followed by `StateSync` bytes.
+    SynthesizedVtStateSync,
+}
+
+/// Select one explicit profile and the negotiated payload bounds.
+///
+/// Native v2 is preferred whenever both peers advertise it and all required
+/// engine features intersect. Otherwise synthesized VT is selected only when
+/// both peers advertised that profile. There is no implicit fallback.
+pub fn select_bootstrap_profile(
+    client: &ClientCapabilities,
+    server: &BootstrapCapabilities,
+) -> Result<(BootstrapProfile, BootstrapLimits), CodecUnavailable> {
+    let limits = client.bootstrap.limits.intersect(server.limits);
+    if client
+        .bootstrap
+        .profiles
+        .contains(BootstrapProfileKind::NativeState)
+        && server.profiles.contains(BootstrapProfileKind::NativeState)
+        && let Some(codec) = client
+            .bootstrap
+            .native_codecs
+            .highest_common(server.native_codecs)
+    {
+        let features = client
+            .bootstrap
+            .native_features
+            .intersect(server.native_features);
+        if features.supports_native() {
+            return Ok((BootstrapProfile::NativeState { codec, features }, limits));
+        }
+    }
+
+    let preferred_compatibility = match client.output_mode {
+        OutputMode::Raw => BootstrapProfileKind::SynthesizedVtRaw,
+        OutputMode::StateSync => BootstrapProfileKind::SynthesizedVtStateSync,
+    };
+    if client.bootstrap.profiles.contains(preferred_compatibility)
+        && server.profiles.contains(preferred_compatibility)
+    {
+        let profile = match preferred_compatibility {
+            BootstrapProfileKind::SynthesizedVtRaw => BootstrapProfile::SynthesizedVtRaw,
+            BootstrapProfileKind::SynthesizedVtStateSync => {
+                BootstrapProfile::SynthesizedVtStateSync
+            }
+            BootstrapProfileKind::NativeState => unreachable!(),
+        };
+        return Ok((profile, limits));
+    }
+
+    let fallback_compatibility = match preferred_compatibility {
+        BootstrapProfileKind::SynthesizedVtRaw => BootstrapProfileKind::SynthesizedVtStateSync,
+        BootstrapProfileKind::SynthesizedVtStateSync => BootstrapProfileKind::SynthesizedVtRaw,
+        BootstrapProfileKind::NativeState => unreachable!(),
+    };
+    if client.bootstrap.profiles.contains(fallback_compatibility)
+        && server.profiles.contains(fallback_compatibility)
+    {
+        let profile = match fallback_compatibility {
+            BootstrapProfileKind::SynthesizedVtRaw => BootstrapProfile::SynthesizedVtRaw,
+            BootstrapProfileKind::SynthesizedVtStateSync => {
+                BootstrapProfile::SynthesizedVtStateSync
+            }
+            BootstrapProfileKind::NativeState => unreachable!(),
+        };
+        return Ok((profile, limits));
+    }
+
+    Err(CodecUnavailable)
+}
 
 // -----------------------------------------------------------------------------
 // Layer / LayerSet — SPEC §6.2 conformance-tier bitset (ADR-0015).
@@ -236,6 +800,8 @@ pub const ACKNOWLEDGED_INPUT: u32 = 0x0000_0010;
 pub const FILE_UPLOAD: u32 = 0x0000_0020;
 /// Wire bit advertising the `MOVE_TERMINAL` re-parent frame (ADR-0056).
 pub const MOVE_TERMINAL: u32 = 0x0000_0040;
+/// Wire bit advertising opaque client terminal-emulator PTY replies.
+pub const TERMINAL_REPLY: u32 = 0x0000_0080;
 
 /// An additive server-owned protocol feature.
 #[repr(u32)]
@@ -250,6 +816,8 @@ pub enum ServerFeature {
     /// (ADR-0056). A client MUST see this bit before sending the frame;
     /// an older server would silently drop the unknown discriminant.
     MoveTerminal = MOVE_TERMINAL,
+    /// The server accepts opaque terminal-emulator replies for attached PTYs.
+    TerminalReply = TERMINAL_REPLY,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -259,7 +827,8 @@ pub struct ServerFeatureSet(u32);
 impl ServerFeatureSet {
     const KNOWN: u32 = (ServerFeature::AcknowledgedInput as u32)
         | (ServerFeature::FileUpload as u32)
-        | (ServerFeature::MoveTerminal as u32);
+        | (ServerFeature::MoveTerminal as u32)
+        | (ServerFeature::TerminalReply as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -476,10 +1045,10 @@ pub struct ClientCapabilities {
     pub kbd_protocols: KeyboardProtocolSet,
     /// Whether OSC 8 hyperlink framing may be forwarded to the client.
     pub hyperlinks: bool,
-    /// Which server emitter this consumer wants for terminal content
-    /// (SPEC §6.2). Defaults to [`OutputMode::Raw`] — the byte-faithful
-    /// human-TUI path; agent / state-sync consumers opt into
-    /// [`OutputMode::StateSync`] (phux-fseo).
+    /// Requested compatibility live emitter. It selects between
+    /// [`BootstrapProfile::SynthesizedVtRaw`] and
+    /// [`BootstrapProfile::SynthesizedVtStateSync`] when native is unavailable;
+    /// [`BootstrapProfile::NativeState`] always carries byte-identical raw PTY output.
     pub output_mode: OutputMode,
     /// The outer terminal's effective default foreground/background colors.
     ///
@@ -489,6 +1058,8 @@ pub struct ClientCapabilities {
     /// replies they receive when run directly in the host terminal. `None`
     /// is the compatibility value for non-TTY and older clients.
     pub default_colors: Option<TerminalDefaultColors>,
+    /// Explicit bootstrap profiles, exact native codecs/features, and receive bounds.
+    pub bootstrap: BootstrapCapabilities,
 }
 
 /// Effective default colors reported by the client's outer terminal.
@@ -525,6 +1096,7 @@ impl ClientCapabilities {
             hyperlinks: true,
             output_mode: OutputMode::Raw,
             default_colors: None,
+            bootstrap: BootstrapCapabilities::new(),
         }
     }
 
@@ -539,6 +1111,12 @@ impl ClientCapabilities {
     #[must_use]
     pub const fn with_default_colors(mut self, colors: TerminalDefaultColors) -> Self {
         self.default_colors = Some(colors);
+        self
+    }
+    /// Builder setter for [`Self::bootstrap`].
+    #[must_use]
+    pub const fn with_bootstrap(mut self, bootstrap: BootstrapCapabilities) -> Self {
+        self.bootstrap = bootstrap;
         self
     }
 
@@ -837,22 +1415,83 @@ mod tests {
     }
 
     #[test]
-    fn server_feature_bits_are_stable() {
+    fn bootstrap_capabilities_default_to_synthesis_only() {
+        let caps = BootstrapCapabilities::new();
+        assert!(
+            caps.profiles
+                .contains(BootstrapProfileKind::SynthesizedVtRaw)
+        );
+        assert!(
+            caps.profiles
+                .contains(BootstrapProfileKind::SynthesizedVtStateSync)
+        );
+        assert!(!caps.profiles.contains(BootstrapProfileKind::NativeState));
+        assert_eq!(caps.native_codecs.as_wire(), 0);
+        assert_eq!(caps.native_features.as_wire(), 0);
+    }
+
+    #[test]
+    fn native_builder_advertises_the_exact_indivisible_profile() {
+        let caps = BootstrapCapabilities::new().with_native(
+            EngineCodec::LibghosttyCheckpointV2,
+            EngineFeatureSet::required_native(),
+        );
+        assert!(
+            caps.profiles
+                .contains(BootstrapProfileKind::SynthesizedVtRaw)
+        );
+        assert!(
+            caps.profiles
+                .contains(BootstrapProfileKind::SynthesizedVtStateSync)
+        );
+        assert!(caps.profiles.contains(BootstrapProfileKind::NativeState));
+        assert!(
+            caps.native_codecs
+                .contains(EngineCodec::LibghosttyCheckpointV2)
+        );
+        assert_eq!(caps.native_features, EngineFeatureSet::required_native());
+        assert_eq!(EngineFeature::BoundedHistoryControl as u32, 0x0000_0008);
+        assert_eq!(caps.native_features.as_wire(), 0x0000_000f);
+    }
+
+    #[test]
+    fn native_builder_rejects_partial_features() {
+        let partial =
+            EngineFeatureSet::with(&[EngineFeature::Continuation, EngineFeature::ReadyBoundary]);
+        let caps = BootstrapCapabilities::new()
+            .with_native(
+                EngineCodec::LibghosttyCheckpointV2,
+                EngineFeatureSet::required_native(),
+            )
+            .with_native(EngineCodec::LibghosttyCheckpointV2, partial);
+        assert!(!caps.profiles.contains(BootstrapProfileKind::NativeState));
+        assert_eq!(caps.native_codecs.as_wire(), 0);
+        assert_eq!(caps.native_features.as_wire(), 0);
+    }
+
+    #[test]
+    fn server_feature_bits_are_stable_and_unknown_bits_are_ignored() {
         assert_eq!(ACKNOWLEDGED_INPUT, 0x0000_0010);
         assert_eq!(FILE_UPLOAD, 0x0000_0020);
         assert_eq!(MOVE_TERMINAL, 0x0000_0040);
+        assert_eq!(TERMINAL_REPLY, 0x0000_0080);
         assert_eq!(ServerFeature::AcknowledgedInput as u32, ACKNOWLEDGED_INPUT);
         assert_eq!(ServerFeature::FileUpload as u32, FILE_UPLOAD);
         assert_eq!(ServerFeature::MoveTerminal as u32, MOVE_TERMINAL);
+        assert_eq!(ServerFeature::TerminalReply as u32, TERMINAL_REPLY);
         let set = ServerFeatureSet::with(&[
             ServerFeature::AcknowledgedInput,
             ServerFeature::FileUpload,
             ServerFeature::MoveTerminal,
+            ServerFeature::TerminalReply,
         ]);
         assert!(set.contains(ServerFeature::AcknowledgedInput));
         assert!(set.contains(ServerFeature::FileUpload));
         assert!(set.contains(ServerFeature::MoveTerminal));
-        assert_eq!(set.as_wire(), 0x0000_0070);
-        assert_eq!(ServerFeatureSet::from_wire(u32::MAX), set);
+        assert!(set.contains(ServerFeature::TerminalReply));
+        assert_eq!(set.as_wire(), 0x0000_00F0);
+        let future = 1_u32 << 31;
+        assert!(ServerFeatureSet::from_wire(future).is_empty());
+        assert_eq!(ServerFeatureSet::from_wire(set.as_wire() | future), set);
     }
 }

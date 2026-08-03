@@ -27,7 +27,7 @@ use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
+use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use tempfile::TempDir;
 use tokio::net::TcpStream;
@@ -71,6 +71,7 @@ fn encode(frame: &FrameKind) -> Vec<u8> {
     buf.to_vec()
 }
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn ws_hello_attach_receives_attached_and_snapshot() {
     let port = free_port();
@@ -113,6 +114,7 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
         };
         ws.send(Message::Binary(encode(&hello))).await.unwrap();
         let attach = FrameKind::Attach {
+            attach_id: 1,
             target: AttachTarget::ByName("default".to_owned()),
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,
@@ -133,7 +135,7 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
                     let (frame, _) = FrameKind::decode(&data).expect("decode server frame");
                     match frame {
                         FrameKind::Attached { .. } => got_attached = true,
-                        FrameKind::TerminalSnapshot { cols, rows, .. } => {
+                        FrameKind::BootstrapBegin { cols, rows, .. } => {
                             assert!(cols > 0 && rows > 0, "snapshot has a real grid");
                             got_snapshot = true;
                         }
@@ -177,6 +179,53 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
         assert!(got_pong, "server sent PONG over WebSocket");
 
         drop(ws);
+
+        // A fresh web connection must reject the reserved zero correlation id
+        // before creating any attached consumer state.
+        let socket = TcpStream::connect(&addr).await.unwrap();
+        let (mut bad_ws, _) = tokio_tungstenite::client_async(&url, socket).await.unwrap();
+        bad_ws
+            .send(Message::Binary(encode(&FrameKind::Hello {
+                client_name: "ws-zero-attach-test".to_owned(),
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                client_caps: ClientCapabilities::default(),
+            })))
+            .await
+            .unwrap();
+        let Some(Ok(Message::Binary(hello_ok))) = bad_ws.next().await else {
+            panic!("server must answer HELLO");
+        };
+        assert!(matches!(
+            FrameKind::decode(&hello_ok).unwrap().0,
+            FrameKind::HelloOk { .. }
+        ));
+        bad_ws
+            .send(Message::Binary(encode(&FrameKind::Attach {
+                attach_id: 0,
+                target: AttachTarget::ByName("default".to_owned()),
+                viewport: ViewportInfo::new(80, 24),
+                request_scrollback: false,
+                scrollback_limit_lines: 0,
+            })))
+            .await
+            .unwrap();
+        let Some(Ok(Message::Binary(error))) = bad_ws.next().await else {
+            panic!("server must flush zero-id error");
+        };
+        assert!(matches!(
+            FrameKind::decode(&error).unwrap().0,
+            FrameKind::Error {
+                code: ErrorCode::MalformedMessage,
+                message,
+                ..
+            } if message.contains("attach_id must be nonzero")
+        ));
+        let closed = tokio::time::timeout(HANDSHAKE_DEADLINE, bad_ws.next())
+            .await
+            .expect("server closes websocket");
+        assert!(matches!(closed, None | Some(Ok(Message::Close(_)))));
         shutdown.send(()).ok();
         server.await.unwrap().unwrap();
     });

@@ -1,7 +1,0 @@
----
-source: crates/phux-protocol/tests/frame_wire_snapshots.rs
-expression: dump_frame(&frame)
----
-00000000 | 00 00 00 29 01 01 04 0d  70 68 75 78 2d 74 75 69 |...)....phux-tui
-00000010 | 2f 74 65 73 74 02 04 02  00 00 03 04 02 00 02 04 |/test...........
-00000020 | 04 02 00 00 05 04 06 00  07 07 03 01 00          |.............

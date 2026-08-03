@@ -6,8 +6,9 @@ use crate::grid::SnapshotBytes;
 use crate::state::{Outbound, TerminalInput};
 use bytes::Bytes;
 use phux_protocol::ClientId;
-use phux_protocol::wire::frame::{ControlAction, TerminalEventType, TerminalSignal};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use phux_protocol::ids::{BootstrapId, StreamId};
+use phux_protocol::wire::frame::{ControlAction, FrameKind, TerminalEventType, TerminalSignal};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 /// A supervisory control request delivered to a [`super::TerminalActor`] over
 /// its `control` mailbox (ADR-0033, "take the wheel + kill").
@@ -64,13 +65,11 @@ pub enum ControlRequest {
 /// runtime's ATTACH path, which has just installed the client in
 /// `ServerState`.
 ///
-/// The actor allocates a fresh `RenderState`, primes it against the
-/// live `Terminal` (so the next incremental synthesis emits only
-/// deltas *from now*), captures the cursor + mode state, and stores
-/// the resulting [`super::ConsumerSyncState`] keyed by `client_id`. The reply
-/// fires once the entry is in place; the caller can then proceed to
-/// emit `TERMINAL_SNAPSHOT` (which brings the consumer to the same
-/// reference point this `RenderState` was primed against).
+/// For state-sync consumers the actor synthesizes the bootstrap snapshot,
+/// primes the per-consumer reference from that exact canonical terminal cut,
+/// installs the lifecycle entry, and returns both snapshot and cut in one
+/// reply. No PTY event can run between those operations. Raw consumers retain
+/// the lightweight lifecycle-only path and return no synthesized bootstrap.
 #[derive(Debug)]
 pub struct ConsumerAttachRequest {
     /// Identifier the actor will key the per-consumer state by. Must
@@ -87,12 +86,27 @@ pub struct ConsumerAttachRequest {
     /// from the actor's [`phux_core::ids::TerminalId`] to this wire id and
     /// passes the resolved value here at ATTACH time.
     pub wire_terminal_id: u32,
+    /// Logical protocol-0.7 subscription identity.
+    pub stream_id: StreamId,
+    /// Current replica generation for this subscription.
+    pub bootstrap_id: BootstrapId,
     /// Whether this consumer negotiated the synthesized state-sync tick
     /// emitter (`OutputMode::StateSync`) at HELLO time (phux-fseo). When
     /// `true` the actor's `tick_emit` serves this consumer and the runtime
     /// suppresses its broadcast pump for it; when `false` the consumer
     /// stays on the raw PTY broadcast (the human-TUI default).
     pub wants_state_sync: bool,
+    /// Requested synthesized scrollback for the atomic state-sync bootstrap.
+    ///
+    /// Ignored when [`Self::wants_state_sync`] is false. `None` means the
+    /// state-sync snapshot contains only the active screen.
+    pub state_sync_scrollback: Option<u32>,
+    /// Maximum snapshot bytes this registration may allocate before replying.
+    pub bootstrap_max_bytes: usize,
+    /// Maximum bootstrap frames the caller can still retain.
+    pub bootstrap_max_frames: usize,
+    /// Negotiated maximum bytes per synthesized bootstrap chunk.
+    pub bootstrap_chunk_bytes: usize,
     /// Whether this consumer is on a lossy/forwarded leg and should use the
     /// advance-on-ack loss-tolerant emission model (phux-v45.8, ADR-0042).
     ///
@@ -104,6 +118,9 @@ pub struct ConsumerAttachRequest {
     /// reference and self-heals. `false` (the default for a direct,
     /// reliable-transport consumer) keeps the emit-once model.
     pub loss_tolerant: bool,
+    /// Aggregate-attach publication gate. While false, the actor retains the
+    /// primed reference but emits no live state-sync frames.
+    pub live_gate: watch::Receiver<bool>,
     /// Channel the actor uses to acknowledge the lifecycle insertion.
     /// `Ok(outcome)` on success (the outcome reports whether this actor
     /// is tick-managing the consumer); `Err(...)` if the per-consumer
@@ -113,22 +130,28 @@ pub struct ConsumerAttachRequest {
     pub reply: oneshot::Sender<Result<ConsumerAttachOutcome, ConsumerAttachError>>,
 }
 
+/// Snapshot and exact actor cut produced atomically with state-sync
+/// registration.
+#[derive(Debug)]
+pub struct StateSyncBootstrap {
+    /// Synthesized VT snapshot captured from the canonical terminal.
+    pub snapshot: SnapshotBytes,
+    /// Actor-global raw sequence included by that same cut.
+    pub base_seq: u64,
+}
+
 /// Successful outcome of a [`ConsumerAttachRequest`].
 ///
 /// phux-3uv: the runtime needs to know whether this actor will *emit*
-/// `TERMINAL_OUTPUT` for the consumer via the state-sync tick
-/// (`consumer_tick_emits == true`). If so, the runtime must SUPPRESS its
-/// own broadcast pump for this pane so exactly one emitter serves the
-/// consumer (SPEC §12.2 monotonic-per-consumer; two independent `seq`
-/// streams on one mailbox would double-paint). If the actor is not
-/// tick-managing (gate off, or a non-emitting variant), the runtime keeps
-/// the broadcast pump as the sole emitter.
-#[derive(Debug, Clone, Copy)]
+/// `TERMINAL_OUTPUT` for the consumer via the state-sync tick. If so, the
+/// runtime must suppress its own broadcast pump. State-sync registration also
+/// returns the snapshot captured in the same actor turn as its reference.
+#[derive(Debug)]
 pub struct ConsumerAttachOutcome {
-    /// `true` ⇒ this actor's `tick_emit` will push `TERMINAL_OUTPUT`
-    /// frames for the consumer; the runtime must NOT also spawn a
-    /// broadcast pump for this pane.
+    /// `true` when this actor's tick is the sole live emitter.
     pub tick_managed: bool,
+    /// Atomic synthesized bootstrap for a state-sync consumer.
+    pub state_sync_bootstrap: Option<StateSyncBootstrap>,
 }
 
 /// Errors surfaced by the private `TerminalActor::register_consumer`
@@ -143,6 +166,9 @@ pub enum ConsumerAttachError {
     /// (`SnapshotSynthesizer::prime_reference`) failed.
     #[error("reference priming failed: {0}")]
     Synth(#[from] crate::grid::SynthesisError),
+    /// The actor-global sequence cannot represent a post-bootstrap frame.
+    #[error("state-sync sequence exhausted")]
+    SequenceExhausted,
 }
 
 /// Request to drop the per-consumer state for `client_id`.
@@ -176,6 +202,10 @@ pub struct ConsumerDetachRequest {
 pub struct ConsumerAckRequest {
     /// Identifier whose [`super::ConsumerSyncState`]'s dirty cache to evict.
     pub client_id: ClientId,
+    /// Logical subscription being acknowledged.
+    pub stream_id: StreamId,
+    /// Replica generation being acknowledged.
+    pub bootstrap_id: BootstrapId,
     /// Cumulative ack sequence (per SPEC §12.2): the highest `seq` from
     /// `TERMINAL_OUTPUT` this consumer has applied. Strictly-monotonic
     /// against the per-consumer `last_acked_seq` — older/duplicate acks
@@ -195,26 +225,30 @@ pub const DEFAULT_INPUT_MAILBOX: usize = 64;
 #[derive(Debug)]
 pub(crate) struct EncodedInputRequest {
     /// Fully encoded PTY bytes.
-    pub(crate) bytes: Vec<u8>,
+    pub(crate) bytes: Bytes,
     /// `true` after `write_all` and `flush` both succeed; `false` on either
     /// writer failure. Dropping the sender reports indeterminate delivery.
     pub(crate) completion: Option<std::sync::mpsc::Sender<bool>>,
 }
 
 impl EncodedInputRequest {
-    pub(crate) const fn legacy(bytes: Vec<u8>) -> Self {
+    pub(crate) fn legacy(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes: bytes.into(),
+            completion: None,
+        }
+    }
+
+    pub(crate) const fn opaque(bytes: Bytes) -> Self {
         Self {
             bytes,
             completion: None,
         }
     }
 
-    pub(crate) const fn acknowledged(
-        bytes: Vec<u8>,
-        completion: std::sync::mpsc::Sender<bool>,
-    ) -> Self {
+    pub(crate) fn acknowledged(bytes: Vec<u8>, completion: std::sync::mpsc::Sender<bool>) -> Self {
         Self {
-            bytes,
+            bytes: Bytes::from(bytes),
             completion: Some(completion),
         }
     }
@@ -227,6 +261,14 @@ impl EncodedInputRequest {
 /// slow subscriber falls behind and gets a `RecvError::Lagged`.
 pub const DEFAULT_OUTPUT_BROADCAST: usize = 256;
 
+/// Continuity reason carried with an actor-generated full resync.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResyncReason {
+    /// Authoritative geometry changed.
+    Resize,
+    /// A bounded output subscriber observed a sequence gap.
+    OutboundGap,
+}
 /// Payload of the per-pane output broadcast ([`TerminalHandle::output`]).
 ///
 /// Subscribers (the per-attach output pumps in `runtime::attach`) map each
@@ -236,6 +278,8 @@ pub const DEFAULT_OUTPUT_BROADCAST: usize = 256;
 /// * [`PaneOutput::Resync`] → `TERMINAL_SNAPSHOT` — the full post-reflow
 ///   grid, carrying the new `(cols, rows)` so the client mirror RESIZES to
 ///   them and repaints from authoritative state.
+/// * [`PaneOutput::Control`] → an ordered generation/history control frame
+///   routed only by the pump whose server-local owner matches.
 ///
 /// Routing the resize-resync as a `TERMINAL_SNAPSHOT` (rather than raw
 /// output) is load-bearing. The client resizes its libghostty mirror ONLY
@@ -246,10 +290,16 @@ pub const DEFAULT_OUTPUT_BROADCAST: usize = 256;
 /// promoting the survivor, or enlarging the outer window — could never fill
 /// the freed space (phux-3ns5). The snapshot path resizes first, then
 /// applies the synthesized grid, so grow and shrink both reconverge.
+
 #[derive(Clone, Debug)]
 pub enum PaneOutput {
     /// Live PTY byte chunk forwarded as `TERMINAL_OUTPUT`.
-    Live(Bytes),
+    Live {
+        /// Actor-global, strictly increasing raw output sequence.
+        seq: u64,
+        /// Verbatim PTY bytes for this sequence.
+        bytes: Bytes,
+    },
     /// Post-resize grid resync forwarded as `TERMINAL_SNAPSHOT` at the
     /// carried dims (phux-8v1 reconverge mechanism + phux-3ns5 mirror
     /// resize). `bytes` is the synthesized grid replay (with its
@@ -260,8 +310,21 @@ pub enum PaneOutput {
         cols: u16,
         /// Post-reflow grid height the client mirror resizes to.
         rows: u16,
+        /// Why the prior generation can no longer continue.
+        reason: ResyncReason,
+        /// Actor-global raw sequence included by the replacement cut.
+        base_seq: u64,
         /// Synthesized grid replay (with reset preamble) for `vt_write`.
         bytes: Bytes,
+    },
+    /// Ordered native control. It shares the broadcast sequence with
+    /// [`Self::Live`] so a pump observes every prior raw sequence before
+    /// invalidating the matching generation or history cursor.
+    Control {
+        /// Server-local pump owner; other subscribers ignore this control.
+        owner: u64,
+        /// Fully-owned tombstone/control frame for the matching pump.
+        frame: FrameKind,
     },
 }
 
@@ -278,10 +341,95 @@ pub struct SnapshotRequest {
     /// the most-recent `n` rows. The actor primes
     /// [`SnapshotBytes::scrollback`] accordingly.
     pub scrollback: Option<u32>,
-    /// Channel the actor uses to ship the synthesized snapshot back.
-    /// Dropping the sender on the receiver side is benign — the actor
-    /// just discards the reply.
-    pub reply: oneshot::Sender<SnapshotBytes>,
+    /// Maximum aggregate snapshot bytes the actor may allocate.
+    pub max_bytes: usize,
+    /// Maximum frames the caller can still retain for this snapshot.
+    pub max_frames: usize,
+    /// Negotiated maximum bytes per synthesized bootstrap chunk.
+    pub chunk_bytes: usize,
+    /// Channel receiving the snapshot and actor-global raw cut.
+    /// Dropping the receiver is benign; the actor discards the reply.
+    pub reply: oneshot::Sender<Result<(SnapshotBytes, u64), crate::grid::SynthesisError>>,
+}
+
+/// Fully-owned native prefix captured atomically by the terminal actor.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativeBootstrapReply {
+    /// Bounded BEGIN/CHUNK/READY sequence for the per-client pump to publish.
+    pub frames: Vec<FrameKind>,
+    /// Aggregate heap capacity retained by opaque frame payloads.
+    ///
+    /// This may exceed their wire lengths and must be charged to the
+    /// connection-wide bootstrap staging budget.
+    pub retained_bytes: usize,
+    /// Actor-global raw output cut included by the checkpoint.
+    pub base_seq: u64,
+}
+
+/// Native checkpoint capture request serialized by the terminal actor.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativeBootstrapRequest {
+    /// Server-local owner identity used for detach and TTL cleanup.
+    pub owner: u64,
+    /// Wire terminal identity for this subscription.
+    pub terminal_id: phux_protocol::ids::TerminalId,
+    /// Logical stream identity.
+    pub stream_id: StreamId,
+    /// Replica generation identity.
+    pub bootstrap_id: BootstrapId,
+    /// Negotiated payload limits.
+    pub limits: phux_protocol::caps::BootstrapLimits,
+    /// Remaining connection-wide opaque byte budget.
+    pub max_bytes: usize,
+    /// Remaining connection-wide frame budget.
+    pub max_frames: usize,
+    /// Atomic capture result. The pump alone publishes the returned frames.
+    pub reply: oneshot::Sender<Result<NativeBootstrapReply, crate::native_state::NativeStateError>>,
+}
+
+/// Actor result paired with the caller's still-owned outbound permit.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativeHistoryReply {
+    /// Permit proving mailbox capacity was reserved before actor advancement.
+    pub permit: mpsc::OwnedPermit<Outbound>,
+    /// Fully-owned response frame, or an invalid request/host failure.
+    pub result: Result<FrameKind, crate::native_state::NativeStateError>,
+}
+
+/// One bounded native history step routed to the owning terminal actor.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativeHistoryRequest {
+    /// Reserved client-mailbox capacity. The actor returns but never consumes it.
+    pub permit: mpsc::OwnedPermit<Outbound>,
+    /// Server-local owner identity authenticated against the retained cut.
+    pub owner: u64,
+    /// Wire terminal identity for this subscription.
+    pub terminal_id: phux_protocol::ids::TerminalId,
+    /// Logical stream identity.
+    pub stream_id: StreamId,
+    /// Replica generation identity.
+    pub bootstrap_id: BootstrapId,
+    /// Stable opaque capability echoed by the client.
+    pub cursor: Bytes,
+    /// Requested non-zero response byte bound.
+    pub max_bytes: u32,
+    /// Requested non-zero history row bound.
+    pub max_rows: u32,
+    /// Negotiated connection bounds.
+    pub limits: phux_protocol::caps::BootstrapLimits,
+    /// Actor result; the pump consumes the returned permit.
+    pub reply: oneshot::Sender<NativeHistoryReply>,
+}
+/// Release every retained native history cut owned by one detached client.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+pub struct NativeReleaseRequest {
+    /// Server-local owner identity.
+    pub owner: u64,
 }
 
 /// Install the effective default palette reported by an interactive client.
@@ -451,6 +599,15 @@ pub struct TerminalHandle {
     /// Sender for snapshot requests. The ATTACH handler uses this to
     /// build `TERMINAL_SNAPSHOT` frames.
     pub snapshot: mpsc::Sender<SnapshotRequest>,
+    /// Actor-serialized native checkpoint capture.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pub native_bootstrap: mpsc::Sender<NativeBootstrapRequest>,
+    /// Actor-serialized native history paging.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pub native_history: mpsc::Sender<NativeHistoryRequest>,
+    /// Actor-serialized detach cleanup for retained native cuts.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pub native_release: mpsc::Sender<NativeReleaseRequest>,
     /// Sender for host-palette updates. The most recently attached client
     /// that advertises colors is authoritative for the shared pane.
     pub set_default_colors: mpsc::Sender<SetDefaultColorsRequest>,

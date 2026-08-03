@@ -6,7 +6,7 @@ fn main() {
     let wasm = std::path::Path::new(&manifest).join("vendor/ghostty-vt.wasm");
     if !wasm.exists() {
         panic!(
-            "missing {} — run scripts/build-vt-wasm.sh (builds ghostty-vt.wasm from ghostty via zig)",
+            "missing {} — run scripts/build-vt-wasm.sh (builds the checkpoint-capable standalone ghostty-vt.wasm)",
             wasm.display()
         );
     }

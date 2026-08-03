@@ -1,15 +1,19 @@
 //! Submodule for runtime internals.
 
+use std::collections::HashSet;
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
+#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::{
-    ClientCapabilities, LayerSet, ServerCapabilities, ServerFeature, ServerFeatureSet,
+    BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet, ServerCapabilities,
+    ServerFeature, ServerFeatureSet, select_bootstrap_profile,
 };
-use phux_protocol::policy::{ConsumerId as PolicyConsumerId, PeerIdentity};
+use phux_protocol::policy::ConsumerId as PolicyConsumerId;
 use phux_protocol::wire::frame::{AgentEvent, ErrorCode, FrameKind, TERMINAL_AGENT_KEY};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
@@ -21,11 +25,59 @@ use super::input_lane::{InputLaneHandle, RoutedInput};
 use super::{
     STALE_PROBE_TIMEOUT, ServerError, SpawnRequest, handle_attach, handle_command,
     handle_frame_ack, handle_move_terminal, handle_spawn_terminal, handle_terminal_input,
-    handle_terminal_resize, handle_viewport_resize,
+    handle_terminal_reply, handle_terminal_resize, handle_viewport_resize,
 };
 use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState, TerminalInput};
 use crate::terminal_actor::ConsumerDetachRequest;
 use crate::transport::{FrameReader, FrameWriter, Incoming};
+
+#[derive(Debug, Clone, Copy)]
+struct NegotiatedConnection {
+    client_caps: ClientCapabilities,
+    profile: BootstrapProfile,
+    limits: BootstrapLimits,
+    server_features: ServerFeatureSet,
+}
+
+impl NegotiatedConnection {
+    const fn accepts_terminal_reply(self) -> bool {
+        self.server_features.contains(ServerFeature::TerminalReply)
+    }
+}
+const fn runtime_server_features() -> ServerFeatureSet {
+    ServerFeatureSet::with(&[
+        ServerFeature::AcknowledgedInput,
+        ServerFeature::FileUpload,
+        ServerFeature::MoveTerminal,
+        ServerFeature::TerminalReply,
+    ])
+}
+
+#[cfg(test)]
+mod negotiated_feature_tests {
+    use super::*;
+
+    fn connection(server_features: ServerFeatureSet) -> NegotiatedConnection {
+        NegotiatedConnection {
+            client_caps: ClientCapabilities::default(),
+            profile: BootstrapProfile::SynthesizedVtRaw,
+            limits: BootstrapLimits::default(),
+            server_features,
+        }
+    }
+
+    #[test]
+    fn old_07_without_terminal_reply_bit_discards_reply_without_routing() {
+        assert!(!connection(ServerFeatureSet::new()).accepts_terminal_reply());
+    }
+
+    #[test]
+    fn current_07_advertisement_enables_installed_terminal_reply_route() {
+        let advertised = runtime_server_features();
+        assert!(advertised.contains(ServerFeature::TerminalReply));
+        assert!(connection(advertised).accepts_terminal_reply());
+    }
+}
 
 pub(crate) fn spawn_pane_event_drain(
     state: SharedState,
@@ -481,6 +533,10 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
         phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
     let handles = state.with(|s| s.subscribed_terminal_handles(client_id));
     for handle in handles {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let _ = handle
+            .native_release
+            .try_send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 });
         let (reply_tx, _reply_rx) = oneshot::channel();
         match handle.consumer_detach.try_send(ConsumerDetachRequest {
             client_id: wire_client_id,
@@ -556,7 +612,7 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     }
 }
 
-/// Prepare the parent directory of `socket_path` with mode `0o700`.
+/// Prepare and validate the parent directory of `socket_path` with mode `0o700`.
 pub(crate) fn prepare_socket_dir(socket_path: &Path) -> Result<(), ServerError> {
     let Some(parent) = socket_path.parent() else {
         return Ok(());
@@ -564,14 +620,95 @@ pub(crate) fn prepare_socket_dir(socket_path: &Path) -> Result<(), ServerError> 
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
+    let fail = |source| ServerError::PrepareDir {
+        path: parent.to_path_buf(),
+        source,
+    };
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true).mode(0o700);
-    builder
-        .create(parent)
-        .map_err(|source| ServerError::PrepareDir {
-            path: parent.to_path_buf(),
-            source,
-        })
+    builder.create(parent).map_err(fail)?;
+    let metadata = std::fs::symlink_metadata(parent).map_err(fail)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(fail(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "socket parent must be a real directory, not a symlink",
+        )));
+    }
+    let expected_uid = rustix::process::geteuid().as_raw();
+    if metadata.uid() != expected_uid {
+        return Err(fail(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "socket parent is owned by another user",
+        )));
+    }
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
+    let secured = std::fs::symlink_metadata(parent).map_err(fail)?;
+    if secured.uid() != expected_uid || secured.mode() & 0o777 != 0o700 {
+        return Err(fail(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "socket parent ownership or permissions changed during setup",
+        )));
+    }
+    Ok(())
+}
+
+/// Restrict a freshly bound UDS to its owning user.
+pub(crate) fn secure_socket_file(socket_path: &Path) -> Result<(), ServerError> {
+    let metadata = std::fs::symlink_metadata(socket_path)?;
+    let expected_uid = rustix::process::geteuid().as_raw();
+    if !metadata.file_type().is_socket() || metadata.uid() != expected_uid {
+        return Err(ServerError::Io(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "bound socket is not an owner-controlled Unix socket",
+        )));
+    }
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    let secured = std::fs::symlink_metadata(socket_path)?;
+    if secured.uid() != expected_uid || secured.mode() & 0o777 != 0o600 {
+        return Err(ServerError::Io(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "bound socket ownership or permissions changed during setup",
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod socket_security_tests {
+    use super::*;
+
+    #[test]
+    fn existing_permissive_socket_directory_is_restricted() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let parent = root.path().join("runtime");
+        std::fs::create_dir(&parent).expect("runtime dir");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777))
+            .expect("permissive mode");
+
+        prepare_socket_dir(&parent.join("phux.sock")).expect("secure existing directory");
+
+        let mode = std::fs::symlink_metadata(parent)
+            .expect("secured metadata")
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn socket_parent_symlink_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).expect("target");
+        let parent = root.path().join("runtime-link");
+        symlink(&target, &parent).expect("symlink");
+        assert!(matches!(
+            prepare_socket_dir(&parent.join("phux.sock")),
+            Err(ServerError::PrepareDir { source, .. })
+                if source.kind() == io::ErrorKind::InvalidInput
+        ));
+    }
 }
 
 /// Handle the case where `socket_path` already exists. If something accepts a
@@ -717,6 +854,29 @@ fn incompatible_protocol_message(
     )
 }
 
+const WRITER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+async fn close_client_writer(
+    out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    writer_close: &tokio::sync::watch::Sender<bool>,
+    sibling_tasks: &mut JoinSet<()>,
+) {
+    // The close command is independent of sender liveness. The writer closes
+    // its receiver, drains every frame already ordered before this command,
+    // then calls FrameWriter::close.
+    let _ = writer_close.send(true);
+    drop(out_tx);
+    if tokio::time::timeout(WRITER_DRAIN_TIMEOUT, async {
+        while sibling_tasks.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        sibling_tasks.abort_all();
+        while sibling_tasks.join_next().await.is_some() {}
+    }
+}
+
 /// Per-client task. Reads frames in a loop and dispatches each one.
 ///
 /// Outbound messages are routed through a per-client `mpsc` channel
@@ -761,43 +921,28 @@ where
     // The writer drains one `Outbound` channel; closure of this one
     // channel is the unambiguous signal for the writer to exit.
     let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
+    let (writer_close_tx, writer_close_rx) = tokio::sync::watch::channel(false);
     // Per-client `JoinSet` for sibling tasks (today: just the writer).
     // Held in this scope so it drops with `handle_client` and the
     // writer aborts if it hasn't already exited via its own
     // close-on-EOF path. Keeps lifecycle plumbing local.
     let mut sibling_tasks: JoinSet<()> = JoinSet::new();
-    sibling_tasks.spawn_local(writer_task(writer, out_rx, client_id));
+    sibling_tasks.spawn_local(writer_task(writer, out_rx, writer_close_rx, client_id));
 
     // Per-attach raw-output pumps. These are deliberately separate from
     // `sibling_tasks`: DETACH/session switch must abort pane output pumps
     // without killing the writer, because the writer still needs to emit
     // DETACHED and may serve a later ATTACH on the same connection.
     let mut output_pumps: JoinSet<()> = JoinSet::new();
+    // An attach id names one immutable aggregate generation for the life of
+    // this connection. Reuse would collide with a completed stream/bootstrap
+    // key even when the replacement otherwise followed the right barriers.
+    let mut used_attach_ids = HashSet::new();
 
-    // Per-connection cache of the most-recently-advertised
-    // [`ClientCapabilities`] (SPEC §6.2). HELLO populates this; ATTACH
-    // consumes it when constructing the `AttachedClient`. Pre-HELLO it
-    // defaults to [`ClientCapabilities::default`] (most-permissive) so a
-    // client that skips HELLO (out of spec, but tolerated for
-    // forward-compat) still attaches with sensible bytes-on-wire behavior.
-    let mut negotiated_client_caps = ClientCapabilities::default();
-
-    // SPEC §6.1: every connection opens with HELLO. On the local UDS
-    // transport (and same-process loopback) a missing HELLO stays
-    // tolerated — the same-uid trust boundary holds and the CLI's
-    // control commands rely on it. On network-reachable transports an
-    // unversioned peer must not reach ATTACH/COMMAND at all: skipping
-    // HELLO would otherwise bypass version negotiation entirely.
-    let requires_hello = state
-        .with(|s| s.peer_identity(client_id).map(|peer| peer.transport))
-        .is_some_and(|transport| {
-            !matches!(
-                transport,
-                phux_protocol::policy::TransportType::UnixSocket
-                    | phux_protocol::policy::TransportType::Localhost
-            )
-        });
-    let mut hello_seen = false;
+    // Exact per-connection bootstrap state selected by HELLO. `None` is the
+    // pre-negotiation state; successful selection writes it exactly once and
+    // duplicate HELLO is fatal, so an attached connection can never mutate it.
+    let mut negotiated: Option<NegotiatedConnection> = None;
 
     loop {
         // Pull the next complete frame from the transport — length-prefixed on
@@ -807,7 +952,10 @@ where
         let framed = tokio::select! {
             biased;
             () = token.cancelled() => {
-                debug!(?client_id, "client task cancelled by root token");
+                debug!(?client_id, "client task cancelled");
+                abort_output_pumps(&mut output_pumps, client_id, "connection cancellation").await;
+                detach_and_release_consumer_state(&state, client_id);
+                close_client_writer(out_tx, &writer_close_tx, &mut sibling_tasks).await;
                 return Ok(());
             }
             res = reader.read_frame() => match res {
@@ -823,7 +971,11 @@ where
             },
         };
 
-        let frame = match FrameKind::decode(&framed) {
+        let decoded = negotiated.as_ref().map_or_else(
+            || FrameKind::decode(&framed),
+            |selection| FrameKind::decode_with_limits(&framed, selection.limits),
+        );
+        let frame = match decoded {
             Ok((frame, _rest)) => frame,
             Err(err) => {
                 warn!(error = ?err, "client sent undecodable frame; closing");
@@ -835,22 +987,18 @@ where
         // (the connector's consumer health check is exactly that), and the
         // spec's close-before-processing clause targets "ATTACH or other
         // stateful frames".
-        if requires_hello
-            && !hello_seen
+        if negotiated.is_none()
             && !matches!(frame, FrameKind::Hello { .. } | FrameKind::Ping { .. })
         {
-            warn!(
-                ?client_id,
-                "frame before HELLO on network transport; closing"
-            );
+            warn!(?client_id, "stateful frame before HELLO; closing");
             let _ = out_tx
                 .send(Outbound::Frame(FrameKind::Error {
                     request_id: None,
                     code: ErrorCode::VersionIncompatible,
-                    message: "HELLO required before any other frame on this transport".to_owned(),
+                    message: "HELLO required before any stateful frame".to_owned(),
                 }))
                 .await;
-            // Same flush-then-close dance as the version-mismatch arm.
+            // Flush the refusal before closing the transport.
             drop(out_tx);
             let _ = sibling_tasks.join_next().await;
             return Ok(());
@@ -864,6 +1012,24 @@ where
                 protocol_patch,
                 client_caps,
             } => {
+                if negotiated.is_some() {
+                    warn!(?client_id, "duplicate HELLO; closing");
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::InvalidCommand,
+                            message: "HELLO already completed on this connection".to_owned(),
+                        }))
+                        .await;
+                    // Never patch a live client's capabilities. Tear down any
+                    // attached profile so its mailbox sender cannot keep the
+                    // writer alive, flush the protocol-order error, then close.
+                    abort_output_pumps(&mut output_pumps, client_id, "duplicate HELLO").await;
+                    detach_and_release_consumer_state(&state, client_id);
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
+                    return Ok(());
+                }
                 debug!(
                     ?client_id,
                     %client_name,
@@ -893,18 +1059,26 @@ where
                     let _ = sibling_tasks.join_next().await;
                     return Ok(());
                 }
-                // Policy check: authorize HELLO before proceeding.
+                // Policy check: authorize HELLO only against the identity
+                // authenticated by the accepting transport. A missing registry
+                // entry is never equivalent to a local root peer.
+                let Some(peer) = state.with(|s| s.peer_identity(client_id).cloned()) else {
+                    warn!(
+                        ?client_id,
+                        "HELLO denied: authenticated peer identity missing"
+                    );
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::PermissionDenied,
+                            message: "authenticated peer identity missing".to_owned(),
+                        }))
+                        .await;
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
+                    return Ok(());
+                };
                 let policy_ok = {
-                    let peer = state
-                        .with(|s| s.peer_identity(client_id).cloned())
-                        .unwrap_or(PeerIdentity {
-                            uid: 0,
-                            pid: None,
-                            exe_path: None,
-                            mcp_host_key: None,
-                            transport: phux_protocol::policy::TransportType::UnixSocket,
-                            source_addr: None,
-                        });
                     let bundle = state.with(|s| s.policy_bundle().clone());
                     let _consumer = PolicyConsumerId(client_id.0.to_string());
                     // Build a capability list from the advertised layers.
@@ -931,48 +1105,81 @@ where
                     }
                 };
                 if !policy_ok {
+                    // Do not abort the writer before the policy refusal is on
+                    // the transport.
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
                     return Ok(());
                 }
-                // SPEC §6.1: HELLO arrives before ATTACH. Cache the
-                // advertised tier on the per-task stack; the ATTACH
-                // branch consumes it when building the `AttachedClient`.
-                // If a client (mis-)sends HELLO post-ATTACH we also
-                // patch the live `AttachedClient` so downsample picks
-                // up the change — the alternative (protocol error
-                // close) gives the operator nothing to debug.
-                negotiated_client_caps = client_caps;
+                #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                let server_bootstrap = crate::native_state::native_bootstrap_capabilities();
+                #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+                let server_bootstrap = BootstrapCapabilities::new();
+                let Ok((selected_profile, bootstrap_limits)) =
+                    select_bootstrap_profile(&client_caps, &server_bootstrap)
+                else {
+                    let message = format!(
+                        "no common protocol-0.7 bootstrap profile: client profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}; server profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}. NativeState requires an exact common codec and every required engine feature; advertise SynthesizedVtRaw/SynthesizedVtStateSync or update the incompatible peer",
+                        client_caps.bootstrap.profiles.as_wire(),
+                        client_caps.bootstrap.native_codecs.as_wire(),
+                        client_caps.bootstrap.native_features.as_wire(),
+                        server_bootstrap.profiles.as_wire(),
+                        server_bootstrap.native_codecs.as_wire(),
+                        server_bootstrap.native_features.as_wire(),
+                    );
+                    warn!(?client_id, %message, "HELLO codec unavailable");
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::CodecUnavailable,
+                            message,
+                        }))
+                        .await;
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
+                    return Ok(());
+                };
+                let mut effective_client_caps = client_caps;
+                effective_client_caps.output_mode =
+                    if matches!(selected_profile, BootstrapProfile::SynthesizedVtStateSync) {
+                        phux_protocol::caps::OutputMode::StateSync
+                    } else {
+                        // NativeState and SynthesizedVtRaw both carry raw live PTY
+                        // output regardless of the client's compatibility
+                        // preference field.
+                        phux_protocol::caps::OutputMode::Raw
+                    };
+                let server_features = runtime_server_features();
+
+                // Cache all negotiated state exactly once before any stateful
+                // frame can be processed. Subsequent decoding immediately uses
+                // these bounds, rejecting oversized borrowed payloads before
+                // the protocol decoder copies them into owned storage.
+                negotiated = Some(NegotiatedConnection {
+                    client_caps: effective_client_caps,
+                    profile: selected_profile,
+                    limits: bootstrap_limits,
+                    server_features,
+                });
                 state.with_mut(|s| {
-                    s.set_client_capabilities(client_id, client_caps);
                     // SPEC §6.2: cache the negotiated layer set. The L3
-                    // dispatch arms (METADATA_*) gate emission of
-                    // `METADATA_CHANGED` on `client_speaks_l3` so non-L3
-                    // consumers never see L3 frames (SPEC §16.4).
+                    // dispatch arms gate METADATA_CHANGED on this value.
                     s.set_client_layers(client_id, client_caps.layers);
                 });
-                // SPEC §6.1: server replies with HELLO_OK before ATTACH
-                // is processed on this connection. The compatible
-                // single-version client and server agree on major.minor; the
-                // server selects its current patch and advertises the full
-                // tier set it mounts (L1+L2+L3).
-                // the negotiated set is the intersection with the client's
-                // `layers`. `server_id` is the opaque process identity.
                 let hello_ok = FrameKind::HelloOk {
                     protocol_major: PROTOCOL_VERSION.major,
                     protocol_minor: PROTOCOL_VERSION.minor,
                     protocol_patch: PROTOCOL_VERSION.patch,
                     server_caps: ServerCapabilities::new()
                         .with_layers(LayerSet::all())
-                        .with_features(ServerFeatureSet::with(&[
-                            ServerFeature::AcknowledgedInput,
-                            ServerFeature::FileUpload,
-                            ServerFeature::MoveTerminal,
-                        ])),
+                        .with_features(server_features),
                     server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
+                    selected_profile,
+                    bootstrap_limits,
                 };
                 if out_tx.send(Outbound::Frame(hello_ok)).await.is_err() {
                     trace!(?client_id, "HELLO_OK send dropped: writer gone");
                 }
-                hello_seen = true;
             }
             FrameKind::Ping { nonce } => {
                 // SPEC §7.4: echo nonce in PONG.
@@ -986,22 +1193,65 @@ where
                 }
             }
             FrameKind::Attach {
+                attach_id,
                 target,
                 viewport,
                 request_scrollback,
                 scrollback_limit_lines,
             } => {
+                if attach_id == 0 {
+                    warn!(?client_id, "ATTACH used reserved zero attach_id; closing");
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::MalformedMessage,
+                            message: "ATTACH attach_id must be nonzero".to_owned(),
+                        }))
+                        .await;
+                    abort_output_pumps(&mut output_pumps, client_id, "zero ATTACH id").await;
+                    detach_and_release_consumer_state(&state, client_id);
+                    drop(out_tx);
+                    let _ = sibling_tasks.join_next().await;
+                    return Ok(());
+                }
+                if !used_attach_ids.insert(attach_id) {
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::MalformedMessage,
+                            message: format!(
+                                "ATTACH attach_id {attach_id} was already used on this connection"
+                            ),
+                        }))
+                        .await;
+                    continue;
+                }
+                let Some(selection) = negotiated.as_ref() else {
+                    continue;
+                };
+                debug!(
+                    ?client_id,
+                    attach_id,
+                    profile = ?selection.profile,
+                    chunk_limit = selection.limits.max_chunk_bytes(),
+                    history_page_limit = selection.limits.max_history_page_bytes(),
+                    "ATTACH with immutable bootstrap selection",
+                );
                 handle_attach(
                     &state,
                     client_id,
+                    attach_id,
                     target,
                     viewport,
                     request_scrollback,
                     scrollback_limit_lines,
                     &out_tx,
-                    negotiated_client_caps,
+                    selection.client_caps,
+                    selection.profile,
+                    selection.limits,
                     &root_token,
                     &mut output_pumps,
+                    &token,
                 )
                 .await;
             }
@@ -1077,8 +1327,131 @@ where
                     "INPUT_PASTE",
                 );
             }
-            FrameKind::FrameAck { terminal_id, seq } => {
-                handle_frame_ack(&state, client_id, &terminal_id, seq);
+            FrameKind::InputTerminalReply { terminal_id, bytes } => {
+                let Some(selection) = negotiated.as_ref() else {
+                    continue;
+                };
+                if !selection.accepts_terminal_reply() {
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::UnknownMessageType,
+                            message: "INPUT_TERMINAL_REPLY was not advertised for this connection"
+                                .to_owned(),
+                        }))
+                        .await;
+                    // The frame is additive within protocol 0.7: report the
+                    // unadvertised type without killing an otherwise valid
+                    // connection, and never pass its bytes to the PTY.
+                    continue;
+                }
+                handle_terminal_reply(&state, client_id, &terminal_id, bytes);
+            }
+            FrameKind::FrameAck {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq,
+            } => {
+                handle_frame_ack(
+                    &state,
+                    client_id,
+                    &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    seq,
+                );
+            }
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            FrameKind::HistoryRequest {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                max_bytes,
+                max_rows,
+            } => {
+                let Some(selection) = negotiated.as_ref() else {
+                    continue;
+                };
+                if !matches!(
+                    selection.profile,
+                    BootstrapProfile::NativeState {
+                        codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+                        ..
+                    }
+                ) {
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::CodecUnavailable,
+                            message: "HISTORY_REQUEST requires negotiated native checkpoint v2"
+                                .to_owned(),
+                        }))
+                        .await;
+                    continue;
+                }
+                let handle = state.with(|server| {
+                    server
+                        .terminal_from_wire(&terminal_id)
+                        .and_then(|pane| server.terminal_handle(pane).cloned())
+                });
+                let Some(handle) = handle else {
+                    let _ = out_tx
+                        .send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code: ErrorCode::TerminalNotFound,
+                            message: format!("no such terminal: {terminal_id:?}"),
+                        }))
+                        .await;
+                    continue;
+                };
+                let Ok(permit) = out_tx.clone().reserve_owned().await else {
+                    continue;
+                };
+                let (reply_tx, reply_rx) = oneshot::channel();
+                if handle
+                    .native_history
+                    .send(crate::terminal_actor::NativeHistoryRequest {
+                        permit,
+                        owner: client_id.0,
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        cursor,
+                        max_bytes,
+                        max_rows,
+                        limits: selection.limits,
+                        reply: reply_tx,
+                    })
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                let Ok(reply) = reply_rx.await else {
+                    continue;
+                };
+                match reply.result {
+                    Ok(frame) => {
+                        reply.permit.send(Outbound::Frame(frame));
+                    }
+                    Err(error) => {
+                        let code = match error {
+                            crate::native_state::NativeStateError::OutOfMemory
+                            | crate::native_state::NativeStateError::OutOfSpace { .. }
+                            | crate::native_state::NativeStateError::LimitExceeded => {
+                                ErrorCode::ResourceExhausted
+                            }
+                            _ => ErrorCode::InternalError,
+                        };
+                        reply.permit.send(Outbound::Frame(FrameKind::Error {
+                            request_id: None,
+                            code,
+                            message: format!("native history request failed: {error}"),
+                        }));
+                    }
+                }
             }
             FrameKind::GetMetadata {
                 request_id,
@@ -1130,6 +1503,9 @@ where
                 owner_terminal,
                 agent_session,
             } => {
+                let Some(selection) = negotiated.as_ref() else {
+                    continue;
+                };
                 handle_spawn_terminal(
                     &state,
                     client_id,
@@ -1145,7 +1521,11 @@ where
                         agent_session,
                     },
                     &out_tx,
+                    selection.profile,
+                    selection.limits,
                     &root_token,
+                    &token,
+                    &mut output_pumps,
                 )
                 .await;
             }
@@ -1175,18 +1555,39 @@ where
                 request_id,
                 command,
             } => {
+                let Some(selection) = negotiated.as_ref() else {
+                    continue;
+                };
                 handle_command(
                     &state,
                     client_id,
                     request_id,
                     command,
                     &out_tx,
+                    selection.client_caps,
+                    selection.profile,
+                    selection.limits,
                     input_lane.as_ref(),
+                    &token,
                 )
                 .await;
             }
             other => {
-                debug!(kind = ?other, "unhandled message type (INPUT_* / etc.)");
+                warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
+                let _ = out_tx
+                    .send(Outbound::Frame(FrameKind::Error {
+                        request_id: None,
+                        code: ErrorCode::InvalidCommand,
+                        message: format!(
+                            "frame is not valid from a client in the negotiated phase: {other:?}"
+                        ),
+                    }))
+                    .await;
+                abort_output_pumps(&mut output_pumps, client_id, "direction-invalid frame").await;
+                detach_and_release_consumer_state(&state, client_id);
+                drop(out_tx);
+                let _ = sibling_tasks.join_next().await;
+                return Ok(());
             }
         }
     }
@@ -1725,6 +2126,8 @@ pub(crate) fn handle_subscribe_events(
                     // deltas must flow immediately, so it is not gated
                     // (phux-v45.14).
                     awaits_snapshot: false,
+                    bootstrap_profile: None,
+                    bootstrap_limits: None,
                 },
                 FrameKind::SubscribeEvents {
                     terminal: Some(phux_protocol::ids::TerminalId::local(id)),
@@ -1801,21 +2204,393 @@ pub(crate) fn broadcast_event(
 /// sender.
 pub(crate) async fn writer_task<W: FrameWriter>(
     mut writer: W,
-
     mut rx: tokio::sync::mpsc::Receiver<Outbound>,
+    mut close: tokio::sync::watch::Receiver<bool>,
     client_id: ClientId,
 ) {
     let mut buf = BytesMut::with_capacity(1024);
-    while let Some(msg) = rx.recv().await {
-        let Outbound::Frame(frame) = msg;
+    let mut close_control_open = true;
+    loop {
+        let message = if close_control_open {
+            tokio::select! {
+                biased;
+                changed = close.changed() => {
+                    match changed {
+                        Ok(()) if *close.borrow_and_update() => {
+                            rx.close();
+                            close_control_open = false;
+                        }
+                        _ => close_control_open = false,
+                    }
+                    continue;
+                }
+                message = rx.recv() => message,
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(message) = message else {
+            break;
+        };
+        let (frame, terminal) = match message {
+            Outbound::Frame(frame) => (frame, false),
+            Outbound::TerminalError {
+                request_id,
+                code,
+                message,
+            } => (
+                FrameKind::Error {
+                    request_id,
+                    code,
+                    message,
+                },
+                true,
+            ),
+        };
         buf.clear();
         frame.encode(&mut buf);
         if let Err(err) = writer.write_frame(&buf).await {
             debug!(?client_id, error = %err, "writer error on frame; client task ending");
+            let _ = writer.close().await;
+            return;
+        }
+        if terminal {
+            let _ = writer.close().await;
             return;
         }
     }
+    if let Err(err) = writer.close().await {
+        debug!(?client_id, error = %err, "writer close failed");
+    }
     debug!(?client_id, "writer task exiting (channel closed)");
+}
+
+#[cfg(test)]
+mod writer_close_tests {
+    use std::cell::RefCell;
+    use std::io;
+    use std::rc::Rc;
+
+    use phux_protocol::wire::frame::{ErrorCode, FrameKind};
+
+    use super::writer_task;
+    use crate::state::{ClientId, Outbound};
+    use crate::transport::FrameWriter;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum WriterEvent {
+        Frame,
+        Error,
+        Close,
+    }
+
+    struct RecordingWriter(Rc<RefCell<Vec<WriterEvent>>>);
+
+    impl FrameWriter for RecordingWriter {
+        async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
+            let event = match FrameKind::decode(frame).expect("encoded frame").0 {
+                FrameKind::Error { .. } => WriterEvent::Error,
+                _ => WriterEvent::Frame,
+            };
+            self.0.borrow_mut().push(event);
+            Ok(())
+        }
+
+        async fn close(&mut self) -> io::Result<()> {
+            self.0.borrow_mut().push(WriterEvent::Close);
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn terminal_error_is_written_before_transport_close() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let writer = RecordingWriter(Rc::clone(&events));
+        let (tx, rx) = tokio::sync::mpsc::channel(3);
+        tx.send(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
+            .await
+            .expect("queue earlier frame");
+        tx.send(Outbound::TerminalError {
+            request_id: None,
+            code: ErrorCode::CodecUnavailable,
+            message: "fatal native stream failure".to_owned(),
+        })
+        .await
+        .expect("queue terminal error");
+        tx.send(Outbound::Frame(FrameKind::Pong { nonce: 2 }))
+            .await
+            .expect("racing producer queues after sentinel");
+
+        let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
+        writer_task(writer, rx, close_rx, ClientId(7)).await;
+        assert_eq!(
+            events.borrow().as_slice(),
+            [WriterEvent::Frame, WriterEvent::Error, WriterEvent::Close],
+            "the terminal ERROR is the last decoded frame before transport close",
+        );
+    }
+}
+#[cfg(test)]
+#[cfg(all(test, feature = "native-engine", not(target_arch = "wasm32")))]
+mod fatal_preflight_close_tests {
+    use std::collections::VecDeque;
+    use std::io;
+
+    use bytes::BytesMut;
+    use phux_protocol::PROTOCOL_VERSION;
+    use phux_protocol::caps::{
+        BootstrapCapabilities, ClientCapabilities, EngineCodec, EngineFeatureSet,
+    };
+    use phux_protocol::policy::{PeerIdentity, TransportType};
+    use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::{broadcast, mpsc};
+    use tokio::task::LocalSet;
+    use tokio_util::sync::CancellationToken;
+
+    use super::handle_client;
+    use crate::state::SharedState;
+    use crate::terminal_actor::{ConsumerAttachOutcome, PaneOutput, TerminalHandle};
+    use crate::transport::{FrameReader, FrameWriter};
+
+    struct ScriptReader {
+        frames: VecDeque<BytesMut>,
+    }
+
+    impl ScriptReader {
+        fn new(frames: impl IntoIterator<Item = FrameKind>) -> Self {
+            Self {
+                frames: frames
+                    .into_iter()
+                    .map(|frame| {
+                        let mut encoded = BytesMut::new();
+                        frame.encode(&mut encoded);
+                        encoded
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl FrameReader for ScriptReader {
+        async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
+            if let Some(frame) = self.frames.pop_front() {
+                return Ok(Some(frame));
+            }
+            std::future::pending().await
+        }
+    }
+
+    struct DuplexWriter(tokio::io::WriteHalf<tokio::io::DuplexStream>);
+
+    impl FrameWriter for DuplexWriter {
+        async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
+            self.0.write_all(frame).await
+        }
+
+        async fn close(&mut self) -> io::Result<()> {
+            self.0.shutdown().await
+        }
+    }
+
+    async fn read_frame(
+        reader: &mut tokio::io::ReadHalf<tokio::io::DuplexStream>,
+    ) -> io::Result<Option<FrameKind>> {
+        let mut header = [0_u8; 4];
+        match reader.read_exact(&mut header).await {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let body_len = u32::from_be_bytes(header) as usize;
+        let mut framed = BytesMut::with_capacity(4 + body_len);
+        framed.extend_from_slice(&header);
+        framed.resize(4 + body_len, 0);
+        reader.read_exact(&mut framed[4..]).await?;
+        FrameKind::decode(&framed)
+            .map(|(frame, _)| Some(frame))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))
+    }
+
+    fn native_failure_handle() -> (
+        TerminalHandle,
+        mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
+        mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
+    ) {
+        let (output, _output_seed) = broadcast::channel::<PaneOutput>(8);
+        let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
+        let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
+        let (native_release, _native_release_rx) = mpsc::channel(8);
+        let (consumer_detach, _consumer_detach_rx) = mpsc::channel(8);
+        (
+            TerminalHandle {
+                input: mpsc::channel(8).0,
+                encoded_input: mpsc::channel(8).0,
+                input_snapshot: tokio::sync::watch::channel(
+                    crate::input::InputEncoderSnapshot::default(),
+                )
+                .1,
+                snapshot: mpsc::channel(8).0,
+                native_bootstrap,
+                native_history: mpsc::channel(8).0,
+                native_release,
+                set_default_colors: mpsc::channel(8).0,
+                screen: mpsc::channel(8).0,
+                pwd: mpsc::channel(8).0,
+                output,
+                resize: mpsc::channel(8).0,
+                consumer_attach,
+                consumer_detach,
+                consumer_ack: mpsc::channel(8).0,
+                subscribe_to_events: mpsc::channel(8).0,
+                unsubscribe_from_events: mpsc::channel(8).0,
+                upgrade: mpsc::channel(8).0,
+                control: mpsc::channel(8).0,
+                cols: 80,
+                rows: 24,
+            },
+            consumer_attach_rx,
+            native_bootstrap_rx,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_preflight_failure_flushes_error_then_duplex_eof() {
+        let local = LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_session, _window, terminal) =
+                    state.with_mut(|server| server.seed_session("fatal-duplex"));
+                let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) =
+                    native_failure_handle();
+                state.with_mut(|server| {
+                    let _ =
+                        server.register_terminal_handle(terminal, handle, CancellationToken::new());
+                });
+                let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                state.with_mut(|server| {
+                    server.set_peer_identity(
+                        client_id,
+                        PeerIdentity {
+                            uid: 0,
+                            pid: None,
+                            exe_path: None,
+                            mcp_host_key: None,
+                            transport: TransportType::UnixSocket,
+                            source_addr: None,
+                        },
+                    );
+                });
+
+                let native = BootstrapCapabilities::new().with_native(
+                    EngineCodec::LibghosttyCheckpointV2,
+                    EngineFeatureSet::required_native(),
+                );
+                let reader = ScriptReader::new([
+                    FrameKind::Hello {
+                        client_name: "fatal-duplex-test".to_owned(),
+                        protocol_major: PROTOCOL_VERSION.major,
+                        protocol_minor: PROTOCOL_VERSION.minor,
+                        protocol_patch: PROTOCOL_VERSION.patch,
+                        client_caps: ClientCapabilities::new().with_bootstrap(native),
+                    },
+                    FrameKind::Attach {
+                        attach_id: 1,
+                        target: AttachTarget::ByName("fatal-duplex".to_owned()),
+                        viewport: ViewportInfo::new(80, 24),
+                        request_scrollback: false,
+                        scrollback_limit_lines: 0,
+                    },
+                ]);
+                let (server_io, peer_io) = tokio::io::duplex(64 * 1024);
+                let (server_read, server_write) = tokio::io::split(server_io);
+                drop(server_read);
+                let (mut client_read, client_write) = tokio::io::split(peer_io);
+                drop(client_write);
+                let connection_token = CancellationToken::new();
+                let task = tokio::task::spawn_local(handle_client(
+                    reader,
+                    DuplexWriter(server_write),
+                    state,
+                    client_id,
+                    connection_token,
+                    CancellationToken::new(),
+                    None,
+                ));
+                let actor = tokio::task::spawn_local(async move {
+                    let registration = consumer_attach_rx
+                        .recv()
+                        .await
+                        .expect("consumer registration");
+                    registration
+                        .reply
+                        .send(Ok(ConsumerAttachOutcome {
+                            tick_managed: false,
+                            state_sync_bootstrap: None,
+                        }))
+                        .expect("registration reply");
+                    native_bootstrap_rx
+                        .recv()
+                        .await
+                        .expect("native preflight")
+                        .reply
+                        .send(Err(crate::native_state::NativeStateError::OutOfMemory))
+                        .expect("native failure reply");
+                });
+
+                let hello = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    read_frame(&mut client_read),
+                )
+                .await
+                .expect("HELLO_OK timed out")
+                .expect("read HELLO_OK")
+                .expect("HELLO_OK frame");
+                assert!(matches!(
+                    hello,
+                    FrameKind::HelloOk {
+                        selected_profile: phux_protocol::caps::BootstrapProfile::NativeState {
+                            codec: EngineCodec::LibghosttyCheckpointV2,
+                            ..
+                        },
+                        ..
+                    }
+                ));
+                let error = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    read_frame(&mut client_read),
+                )
+                .await
+                .expect("terminal ERROR timed out")
+                .expect("read terminal ERROR")
+                .expect("terminal ERROR frame");
+                assert!(matches!(
+                    error,
+                    FrameKind::Error {
+                        code: ErrorCode::CodecUnavailable,
+                        ..
+                    }
+                ));
+                assert!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        read_frame(&mut client_read),
+                    )
+                    .await
+                    .expect("duplex EOF timed out")
+                    .expect("read duplex EOF")
+                    .is_none(),
+                    "transport closes only after flushing terminal ERROR"
+                );
+                actor.await.expect("actor task");
+                task.await
+                    .expect("client task")
+                    .expect("client task result");
+            })
+            .await;
+    }
 }
 #[cfg(test)]
 mod terminal_metadata_scope_tests {

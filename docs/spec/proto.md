@@ -210,211 +210,156 @@ within the payload as defined per-message and per-field.
 
 ---
 
-## 6. Version negotiation
+## 6. Version and profile negotiation
 
-The protocol uses semantic versioning: `major.minor.patch`. This
-document specifies version `0.6.0`.
+This document specifies protocol `0.7.0`. Major/minor identify the wire
+contract and MUST match exactly; patch differences are allowed and never change
+encoded bytes. Protocol `0.6.x` and `0.7.x` reject each other. Every stateful
+connection, including same-UID Unix sockets, performs HELLO. `PING` is the only
+frame permitted before HELLO.
 
-- **Major** and **minor** versions identify the implemented wire contract. The
-  reference wire currently carries one concrete version rather than a range,
-  so peers MUST have equal `major.minor` values. A peer encountering an unknown
-  message type at that version MUST log and drop the message. A peer
-  encountering a **field id** it does not recognize within a known message MUST
-  skip that field by its declared length (the field-tagged TLV extensibility
-  rule of [appendix-encoding.md](./appendix-encoding.md)).
-- **Patch** version changes are editorial or behavior-preserving and MUST NOT
-  change encoded bytes. Peers with equal `major.minor` values MAY differ in
-  patch.
+### 6.1 HELLO / HELLO_OK
 
-### 6.1 The HELLO handshake
-
-Every connection opens with a HELLO exchange. The client speaks first:
+The client speaks first. Both bodies are field-tagged TLV:
 
 ```
-Client → Server:  HELLO {
-    version: Version,
-    client_caps: ClientCapabilities,   // includes layers: bitset<Layer>
+HELLO {
+    client_name: str,                 // field 1
+    protocol_major: u16,              // field 2
+    protocol_minor: u16,              // field 3
+    protocol_patch: u16,              // field 4
+    client_caps: ClientCapabilities,  // field 5, required positional sub-record
 }
 
-Server → Client:  HELLO_OK {
-    version: Version,
-    server_caps: ServerCapabilities,   // includes layers: bitset<Layer>
-    server_id: bytes,
+HELLO_OK {
+    protocol_major: u16,              // field 1
+    protocol_minor: u16,              // field 2
+    protocol_patch: u16,              // field 3
+    server_caps: ServerCapabilities,  // field 4
+    server_id: bytes,                 // field 5
+    selected_profile: BootstrapProfile, // field 6, required
+    max_chunk_bytes: u32,             // field 7, required
+    max_history_page_bytes: u32,      // field 8, required
 }
 ```
 
-`server_id` is an opaque 128-bit server-incarnation value. It MUST remain
-stable across connections to the same in-memory server state and MUST change
-whenever reconnect-safety state is lost, including a normal restart or a
-graceful re-exec that does not preserve that state. Consumers MUST compare it
-as opaque bytes and MUST NOT derive host identity from it.
+`server_id` is an authenticated opaque server-incarnation value. It remains
+stable only while reconnect-safety state is preserved and changes on any
+restart/re-exec that loses that state. Consumers compare bytes only.
 
-The current wire encodes one concrete client version. The server MUST accept it
-only when its `major.minor` equals the server's supported `major.minor`, then
-echo the server's current patch in `HELLO_OK`. If they differ, the server MUST
-send `ERROR { code: VERSION_INCOMPATIBLE }` naming both versions and the older
-peer to upgrade, then close before processing `ATTACH` or other stateful frames.
+The server accepts HELLO only when `major.minor` matches, then returns its
+current patch. Otherwise it sends fatal `VERSION_INCOMPATIBLE` and closes before
+state. It intersects `layers`, selects exactly one profile by §6.2, and selects
+each byte bound as `min(client, server)`. Missing required 0.7 fields, zero
+bounds, or bounds over their hard caps are `MALFORMED_MESSAGE`. No profile is
+`CODEC_UNAVAILABLE`.
 
-The `layers` bit-field on `ClientCapabilities` and `ServerCapabilities`
-declares which conformance tiers (§11 Conformance) each side speaks. Per
-[ADR-0015](../../ADR/0015-protocol-layering.md) §"Conformance tiers":
+Unknown top-level field ids are skipped by declared length. Required known
+fields do not acquire legacy defaults: the clean cutover relies on the
+major/minor admission gate rather than decoding a 0.6 HELLO shape as 0.7.
+HELLO twice is a protocol error.
 
-- The client's `layers` lists what it wants. L1 is always implied; a
-  client MAY omit higher tiers (an agent SDK declares L1 only).
-- The server's `layers` (in `HELLO_OK`) lists what it implements. L1
-  is always implemented; the server MAY mount L3 or not. L2 is never
-  mounted (no collection tier).
-- The **negotiated tier set** is the intersection of the two `layers`
-  bit-fields. The server MUST NOT send messages from tiers outside
-  the intersection, and the client MUST NOT send messages from tiers
-  outside the intersection. Decoders MUST treat the receipt of an
-  out-of-tier message as a protocol error.
+The `layers` intersection retains ADR-0015 semantics: L1 is mandatory, L2 is
+reserved/unmounted, and L3 is optional. Neither peer sends out-of-intersection
+tier frames.
 
-After `HELLO_OK`, the negotiated version and tier set govern the rest
-of the connection. Sending HELLO twice on the same connection is an
-error.
-
-### 6.2 Capability negotiation
-
-Capabilities are advertised once, at HELLO time, and apply for the life
-of the connection. They are not renegotiated.
+### 6.2 Capability and synchronization profile negotiation
 
 ```
-Layer = bitset (u8) {
-    L1 = 0x01,   // Terminal substrate (always implemented; MUST be set)
-    L2 = 0x02,   // reserved, unused — no collection tier (L2.md)
-    L3 = 0x04,   // Metadata storage (optional service)
-}
-
 OutputMode = enum (u8) {
-    Raw = 0,        // raw PTY byte broadcast (default; byte-faithful human path)
-    StateSync = 1,  // per-consumer synthesized grid-delta tick (ADR-0018)
+    Raw       = 0,   // compatibility preference only
+    StateSync = 1,
 }
 
-ClientCapabilities {
-    kbd_protocols: bitset<KeyboardProtocol>,
-    mouse_protocols: bitset<MouseProtocol>,
-    color: ColorSupport,           // TrueColor | Indexed256 | Indexed16
-    images: bitset<ImageProtocol>, // Sixel | KittyGraphics | Iterm2
-    hyperlinks: bool,
-    unicode_version: u8,
-    rendering: RenderingMode,      // Diff | VtReplay (deprecated; see prose below)
-    layers: bitset<Layer>,         // tiers the client speaks (§11; ADR-0015)
-    output_mode: OutputMode,       // emitter the consumer wants
-    default_colors: optional<{     // outer terminal OSC 10/11 defaults
-        foreground: rgb24,
-        background: rgb24,
-    }>,
+BootstrapProfileKind = bitset (u8) {
+    SynthesizedVtRaw        = 0x02,
+    SynthesizedVtStateSync  = 0x04,
+    NativeState             = 0x08,
+    // 0x01 is permanently retired: incomplete pre-bounded-history NativeState.
 }
 
-ServerCapabilities {
-    layers: bitset<Layer>,         // tiers the server implements (§11; ADR-0015)
-    features: bitset<ServerFeature>, // optional trailing u32
+EngineCodecSet = bitset (u64) {
+    LibghosttyCheckpointV2 = 1 << 2,
 }
 
 ServerFeature = bitset (u32) {
     ACKNOWLEDGED_INPUT = 0x00000010, // APPLY_INPUT (L1.md §6.2.1; ADR-0053)
-    FILE_UPLOAD       = 0x00000020, // PUT_FILE (L1.md §6.2.2; ADR-0059)
-    MOVE_TERMINAL     = 0x00000040, // MOVE_TERMINAL (L1.md §3.1; ADR-0056)
+    FILE_UPLOAD        = 0x00000020, // PUT_FILE (L1.md §6.2.2; ADR-0059)
+    MOVE_TERMINAL      = 0x00000040, // MOVE_TERMINAL (L1.md §3.1; ADR-0056)
+    TERMINAL_REPLY     = 0x00000080, // INPUT_TERMINAL_REPLY (L1.md §3.4; ADR-0067)
+}
+
+EngineFeatureSet = bitset (u32) {
+    CONTINUATION            = 0x00000001,
+    READY_BOUNDARY          = 0x00000002,
+    HISTORY_PAGES           = 0x00000004,
+    BOUNDED_HISTORY_CONTROL = 0x00000008,
+}
+
+BootstrapProfile = tagged_union {
+    SynthesizedVtRaw,                      // tag 1
+    SynthesizedVtStateSync,                // tag 2
+    NativeState {                          // tag 3
+        codec: EngineCodec,                // exact u8 version: v2 = 2
+        features: EngineFeatureSet,
+    },
+    // tag 0 is permanently retired: incomplete pre-bounded-history NativeState.
 }
 ```
 
-`ServerCapabilities` is a positional prefix: `layers` is the first byte and
-`features` is an optional trailing `u32` big-endian bitset. A one-byte legacy
-value therefore decodes with an empty feature set. Decoders MUST ignore unknown
-feature bits. A client MUST use `APPLY_INPUT` only when
-`ACKNOWLEDGED_INPUT` is advertised, MUST use `PUT_FILE` only when
-`FILE_UPLOAD` is advertised, and MUST use `MOVE_TERMINAL` only when
-`MOVE_TERMINAL` is advertised.
+The three profile variants are the complete mode matrix. Native always means
+exact checkpoint plus byte-identical raw PTY continuation; there is no native
+StateSync value to encode. `OutputMode` chooses a preferred synthesized profile
+only. Native is selected first when both peers advertise it, share an exact
+codec, and the feature intersection contains all four required v2 features,
+including `BOUNDED_HISTORY_CONTROL`. The current native offer bit/tag are
+`0x08`/`3`; legacy native bit/tag `0x01`/`0` are permanently retired and ignored,
+so mixed old/new 0.7 peers fall back to a commonly advertised synthesized
+profile or fail with `CODEC_UNAVAILABLE` before attach. Otherwise the selected
+synthesized variant must be in both advertised sets. No fallback occurs after
+HELLO_OK.
 
-The HELLO body is field-tagged TLV per
-[appendix-encoding.md](./appendix-encoding.md): `client_name`, the version
-triple, and the `ClientCapabilities` blob each ride as a separate tagged
-field. `ClientCapabilities` itself is a nested positional, big-endian,
-length-prefixed sub-record carried inside its field's value, with the field
-order `color`, `layers`, `images`, `kbd_protocols`, `hyperlinks`,
-`output_mode`, then `default_colors` as a presence byte followed by foreground
-and background `R,G,B` bytes when present. A decoder MUST accept every prefix
-of that caps sub-record and
-apply defaults for missing trailing bytes — a value that stops before
-`output_mode` decodes as `OutputMode::Raw`, and an unknown `output_mode` tag
-also decodes as `Raw` — and an absent `ClientCapabilities` *field* decodes to
-the default capabilities. New capability bytes append after `output_mode`
-inside the same field.
+`ClientCapabilities` is one positional sub-record inside HELLO field 5. Protocol
+0.7 fixes this exact order:
 
-`default_colors` lets an interactive client report the effective foreground
-and background returned by OSC 10/11 on its outer terminal. The server SHOULD
-install them as the canonical Terminal's default colors before parsing child
-output, so OSC 10/11 queries from programs inside phux receive the same answer
-as they do outside it. This affects theme derivation, not SGR downsampling.
-When several clients share a Terminal, the most recently attached client that
-advertises `default_colors` is authoritative; an attach that omits the field
-MUST NOT erase an established palette. Non-TTY and legacy clients omit it.
+```
+color: u8
+layers: u8
+images: u8
+kbd_protocols: u8
+hyperlinks: u8
+output_mode: u8
+default_colors_present: u8
+default_colors: foreground_rgb24 || background_rgb24  // iff present = 1
+bootstrap_profiles: u8
+native_codecs: u64
+native_features: u32
+max_chunk_bytes: u32
+max_history_page_bytes: u32
+```
 
-`output_mode` lets a consumer choose, per connection, which server emitter
-serves its attached Terminals: `Raw` (the default) keeps the byte-faithful
-low-latency PTY broadcast that interactive shells and TUIs rely on, while
-`StateSync` opts into the per-consumer synthesized grid-delta tick
-(ADR-0018) suited to agents and remote state-sync consumers. The server
-suppresses the raw broadcast for a `StateSync` consumer so exactly one
-emitter serves it. Raw stays the human default because synthesized ticks
-add a visible local-typing latency floor and can lose byte-exact styling.
+Unknown set bits are ignored. Unknown enum tags, truncated records, and palette
+presence other than 0/1 are malformed. Bounds are nonzero and at most 8 MiB
+each. Reference advertisements are 256 KiB bootstrap chunks and 1 MiB history
+pages. HELLO_OK repeats the negotiated limits. A receiver rejects a chunk/page
+above the negotiated bound before allocating it; opaque cursors are at most
+4 KiB.
 
-Under `StateSync`, `TERMINAL_OUTPUT.bytes` is the minimum-VT transition from
-the consumer's reference grid to the live grid, synthesized once per tick and
-RTT-paced, so a runaway producer bounds the consumer's re-parse *rate* rather
-than streaming every intermediate frame; the resulting grid is equivalent to
-what the `Raw` byte stream would produce (ADR-0018,
-[ADR-0043](../../ADR/0043-state-diff-output-mode.md)). Whether the server
-advances a consumer's reference **on emit** (the emit-once model, correct on a
-reliable ordered transport) or **on `FRAME_ACK`** (the loss-tolerant model,
-which re-diffs a dropped/un-acked frame against the last-acked reference so it
-self-heals) is a **server-side emission strategy** chosen per consumer from the
-transport/topology — it needs no `ClientCapabilities` field and changes no wire
-bytes (`FRAME_ACK` and `seq` already round-trip). A consumer MUST NOT assume
-which strategy serves it; both converge to the same grid.
+`ServerCapabilities` remains a positional prefix: `layers: u8` followed by
+optional `features: u32`. A one-byte legacy value therefore decodes with an
+empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
+`MOVE_TERMINAL = 0x40`, and `TERMINAL_REPLY = 0x80`; unknown feature bits are
+ignored. A client MUST use the corresponding frame only when its feature is
+advertised. In particular, the absence of `TERMINAL_REPLY` in an otherwise
+valid 0.7 `HELLO_OK` is authoritative: that server does not accept
+`INPUT_TERMINAL_REPLY`.
 
-The former `CC_FRONTEND` feature slot is **reclaimed** per
-[ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md). Earlier drafts
-reserved it for a server that could "speak tmux control mode as an
-alternative frontend." Under ADR-0017 the reference TUI has no
-protocol-level privilege, and `tmux control mode` (when added) is one
-L1/L3 consumer among several — no capability bit required. The `0x10` slot now
-advertises `ACKNOWLEDGED_INPUT`; older decoders ignore its additive trailing
-field.
-
-Servers MUST adapt outbound `TERMINAL_OUTPUT` (see [L1.md §state
-synchronization](./L1.md)) byte streams to each
-client's capabilities. The downsampling is performed as a server-side
-**VT byte stream rewrite**, not a per-cell structured transform:
-
-- **Color.** For a client advertising `Indexed256`, the server MUST
-  rewrite truecolor SGR sequences (`CSI 38;2;R;G;B m` / `CSI 48;2;R;G;B m`)
-  to their indexed equivalents (`CSI 38;5;N m` / `CSI 48;5;N m`) before
-  forwarding. For a client advertising `Indexed16`, the server MUST
-  further quantize to the standard / bright ANSI ranges
-  (`CSI 3N m` / `CSI 9N m` and their background counterparts).
-- **Images.** For each image protocol the client does not advertise
-  (`Sixel`, `KittyGraphics`, `Iterm2`), the server MUST drop or
-  transform the corresponding escape sequences before forwarding so the
-  client never receives bytes for a protocol it cannot render.
-- **Keyboard protocols.** APC keyboard-reply sequences (kitty keyboard
-  protocol, modifyOtherKeys, etc.) MUST be gated to clients advertising
-  the matching `kbd_protocols` bit; the server's canonical Terminal
-  still processes them locally, but they are stripped from the outbound
-  byte stream for clients that did not negotiate the protocol.
-- **Hyperlinks (OSC 8) and other terminal features** SHOULD be stripped
-  when the corresponding capability bit is unset.
-
-The downsampling MUST be deterministic and MUST NOT alter the visible
-grid state on the client beyond what the capability reduction implies.
-See [ADR-0013] for the rationale and the byte-stream rewriter design.
-
-The legacy `RenderingMode` field on `ClientCapabilities` (`Diff` vs.
-`VtReplay`) is **deprecated** as of this revision: with `TERMINAL_OUTPUT`
-carrying VT bytes, every client renders via local libghostty parse —
-there is no longer a structured-diff alternative. Decoders MUST accept
-the field for forward-compat and SHOULD ignore its value.
+Color/image/keyboard/hyperlink rewriting applies only to synthesized
+compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,
+`HISTORY_PAGE.payload`, cursors, and subsequent `TERMINAL_OUTPUT.bytes` are
+engine-owned opaque bytes and MUST remain byte-identical across server,
+transport, recorder, and federation relay. phux never scans or rewrites native
+records or raw live bytes.
 
 ### 6.3 Extension discipline: capabilities add, versions break
 
@@ -521,6 +466,7 @@ have no catalog row; the mechanism is defined in
 | 0x01  | C → S     | `HELLO`           | §6.1               | shipped   |
 | 0x02  | C → S     | `ATTACH`          | [L1.md §replay](./L1.md) | shipped |
 | 0x03  | C → S     | `DETACH`          | §7.2               | shipped   |
+| 0x16  | C → S     | `HISTORY_REQUEST` | [L1.md §history](./L1.md) | shipped |
 | 0x21  | C → S     | `FRAME_ACK`       | §8                 | shipped   |
 | 0x31  | C → S     | `COMMAND`         | [L1.md §5](./L1.md)| shipped   |
 | 0x40  | C → S     | `SUBSCRIBE`       | §7.3               | spec-only |
@@ -528,6 +474,7 @@ have no catalog row; the mechanism is defined in
 | 0x80  | S → C     | `HELLO_OK`        | §6.1               | shipped   |
 | 0x81  | S → C     | `ATTACHED`        | [L1.md §replay](./L1.md) | shipped |
 | 0x82  | S → C     | `DETACHED`        | §7.2               | shipped   |
+| 0x83  | S → C     | `ATTACH_READY`    | [L1.md §replay](./L1.md) | shipped |
 | 0xC1  | S → C     | `ERROR`           | §9                 | shipped   |
 | 0xC2  | S → C     | `COMMAND_RESULT`  | [L1.md §5](./L1.md)| shipped   |
 | 0xFF  | S → C     | `PONG`            | §7.4               | shipped   |
@@ -629,71 +576,60 @@ interpreted as anything other than a transport failure.
 
 ---
 
-## 8. Flow control
+## 8. Generation-scoped flow control
 
-### 8.1 Output pacing
+### 8.1 Live sequence and pacing
 
-The server MUST cap per-Terminal `TERMINAL_OUTPUT` emission at a
-configurable refresh rate (default 60 Hz). Between emissions, PTY
-bytes are accumulated and shipped as a single coalesced
-`TERMINAL_OUTPUT` carrying the batched VT bytes. There is no "every
-byte emits a frame" mode; that would not survive a `yes` flood.
+The Terminal actor stamps one checked, non-wrapping `u64` sequence before
+broadcast. `TERMINAL_OUTPUT` is scoped by
+`(terminal_id, stream_id, bootstrap_id, seq)`. A bootstrap cut is inclusive:
+its checkpoint covers `seq <= base_seq`; subscribed duplicates at or below the
+cut are discarded; only contiguous `seq > base_seq` is queued and released.
+The first live frame after that generation's `BOOTSTRAP_READY` is
+`base_seq + 1`.
 
-Coalescing operates at the byte level: the server concatenates the
-PTY's output across the pacing interval into the next
-`TERMINAL_OUTPUT`'s `bytes` field. Because libghostty's parser is
-deterministic over the full byte stream, coalescing has no observable
-effect on the client's local Terminal state beyond timing.
+Servers MAY coalesce adjacent bytes while preserving sequence/content order and
+MUST bound every per-client queue. Native raw bytes are never rewritten.
+Compatibility rewriting follows §6.2. A gap, duplicate, wrap, age/byte overflow,
+resize, or relay discontinuity produces `BOOTSTRAP_TOMBSTONE`, not a silent
+drop; no old-generation data follows the tombstone.
 
-### 8.2 Per-Terminal acknowledgement
+### 8.2 READY and acknowledgement timing
 
-Clients acknowledge `TERMINAL_OUTPUT` emissions they have processed
-(applied to their local libghostty `Terminal`):
+There is no client ACK for bootstrap or raw live output. The reliable ordered
+transport and protocol `BOOTSTRAP_READY` are the publication fence: a client
+publishes staged state when it consumes READY, and ordered raw output may follow
+immediately. This intentionally avoids one RTT per pane.
+
+`FRAME_ACK` is valid only for `SynthesizedVtStateSync`:
 
 ```
-FRAME_ACK { terminal_id: TerminalId, seq: u64 }
+FRAME_ACK {
+    terminal_id: TerminalId, // field 1
+    seq: u64,                // field 2, cumulative
+    stream_id: StreamId,     // field 3
+    bootstrap_id: BootstrapId, // field 4
+}
 ```
 
-`seq` is the monotonic per-Terminal sequence number from
-`TERMINAL_OUTPUT` (see [L1.md §frame model](./L1.md)). An ack is
-cumulative: acknowledging
-`seq = N` implies all prior `TERMINAL_OUTPUT`s for that Terminal up
-to and including `N` have been applied.
+The client sends it only after applying all StateSync transitions through
+`seq = N` to the published compatibility terminal. It is cumulative within the
+exact `(terminal, stream, bootstrap)` tuple. A raw-profile ACK or an ACK for a
+tombstoned/wrong generation is `MALFORMED_MESSAGE`; it never gates native raw
+release.
 
-The server tracks per-client `last_acked_seq` per Terminal. When
-`pending_unacked_bytes` (or equivalently the count of unacked
-`TERMINAL_OUTPUT` emissions) for a Terminal exceeds a configurable
-`flow_control_threshold` (default: 32 unacked emissions, per-server
-configurable, never disable-able), the server:
+### 8.3 Bounds, isolation, and fairness
 
-1. Stops sending live `TERMINAL_OUTPUT` for that Terminal to that client.
-2. Drops the queued byte backlog for that Terminal / client.
-3. Emits a single `TERMINAL_SNAPSHOT` (see [L1.md §snapshots](./L1.md))
-   synthesized from the server's canonical Terminal — `vt_replay_bytes`
-   reproduces the current grid on a fresh client Terminal.
-4. Resumes live `TERMINAL_OUTPUT` from the post-snapshot byte stream.
-   The next `seq` after the snapshot establishes a fresh base
-   (see [L1.md §state replay on attach](./L1.md)); clients MUST NOT
-   assume `seq` continuity across the snapshot boundary.
+Bootstrap chunks and history pages obey HELLO_OK's negotiated limits before
+allocation. History has at most one outstanding request per logical stream,
+explicit scroll demand outranks prefetch, and all history work ranks below live
+writes and READY-prefix bootstrap work. Multi-pane attach sends BEGIN in stable
+snapshot order and chunks in bounded round-robin turns. A pane opens its live
+queue at its own READY rather than waiting for other panes or history.
 
-This is the playbook Mosh uses, generalized to per-Terminal streams.
-It ensures a slow client cannot block the server, and the worst-case
-catch-up cost is one snapshot's worth of synthesized VT bytes, not an
-unbounded queue of accumulated PTY output.
-
-Scrollback that scrolls off during a backpressure-induced snapshot is
-**not** retransmitted to the lagging client; clients that require
-gap-free scrollback during heavy output SHOULD configure their server
-with a higher `flow_control_threshold` or accept snapshot-driven
-truncation. Servers MAY include bounded scrollback in
-`TERMINAL_SNAPSHOT.scrollback_bytes` if configured to do so on
-backpressure (implementation-defined; not normative).
-
-### 8.3 Per-client isolation
-
-Each connected client has its own outbound queue. A wedged client whose
-queue exceeds its bound is forcibly disconnected with
-`DETACHED { reason: PROTOCOL_ERROR }`. Other clients are unaffected.
+Capture leases, post-cut raw queues (bytes and age), outbound queues, history
+work, and local caches are bounded independently per consumer. Overflow
+tombstones the affected generation; other consumers and panes continue.
 
 ---
 
@@ -713,12 +649,8 @@ ErrorCode = enum {
     UNKNOWN_MESSAGE_TYPE = 2,
     MALFORMED_MESSAGE    = 3,
     FRAME_TOO_LARGE      = 4,
-    OUT_OF_TIER          = 5,   // RESERVED, not emitted: the L2 tier was
-                                //   dissolved (ADR-0030), so no message can
-                                //   arrive from an un-negotiated tier. The
-                                //   shipped enum does not define this variant;
-                                //   the value stays reserved for the §11.5 use.
-
+    // 5 was reserved for withdrawn OUT_OF_TIER and is never reused.
+    CODEC_UNAVAILABLE    = 6,
     NOT_ATTACHED         = 100,
     ALREADY_ATTACHED     = 101,
     SESSION_NOT_FOUND    = 102,  // shipped name; the requested session
@@ -753,16 +685,11 @@ ErrorCode = enum {
 ```
 
 This catalog tracks the shipped `#[non_exhaustive]` `ErrorCode` enum in
-`phux-protocol` (`wire::frame`), which is the source of truth for the
-wire bytes. `OUT_OF_TIER = 5` remains reserved but is not emitted because the
-L2 tier it guarded was dissolved by
-[ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md).
-Codes `102` and `103` ship under the names
-`SESSION_NOT_FOUND` / `WINDOW_NOT_FOUND`; the substrate no longer carries
-a session or window concept, so the names read as the TUI-convention
-lookups they back. Decoders MUST accept the byte values regardless of the
-name. Because the enum is `#[non_exhaustive]`, an unknown code value is
-surfaced rather than mapped to a placeholder.
+`phux-protocol`. `CODEC_UNAVAILABLE` is fatal during HELLO: there is no shared
+explicit profile, exact native codec, or required feature intersection.
+`OUT_OF_TIER = 5` was reserved by an earlier specification but never shipped;
+the slot stays retired rather than being reused. Unknown codes are surfaced,
+never mapped to a placeholder.
 
 A fatal error MUST be followed by `DETACHED { reason: PROTOCOL_ERROR }`
 and transport close.
@@ -805,27 +732,26 @@ the protocol-meta requirements common to all consumers.
 Every conforming consumer:
 
 1. Frames every message per §5.
-2. Performs the §6.1 HELLO handshake with `versions` consistent with
-   §6 ordering and `version` selection, and a non-empty `layers`
-   bit-field with the `L1` bit set.
-3. Tolerates unknown messages by logging and dropping them (§6).
-4. Tolerates unknown trailing fields per the encoding rules
-   ([appendix-encoding.md](./appendix-encoding.md)).
-5. Implements protocol-meta messages:
-   `HELLO`, `HELLO_OK`, `ATTACH`, `ATTACHED`, `DETACH`, `DETACHED`,
-   `PING`, `PONG`, `ERROR`, `COMMAND`, `COMMAND_RESULT`.
+2. Performs the §6.1 HELLO handshake for protocol 0.7, including explicit
+   profile/codec/features and nonzero negotiated bounds.
+3. Rejects 0.6 shapes rather than applying compatibility defaults.
+4. Skips unknown top-level TLV fields by declared length.
+5. Implements `HELLO`, `HELLO_OK`, `ATTACH`, `ATTACHED`, `ATTACH_READY`,
+   `DETACH`, `DETACHED`, `PING`, `PONG`, `ERROR`, `COMMAND`, and
+   `COMMAND_RESULT`.
 
 ### 11.2 L1 conformance (REQUIRED — Terminal substrate)
 
 Every conforming consumer additionally implements:
 
-- **Terminal content:** `TERMINAL_OUTPUT`, `TERMINAL_SNAPSHOT`,
-  `TERMINAL_RESIZED`, `FRAME_ACK`.
+- **Terminal content:** generation-bound `TERMINAL_OUTPUT`,
+  `BOOTSTRAP_BEGIN`, `BOOTSTRAP_CHUNK`, `BOOTSTRAP_READY`,
+  `BOOTSTRAP_TOMBSTONE`, NativeState-only `HISTORY_REQUEST`, `HISTORY_PAGE`,
+  `HISTORY_TOMBSTONE`, `HISTORY_REJECTED`, and StateSync-only `FRAME_ACK`.
 - **Terminal lifecycle:** `TERMINAL_OPENED`, `TERMINAL_CLOSED`.
-- **Structured events:** `TERMINAL_EVENT`, `BELL`. (`ALERT` is
-  RECOMMENDED.)
-- **Input:** `INPUT_KEY`, `INPUT_PASTE`, `VIEWPORT_RESIZE`.
-  (`INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_RAW` are RECOMMENDED.)
+- **Structured events:** `TERMINAL_EVENT`, `BELL`; `ALERT` is recommended.
+- **Input:** `INPUT_KEY`, `INPUT_PASTE`, `VIEWPORT_RESIZE`;
+  `INPUT_MOUSE`, `INPUT_FOCUS`, `INPUT_TERMINAL_REPLY`, and `INPUT_RAW` are recommended.
 - **L1 commands:** `SPAWN`, `ATTACH_TERMINAL`, `DETACH_TERMINAL`,
   `KILL_TERMINAL`, `RESIZE_TERMINAL`.
 
@@ -865,17 +791,10 @@ sessions, windows, and panes from L3 metadata, not from a wire tier.
 
 ### 11.5 Out-of-tier messages
 
-A peer receiving a message from a tier outside the negotiated
-intersection MUST send `ERROR { code: OUT_OF_TIER }` and SHOULD
-close the connection with `DETACHED { reason: PROTOCOL_ERROR }`.
-
-In practice no message can trigger this today: the only optional tier
-was L2, dissolved by
-[ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md),
-so every conforming consumer speaks the same L1 (+ optional L3) surface.
-`OUT_OF_TIER = 5` is therefore reserved (§9) and not emitted by the
-reference implementation; the rule stands so a future optional tier
-reinstates it without a renumber.
+A peer receiving a message outside the negotiated tier intersection sends
+`MALFORMED_MESSAGE` and may close with `PROTOCOL_ERROR`. The former
+`OUT_OF_TIER = 5` proposal never shipped and is permanently retired; a future
+optional tier allocates a new error code rather than reusing it.
 
 ### 11.6 Test suite
 

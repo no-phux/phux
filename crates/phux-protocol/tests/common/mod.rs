@@ -46,8 +46,8 @@ pub fn framed_tlv(type_byte: u8, fields: &[u8]) -> Vec<u8> {
 /// Hand-roll an ATTACHED frame whose single `WindowInfo` carries `layout` —
 /// the positional `LayoutNode` bytes, without the leading `Some` presence
 /// byte (this helper writes it). Under field-tagged TLV the message body is
-/// two fields — SNAPSHOT (id 1) and `INITIAL_CLIENT_ID` (id 2) — but the
-/// `SessionSnapshot` value is still positional, so the inner bytes mirror
+/// three fields — SNAPSHOT (id 1), `INITIAL_CLIENT_ID` (id 2), and
+/// `ATTACH_ID` (id 3) — but the
 /// `info::encode_session_snapshot` exactly. Keep in sync when the snapshot
 /// wire shape changes.
 pub fn attached_with_layout(layout: &[u8]) -> Vec<u8> {
@@ -72,9 +72,11 @@ pub fn attached_with_layout(layout: &[u8]) -> Vec<u8> {
     snap.push(0); // focused_pane tag local
     snap.extend_from_slice(&1u32.to_be_bytes());
 
-    // Field-tagged ATTACHED body: SNAPSHOT (id 1) + INITIAL_CLIENT_ID (id 2).
+    // Field-tagged ATTACHED body: SNAPSHOT (id 1), INITIAL_CLIENT_ID (id 2),
+    // and ATTACH_ID (id 3).
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &snap);
     tlv_field(&mut fields, 2, &7u32.to_be_bytes());
+    tlv_field(&mut fields, 3, &1u32.to_be_bytes());
     framed_tlv(0x81, &fields)
 }

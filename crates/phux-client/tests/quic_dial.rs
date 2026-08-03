@@ -17,6 +17,8 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, QuicDial};
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::{BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile};
 use phux_protocol::ids::TerminalId;
 use phux_protocol::policy::QUIC_ALPN;
 use phux_protocol::wire::frame::FrameKind;
@@ -75,9 +77,37 @@ async fn write_frame(send: &mut quinn::SendStream, frame: &FrameKind) {
     send.write_all(&out).await.unwrap();
 }
 
+#[allow(
+    clippy::panic,
+    reason = "the fixture must reject a non-HELLO first frame"
+)]
+async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream) {
+    let FrameKind::Hello { client_caps, .. } = read_frame(recv).await else {
+        panic!("expected HELLO");
+    };
+    let (selected_profile, bootstrap_limits) =
+        select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new())
+            .expect("fixture profiles intersect");
+    write_frame(
+        send,
+        &FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: PROTOCOL_VERSION.patch,
+            server_caps: ServerCapabilities::new(),
+            server_id: Vec::new(),
+            selected_profile,
+            bootstrap_limits,
+        },
+    )
+    .await;
+}
+
 const fn ack(seq: u64) -> FrameKind {
     FrameKind::FrameAck {
         terminal_id: TerminalId::Local { id: 1 },
+        stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+        bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
         seq,
     }
 }
@@ -96,6 +126,7 @@ async fn loopback_skip_verify_round_trips_both_directions() {
         async move {
             let conn = endpoint.accept().await.unwrap().await.unwrap();
             let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+            accept_hello(&mut send, &mut recv).await;
             // Client → server.
             assert_eq!(read_frame(&mut recv).await, from_client);
             // Server → client.
@@ -135,7 +166,8 @@ async fn pinned_fingerprint_accepts_matching_cert() {
 
     let server = async move {
         let conn = endpoint.accept().await.unwrap().await.unwrap();
-        let (_send, mut recv) = conn.accept_bi().await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        accept_hello(&mut send, &mut recv).await;
         read_frame(&mut recv).await
     };
 
@@ -197,6 +229,8 @@ async fn shutdown_closes_connection_promptly() {
 
     let server = async move {
         let conn = endpoint.accept().await.unwrap().await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        accept_hello(&mut send, &mut recv).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), conn.closed())
             .await
             .expect("server must observe a prompt close, not the 30s idle timeout")
@@ -236,7 +270,7 @@ async fn token_preamble_precedes_frames() {
         let frame = frame.clone();
         async move {
             let conn = endpoint.accept().await.unwrap().await.unwrap();
-            let (_send, mut recv) = conn.accept_bi().await.unwrap();
+            let (mut send, mut recv) = conn.accept_bi().await.unwrap();
             // The dialer writes the auth preamble (len: u32 BE + token) ahead of
             // any phux frame.
             let mut len_buf = [0u8; 4];
@@ -245,6 +279,7 @@ async fn token_preamble_precedes_frames() {
             let mut got_token = vec![0u8; len];
             recv.read_exact(&mut got_token).await.unwrap();
             assert_eq!(got_token, token, "raw token bytes arrive first");
+            accept_hello(&mut send, &mut recv).await;
             // Then the frame.
             assert_eq!(read_frame(&mut recv).await, frame);
         }

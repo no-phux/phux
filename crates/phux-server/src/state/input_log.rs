@@ -39,8 +39,21 @@ pub enum TerminalInput {
 ///   ADR-0008 / ADR-0013 the protocol crate owns the wire types and the
 ///   server defers to them for any variant — `Hello`, `TerminalOutput`,
 ///   lifecycle frames, and so on.
+///
+/// * [`Outbound::TerminalError`] is an ordered terminal sentinel. The writer
+///   writes that final `ERROR`, immediately closes the transport, and discards
+///   anything producers race into the mailbox after it.
 #[derive(Debug)]
 pub enum Outbound {
     /// A structured frame; the writer encodes it before writing.
     Frame(phux_protocol::wire::frame::FrameKind),
+    /// Final protocol error followed by an immediate transport close.
+    TerminalError {
+        /// Optional request correlation.
+        request_id: Option<u32>,
+        /// Protocol error category.
+        code: phux_protocol::wire::frame::ErrorCode,
+        /// Human-readable failure detail.
+        message: String,
+    },
 }

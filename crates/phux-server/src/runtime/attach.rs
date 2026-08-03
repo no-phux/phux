@@ -3,8 +3,10 @@
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use phux_core::TerminalId;
-use phux_protocol::caps::ClientCapabilities;
-use phux_protocol::ids::GroupId;
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,
+};
+use phux_protocol::ids::{BootstrapId, GroupId, StreamId};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, MoveError,
     MoveResult, SpawnError, SpawnResult,
@@ -20,8 +22,8 @@ use super::{
 };
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use crate::terminal_actor::{
-    ConsumerAttachRequest, PaneOutput, PwdRequest, ResizeRequest, SetDefaultColorsRequest,
-    SnapshotRequest,
+    ConsumerAttachRequest, ConsumerDetachRequest, PaneOutput, PwdRequest, ResizeRequest,
+    SetDefaultColorsRequest, SnapshotRequest,
 };
 
 /// Adapt a broadcast byte chunk to a client's capabilities for the wire:
@@ -39,9 +41,403 @@ pub(crate) fn downsample_for_caps(
     }
 }
 
-/// Tuple bundling everything `handle_attach` needs after it's done
-/// touching `ServerState`. Cloned out of the critical section so the
-/// remaining awaits don't hold the state lock.
+fn bootstrap_source_ceiling(
+    remaining_bytes: usize,
+    caps: phux_protocol::ClientCapabilities,
+) -> usize {
+    if crate::downsample::caps_pass_through(caps) {
+        remaining_bytes
+    } else {
+        // During adaptation the source and one equally bounded output Vec are
+        // simultaneously live. The rewriter has no other payload-sized heap
+        // scratch, so half the connection budget is the exact source ceiling.
+        remaining_bytes / 2
+    }
+}
+
+#[derive(Debug)]
+struct AdaptedBootstrap {
+    payloads: Vec<bytes::Bytes>,
+    retained_bytes: usize,
+    peak_bytes: usize,
+}
+
+fn adapt_bootstrap_snapshot(
+    snapshot: crate::grid::SnapshotBytes,
+    caps: phux_protocol::ClientCapabilities,
+    peak_budget: usize,
+) -> Result<AdaptedBootstrap, ()> {
+    let sources = [snapshot.scrollback, snapshot.bytes];
+    let mut remaining_source = sources
+        .iter()
+        .try_fold(0_usize, |total, source| {
+            total.checked_add(source.capacity())
+        })
+        .ok_or(())?;
+    let passthrough = crate::downsample::caps_pass_through(caps);
+    if remaining_source > bootstrap_source_ceiling(peak_budget, caps) {
+        return Err(());
+    }
+    let mut peak_bytes = remaining_source;
+
+    let mut retained_output = 0_usize;
+    let mut payloads = Vec::new();
+    payloads.try_reserve(2).map_err(|_| ())?;
+    for source in sources {
+        if source.is_empty() {
+            remaining_source = remaining_source.checked_sub(source.capacity()).ok_or(())?;
+            continue;
+        }
+        let source_capacity = source.capacity();
+        let (output, output_allocation) = if passthrough {
+            (bytes::Bytes::from(source), source_capacity)
+        } else {
+            let rewritten = crate::downsample::rewrite_bytes_with_caps(&source, caps);
+            let output_allocation = rewritten.capacity();
+            if output_allocation > source_capacity {
+                return Err(());
+            }
+            let peak = retained_output
+                .checked_add(remaining_source)
+                .and_then(|bytes| bytes.checked_add(output_allocation))
+                .ok_or(())?;
+            if peak > peak_budget {
+                return Err(());
+            }
+            peak_bytes = peak_bytes.max(peak);
+            drop(source);
+            (bytes::Bytes::from(rewritten), output_allocation)
+        };
+        remaining_source = remaining_source.checked_sub(source_capacity).ok_or(())?;
+        retained_output = retained_output.checked_add(output_allocation).ok_or(())?;
+        payloads.push(output);
+    }
+    Ok(AdaptedBootstrap {
+        payloads,
+        retained_bytes: retained_output,
+        peak_bytes,
+    })
+}
+
+pub(crate) const fn bootstrap_stream_profile(
+    profile: BootstrapProfile,
+) -> Option<BootstrapStreamProfile> {
+    match profile {
+        BootstrapProfile::NativeState { codec, .. } => {
+            Some(BootstrapStreamProfile::NativeState { codec })
+        }
+        BootstrapProfile::SynthesizedVtStateSync => {
+            Some(BootstrapStreamProfile::SynthesizedVtStateSync)
+        }
+        BootstrapProfile::SynthesizedVtRaw => Some(BootstrapStreamProfile::SynthesizedVtRaw),
+        _ => None,
+    }
+}
+
+pub(crate) const fn stream_id_from(raw: u64) -> StreamId {
+    match StreamId::new(raw.saturating_add(1)) {
+        Some(id) => id,
+        None => unreachable!(),
+    }
+}
+
+pub(crate) const fn initial_bootstrap_id() -> BootstrapId {
+    match BootstrapId::new(1) {
+        Some(id) => id,
+        None => unreachable!(),
+    }
+}
+
+pub(crate) const fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
+    let raw = match id.get().checked_add(1) {
+        Some(raw) => raw,
+        None => 1,
+    };
+    match BootstrapId::new(raw) {
+        Some(next) => next,
+        None => unreachable!(),
+    }
+}
+
+/// Connection-wide retention ceiling for an aggregate ATTACH preflight.
+///
+/// A session can contain many panes, but the server must hold every pane's
+/// complete bootstrap until the atomic publication cut. Keep that aggregate no
+/// larger than one maximally bounded native prefix rather than multiplying the
+/// per-pane allowance by the pane count.
+const MAX_STAGED_BOOTSTRAP_BYTES: usize = 64 * 1024 * 1024;
+const MAX_STAGED_BOOTSTRAP_FRAMES: usize = 4_096 + 2;
+
+/// Maximum pane sources admitted to one aggregate bootstrap.
+/// Every supported profile consumes at least `BEGIN`, one opaque `CHUNK`, and
+/// `READY`, so a larger source set cannot fit the connection-wide frame budget.
+/// The preflight runs before the session snapshot and pane-handle vectors are
+/// allocated.
+pub(crate) const MAX_AGGREGATE_BOOTSTRAP_PANES: usize = MAX_STAGED_BOOTSTRAP_FRAMES / 3;
+
+#[derive(Debug)]
+struct BootstrapStagingBudget {
+    max_bytes: usize,
+    max_frames: usize,
+    staged_bytes: usize,
+    staged_frames: usize,
+}
+
+impl BootstrapStagingBudget {
+    const fn new() -> Self {
+        Self::with_limits(MAX_STAGED_BOOTSTRAP_BYTES, MAX_STAGED_BOOTSTRAP_FRAMES)
+    }
+
+    const fn with_limits(max_bytes: usize, max_frames: usize) -> Self {
+        Self {
+            max_bytes,
+            max_frames,
+            staged_bytes: 0,
+            staged_frames: 0,
+        }
+    }
+
+    const fn remaining_bytes(&self) -> usize {
+        self.max_bytes.saturating_sub(self.staged_bytes)
+    }
+
+    const fn remaining_frames(&self) -> usize {
+        self.max_frames.saturating_sub(self.staged_frames)
+    }
+
+    #[cfg(test)]
+    fn append(
+        &mut self,
+        staged: &mut Vec<FrameKind>,
+        incoming: &mut Vec<FrameKind>,
+    ) -> Result<(), ()> {
+        let incoming_bytes = incoming
+            .iter()
+            .try_fold(0_usize, |total, frame| {
+                total.checked_add(match frame {
+                    FrameKind::BootstrapChunk { payload, .. } => payload.len(),
+                    FrameKind::BootstrapReady { history_cursor, .. } => {
+                        history_cursor.as_ref().map_or(0, bytes::Bytes::len)
+                    }
+                    _ => 0,
+                })
+            })
+            .ok_or(())?;
+        self.append_accounted(staged, incoming, incoming_bytes)
+    }
+
+    fn append_accounted(
+        &mut self,
+        staged: &mut Vec<FrameKind>,
+        incoming: &mut Vec<FrameKind>,
+        incoming_bytes: usize,
+    ) -> Result<(), ()> {
+        let incoming_frames = incoming.len();
+        let next_frames = self.staged_frames.checked_add(incoming_frames).ok_or(())?;
+        let next_bytes = self.staged_bytes.checked_add(incoming_bytes).ok_or(())?;
+        if next_frames > self.max_frames || next_bytes > self.max_bytes {
+            return Err(());
+        }
+        staged.try_reserve(incoming_frames).map_err(|_| ())?;
+        staged.append(incoming);
+        self.staged_frames = next_frames;
+        self.staged_bytes = next_bytes;
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+pub(crate) async fn publish_native_bootstrap(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    reply: crate::terminal_actor::NativeBootstrapReply,
+) -> Result<u64, ()> {
+    for frame in reply.frames {
+        out_tx.send(Outbound::Frame(frame)).await.map_err(|_| ())?;
+    }
+    Ok(reply.base_seq)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn synthesized_bootstrap_frames(
+    terminal_id: phux_protocol::ids::TerminalId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    profile: BootstrapStreamProfile,
+    limits: BootstrapLimits,
+    cols: u16,
+    rows: u16,
+    base_seq: u64,
+    payloads: impl IntoIterator<Item = bytes::Bytes>,
+) -> Result<Vec<FrameKind>, ()> {
+    let mut frames = Vec::new();
+    frames.try_reserve(2).map_err(|_| ())?;
+    frames.push(FrameKind::BootstrapBegin {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        profile,
+        cols,
+        rows,
+        base_seq,
+    });
+    let max_chunk = usize::try_from(limits.max_chunk_bytes()).map_err(|_| ())?;
+    if max_chunk == 0 {
+        return Err(());
+    }
+    let mut chunk_seq = 0_u32;
+    for payload in payloads {
+        let mut offset = 0_usize;
+        while offset < payload.len() {
+            let end = offset.saturating_add(max_chunk).min(payload.len());
+            frames.try_reserve(1).map_err(|_| ())?;
+            frames.push(FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
+                payload: payload.slice(offset..end),
+            });
+            chunk_seq = chunk_seq.checked_add(1).ok_or(())?;
+            offset = end;
+        }
+    }
+    frames.try_reserve(1).map_err(|_| ())?;
+    frames.push(FrameKind::BootstrapReady {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        history_cursor: None,
+    });
+    Ok(frames)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn send_synthesized_bootstrap(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    terminal_id: phux_protocol::ids::TerminalId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    profile: BootstrapStreamProfile,
+    limits: BootstrapLimits,
+    cols: u16,
+    rows: u16,
+    base_seq: u64,
+    payloads: impl IntoIterator<Item = bytes::Bytes>,
+) -> Result<(), ()> {
+    for frame in synthesized_bootstrap_frames(
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        profile,
+        limits,
+        cols,
+        rows,
+        base_seq,
+        payloads,
+    )? {
+        out_tx.send(Outbound::Frame(frame)).await.map_err(|_| ())?;
+    }
+    Ok(())
+}
+
+/// Queue the mandatory in-band resync after a broadcast gap.
+///
+/// The output pump awaits mailbox capacity and therefore cannot consume or
+/// forward a later delta until the actor has accepted the resync request.
+/// A closed or persistently full actor mailbox fails boundedly.
+pub(crate) async fn enqueue_output_resync(
+    resize: &tokio::sync::mpsc::Sender<ResizeRequest>,
+) -> bool {
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            resize.send(ResizeRequest {
+                cols: 0,
+                rows: 0,
+                cell_px: None,
+                resync_clients: true,
+                resync_only: true,
+            }),
+        )
+        .await,
+        Ok(Ok(()))
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "single rollback boundary deliberately receives every staged and committed resource so cancellation, producer detach, pump abortion, and the fatal sentinel remain strictly ordered"
+)]
+async fn fail_aggregate_attach_prepublication(
+    state: &SharedState,
+    client_id: ClientId,
+    attach_id: u32,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    connection_token: &CancellationToken,
+    staged_handles: &[crate::terminal_actor::TerminalHandle],
+    staged_pumps: &mut JoinSet<()>,
+    committed_pumps: &mut JoinSet<()>,
+    reason: &str,
+) {
+    staged_pumps.abort_all();
+    while staged_pumps.join_next().await.is_some() {}
+    super::client::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
+
+    let wire_client_id =
+        phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
+    let producer_deadline = std::time::Duration::from_secs(1);
+    for handle in staged_handles {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        {
+            let _ = tokio::time::timeout(
+                producer_deadline,
+                handle
+                    .native_release
+                    .send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 }),
+            )
+            .await;
+        }
+        let (reply, done) = oneshot::channel();
+        if matches!(
+            tokio::time::timeout(
+                producer_deadline,
+                handle.consumer_detach.send(ConsumerDetachRequest {
+                    client_id: wire_client_id,
+                    reply,
+                }),
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
+            let _ = tokio::time::timeout(producer_deadline, done).await;
+        }
+    }
+    crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+
+    // Queue one ordered terminal sentinel after rollback. Even if an old
+    // state-sync producer survives its bounded detach acknowledgement and
+    // races another frame, the writer closes immediately after this ERROR and
+    // discards everything behind it.
+    if !matches!(
+        tokio::time::timeout(
+            producer_deadline,
+            out_tx.send(Outbound::TerminalError {
+                request_id: None,
+                code: ErrorCode::CodecUnavailable,
+                message: format!("ATTACH {attach_id} failed before publication: {reason}"),
+            }),
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        warn!(client = ?client_id, attach_id, "failed to enqueue terminal ATTACH error");
+    }
+    connection_token.cancel();
+}
+
+/// Tuple bundling everything `handle_attach` needs after it is done
+/// touching [`ServerState`]. Cloned out of the critical section so the
+/// remaining awaits do not hold the state lock.
 pub(crate) type AttachPrepared = (
     phux_protocol::wire::info::SessionSnapshot,
     phux_protocol::ids::ClientId,
@@ -695,9 +1091,10 @@ pub(crate) async fn handle_move_terminal(
 /// satellite fails fast with [`SpawnError::SatelliteUnreachable`]
 /// (L1 §3.1 / §9.1).
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::cognitive_complexity,
-    reason = "linear orchestration: route satellite spawns → validate group → build CommandBuilder from wire frame → resolve hosting session → spawn PTY-backed pane into its window → auto-subscribe spawning client + spawn output pump → reply on the wire. Each step is small; splitting them scatters the SPAWN_TERMINAL contract without simplifying the logic."
+    reason = "linear orchestration: route satellite spawns → validate group → build CommandBuilder from wire frame → resolve hosting session → spawn PTY-backed pane into its window → auto-subscribe spawning client + spawn output pump → reply on the wire. The explicit context arguments preserve cancellation and output-pump ownership; splitting the flow would scatter the SPAWN_TERMINAL contract without simplifying it."
 )]
 pub(crate) async fn handle_spawn_terminal(
     state: &SharedState,
@@ -705,8 +1102,22 @@ pub(crate) async fn handle_spawn_terminal(
     request_id: u32,
     request: SpawnRequest,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    bootstrap_profile: BootstrapProfile,
+    bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
+    connection_token: &CancellationToken,
+    output_pumps: &mut JoinSet<()>,
 ) {
+    let Some(profile) = bootstrap_stream_profile(bootstrap_profile) else {
+        let _ = out_tx
+            .send(Outbound::Frame(FrameKind::Error {
+                request_id: Some(request_id),
+                code: ErrorCode::CodecUnavailable,
+                message: "SPAWN_TERMINAL selected an unsupported bootstrap profile".to_owned(),
+            }))
+            .await;
+        return;
+    };
     let SpawnRequest {
         group,
         command,
@@ -953,6 +1364,8 @@ pub(crate) async fn handle_spawn_terminal(
     });
 
     if let Some((wire_terminal_id, handle, client_caps)) = wire_and_handle {
+        // `profile` was validated before spawning the pane, so an unknown
+        // future profile can never publish a partial bootstrap generation.
         // Spawn the output pump BEFORE replying with `TerminalSpawned`
         // so any bytes the freshly-spawned PTY emits in the gap between
         // exec and the client's first read are queued on the broadcast
@@ -961,55 +1374,380 @@ pub(crate) async fn handle_spawn_terminal(
         let mut output_rx = handle.output.subscribe();
         let pump_out_tx = out_tx.clone();
         let pump_wire_terminal_id = wire_terminal_id.clone();
-        tokio::task::spawn_local(async move {
-            let mut seq: u64 = 0;
+        let stream_id = stream_id_from(u64::from(request_id));
+        let pump_resize = handle.resize.clone();
+        let pump_state = state.clone();
+        let pump_connection_token = connection_token.clone();
+        let pump_core_terminal_id = core_terminal_id;
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        let pump_native_bootstrap = handle.native_bootstrap.clone();
+        let (bootstrap_gate_tx, bootstrap_gate_rx) = oneshot::channel::<u64>();
+        output_pumps.spawn_local(async move {
+            let Ok(mut published_cut) = bootstrap_gate_rx.await else {
+                return;
+            };
+            let mut last_forwarded_seq = published_cut;
+            let mut bootstrap_id = initial_bootstrap_id();
+            let mut generation_active = true;
             loop {
                 match output_rx.recv().await {
-                    Ok(msg) => {
-                        // phux-3ns5: same Live→OUTPUT / Resync→SNAPSHOT
-                        // mapping as the main attach pump.
-                        let frame = match msg {
-                            PaneOutput::Live(bytes) => {
-                                seq = seq.wrapping_add(1);
-                                FrameKind::TerminalOutput {
-                                    terminal_id: pump_wire_terminal_id.clone(),
-                                    seq,
-                                    bytes: downsample_for_caps(&bytes, client_caps),
-                                }
-                            }
-                            PaneOutput::Resync { cols, rows, bytes } => {
-                                FrameKind::TerminalSnapshot {
-                                    terminal_id: pump_wire_terminal_id.clone(),
-                                    cols,
-                                    rows,
-                                    vt_replay_bytes: downsample_for_caps(&bytes, client_caps)
-                                        .into(),
-                                    scrollback_bytes: None,
-                                }
-                            }
+                    Ok(PaneOutput::Live { seq, bytes }) => {
+                        if !generation_active || seq <= published_cut {
+                            continue;
+                        }
+                        let frame = FrameKind::TerminalOutput {
+                            terminal_id: pump_wire_terminal_id.clone(),
+                            stream_id,
+                            bootstrap_id,
+                            seq,
+                            bytes: downsample_for_caps(&bytes, client_caps),
                         };
                         if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
                             break;
                         }
+                        last_forwarded_seq = seq;
+                    }
+                    Ok(PaneOutput::Control { owner, frame }) => {
+                        if owner != client_id.0 {
+                            continue;
+                        }
+                        let (targets_pump, ends_generation) = match &frame {
+                            FrameKind::BootstrapTombstone {
+                                terminal_id,
+                                stream_id: control_stream_id,
+                                bootstrap_id: control_bootstrap_id,
+                                ..
+                            } => (
+                                terminal_id == &pump_wire_terminal_id
+                                    && *control_stream_id == stream_id
+                                    && *control_bootstrap_id == bootstrap_id,
+                                true,
+                            ),
+                            FrameKind::HistoryTombstone {
+                                terminal_id,
+                                stream_id: control_stream_id,
+                                bootstrap_id: control_bootstrap_id,
+                                ..
+                            } => (
+                                terminal_id == &pump_wire_terminal_id
+                                    && *control_stream_id == stream_id
+                                    && *control_bootstrap_id == bootstrap_id,
+                                false,
+                            ),
+                            _ => (false, false),
+                        };
+                        if !targets_pump {
+                            continue;
+                        }
+                        if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
+                            break;
+                        }
+                        if ends_generation {
+                            generation_active = false;
+                        }
+                    }
+                    Ok(PaneOutput::Resync {
+                        cols,
+                        rows,
+                        bytes,
+                        reason: tombstone_reason,
+                        base_seq,
+                    }) => {
+                        // Resync is a control event, not replayable live data:
+                        // even an unchanged cut (for example resize directly
+                        // after READY) invalidates and replaces the generation.
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        let prior_bootstrap_id = bootstrap_id;
+                        bootstrap_id = next_bootstrap_id(bootstrap_id);
+                        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                        if matches!(
+                            profile,
+                            BootstrapStreamProfile::NativeState {
+                                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+                            }
+                        ) {
+                            if generation_active
+                                && pump_out_tx
+                                .send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                                    terminal_id: pump_wire_terminal_id.clone(),
+                                    stream_id,
+                                    bootstrap_id: prior_bootstrap_id,
+                                    reason: match tombstone_reason {
+                                        crate::terminal_actor::ResyncReason::Resize => {
+                                            phux_protocol::wire::frame::TombstoneReason::Resize
+                                        }
+                                        crate::terminal_actor::ResyncReason::OutboundGap => {
+                                            phux_protocol::wire::frame::TombstoneReason::OutboundGap
+                                        }
+                                    },
+                                    last_valid_seq: last_forwarded_seq,
+                                }))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            let (reply_tx, reply_rx) = oneshot::channel();
+                            if pump_native_bootstrap
+                                .send(crate::terminal_actor::NativeBootstrapRequest {
+                                    owner: client_id.0,
+                                    terminal_id: pump_wire_terminal_id.clone(),
+                                    stream_id,
+                                    bootstrap_id,
+                                    limits: bootstrap_limits,
+                                    max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+                                    max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                                    reply: reply_tx,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                pump_state.with_mut(|s| {
+                                    s.reap_terminal(pump_core_terminal_id);
+                                });
+                                pump_connection_token.cancel();
+                                break;
+                            }
+                            let Ok(Ok(reply)) = reply_rx.await else {
+                                let _ = pump_out_tx
+                                    .send(Outbound::Frame(FrameKind::Error {
+                                        request_id: None,
+                                        code: ErrorCode::CodecUnavailable,
+                                        message: "native checkpoint resync failed".to_owned(),
+                                    }))
+                                    .await;
+                                pump_state.with_mut(|s| {
+                                    s.reap_terminal(pump_core_terminal_id);
+                                });
+                                pump_connection_token.cancel();
+                                break;
+                            };
+                            let Ok(cut) = publish_native_bootstrap(&pump_out_tx, reply).await
+                            else {
+                                pump_state.with_mut(|s| {
+                                    s.reap_terminal(pump_core_terminal_id);
+                                });
+                                pump_connection_token.cancel();
+                                break;
+                            };
+                            published_cut = cut;
+                            last_forwarded_seq = cut;
+                            generation_active = true;
+                            continue;
+                        }
+                        let payload = downsample_for_caps(&bytes, client_caps);
+                        if send_synthesized_bootstrap(
+                            &pump_out_tx,
+                            pump_wire_terminal_id.clone(),
+                            stream_id,
+                            bootstrap_id,
+                            profile,
+                            bootstrap_limits,
+                            cols,
+                            rows,
+                            base_seq,
+                            [payload],
+                        )
+                        .await
+                        .is_err()
+                        {
+                            break;
+                        }
+                        published_cut = base_seq;
+                        last_forwarded_seq = base_seq;
+                        generation_active = true;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!(
                             terminal_id = ?pump_wire_terminal_id,
                             dropped = n,
-                            "SPAWN_TERMINAL output pump lagged; consider larger broadcast capacity",
+                            "SPAWN_TERMINAL output pump lagged; requesting in-band resync",
                         );
+                        if !enqueue_output_resync(&pump_resize).await {
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(1),
+                                pump_out_tx.send(Outbound::Frame(FrameKind::Error {
+                                    request_id: None,
+                                    code: ErrorCode::InternalError,
+                                    message: "terminal output gap could not be resynchronized"
+                                        .to_owned(),
+                                })),
+                            )
+                            .await;
+                            pump_state.with_mut(|s| {
+                                s.reap_terminal(pump_core_terminal_id);
+                            });
+                            pump_connection_token.cancel();
+                            break;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
 
-        let _ = out_tx
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        if matches!(
+            profile,
+            BootstrapStreamProfile::NativeState {
+                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+            }
+        ) {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            let sent = handle
+                .native_bootstrap
+                .send(crate::terminal_actor::NativeBootstrapRequest {
+                    owner: client_id.0,
+                    terminal_id: wire_terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id: initial_bootstrap_id(),
+                    limits: bootstrap_limits,
+                    max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+                    max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                    reply: reply_tx,
+                })
+                .await
+                .is_ok();
+            let reply = if sent {
+                match reply_rx.await {
+                    Ok(Ok(reply)) => Some(reply),
+                    Ok(Err(error)) => {
+                        warn!(?core_terminal_id, %error, "native spawn preflight failed");
+                        None
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+            let Some(reply) = reply else {
+                state.with_mut(|s| {
+                    s.reap_terminal(core_terminal_id);
+                });
+                let _ = out_tx
+                    .send(Outbound::Frame(FrameKind::TerminalSpawned {
+                        request_id,
+                        result: SpawnResult::Err(SpawnError::SpawnFailed(
+                            "native checkpoint preflight failed".to_owned(),
+                        )),
+                    }))
+                    .await;
+                return;
+            };
+            let cut = reply.base_seq;
+            if out_tx
+                .send(Outbound::Frame(FrameKind::TerminalSpawned {
+                    request_id,
+                    result: SpawnResult::Ok(wire_terminal_id.clone()),
+                }))
+                .await
+                .is_err()
+            {
+                state.with_mut(|s| {
+                    s.reap_terminal(core_terminal_id);
+                });
+                return;
+            }
+            for frame in reply.frames {
+                if out_tx.send(Outbound::Frame(frame)).await.is_err() {
+                    state.with_mut(|s| {
+                        s.reap_terminal(core_terminal_id);
+                    });
+                    return;
+                }
+            }
+            let _ = bootstrap_gate_tx.send(cut);
+            broadcast_event(state, Some(&wire_terminal_id), &AgentEvent::PaneSpawned);
+            return;
+        }
+
+        let (snapshot_tx, snapshot_rx) = oneshot::channel();
+        if handle
+            .snapshot
+            .send(SnapshotRequest {
+                scrollback: None,
+                max_bytes: usize::MAX,
+                max_frames: usize::MAX,
+                chunk_bytes: 1,
+                reply: snapshot_tx,
+            })
+            .await
+            .is_err()
+        {
+            state.with_mut(|s| {
+                s.reap_terminal(core_terminal_id);
+            });
+            let _ = out_tx
+                .send(Outbound::Frame(FrameKind::TerminalSpawned {
+                    request_id,
+                    result: SpawnResult::Err(SpawnError::SpawnFailed(
+                        "snapshot preflight failed".to_owned(),
+                    )),
+                }))
+                .await;
+            return;
+        }
+        let Ok(Ok((snapshot, cut))) = snapshot_rx.await else {
+            state.with_mut(|s| {
+                s.reap_terminal(core_terminal_id);
+            });
+            let _ = out_tx
+                .send(Outbound::Frame(FrameKind::TerminalSpawned {
+                    request_id,
+                    result: SpawnResult::Err(SpawnError::SpawnFailed(
+                        "snapshot preflight failed".to_owned(),
+                    )),
+                }))
+                .await;
+            return;
+        };
+        let replay = downsample_for_caps(&bytes::Bytes::from(snapshot.bytes), client_caps);
+        let Ok(frames) = synthesized_bootstrap_frames(
+            wire_terminal_id.clone(),
+            stream_id,
+            initial_bootstrap_id(),
+            profile,
+            bootstrap_limits,
+            snapshot.cols,
+            snapshot.rows,
+            cut,
+            [replay],
+        ) else {
+            state.with_mut(|s| {
+                s.reap_terminal(core_terminal_id);
+            });
+            let _ = out_tx
+                .send(Outbound::Frame(FrameKind::TerminalSpawned {
+                    request_id,
+                    result: SpawnResult::Err(SpawnError::SpawnFailed(
+                        "bootstrap limits rejected snapshot".to_owned(),
+                    )),
+                }))
+                .await;
+            return;
+        };
+        if out_tx
             .send(Outbound::Frame(FrameKind::TerminalSpawned {
                 request_id,
                 result: SpawnResult::Ok(wire_terminal_id.clone()),
             }))
-            .await;
+            .await
+            .is_err()
+        {
+            state.with_mut(|s| {
+                s.reap_terminal(core_terminal_id);
+            });
+            return;
+        }
+        for frame in frames {
+            if out_tx.send(Outbound::Frame(frame)).await.is_err() {
+                state.with_mut(|s| {
+                    s.reap_terminal(core_terminal_id);
+                });
+                return;
+            }
+        }
+        let _ = bootstrap_gate_tx.send(cut);
         // phux-y2t: fan a `pane_spawned` agent event to event-stream
         // subscribers (SPEC §7.5). The new pane's wire id rides the
         // `EVENT` envelope; server-wide subscribers and any per-pane
@@ -1026,6 +1764,9 @@ pub(crate) async fn handle_spawn_terminal(
             ?core_terminal_id,
             "SPAWN_TERMINAL: spawn succeeded but TerminalHandle vanished",
         );
+        state.with_mut(|s| {
+            s.reap_terminal(core_terminal_id);
+        });
         let _ = out_tx
             .send(Outbound::Frame(FrameKind::TerminalSpawned {
                 request_id,
@@ -1062,15 +1803,15 @@ pub(crate) async fn handle_spawn_terminal(
 /// partially-attach: either every frame queues or none does.
 #[allow(
     clippy::too_many_lines,
-    reason = "linear attach orchestration: resolve target -> prepare -> spawn per-pane output pumps -> fan out snapshot requests via FuturesUnordered -> drain; splitting it would scatter context"
+    reason = "linear attach orchestration: resolve target -> prepare -> stage per-pane output pumps -> capture each bounded source against the remaining aggregate budget -> publish atomically; splitting it would scatter the rollback contract"
 )]
 #[allow(
     clippy::too_many_arguments,
     reason = "the ATTACH branch in handle_client pre-decomposes the FrameKind::Attach payload (target/viewport/request_scrollback/scrollback_limit_lines) and threads the negotiated ColorSupport alongside the SharedState + client_id + out_tx; rebundling into a struct would just move the arity from the call site to a builder"
 )]
 // Lifecycle span (info): one ATTACH per client. Its CLOSE duration is the
-// attach-handshake timing (snapshot fan-out is the slow part); the fields
-// correlate it to a client + target + requested dims. `skip_all` keeps the
+// attach-handshake timing (bounded per-pane capture is the slow part); the
+// fields correlate it to a client + target + requested dims. `skip_all` keeps the
 // large arg list (state handle, channels, token) out of the span.
 #[tracing::instrument(
     level = "info",
@@ -1081,15 +1822,28 @@ pub(crate) async fn handle_spawn_terminal(
 pub(crate) async fn handle_attach(
     state: &SharedState,
     client_id: ClientId,
+    attach_id: u32,
     target: AttachTarget,
     viewport: phux_protocol::wire::frame::ViewportInfo,
     request_scrollback: bool,
     scrollback_limit_lines: u32,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     client_caps: ClientCapabilities,
+    negotiated_profile: BootstrapProfile,
+    bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
+    connection_token: &CancellationToken,
 ) {
+    let Some(stream_profile) = bootstrap_stream_profile(negotiated_profile) else {
+        send_error(
+            out_tx,
+            ErrorCode::CodecUnavailable,
+            "ATTACH selected an unsupported bootstrap profile",
+        )
+        .await;
+        return;
+    };
     // phux-9q5f: honor the ATTACH scrollback request. `request_scrollback`
     // gates the feature; `scrollback_limit_lines` caps it (0 ⇒ all retained
     // history, the SCROLLBACK_ALL sentinel). The per-pane SnapshotRequest
@@ -1113,28 +1867,80 @@ pub(crate) async fn handle_attach(
     // current `cwd` per pane (the sidebar's VCS branch line depends on it).
     refresh_registry_cwds(state).await;
 
-    let (snapshot, initial_client_id, panes_to_snapshot) =
-        match prepare_attach(state, client_id, &session_name, out_tx, client_caps) {
-            Ok(t) => t,
-            Err(crate::state::AttachError::UnknownSession(name)) => {
-                send_error(
-                    out_tx,
-                    ErrorCode::SessionNotFound,
-                    &format!("session {name:?} not found"),
-                )
-                .await;
-                return;
+    let same_session_reattach = state.with(|server| {
+        let target = server.find_session_by_name(&session_name);
+        matches!(
+            (server.attached.get(&client_id), target),
+            (Some(attached), Some(target)) if attached.session == target
+        )
+    });
+
+    let (snapshot, initial_client_id, panes_to_snapshot) = match prepare_attach(
+        state,
+        client_id,
+        &session_name,
+        out_tx,
+        client_caps,
+        negotiated_profile,
+        bootstrap_limits,
+    ) {
+        Ok(prepared) => prepared,
+        Err(crate::state::AttachError::UnknownSession(name)) => {
+            send_error(
+                out_tx,
+                ErrorCode::SessionNotFound,
+                &format!("session {name:?} not found"),
+            )
+            .await;
+            return;
+        }
+        Err(crate::state::AttachError::AlreadyAttached(_)) => {
+            send_error(
+                out_tx,
+                ErrorCode::AlreadyAttached,
+                "client is already attached",
+            )
+            .await;
+            return;
+        }
+        Err(crate::state::AttachError::ResourceLimit) => {
+            send_error(
+                out_tx,
+                ErrorCode::CodecUnavailable,
+                "session exceeds bounded aggregate attach limits",
+            )
+            .await;
+            return;
+        }
+    };
+    let wire_client_id =
+        phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
+    if same_session_reattach
+        && matches!(
+            client_caps.output_mode,
+            phux_protocol::caps::OutputMode::StateSync
+        )
+    {
+        // Stop the prior generation's actor-side tick emitters before the new
+        // ATTACHED frame is visible. Raw pumps were aborted above; without
+        // this matching teardown, a state-sync delta from the old stream
+        // could interleave between ATTACHED and the replacement bootstrap.
+        for pane in &panes_to_snapshot {
+            let (reply, done) = oneshot::channel();
+            if pane
+                .handle
+                .consumer_detach
+                .send(ConsumerDetachRequest {
+                    client_id: wire_client_id,
+                    reply,
+                })
+                .await
+                .is_ok()
+            {
+                let _ = done.await;
             }
-            Err(crate::state::AttachError::AlreadyAttached(_)) => {
-                send_error(
-                    out_tx,
-                    ErrorCode::AlreadyAttached,
-                    "client is already attached",
-                )
-                .await;
-                return;
-            }
-        };
+        }
+    }
 
     // Terminal defaults are shared pane state. The most recently attached
     // interactive client that advertises a palette wins; palette-less agent
@@ -1170,49 +1976,63 @@ pub(crate) async fn handle_attach(
     // post-attach `TERMINAL_RESIZE` reflow path used by multi-pane).
     apply_attach_viewport(state, client_id, &panes_to_snapshot, viewport);
 
-    if out_tx
-        .send(Outbound::Frame(FrameKind::Attached {
-            snapshot,
-            initial_client_id,
-        }))
-        .await
-        .is_err()
-    {
-        return;
-    }
-
-    // docs/consumers/tui.md §9 (phux-r82.1): the attach mutation landed and
-    // ATTACHED queued — the `client-attached` hook point.
-    crate::hooks::fire_hook(
-        state,
-        crate::hooks::HookEvent::client_attached(client_id, &session_name),
-    );
-
-    // Fan out all `SnapshotRequest`s concurrently. The mpsc sends below
-    // are fast (they just push into each actor's mailbox); the slow part
-    // is awaiting the oneshot reply once the actor synthesizes. Doing
-    // this sequentially made attach latency scale with the SUM of pane
-    // reply times. With `FuturesUnordered` it scales with the MAX —
-    // one slow pane no longer stalls the rest.
-    // Bridge `state::ClientId` (u64 newtype) -> `phux_protocol::ClientId`
-    // (u32), matching `handle_frame_ack`'s conversion so the
-    // per-consumer state map keys line up across attach / ack / detach.
-    let wire_client_id =
-        phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
-
+    // Capture sources one pane at a time. Each completed result is charged to
+    // the aggregate staging budget before the next actor receives its remaining
+    // byte/frame ceiling, so no set of concurrent actor allocations can exceed
+    // the connection-wide cap.
+    let stream_id = stream_id_from(u64::from(attach_id));
+    let bootstrap_id = initial_bootstrap_id();
+    // `stream_profile` was validated before resolving or mutating the attach
+    // target, so no ATTACHED/BOOTSTRAP_BEGIN can precede this preflight.
     // phux-7w1j: per-pane "snapshot has been sent" gates. The output pump
     // subscribes to the broadcast in this loop (BEFORE the SnapshotRequest, so
     // no live bytes are lost), but must not FORWARD a `TerminalOutput` frame
     // until the pane's `TerminalSnapshot` has been written to `out_tx` — else a
     // PTY-active pane races output ahead of its snapshot and the client sees
-    // frame 2 = OUTPUT instead of SNAPSHOT. The pump parks on `gate_rx`; the
-    // drain loop fires `gate_tx` right after sending the snapshot.
-    let mut snapshot_gates: Vec<(TerminalId, oneshot::Sender<()>)> = Vec::new();
+    // frame 2 = OUTPUT instead of SNAPSHOT. The pump parks on `gate_rx`;
+    // the barrier releases every pump only after every pane has queued READY
+    // (or a close outcome) and the aggregate ATTACH_READY has been queued.
+    let mut snapshot_gates: Vec<(TerminalId, oneshot::Sender<u64>, Option<u64>)> = Vec::new();
+    // A failed replacement is connection-fatal: preserving an older producer
+    // would allow output to overtake the terminal ERROR.
+    let mut staged_output_pumps = JoinSet::new();
+    let mut staged_handles = Vec::new();
+    macro_rules! fail_prepublication {
+        ($reason:expr) => {{
+            fail_aggregate_attach_prepublication(
+                state,
+                client_id,
+                attach_id,
+                out_tx,
+                connection_token,
+                &staged_handles,
+                &mut staged_output_pumps,
+                output_pumps,
+                $reason,
+            )
+            .await;
+            return;
+        }};
+    }
+    if staged_handles.try_reserve(panes_to_snapshot.len()).is_err() {
+        fail_prepublication!("host allocation failed");
+    }
 
-    let mut pending: FuturesUnordered<_> = FuturesUnordered::new();
+    // Captures are deliberately awaited one pane at a time. The retained
+    // result from earlier panes is charged before the next actor receives its
+    // remaining source-allocation ceiling.
+    let mut bootstrap_frames = Vec::new();
+    let mut staging_budget = BootstrapStagingBudget::new();
+    let (live_gate_tx, live_gate_rx) = tokio::sync::watch::channel(false);
+    let Ok(aggregate_chunk_bytes) = usize::try_from(bootstrap_limits.max_chunk_bytes()) else {
+        fail_prepublication!("bootstrap chunk bound cannot fit host");
+    };
     for pane in panes_to_snapshot {
+        let synthesized_source_max =
+            bootstrap_source_ceiling(staging_budget.remaining_bytes(), client_caps);
         let terminal_id = pane.terminal_id;
         let handle = pane.handle;
+        staged_handles.push(handle.clone());
         let wire_terminal_id = pane.wire_terminal_id;
         // ADR-0018 / phux-0q8: register the per-consumer state-sync entry
         // so the actor allocates and primes a per-consumer `RenderState`
@@ -1235,6 +2055,8 @@ pub(crate) async fn handle_attach(
         // pump starts streaming deltas; a dropped reply or actor-gone is
         // logged and we fall back to the broadcast path.
         let mut tick_managed = false;
+        let mut state_sync_bootstrap = None;
+        let mut consumer_registered = false;
         if let Some(wire_id) = wire_terminal_id.local_id() {
             let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
             if handle
@@ -1243,6 +2065,8 @@ pub(crate) async fn handle_attach(
                     client_id: wire_client_id,
                     outbound: out_tx.clone(),
                     wire_terminal_id: wire_id,
+                    stream_id,
+                    bootstrap_id,
                     // phux-fseo: honor the consumer's negotiated output mode.
                     // StateSync ⇒ the actor's tick is this consumer's emitter
                     // and the broadcast pump below is suppressed for it; Raw
@@ -1251,6 +2075,10 @@ pub(crate) async fn handle_attach(
                         client_caps.output_mode,
                         phux_protocol::caps::OutputMode::StateSync
                     ),
+                    state_sync_scrollback: scrollback_req,
+                    bootstrap_max_bytes: synthesized_source_max,
+                    bootstrap_max_frames: staging_budget.remaining_frames(),
+                    bootstrap_chunk_bytes: aggregate_chunk_bytes,
                     // phux-v45.8: a directly-attached consumer rides a reliable,
                     // ordered transport (UDS / SSH stdio / WebSocket / QUIC
                     // stream), so the emit-once model is correct and cheapest —
@@ -1260,6 +2088,7 @@ pub(crate) async fn handle_attach(
                     // (the satellite cannot see the downstream drop from the
                     // link's reliable transport); the advance-on-ack mechanism
                     // it flips on is fully implemented here (ADR-0042).
+                    live_gate: live_gate_rx.clone(),
                     loss_tolerant: false,
                     reply: attach_reply_tx,
                 })
@@ -1268,7 +2097,9 @@ pub(crate) async fn handle_attach(
             {
                 match attach_reply_rx.await {
                     Ok(Ok(outcome)) => {
+                        consumer_registered = true;
                         tick_managed = outcome.tick_managed;
+                        state_sync_bootstrap = outcome.state_sync_bootstrap;
                         trace!(
                             ?terminal_id,
                             tick_managed, "per-consumer state-sync entry registered",
@@ -1295,6 +2126,17 @@ pub(crate) async fn handle_attach(
                 );
             }
         }
+        if matches!(
+            client_caps.output_mode,
+            phux_protocol::caps::OutputMode::StateSync
+        ) && !consumer_registered
+        {
+            warn!(
+                ?terminal_id,
+                "state-sync registration failed before aggregate attach publication"
+            );
+            fail_prepublication!("state-sync consumer registration failed");
+        }
 
         // phux-3uv: suppress the broadcast pump for a tick-managed
         // consumer — the actor's `tick_emit` is the single emitter for
@@ -1314,80 +2156,318 @@ pub(crate) async fn handle_attach(
             // in-band resync (a full grid snapshot on the same ordered channel)
             // so a consumer that dropped bytes reconverges.
             let pump_resize = handle.resize.clone();
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            let pump_native_bootstrap = handle.native_bootstrap.clone();
+            let pump_state = state.clone();
+            let pump_connection_token = connection_token.clone();
             // phux-7w1j: hold this pump's first forward until the pane's
             // snapshot has been sent (the drain loop fires `gate_tx`).
-            let (gate_tx, gate_rx) = oneshot::channel::<()>();
-            snapshot_gates.push((terminal_id, gate_tx));
-            output_pumps.spawn_local(async move {
-                // `output_rx` is already subscribed, so bytes produced while we
-                // wait are buffered by the broadcast (or surface as `Lagged`) —
-                // never lost, and never forwarded ahead of the snapshot. A
-                // dropped gate (attach aborted / snapshot failed) falls through
-                // to forwarding live output rather than going silent.
-                let _ = gate_rx.await;
-                let mut seq: u64 = 0;
+            let (gate_tx, gate_rx) = oneshot::channel::<u64>();
+            snapshot_gates.push((terminal_id, gate_tx, None));
+            staged_output_pumps.spawn_local(async move {
+                let Ok(mut published_cut) = gate_rx.await else {
+                    return;
+                };
+                let mut last_forwarded_seq = published_cut;
+                let mut bootstrap_id = bootstrap_id;
+                let mut generation_active = true;
                 loop {
                     match output_rx.recv().await {
-                        Ok(msg) => {
-                            // phux-3ns5: `Live` chunks forward as
-                            // TERMINAL_OUTPUT (seq'd delta); `Resync`
-                            // forwards as TERMINAL_SNAPSHOT carrying the
-                            // post-reflow dims so the client mirror resizes
-                            // and repaints from authoritative state.
-                            let frame = match msg {
-                                PaneOutput::Live(bytes) => {
-                                    seq = seq.wrapping_add(1);
-                                    let out_bytes = downsample_for_caps(&bytes, pump_client_caps);
-                                    FrameKind::TerminalOutput {
-                                        terminal_id: pump_wire_terminal_id.clone(),
-                                        seq,
-                                        bytes: out_bytes,
-                                    }
-                                }
-                                PaneOutput::Resync { cols, rows, bytes } => {
-                                    let out_bytes = downsample_for_caps(&bytes, pump_client_caps);
-                                    FrameKind::TerminalSnapshot {
-                                        terminal_id: pump_wire_terminal_id.clone(),
-                                        cols,
-                                        rows,
-                                        vt_replay_bytes: out_bytes.into(),
-                                        scrollback_bytes: None,
-                                    }
-                                }
+                        Ok(PaneOutput::Live { seq, bytes }) => {
+                            if !generation_active || seq <= published_cut {
+                                continue;
+                            }
+                            let frame = FrameKind::TerminalOutput {
+                                terminal_id: pump_wire_terminal_id.clone(),
+                                stream_id,
+                                bootstrap_id,
+                                seq,
+                                bytes: downsample_for_caps(&bytes, pump_client_caps),
                             };
                             if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
-                                // Client mailbox closed (detach or disconnect).
                                 break;
                             }
+                            last_forwarded_seq = seq;
+                        }
+                        Ok(PaneOutput::Control { owner, frame }) => {
+                            if owner != client_id.0 {
+                                continue;
+                            }
+                            let (targets_pump, ends_generation) = match &frame {
+                                FrameKind::BootstrapTombstone {
+                                    terminal_id,
+                                    stream_id: control_stream_id,
+                                    bootstrap_id: control_bootstrap_id,
+                                    ..
+                                } => (
+                                    terminal_id == &pump_wire_terminal_id
+                                        && *control_stream_id == stream_id
+                                        && *control_bootstrap_id == bootstrap_id,
+                                    true,
+                                ),
+                                FrameKind::HistoryTombstone {
+                                    terminal_id,
+                                    stream_id: control_stream_id,
+                                    bootstrap_id: control_bootstrap_id,
+                                    ..
+                                } => (
+                                    terminal_id == &pump_wire_terminal_id
+                                        && *control_stream_id == stream_id
+                                        && *control_bootstrap_id == bootstrap_id,
+                                    false,
+                                ),
+                                _ => (false, false),
+                            };
+                            if !targets_pump {
+                                continue;
+                            }
+                            if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
+                                break;
+                            }
+                            if ends_generation {
+                                generation_active = false;
+                            }
+                        }
+                        Ok(PaneOutput::Resync {
+                            cols,
+                            rows,
+                            bytes,
+                            reason: tombstone_reason,
+                            base_seq,
+                        }) => {
+                            // Resync is control, so an unchanged cut still
+                            // tombstones and replaces the published generation.
+                            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                            let prior_bootstrap_id = bootstrap_id;
+                            bootstrap_id = next_bootstrap_id(bootstrap_id);
+                            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+                            if matches!(
+                                stream_profile,
+                                BootstrapStreamProfile::NativeState {
+                                    codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+                                }
+                            ) {
+                                if generation_active
+                                    && pump_out_tx
+                                    .send(Outbound::Frame(FrameKind::BootstrapTombstone {
+                                        terminal_id: pump_wire_terminal_id.clone(),
+                                        stream_id,
+                                        bootstrap_id: prior_bootstrap_id,
+                                        reason: match tombstone_reason {
+                                            crate::terminal_actor::ResyncReason::Resize => {
+                                                phux_protocol::wire::frame::TombstoneReason::Resize
+                                            }
+                                            crate::terminal_actor::ResyncReason::OutboundGap => {
+                                                phux_protocol::wire::frame::TombstoneReason::OutboundGap
+                                            }
+                                        },
+                                        last_valid_seq: last_forwarded_seq,
+                                    }))
+                                    .await
+                                    .is_err()
+                                {
+                                    crate::runtime::client::detach_and_release_consumer_state(
+                                        &pump_state,
+                                        client_id,
+                                    );
+                                    pump_connection_token.cancel();
+                                    break;
+                                }
+                                let (reply_tx, reply_rx) = oneshot::channel();
+                                if pump_native_bootstrap
+                                    .send(crate::terminal_actor::NativeBootstrapRequest {
+                                        owner: client_id.0,
+                                        terminal_id: pump_wire_terminal_id.clone(),
+                                        stream_id,
+                                        bootstrap_id,
+                                        limits: bootstrap_limits,
+                                        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+                                        max_frames:
+                                            crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+                                        reply: reply_tx,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    crate::runtime::client::detach_and_release_consumer_state(
+                                        &pump_state,
+                                        client_id,
+                                    );
+                                    pump_connection_token.cancel();
+                                    break;
+                                }
+                                let Ok(Ok(reply)) = reply_rx.await else {
+                                    let _ = pump_out_tx
+                                        .send(Outbound::Frame(FrameKind::Error {
+                                            request_id: None,
+                                            code: ErrorCode::CodecUnavailable,
+                                            message: "native checkpoint resync failed".to_owned(),
+                                        }))
+                                        .await;
+                                    crate::runtime::client::detach_and_release_consumer_state(
+                                        &pump_state,
+                                        client_id,
+                                    );
+                                    pump_connection_token.cancel();
+                                    break;
+                                };
+                                let Ok(cut) =
+                                    publish_native_bootstrap(&pump_out_tx, reply).await
+                                else {
+                                    crate::runtime::client::detach_and_release_consumer_state(
+                                        &pump_state,
+                                        client_id,
+                                    );
+                                    pump_connection_token.cancel();
+                                    break;
+                                };
+                                published_cut = cut;
+                                last_forwarded_seq = cut;
+                                generation_active = true;
+                                continue;
+                            }
+                            let payload = downsample_for_caps(&bytes, pump_client_caps);
+                            if send_synthesized_bootstrap(
+                                &pump_out_tx,
+                                pump_wire_terminal_id.clone(),
+                                stream_id,
+                                bootstrap_id,
+                                stream_profile,
+                                bootstrap_limits,
+                                cols,
+                                rows,
+                                base_seq,
+                                [payload],
+                            )
+                            .await
+                            .is_err()
+                            {
+                                break;
+                            }
+                            published_cut = base_seq;
+                            last_forwarded_seq = base_seq;
+                            generation_active = true;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            // The broadcast buffer overran: this consumer dropped
-                            // `n` chunks of VT, so its mirror is now diverged.
-                            // Ask the actor to emit an in-band `PaneOutput::Resync`
-                            // (a full grid snapshot on this same ordered channel):
-                            // it lands here after the post-lag tail and cleanly
-                            // supersedes the gap — no double-apply, no lost output.
-                            // Without this the divergence is permanent until an
-                            // unrelated resize/reattach happens to resync.
-                            // `try_send` failing (mailbox full ⇒ a resync is
-                            // already queued, or actor gone) is benign.
                             warn!(
                                 terminal_id = ?pump_wire_terminal_id,
                                 dropped = n,
                                 "TerminalOutput pump lagged; requesting in-band resync",
                             );
-                            let _ = pump_resize.try_send(ResizeRequest {
-                                cols: 0,
-                                rows: 0,
-                                cell_px: None,
-                                resync_clients: true,
-                                resync_only: true,
-                            });
+                            if !enqueue_output_resync(&pump_resize).await {
+                                let _ = tokio::time::timeout(
+                                    std::time::Duration::from_secs(1),
+                                    pump_out_tx.send(Outbound::Frame(FrameKind::Error {
+                                        request_id: None,
+                                        code: ErrorCode::InternalError,
+                                        message: "terminal output gap could not be resynchronized"
+                                            .to_owned(),
+                                    })),
+                                )
+                                .await;
+                                crate::runtime::client::detach_and_release_consumer_state(
+                                    &pump_state,
+                                    client_id,
+                                );
+                                pump_connection_token.cancel();
+                                break;
+                            }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
             });
+        }
+        if let Some(state_sync) = state_sync_bootstrap {
+            let snap = state_sync.snapshot;
+            let cols = snap.cols;
+            let rows = snap.rows;
+            let Ok(adapted) =
+                adapt_bootstrap_snapshot(snap, client_caps, staging_budget.remaining_bytes())
+            else {
+                fail_prepublication!("state-sync bootstrap adaptation exceeded source budget");
+            };
+            debug_assert!(adapted.peak_bytes <= staging_budget.remaining_bytes());
+            let retained_bytes = adapted.retained_bytes;
+            let payloads = adapted.payloads;
+            let Ok(mut frames) = synthesized_bootstrap_frames(
+                wire_terminal_id,
+                stream_id,
+                bootstrap_id,
+                stream_profile,
+                bootstrap_limits,
+                cols,
+                rows,
+                state_sync.base_seq,
+                payloads,
+            ) else {
+                fail_prepublication!("state-sync bootstrap exceeded negotiated bounds");
+            };
+            if staging_budget
+                .append_accounted(&mut bootstrap_frames, &mut frames, retained_bytes)
+                .is_err()
+            {
+                fail_prepublication!("aggregate bootstrap staging budget exceeded");
+            }
+            continue;
+        }
+
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        if matches!(
+            stream_profile,
+            BootstrapStreamProfile::NativeState {
+                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+            }
+        ) {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            if handle
+                .native_bootstrap
+                .send(crate::terminal_actor::NativeBootstrapRequest {
+                    owner: client_id.0,
+                    terminal_id: wire_terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    limits: bootstrap_limits,
+                    max_bytes: staging_budget.remaining_bytes(),
+                    max_frames: staging_budget.remaining_frames(),
+                    reply: reply_tx,
+                })
+                .await
+                .is_err()
+            {
+                warn!(?terminal_id, "pane actor dropped before native bootstrap");
+                fail_prepublication!("pane actor dropped native bootstrap request");
+            }
+            match reply_rx.await {
+                Ok(Ok(mut reply)) => {
+                    let cut = reply.base_seq;
+                    if staging_budget
+                        .append_accounted(
+                            &mut bootstrap_frames,
+                            &mut reply.frames,
+                            reply.retained_bytes,
+                        )
+                        .is_err()
+                    {
+                        fail_prepublication!("aggregate bootstrap staging budget exceeded");
+                    }
+                    if let Some((_, _, gate_cut)) = snapshot_gates
+                        .iter_mut()
+                        .find(|(tid, _, _)| *tid == terminal_id)
+                    {
+                        *gate_cut = Some(cut);
+                    }
+                }
+                Ok(Err(error)) => {
+                    warn!(?terminal_id, %error, "native checkpoint failed before attach publication");
+                    fail_prepublication!("native checkpoint capture failed");
+                }
+                Err(_) => {
+                    warn!(?terminal_id, "pane actor dropped native checkpoint reply");
+                    fail_prepublication!("pane actor dropped native checkpoint reply");
+                }
+            }
+            continue;
         }
 
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -1395,51 +2475,116 @@ pub(crate) async fn handle_attach(
             .snapshot
             .send(SnapshotRequest {
                 scrollback: scrollback_req,
+                max_bytes: synthesized_source_max,
+                max_frames: staging_budget.remaining_frames(),
+                chunk_bytes: aggregate_chunk_bytes,
                 reply: reply_tx,
             })
             .await
             .is_err()
         {
-            warn!(?terminal_id, "pane actor dropped; skipping snapshot");
-            continue;
+            warn!(
+                ?terminal_id,
+                "pane actor dropped before synthesized bootstrap"
+            );
+            fail_prepublication!("pane actor dropped synthesized bootstrap request");
         }
-        // Tag each in-flight receiver with its identifiers so the drain
-        // loop can warn / build a frame without re-deriving them.
-        pending.push(async move { (terminal_id, wire_terminal_id, reply_rx.await) });
-    }
-
-    while let Some((terminal_id, wire_terminal_id, reply)) = pending.next().await {
-        let Ok(snap) = reply else {
-            warn!(?terminal_id, "pane actor failed to reply with snapshot");
-            continue;
+        let (snap, cut) = match reply_rx.await {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(error)) => {
+                warn!(?terminal_id, %error, "bounded snapshot synthesis failed");
+                fail_prepublication!("synthesized bootstrap source limit exceeded");
+            }
+            Err(_) => {
+                warn!(
+                    ?terminal_id,
+                    "pane actor dropped synthesized snapshot reply"
+                );
+                fail_prepublication!("pane actor dropped synthesized snapshot reply");
+            }
         };
-        let replay = downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps).into();
-        if out_tx
-            .send(Outbound::Frame(FrameKind::TerminalSnapshot {
-                terminal_id: wire_terminal_id,
-                cols: snap.cols,
-                rows: snap.rows,
-                vt_replay_bytes: replay,
-                // phux-9q5f: when the ATTACH requested scrollback and the pane
-                // retains history, the actor primed these history-priming VT
-                // bytes; the client `vt_write`s them before the viewport
-                // replay. Empty ⇒ `None` (viewport-only, or no history).
-                scrollback_bytes: (!snap.scrollback.is_empty()).then_some(snap.scrollback),
-            }))
-            .await
+        let cols = snap.cols;
+        let rows = snap.rows;
+        let Ok(adapted) =
+            adapt_bootstrap_snapshot(snap, client_caps, staging_budget.remaining_bytes())
+        else {
+            fail_prepublication!("synthesized bootstrap adaptation exceeded source budget");
+        };
+        debug_assert!(adapted.peak_bytes <= staging_budget.remaining_bytes());
+        let retained_bytes = adapted.retained_bytes;
+        let payloads = adapted.payloads;
+        let Ok(mut frames) = synthesized_bootstrap_frames(
+            wire_terminal_id,
+            stream_id,
+            bootstrap_id,
+            stream_profile,
+            bootstrap_limits,
+            cols,
+            rows,
+            cut,
+            payloads,
+        ) else {
+            fail_prepublication!("synthesized bootstrap exceeded negotiated bounds");
+        };
+        if staging_budget
+            .append_accounted(&mut bootstrap_frames, &mut frames, retained_bytes)
             .is_err()
         {
+            fail_prepublication!("aggregate bootstrap staging budget exceeded");
+        }
+        if let Some((_, _, gate_cut)) = snapshot_gates
+            .iter_mut()
+            .find(|(tid, _, _)| *tid == terminal_id)
+        {
+            *gate_cut = Some(cut);
+        }
+    }
+
+    // Commit the replacement only after every pane has produced a complete,
+    // bounded bootstrap. Until this point the prior generation's pumps remain
+    // live and every new pump is parked on its unpublished gate.
+    if same_session_reattach {
+        super::client::abort_output_pumps(output_pumps, client_id, "replacement ATTACH").await;
+    }
+    let mut committed_output_pumps = staged_output_pumps;
+    output_pumps
+        .spawn_local(async move { while committed_output_pumps.join_next().await.is_some() {} });
+
+    if out_tx
+        .send(Outbound::Frame(FrameKind::Attached {
+            attach_id,
+            snapshot,
+            initial_client_id,
+        }))
+        .await
+        .is_err()
+    {
+        crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+        return;
+    }
+    crate::hooks::fire_hook(
+        state,
+        crate::hooks::HookEvent::client_attached(client_id, &session_name),
+    );
+    for frame in bootstrap_frames {
+        if out_tx.send(Outbound::Frame(frame)).await.is_err() {
+            crate::runtime::client::detach_and_release_consumer_state(state, client_id);
             return;
         }
-        // phux-7w1j: snapshot for this pane is on the wire — release its
-        // output pump so any buffered/live `TerminalOutput` now follows the
-        // snapshot in order rather than racing ahead of it.
-        if let Some(pos) = snapshot_gates
-            .iter()
-            .position(|(tid, _)| *tid == terminal_id)
-        {
-            let (_, gate_tx) = snapshot_gates.swap_remove(pos);
-            let _ = gate_tx.send(());
+    }
+
+    if out_tx
+        .send(Outbound::Frame(FrameKind::AttachReady { attach_id }))
+        .await
+        .is_err()
+    {
+        crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+        return;
+    }
+    let _ = live_gate_tx.send(true);
+    for (_, gate, cut) in snapshot_gates {
+        if let Some(cut) = cut {
+            let _ = gate.send(cut);
         }
     }
 }
@@ -1529,4 +2674,605 @@ pub(crate) fn apply_attach_viewport(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tiny_staged_pane(pane: u32) -> Vec<FrameKind> {
+        let terminal_id = phux_protocol::ids::TerminalId::local(pane + 1);
+        let stream_id = StreamId::new(1).expect("stream id");
+        let bootstrap_id = BootstrapId::new(1).expect("bootstrap id");
+        vec![
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"pane"),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn aggregate_staging_budget_rejects_many_panes_without_large_allocations() {
+        let mut budget = BootstrapStagingBudget::with_limits(8 * 4, 8 * 3);
+        let mut staged = Vec::new();
+
+        for pane in 0..16 {
+            let mut frames = tiny_staged_pane(pane);
+            let result = budget.append(&mut staged, &mut frames);
+            if pane < 8 {
+                assert!(result.is_ok(), "pane {pane} fits the aggregate budget");
+                assert!(frames.is_empty(), "accepted frames move into staging");
+            } else {
+                assert!(result.is_err(), "pane {pane} exceeds the aggregate budget");
+                assert_eq!(frames.len(), 3, "rejected frames are not appended");
+            }
+        }
+
+        assert_eq!(staged.len(), 8 * 3);
+        assert_eq!(budget.staged_bytes, 8 * 4);
+        assert_eq!(budget.staged_frames, 8 * 3);
+    }
+
+    #[test]
+    fn bootstrap_adaptation_peak_includes_sources_scratch_and_outputs() {
+        let mut scrollback = Vec::new();
+        scrollback
+            .try_reserve_exact(512)
+            .expect("scrollback reserve");
+        scrollback.resize(512, b's');
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(1_024).expect("snapshot reserve");
+        bytes.resize(1_024, b'x');
+        let source_capacity = scrollback.capacity() + bytes.capacity();
+        let peak_budget = source_capacity.checked_mul(2).expect("peak budget");
+        let caps = ClientCapabilities::default()
+            .with_color_support(phux_protocol::caps::ColorSupport::Indexed256);
+        assert!(!crate::downsample::caps_pass_through(caps));
+
+        let adapted = adapt_bootstrap_snapshot(
+            crate::grid::SnapshotBytes {
+                cols: 80,
+                rows: 24,
+                bytes,
+                scrollback,
+            },
+            caps,
+            peak_budget,
+        )
+        .expect("bounded capability adaptation");
+
+        assert_eq!(
+            adapted
+                .payloads
+                .iter()
+                .map(bytes::Bytes::len)
+                .sum::<usize>(),
+            source_capacity,
+        );
+        assert_eq!(adapted.retained_bytes, source_capacity);
+        assert!(adapted.peak_bytes <= peak_budget);
+    }
+
+    #[test]
+    fn aggregate_staging_charges_many_tiny_native_records_by_capacity() {
+        const RECORDS: usize = 64;
+        const RECORD_CAPACITY: usize = 1_024;
+        let retained_per_pane = RECORDS * RECORD_CAPACITY;
+        let mut budget = BootstrapStagingBudget::with_limits(retained_per_pane * 3, usize::MAX);
+        let mut staged = Vec::new();
+
+        for pane in 0..4_u32 {
+            let terminal_id = phux_protocol::ids::TerminalId::local(pane + 1);
+            let stream_id = StreamId::new(u64::from(pane) + 1).expect("stream id");
+            let bootstrap_id = BootstrapId::new(u64::from(pane) + 1).expect("bootstrap id");
+            let mut frames = Vec::new();
+            frames.push(FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::NativeState {
+                    codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+                },
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            });
+            let mut retained_bytes = 0_usize;
+            for chunk_seq in 0..RECORDS {
+                let mut record = Vec::with_capacity(RECORD_CAPACITY);
+                record.push(b'x');
+                retained_bytes += record.capacity();
+                frames.push(FrameKind::BootstrapChunk {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq: u32::try_from(chunk_seq).expect("chunk sequence"),
+                    payload: bytes::Bytes::from(record),
+                });
+            }
+            frames.push(FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            });
+            let wire_bytes = frames
+                .iter()
+                .map(|frame| match frame {
+                    FrameKind::BootstrapChunk { payload, .. } => payload.len(),
+                    _ => 0,
+                })
+                .sum::<usize>();
+            assert_eq!(retained_bytes, retained_per_pane);
+            assert!(retained_bytes > wire_bytes);
+
+            let result = budget.append_accounted(&mut staged, &mut frames, retained_bytes);
+            assert_eq!(result.is_ok(), pane < 3);
+        }
+        assert_eq!(budget.staged_bytes, retained_per_pane * 3);
+    }
+
+    #[test]
+    fn aggregate_staging_charges_tiny_rewrites_by_retained_capacity() {
+        fn kitty_snapshot() -> crate::grid::SnapshotBytes {
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(64 * 1024).expect("kitty reserve");
+            bytes.extend_from_slice(b"\x1b_Gf=100,a=T;");
+            bytes.resize((64 * 1024) - 2, b'A');
+            bytes.extend_from_slice(b"\x1b\\");
+            crate::grid::SnapshotBytes {
+                cols: 80,
+                rows: 24,
+                bytes,
+                scrollback: Vec::new(),
+            }
+        }
+        let caps = ClientCapabilities::default()
+            .with_color_support(phux_protocol::caps::ColorSupport::Indexed256)
+            .with_image_protocols(phux_protocol::caps::ImageProtocolSet::new());
+        let sample =
+            adapt_bootstrap_snapshot(kitty_snapshot(), caps, 2 * 64 * 1024).expect("rewrite");
+        let retained_per_pane = sample.retained_bytes;
+        let wire_per_pane = sample.payloads.iter().map(bytes::Bytes::len).sum::<usize>();
+        assert!(
+            retained_per_pane > wire_per_pane,
+            "dropped Kitty payload retains rewrite allocation capacity"
+        );
+        drop(sample);
+
+        let mut budget = BootstrapStagingBudget::with_limits(retained_per_pane * 3, usize::MAX);
+        let mut staged = Vec::new();
+        for pane in 0..4_u32 {
+            let adapted = adapt_bootstrap_snapshot(
+                kitty_snapshot(),
+                caps,
+                retained_per_pane.checked_mul(2).expect("peak budget"),
+            )
+            .expect("bounded pane rewrite");
+            let retained_bytes = adapted.retained_bytes;
+            let mut frames = synthesized_bootstrap_frames(
+                phux_protocol::ids::TerminalId::local(pane + 1),
+                StreamId::new(u64::from(pane) + 1).expect("stream id"),
+                BootstrapId::new(u64::from(pane) + 1).expect("bootstrap id"),
+                BootstrapStreamProfile::SynthesizedVtRaw,
+                BootstrapLimits::new(
+                    phux_protocol::MAX_BOOTSTRAP_CHUNK_BYTES,
+                    phux_protocol::DEFAULT_HISTORY_PAGE_BYTES,
+                )
+                .expect("limits"),
+                80,
+                24,
+                0,
+                adapted.payloads,
+            )
+            .expect("bootstrap frames");
+            let result = budget.append_accounted(&mut staged, &mut frames, retained_bytes);
+            assert_eq!(result.is_ok(), pane < 3);
+        }
+        assert_eq!(budget.staged_bytes, retained_per_pane * 3);
+    }
+
+    #[test]
+    fn synthesized_bootstrap_is_built_completely_before_publication() {
+        let terminal_id = phux_protocol::ids::TerminalId::local(7);
+        let stream_id = StreamId::new(3).expect("stream id");
+        let bootstrap_id = BootstrapId::new(5).expect("bootstrap id");
+        let limits = BootstrapLimits::new(3, phux_protocol::DEFAULT_HISTORY_PAGE_BYTES)
+            .expect("bounded test limits");
+        let frames = synthesized_bootstrap_frames(
+            terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            BootstrapStreamProfile::SynthesizedVtRaw,
+            limits,
+            80,
+            24,
+            11,
+            [bytes::Bytes::from_static(b"abcdefg")],
+        )
+        .expect("build complete bootstrap");
+
+        assert!(matches!(
+            frames.first(),
+            Some(FrameKind::BootstrapBegin {
+                terminal_id: id,
+                stream_id: stream,
+                bootstrap_id: bootstrap,
+                base_seq: 11,
+                ..
+            }) if id == &terminal_id && *stream == stream_id && *bootstrap == bootstrap_id
+        ));
+        let chunks: Vec<_> = frames
+            .iter()
+            .filter_map(|frame| match frame {
+                FrameKind::BootstrapChunk {
+                    chunk_seq, payload, ..
+                } => Some((*chunk_seq, payload.as_ref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            chunks,
+            vec![
+                (0, b"abc".as_slice()),
+                (1, b"def".as_slice()),
+                (2, b"g".as_slice())
+            ]
+        );
+        assert!(matches!(
+            frames.last(),
+            Some(FrameKind::BootstrapReady {
+                terminal_id: id,
+                stream_id: stream,
+                bootstrap_id: bootstrap,
+                history_cursor: None,
+            }) if id == &terminal_id && *stream == stream_id && *bootstrap == bootstrap_id
+        ));
+    }
+
+    #[test]
+    fn prepare_attach_rejects_pane_source_count_before_registration() {
+        let state = SharedState::new();
+        let (_session, window, _pane) = state.with_mut(|server| server.seed_session("bounded"));
+        state.with_mut(|server| {
+            for _ in 0..MAX_AGGREGATE_BOOTSTRAP_PANES {
+                server
+                    .registry
+                    .new_terminal(window)
+                    .expect("bounded test pane");
+            }
+        });
+        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+        let (out_tx, _out_rx) = tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
+        assert!(matches!(
+            prepare_attach(
+                &state,
+                client_id,
+                "bounded",
+                &out_tx,
+                ClientCapabilities::default(),
+                BootstrapProfile::SynthesizedVtRaw,
+                BootstrapLimits::default(),
+            ),
+            Err(crate::state::AttachError::ResourceLimit)
+        ));
+        assert!(!state.with(|server| server.attached.contains_key(&client_id)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn saturated_resync_mailbox_blocks_until_actor_accepts_request() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(ResizeRequest {
+            cols: 80,
+            rows: 24,
+            cell_px: None,
+            resync_clients: false,
+            resync_only: false,
+        })
+        .await
+        .expect("occupy resize mailbox");
+
+        let mut pending = Box::pin(enqueue_output_resync(&tx));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut pending)
+                .await
+                .is_err(),
+            "lagged pump must not resume while the resync mailbox is full"
+        );
+        assert!(
+            !rx.recv().await.expect("occupied request").resync_only,
+            "first request is the existing mailbox occupant"
+        );
+        assert!(pending.await, "resync queues once capacity is available");
+        let queued = rx.recv().await.expect("queued resync");
+        assert!(queued.resync_only && queued.resync_clients);
+
+        drop(rx);
+        assert!(
+            !enqueue_output_resync(&tx).await,
+            "closed actor mailbox fails instead of resuming delta forwarding"
+        );
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn native_attach_handle() -> (
+        crate::terminal_actor::TerminalHandle,
+        tokio::sync::mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
+        tokio::sync::mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
+    ) {
+        use tokio::sync::{broadcast, mpsc, watch};
+
+        let (output, _seed) = broadcast::channel(8);
+        let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
+        let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
+        (
+            crate::terminal_actor::TerminalHandle {
+                input: mpsc::channel(8).0,
+                encoded_input: mpsc::channel(8).0,
+                input_snapshot: watch::channel(crate::input::InputEncoderSnapshot::default()).1,
+                snapshot: mpsc::channel(8).0,
+                native_bootstrap,
+                native_history: mpsc::channel(8).0,
+                native_release: mpsc::channel(8).0,
+                set_default_colors: mpsc::channel(8).0,
+                screen: mpsc::channel(8).0,
+                upgrade: mpsc::channel(8).0,
+                pwd: mpsc::channel(8).0,
+                output,
+                resize: mpsc::channel(8).0,
+                consumer_attach,
+                consumer_detach: mpsc::channel(8).0,
+                consumer_ack: mpsc::channel(8).0,
+                subscribe_to_events: mpsc::channel(8).0,
+                unsubscribe_from_events: mpsc::channel(8).0,
+                control: mpsc::channel(8).0,
+                cols: 80,
+                rows: 24,
+            },
+            consumer_attach_rx,
+            native_bootstrap_rx,
+        )
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    async fn answer_native_attach(
+        consumer_attach_rx: &mut tokio::sync::mpsc::Receiver<
+            crate::terminal_actor::ConsumerAttachRequest,
+        >,
+        native_bootstrap_rx: &mut tokio::sync::mpsc::Receiver<
+            crate::terminal_actor::NativeBootstrapRequest,
+        >,
+        succeed: bool,
+    ) {
+        let registration = consumer_attach_rx
+            .recv()
+            .await
+            .expect("consumer registration");
+        registration
+            .reply
+            .send(Ok(crate::terminal_actor::ConsumerAttachOutcome {
+                tick_managed: false,
+                state_sync_bootstrap: None,
+            }))
+            .expect("consumer registration reply");
+        let native = native_bootstrap_rx.recv().await.expect("native preflight");
+        if !succeed {
+            native
+                .reply
+                .send(Err(crate::native_state::NativeStateError::LimitExceeded))
+                .expect("continuation-cap failure reply");
+            return;
+        }
+        let terminal_id = native.terminal_id.clone();
+        native
+            .reply
+            .send(Ok(crate::terminal_actor::NativeBootstrapReply {
+                frames: vec![
+                    FrameKind::BootstrapBegin {
+                        terminal_id: terminal_id.clone(),
+                        stream_id: native.stream_id,
+                        bootstrap_id: native.bootstrap_id,
+                        profile: BootstrapStreamProfile::NativeState {
+                            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+                        },
+                        cols: 80,
+                        rows: 24,
+                        base_seq: 0,
+                    },
+                    FrameKind::BootstrapChunk {
+                        terminal_id: terminal_id.clone(),
+                        stream_id: native.stream_id,
+                        bootstrap_id: native.bootstrap_id,
+                        chunk_seq: 0,
+                        payload: bytes::Bytes::from_static(b"opaque"),
+                    },
+                    FrameKind::BootstrapReady {
+                        terminal_id,
+                        stream_id: native.stream_id,
+                        bootstrap_id: native.bootstrap_id,
+                        history_cursor: None,
+                    },
+                ],
+                retained_bytes: b"opaque".len(),
+                base_seq: 0,
+            }))
+            .expect("native success reply");
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn native_profile() -> BootstrapProfile {
+        BootstrapProfile::NativeState {
+            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+            features: phux_protocol::caps::EngineFeatureSet::required_native(),
+        }
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn fresh_native_capacity_failure_sends_error_then_closes_without_publication() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_session, _window, terminal) =
+                    state.with_mut(|s| s.seed_session("fresh-failure"));
+                let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) =
+                    native_attach_handle();
+                state.with_mut(|s| {
+                    let _ = s.register_terminal_handle(terminal, handle, CancellationToken::new());
+                });
+                let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                let (out_tx, mut out_rx) =
+                    tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
+                let root_token = CancellationToken::new();
+                let connection_token = CancellationToken::new();
+                let mut output_pumps = JoinSet::new();
+
+                let attach = handle_attach(
+                    &state,
+                    client_id,
+                    41,
+                    AttachTarget::ByName("fresh-failure".to_owned()),
+                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
+                    false,
+                    0,
+                    &out_tx,
+                    ClientCapabilities::default(),
+                    native_profile(),
+                    BootstrapLimits::default(),
+                    &root_token,
+                    &mut output_pumps,
+                    &connection_token,
+                );
+                let actor =
+                    answer_native_attach(&mut consumer_attach_rx, &mut native_bootstrap_rx, false);
+                tokio::join!(attach, actor);
+
+                assert!(matches!(
+                    out_rx.recv().await,
+                    Some(Outbound::TerminalError {
+                        code: ErrorCode::CodecUnavailable,
+                        ..
+                    })
+                ));
+                assert!(out_rx.try_recv().is_err(), "no ATTACHED or BEGIN may leak");
+                assert!(connection_token.is_cancelled());
+                assert!(state.with(|s| !s.attached.contains_key(&client_id)));
+                drop(out_tx);
+                assert!(
+                    out_rx.recv().await.is_none(),
+                    "fatal fresh attach must reach EOF"
+                );
+            })
+            .await;
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn replacement_native_capacity_failure_closes_but_preserves_terminal_state() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (_session, _window, terminal) =
+                    state.with_mut(|s| s.seed_session("replacement-failure"));
+                let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) =
+                    native_attach_handle();
+                state.with_mut(|s| {
+                    let _ = s.register_terminal_handle(terminal, handle, CancellationToken::new());
+                });
+                let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                let (out_tx, mut out_rx) =
+                    tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
+                let root_token = CancellationToken::new();
+                let connection_token = CancellationToken::new();
+                let mut output_pumps = JoinSet::new();
+
+                let first = handle_attach(
+                    &state,
+                    client_id,
+                    51,
+                    AttachTarget::ByName("replacement-failure".to_owned()),
+                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
+                    false,
+                    0,
+                    &out_tx,
+                    ClientCapabilities::default(),
+                    native_profile(),
+                    BootstrapLimits::default(),
+                    &root_token,
+                    &mut output_pumps,
+                    &connection_token,
+                );
+                tokio::join!(
+                    first,
+                    answer_native_attach(&mut consumer_attach_rx, &mut native_bootstrap_rx, true)
+                );
+                for _ in 0..5 {
+                    out_rx.recv().await.expect("initial attach publication");
+                }
+                assert!(state.with(|s| s.attached.contains_key(&client_id)));
+
+                let replacement = handle_attach(
+                    &state,
+                    client_id,
+                    52,
+                    AttachTarget::ByName("replacement-failure".to_owned()),
+                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
+                    false,
+                    0,
+                    &out_tx,
+                    ClientCapabilities::default(),
+                    native_profile(),
+                    BootstrapLimits::default(),
+                    &root_token,
+                    &mut output_pumps,
+                    &connection_token,
+                );
+                tokio::join!(
+                    replacement,
+                    answer_native_attach(&mut consumer_attach_rx, &mut native_bootstrap_rx, false)
+                );
+                assert!(matches!(
+                    out_rx.recv().await,
+                    Some(Outbound::TerminalError {
+                        code: ErrorCode::CodecUnavailable,
+                        ..
+                    })
+                ));
+                assert!(connection_token.is_cancelled());
+                assert!(state.with(|s| !s.attached.contains_key(&client_id)));
+                assert!(
+                    state.with(|s| s.registry.terminal(terminal).is_some()),
+                    "failed replacement must not reap canonical terminal state"
+                );
+                output_pumps.abort_all();
+                while output_pumps.join_next().await.is_some() {}
+                drop(out_tx);
+                assert!(
+                    out_rx.recv().await.is_none(),
+                    "fatal replacement must close cleanly after ERROR"
+                );
+            })
+            .await;
+    }
 }

@@ -8,10 +8,10 @@
 //! same belief that produced the bug the test is supposed to catch, so the
 //! fake catches nothing. The concrete failure: seventeen `phux rec` unit
 //! tests passed against a completely non-functional feature, because the
-//! local fake answered `COMMAND_RESULT` *before* the priming
-//! `TERMINAL_SNAPSHOT` while the reference server does the opposite. Every
-//! capture against a real server came back as a 0x0 grid with nothing
-//! playable in it, and the suite was green throughout.
+//! local fake answered `COMMAND_RESULT` *before* the priming bootstrap
+//! transcript while the reference server does the opposite. Every capture
+//! against a real server came back as a 0x0 grid with nothing playable in it,
+//! and the suite was green throughout.
 //!
 //! The fix is not "write better fakes". It is to have exactly one place
 //! where the server's frame *order* is written down — the private
@@ -34,10 +34,10 @@
 //!
 //! - `ATTACH_TERMINAL` — `handle_attach_terminal`
 //!   (`crates/phux-server/src/runtime/commands.rs`) pushes the authoritative
-//!   `TERMINAL_SNAPSHOT` "before the pump's first delta and before the Ok
-//!   reply", and never re-sends it. [`ScriptSpec::priming_snapshot`] is
-//!   therefore **mandatory** for any script whose client attaches a
-//!   Terminal: a script without one panics rather than silently modelling a
+//!   bootstrap transcript before the acknowledgement and never re-sends it.
+//!   [`ScriptSpec::priming_snapshot`] is therefore **mandatory** for any script
+//!   whose client attaches a Terminal: a script without one panics rather than
+//!   silently modelling a
 //!   server that does not exist.
 //! - `GET_STATE` — `handle_get_state_federated` emits one uncorrelated
 //!   `ERROR` per unreachable satellite *ahead of* the merged snapshot's ack,
@@ -77,10 +77,12 @@
 
 use std::fmt;
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::ServerCapabilities;
-use phux_protocol::ids::TerminalId;
+use phux_protocol::caps::{
+    BootstrapCapabilities, BootstrapStreamProfile, ServerCapabilities, select_bootstrap_profile,
+};
+use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, SpawnResult,
 };
@@ -90,6 +92,10 @@ use tokio::net::{UnixListener, UnixStream};
 
 /// Number of bytes in the SPEC §5 length prefix.
 const LENGTH_PREFIX: usize = 4;
+const FIXTURE_STREAM_ID: StreamId =
+    StreamId::new(1).expect("fixture stream identifier is non-zero");
+const FIXTURE_BOOTSTRAP_ID: BootstrapId =
+    BootstrapId::new(1).expect("fixture bootstrap identifier is non-zero");
 
 /// What the scripted server does once it has played its script.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -118,8 +124,8 @@ type MetadataResponder = Box<dyn FnMut(&Scope, &str) -> Option<Vec<u8>> + Send>;
 /// [`ScriptSpec::new`] and the chainable setters.
 #[derive(Default)]
 pub struct ScriptSpec {
-    /// The `TERMINAL_SNAPSHOT` pushed ahead of the `ATTACH_TERMINAL` ack.
-    priming: Option<FrameKind>,
+    /// The negotiated bootstrap transcript pushed ahead of the attach ack.
+    priming: Vec<FrameKind>,
     /// The snapshot a `GET_STATE` ack carries.
     state: Option<SessionSnapshot>,
     /// Frames pushed ahead of the *next* command ack — the hub degradation
@@ -171,12 +177,8 @@ impl ScriptSpec {
         Self::default()
     }
 
-    /// The authoritative `TERMINAL_SNAPSHOT` the server pushes *before* the
-    /// `ATTACH_TERMINAL` ack.
-    ///
-    /// Mandatory for any script whose client attaches a Terminal: the
-    /// reference server always primes, and a harness that let a test opt out
-    /// would be re-offering the exact hole this module closes.
+    /// The synthesized raw-VT bootstrap the server pushes before the
+    /// `ATTACH_TERMINAL` acknowledgement.
     #[must_use]
     pub fn priming_snapshot(
         mut self,
@@ -185,13 +187,32 @@ impl ScriptSpec {
         rows: u16,
         replay: &[u8],
     ) -> Self {
-        self.priming = Some(FrameKind::TerminalSnapshot {
-            terminal_id: terminal.clone(),
-            cols,
-            rows,
-            vt_replay_bytes: replay.to_vec(),
-            scrollback_bytes: None,
-        });
+        let stream_id = FIXTURE_STREAM_ID;
+        let bootstrap_id = FIXTURE_BOOTSTRAP_ID;
+        self.priming = vec![
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols,
+                rows,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: Bytes::copy_from_slice(replay),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id: terminal.clone(),
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ];
         self
     }
 
@@ -420,13 +441,20 @@ impl ScriptedServer {
 /// [`ScriptedServer::run`].
 fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
     match frame {
-        FrameKind::Hello { .. } => vec![FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new(),
-            server_id: Vec::new(),
-        }],
+        FrameKind::Hello { client_caps, .. } => {
+            let (selected_profile, bootstrap_limits) =
+                select_bootstrap_profile(client_caps, &BootstrapCapabilities::new())
+                    .expect("default scripted server and client share a bootstrap profile");
+            vec![FrameKind::HelloOk {
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                server_caps: ServerCapabilities::new(),
+                server_id: Vec::new(),
+                selected_profile,
+                bootstrap_limits,
+            }]
+        }
         FrameKind::Command {
             request_id,
             command,
@@ -528,14 +556,12 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
     let mut out = std::mem::take(&mut spec.pre_ack);
     match command {
         Command::AttachTerminal { .. } => {
-            // The ordering this whole module exists for: snapshot, then ack.
-            let priming = spec.priming.clone().expect(
-                "a scripted server whose client sends ATTACH_TERMINAL must declare a \
-                 priming snapshot: handle_attach_terminal pushes TERMINAL_SNAPSHOT \
-                 before the Ok reply and never re-sends it. Call \
-                 ScriptSpec::priming_snapshot.",
+            assert!(
+                !spec.priming.is_empty(),
+                "a scripted server whose client sends ATTACH_TERMINAL must declare \
+                 priming bootstrap frames. Call ScriptSpec::priming_snapshot."
             );
-            out.push(priming);
+            out.extend(spec.priming.clone());
             out.push(FrameKind::CommandResult {
                 request_id,
                 result: CommandResult::Ok,

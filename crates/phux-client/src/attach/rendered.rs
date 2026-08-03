@@ -51,6 +51,7 @@ use crate::render::chrome::status_bar::{StatusBarPainter, make_context};
 pub(super) fn compose_full_frame_cells(
     layout_state: &LayoutState,
     panes: &mut HashMap<TerminalId, PaneSlot>,
+    kernel: &super::driver::AttachKernel,
     focused_pane: Option<&TerminalId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&StatusBarPainter>,
@@ -78,14 +79,15 @@ pub(super) fn compose_full_frame_cells(
         let Some(slot) = panes.get_mut(id) else {
             continue;
         };
+        let Some(terminal) = super::driver::published_terminal(kernel, id) else {
+            continue;
+        };
         // A render error on one pane shouldn't sink the whole introspection
         // query; leave that pane's cells blank and move on.
-        let Ok(cursor) = slot.renderer.render_at_cells(
-            &slot.terminal,
-            &mut frame,
-            (rect.x, rect.y),
-            (rect.w, rect.h),
-        ) else {
+        let Ok(cursor) =
+            slot.renderer
+                .render_at_cells(terminal, &mut frame, (rect.x, rect.y), (rect.w, rect.h))
+        else {
             continue;
         };
         if Some(id) == focused_pane {
@@ -223,6 +225,75 @@ mod tests {
     use crate::layout::{LayoutState, WindowState, Workspace};
     use crate::render::chrome::status_bar::{Position, StatusBarPainter};
     use phux_protocol::wire::info::{LayoutNode, SplitDir};
+    fn published_kernel(entries: &[(&TerminalId, &[u8])]) -> super::super::driver::AttachKernel {
+        use phux_client_core::session::{
+            EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel,
+        };
+        use phux_protocol::{
+            BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, StreamId,
+        };
+
+        let terminals = entries
+            .iter()
+            .map(|(terminal_id, _)| (*terminal_id).clone())
+            .collect::<Vec<_>>();
+        let mut kernel = SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(BootstrapLimits::default()),
+            BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = KernelEffectBuffer::new();
+        kernel
+            .update(
+                KernelInput::AttachStarted {
+                    attach_id: 1,
+                    terminals: &terminals,
+                },
+                &mut effects,
+            )
+            .expect("attach");
+        for (index, (terminal_id, replay)) in entries.iter().enumerate() {
+            let stream_id = StreamId::new(1).expect("stream");
+            let bootstrap_id = BootstrapId::new(index as u64 + 1).expect("bootstrap");
+            kernel
+                .update(
+                    KernelInput::BootstrapBegin {
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                        geometry: phux_client_core::engine::CanonicalGeometry::new(80, 24)
+                            .expect("geometry"),
+                        base_seq: 0,
+                    },
+                    &mut effects,
+                )
+                .expect("begin");
+            kernel
+                .update(
+                    KernelInput::BootstrapChunk {
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        chunk_seq: 0,
+                        payload: replay,
+                    },
+                    &mut effects,
+                )
+                .expect("chunk");
+            kernel
+                .update(
+                    KernelInput::BootstrapReady {
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        history_cursor: None,
+                    },
+                    &mut effects,
+                )
+                .expect("ready");
+        }
+        kernel
+    }
 
     fn two_pane(left: &TerminalId, right: &TerminalId) -> Workspace {
         Workspace {
@@ -259,10 +330,12 @@ mod tests {
         let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
         panes.insert(left.clone(), pane_with(b"L"));
         panes.insert(right.clone(), pane_with(b"R"));
+        let kernel = published_kernel(&[(&left, b"L"), (&right, b"R")]);
 
         let frame = compose_full_frame_cells(
             workspace.active_window().expect("active window"),
             &mut panes,
+            &kernel,
             Some(&left),
             (80, 24),
             None,
@@ -334,6 +407,7 @@ mod tests {
         let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
         panes.insert(left.clone(), pane_with(b"L"));
         panes.insert(right.clone(), pane_with(b"R"));
+        let kernel = published_kernel(&[(&left, b"L"), (&right, b"R")]);
 
         // The same window list `window_infos` would hand the strip painter.
         let mut sidebar_painter = SidebarPainter::new(Theme::default());
@@ -361,6 +435,7 @@ mod tests {
         let enabled = compose_full_frame_cells(
             ls,
             &mut panes,
+            &kernel,
             Some(&left),
             (80, 24),
             None,
@@ -427,6 +502,7 @@ mod tests {
         let disabled = compose_full_frame_cells(
             ls,
             &mut panes_off,
+            &kernel,
             Some(&left),
             (80, 24),
             None,
@@ -464,6 +540,7 @@ mod tests {
         let workspace = Workspace::single(pane.clone());
         let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
         panes.insert(pane.clone(), pane_with(b"hi"));
+        let kernel = published_kernel(&[(&pane, b"hi")]);
 
         let cfg = phux_config::StatusCfg {
             left: vec![phux_config::Widget::Bare("session-name".to_owned())],
@@ -476,6 +553,7 @@ mod tests {
         let frame = compose_full_frame_cells(
             workspace.active_window().expect("active window"),
             &mut panes,
+            &kernel,
             Some(&pane),
             (80, 24),
             Some(&painter),
@@ -510,6 +588,7 @@ mod tests {
         let workspace = Workspace::single(pane.clone());
         let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
         panes.insert(pane.clone(), pane_with(b"hi"));
+        let kernel = published_kernel(&[(&pane, b"hi")]);
 
         // A bar whose ONLY widget is the window tabs, left-slotted — the strip
         // that was landing under the sidebar.
@@ -539,6 +618,7 @@ mod tests {
         let frame = compose_full_frame_cells(
             workspace.active_window().expect("active window"),
             &mut panes,
+            &kernel,
             Some(&pane),
             (80, 24),
             Some(&painter),

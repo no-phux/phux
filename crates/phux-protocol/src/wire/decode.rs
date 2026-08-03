@@ -8,21 +8,31 @@ use super::error::DecodeError;
 use super::field;
 use super::frame::Scope;
 use super::frame::{
-    ErrorCode, FrameKind, MAX_FRAME_LEN, TYPE_ATTACH, TYPE_ATTACHED, TYPE_BELL, TYPE_COMMAND,
-    TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT,
-    TYPE_FRAME_ACK, TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
-    TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED,
-    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_TERMINAL, TYPE_PING, TYPE_PONG,
-    TYPE_SET_METADATA, TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
-    TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_MOVED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_RESIZE,
-    TYPE_TERMINAL_SNAPSHOT, TYPE_TERMINAL_SPAWNED, TYPE_VIEWPORT_RESIZE, decode_agent_event,
-    decode_attach_target, decode_command, decode_command_result, decode_env, decode_focus_event,
-    decode_key_event, decode_metadata_scope_key, decode_mouse_event, decode_move_result,
-    decode_paste_event, decode_scope, decode_spawn_result, decode_string_list, decode_terminal_id,
+    ErrorCode, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN,
+    MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS, MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_ATTACH,
+    TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK,
+    TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND, TYPE_COMMAND_RESULT,
+    TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK,
+    TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED,
+    TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
+    TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_METADATA,
+    TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_TERMINAL, TYPE_PING,
+    TYPE_PONG, TYPE_SET_METADATA, TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS,
+    TYPE_SUBSCRIBE_METADATA, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_MOVED, TYPE_TERMINAL_OUTPUT,
+    TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SPAWNED, TYPE_VIEWPORT_RESIZE, TombstoneReason,
+    decode_agent_event, decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id,
+    decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
+    decode_command_result, decode_env, decode_focus_event, decode_key_event,
+    decode_metadata_scope_key, decode_mouse_event, decode_move_result, decode_paste_event,
+    decode_scope, decode_spawn_result, decode_stream_id, decode_string_list, decode_terminal_id,
     decode_viewport_info,
 };
 use super::info::{decode_client_id, decode_session_snapshot};
-use crate::ids::{GroupId, TerminalId};
+use crate::caps::{
+    BootstrapCapabilities, BootstrapLimits, BootstrapProfileSet, EngineCodecSet, EngineFeatureSet,
+    MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES,
+};
+use crate::ids::{BootstrapId, GroupId, StreamId, TerminalId};
 use crate::input::focus::FocusEvent;
 use crate::input::key::KeyEvent;
 use crate::input::mouse::MouseEvent;
@@ -50,14 +60,12 @@ macro_rules! sub {
 pub struct Decoder<'a> {
     input: &'a [u8],
     pos: usize,
-    /// End offset of the current frame body, set by [`Self::read_frame`]
-    /// once the length header is parsed. Lets variant decoders distinguish
-    /// "ran out of this frame's body" (a backward-compat trailing field is
-    /// absent) from "ran out of the whole buffer", without conflating a
-    /// following frame's bytes with this frame's optional tail. `None`
-    /// outside a framed decode (the boundary is unknown), in which case
-    /// [`Self::at_body_end`] falls back to the input end.
+    /// End offset of the current frame body.
     body_end: Option<usize>,
+    /// Connection-negotiated maximum `BOOTSTRAP_CHUNK.payload` bytes.
+    max_bootstrap_chunk_bytes: u32,
+    /// Connection-negotiated maximum `HISTORY_PAGE.payload` bytes.
+    max_history_page_bytes: u32,
 }
 
 impl<'a> Decoder<'a> {
@@ -68,6 +76,23 @@ impl<'a> Decoder<'a> {
             input,
             pos: 0,
             body_end: None,
+            max_bootstrap_chunk_bytes: MAX_BOOTSTRAP_CHUNK_BYTES,
+            max_history_page_bytes: MAX_HISTORY_PAGE_BYTES,
+        }
+    }
+
+    /// Wrap `input` with the payload limits negotiated in `HELLO_OK`.
+    ///
+    /// The decoder checks a payload's borrowed TLV slice length against these
+    /// limits before copying it into owned [`bytes::Bytes`].
+    #[must_use]
+    pub const fn with_bootstrap_limits(input: &'a [u8], limits: BootstrapLimits) -> Self {
+        Self {
+            input,
+            pos: 0,
+            body_end: None,
+            max_bootstrap_chunk_bytes: limits.max_chunk_bytes(),
+            max_history_page_bytes: limits.max_history_page_bytes(),
         }
     }
 
@@ -314,10 +339,10 @@ impl<'a> Decoder<'a> {
         let frame = match type_byte {
             TYPE_HELLO => {
                 let mut client_name: Option<String> = None;
-                let mut protocol_major = 0u16;
-                let mut protocol_minor = 0u16;
-                let mut protocol_patch = 0u16;
-                let mut client_caps = crate::caps::ClientCapabilities::default();
+                let mut protocol_major = None;
+                let mut protocol_minor = None;
+                let mut protocol_patch = None;
+                let mut client_caps: Option<crate::caps::ClientCapabilities> = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::hello::CLIENT_NAME => {
@@ -328,117 +353,172 @@ impl<'a> Decoder<'a> {
                             );
                         }
                         field::hello::PROTOCOL_MAJOR => {
-                            protocol_major = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_major =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello::PROTOCOL_MINOR => {
-                            protocol_minor = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_minor =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello::PROTOCOL_PATCH => {
-                            protocol_patch = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_patch =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello::CLIENT_CAPS => {
-                            // Caps blob: a prefix of color_support, layers,
-                            // image_protocols, kbd_protocols, hyperlinks,
-                            // output_mode, then an optional palette-present
-                            // byte + foreground/background RGB. A shorter blob
-                            // (older peer) leaves trailing caps at defaults.
                             let mut d = Decoder::new(value);
-                            if !d.at_body_end() {
-                                let cs = crate::caps::ColorSupport::from_wire(d.read_u8()?)
-                                    .unwrap_or_default();
-                                client_caps = client_caps.with_color_support(cs);
-                            }
-                            if !d.at_body_end() {
-                                client_caps = client_caps
-                                    .with_layers(crate::caps::LayerSet::from_wire(d.read_u8()?));
-                            }
-                            if !d.at_body_end() {
-                                client_caps = client_caps.with_image_protocols(
-                                    crate::caps::ImageProtocolSet::from_wire(d.read_u8()?),
-                                );
-                            }
-                            if !d.at_body_end() {
-                                client_caps = client_caps.with_kbd_protocols(
-                                    crate::caps::KeyboardProtocolSet::from_wire(d.read_u8()?),
-                                );
-                            }
-                            if !d.at_body_end() {
-                                client_caps = client_caps.with_hyperlinks(d.read_u8()? != 0);
-                            }
-                            if !d.at_body_end() {
-                                client_caps = client_caps.with_output_mode(
-                                    crate::caps::OutputMode::from_wire(d.read_u8()?),
-                                );
-                            }
-                            if !d.at_body_end() && d.read_u8()? != 0 {
-                                let foreground = crate::caps::TerminalColor {
-                                    r: d.read_u8()?,
-                                    g: d.read_u8()?,
-                                    b: d.read_u8()?,
-                                };
-                                let background = crate::caps::TerminalColor {
-                                    r: d.read_u8()?,
-                                    g: d.read_u8()?,
-                                    b: d.read_u8()?,
-                                };
-                                client_caps = client_caps.with_default_colors(
-                                    crate::caps::TerminalDefaultColors {
-                                        foreground,
-                                        background,
+                            let color_value = d.read_u8()?;
+                            let color_support = crate::caps::ColorSupport::from_wire(color_value)
+                                .ok_or_else(|| DecodeError::UnknownEnumValue {
+                                field: "ColorSupport",
+                                value: u32::from(color_value),
+                            })?;
+                            let layers = crate::caps::LayerSet::from_wire(d.read_u8()?);
+                            let images = crate::caps::ImageProtocolSet::from_wire(d.read_u8()?);
+                            let keyboards =
+                                crate::caps::KeyboardProtocolSet::from_wire(d.read_u8()?);
+                            let hyperlinks = match d.read_u8()? {
+                                0 => false,
+                                1 => true,
+                                value => {
+                                    return Err(DecodeError::UnknownEnumValue {
+                                        field: "hyperlinks",
+                                        value: u32::from(value),
+                                    });
+                                }
+                            };
+                            let output_mode_tag = d.read_u8()?;
+                            let output_mode = match output_mode_tag {
+                                0 => crate::caps::OutputMode::Raw,
+                                1 => crate::caps::OutputMode::StateSync,
+                                value => {
+                                    return Err(DecodeError::UnknownEnumValue {
+                                        field: "OutputMode",
+                                        value: u32::from(value),
+                                    });
+                                }
+                            };
+                            let palette_tag = d.read_u8()?;
+                            let default_colors = match palette_tag {
+                                0 => None,
+                                1 => Some(crate::caps::TerminalDefaultColors {
+                                    foreground: crate::caps::TerminalColor {
+                                        r: d.read_u8()?,
+                                        g: d.read_u8()?,
+                                        b: d.read_u8()?,
                                     },
-                                );
+                                    background: crate::caps::TerminalColor {
+                                        r: d.read_u8()?,
+                                        g: d.read_u8()?,
+                                        b: d.read_u8()?,
+                                    },
+                                }),
+                                value => {
+                                    return Err(DecodeError::UnknownEnumValue {
+                                        field: "default_colors presence",
+                                        value: u32::from(value),
+                                    });
+                                }
+                            };
+                            let profiles = BootstrapProfileSet::from_wire(d.read_u8()?);
+                            let native_codecs = EngineCodecSet::from_wire(d.read_u64_be()?);
+                            let native_features = EngineFeatureSet::from_wire(d.read_u32_be()?);
+                            let max_chunk_bytes = d.read_u32_be()?;
+                            let max_history_page_bytes = d.read_u32_be()?;
+                            let limits =
+                                BootstrapLimits::new(max_chunk_bytes, max_history_page_bytes)
+                                    .ok_or(DecodeError::BootstrapLimitExceeded)?;
+                            let bootstrap = BootstrapCapabilities {
+                                profiles,
+                                native_codecs,
+                                native_features,
+                                limits,
+                            };
+                            let mut caps = crate::caps::ClientCapabilities::new()
+                                .with_color_support(color_support)
+                                .with_layers(layers)
+                                .with_image_protocols(images)
+                                .with_kbd_protocols(keyboards)
+                                .with_hyperlinks(hyperlinks)
+                                .with_output_mode(output_mode)
+                                .with_bootstrap(bootstrap);
+                            if let Some(colors) = default_colors {
+                                caps = caps.with_default_colors(colors);
                             }
+                            client_caps = Some(caps);
                         }
                         _ => {}
                     }
                 }
                 FrameKind::Hello {
                     client_name: client_name.ok_or(DecodeError::UnexpectedEof)?,
-                    protocol_major,
-                    protocol_minor,
-                    protocol_patch,
-                    client_caps,
+                    protocol_major: protocol_major.ok_or(DecodeError::UnexpectedEof)?,
+                    protocol_minor: protocol_minor.ok_or(DecodeError::UnexpectedEof)?,
+                    protocol_patch: protocol_patch.ok_or(DecodeError::UnexpectedEof)?,
+                    client_caps: client_caps.ok_or(DecodeError::UnexpectedEof)?,
                 }
             }
             TYPE_HELLO_OK => {
-                let mut protocol_major = 0u16;
-                let mut protocol_minor = 0u16;
-                let mut protocol_patch = 0u16;
-                let mut server_caps = crate::caps::ServerCapabilities::default();
-                let mut server_id: Vec<u8> = Vec::new();
+                let mut protocol_major = None;
+                let mut protocol_minor = None;
+                let mut protocol_patch = None;
+                let mut server_caps = None;
+                let mut server_id = None;
+                let mut selected_profile = None;
+                let mut max_chunk_bytes = None;
+                let mut max_history_page_bytes = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::hello_ok::PROTOCOL_MAJOR => {
-                            protocol_major = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_major =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello_ok::PROTOCOL_MINOR => {
-                            protocol_minor = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_minor =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello_ok::PROTOCOL_PATCH => {
-                            protocol_patch = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                            protocol_patch =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
                         }
                         field::hello_ok::SERVER_CAPS => {
                             let mut d = Decoder::new(value);
+                            let mut caps = crate::caps::ServerCapabilities::new()
+                                .with_layers(crate::caps::LayerSet::from_wire(d.read_u8()?));
                             if !d.at_body_end() {
-                                server_caps = server_caps
-                                    .with_layers(crate::caps::LayerSet::from_wire(d.read_u8()?));
-                            }
-                            if !d.at_body_end() {
-                                server_caps = server_caps.with_features(
+                                caps = caps.with_features(
                                     crate::caps::ServerFeatureSet::from_wire(d.read_u32_be()?),
                                 );
                             }
+                            server_caps = Some(caps);
                         }
-                        field::hello_ok::SERVER_ID => server_id = value.to_vec(),
+                        field::hello_ok::SERVER_ID => server_id = Some(value.to_vec()),
+                        field::hello_ok::SELECTED_PROFILE => {
+                            selected_profile = Some(sub!(value, decode_bootstrap_profile));
+                        }
+                        field::hello_ok::MAX_CHUNK_BYTES => {
+                            max_chunk_bytes =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
+                        field::hello_ok::MAX_HISTORY_PAGE_BYTES => {
+                            max_history_page_bytes =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
                         _ => {}
                     }
                 }
+                let bootstrap_limits = BootstrapLimits::new(
+                    max_chunk_bytes.ok_or(DecodeError::UnexpectedEof)?,
+                    max_history_page_bytes.ok_or(DecodeError::UnexpectedEof)?,
+                )
+                .ok_or(DecodeError::BootstrapLimitExceeded)?;
                 FrameKind::HelloOk {
-                    protocol_major,
-                    protocol_minor,
-                    protocol_patch,
-                    server_caps,
-                    server_id,
+                    protocol_major: protocol_major.ok_or(DecodeError::UnexpectedEof)?,
+                    protocol_minor: protocol_minor.ok_or(DecodeError::UnexpectedEof)?,
+                    protocol_patch: protocol_patch.ok_or(DecodeError::UnexpectedEof)?,
+                    server_caps: server_caps.ok_or(DecodeError::UnexpectedEof)?,
+                    server_id: server_id.ok_or(DecodeError::UnexpectedEof)?,
+                    selected_profile: selected_profile.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_limits,
                 }
             }
             TYPE_PING => {
@@ -465,26 +545,36 @@ impl<'a> Decoder<'a> {
             }
             TYPE_TERMINAL_OUTPUT => {
                 let mut terminal_id: Option<TerminalId> = None;
-                let mut seq = 0u64;
-                let mut bytes = bytes::Bytes::new();
+                let mut stream_id: Option<StreamId> = None;
+                let mut bootstrap_id: Option<BootstrapId> = None;
+                let mut seq: Option<u64> = None;
+                let mut bytes: Option<bytes::Bytes> = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::terminal_output::TERMINAL_ID => {
                             terminal_id = Some(sub!(value, decode_terminal_id));
                         }
                         field::terminal_output::SEQ => {
-                            seq = sub!(value, |d: &mut Decoder<'_>| d.read_u64_be());
+                            seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
                         }
                         field::terminal_output::BYTES => {
-                            bytes = bytes::Bytes::copy_from_slice(value);
+                            bytes = Some(bytes::Bytes::copy_from_slice(value));
+                        }
+                        field::terminal_output::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
+                        }
+                        field::terminal_output::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                         }
                         _ => {}
                     }
                 }
                 FrameKind::TerminalOutput {
                     terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
-                    seq,
-                    bytes,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    seq: seq.ok_or(DecodeError::UnexpectedEof)?,
+                    bytes: bytes.ok_or(DecodeError::UnexpectedEof)?,
                 }
             }
             TYPE_ATTACH => {
@@ -492,6 +582,7 @@ impl<'a> Decoder<'a> {
                 let mut viewport: Option<crate::wire::frame::ViewportInfo> = None;
                 let mut request_scrollback = false;
                 let mut scrollback_limit_lines = 0u32;
+                let mut attach_id = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::attach::TARGET => target = Some(sub!(value, decode_attach_target)),
@@ -506,10 +597,14 @@ impl<'a> Decoder<'a> {
                             scrollback_limit_lines =
                                 sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
                         }
+                        field::attach::ATTACH_ID => {
+                            attach_id = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
                         _ => {}
                     }
                 }
                 FrameKind::Attach {
+                    attach_id: attach_id.ok_or(DecodeError::UnexpectedEof)?,
                     target: target.ok_or(DecodeError::UnexpectedEof)?,
                     viewport: viewport.ok_or(DecodeError::UnexpectedEof)?,
                     request_scrollback,
@@ -591,23 +686,55 @@ impl<'a> Decoder<'a> {
                     event: event.ok_or(DecodeError::UnexpectedEof)?,
                 }
             }
+            TYPE_INPUT_TERMINAL_REPLY => {
+                let mut terminal_id: Option<TerminalId> = None;
+                let mut bytes: Option<bytes::Bytes> = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::input_terminal_reply::TERMINAL_ID => {
+                            terminal_id = Some(sub!(value, decode_terminal_id));
+                        }
+                        field::input_terminal_reply::BYTES => {
+                            if value.is_empty() || value.len() > MAX_INPUT_TERMINAL_REPLY_BYTES {
+                                return Err(DecodeError::InputTerminalReplyLimitExceeded);
+                            }
+                            bytes = Some(bytes::Bytes::copy_from_slice(value));
+                        }
+                        _ => {}
+                    }
+                }
+                FrameKind::InputTerminalReply {
+                    terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bytes: bytes.ok_or(DecodeError::UnexpectedEof)?,
+                }
+            }
             TYPE_FRAME_ACK => {
                 let mut terminal_id: Option<TerminalId> = None;
-                let mut seq = 0u64;
+                let mut stream_id: Option<StreamId> = None;
+                let mut bootstrap_id: Option<BootstrapId> = None;
+                let mut seq: Option<u64> = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::frame_ack::TERMINAL_ID => {
                             terminal_id = Some(sub!(value, decode_terminal_id));
                         }
                         field::frame_ack::SEQ => {
-                            seq = sub!(value, |d: &mut Decoder<'_>| d.read_u64_be());
+                            seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                        }
+                        field::frame_ack::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
+                        }
+                        field::frame_ack::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                         }
                         _ => {}
                     }
                 }
                 FrameKind::FrameAck {
                     terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
-                    seq,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    seq: seq.ok_or(DecodeError::UnexpectedEof)?,
                 }
             }
             TYPE_VIEWPORT_RESIZE => {
@@ -624,6 +751,7 @@ impl<'a> Decoder<'a> {
             TYPE_ATTACHED => {
                 let mut snapshot: Option<crate::wire::info::SessionSnapshot> = None;
                 let mut initial_client_id: Option<crate::ids::ClientId> = None;
+                let mut attach_id = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::attached::SNAPSHOT => {
@@ -632,46 +760,421 @@ impl<'a> Decoder<'a> {
                         field::attached::INITIAL_CLIENT_ID => {
                             initial_client_id = Some(sub!(value, decode_client_id));
                         }
+                        field::attached::ATTACH_ID => {
+                            attach_id = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
                         _ => {}
                     }
                 }
                 FrameKind::Attached {
+                    attach_id: attach_id.ok_or(DecodeError::UnexpectedEof)?,
                     snapshot: snapshot.ok_or(DecodeError::UnexpectedEof)?,
                     initial_client_id: initial_client_id.ok_or(DecodeError::UnexpectedEof)?,
                 }
             }
-            TYPE_TERMINAL_SNAPSHOT => {
-                let mut terminal_id: Option<TerminalId> = None;
-                let mut cols = 0u16;
-                let mut rows = 0u16;
-                let mut vt_replay_bytes: Vec<u8> = Vec::new();
-                let mut scrollback_bytes: Option<Vec<u8>> = None;
+            TYPE_ATTACH_READY => {
+                let mut attach_id = None;
+                while let Some((id, value)) = self.read_field()? {
+                    if id == field::attach_ready::ATTACH_ID {
+                        attach_id = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    }
+                }
+                FrameKind::AttachReady {
+                    attach_id: attach_id.ok_or(DecodeError::UnexpectedEof)?,
+                }
+            }
+            TYPE_BOOTSTRAP_BEGIN => {
+                let mut terminal_id = None;
+                let mut stream_id = None;
+                let mut bootstrap_id = None;
+                let mut codec = None;
+                let mut cols = None;
+                let mut rows = None;
+                let mut output_mode = None;
+                let mut base_seq = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
-                        field::terminal_snapshot::TERMINAL_ID => {
+                        field::bootstrap_begin::TERMINAL_ID => {
                             terminal_id = Some(sub!(value, decode_terminal_id));
                         }
-                        field::terminal_snapshot::COLS => {
-                            cols = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                        field::bootstrap_begin::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
                         }
-                        field::terminal_snapshot::ROWS => {
-                            rows = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                        field::bootstrap_begin::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                         }
-                        field::terminal_snapshot::VT_REPLAY_BYTES => {
-                            vt_replay_bytes = value.to_vec();
+                        field::bootstrap_begin::CODEC => {
+                            codec = Some(sub!(value, decode_bootstrap_codec));
                         }
-                        field::terminal_snapshot::SCROLLBACK_BYTES => {
-                            scrollback_bytes = Some(value.to_vec());
+                        field::bootstrap_begin::COLS => {
+                            cols = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                        }
+                        field::bootstrap_begin::ROWS => {
+                            rows = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                        }
+                        field::bootstrap_begin::OUTPUT_MODE => {
+                            output_mode = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u8()));
+                        }
+                        field::bootstrap_begin::BASE_SEQ => {
+                            base_seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
                         }
                         _ => {}
                     }
                 }
-                FrameKind::TerminalSnapshot {
+                let cols = cols.ok_or(DecodeError::UnexpectedEof)?;
+                let rows = rows.ok_or(DecodeError::UnexpectedEof)?;
+                if cols == 0 || rows == 0 {
+                    return Err(DecodeError::InvalidBootstrapProfile);
+                }
+                let profile = decode_bootstrap_stream_profile(
+                    codec.ok_or(DecodeError::UnexpectedEof)?,
+                    output_mode.ok_or(DecodeError::UnexpectedEof)?,
+                )?;
+                FrameKind::BootstrapBegin {
                     terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    profile,
                     cols,
                     rows,
-                    vt_replay_bytes,
-                    scrollback_bytes,
+                    base_seq: base_seq.ok_or(DecodeError::UnexpectedEof)?,
+                }
+            }
+            TYPE_BOOTSTRAP_CHUNK => {
+                let mut terminal_id = None;
+                let mut stream_id = None;
+                let mut bootstrap_id = None;
+                let mut chunk_seq = None;
+                let mut payload = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::bootstrap_chunk::TERMINAL_ID => {
+                            terminal_id = Some(sub!(value, decode_terminal_id));
+                        }
+                        field::bootstrap_chunk::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
+                        }
+                        field::bootstrap_chunk::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
+                        }
+                        field::bootstrap_chunk::CHUNK_SEQ => {
+                            chunk_seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
+                        field::bootstrap_chunk::PAYLOAD => {
+                            if value.len() > self.max_bootstrap_chunk_bytes as usize {
+                                return Err(DecodeError::BootstrapLimitExceeded);
+                            }
+                            payload = Some(bytes::Bytes::copy_from_slice(value));
+                        }
+                        _ => {}
+                    }
+                }
+                FrameKind::BootstrapChunk {
+                    terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    chunk_seq: chunk_seq.ok_or(DecodeError::UnexpectedEof)?,
+                    payload: payload.ok_or(DecodeError::UnexpectedEof)?,
+                }
+            }
+            TYPE_BOOTSTRAP_READY => {
+                let mut terminal_id = None;
+                let mut stream_id = None;
+                let mut bootstrap_id = None;
+                let mut history_cursor = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::bootstrap_ready::TERMINAL_ID => {
+                            terminal_id = Some(sub!(value, decode_terminal_id));
+                        }
+                        field::bootstrap_ready::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
+                        }
+                        field::bootstrap_ready::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
+                        }
+                        field::bootstrap_ready::HISTORY_CURSOR => {
+                            if value.len() > MAX_HISTORY_CURSOR_BYTES {
+                                return Err(DecodeError::BootstrapLimitExceeded);
+                            }
+                            history_cursor = Some(bytes::Bytes::copy_from_slice(value));
+                        }
+                        _ => {}
+                    }
+                }
+                FrameKind::BootstrapReady {
+                    terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    history_cursor,
+                }
+            }
+            TYPE_HISTORY_REQUEST => {
+                let mut terminal_id = None;
+                let mut stream_id = None;
+                let mut bootstrap_id = None;
+                let mut cursor = None;
+                let mut max_bytes = None;
+                let mut max_rows = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::history_request::TERMINAL_ID => {
+                            terminal_id = Some(sub!(value, decode_terminal_id));
+                        }
+                        field::history_request::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
+                        }
+                        field::history_request::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
+                        }
+                        field::history_request::CURSOR => {
+                            if value.len() > MAX_HISTORY_CURSOR_BYTES {
+                                return Err(DecodeError::BootstrapLimitExceeded);
+                            }
+                            cursor = Some(bytes::Bytes::copy_from_slice(value));
+                        }
+                        field::history_request::MAX_BYTES => {
+                            max_bytes = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
+                        field::history_request::MAX_ROWS => {
+                            max_rows = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
+                        _ => {}
+                    }
+                }
+                let max_bytes = max_bytes.ok_or(DecodeError::UnexpectedEof)?;
+                let max_rows = max_rows.ok_or(DecodeError::UnexpectedEof)?;
+                FrameKind::HistoryRequest {
+                    terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    cursor: cursor.ok_or(DecodeError::UnexpectedEof)?,
+                    max_bytes,
+                    max_rows,
+                }
+            }
+            TYPE_HISTORY_PAGE => {
+                // Retain borrowed fields until every scalar and bound has been
+                // validated. A producer may place the opaque payload before a
+                // required scalar, so copying during the TLV scan would let a
+                // malformed frame allocate up to the negotiated page limit.
+                let mut terminal_id = None;
+                let mut stream_id = None;
+                let mut bootstrap_id = None;
+                let mut page_seq = None;
+                let mut cursor = None;
+                let mut next_cursor = None;
+                let mut payload = None;
+                let mut rows = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::history_page::TERMINAL_ID => terminal_id = Some(value),
+                        field::history_page::STREAM_ID => stream_id = Some(value),
+                        field::history_page::BOOTSTRAP_ID => bootstrap_id = Some(value),
+                        field::history_page::CURSOR => cursor = Some(value),
+                        field::history_page::NEXT_CURSOR => next_cursor = Some(value),
+                        field::history_page::PAYLOAD => payload = Some(value),
+                        field::history_page::PAGE_SEQ => page_seq = Some(value),
+                        field::history_page::ROWS => rows = Some(value),
+                        _ => {}
+                    }
+                }
+
+                let stream_id = sub!(
+                    stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    decode_stream_id
+                );
+                let bootstrap_id = sub!(
+                    bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    decode_bootstrap_id
+                );
+                let page_seq = sub!(
+                    page_seq.ok_or(DecodeError::UnexpectedEof)?,
+                    |d: &mut Decoder<'_>| d.read_u64_be()
+                );
+                if page_seq == 0 {
+                    return Err(DecodeError::InvalidHistoryPageSequence);
+                }
+                let rows = sub!(
+                    rows.ok_or(DecodeError::UnexpectedEof)?,
+                    |d: &mut Decoder<'_>| d.read_u32_be()
+                );
+                if rows > MAX_HISTORY_PAGE_ROWS {
+                    return Err(DecodeError::HistoryRowLimitExceeded);
+                }
+
+                let payload = payload.ok_or(DecodeError::UnexpectedEof)?;
+                if payload.len() > self.max_history_page_bytes as usize {
+                    return Err(DecodeError::BootstrapLimitExceeded);
+                }
+                let cursor = cursor.ok_or(DecodeError::UnexpectedEof)?;
+                if cursor.len() > MAX_HISTORY_CURSOR_BYTES {
+                    return Err(DecodeError::BootstrapLimitExceeded);
+                }
+                if next_cursor.is_some_and(|next| next.len() > MAX_HISTORY_CURSOR_BYTES) {
+                    return Err(DecodeError::BootstrapLimitExceeded);
+                }
+                let terminal_id = sub!(
+                    terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    decode_terminal_id
+                );
+
+                FrameKind::HistoryPage {
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    page_seq,
+                    cursor: bytes::Bytes::copy_from_slice(cursor),
+                    next_cursor: next_cursor.map(bytes::Bytes::copy_from_slice),
+                    payload: bytes::Bytes::copy_from_slice(payload),
+                    rows,
+                }
+            }
+            TYPE_BOOTSTRAP_TOMBSTONE => {
+                let mut terminal_id = None;
+                let mut stream_id = None;
+                let mut bootstrap_id = None;
+                let mut reason = None;
+                let mut last_valid_seq = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::bootstrap_tombstone::TERMINAL_ID => {
+                            terminal_id = Some(sub!(value, decode_terminal_id));
+                        }
+                        field::bootstrap_tombstone::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
+                        }
+                        field::bootstrap_tombstone::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
+                        }
+                        field::bootstrap_tombstone::REASON => {
+                            let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                            reason = Some(TombstoneReason::from_wire(value).ok_or_else(|| {
+                                DecodeError::UnknownEnumValue {
+                                    field: "TombstoneReason",
+                                    value: u32::from(value),
+                                }
+                            })?);
+                        }
+                        field::bootstrap_tombstone::LAST_VALID_SEQ => {
+                            last_valid_seq =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                        }
+                        _ => {}
+                    }
+                }
+                FrameKind::BootstrapTombstone {
+                    terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    reason: reason.ok_or(DecodeError::UnexpectedEof)?,
+                    last_valid_seq: last_valid_seq.ok_or(DecodeError::UnexpectedEof)?,
+                }
+            }
+            TYPE_HISTORY_TOMBSTONE => {
+                let mut terminal_id = None;
+                let mut stream_id = None;
+                let mut bootstrap_id = None;
+                let mut cursor = None;
+                let mut reason = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::history_tombstone::TERMINAL_ID => {
+                            terminal_id = Some(sub!(value, decode_terminal_id));
+                        }
+                        field::history_tombstone::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
+                        }
+                        field::history_tombstone::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
+                        }
+                        field::history_tombstone::CURSOR => {
+                            if value.len() > MAX_HISTORY_CURSOR_BYTES {
+                                return Err(DecodeError::BootstrapLimitExceeded);
+                            }
+                            cursor = Some(bytes::Bytes::copy_from_slice(value));
+                        }
+                        field::history_tombstone::REASON => {
+                            let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                            reason = Some(HistoryTombstoneReason::from_wire(value).ok_or_else(
+                                || DecodeError::UnknownEnumValue {
+                                    field: "HistoryTombstoneReason",
+                                    value: u32::from(value),
+                                },
+                            )?);
+                        }
+                        _ => {}
+                    }
+                }
+                FrameKind::HistoryTombstone {
+                    terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    cursor: cursor.ok_or(DecodeError::UnexpectedEof)?,
+                    reason: reason.ok_or(DecodeError::UnexpectedEof)?,
+                }
+            }
+            TYPE_HISTORY_REJECTED => {
+                let mut terminal_id = None;
+                let mut stream_id = None;
+                let mut bootstrap_id = None;
+                let mut cursor = None;
+                let mut reason = None;
+                let mut required_bytes = None;
+                let mut required_rows = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::history_rejected::TERMINAL_ID => {
+                            terminal_id = Some(sub!(value, decode_terminal_id));
+                        }
+                        field::history_rejected::STREAM_ID => {
+                            stream_id = Some(sub!(value, decode_stream_id));
+                        }
+                        field::history_rejected::BOOTSTRAP_ID => {
+                            bootstrap_id = Some(sub!(value, decode_bootstrap_id));
+                        }
+                        field::history_rejected::CURSOR => {
+                            if value.len() > MAX_HISTORY_CURSOR_BYTES {
+                                return Err(DecodeError::BootstrapLimitExceeded);
+                            }
+                            cursor = Some(bytes::Bytes::copy_from_slice(value));
+                        }
+                        field::history_rejected::REASON => {
+                            let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                            reason = Some(HistoryRejectionReason::from_wire(value).ok_or_else(
+                                || DecodeError::UnknownEnumValue {
+                                    field: "HistoryRejectionReason",
+                                    value: u32::from(value),
+                                },
+                            )?);
+                        }
+                        field::history_rejected::REQUIRED_BYTES => {
+                            required_bytes =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
+                        field::history_rejected::REQUIRED_ROWS => {
+                            required_rows =
+                                Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        }
+                        _ => {}
+                    }
+                }
+                let required_bytes = required_bytes.ok_or(DecodeError::UnexpectedEof)?;
+                if required_bytes == 0 || required_bytes > self.max_history_page_bytes {
+                    return Err(DecodeError::BootstrapLimitExceeded);
+                }
+                let required_rows = required_rows.ok_or(DecodeError::UnexpectedEof)?;
+                if required_rows == 0 || required_rows > MAX_HISTORY_PAGE_ROWS {
+                    return Err(DecodeError::HistoryRowLimitExceeded);
+                }
+                FrameKind::HistoryRejected {
+                    terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
+                    stream_id: stream_id.ok_or(DecodeError::UnexpectedEof)?,
+                    bootstrap_id: bootstrap_id.ok_or(DecodeError::UnexpectedEof)?,
+                    cursor: cursor.ok_or(DecodeError::UnexpectedEof)?,
+                    reason: reason.ok_or(DecodeError::UnexpectedEof)?,
+                    required_bytes,
+                    required_rows,
                 }
             }
             TYPE_DETACHED => {

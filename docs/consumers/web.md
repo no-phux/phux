@@ -98,10 +98,15 @@ the one documented in [`../spec/appendix-encoding.md`](../spec/appendix-encoding
    - **WebSocket** (`PHUX_WS_ADDR`): one binary message carries one encoded
      frame. The fallback (and the default when no WebTransport URL is
      given).
-4. Send `HELLO`, then `ATTACH` (`CreateIfMissing` the `default` session).
-5. On `TERMINAL_SNAPSHOT` / `TERMINAL_OUTPUT`, write the bytes into the engine
-   and repaint the grid; ack output with `FRAME_ACK`. A 530 ms interval toggles
-   the cursor blink.
+4. Send protocol-0.7 `HELLO`, consume its selected bootstrap profile/bounds,
+   then send `ATTACH` with a client correlation `attach_id`.
+5. Decode matching `BOOTSTRAP_BEGIN` / `BOOTSTRAP_CHUNK` into an invisible
+   engine and publish at `BOOTSTRAP_READY`; consume generation-bound
+   `TERMINAL_OUTPUT` from `base_seq + 1`. Native checkpoint and raw live bytes
+   are never rewritten. Raw profiles send no `FRAME_ACK`; only negotiated
+   `SynthesizedVtStateSync` acknowledges a transition after applying it.
+   Retained history is requested incrementally after READY. A 530 ms interval
+   toggles cursor blink.
 6. On `keydown`, map `KeyboardEvent.code` to a `PhysicalKey`, build a
    `KeyEvent`, and send `INPUT_KEY` for the attached terminal.
 
@@ -186,14 +191,14 @@ can be launched with `--origin-to-force-quic-on` +
 
 - `phux-vt-web` — `wasm-pack test --node`: drives the real engine, reads the
   grid back, decodes a truecolor cell and the cursor.
-- `phux-web` — `wasm-pack test --node`: a real `TERMINAL_OUTPUT` frame
-  (round-tripped through the codec) feeds the engine and acks.
+- `phux-web` — `wasm-pack test --node`: generation-bound
+  `TERMINAL_OUTPUT` round-trips through the codec and feeds the engine; native
+  and synthesized-raw profiles do not ACK.
 - Renderer and full client — `wasm-pack test --headless --chrome`:
   engine-to-grid-to-canvas pixel test, and a live connect-to-server-and-render
   end-to-end test against `ws_demo_server`.
-- Server side — `phux-server` `ws_attach` test: a real client does
-  `HELLO`-then-`ATTACH` over WebSocket and receives `ATTACHED` plus
-  `TERMINAL_SNAPSHOT`.
+- Server side — `phux-server` attach tests: a real protocol-0.7 client receives
+  `ATTACHED`, per-pane BEGIN/CHUNK/READY, and aggregate `ATTACH_READY`.
 - WebTransport listener — `phux-server` `transport::webtransport` tests: a
   native WebTransport client (wtransport) performs the full HTTP/3 session
   handshake against the listener, exercises the bearer-token gate (header

@@ -57,7 +57,7 @@ mod common;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use common::{encode_frame, recv_typed, send_frame, wait_for_socket};
+use common::{encode_frame, recv_typed, send_frame, wait_for_raw_socket, wait_for_socket};
 use futures_util::{SinkExt, StreamExt};
 use phux_config::SatelliteConfigEntry;
 use phux_protocol::PROTOCOL_VERSION;
@@ -817,7 +817,7 @@ async fn run_stub_bridge(c2s: PathBuf, s2c: PathBuf, sat_sock: PathBuf) {
             Err(err) => panic!("ssh stub never opened its stdout FIFO: {err}"),
         }
     };
-    let satellite = wait_for_socket(&sat_sock, STEP_DEADLINE).await;
+    let satellite = wait_for_raw_socket(&sat_sock, STEP_DEADLINE).await;
     let (mut sat_rd, mut sat_wr) = satellite.into_split();
     // One finished direction ends the bridge, mirroring `phux
     // stdio-bridge`: the transport is gone either way and the hub's
@@ -1055,9 +1055,16 @@ async fn send_key_and_enter(hub: &mut UnixStream, sat_id: &TerminalId, c: char) 
 }
 
 /// Drain re-tagged `TERMINAL_OUTPUT` frames for `sat_id` until `needle`
-/// appears in the accumulated bytes; returns the last observed `seq`.
-/// Panics when `STEP_DEADLINE` elapses first.
-async fn await_satellite_echo(hub: &mut UnixStream, sat_id: &TerminalId, needle: u8) -> u64 {
+/// appears, returning the stream/generation identity and last `seq`.
+async fn await_satellite_echo(
+    hub: &mut UnixStream,
+    sat_id: &TerminalId,
+    needle: u8,
+) -> (
+    phux_protocol::ids::StreamId,
+    phux_protocol::ids::BootstrapId,
+    u64,
+) {
     let mut acc: Vec<u8> = Vec::new();
     let deadline = Instant::now() + STEP_DEADLINE;
     while Instant::now() < deadline {
@@ -1065,6 +1072,8 @@ async fn await_satellite_echo(hub: &mut UnixStream, sat_id: &TerminalId, needle:
         if let FrameKind::TerminalOutput {
             terminal_id,
             seq,
+            stream_id,
+            bootstrap_id,
             bytes,
         } = frame
         {
@@ -1074,7 +1083,7 @@ async fn await_satellite_echo(hub: &mut UnixStream, sat_id: &TerminalId, needle:
             );
             acc.extend_from_slice(&bytes);
             if acc.contains(&needle) {
-                return seq;
+                return (stream_id, bootstrap_id, seq);
             }
         }
     }
@@ -1112,9 +1121,9 @@ fn two_hop_attach_snapshot_output_input_ack_and_detach() {
         let frames = attach_terminal_until_ok(&mut hub, &sat_id).await;
         let snapshot_pos = frames
             .iter()
-            .position(|f| matches!(f, FrameKind::TerminalSnapshot { .. }))
+            .position(|f| matches!(f, FrameKind::BootstrapBegin { .. }))
             .expect("ATTACH_TERMINAL must deliver a TERMINAL_SNAPSHOT");
-        if let FrameKind::TerminalSnapshot {
+        if let FrameKind::BootstrapBegin {
             terminal_id,
             cols,
             rows,
@@ -1139,7 +1148,7 @@ fn two_hop_attach_snapshot_output_input_ack_and_detach() {
         //    link consumer holds an ATTACH_TERMINAL subscription) and
         //    `cat` echoes back as re-tagged TERMINAL_OUTPUT.
         send_key_and_enter(&mut hub, &sat_id, 'a').await;
-        let seq = await_satellite_echo(&mut hub, &sat_id, b'a').await;
+        let (stream_id, bootstrap_id, seq) = await_satellite_echo(&mut hub, &sat_id, b'a').await;
 
         // 3. FRAME_ACK relays without deadlocking or killing the stream
         //    (ADR-0018 flow control across the extra hop): ack what we
@@ -1148,6 +1157,8 @@ fn two_hop_attach_snapshot_output_input_ack_and_detach() {
             &mut hub,
             &FrameKind::FrameAck {
                 terminal_id: sat_id.clone(),
+                stream_id,
+                bootstrap_id,
                 seq,
             },
         )
@@ -1170,7 +1181,7 @@ fn two_hop_attach_snapshot_output_input_ack_and_detach() {
         assert!(
             frames
                 .iter()
-                .any(|f| matches!(f, FrameKind::TerminalSnapshot { .. })),
+                .any(|f| matches!(f, FrameKind::BootstrapBegin { .. })),
             "re-attach after detach must deliver a fresh snapshot"
         );
 

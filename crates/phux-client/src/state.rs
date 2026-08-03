@@ -406,17 +406,31 @@ mod tests {
         );
         assert_eq!(*view.snapshot(), expected);
         let seen = server.await.unwrap();
+        let Some(FrameKind::Hello {
+            client_name,
+            client_caps,
+            ..
+        }) = seen.first()
+        else {
+            panic!("HELLO must be first, got {seen:?}");
+        };
+        assert!(client_name.starts_with("phux-client/"));
+        assert_eq!(
+            client_caps.layers,
+            phux_protocol::caps::LayerSet::new(),
+            "control commands advertise only the default L1 profile"
+        );
         assert!(
             matches!(
-                seen.first(),
+                seen.get(1),
                 Some(FrameKind::Command {
                     request_id: 0,
                     command: Command::GetState { .. }
                 })
             ),
-            "GET_STATE is the only frame this path sends, on request id 0; got {:?}",
-            seen.first()
+            "GET_STATE must follow negotiation on request id 0; got {seen:?}",
         );
+        assert_eq!(seen.len(), 2, "exactly one HELLO and one GET_STATE");
     }
 
     #[tokio::test]

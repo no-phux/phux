@@ -123,12 +123,15 @@ async fn collect_until(rx: &mut Receiver<PaneOutput>, needle: &[u8]) -> Vec<u8> 
         let mut acc: Vec<u8> = Vec::new();
         loop {
             match rx.recv().await {
-                Ok(PaneOutput::Live(chunk) | PaneOutput::Resync { bytes: chunk, .. }) => {
+                Ok(
+                    PaneOutput::Live { bytes: chunk, .. } | PaneOutput::Resync { bytes: chunk, .. },
+                ) => {
                     acc.extend_from_slice(&chunk);
                     if acc.windows(needle.len()).any(|w| w == needle) {
                         return acc;
                     }
                 }
+                Ok(PaneOutput::Control { .. }) => {}
                 // A slow subscriber dropping bytes would make the replay
                 // assertion meaningless (we'd be missing stream content), so
                 // a lag is a hard failure here, unlike in liveness-only tests.
@@ -156,9 +159,10 @@ fn drain_pending(rx: &mut Receiver<PaneOutput>) -> Vec<u8> {
     let mut acc = Vec::new();
     loop {
         match rx.try_recv() {
-            Ok(PaneOutput::Live(chunk) | PaneOutput::Resync { bytes: chunk, .. }) => {
+            Ok(PaneOutput::Live { bytes: chunk, .. } | PaneOutput::Resync { bytes: chunk, .. }) => {
                 acc.extend_from_slice(&chunk);
             }
+            Ok(PaneOutput::Control { .. }) => {}
             Err(TryRecvError::Empty | TryRecvError::Closed) => return acc,
             Err(TryRecvError::Lagged(n)) => {
                 panic!("broadcast lagged by {n} during drain; replay totality cannot hold")
@@ -173,6 +177,9 @@ async fn snapshot(snap_tx: &mpsc::Sender<SnapshotRequest>) -> SnapshotBytes {
     snap_tx
         .send(SnapshotRequest {
             scrollback: None,
+            max_bytes: usize::MAX,
+            max_frames: usize::MAX,
+            chunk_bytes: 1,
             reply: tx,
         })
         .await
@@ -181,6 +188,8 @@ async fn snapshot(snap_tx: &mpsc::Sender<SnapshotRequest>) -> SnapshotBytes {
         .await
         .expect("snapshot timed out")
         .expect("snapshot reply dropped")
+        .expect("snapshot synthesis")
+        .0
 }
 
 /// Replay `bytes` into a fresh `Screen` sized `cols x rows` and return the

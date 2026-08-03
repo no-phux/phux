@@ -52,10 +52,10 @@ scenario_description() {
       echo "ignored e2e lane covering real PTY run/wait behavior"
       ;;
     tui-probe)
-      echo "black-box attach probe through an isolated tmux terminal"
+      echo "bounded assertion-bearing real-server TUI, paging, restore, and cast replay gate"
       ;;
     visual-qa-hooks)
-      echo "captured TUI probe artifact with screen/cursor markers"
+      echo "captured TUI screens, cursors, logs, casts, and replay snapshots"
       ;;
     docs-check)
       echo "doc-system frontmatter/TLDR/link/spec gate"
@@ -87,7 +87,7 @@ scenario_command() {
       echo "bash scripts/tui-probe.sh 80 24"
       ;;
     visual-qa-hooks)
-      echo "bash scripts/tui-probe.sh 100 30 | tee \$PHUX_PARITY_ARTIFACT_DIR/parity-tui-probe.txt && grep -q 'AFTER ATTACH' \$PHUX_PARITY_ARTIFACT_DIR/parity-tui-probe.txt && grep -q 'AFTER SPLIT' \$PHUX_PARITY_ARTIFACT_DIR/parity-tui-probe.txt && grep -q 'cursor (x,y)' \$PHUX_PARITY_ARTIFACT_DIR/parity-tui-probe.txt"
+      echo "PHUX_SMOKE_ARTIFACT_DIR=\$PHUX_PARITY_ARTIFACT_DIR bash scripts/tui-probe.sh 100 30 | tee \$PHUX_PARITY_ARTIFACT_DIR/parity-tui-probe.txt && grep -q '=== PASS ===' \$PHUX_PARITY_ARTIFACT_DIR/parity-tui-probe.txt"
       ;;
     docs-check)
       echo "just docs-check"
@@ -201,11 +201,9 @@ run_scenario() {
       ;;
     visual-qa-hooks)
       local artifact="$ARTIFACT_DIR/parity-tui-probe.txt"
-      (cd "$ROOT" && bash scripts/tui-probe.sh 100 30) | tee "$artifact"
-      grep -q "AFTER ATTACH" "$artifact"
-      grep -q "AFTER SPLIT" "$artifact"
-      grep -q "cursor (x,y)" "$artifact"
-      echo "visual QA artifact: $artifact"
+      (cd "$ROOT" && PHUX_SMOKE_ARTIFACT_DIR="$ARTIFACT_DIR" bash scripts/tui-probe.sh 100 30) | tee "$artifact"
+      grep -q "=== PASS ===" "$artifact"
+      echo "visual QA artifacts: $ARTIFACT_DIR"
       ;;
     docs-check)
       (cd "$ROOT" && just docs-check)

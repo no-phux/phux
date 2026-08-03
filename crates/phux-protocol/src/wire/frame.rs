@@ -25,10 +25,13 @@
 
 use bytes::BytesMut;
 
-use crate::caps::{ClientCapabilities, ServerCapabilities};
+use crate::caps::{
+    BootstrapCodec, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,
+    EngineCodec, EngineFeatureSet, OutputMode, ServerCapabilities,
+};
 use crate::ids::{
-    ClientId, FileUploadId, GroupId, InputOperationId, SatelliteHost, SessionId,
-    TERMINAL_ID_TAG_LOCAL, TERMINAL_ID_TAG_SATELLITE, TerminalId,
+    BootstrapId, ClientId, FileUploadId, GroupId, InputOperationId, SatelliteHost, SessionId,
+    StreamId, TERMINAL_ID_TAG_LOCAL, TERMINAL_ID_TAG_SATELLITE, TerminalId,
 };
 use crate::input::InputEvent;
 use crate::input::focus::FocusEvent;
@@ -48,6 +51,15 @@ use super::info::{
 /// Maximum permitted value of the wire-frame `length` field, per `docs/spec/proto.md` §5
 /// ("at most `16_777_216` (16 MiB)").
 pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
+/// Maximum bytes in one opaque engine-owned history cursor.
+pub const MAX_HISTORY_CURSOR_BYTES: usize = 4 * 1024;
+/// Hard upper bound for rows requested or reported in one native history page.
+pub const MAX_HISTORY_PAGE_ROWS: u32 = 4 * 1024;
+/// Maximum bytes in one opaque client terminal-emulator PTY reply.
+///
+/// This matches the existing 64 KiB input-command bound and keeps a stateful
+/// reply below pre-auth buffering limits with ample TLV envelope headroom.
+pub const MAX_INPUT_TERMINAL_REPLY_BYTES: usize = 64 * 1024;
 /// Maximum payload bytes in one [`Command::PutFile`] chunk. The 8 MiB ceiling
 /// leaves ample room below the 16 MiB frame cap for envelope and metadata.
 pub const MAX_FILE_UPLOAD_CHUNK: usize = 8 * 1024 * 1024;
@@ -77,19 +89,16 @@ pub const TYPE_INPUT_FOCUS: u8 = 0x14;
 // 0x15 was `INPUT_SELECTION`, removed in v0.5.0 (phux-q1ni, ADR-0030):
 // selection is a client-side projection over the consumer's own engine, not a
 // wire frame. The discriminant is left unassigned.
-/// Discriminant for `FRAME_ACK` (client to server, `docs/spec/proto.md` §7.2 / §8.2).
+/// Discriminant for `HISTORY_REQUEST` (client to server, `docs/spec/L1.md` §4.5).
+pub const TYPE_HISTORY_REQUEST: u8 = 0x16;
+/// Discriminant for `INPUT_TERMINAL_REPLY` (client to server,
+/// `docs/spec/input.md` §6).
+pub const TYPE_INPUT_TERMINAL_REPLY: u8 = 0x17;
+/// Discriminant for StateSync-only `FRAME_ACK` (client to server,
+/// `docs/spec/proto.md` §8.2).
 ///
-/// Per-Terminal cumulative acknowledgement of `TERMINAL_OUTPUT` (§8.1) frames
-/// the client has applied to its local `libghostty_vt::Terminal`. The server
-/// uses these acks to evict per-consumer cached reference state under ADR-0018
-/// lazy state synchronization — calling `mark_synced` on the per-consumer
-/// `SnapshotSynthesizer` so the next tick re-diffs against the just-acked
-/// reference rather than the prior one.
-///
-/// Loss tolerance falls out: a dropped ack leaves the dirty bits set on the
-/// per-consumer `RenderState`, so the next tick re-emits a larger diff against
-/// the same older reference. No retransmit machinery; the ack is a hint, not a
-/// guarantee.
+/// Cumulative within one `(TerminalId, StreamId, BootstrapId)` after the
+/// client applies the acknowledged transition. Raw profiles never send it.
 pub const TYPE_FRAME_ACK: u8 = 0x21;
 /// Discriminant for `VIEWPORT_RESIZE` (client to server, `docs/spec/proto.md` §7.1 / §10.5).
 ///
@@ -103,10 +112,12 @@ pub const TYPE_VIEWPORT_RESIZE: u8 = 0x20;
 pub const TYPE_PING: u8 = 0x7F;
 /// Discriminant for `HELLO_OK` (server to client, `docs/spec/proto.md` §6.1).
 pub const TYPE_HELLO_OK: u8 = 0x80;
-/// Discriminant for `ATTACHED` (server to client, `docs/spec/L1.md` §1 / §13).
+/// Discriminant for `ATTACHED` (server to client, `docs/spec/L1.md` §8).
 pub const TYPE_ATTACHED: u8 = 0x81;
 /// Discriminant for `DETACHED` (server to client, `docs/spec/L1.md` §1 / §7.3).
 pub const TYPE_DETACHED: u8 = 0x82;
+/// Discriminant for `ATTACH_READY` (server to client, `docs/spec/L1.md` §8).
+pub const TYPE_ATTACH_READY: u8 = 0x83;
 /// Discriminant for `BELL` (server to client, `docs/spec/L1.md` §1.2).
 pub const TYPE_BELL: u8 = 0xB0;
 /// Discriminant for `ERROR` (server to client, `docs/spec/proto.md` §9).
@@ -118,21 +129,28 @@ pub const TYPE_BELL: u8 = 0xB0;
 pub const TYPE_ERROR: u8 = 0xC1;
 /// Discriminant for `PONG` (server to client, `docs/spec/proto.md` §7.4).
 pub const TYPE_PONG: u8 = 0xFF;
-/// Discriminant for `TERMINAL_OUTPUT` (server to client, `docs/spec/L1.md` §1 / §8.1).
-///
-/// Hot-path terminal content under [ADR-0013]: the server forwards PTY bytes
-/// (possibly downsampled per the client's [`crate::caps::ColorSupport`])
-/// in `TERMINAL_OUTPUT` frames. Supersedes the earlier `PANE_DIFF` slot;
-/// `PANE_DIFF` is retired and its old discriminant (`0x40`) is no longer
-/// recognised.
+/// Discriminant for generation-bound `TERMINAL_OUTPUT` (server to client,
+/// `docs/spec/L1.md` §4.1). Native-profile payloads are byte-identical raw PTY
+/// bytes and are never capability-rewritten.
 pub const TYPE_TERMINAL_OUTPUT: u8 = 0x90;
-/// Discriminant for `TERMINAL_SNAPSHOT` (server to client, `docs/spec/L1.md` §1 / §8.4).
-///
-/// Required per SPEC §16 conformance. Under [ADR-0013] the payload is a
-/// synthesised VT byte sequence (`vt_replay_bytes`) plus optional
-/// `scrollback_bytes`; the client `vt_write`s them into a fresh Terminal
-/// of the declared `cols × rows`.
-pub const TYPE_TERMINAL_SNAPSHOT: u8 = 0x91;
+// 0x91 was `TERMINAL_SNAPSHOT` through protocol 0.6. It is permanently
+// retired by ADR-0067 and MUST NOT be decoded or reassigned.
+/// Discriminant for `BOOTSTRAP_BEGIN` (server to client, `docs/spec/L1.md` §4.3).
+pub const TYPE_BOOTSTRAP_BEGIN: u8 = 0x93;
+/// Discriminant for `BOOTSTRAP_CHUNK` (server to client, `docs/spec/L1.md` §4.3).
+pub const TYPE_BOOTSTRAP_CHUNK: u8 = 0x94;
+/// Discriminant for `BOOTSTRAP_READY` (server to client, `docs/spec/L1.md` §4.3).
+pub const TYPE_BOOTSTRAP_READY: u8 = 0x95;
+/// Discriminant for `HISTORY_PAGE` (server to client, `docs/spec/L1.md` §4.5).
+pub const TYPE_HISTORY_PAGE: u8 = 0x96;
+/// Discriminant for `BOOTSTRAP_TOMBSTONE` (server to client, `docs/spec/L1.md` §4.6).
+pub const TYPE_BOOTSTRAP_TOMBSTONE: u8 = 0x97;
+/// Discriminant for cursor-scoped `HISTORY_TOMBSTONE` (server to client,
+/// `docs/spec/L1.md` §4.5).
+pub const TYPE_HISTORY_TOMBSTONE: u8 = 0x98;
+/// Discriminant for retryable cursor-scoped `HISTORY_REJECTED` (server to
+/// client, `docs/spec/L1.md` §4.5).
+pub const TYPE_HISTORY_REJECTED: u8 = 0x99;
 
 // -----------------------------------------------------------------------------
 // L3 metadata frame discriminants — SPEC §7.4 (phux-4li.2).
@@ -519,9 +537,9 @@ pub(crate) const EVENT_TAG_CWD_CHANGED: u8 = 0x0a;
 // decode as `UnknownEnumValue` until wired.
 /// Wire tag for [`Command::AttachTerminal`], taking the `0x01` slot the
 /// SPEC §5.1 catalog reserved for `ATTACH_TERMINAL` (phux-v45.7). The
-/// per-Terminal output-subscription verb: it wires the caller to receive
-/// `TERMINAL_SNAPSHOT` + `TERMINAL_OUTPUT` for one Terminal without a
-/// session-scoped `ATTACH`. The catalog's `role_policy` field is not yet
+/// per-Terminal output-subscription verb: it wires the caller to receive a
+/// profile-selected bootstrap stream plus `TERMINAL_OUTPUT`.
+/// The catalog's `role_policy` field is not yet
 /// encoded — an absent policy decodes as
 /// `RolePolicy { requested_role: PRIMARY, takeover: NEVER }` per SPEC §8.1,
 /// which is exactly what this body-less-policy encoding means; the field
@@ -674,11 +692,13 @@ pub enum ErrorCode {
     VersionIncompatible = 1,
     /// SPEC §6: the peer sent a type byte the receiver does not recognise.
     UnknownMessageType = 2,
-    /// SPEC §5 / Appendix A: a message could not be decoded (truncated,
-    /// bad enum, invalid UTF-8, ...).
+    /// SPEC §5 / Appendix A: a message could not be decoded.
     MalformedMessage = 3,
     /// SPEC §5: a frame's declared length exceeded the protocol cap.
     FrameTooLarge = 4,
+    // Value 5 is permanently reserved for the withdrawn OUT_OF_TIER error.
+    /// SPEC §6.1: peers share no usable explicit bootstrap profile/codec/features.
+    CodecUnavailable = 6,
 
     /// SPEC §13: the client issued an operation that requires an attach
     /// while not attached.
@@ -746,6 +766,7 @@ impl ErrorCode {
             2 => Self::UnknownMessageType,
             3 => Self::MalformedMessage,
             4 => Self::FrameTooLarge,
+            6 => Self::CodecUnavailable,
             100 => Self::NotAttached,
             101 => Self::AlreadyAttached,
             102 => Self::SessionNotFound,
@@ -761,6 +782,128 @@ impl ErrorCode {
             204 => Self::InputLeaseHeld,
             205 => Self::InputDeliveryUnknown,
             65535 => Self::InternalError,
+            _ => return None,
+        })
+    }
+}
+/// Why a bootstrap generation can no longer preserve stream continuity.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TombstoneReason {
+    /// The bounded post-cut raw replay queue overflowed.
+    RawReplayOverflow = 0,
+    /// A live sequence was dropped, duplicated, or observed out of order.
+    OutboundGap = 1,
+    /// Authoritative PTY geometry changed and requires a new actor cut.
+    Resize = 2,
+    /// A federation return leg reconnected without provable continuity.
+    RelayReconnect = 3,
+    /// The consumer explicitly requested a replacement bootstrap.
+    ExplicitReattach = 4,
+    /// The selected engine/compatibility codec rejected or failed capture.
+    CodecFailure = 5,
+    /// A bounded, explicit reason not represented by an earlier tag.
+    Other = 6,
+}
+
+impl TombstoneReason {
+    /// Stable wire discriminant.
+    #[must_use]
+    pub const fn as_wire(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode a known tombstone reason.
+    #[must_use]
+    pub const fn from_wire(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::RawReplayOverflow,
+            1 => Self::OutboundGap,
+            2 => Self::Resize,
+            3 => Self::RelayReconnect,
+            4 => Self::ExplicitReattach,
+            5 => Self::CodecFailure,
+            6 => Self::Other,
+            _ => return None,
+        })
+    }
+}
+
+/// Why one progressive history cursor can no longer be consumed.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum HistoryTombstoneReason {
+    /// The cursor is no longer current for its history lease.
+    Stale = 0,
+    /// The referenced retained rows were pruned.
+    Pruned = 1,
+    /// History capture state was reset without invalidating live state.
+    Reset = 2,
+    /// A resize invalidated historical reflow for this cursor.
+    Resize = 3,
+    /// The cursor lease expired.
+    Expired = 4,
+    /// The cursor lease was explicitly released.
+    Released = 5,
+    /// A history byte or row resource limit was reached.
+    Limit = 6,
+    /// The selected native codec rejected history capture or import.
+    CodecFailure = 7,
+}
+
+impl HistoryTombstoneReason {
+    /// Stable wire discriminant.
+    #[must_use]
+    pub const fn as_wire(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode a known history-tombstone reason.
+    #[must_use]
+    pub const fn from_wire(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::Stale,
+            1 => Self::Pruned,
+            2 => Self::Reset,
+            3 => Self::Resize,
+            4 => Self::Expired,
+            5 => Self::Released,
+            6 => Self::Limit,
+            7 => Self::CodecFailure,
+            _ => return None,
+        })
+    }
+}
+
+/// Why one history request was rejected without advancing its cursor.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum HistoryRejectionReason {
+    /// A required byte or row request limit was zero.
+    ZeroLimit = 0,
+    /// The requested limits cannot fit the next independently decodable unit.
+    TooSmall = 1,
+    /// Capture is temporarily busy; retrying the same cursor is permitted.
+    Busy = 2,
+}
+
+impl HistoryRejectionReason {
+    /// Stable wire discriminant.
+    #[must_use]
+    pub const fn as_wire(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode a known history-rejection reason.
+    #[must_use]
+    pub const fn from_wire(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::ZeroLimit,
+            1 => Self::TooSmall,
+            2 => Self::Busy,
             _ => return None,
         })
     }
@@ -1224,12 +1367,12 @@ impl ControlAction {
 pub enum Command {
     /// Subscribe the calling client to one Terminal's content stream
     /// (SPEC §5.1 `ATTACH_TERMINAL`, phux-v45.7): the server registers the
-    /// caller as an output subscriber, primes it with an authoritative
-    /// `TERMINAL_SNAPSHOT`, and streams `TERMINAL_OUTPUT` deltas from then
-    /// on — the per-Terminal interactive attach, without the session-scoped
-    /// `ATTACH` handshake. Idempotent: re-attaching re-sends a fresh
-    /// snapshot without duplicating the stream. Unlike session `ATTACH`
-    /// this does NOT resize the Terminal (no viewport rides the command);
+    /// caller as an output subscriber, primes it with a fresh profile-selected
+    /// bootstrap generation, and streams generation-bound `TERMINAL_OUTPUT`
+    /// from then on — the per-Terminal interactive attach without a
+    /// session-scoped `ATTACH` handshake.
+    /// Re-attaching replaces the generation without duplicating the stream.
+    /// It does NOT resize the Terminal (no viewport rides the command);
     /// callers that want their geometry applied follow with
     /// `TERMINAL_RESIZE`. The catalog's `role_policy` field is not yet
     /// encoded; absence means `{ PRIMARY, takeover: NEVER }` (SPEC §8.1).
@@ -1656,12 +1799,9 @@ pub enum AgentEvent {
 ///
 /// The phux-6yl.4 scaffold populated `Hello`, `Ping`, and `PaneDiff`. The
 /// phux-4az pass added the message-catalog variants needed for the attach
-/// lifecycle. The phux-i58 SPEC §13 conformance pass conforms ATTACH/ATTACHED
-/// to spec and splits out `TERMINAL_SNAPSHOT` per SPEC §16. Under [ADR-0013] the
-/// structured `PaneDiff` variant is replaced by `TerminalOutput` (raw VT bytes)
-/// and `TerminalSnapshot` carries `vt_replay_bytes` instead of a `DiffOp` list.
-/// The remaining SPEC §7 catalog (`TerminalEvent`, `Alert`,
-/// resize/ack/command/etc.) lands in sibling tasks.
+/// lifecycle. Protocol 0.7 replaces the retired synthesized snapshot frame with
+/// explicit bootstrap/profile/history frames from ADR-0067. `TerminalOutput`
+/// remains VT bytes, now bound to a non-zero stream and bootstrap generation.
 ///
 /// [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
 #[derive(Debug, Clone, PartialEq)]
@@ -1669,19 +1809,10 @@ pub enum AgentEvent {
 pub enum FrameKind {
     /// `HELLO` — client to server handshake (`docs/spec/proto.md` §6.1).
     ///
-    /// Carries the client's free-form identifier, the highest protocol
-    /// version triple it supports, and a [`ClientCapabilities`] envelope
-    /// (SPEC §6.2). The `client_caps` field is appended to the v0.1 body;
-    /// per Appendix A field-tag extensibility, a HELLO without it MUST
-    /// still decode — older encoders that emit only the version triple
-    /// stay forward-compatible. Decoders that see no trailing bytes
-    /// substitute [`ClientCapabilities::default`] (most-permissive
-    /// [`crate::caps::ColorSupport::TrueColor`]).
-    ///
-    /// Sibling tickets grow `ClientCapabilities` with the rest of SPEC §6.2
-    /// (mouse protocols, unicode version, deprecated rendering mode).
-    /// Additional capability fields append using the same trailing-byte
-    /// forward-compat trick.
+    /// Carries the client's identifier, exact protocol version, and required
+    /// protocol-0.7 [`ClientCapabilities`] record. A missing or truncated
+    /// capability record is malformed; protocol 0.6 and 0.7 use their
+    /// major/minor admission boundary rather than compatibility defaults.
     Hello {
         /// Free-form client identifier (e.g. `"phux-client 0.1.0"`).
         client_name: String,
@@ -1697,20 +1828,10 @@ pub enum FrameKind {
     },
     /// `HELLO_OK` — server handshake acknowledgement (`docs/spec/proto.md` §6.1).
     ///
-    /// Carries the version the server selected, the [`ServerCapabilities`]
-    /// it implements, and opaque `server_id` identity bytes. The version
-    /// triple mirrors [`FrameKind::Hello`]'s positional `major/minor/patch`
-    /// (the wire carries a single concrete version, not the spec's abstract
-    /// `VersionRange` list — the server echoes the one it chose). Capability
-    /// and identity fields are trailing and length-skippable, so a decoder
-    /// reading a shorter (older) body falls back to defaults, and future
-    /// server-owned fields append without a wire break (SPEC §6 "skip them
-    /// by length").
-    ///
-    /// The reference server accepts the client's concrete version only when
-    /// `major.minor` matches its own, selects its current patch, and otherwise
-    /// sends `ERROR { VERSION_INCOMPATIBLE }` with an upgrade direction before
-    /// closing the connection.
+    /// Protocol 0.7 selects one explicit [`BootstrapProfile`] and exact
+    /// negotiated payload limits. Native selection contains the immutable
+    /// libghostty codec and required feature intersection; compatibility
+    /// selection contains its `OutputMode`. No later frame can switch profile.
     HelloOk {
         /// Selected major version (wire-breaking axis pre-1.0).
         protocol_major: u16,
@@ -1724,6 +1845,10 @@ pub enum FrameKind {
         /// Opaque server identity bytes (SPEC §6.1). Not interpreted by
         /// the client today; reserved for reconnect / multi-server routing.
         server_id: Vec<u8>,
+        /// Explicit synchronization profile selected for this connection.
+        selected_profile: BootstrapProfile,
+        /// Negotiated bootstrap/history payload bounds.
+        bootstrap_limits: BootstrapLimits,
     },
 
     /// `PING` — liveness probe (`docs/spec/proto.md` §7.4). The peer MUST echo `nonce`
@@ -1739,27 +1864,23 @@ pub enum FrameKind {
         nonce: u64,
     },
 
-    /// `TERMINAL_OUTPUT` — server-to-client terminal content (`docs/spec/L1.md` §2.1).
+    /// `TERMINAL_OUTPUT` — live terminal content (`docs/spec/L1.md` §4.1).
     ///
-    /// The hot path under [ADR-0013]: the server forwards bytes from the
-    /// terminal's PTY (after parsing into its canonical
-    /// `libghostty_vt::Terminal` and after any per-client capability
-    /// rewriting). The client feeds `bytes` into its local Terminal via
-    /// `vt_write`; `RenderState` provides per-row dirty tracking for
-    /// efficient local redraw.
-    ///
-    /// `seq` is a monotonic per-terminal sequence id used by `FRAME_ACK` /
-    /// predictive-echo correlation; it carries no structural meaning.
-    ///
-    /// [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
+    /// `stream_id` and `bootstrap_id` bind every live frame to one published
+    /// replica generation. `seq` is checked, non-wrapping, and contiguous
+    /// within that pair. Under `NativeState`, `bytes` are the exact PTY bytes
+    /// and MUST NOT be color- or capability-rewritten. Compatibility profiles
+    /// may carry raw or synthesized VT according to the selected profile.
     TerminalOutput {
         /// Target terminal.
         terminal_id: TerminalId,
-        /// Monotonic per-terminal sequence id (`docs/spec/proto.md` §8).
+        /// Logical subscription receiving this output.
+        stream_id: StreamId,
+        /// Published replica generation this output extends.
+        bootstrap_id: BootstrapId,
+        /// Monotonic stream sequence.
         seq: u64,
-        /// VT bytes from the PTY (possibly downsampled per
-        /// [`crate::caps::ColorSupport`]). Refcounted [`bytes::Bytes`] so the
-        /// server can forward verbatim chunks to capable clients with no copy.
+        /// Opaque VT bytes.
         bytes: bytes::Bytes,
     },
 
@@ -1768,6 +1889,8 @@ pub enum FrameKind {
     /// Conforms to SPEC §13 as of phux-i58: `target` tagged union plus
     /// viewport metrics plus scrollback negotiation.
     Attach {
+        /// Client-chosen correlation id echoed by `ATTACHED` and `ATTACH_READY`.
+        attach_id: u32,
         /// Which session to attach to. Tagged union with four variants.
         target: AttachTarget,
         /// Client viewport dimensions at attach time.
@@ -1822,23 +1945,33 @@ pub enum FrameKind {
         event: PasteEvent,
     },
 
-    /// `FRAME_ACK` — client acknowledges a `TERMINAL_OUTPUT` it has applied
-    /// (`docs/spec/proto.md` §7.2 / §8.2).
+    /// `INPUT_TERMINAL_REPLY` — opaque bytes generated by the client's
+    /// terminal emulator in response to server output (`docs/spec/input.md` §6).
     ///
-    /// Cumulative ack: acknowledging `seq = N` implies all prior emissions
-    /// for `terminal_id` up to and including `N` have been applied to the
-    /// client's local `libghostty_vt::Terminal`.
-    ///
-    /// Under ADR-0018 the server uses this to drive per-consumer cached
-    /// reference state eviction — the per-consumer `SnapshotSynthesizer`'s
-    /// `mark_synced` clears the dirty bits that produced the acked frame.
-    /// Loss tolerance: a dropped ack just means the next tick re-emits a
-    /// larger diff against the same older reference; no retransmit.
-    FrameAck {
-        /// Acked terminal (wire id, per SPEC §13).
+    /// This is not user paste or a structured input atom. The attached client
+    /// sends the bytes byte-identically and the server writes them directly to
+    /// the terminal's ordered encoded-input lane.
+    InputTerminalReply {
+        /// Attached target terminal.
         terminal_id: TerminalId,
-        /// Cumulative ack sequence — the highest `seq` from
-        /// `TERMINAL_OUTPUT` for this `terminal_id` the client has applied.
+        /// Non-empty opaque PTY reply bytes. NUL and non-UTF-8 are valid.
+        bytes: bytes::Bytes,
+    },
+
+    /// `FRAME_ACK` — cumulative `StateSync` acknowledgement
+    /// (`docs/spec/proto.md` §8.2).
+    ///
+    /// Valid only for the `SynthesizedVtStateSync` profile. Raw profiles never
+    /// acknowledge live output; reliable ordering plus the bootstrap READY
+    /// boundary releases raw bytes without an extra RTT.
+    FrameAck {
+        /// Acked terminal.
+        terminal_id: TerminalId,
+        /// Logical subscription whose `StateSync` reference advances.
+        stream_id: StreamId,
+        /// Replica generation whose reference advances.
+        bootstrap_id: BootstrapId,
+        /// Highest contiguous `TERMINAL_OUTPUT.seq` applied.
         seq: u64,
     },
 
@@ -1860,19 +1993,23 @@ pub enum FrameKind {
         viewport: ViewportInfo,
     },
 
-    /// `ATTACHED` — server acknowledges attach with initial state
-    /// (`docs/spec/L1.md` §7).
+    /// `ATTACHED` — metadata inventory for an accepted attach.
     ///
-    /// Conforms to SPEC §13 as of phux-i58: full `SessionSnapshot` plus the
-    /// server-allocated `ClientId` identifying this attachment. The per-
-    /// terminal initial state arrives separately via `TERMINAL_SNAPSHOT`
-    /// frames per the SPEC §13 attach sequence.
+    /// Terminal content follows separately through bootstrap streams. This
+    /// frame does not mean those streams are renderable; `ATTACH_READY` marks
+    /// the aggregate boundary after every pane is READY or closed.
     Attached {
-        /// Full graph of sessions/windows/panes plus the attaching client's
-        /// initial focus triple.
+        /// Client-chosen correlation id from `ATTACH`.
+        attach_id: u32,
+        /// Full graph of sessions/windows/panes plus initial focus.
         snapshot: SessionSnapshot,
         /// Server-allocated client identifier for this attachment.
         initial_client_id: ClientId,
+    },
+    /// `ATTACH_READY` — every stream created by one `ATTACH` is READY or closed.
+    AttachReady {
+        /// Client-chosen correlation id from `ATTACH`.
+        attach_id: u32,
     },
 
     /// `DETACHED` — server confirms detach and closes the transport
@@ -1883,37 +2020,124 @@ pub enum FrameKind {
     /// once the server actually distinguishes shutdown causes.
     Detached,
 
-    /// `TERMINAL_SNAPSHOT` — initial state of a single terminal (`docs/spec/L1.md` §2.4).
-    ///
-    /// REQUIRED per SPEC §16 conformance. Sent after `ATTACHED` for each
-    /// terminal the client needs initialised; subsequent updates flow as
-    /// `TERMINAL_OUTPUT`. The server MAY also emit `TERMINAL_SNAPSHOT`
-    /// mid-stream as a flow-control catch-up (SPEC §12.2) or after a resize
-    /// that requires full retransmission.
-    ///
-    /// Under [ADR-0013] the payload is a synthesised VT byte sequence:
-    /// when written to a fresh `libghostty_vt::Terminal` of the declared
-    /// `cols × rows`, `vt_replay_bytes` reproduces the server's grid state
-    /// at the moment of snapshot emission. `scrollback_bytes` is present
-    /// iff the attaching client requested scrollback in `ATTACH`.
-    ///
-    /// [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
-    TerminalSnapshot {
+    /// `BOOTSTRAP_BEGIN` — declares one replacement replica generation.
+    BootstrapBegin {
         /// Target terminal.
         terminal_id: TerminalId,
-        /// Grid width in cells at snapshot time.
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// New generation for this stream.
+        bootstrap_id: BootstrapId,
+        /// Concrete stream profile. Its variants encode the `codec` and
+        /// `output_mode` fields without permitting native `StateSync`.
+        profile: BootstrapStreamProfile,
+        /// Authoritative PTY width at the actor cut.
         cols: u16,
-        /// Grid height in cells at snapshot time.
+        /// Authoritative PTY height at the actor cut.
         rows: u16,
-        /// Synthesised VT byte sequence that reproduces the grid when fed
-        /// to a fresh `libghostty_vt::Terminal` of `cols × rows`. Opaque
-        /// to the client beyond `vt_write`.
-        vt_replay_bytes: Vec<u8>,
-        /// Optional scrollback replay bytes. Present iff the client
-        /// requested scrollback in `ATTACH` and the server can supply it.
-        /// Applied before `vt_replay_bytes` (or under whatever construction
-        /// the server chooses, per SPEC §8.4).
-        scrollback_bytes: Option<Vec<u8>>,
+        /// Actor cut sequence; first live output is `base_seq + 1`.
+        base_seq: u64,
+    },
+    /// `BOOTSTRAP_CHUNK` — one bounded opaque checkpoint fragment.
+    BootstrapChunk {
+        /// Target terminal.
+        terminal_id: TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Replica generation.
+        bootstrap_id: BootstrapId,
+        /// Zero-based contiguous chunk sequence.
+        chunk_seq: u32,
+        /// Opaque engine/compatibility bytes.
+        payload: bytes::Bytes,
+    },
+    /// `BOOTSTRAP_READY` — prior chunks reach the selected codec's READY boundary.
+    BootstrapReady {
+        /// Target terminal.
+        terminal_id: TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Replica generation now safe to publish.
+        bootstrap_id: BootstrapId,
+        /// Opaque newest-to-oldest history cursor, if retained history exists.
+        history_cursor: Option<bytes::Bytes>,
+    },
+    /// `HISTORY_REQUEST` — request the next bounded history suffix page.
+    HistoryRequest {
+        /// Target terminal.
+        terminal_id: TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Replica generation that issued the cursor.
+        bootstrap_id: BootstrapId,
+        /// Opaque cursor returned by READY or a previous page.
+        cursor: bytes::Bytes,
+        /// Requested response byte budget; zero receives `HISTORY_REJECTED`.
+        max_bytes: u32,
+        /// Requested row budget; zero receives `HISTORY_REJECTED`.
+        max_rows: u32,
+    },
+    /// `HISTORY_PAGE` — one independently decodable opaque history page.
+    HistoryPage {
+        /// Target terminal.
+        terminal_id: TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Replica generation that issued the cursor.
+        bootstrap_id: BootstrapId,
+        /// Non-zero page sequence within this generation-bound cursor lineage.
+        page_seq: u64,
+        /// Opaque cursor consumed by this response.
+        cursor: bytes::Bytes,
+        /// Cursor for the next older page; absence means this payload ends in FINISH.
+        next_cursor: Option<bytes::Bytes>,
+        /// Opaque selected-codec page bytes.
+        payload: bytes::Bytes,
+        /// Number of history rows encoded by this payload.
+        rows: u32,
+    },
+    /// `BOOTSTRAP_TOMBSTONE` — permanently invalidates one generation.
+    BootstrapTombstone {
+        /// Target terminal.
+        terminal_id: TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Invalidated generation.
+        bootstrap_id: BootstrapId,
+        /// Why continuity could not be preserved.
+        reason: TombstoneReason,
+        /// Highest live sequence known valid for this generation.
+        last_valid_seq: u64,
+    },
+    /// `HISTORY_TOMBSTONE` — invalidates one progressive history cursor only.
+    HistoryTombstone {
+        /// Target terminal.
+        terminal_id: TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Replica generation that issued the cursor.
+        bootstrap_id: BootstrapId,
+        /// Opaque invalidated history cursor.
+        cursor: bytes::Bytes,
+        /// Why progressive history for the cursor ended.
+        reason: HistoryTombstoneReason,
+    },
+    /// `HISTORY_REJECTED` — retryable refusal that preserves cursor continuity.
+    HistoryRejected {
+        /// Target terminal.
+        terminal_id: TerminalId,
+        /// Logical subscription.
+        stream_id: StreamId,
+        /// Replica generation that issued the cursor.
+        bootstrap_id: BootstrapId,
+        /// Opaque history cursor that was not advanced.
+        cursor: bytes::Bytes,
+        /// Why the request did not begin.
+        reason: HistoryRejectionReason,
+        /// Non-zero byte limit required for a retry.
+        required_bytes: u32,
+        /// Non-zero row limit required for a retry.
+        required_rows: u32,
     },
 
     /// `BELL` — terminal received a bell character (`docs/spec/L1.md` §1.2).
@@ -2339,11 +2563,20 @@ impl FrameKind {
             Self::InputMouse { .. } => TYPE_INPUT_MOUSE,
             Self::InputFocus { .. } => TYPE_INPUT_FOCUS,
             Self::InputPaste { .. } => TYPE_INPUT_PASTE,
+            Self::InputTerminalReply { .. } => TYPE_INPUT_TERMINAL_REPLY,
             Self::FrameAck { .. } => TYPE_FRAME_ACK,
             Self::ViewportResize { .. } => TYPE_VIEWPORT_RESIZE,
             Self::Attached { .. } => TYPE_ATTACHED,
+            Self::AttachReady { .. } => TYPE_ATTACH_READY,
             Self::Detached => TYPE_DETACHED,
-            Self::TerminalSnapshot { .. } => TYPE_TERMINAL_SNAPSHOT,
+            Self::HistoryRequest { .. } => TYPE_HISTORY_REQUEST,
+            Self::BootstrapBegin { .. } => TYPE_BOOTSTRAP_BEGIN,
+            Self::BootstrapChunk { .. } => TYPE_BOOTSTRAP_CHUNK,
+            Self::BootstrapReady { .. } => TYPE_BOOTSTRAP_READY,
+            Self::HistoryPage { .. } => TYPE_HISTORY_PAGE,
+            Self::BootstrapTombstone { .. } => TYPE_BOOTSTRAP_TOMBSTONE,
+            Self::HistoryTombstone { .. } => TYPE_HISTORY_TOMBSTONE,
+            Self::HistoryRejected { .. } => TYPE_HISTORY_REJECTED,
             Self::Bell { .. } => TYPE_BELL,
             Self::Error { .. } => TYPE_ERROR,
             Self::GetMetadata { .. } => TYPE_GET_METADATA,
@@ -2405,10 +2638,10 @@ impl FrameKind {
                 enc.write_field_with(field::hello::PROTOCOL_PATCH, |e| {
                     e.write_u16_be(*protocol_patch);
                 });
-                // ClientCapabilities rides as one field whose value is the
-                // positional caps blob: color_support, layers,
-                // image_protocols, kbd_protocols, hyperlinks, output_mode,
-                // optional default foreground/background RGB values.
+                // ClientCapabilities remains a positional sub-record inside its
+                // top-level TLV field. Protocol 0.7 fixes the complete order:
+                // legacy render caps, palette presence/value, profile set,
+                // exact native codec set/features, then receive bounds.
                 enc.write_field_with(field::hello::CLIENT_CAPS, |e| {
                     e.write_u8(client_caps.color_support.as_wire());
                     e.write_u8(client_caps.layers.as_wire());
@@ -2424,7 +2657,14 @@ impl FrameKind {
                         e.write_u8(colors.background.r);
                         e.write_u8(colors.background.g);
                         e.write_u8(colors.background.b);
+                    } else {
+                        e.write_u8(0);
                     }
+                    e.write_u8(client_caps.bootstrap.profiles.as_wire());
+                    e.write_u64_be(client_caps.bootstrap.native_codecs.as_wire());
+                    e.write_u32_be(client_caps.bootstrap.native_features.as_wire());
+                    e.write_u32_be(client_caps.bootstrap.limits.max_chunk_bytes());
+                    e.write_u32_be(client_caps.bootstrap.limits.max_history_page_bytes());
                 });
             }
             Self::HelloOk {
@@ -2433,6 +2673,8 @@ impl FrameKind {
                 protocol_patch,
                 server_caps,
                 server_id,
+                selected_profile,
+                bootstrap_limits,
             } => {
                 enc.write_field_with(field::hello_ok::PROTOCOL_MAJOR, |e| {
                     e.write_u16_be(*protocol_major);
@@ -2452,6 +2694,15 @@ impl FrameKind {
                 // server_id is opaque bytes; the field is already
                 // length-delimited so the raw bytes are the value.
                 enc.write_field(field::hello_ok::SERVER_ID, server_id);
+                enc.write_field_with(field::hello_ok::SELECTED_PROFILE, |e| {
+                    encode_bootstrap_profile(*selected_profile, e);
+                });
+                enc.write_field_with(field::hello_ok::MAX_CHUNK_BYTES, |e| {
+                    e.write_u32_be(bootstrap_limits.max_chunk_bytes());
+                });
+                enc.write_field_with(field::hello_ok::MAX_HISTORY_PAGE_BYTES, |e| {
+                    e.write_u32_be(bootstrap_limits.max_history_page_bytes());
+                });
             }
             // `Ping` and `Pong` share a single-`u64` nonce field; merged to
             // satisfy `clippy::match_same_arms`.
@@ -2460,6 +2711,8 @@ impl FrameKind {
             }
             Self::TerminalOutput {
                 terminal_id,
+                stream_id,
+                bootstrap_id,
                 seq,
                 bytes,
             } => {
@@ -2468,8 +2721,15 @@ impl FrameKind {
                 });
                 enc.write_field_with(field::terminal_output::SEQ, |e| e.write_u64_be(*seq));
                 enc.write_field(field::terminal_output::BYTES, bytes);
+                enc.write_field_with(field::terminal_output::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::terminal_output::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
             }
             Self::Attach {
+                attach_id,
                 target,
                 viewport,
                 request_scrollback,
@@ -2485,6 +2745,7 @@ impl FrameKind {
                 enc.write_field_with(field::attach::SCROLLBACK_LIMIT_LINES, |e| {
                     e.write_u32_be(*scrollback_limit_lines);
                 });
+                enc.write_field_with(field::attach::ATTACH_ID, |e| e.write_u32_be(*attach_id));
             }
             // `Detach` and `Detached` are unit variants: type byte only, no
             // fields. Merged to satisfy `clippy::match_same_arms`.
@@ -2515,11 +2776,28 @@ impl FrameKind {
                 });
                 enc.write_field_with(field::input_paste::EVENT, |e| encode_paste_event(event, e));
             }
-            Self::FrameAck { terminal_id, seq } => {
+            Self::InputTerminalReply { terminal_id, bytes } => {
+                enc.write_field_with(field::input_terminal_reply::TERMINAL_ID, |e| {
+                    encode_terminal_id(terminal_id, e);
+                });
+                enc.write_field(field::input_terminal_reply::BYTES, bytes.as_ref());
+            }
+            Self::FrameAck {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                seq,
+            } => {
                 enc.write_field_with(field::frame_ack::TERMINAL_ID, |e| {
                     encode_terminal_id(terminal_id, e);
                 });
                 enc.write_field_with(field::frame_ack::SEQ, |e| e.write_u64_be(*seq));
+                enc.write_field_with(field::frame_ack::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::frame_ack::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
             }
             Self::ViewportResize { viewport } => {
                 enc.write_field_with(field::viewport_resize::VIEWPORT, |e| {
@@ -2527,6 +2805,7 @@ impl FrameKind {
                 });
             }
             Self::Attached {
+                attach_id,
                 snapshot,
                 initial_client_id,
             } => {
@@ -2536,24 +2815,222 @@ impl FrameKind {
                 enc.write_field_with(field::attached::INITIAL_CLIENT_ID, |e| {
                     encode_client_id(*initial_client_id, e);
                 });
+                enc.write_field_with(field::attached::ATTACH_ID, |e| e.write_u32_be(*attach_id));
             }
-            Self::TerminalSnapshot {
+            Self::AttachReady { attach_id } => {
+                enc.write_field_with(field::attach_ready::ATTACH_ID, |e| {
+                    e.write_u32_be(*attach_id);
+                });
+            }
+            Self::BootstrapBegin {
                 terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile,
                 cols,
                 rows,
-                vt_replay_bytes,
-                scrollback_bytes,
+                base_seq,
             } => {
-                enc.write_field_with(field::terminal_snapshot::TERMINAL_ID, |e| {
+                enc.write_field_with(field::bootstrap_begin::TERMINAL_ID, |e| {
                     encode_terminal_id(terminal_id, e);
                 });
-                enc.write_field_with(field::terminal_snapshot::COLS, |e| e.write_u16_be(*cols));
-                enc.write_field_with(field::terminal_snapshot::ROWS, |e| e.write_u16_be(*rows));
-                enc.write_field(field::terminal_snapshot::VT_REPLAY_BYTES, vt_replay_bytes);
-                // Optional: present only when Some; an absent field decodes None.
-                if let Some(sb) = scrollback_bytes.as_deref() {
-                    enc.write_field(field::terminal_snapshot::SCROLLBACK_BYTES, sb);
+                enc.write_field_with(field::bootstrap_begin::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::bootstrap_begin::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
+                let (codec, output_mode) = match profile {
+                    BootstrapStreamProfile::NativeState { codec } => {
+                        (BootstrapCodec::Native(*codec), OutputMode::Raw)
+                    }
+                    BootstrapStreamProfile::SynthesizedVtRaw => {
+                        (BootstrapCodec::SynthesizedVtV1, OutputMode::Raw)
+                    }
+                    BootstrapStreamProfile::SynthesizedVtStateSync => {
+                        (BootstrapCodec::SynthesizedVtV1, OutputMode::StateSync)
+                    }
+                };
+                enc.write_field_with(field::bootstrap_begin::CODEC, |e| {
+                    encode_bootstrap_codec(codec, e);
+                });
+                enc.write_field_with(field::bootstrap_begin::COLS, |e| e.write_u16_be(*cols));
+                enc.write_field_with(field::bootstrap_begin::ROWS, |e| e.write_u16_be(*rows));
+                enc.write_field_with(field::bootstrap_begin::OUTPUT_MODE, |e| {
+                    e.write_u8(output_mode.as_wire());
+                });
+                enc.write_field_with(field::bootstrap_begin::BASE_SEQ, |e| {
+                    e.write_u64_be(*base_seq);
+                });
+            }
+            Self::BootstrapChunk {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq,
+                payload,
+            } => {
+                enc.write_field_with(field::bootstrap_chunk::TERMINAL_ID, |e| {
+                    encode_terminal_id(terminal_id, e);
+                });
+                enc.write_field_with(field::bootstrap_chunk::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::bootstrap_chunk::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
+                enc.write_field_with(field::bootstrap_chunk::CHUNK_SEQ, |e| {
+                    e.write_u32_be(*chunk_seq);
+                });
+                enc.write_field(field::bootstrap_chunk::PAYLOAD, payload);
+            }
+            Self::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor,
+            } => {
+                enc.write_field_with(field::bootstrap_ready::TERMINAL_ID, |e| {
+                    encode_terminal_id(terminal_id, e);
+                });
+                enc.write_field_with(field::bootstrap_ready::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::bootstrap_ready::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
+                if let Some(cursor) = history_cursor {
+                    enc.write_field(field::bootstrap_ready::HISTORY_CURSOR, cursor);
                 }
+            }
+            Self::HistoryRequest {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                max_bytes,
+                max_rows,
+            } => {
+                enc.write_field_with(field::history_request::TERMINAL_ID, |e| {
+                    encode_terminal_id(terminal_id, e);
+                });
+                enc.write_field_with(field::history_request::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::history_request::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
+                enc.write_field(field::history_request::CURSOR, cursor);
+                enc.write_field_with(field::history_request::MAX_BYTES, |e| {
+                    e.write_u32_be(*max_bytes);
+                });
+                enc.write_field_with(field::history_request::MAX_ROWS, |e| {
+                    e.write_u32_be(*max_rows);
+                });
+            }
+            Self::HistoryPage {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                page_seq,
+                cursor,
+                next_cursor,
+                payload,
+                rows,
+            } => {
+                enc.write_field_with(field::history_page::TERMINAL_ID, |e| {
+                    encode_terminal_id(terminal_id, e);
+                });
+                enc.write_field_with(field::history_page::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::history_page::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
+                enc.write_field(field::history_page::CURSOR, cursor);
+                if let Some(next) = next_cursor {
+                    enc.write_field(field::history_page::NEXT_CURSOR, next);
+                }
+                enc.write_field(field::history_page::PAYLOAD, payload);
+                enc.write_field_with(field::history_page::PAGE_SEQ, |e| {
+                    e.write_u64_be(*page_seq);
+                });
+                enc.write_field_with(field::history_page::ROWS, |e| {
+                    e.write_u32_be(*rows);
+                });
+            }
+            Self::BootstrapTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                reason,
+                last_valid_seq,
+            } => {
+                enc.write_field_with(field::bootstrap_tombstone::TERMINAL_ID, |e| {
+                    encode_terminal_id(terminal_id, e);
+                });
+                enc.write_field_with(field::bootstrap_tombstone::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::bootstrap_tombstone::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
+                enc.write_field_with(field::bootstrap_tombstone::REASON, |e| {
+                    e.write_u8(reason.as_wire());
+                });
+                enc.write_field_with(field::bootstrap_tombstone::LAST_VALID_SEQ, |e| {
+                    e.write_u64_be(*last_valid_seq);
+                });
+            }
+            Self::HistoryTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+            } => {
+                enc.write_field_with(field::history_tombstone::TERMINAL_ID, |e| {
+                    encode_terminal_id(terminal_id, e);
+                });
+                enc.write_field_with(field::history_tombstone::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::history_tombstone::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
+                enc.write_field(field::history_tombstone::CURSOR, cursor);
+                enc.write_field_with(field::history_tombstone::REASON, |e| {
+                    e.write_u8(reason.as_wire());
+                });
+            }
+            Self::HistoryRejected {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor,
+                reason,
+                required_bytes,
+                required_rows,
+            } => {
+                enc.write_field_with(field::history_rejected::TERMINAL_ID, |e| {
+                    encode_terminal_id(terminal_id, e);
+                });
+                enc.write_field_with(field::history_rejected::STREAM_ID, |e| {
+                    e.write_u64_be(stream_id.get());
+                });
+                enc.write_field_with(field::history_rejected::BOOTSTRAP_ID, |e| {
+                    e.write_u64_be(bootstrap_id.get());
+                });
+                enc.write_field(field::history_rejected::CURSOR, cursor);
+                enc.write_field_with(field::history_rejected::REASON, |e| {
+                    e.write_u8(reason.as_wire());
+                });
+                enc.write_field_with(field::history_rejected::REQUIRED_BYTES, |e| {
+                    e.write_u32_be(*required_bytes);
+                });
+                enc.write_field_with(field::history_rejected::REQUIRED_ROWS, |e| {
+                    e.write_u32_be(*required_rows);
+                });
             }
             Self::Bell { terminal_id } => {
                 enc.write_field_with(field::bell::TERMINAL_ID, |e| {
@@ -2800,12 +3277,117 @@ impl FrameKind {
     pub fn decode(input: &[u8]) -> Result<(Self, &[u8]), DecodeError> {
         Decoder::new(input).read_frame()
     }
+
+    /// Decode one frame using the payload limits negotiated in `HELLO_OK`.
+    ///
+    /// Bootstrap/history payload lengths are rejected against `limits` while
+    /// still borrowed from the input, before an owned payload copy is made.
+    pub fn decode_with_limits(
+        input: &[u8],
+        limits: BootstrapLimits,
+    ) -> Result<(Self, &[u8]), DecodeError> {
+        Decoder::with_bootstrap_limits(input, limits).read_frame()
+    }
 }
 
 // -----------------------------------------------------------------------------
 // Helpers for the message-catalog variants. Kept in this file so encoder and
 // decoder share one source of truth for sub-record layout.
 // -----------------------------------------------------------------------------
+pub(super) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut Encoder<'_>) {
+    match codec {
+        BootstrapCodec::SynthesizedVtV1 => {
+            enc.write_u8(BootstrapCodec::SYNTHESIZED_VT_V1_TAG);
+        }
+        BootstrapCodec::Native(version) => {
+            enc.write_u8(BootstrapCodec::NATIVE_TAG);
+            enc.write_u8(version.as_wire());
+        }
+    }
+}
+
+pub(super) fn decode_bootstrap_codec(dec: &mut Decoder<'_>) -> Result<BootstrapCodec, DecodeError> {
+    match dec.read_u8()? {
+        BootstrapCodec::SYNTHESIZED_VT_V1_TAG => Ok(BootstrapCodec::SynthesizedVtV1),
+        BootstrapCodec::NATIVE_TAG => {
+            let value = dec.read_u8()?;
+            let codec =
+                EngineCodec::from_wire(value).ok_or_else(|| DecodeError::UnknownEnumValue {
+                    field: "EngineCodec",
+                    value: u32::from(value),
+                })?;
+            Ok(BootstrapCodec::Native(codec))
+        }
+        value => Err(DecodeError::UnknownEnumValue {
+            field: "BootstrapCodec",
+            value: u32::from(value),
+        }),
+    }
+}
+
+pub(super) fn encode_bootstrap_profile(profile: BootstrapProfile, enc: &mut Encoder<'_>) {
+    match profile {
+        BootstrapProfile::NativeState { codec, features } => {
+            enc.write_u8(BootstrapProfile::NATIVE_STATE_TAG);
+            enc.write_u8(codec.as_wire());
+            enc.write_u32_be(features.as_wire());
+        }
+        BootstrapProfile::SynthesizedVtRaw => {
+            enc.write_u8(BootstrapProfile::SYNTHESIZED_VT_RAW_TAG);
+        }
+        BootstrapProfile::SynthesizedVtStateSync => {
+            enc.write_u8(BootstrapProfile::SYNTHESIZED_VT_STATE_SYNC_TAG);
+        }
+    }
+}
+
+pub(super) fn decode_bootstrap_profile(
+    dec: &mut Decoder<'_>,
+) -> Result<BootstrapProfile, DecodeError> {
+    match dec.read_u8()? {
+        BootstrapProfile::NATIVE_STATE_TAG => {
+            let value = dec.read_u8()?;
+            let codec =
+                EngineCodec::from_wire(value).ok_or_else(|| DecodeError::UnknownEnumValue {
+                    field: "EngineCodec",
+                    value: u32::from(value),
+                })?;
+            let features = EngineFeatureSet::from_wire(dec.read_u32_be()?);
+            if !features.supports_native() {
+                return Err(DecodeError::InvalidBootstrapProfile);
+            }
+            Ok(BootstrapProfile::NativeState { codec, features })
+        }
+        BootstrapProfile::SYNTHESIZED_VT_RAW_TAG => Ok(BootstrapProfile::SynthesizedVtRaw),
+        BootstrapProfile::SYNTHESIZED_VT_STATE_SYNC_TAG => {
+            Ok(BootstrapProfile::SynthesizedVtStateSync)
+        }
+        value => Err(DecodeError::UnknownEnumValue {
+            field: "BootstrapProfile",
+            value: u32::from(value),
+        }),
+    }
+}
+
+pub(super) const fn decode_bootstrap_stream_profile(
+    codec: BootstrapCodec,
+    output_mode: u8,
+) -> Result<BootstrapStreamProfile, DecodeError> {
+    match (codec, output_mode) {
+        (BootstrapCodec::Native(codec), 0) => Ok(BootstrapStreamProfile::NativeState { codec }),
+        (BootstrapCodec::SynthesizedVtV1, 0) => Ok(BootstrapStreamProfile::SynthesizedVtRaw),
+        (BootstrapCodec::SynthesizedVtV1, 1) => Ok(BootstrapStreamProfile::SynthesizedVtStateSync),
+        _ => Err(DecodeError::InvalidBootstrapProfile),
+    }
+}
+
+pub(super) fn decode_stream_id(dec: &mut Decoder<'_>) -> Result<StreamId, DecodeError> {
+    StreamId::new(dec.read_u64_be()?).ok_or(DecodeError::InvalidStreamId)
+}
+
+pub(super) fn decode_bootstrap_id(dec: &mut Decoder<'_>) -> Result<BootstrapId, DecodeError> {
+    BootstrapId::new(dec.read_u64_be()?).ok_or(DecodeError::InvalidBootstrapId)
+}
 
 pub(super) fn encode_attach_target(target: &AttachTarget, enc: &mut Encoder<'_>) {
     match target {
@@ -3223,10 +3805,9 @@ pub(super) fn decode_env(dec: &mut Decoder<'_>) -> Result<Vec<(String, String)>,
     Ok(out)
 }
 
-// The optional-bytes fields (`TERMINAL_SNAPSHOT.scrollback_bytes`,
-// `METADATA_CHANGED.value`, `METADATA_VALUE.value`) now express `None` as an
-// absent TLV field, so the `encode_optional_bytes` / `decode_optional_bytes`
-// presence-tag helpers were retired with the field-tagged migration.
+// Optional byte fields (`BOOTSTRAP_READY.history_cursor`,
+// `HISTORY_PAGE.next_cursor`, `METADATA_CHANGED.value`,
+// `METADATA_VALUE.value`) express `None` as an absent TLV field.
 
 // -----------------------------------------------------------------------------
 // Scope codec — SPEC §7.4 (phux-4li.2).

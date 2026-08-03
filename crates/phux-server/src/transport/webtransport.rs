@@ -237,6 +237,10 @@ impl FrameWriter for WtWriter {
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
         self.send.write_all(frame).await.map_err(io::Error::other)
     }
+
+    async fn close(&mut self) -> io::Result<()> {
+        self.send.finish().await.map_err(io::Error::other)
+    }
 }
 
 impl Incoming for WtListener {

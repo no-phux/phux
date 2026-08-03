@@ -1109,7 +1109,8 @@ mod tests {
                     .expect("B's leased input must reach the PTY writer")
                     .expect("writer channel open");
                 assert_eq!(
-                    got.bytes, b"B",
+                    got.bytes.as_ref(),
+                    b"B",
                     "the lease holder's input is delivered; the blocked client's is dropped",
                 );
                 // A's input must never arrive: nothing else is queued.
@@ -1196,7 +1197,7 @@ mod tests {
                     .await
                     .expect("lane delivery")
                     .expect("writer open");
-                assert_eq!(got.bytes, b"\x1b[200~lane\x1b[201~");
+                assert_eq!(got.bytes.as_ref(), b"\x1b[200~lane\x1b[201~");
                 fx.token.cancel();
             })
             .await;
@@ -1324,7 +1325,7 @@ mod tests {
                     .await
                     .expect("batch handed to writer")
                     .expect("writer open");
-                assert_eq!(request.bytes, b"onetwo");
+                assert_eq!(request.bytes.as_ref(), b"onetwo");
                 request
                     .completion
                     .expect("acknowledged completion")
@@ -1644,7 +1645,7 @@ mod tests {
                         .await
                 });
                 let request = fx.writer_rx.recv().await.expect("retry write");
-                assert_eq!(request.bytes, b"blocked");
+                assert_eq!(request.bytes.as_ref(), b"blocked");
                 request.completion.expect("completion").send(true).unwrap();
                 assert_eq!(retry.await.unwrap(), CommandResult::Ok);
                 fx.token.cancel();
@@ -1884,7 +1885,7 @@ mod tests {
                         .await
                 });
                 let third_request = fx.writer_rx.recv().await.expect("third writer request");
-                assert_eq!(third_request.bytes, b"third");
+                assert_eq!(third_request.bytes.as_ref(), b"third");
                 third_request
                     .completion
                     .expect("completion")

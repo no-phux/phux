@@ -13,6 +13,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use bytes::{Buf, BytesMut};
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities, ServerFeatureSet,
+};
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, MAX_FRAME_LEN, MoveResult, Scope, SpawnResult,
 };
@@ -53,12 +57,12 @@ impl Dial {
     }
 }
 
-/// A connected, owned transport split into framed read and write halves.
+/// Production construction connects (UDS, QUIC, or WebSocket) and completes
+/// protocol negotiation before returning.
 ///
-/// Construction performs the connect (UDS or QUIC); the two halves are
-/// independent after that. The struct keeps them together so the simple "send +
-/// recv on the same task" case is one type. Both transports carry the identical
-/// SPEC §5 framing — the variant only changes the byte plumbing underneath.
+/// The two halves are independent after negotiation. All transports carry
+/// identical SPEC §5 frames; the variant only changes the byte plumbing
+/// underneath.
 ///
 /// # The COMMAND interleave contract
 ///
@@ -72,10 +76,9 @@ impl Dial {
 ///
 /// - `ATTACH_TERMINAL`: `handle_attach_terminal`
 ///   (`crates/phux-server/src/runtime/commands.rs`) pushes the authoritative
-///   `TERMINAL_SNAPSHOT` "before the pump's first delta and before the Ok
-///   reply". A caller that drops it has no opening screen and no geometry —
-///   the exact defect that made every `phux rec` capture come back as a 0x0
-///   grid.
+///   bootstrap transcript before the acknowledgement. A caller that drops it
+///   has no opening screen and no geometry — the exact defect that made every
+///   `phux rec` capture come back as a 0x0 grid.
 /// - `GET_STATE` on a federation hub: `handle_get_state_federated` pushes an
 ///   uncorrelated `ERROR` frame per unreachable satellite, deliberately
 ///   ("observable degradation, not silence"), *before* returning the merged
@@ -101,6 +104,23 @@ pub struct Connection {
     /// `None` on the remote transports (QUIC/WS have no such channel) and
     /// on platforms whose credentials carry no pid.
     peer_pid: Option<i32>,
+    /// Exact profile and bounds selected by the one successful `HELLO_OK`.
+    ///
+    /// Every production constructor fills this before returning. It is an
+    /// `Option` only for the crate's raw in-process transport test seam.
+    negotiated_bootstrap: Option<NegotiatedBootstrap>,
+    next_attach_id: u32,
+}
+
+/// Immutable result of protocol-0.7 bootstrap negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NegotiatedBootstrap {
+    /// Exact synchronization profile selected by the server.
+    pub profile: BootstrapProfile,
+    /// Exact per-frame bootstrap/history payload bounds.
+    pub limits: BootstrapLimits,
+    /// Additive server features authenticated by `HELLO_OK`.
+    pub server_features: ServerFeatureSet,
 }
 
 /// Read half — pulls one [`FrameKind`] per call, over either transport.
@@ -136,6 +156,9 @@ pub struct UdsReader {
     /// next read. This buffering is what lets the attach loop coalesce a
     /// back-to-back output burst into one paint (phux-jhv8).
     buf: BytesMut,
+    /// Payload bounds selected by `HELLO_OK`, or the client's advertised
+    /// bounds while the handshake itself is being decoded.
+    bootstrap_limits: BootstrapLimits,
 }
 
 /// UDS write half.
@@ -161,6 +184,7 @@ pub struct QuicReader {
     buf: BytesMut,
     _endpoint: quinn::Endpoint,
     _connection: quinn::Connection,
+    bootstrap_limits: BootstrapLimits,
 }
 
 /// QUIC write half. Holds the endpoint + connection for the same reasons as
@@ -178,6 +202,7 @@ pub struct QuicWriter {
 #[derive(Debug)]
 pub struct WsReader {
     inner: ws::WsReader,
+    bootstrap_limits: BootstrapLimits,
 }
 
 /// WebSocket write half.
@@ -198,15 +223,41 @@ impl Drop for QuicWriter {
     }
 }
 
+fn default_client_name() -> String {
+    format!("phux-client/{}", env!("CARGO_PKG_VERSION"))
+}
+
 impl Connection {
-    /// Open the UDS at `socket` and return a framed connection.
+    /// Open the UDS at `socket` and negotiate the current L1 protocol.
+    ///
+    /// Control-plane callers use the generic phux client identity and default
+    /// L1 capabilities. Consumers with a richer profile (the TUI and recorder)
+    /// use [`Self::connect_with_hello`] instead.
     ///
     /// # Errors
     ///
-    /// Surfaces `AttachError::Io` on any connect failure. The OS-level
-    /// reason (ENOENT, ECONNREFUSED, EACCES, ...) is preserved in the
-    /// inner `io::Error`.
+    /// Surfaces `AttachError::Io` on any connect failure and handshake errors
+    /// when the server refuses or does not acknowledge `HELLO`.
     pub async fn connect(socket: &Path) -> Result<Self, AttachError> {
+        Self::connect_with_hello(socket, default_client_name(), ClientCapabilities::new()).await
+    }
+
+    /// Open the UDS and negotiate with the supplied client profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
+    pub async fn connect_with_hello(
+        socket: &Path,
+        client_name: String,
+        client_caps: ClientCapabilities,
+    ) -> Result<Self, AttachError> {
+        let mut conn = Self::connect_uds_transport(socket).await?;
+        conn.negotiate(client_name, client_caps).await?;
+        Ok(conn)
+    }
+
+    async fn connect_uds_transport(socket: &Path) -> Result<Self, AttachError> {
         let stream = UnixStream::connect(socket).await.map_err(AttachError::Io)?;
         // Read the peer credentials while the stream is still whole: the
         // split halves do not expose them, and the pid is free to capture
@@ -218,27 +269,46 @@ impl Connection {
             reader: FrameReader::Uds(UdsReader {
                 inner: read,
                 buf: BytesMut::with_capacity(8192),
+                bootstrap_limits: BootstrapLimits::default(),
             }),
             writer: FrameWriter::Uds(UdsWriter {
                 inner: write,
                 out: BytesMut::with_capacity(4096),
             }),
             peer_pid,
+            negotiated_bootstrap: None,
+            next_attach_id: 1,
         })
     }
 
-    /// Dial a remote QUIC listener and return a framed connection.
+    /// Dial a remote QUIC listener and negotiate the current L1 protocol.
     ///
-    /// Establishes the TLS 1.3 handshake (phux ALPN), opens one bidirectional
-    /// stream, and writes the bearer-token preamble when [`QuicDial::token`] is
-    /// set, all before returning — so the first [`Self::send`]/[`Self::recv`]
-    /// sees a stream the server is already reading phux frames off.
+    /// Establishes TLS and the optional bearer-token preamble, then waits for
+    /// `HELLO_OK` before returning.
     ///
     /// # Errors
     ///
-    /// Surfaces [`AttachError::Connect`] on any handshake, certificate, or
-    /// preamble failure (the address, the pin, or the token).
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
     pub async fn connect_quic(dial: &QuicDial) -> Result<Self, AttachError> {
+        Self::connect_quic_with_hello(dial, default_client_name(), ClientCapabilities::new()).await
+    }
+
+    /// Dial QUIC and negotiate with the supplied client profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
+    pub async fn connect_quic_with_hello(
+        dial: &QuicDial,
+        client_name: String,
+        client_caps: ClientCapabilities,
+    ) -> Result<Self, AttachError> {
+        let mut conn = Self::connect_quic_transport(dial).await?;
+        conn.negotiate(client_name, client_caps).await?;
+        Ok(conn)
+    }
+
+    async fn connect_quic_transport(dial: &QuicDial) -> Result<Self, AttachError> {
         let (endpoint, connection, send, recv) = quic::dial(dial).await?;
         Ok(Self {
             reader: FrameReader::Quic(QuicReader {
@@ -246,6 +316,7 @@ impl Connection {
                 buf: BytesMut::with_capacity(8192),
                 _endpoint: endpoint.clone(),
                 _connection: connection.clone(),
+                bootstrap_limits: BootstrapLimits::default(),
             }),
             writer: FrameWriter::Quic(QuicWriter {
                 send,
@@ -254,25 +325,50 @@ impl Connection {
                 connection,
             }),
             peer_pid: None,
+            negotiated_bootstrap: None,
+            next_attach_id: 1,
         })
     }
 
-    /// Dial a remote WebSocket listener and return a framed connection.
+    /// Dial a remote WebSocket listener and negotiate the current L1 protocol.
     ///
-    /// The server uses one binary WebSocket message per encoded phux frame.
-    /// This is the native TCP fallback for networks where UDP/QUIC is blocked.
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
     pub async fn connect_ws(dial: &WsDial) -> Result<Self, AttachError> {
+        Self::connect_ws_with_hello(dial, default_client_name(), ClientCapabilities::new()).await
+    }
+
+    /// Dial WebSocket and negotiate with the supplied client profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
+    pub async fn connect_ws_with_hello(
+        dial: &WsDial,
+        client_name: String,
+        client_caps: ClientCapabilities,
+    ) -> Result<Self, AttachError> {
+        let mut conn = Self::connect_ws_transport(dial).await?;
+        conn.negotiate(client_name, client_caps).await?;
+        Ok(conn)
+    }
+
+    async fn connect_ws_transport(dial: &WsDial) -> Result<Self, AttachError> {
         let ws = ws::dial(dial).await?;
         let (tx, rx) = futures_util::StreamExt::split(ws);
         Ok(Self {
             reader: FrameReader::Ws(WsReader {
                 inner: ws::WsReader { rx },
+                bootstrap_limits: BootstrapLimits::default(),
             }),
             writer: FrameWriter::Ws(WsWriter {
                 inner: ws::WsWriter { tx },
                 out: BytesMut::with_capacity(4096),
             }),
             peer_pid: None,
+            negotiated_bootstrap: None,
+            next_attach_id: 1,
         })
     }
 
@@ -304,16 +400,29 @@ impl Connection {
         }
     }
 
-    /// Connect over whichever transport `dial` names.
+    /// Connect over `dial` and negotiate the generic L1 profile.
     ///
     /// # Errors
     ///
-    /// Propagates [`Self::connect`] / [`Self::connect_quic`] errors.
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
     pub async fn connect_dial(dial: &Dial) -> Result<Self, AttachError> {
+        Self::connect_dial_with_hello(dial, default_client_name(), ClientCapabilities::new()).await
+    }
+
+    /// Connect over `dial` and negotiate with the supplied client profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
+    pub async fn connect_dial_with_hello(
+        dial: &Dial,
+        client_name: String,
+        client_caps: ClientCapabilities,
+    ) -> Result<Self, AttachError> {
         match dial {
-            Dial::Uds(path) => Self::connect(path).await,
-            Dial::Quic(quic) => Self::connect_quic(quic).await,
-            Dial::Ws(ws) => Self::connect_ws(ws).await,
+            Dial::Uds(path) => Self::connect_with_hello(path, client_name, client_caps).await,
+            Dial::Quic(quic) => Self::connect_quic_with_hello(quic, client_name, client_caps).await,
+            Dial::Ws(ws) => Self::connect_ws_with_hello(ws, client_name, client_caps).await,
         }
     }
 
@@ -331,15 +440,96 @@ impl Connection {
             reader: FrameReader::Uds(UdsReader {
                 inner: read,
                 buf: BytesMut::with_capacity(8192),
+                bootstrap_limits: BootstrapLimits::default(),
             }),
             writer: FrameWriter::Uds(UdsWriter {
                 inner: write,
                 out: BytesMut::with_capacity(4096),
             }),
             peer_pid,
+            negotiated_bootstrap: None,
+            next_attach_id: 1,
         }
     }
 
+    /// Negotiate the current protocol once on an already-connected transport.
+    ///
+    /// Production constructors call this before returning. It is crate-visible
+    /// so scripted tests can exercise the same handshake over `from_stream`.
+    pub(crate) async fn negotiate(
+        &mut self,
+        client_name: String,
+        client_caps: ClientCapabilities,
+    ) -> Result<(), AttachError> {
+        if self.negotiated_bootstrap.is_some() {
+            return Err(AttachError::Protocol(
+                "HELLO negotiation already completed on this connection".to_owned(),
+            ));
+        }
+        self.writer
+            .send(&FrameKind::Hello {
+                client_name,
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                client_caps,
+            })
+            .await?;
+        match self.reader.recv().await? {
+            FrameKind::HelloOk {
+                protocol_major,
+                protocol_minor,
+                protocol_patch,
+                server_caps,
+                server_id: _,
+                selected_profile,
+                bootstrap_limits,
+            } => {
+                validate_hello_ok(
+                    &client_caps,
+                    protocol_major,
+                    protocol_minor,
+                    protocol_patch,
+                    selected_profile,
+                    bootstrap_limits,
+                )?;
+                self.reader.set_bootstrap_limits(bootstrap_limits);
+                self.negotiated_bootstrap = Some(NegotiatedBootstrap {
+                    profile: selected_profile,
+                    limits: bootstrap_limits,
+                    server_features: server_caps.features,
+                });
+                Ok(())
+            }
+            FrameKind::Error { message, .. } => Err(AttachError::Refused(message)),
+            _ => Err(AttachError::Protocol(crate::explain::unexpected_reply(
+                "HELLO",
+            ))),
+        }
+    }
+
+    /// Return the exact immutable bootstrap selection.
+    ///
+    /// Production constructors cannot return a connection without this value.
+    /// The `Option` exposes the unnegotiated state only to crate-internal raw
+    /// transport tests built with [`Self::from_stream`].
+    #[must_use]
+    pub const fn negotiated_bootstrap(&self) -> Option<NegotiatedBootstrap> {
+        self.negotiated_bootstrap
+    }
+
+    /// Allocate a non-zero correlation id for the next `ATTACH`.
+    ///
+    /// IDs are connection-local. Wrapping skips zero so every emitted request
+    /// remains wire-valid.
+    pub(crate) const fn next_attach_id(&mut self) -> u32 {
+        let id = self.next_attach_id;
+        self.next_attach_id = self.next_attach_id.wrapping_add(1);
+        if self.next_attach_id == 0 {
+            self.next_attach_id = 1;
+        }
+        id
+    }
     /// Encode `frame` and write it to the server.
     pub async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
         self.writer.send(frame).await
@@ -649,6 +839,63 @@ impl Connection {
     }
 }
 
+fn validate_hello_ok(
+    offered: &ClientCapabilities,
+    protocol_major: u16,
+    protocol_minor: u16,
+    protocol_patch: u16,
+    selected_profile: BootstrapProfile,
+    selected_limits: BootstrapLimits,
+) -> Result<(), AttachError> {
+    if (protocol_major, protocol_minor, protocol_patch)
+        != (
+            PROTOCOL_VERSION.major,
+            PROTOCOL_VERSION.minor,
+            PROTOCOL_VERSION.patch,
+        )
+    {
+        return Err(AttachError::Protocol(format!(
+            "HELLO_OK selected unsupported protocol {protocol_major}.{protocol_minor}.{protocol_patch}; client offered {}.{}.{}",
+            PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor, PROTOCOL_VERSION.patch,
+        )));
+    }
+
+    let profile_is_offered = match selected_profile {
+        BootstrapProfile::NativeState { codec, features } => {
+            offered
+                .bootstrap
+                .profiles
+                .contains(BootstrapProfileKind::NativeState)
+                && offered.bootstrap.native_codecs.contains(codec)
+                && features.supports_native()
+                && offered.bootstrap.native_features.intersect(features) == features
+        }
+        BootstrapProfile::SynthesizedVtRaw => offered
+            .bootstrap
+            .profiles
+            .contains(BootstrapProfileKind::SynthesizedVtRaw),
+        BootstrapProfile::SynthesizedVtStateSync => offered
+            .bootstrap
+            .profiles
+            .contains(BootstrapProfileKind::SynthesizedVtStateSync),
+        _ => false,
+    };
+    if !profile_is_offered {
+        return Err(AttachError::Protocol(format!(
+            "HELLO_OK selected bootstrap profile outside the client's offer: {selected_profile:?}",
+        )));
+    }
+
+    if offered.bootstrap.limits.intersect(selected_limits) != selected_limits {
+        return Err(AttachError::Protocol(format!(
+            "HELLO_OK selected bootstrap limits outside the client's offer: chunk={} history_page={}",
+            selected_limits.max_chunk_bytes(),
+            selected_limits.max_history_page_bytes(),
+        )));
+    }
+    Ok(())
+}
+
 /// The peer's correlated `ERROR` answer to one request (`proto.md` §9).
 ///
 /// Distinct from an uncorrelated `ERROR`, which answers nothing and reaches
@@ -763,6 +1010,14 @@ impl FrameReader {
         }
     }
 
+    const fn set_bootstrap_limits(&mut self, limits: BootstrapLimits) {
+        match self {
+            Self::Uds(reader) => reader.bootstrap_limits = limits,
+            Self::Quic(reader) => reader.bootstrap_limits = limits,
+            Self::Ws(reader) => reader.bootstrap_limits = limits,
+        }
+    }
+
     /// Non-blocking sibling of [`Self::recv`]: decode a frame only if one is
     /// already buffered (or, for UDS, becomes readable without blocking).
     ///
@@ -803,7 +1058,7 @@ impl UdsReader {
     /// bytes (awaiting the socket) until a full frame lands.
     async fn recv(&mut self) -> Result<FrameKind, AttachError> {
         loop {
-            if let Some(frame) = decode_buffered(&mut self.buf)? {
+            if let Some(frame) = decode_buffered(&mut self.buf, self.bootstrap_limits)? {
                 return Ok(frame);
             }
             // No complete frame buffered — pull more bytes. A read of zero is
@@ -826,7 +1081,7 @@ impl UdsReader {
     fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
         // A frame may already be sitting in the buffer behind the one `recv`
         // just returned; hand it over before touching the socket.
-        if let Some(frame) = decode_buffered(&mut self.buf)? {
+        if let Some(frame) = decode_buffered(&mut self.buf, self.bootstrap_limits)? {
             return Ok(Some(frame));
         }
         // Top up from the socket without blocking. `WouldBlock` just means
@@ -837,7 +1092,7 @@ impl UdsReader {
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(None),
             Err(err) => return Err(AttachError::Io(err)),
         }
-        decode_buffered(&mut self.buf)
+        decode_buffered(&mut self.buf, self.bootstrap_limits)
     }
 }
 
@@ -862,7 +1117,7 @@ impl QuicReader {
     /// zero ([`AttachError::Disconnected`]).
     async fn recv(&mut self) -> Result<FrameKind, AttachError> {
         loop {
-            if let Some(frame) = decode_buffered(&mut self.buf)? {
+            if let Some(frame) = decode_buffered(&mut self.buf, self.bootstrap_limits)? {
                 return Ok(frame);
             }
             let n = self
@@ -880,7 +1135,7 @@ impl QuicReader {
     /// just returned. quinn has no sync ready-check, so this never reads from
     /// the stream — it only peels off bytes a prior `recv` over-read.
     fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
-        decode_buffered(&mut self.buf)
+        decode_buffered(&mut self.buf, self.bootstrap_limits)
     }
 }
 
@@ -903,9 +1158,10 @@ impl WsReader {
                 frame.len()
             )));
         }
-        let (decoded, rest) = FrameKind::decode(&frame).map_err(|err| {
-            AttachError::Protocol(format!("server sent undecodable frame: {err:?}"))
-        })?;
+        let (decoded, rest) = FrameKind::decode_with_limits(&frame, self.bootstrap_limits)
+            .map_err(|err| {
+                AttachError::Protocol(format!("server sent undecodable frame: {err:?}"))
+            })?;
         if !rest.is_empty() {
             return Err(AttachError::Protocol(
                 "server sent trailing bytes after WebSocket frame".to_owned(),
@@ -921,7 +1177,10 @@ impl WsReader {
 /// length prefix is missing, or the body has not all arrived). The decoded
 /// frame's bytes are dropped from the front; any trailing partial frame stays
 /// for the next read.
-fn decode_buffered(buf: &mut BytesMut) -> Result<Option<FrameKind>, AttachError> {
+fn decode_buffered(
+    buf: &mut BytesMut,
+    bootstrap_limits: BootstrapLimits,
+) -> Result<Option<FrameKind>, AttachError> {
     if buf.len() < LENGTH_PREFIX {
         return Ok(None);
     }
@@ -938,7 +1197,7 @@ fn decode_buffered(buf: &mut BytesMut) -> Result<Option<FrameKind>, AttachError>
         // Body still in flight — wait for more bytes.
         return Ok(None);
     }
-    let (frame, _rest) = FrameKind::decode(&buf[..frame_len])
+    let (frame, _rest) = FrameKind::decode_with_limits(&buf[..frame_len], bootstrap_limits)
         .map_err(|err| AttachError::Protocol(format!("server sent undecodable frame: {err:?}")))?;
     buf.advance(frame_len);
     Ok(Some(frame))
@@ -985,6 +1244,8 @@ mod tests {
         // burst-decode test can assert ordering.
         let frame = FrameKind::FrameAck {
             terminal_id: phux_protocol::ids::TerminalId::Local { id: 1 },
+            stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+            bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
             seq,
         };
         let mut buf = BytesMut::new();
@@ -1002,7 +1263,8 @@ mod tests {
             buf.extend_from_slice(&framed(seq));
         }
         let mut seqs = Vec::new();
-        while let Some(FrameKind::FrameAck { seq, .. }) = decode_buffered(&mut buf).expect("decode")
+        while let Some(FrameKind::FrameAck { seq, .. }) =
+            decode_buffered(&mut buf, BootstrapLimits::default()).expect("decode")
         {
             seqs.push(seq);
         }
@@ -1019,13 +1281,15 @@ mod tests {
         let cut = whole.len() - 2;
         let mut buf = BytesMut::from(&whole[..cut]);
         assert!(
-            decode_buffered(&mut buf).expect("partial").is_none(),
+            decode_buffered(&mut buf, BootstrapLimits::default())
+                .expect("partial")
+                .is_none(),
             "incomplete frame yields None"
         );
         assert_eq!(buf.len(), cut, "partial bytes retained");
         // Deliver the tail; now it decodes and the buffer drains.
         buf.extend_from_slice(&whole[cut..]);
-        let frame = decode_buffered(&mut buf).expect("complete");
+        let frame = decode_buffered(&mut buf, BootstrapLimits::default()).expect("complete");
         assert!(matches!(frame, Some(FrameKind::FrameAck { seq: 7, .. })));
         assert!(buf.is_empty());
     }
@@ -1033,7 +1297,11 @@ mod tests {
     #[test]
     fn decode_buffered_empty_is_none() {
         let mut buf = BytesMut::new();
-        assert!(decode_buffered(&mut buf).expect("empty").is_none());
+        assert!(
+            decode_buffered(&mut buf, BootstrapLimits::default())
+                .expect("empty")
+                .is_none()
+        );
     }
 
     // --- Connection::request -------------------------------------------
@@ -1041,7 +1309,9 @@ mod tests {
     // `Connection` holds `!Send` transport halves, so the scripted server
     // side runs on a `LocalSet` rather than `tokio::spawn`.
 
-    use phux_protocol::ids::TerminalId;
+    use bytes::Bytes;
+    use phux_protocol::caps::BootstrapStreamProfile;
+    use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
     use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
     use tokio::net::UnixStream;
 
@@ -1086,29 +1356,50 @@ mod tests {
         }
     }
 
-    fn snapshot() -> FrameKind {
-        FrameKind::TerminalSnapshot {
-            terminal_id: TerminalId::local(1),
-            cols: 120,
-            rows: 40,
-            vt_replay_bytes: b"opening screen".to_vec(),
-            scrollback_bytes: None,
-        }
+    fn bootstrap() -> Vec<FrameKind> {
+        let terminal_id = TerminalId::local(1);
+        let stream_id = StreamId::new(1).expect("stream");
+        let bootstrap_id = BootstrapId::new(1).expect("bootstrap");
+        vec![
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 120,
+                rows: 40,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: Bytes::from_static(b"opening screen"),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ]
     }
 
     #[test]
-    fn pre_ack_snapshot_is_returned_instead_of_discarded() {
-        // `handle_attach_terminal` pushes TERMINAL_SNAPSHOT before the Ok
-        // reply and never re-sends it. The hand-rolled wait loop this API
-        // replaces dropped it, which is what made every `phux rec` capture a
-        // 0x0 grid with no opening screen.
-        let reply = request_against(vec![snapshot(), ack(7)]);
+    fn pre_ack_bootstrap_is_returned_instead_of_discarded() {
+        let mut script = bootstrap();
+        script.push(ack(7));
+        let reply = request_against(script);
         assert!(matches!(reply.result(), CommandResult::Ok));
-        assert!(
-            matches!(reply.interleaved(), [FrameKind::TerminalSnapshot { .. }]),
-            "the pre-ack snapshot must reach the caller, got {:?}",
-            reply.interleaved()
-        );
+        assert!(matches!(
+            reply.interleaved(),
+            [
+                FrameKind::BootstrapBegin { .. },
+                FrameKind::BootstrapChunk { .. },
+                FrameKind::BootstrapReady { .. }
+            ]
+        ));
     }
 
     #[test]
@@ -1180,15 +1471,14 @@ mod tests {
         let bell = FrameKind::Bell {
             terminal_id: TerminalId::local(1),
         };
-        let reply = request_against(vec![snapshot(), bell, ack(7)]);
-        assert!(
-            matches!(
-                reply.interleaved(),
-                [FrameKind::TerminalSnapshot { .. }, FrameKind::Bell { .. }]
-            ),
-            "got {:?}",
-            reply.interleaved()
-        );
+        let mut script = bootstrap();
+        script.extend([bell, ack(7)]);
+        let reply = request_against(script);
+        assert_eq!(reply.interleaved().len(), 4);
+        assert!(matches!(
+            reply.interleaved().last(),
+            Some(FrameKind::Bell { .. })
+        ));
     }
 
     // --- the non-COMMAND pairs (phux-h5hj.12) --------------------------
@@ -1367,13 +1657,19 @@ mod tests {
             request_id: 7,
             result: SpawnResult::Ok(TerminalId::local(3)),
         };
-        let reply = spawn_against(vec![snapshot(), spawned]);
+        let mut script = bootstrap();
+        script.push(spawned);
+        let reply = spawn_against(script);
         assert!(matches!(reply.result(), Ok(SpawnResult::Ok(_))));
-        assert!(
-            matches!(reply.interleaved(), [FrameKind::TerminalSnapshot { .. }]),
-            "got {:?}",
-            reply.interleaved()
-        );
+        assert_eq!(reply.interleaved().len(), 3);
+        assert!(matches!(
+            reply.interleaved(),
+            [
+                FrameKind::BootstrapBegin { .. },
+                FrameKind::BootstrapChunk { .. },
+                FrameKind::BootstrapReady { .. }
+            ]
+        ));
     }
 
     #[test]
@@ -1389,5 +1685,48 @@ mod tests {
                 Err(AttachError::Protocol(_))
             ));
         });
+    }
+    #[test]
+    fn hello_ok_profile_must_have_been_offered() {
+        let offered = ClientCapabilities::new().with_bootstrap(
+            phux_protocol::BootstrapCapabilities::new()
+                .with_profiles(phux_protocol::BootstrapProfileSet::with(&[
+                    BootstrapProfileKind::SynthesizedVtRaw,
+                ]))
+                .with_native_codecs(phux_protocol::EngineCodecSet::new())
+                .with_native_features(phux_protocol::EngineFeatureSet::new()),
+        );
+        let malicious = BootstrapProfile::NativeState {
+            codec: phux_protocol::EngineCodec::LibghosttyCheckpointV2,
+            features: phux_protocol::EngineFeatureSet::required_native(),
+        };
+        assert!(matches!(
+            validate_hello_ok(
+                &offered,
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch,
+                malicious,
+                BootstrapLimits::default(),
+            ),
+            Err(AttachError::Protocol(message)) if message.contains("outside the client's offer")
+        ));
+    }
+
+    #[test]
+    fn hello_ok_limits_must_not_exceed_the_offer() {
+        let offered = ClientCapabilities::new();
+        let excessive = BootstrapLimits::new(512 * 1024, 2 * 1024 * 1024).unwrap();
+        assert!(matches!(
+            validate_hello_ok(
+                &offered,
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch,
+                BootstrapProfile::SynthesizedVtRaw,
+                excessive,
+            ),
+            Err(AttachError::Protocol(message)) if message.contains("limits outside")
+        ));
     }
 }

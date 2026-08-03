@@ -33,7 +33,7 @@ mod common;
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -95,26 +95,24 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
             "expected Attached",
         );
 
-        // Drain the snapshot. It must NOT carry the marker (printed only
+        // Drain the bootstrap. It must NOT carry the marker (printed only
         // after the 0.5s sleep, i.e. after attach + prime).
-        let (snap_tb, snap) = recv_typed(&mut stream).await;
-        if snap_tb == TYPE_TERMINAL_SNAPSHOT
-            && let FrameKind::TerminalSnapshot {
-                vt_replay_bytes, ..
-            } = snap
-        {
-            assert_eq!(
-                count_occurrences(&vt_replay_bytes, MARKER),
-                0,
-                "marker must arrive as a live delta, not in the snapshot",
-            );
-        }
+        let (snap_tb, begin) = recv_typed(&mut stream).await;
+        assert_eq!(snap_tb, TYPE_BOOTSTRAP_BEGIN);
+        assert!(matches!(begin, FrameKind::BootstrapBegin { .. }));
+        let (_, chunk) = recv_typed(&mut stream).await;
+        let FrameKind::BootstrapChunk { payload, .. } = chunk else {
+            panic!("expected BootstrapChunk");
+        };
+        assert_eq!(count_occurrences(&payload, MARKER), 0);
+        let (_, ready) = recv_typed(&mut stream).await;
+        assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
 
         // Phase 1: wait for the marker to land as a live TERMINAL_OUTPUT
         // delta. Capture its terminal_id + seq for the ack, and assert the
         // per-consumer seq is strictly increasing across frames.
         let mut last_seq: Option<u64> = None;
-        let mut ack_target: Option<(phux_protocol::ids::TerminalId, u64)> = None;
+        let mut ack_target = None;
         let phase1_deadline = tokio::time::Instant::now() + Duration::from_secs(8);
         while tokio::time::Instant::now() < phase1_deadline {
             let remaining = phase1_deadline - tokio::time::Instant::now();
@@ -127,6 +125,8 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
             let FrameKind::TerminalOutput {
                 terminal_id,
                 seq,
+                stream_id,
+                bootstrap_id,
                 bytes,
             } = frame
             else {
@@ -141,12 +141,12 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
             }
             last_seq = Some(seq);
             if count_occurrences(&bytes, MARKER) >= 1 {
-                ack_target = Some((terminal_id, seq));
+                ack_target = Some((terminal_id, stream_id, bootstrap_id, seq));
                 break;
             }
         }
 
-        let (ack_terminal, ack_seq) =
+        let (ack_terminal, ack_stream, ack_bootstrap, ack_seq) =
             ack_target.expect("marker must be delivered as a live TERMINAL_OUTPUT delta");
 
         // Phase 2: ack the delivered frame (the new phux-3uv client
@@ -157,6 +157,8 @@ fn acked_incremental_converges_and_seq_is_monotonic() {
             &mut stream,
             &FrameKind::FrameAck {
                 terminal_id: ack_terminal,
+                stream_id: ack_stream,
+                bootstrap_id: ack_bootstrap,
                 seq: ack_seq,
             },
         )

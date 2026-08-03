@@ -1,5 +1,5 @@
 use phux_core::ids::{SessionId, TerminalId};
-use phux_protocol::caps::ClientCapabilities;
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::ids::TerminalId as WireTerminalId;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -38,6 +38,10 @@ pub struct AttachedClient {
     /// to [`ClientCapabilities::default`] (most-permissive — never silently
     /// downgrades).
     pub client_caps: ClientCapabilities,
+    /// Immutable bootstrap profile selected for this HELLO.
+    pub bootstrap_profile: BootstrapProfile,
+    /// Immutable payload limits selected for this HELLO.
+    pub bootstrap_limits: BootstrapLimits,
     /// This client's current outer viewport (`phux-nk07`).
     ///
     /// Set from the `ATTACH` viewport and updated on every `VIEWPORT_RESIZE`.
@@ -80,4 +84,7 @@ pub enum AttachError {
     /// The given [`ClientId`] is already attached.
     #[error("client {0:?} is already attached")]
     AlreadyAttached(ClientId),
+    /// The session cannot fit the bounded aggregate attach preflight.
+    #[error("session exceeds aggregate attach resource limits")]
+    ResourceLimit,
 }

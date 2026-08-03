@@ -47,7 +47,7 @@
 mod common;
 
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_SNAPSHOT, ViewportInfo,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, ViewportInfo,
 };
 use tempfile::TempDir;
 
@@ -60,6 +60,7 @@ use crate::common::{
 /// dimensions line up with the no-PTY seed actor's defaults.
 fn create_if_missing_frame(name: &str) -> FrameKind {
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::CreateIfMissing {
             name: name.to_owned(),
             command: None,
@@ -77,6 +78,7 @@ fn create_if_missing_frame(name: &str) -> FrameKind {
 /// against a PTY-backed server with no override command.
 fn create_if_missing_with_cwd_frame(name: &str, cwd: &str) -> FrameKind {
     FrameKind::Attach {
+        attach_id: 1,
         target: AttachTarget::CreateIfMissing {
             name: name.to_owned(),
             command: Some(vec![
@@ -130,6 +132,7 @@ fn create_if_missing_creates_session_when_absent() {
         );
         match attached {
             FrameKind::Attached {
+                attach_id: _,
                 snapshot,
                 initial_client_id,
             } => {
@@ -151,11 +154,11 @@ fn create_if_missing_creates_session_when_absent() {
         // ---- TERMINAL_SNAPSHOT for the seed pane ----
         let (type_byte, snap_frame) = recv_typed(&mut stream).await;
         assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
+            type_byte, TYPE_BOOTSTRAP_BEGIN,
             "expected TERMINAL_SNAPSHOT after ATTACHED (got 0x{type_byte:02x})",
         );
         match snap_frame {
-            FrameKind::TerminalSnapshot { cols, rows, .. } => {
+            FrameKind::BootstrapBegin { cols, rows, .. } => {
                 // seed_session_with_actor seeds 80x24 — matches the byc.6.1
                 // expectation. The dimension assertion is what proves the
                 // seed pane actually got created (otherwise we'd never

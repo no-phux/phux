@@ -41,7 +41,7 @@ use tokio::time::{sleep, timeout};
 
 use crate::common::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, encode_frame, run_local,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 /// The consumer bearer the STUB connector verifies and strips before
@@ -149,7 +149,7 @@ async fn spawn_uds_connector(
             // stdio-bridge shape: one finished direction ends the bridge.
             let socket_path = socket_path.clone();
             tokio::spawn(async move {
-                let uds = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+                let uds = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
                 let (mut from_server, mut to_server) = uds.into_split();
                 tokio::select! {
                     _ = tokio::io::copy(&mut tun_recv, &mut to_server) => {}
@@ -354,10 +354,10 @@ fn hello_attach_echo_through_relay_to_real_server() {
                     assert_eq!(snapshot.panes.len(), 1, "exactly one pane");
                     pane_id = Some(snapshot.panes[0].id.clone());
                 }
-                FrameKind::TerminalSnapshot { cols, rows, .. } => {
+                FrameKind::BootstrapBegin { cols, rows, .. } => {
                     assert!(cols > 0 && rows > 0, "snapshot has a real grid");
-                    got_snapshot = true;
                 }
+                FrameKind::BootstrapReady { .. } => got_snapshot = true,
                 _ => {}
             }
         }

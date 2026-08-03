@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# build-vt-wasm.sh — build ghostty's libghostty-vt as a standalone wasm module
-# and vendor it into the phux-web client (phux-486.2).
+# build-vt-wasm.sh — build the checkpoint-capable standalone libghostty-vt WASM
+# module and vendor it into the browser engine adapter.
 #
-# The phux browser client renders terminals with this exact engine. The module
-# is self-contained (only import: env.log) and ships its own allocator; the
-# Rust driver in clients/phux-vt-web loads + drives it via the WebAssembly API.
+# The browser instantiates the immutable protocol-0.7 checkpoint-v2 engine as a
+# second WASM module. It imports env.log plus ghostty.host_entropy_fill; the
+# Rust adapter supplies secure browser entropy and probes codec identity,
+# version, features, and limits before advertising NativeState.
 #
-# Requires zig 0.16.x (the phux nix devshell provides it). Point GHOSTTY_SRC at
-# a ghostty checkout (default ../ghostty). Ideally pin it to the same rev
-# libghostty-vt-sys uses; see crates Cargo.toml.
+# Requires zig 0.16.x (the phux nix devshell provides it). GHOSTTY_SRC defaults
+# to the published standalone checkpoint-WASM checkout; override it only with
+# a source tree implementing the same frozen incremental ABI.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
-GHOSTTY_SRC="${GHOSTTY_SRC:-$repo/../ghostty}"
+GHOSTTY_SRC="${GHOSTTY_SRC:-$repo/../ghostty-checkpoint-wasm}"
 
 if [ ! -f "$GHOSTTY_SRC/build.zig" ]; then
   echo "ghostty source not found at GHOSTTY_SRC=$GHOSTTY_SRC" >&2

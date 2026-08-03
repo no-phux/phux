@@ -38,7 +38,7 @@
 mod common;
 
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
     ViewportInfo,
 };
 use portable_pty::CommandBuilder;
@@ -113,6 +113,7 @@ fn attach_resizes_seed_pty_to_client_viewport() {
         send_frame(
             &mut stream,
             &FrameKind::Attach {
+                attach_id: 1,
                 target: AttachTarget::ByName("default".to_owned()),
                 viewport,
                 request_scrollback: false,
@@ -131,7 +132,7 @@ fn attach_resizes_seed_pty_to_client_viewport() {
         // ---- TERMINAL_SNAPSHOT (one per pane in focused window) ----
         let (type_byte, _snap) = recv_typed(&mut stream).await;
         assert_eq!(
-            type_byte, TYPE_TERMINAL_SNAPSHOT,
+            type_byte, TYPE_BOOTSTRAP_BEGIN,
             "second server-to-client frame must be TERMINAL_SNAPSHOT",
         );
 
