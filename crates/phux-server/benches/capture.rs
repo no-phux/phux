@@ -10,12 +10,7 @@
     reason = "assertion-bearing benchmark binary"
 )]
 
-#[allow(
-    unused_imports,
-    reason = "the benchmark includes the complete integration harness but uses only its wire helpers"
-)]
-#[path = "../tests/common/mod.rs"]
-mod common;
+use phux_server_testkit as common;
 pub(crate) mod server_measure;
 #[path = "../../../benchmarks/support.rs"]
 pub(crate) mod support;

@@ -9,8 +9,7 @@
     reason = "standalone operator-facing harness reports failures directly"
 )]
 
-#[path = "../tests/common/mod.rs"]
-mod common;
+use phux_server_testkit as common;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};

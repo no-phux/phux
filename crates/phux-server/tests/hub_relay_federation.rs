@@ -55,7 +55,6 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-
 use futures_util::{SinkExt, StreamExt};
 use phux_config::SatelliteConfigEntry;
 use phux_protocol::PROTOCOL_VERSION;

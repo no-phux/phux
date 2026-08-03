@@ -7,8 +7,6 @@
     clippy::future_not_send
 )]
 
-mod common;
-
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -24,7 +22,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::{sleep, timeout};
 
-use common::{
+use phux_server_testkit::{
     SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, recv_typed, run_local,
     send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket, wait_for_socket,
 };
@@ -82,7 +80,7 @@ async fn wait_for_fullscreen_marker(path: &Path) {
         &attach_frame_at(u32::MAX, false, ViewportInfo::new(80, 24)),
     )
     .await;
-    let mut screen = common::screen::Screen::new(80, 24).expect("screen oracle");
+    let mut screen = phux_server_testkit::screen::Screen::new(80, 24).expect("screen oracle");
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());

@@ -7,16 +7,16 @@
     reason = "fault tables keep each recovery trace linear"
 )]
 
-mod common;
-
 use std::collections::BTreeSet;
 
 use bytes::Bytes;
-use common::fault::{Fault, FaultOutcome, FaultScript, FaultStep, Milestone, WireTranscript};
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
 use phux_protocol::wire::frame::{
     FrameKind, HistoryRejectionReason, HistoryTombstoneReason, TombstoneReason,
+};
+use phux_server_testkit::fault::{
+    Fault, FaultOutcome, FaultScript, FaultStep, Milestone, WireTranscript,
 };
 
 const FIRST_POST_FENCE: u64 = 7;
