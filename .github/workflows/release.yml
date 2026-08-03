@@ -187,17 +187,15 @@ jobs:
       - name: Build release binaries
         run: cargo +1.90.0 build --release --bin phux --bin phux-mcp
 
-      - name: Check macOS binary portability
-        if: runner.os == 'macOS'
+      # Runs on EVERY leg, not just macOS. This used to be a grep for
+      # "/nix/store" in `otool -L` output behind `if: runner.os == 'macOS'`,
+      # which meant the two Linux artifacts — the ones most likely to pick up a
+      # stray .so from the runner image — were shipped with no link check at
+      # all. A bad dependency here survives packaging, upload, and checksum
+      # verification, and first surfaces as a failed exec on a user's machine.
+      - name: Check binary portability
         shell: bash
-        run: |
-          set -euo pipefail
-          for bin in target/release/phux target/release/phux-mcp; do
-            if otool -L "$bin" | grep -F '/nix/store/'; then
-              echo "::error::${bin} links to a Nix store library; release binaries must be portable."
-              exit 1
-            fi
-          done
+        run: bash scripts/check-binary-portability.sh target/release/phux target/release/phux-mcp
 
       - name: Package tarball
         id: package

@@ -155,8 +155,17 @@ set — regenerates and pushes `Formula/phux.rb` to the tap.
 
 Release builds use rustup plus the official Zig tarballs instead of the Nix dev
 shell, because portable release binaries must not record `/nix/store` dynamic
-library paths. The workflow checks macOS binaries with `otool -L` before
-packaging.
+library paths.
+
+`scripts/check-binary-portability.sh` enforces that on **both** platforms before
+packaging: macOS binaries may link only `/usr/lib/**` and `/System/Library/**`,
+Linux binaries only the glibc runtime set (`libc`, `libm`, `libgcc_s`, `libdl`,
+`libpthread`, `librt`, `libutil`, `ld-linux`). It also fails if a Linux binary
+demands a glibc symbol version above `PHUX_GLIBC_MAX` (2.35, the ubuntu-22.04
+floor the Linux legs build on), so a runner image bump cannot quietly raise the
+minimum distro. Before this existed the check was a `grep` for `/nix/store` in
+`otool -L` output — macOS only, one failure mode, and nothing whatsoever on
+Linux.
 
 Those tarballs are pinned by SHA-256 in `release.yml`, one digest per target,
 and the digests are hand-written on purpose — a checksum fetched at build time
@@ -167,9 +176,11 @@ while every digest stayed on `0.15.2`, so all three matrix legs failed at
 `shasum -c`, and release.yml runs only after the tag and release already exist.
 `just zig-pin-check` (`scripts/check-zig-pins.sh`, a `just ci` and ci.yml step)
 compares the pins against `https://ziglang.org/download/index.json` and fails on
-a stale one; it skips itself when the index is unreachable. `v0.0.3` is the current portable public release. `v0.0.1` was seeded
-with a Linux x86_64 tarball plus checksum, but that first artifact is Nix-linked
-and not portable; do not point installers or the tap at it.
+a stale one; it skips itself when the index is unreachable.
+
+`v0.0.3` is the current portable public release. `v0.0.1` was seeded with a Linux
+x86_64 tarball plus checksum, but that first artifact is Nix-linked and not
+portable; do not point installers or the tap at it.
 
 For an emergency host-only artifact, use the same dist layout locally:
 

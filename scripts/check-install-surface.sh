@@ -54,9 +54,16 @@ require_fixed docs/INSTALL.md "Release tarball"
 require_fixed docs/INSTALL.md "From source"
 require_fixed docs/INSTALL.md "nix develop -c cargo install --locked --path crates/phux"
 require_fixed docs/INSTALL.md "nix develop -c cargo install --locked --path crates/phux-mcp"
-require_fixed docs/INSTALL.md 'seeded `v0.0.1` Linux tarball outside Nix environments'
 require_fixed docs/INSTALL.md 'Every portable tarball and installer path includes `phux-mcp`'
-require_fixed docs/INSTALL.md "cargo install phux is unsupported"
+# Backticked in the doc since the curated-docs truth pass (6968cf06); match the
+# rendered claim, not the old unformatted spelling.
+require_fixed docs/INSTALL.md '`cargo install phux` is unsupported'
+# The seeded-v0.0.1 caveat used to be asserted against docs/INSTALL.md. That
+# truth pass dropped it there — reasonably, since v0.0.1 is ten minor versions
+# stale and INSTALL.md is the user-facing page — but the warning still matters
+# to whoever points a tap or installer at a tag, so it is pinned where it now
+# lives instead of being resurrected in INSTALL.md.
+require_fixed docs/RELEASING.md 'do not point installers or the tap at it'
 require_fixed docs/INSTALL.md "Windows is not supported"
 require_fixed docs/INSTALL.md "First run: persistent session + agent loop"
 require_fixed docs/INSTALL.md 'verifies the release `.sha256` sidecar before unpacking'
@@ -117,6 +124,12 @@ require_fixed .github/workflows/release.yml 'target: aarch64-unknown-linux-gnu'
 # together with it.
 forbid_fixed .github/workflows/release.yml 'target: x86_64-apple-darwin'
 require_fixed .github/workflows/release.yml 'https://ziglang.org/download/${ZIG_VERSION}/${archive}'
+# The link check must run on every matrix leg. It was macOS-only for its whole
+# life, so the Linux artifacts shipped unchecked; pin both the call and the
+# Linux half of the script it calls.
+require_fixed .github/workflows/release.yml 'bash scripts/check-binary-portability.sh'
+require_fixed scripts/check-binary-portability.sh 'check_elf'
+require_fixed scripts/check-binary-portability.sh 'check_macho'
 require_regex .github/workflows/release.yml 'test -x .*phux-mcp|command -v .*phux-mcp|./phux-mcp --'
 
 forbid_fixed .github/workflows/release.yml 'mlugg/setup-zig'
