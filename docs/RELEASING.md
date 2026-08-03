@@ -156,7 +156,18 @@ set — regenerates and pushes `Formula/phux.rb` to the tap.
 Release builds use rustup plus the official Zig tarballs instead of the Nix dev
 shell, because portable release binaries must not record `/nix/store` dynamic
 library paths. The workflow checks macOS binaries with `otool -L` before
-packaging. `v0.0.3` is the current portable public release. `v0.0.1` was seeded
+packaging.
+
+Those tarballs are pinned by SHA-256 in `release.yml`, one digest per target,
+and the digests are hand-written on purpose — a checksum fetched at build time
+would verify nothing about the server that served the tarball. **Bumping
+`ZIG_VERSION` means re-pinning all three digests in the same commit.** Missing
+that is what published `v0.10.0` with no assets: the version moved to `0.16.0`
+while every digest stayed on `0.15.2`, so all three matrix legs failed at
+`shasum -c`, and release.yml runs only after the tag and release already exist.
+`just zig-pin-check` (`scripts/check-zig-pins.sh`, a `just ci` and ci.yml step)
+compares the pins against `https://ziglang.org/download/index.json` and fails on
+a stale one; it skips itself when the index is unreachable. `v0.0.3` is the current portable public release. `v0.0.1` was seeded
 with a Linux x86_64 tarball plus checksum, but that first artifact is Nix-linked
 and not portable; do not point installers or the tap at it.
 

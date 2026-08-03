@@ -253,6 +253,15 @@ jobs:
       # release path that actually consumes it.
       - name: formula-check
         run: nix develop -c bash scripts/check-formula.sh
+      # release.yml pins Zig tarball digests by hand (a checksum fetched at
+      # build time verifies nothing). Nothing tied those digests to
+      # ZIG_VERSION, so v0.10.0 shipped with the version bumped to 0.16.0 and
+      # all three shas still on 0.15.2 — the whole build matrix died at
+      # `shasum -c` and the release was published with zero assets. release.yml
+      # only runs after the tag exists, so this is the last gate that can catch
+      # it while it is still fixable. Skips itself if ziglang.org is unreachable.
+      - name: zig-pin-check
+        run: nix develop -c bash scripts/check-zig-pins.sh
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true

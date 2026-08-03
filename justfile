@@ -271,6 +271,11 @@ docs-gen:
 formula-check:
     bash scripts/check-formula.sh
 
+# release.yml's pinned Zig tarball digests vs ziglang.org's published index.
+# Skips (exit 0) when the index is unreachable, so it is safe offline.
+zig-pin-check:
+    bash scripts/check-zig-pins.sh
+
 # Drift gate for the one generated Rust source in the tree:
 # crates/phux-record/src/font/spleen_8x16.rs vs its vendored .bdf. Compile-free
 # (python3 + cmp). See scripts/check-generated-font.sh for why this is a check
@@ -293,10 +298,10 @@ e2e-lane-check:
 # and machine-independent, so a green run predicts a green `check` job.
 #
 # The gate list mirrors ci.yml's `check` job step for step — fmt, clippy,
-# rustdoc, deny, docs-check, formula-check, font-check, e2e-lane-check — plus
-# the unit test pool from the `test` job. Keep it that way: `just ci` losing a
-# gate CI still runs is how PR #306 shipped five rustdoc failures to a red
-# build after a green local run.
+# rustdoc, deny, docs-check, formula-check, font-check, e2e-lane-check,
+# zig-pin-check — plus the unit test pool from the `test` job. Keep it that way:
+# `just ci` losing a gate CI still runs is how PR #306 shipped five rustdoc
+# failures to a red build after a green local run.
 #
 # The ratatui-confinement boundary (ADR-0020) used to be a grep guard
 # (`check-ratatui-boundary`); phux-0fv replaced it with a crate split, so
@@ -304,7 +309,7 @@ e2e-lane-check:
 # no `ratatui` dependency.
 
 # The inner-loop bar — every deterministic gate CI runs. Run before pushing.
-ci: fmt-check lint docs-check formula-check font-check e2e-lane-check test deny doc
+ci: fmt-check lint docs-check formula-check font-check e2e-lane-check zig-pin-check test deny doc
     @echo "ok"
 
 # The COMPLETE PR bar: `ci` plus the two lanes that spawn real processes.
