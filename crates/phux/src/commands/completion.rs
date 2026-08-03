@@ -22,36 +22,71 @@ use crate::Cli;
 const BIN_NAME: &str = "phux";
 
 /// The command tree completions are generated from: the real parser minus
-/// its hidden top-level verbs.
+/// every hidden verb and every hidden arg, at every depth.
 ///
-/// `clap_complete`'s shell generators (4.6.7) copy every subcommand into
-/// the emitted script -- `is_hide_set` is only consulted for possible
-/// values -- so generating straight from [`Cli::command`] offers the
-/// hidden ADR-0066 deprecation aliases (`remote`, `satellite`, `enroll`)
-/// and the machine-only `gen-reference-docs` right next to `host`
-/// (phux-i0e8.13.2). Since `clap::Command` has no subcommand-removal API,
-/// this rebuilds the root -- same name, version, and root args -- and
-/// re-adds only the visible verbs. The hidden verbs still parse; they are
-/// just never offered.
-///
-/// Root-level pruning only: no nested subcommand is hidden today, and the
-/// tests in `main.rs` pin the generated scripts, so a future nested hidden
-/// verb that leaks will fail there rather than ship silently.
+/// `clap_complete`'s shell generators (4.6.7) copy every subcommand AND
+/// every arg into the emitted script -- `is_hide_set` is only consulted
+/// for possible values -- so generating straight from [`Cli::command`]
+/// offers the hidden ADR-0066 deprecation aliases (`remote`, `satellite`,
+/// `enroll`), the machine-only `gen-reference-docs` (phux-i0e8.13.2), the
+/// deprecated split booleans (`--horizontal`/`--vertical`,
+/// phux-i0e8.13.4), and the machine plumbing flags (`server
+/// --daemonize`, `play --pty-writer`, ...) right next to the visible
+/// surface. Since `clap::Command` has no removal API for either
+/// subcommands or args, [`prune`] rebuilds each command -- name, about,
+/// visible aliases, groups, visible args -- and recurses into only the
+/// visible verbs. The hidden spellings still parse; they are just never
+/// offered.
 fn completion_tree() -> clap::Command {
-    let root = Cli::command();
     // The version the derive stamped on the real root (`--version` still
     // completes); `env!` because `clap::builder::Str` wants `'static`.
-    let mut pruned = clap::Command::new(BIN_NAME).version(env!("CARGO_PKG_VERSION"));
-    if let Some(about) = root.get_about() {
-        pruned = pruned.about(about.clone());
+    prune(&Cli::command()).version(env!("CARGO_PKG_VERSION"))
+}
+
+/// A copy of `cmd` carrying only what the shell generators render --
+/// name, about, visible aliases, arg groups -- with hidden args dropped
+/// and hidden subcommands not descended into.
+fn prune(cmd: &clap::Command) -> clap::Command {
+    // Without clap's `string` feature, builder names want `&'static str`,
+    // but the copied names are borrowed from the source tree. Leaking is
+    // fine here: the set of names is a small constant (the command tree),
+    // and the verb is a one-shot that exits after printing the script.
+    fn leak(s: &str) -> &'static str {
+        Box::leak(s.to_owned().into_boxed_str())
     }
-    for arg in root.get_arguments() {
-        pruned = pruned.arg(arg.clone());
+    let mut out = clap::Command::new(leak(cmd.get_name()));
+    if let Some(about) = cmd.get_about() {
+        out = out.about(about.clone());
     }
-    pruned.subcommands(
-        root.get_subcommands()
+    for alias in cmd.get_visible_aliases() {
+        out = out.visible_alias(leak(alias));
+    }
+    for arg in cmd.get_arguments().filter(|arg| !arg.is_hide_set()) {
+        out = out.arg(arg.clone());
+    }
+    // Arg groups must be copied — visible args may reference a group by id
+    // (e.g. `requires = "remote"` on `attach --token`), and clap's debug
+    // asserts fail the build on a dangling reference. But the derive's
+    // implicit per-verb group lists every arg including the hidden ones,
+    // so each group is rebuilt with only its surviving members. Group-level
+    // `requires`/`conflicts` have no getters and are dropped; this tree is
+    // only ever rendered, never parsed with, so only ids matter.
+    let visible: Vec<&clap::Id> = cmd
+        .get_arguments()
+        .filter(|arg| !arg.is_hide_set())
+        .map(clap::Arg::get_id)
+        .collect();
+    for group in cmd.get_groups() {
+        let rebuilt = clap::ArgGroup::new(group.get_id().clone())
+            .args(group.get_args().filter(|id| visible.contains(id)).cloned())
+            .multiple(group.clone().is_multiple())
+            .required(group.is_required_set());
+        out = out.group(rebuilt);
+    }
+    out.subcommands(
+        cmd.get_subcommands()
             .filter(|sub| !sub.is_hide_set())
-            .cloned(),
+            .map(prune),
     )
 }
 
@@ -147,6 +182,43 @@ mod tests {
                 offered.contains(&name),
                 "`{name}` (hidden: {hidden}) is on the wrong side of the completion tree"
             );
+        }
+    }
+
+    /// `clap_complete` 4.6.7 copies args into the script without
+    /// consulting `is_hide_set`, so the pruned tree must drop hidden args
+    /// before generation -- the machine plumbing (`--daemonize`,
+    /// `--pty-writer`, ...) and the deprecated split booleans alike. Walk
+    /// the real parser for every hidden long at any depth and pin its
+    /// absence from the emitted scripts.
+    #[test]
+    fn completion_scripts_omit_every_hidden_arg() {
+        fn hidden_longs(cmd: &clap::Command, acc: &mut Vec<String>) {
+            for arg in cmd.get_arguments().filter(|arg| arg.is_hide_set()) {
+                if let Some(long) = arg.get_long() {
+                    acc.push(format!("--{long}"));
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                hidden_longs(sub, acc);
+            }
+        }
+        let mut hidden = Vec::new();
+        hidden_longs(&Cli::command(), &mut hidden);
+        assert!(
+            !hidden.is_empty(),
+            "the parser has hidden args today; if that ever stops being \
+             true this test is vacuous and should be retired"
+        );
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+            let script =
+                String::from_utf8(completion_script(shell)).expect("completion script is UTF-8");
+            for flag in &hidden {
+                assert!(
+                    !script.contains(flag.as_str()),
+                    "{shell} completions still offer the hidden arg {flag}"
+                );
+            }
         }
     }
 
