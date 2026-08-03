@@ -153,6 +153,16 @@ Cargo's resolved versions, builds `phux` + `phux-mcp` for
 uploads them onto that release, and — if the `HOMEBREW_TAP_DEPLOY_KEY` secret is
 set — regenerates and pushes `Formula/phux.rb` to the tap.
 
+**Backfilling an old tag is safe; it will not move the tap backwards.**
+`release.yml` is dispatchable against any existing tag, which is how a release
+whose build failed gets its assets attached after the fact. Assets are per-tag,
+so re-running an old tag only fills in that release. The tap is not per-tag —
+`Formula/phux.rb` is version-pinned and is a single moving pointer — so the
+`homebrew` job compares the tag against the version the formula currently serves
+and skips the push if it would be a downgrade, emitting a warning annotation
+instead. Backfilling `v0.9.0` after `v0.10.0` had shipped is exactly the case
+that motivated this; before the guard it silently rewrote the tap to `v0.9.0`.
+
 Release builds use rustup plus the official Zig tarballs instead of the Nix dev
 shell, because portable release binaries must not record `/nix/store` dynamic
 library paths.

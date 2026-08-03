@@ -320,6 +320,25 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
+          # Refuse to move the tap BACKWARDS.
+          #
+          # This workflow is dispatchable against any existing tag — that is how
+          # a release whose build failed gets its assets backfilled later. But
+          # Formula/phux.rb is version-pinned, so regenerating it from an OLDER
+          # tag rewrites the tap to that older release and every `brew upgrade`
+          # silently downgrades.
+          #
+          # Not hypothetical: backfilling v0.9.0's missing assets rewrote a tap
+          # that was already serving v0.10.0, and it took a third release run to
+          # put it back. Assets are per-tag and backfilling them is always safe;
+          # the tap is a single moving pointer and is not.
+          current="$(sed -n 's|.*/releases/download/v\([0-9][^/]*\)/.*|\1|p' tap/Formula/phux.rb 2>/dev/null | head -n 1)"
+          new="${TAG#v}"
+          if [ -n "$current" ] && [ "$current" != "$new" ] \
+             && [ "$(printf '%s\n%s\n' "$current" "$new" | sort -V | head -n 1)" = "$new" ]; then
+            echo "::warning::tap already serves ${current}; refusing to downgrade it to ${new}. Assets for ${TAG} were still attached to the release."
+            exit 0
+          fi
           mkdir -p tap/Formula
           bash scripts/gen-formula.sh "$TAG" dist tap/Formula/phux.rb
           cd tap

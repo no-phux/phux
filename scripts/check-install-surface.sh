@@ -128,6 +128,9 @@ require_fixed .github/workflows/release.yml 'https://ziglang.org/download/${ZIG_
 # life, so the Linux artifacts shipped unchecked; pin both the call and the
 # Linux half of the script it calls.
 require_fixed .github/workflows/release.yml 'bash scripts/check-binary-portability.sh'
+# The tap is a single moving pointer and this workflow is dispatchable against
+# any tag, so backfilling an old release must not rewrite the formula backwards.
+require_fixed .github/workflows/release.yml 'refusing to downgrade it to'
 require_fixed scripts/check-binary-portability.sh 'check_elf'
 require_fixed scripts/check-binary-portability.sh 'check_macho'
 require_regex .github/workflows/release.yml 'test -x .*phux-mcp|command -v .*phux-mcp|./phux-mcp --'
