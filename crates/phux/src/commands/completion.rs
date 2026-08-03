@@ -30,7 +30,7 @@ const BIN_NAME: &str = "phux";
 /// offers the hidden ADR-0066 deprecation aliases (`remote`, `satellite`,
 /// `enroll`), the machine-only `gen-reference-docs` (phux-i0e8.13.2), the
 /// deprecated split booleans (`--horizontal`/`--vertical`,
-/// phux-i0e8.13.4), and the machine plumbing flags (`server
+/// phux-i0e8.13.4, phux-c1ry), and the machine plumbing flags (`server
 /// --daemonize`, `play --pty-writer`, ...) right next to the visible
 /// surface. Since `clap::Command` has no removal API for either
 /// subcommands or args, [`prune`] rebuilds each command -- name, about,
@@ -220,6 +220,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Recursive walk of the real parser against the completion tree:
+    /// every command path offers exactly the visible args and exactly the
+    /// visible subcommands of its real counterpart (phux-c1ry). This is
+    /// the structural guard behind the script-level pins in `main.rs` --
+    /// it fails naming the exact path and arg when a future hidden flag
+    /// (or nested hidden verb) leaks into the offered tree.
+    fn assert_visible_surface(real: &clap::Command, offered: &clap::Command, path: &str) {
+        let offered_args: Vec<&str> = offered
+            .get_arguments()
+            .map(|arg| arg.get_id().as_str())
+            .collect();
+        for arg in real.get_arguments() {
+            assert_eq!(
+                !arg.is_hide_set(),
+                offered_args.contains(&arg.get_id().as_str()),
+                "arg `{}` of `{path}` (hidden: {}) is on the wrong side of the completion tree",
+                arg.get_id(),
+                arg.is_hide_set()
+            );
+        }
+        for sub in real.get_subcommands() {
+            let name = sub.get_name();
+            let offered_sub = offered
+                .get_subcommands()
+                .find(|candidate| candidate.get_name() == name);
+            if sub.is_hide_set() {
+                assert!(
+                    offered_sub.is_none(),
+                    "hidden subcommand `{path} {name}` leaked into the completion tree"
+                );
+            } else {
+                let offered_sub = offered_sub.unwrap_or_else(|| {
+                    panic!("visible subcommand `{path} {name}` missing from the completion tree")
+                });
+                assert_visible_surface(sub, offered_sub, &format!("{path} {name}"));
+            }
+        }
+    }
+
+    #[test]
+    fn completion_tree_offers_exactly_the_visible_surface_recursively() {
+        assert_visible_surface(&Cli::command(), &completion_tree(), BIN_NAME);
     }
 
     /// The four shells the docs tell users to install for must all be

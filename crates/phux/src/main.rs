@@ -1575,6 +1575,33 @@ mod tests {
         }
     }
 
+    /// The deprecated split-direction booleans (phux-i0e8.8.4) are hidden
+    /// per-verb args, so the shipped completion scripts -- generated from
+    /// the arg-pruned visible tree (phux-c1ry) -- offer `--split` on
+    /// `insert-pane` / `move-pane` and never the legacy spellings. The
+    /// literal `--horizontal` / `--vertical` appear nowhere in the visible
+    /// surface (`horizontal` / `vertical` without dashes are legitimate
+    /// `--split` VALUES and stay), so a whole-script grep cannot false-
+    /// positive; the recursive structural test in `completion.rs` covers
+    /// every other hidden arg generically.
+    #[test]
+    fn completions_offer_split_but_not_the_deprecated_direction_flags() {
+        for shell in [clap_complete::Shell::Bash, clap_complete::Shell::Zsh] {
+            let script = String::from_utf8(crate::commands::completion::completion_script(shell))
+                .expect("completion script is UTF-8");
+            assert!(
+                script.contains("--split"),
+                "{shell} completions must offer `--split`"
+            );
+            for legacy in ["--horizontal", "--vertical"] {
+                assert!(
+                    !script.contains(legacy),
+                    "{shell} completions still offer the hidden flag {legacy}"
+                );
+            }
+        }
+    }
+
     /// The alias-mapping helper for the three dispatch tests below: parse
     /// a legacy argv (proving the hidden verb still parses) and map it.
     fn mapped_alias(argv: &[&str]) -> (crate::commands::host::HostAction, String) {
