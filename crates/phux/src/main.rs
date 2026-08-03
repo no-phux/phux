@@ -1429,7 +1429,13 @@ mod tests {
         let Command::Host {
             action: HostAction::Enroll { session, json, .. },
         } = parsed(&[
-            "phux", "host", "enroll", "--session", "work", "--json", "mini",
+            "phux",
+            "host",
+            "enroll",
+            "--session",
+            "work",
+            "--json",
+            "mini",
         ])
         else {
             panic!("expected Host Enroll");
@@ -1459,8 +1465,25 @@ mod tests {
         // `--ssh-only` contacts nothing, so the flags that only matter when
         // the host is contacted are refused at parse time.
         for conflicting in [
-            ["phux", "host", "enroll", "--ssh-only", "--endpoint", "x:1", "mini"].as_slice(),
-            ["phux", "host", "enroll", "--ssh-only", "--no-service", "mini"].as_slice(),
+            [
+                "phux",
+                "host",
+                "enroll",
+                "--ssh-only",
+                "--endpoint",
+                "x:1",
+                "mini",
+            ]
+            .as_slice(),
+            [
+                "phux",
+                "host",
+                "enroll",
+                "--ssh-only",
+                "--no-service",
+                "mini",
+            ]
+            .as_slice(),
         ] {
             assert!(
                 Cli::try_parse_from(conflicting).is_err(),

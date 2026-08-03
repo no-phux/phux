@@ -228,8 +228,7 @@ pub(crate) fn enroll_over_ssh(
     // `phux pair` writes the token store the server reads at startup, so it
     // must run after the service install — which is also what makes
     // PHUX_QUIC_ADDR visible to the pair invocation's overlay-derived link.
-    let stdout =
-        ssh_capture(ssh_host, &["phux", "pair", "--json"]).map_err(EnrollFailure::Pair)?;
+    let stdout = ssh_capture(ssh_host, &["phux", "pair", "--json"]).map_err(EnrollFailure::Pair)?;
     let report = PairReport::parse(&stdout).map_err(EnrollFailure::Pair)?;
     let endpoint = choose_endpoint(ssh_host, &report, endpoint_override, quic_port);
     Ok(EnrollOutcome { endpoint, report })

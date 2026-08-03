@@ -590,9 +590,14 @@ fn finish_enroll(
 
     match role {
         HostRole::Remote => {
-            let new =
-                remote::NewRemote::new(name, endpoint, token_file.as_deref(), cert_fingerprint, session)
-                    .map_err(reject_enrollment)?;
+            let new = remote::NewRemote::new(
+                name,
+                endpoint,
+                token_file.as_deref(),
+                cert_fingerprint,
+                session,
+            )
+            .map_err(reject_enrollment)?;
             write_pairing_token(token_file.as_deref(), pairing)?;
             remote::add_or_update(&new).map_err(registry_failure)?;
             Ok(HostRow {

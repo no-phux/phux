@@ -830,10 +830,11 @@ One namespace over both machine registries. `--role remote` (the default) manage
 Usage: phux host [OPTIONS] <COMMAND>
 
 Commands:
-  add   Register a machine, or replace an entry with the same name
-  ls    List registered machines from both registries [aliases: list]
-  rm    Remove a registered machine. Its token file is left in place [aliases: remove]
-  help  Print this message or the help of the given subcommand(s)
+  add     Register a machine, or replace an entry with the same name
+  enroll  Set up a machine over ssh, end to end, and register it
+  ls      List registered machines from both registries [aliases: list]
+  rm      Remove a registered machine. Its token file is left in place [aliases: remove]
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
       --socket <PATH>
@@ -883,6 +884,61 @@ Options:
 
       --disabled
           Register the entry but leave it disabled (`--role satellite` only)
+
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux host enroll`
+
+```text
+Set up a machine over ssh, end to end, and register it.
+
+Confirms phux is installed on HOST, installs its service unit so the server survives reboot, mints a pairing token there, and registers the result in the role-correct registry — `--role remote` (the default) yields an entry `phux attach <name>` dials with no flags and no hex strings typed by hand; `--role satellite` a peer this hub dials for its users. Uses the ssh trust you already have; it grants nothing ssh did not already grant.
+
+A host with no reachable listener falls back to an ssh:// entry, which still gives you sessions that outlive the connection.
+
+Usage: phux host enroll [OPTIONS] <HOST>
+
+Arguments:
+  <HOST>
+          ssh destination, exactly as you would type it after `ssh` (`mini`, `me@mini`, or a `~/.ssh/config` alias)
+
+Options:
+      --role <ROLE>
+          Which registry the enrolled machine lands in
+
+          Possible values:
+          - remote:    A server this machine attaches to — a `[[remote]]` entry
+          - satellite: A peer this hub dials for its users — a `[[satellites]]` entry
+          
+          [default: remote]
+
+      --name <NAME>
+          Local label to register. Defaults to HOST without any `user@`
+
+      --endpoint <HOST:PORT>
+          Address to register instead of the remote's detected overlay address. Accepts `HOST:PORT` (dialed over QUIC) or a full `quic://`/`wss://` URI
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --quic-port <PORT>
+          QUIC port to configure on the remote and register
+          
+          [default: 8788]
+
+      --no-service
+          Skip installing the remote's service unit. The server will not come back on its own after a reboot
+
+      --ssh-only
+          Register an ssh:// entry without contacting the host at all
+
+      --session <NAME>
+          Session to attach on arrival (`--role remote` only)
 
       --json
           Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
