@@ -163,7 +163,13 @@ impl ServerState {
                         continue;
                     };
                     let handoff = handoffs.get(&tid).cloned();
-                    panes.push(pane_blob(pane_wire, window_wire, desc, &self.term, handoff));
+                    panes.push(pane_blob(
+                        pane_wire,
+                        window_wire,
+                        desc,
+                        &self.config.term,
+                        handoff,
+                    ));
                 }
             }
         }
@@ -172,9 +178,9 @@ impl ServerState {
             version: BLOB_VERSION,
             listener_fd,
             counters: Counters {
-                next_session_wire_id: self.session_id_bridge.next_wire(),
-                next_terminal_wire_id: self.next_terminal_wire_id,
-                next_window_wire_id: self.next_window_wire_id,
+                next_session_wire_id: self.idspace.next_session_wire(),
+                next_terminal_wire_id: self.idspace.next_terminal_wire(),
+                next_window_wire_id: self.idspace.next_window_wire(),
                 next_touch_timestamp: self.next_touch_timestamp,
             },
             sessions,
@@ -197,18 +203,20 @@ impl ServerState {
     }
 
     fn session_wire(&self, sid: SessionId) -> Option<u32> {
-        self.session_id_bridge
-            .wire(sid)
+        self.idspace
+            .session_wire(sid)
             .map(phux_protocol::SessionId::get)
     }
 
     fn window_wire(&self, wid: WindowId) -> Option<u32> {
-        self.window_wire_forward.get(&wid).map(|w| w.get())
+        self.idspace
+            .window_wire(wid)
+            .map(phux_protocol::WindowId::get)
     }
 
     fn terminal_wire(&self, tid: TerminalId) -> Option<u32> {
-        self.terminal_wire_forward
-            .get(&tid)
+        self.idspace
+            .terminal_wire(tid)
             .and_then(phux_protocol::TerminalId::local_id)
     }
 
@@ -296,7 +304,7 @@ impl ServerState {
         &mut self,
         blob: &StateBlob,
     ) -> Result<Vec<(TerminalId, oneshot::Receiver<Option<i32>>)>, RebuildError> {
-        let max_scrollback = self.history_limit;
+        let max_scrollback = self.config.history_limit;
         let mut session_core: HashMap<u32, SessionId> = HashMap::new();
         let mut window_core: HashMap<u32, WindowId> = HashMap::new();
         let mut pane_core: HashMap<u32, TerminalId> = HashMap::new();
@@ -304,8 +312,8 @@ impl ServerState {
 
         for s in &blob.sessions {
             let core = self.registry.new_session(s.name.clone());
-            self.session_id_bridge
-                .bind(core, WireSessionId::new(s.wire_id));
+            self.idspace
+                .bind_session(core, WireSessionId::new(s.wire_id));
             if let Some(sess) = self.registry.session_mut(core)
                 && let Some(created) = unix_nanos_to_systemtime(s.created_at_unix_nanos)
             {
@@ -329,10 +337,7 @@ impl ServerState {
                         id: w.session_wire_id,
                     })?;
             let core = self.registry.new_window(session)?;
-            self.window_wire_forward
-                .insert(core, WireWindowId::new(w.wire_id));
-            self.window_wire_reverse
-                .insert(WireWindowId::new(w.wire_id), core);
+            self.idspace.bind_window(core, WireWindowId::new(w.wire_id));
             if let Some(cwd) = &w.last_cwd {
                 self.window_last_cwd.insert(core, cwd.clone());
             }
@@ -370,10 +375,8 @@ impl ServerState {
             // Pre-bind the wire id so `spawn_terminal_actor`'s intern is a
             // no-op (it returns the existing mapping instead of allocating a
             // fresh one that would diverge from the blob).
-            self.terminal_wire_forward
-                .insert(core, WireTerminalId::local(p.wire_id));
-            self.terminal_wire_reverse
-                .insert(WireTerminalId::local(p.wire_id), core);
+            self.idspace
+                .bind_terminal(core, WireTerminalId::local(p.wire_id));
             let crate::terminal_actor::TerminalActorBundle {
                 actor,
                 handle,
@@ -420,10 +423,12 @@ impl ServerState {
         }
 
         // Restore the allocators above every restored id.
-        self.session_id_bridge
-            .set_next(blob.counters.next_session_wire_id);
-        self.next_terminal_wire_id = blob.counters.next_terminal_wire_id;
-        self.next_window_wire_id = blob.counters.next_window_wire_id;
+        self.idspace
+            .set_next_session_wire(blob.counters.next_session_wire_id);
+        self.idspace
+            .set_next_terminal_wire(blob.counters.next_terminal_wire_id);
+        self.idspace
+            .set_next_window_wire(blob.counters.next_window_wire_id);
         self.next_touch_timestamp = blob.counters.next_touch_timestamp;
 
         Ok(exit_watchers)
@@ -498,7 +503,7 @@ mod tests {
                 let sid = state.registry.new_session("main".to_owned());
                 let wid = state.registry.new_window(sid).expect("new_window");
                 let tid = state.registry.new_terminal(wid).expect("new_terminal");
-                let session_wire = state.session_id_bridge.intern(sid).get();
+                let session_wire = state.idspace.intern_session(sid).get();
                 let window_wire = state.intern_window_wire(wid).get();
 
                 // A real (no-PTY) actor answering the upgrade request.
@@ -559,7 +564,7 @@ mod tests {
                 let sid = state.registry.new_session("main".to_owned());
                 let wid = state.registry.new_window(sid).expect("new_window");
                 let tid = state.registry.new_terminal(wid).expect("new_terminal");
-                state.session_id_bridge.intern(sid);
+                state.idspace.intern_session(sid);
                 state.intern_window_wire(wid);
                 let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
                 tokio::task::spawn_local(bundle.actor.run());

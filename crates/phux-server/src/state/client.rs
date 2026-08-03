@@ -1,9 +1,10 @@
 use phux_core::ids::{SessionId, TerminalId};
-use phux_protocol::caps::ClientCapabilities;
+use phux_protocol::caps::{ClientCapabilities, ColorSupport, Layer, LayerSet};
 use phux_protocol::ids::TerminalId as WireTerminalId;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+use super::ServerState;
 use super::input_log::Outbound;
 use crate::terminal_actor::TerminalHandle;
 
@@ -80,4 +81,255 @@ pub enum AttachError {
     /// The given [`ClientId`] is already attached.
     #[error("client {0:?} is already attached")]
     AlreadyAttached(ClientId),
+}
+
+impl ServerState {
+    /// Record the layer set advertised by `client_id` in HELLO. Called
+    /// from the runtime's HELLO handler. Re-set is idempotent (the
+    /// most recent HELLO wins, matching `ColorSupport`).
+    pub fn set_client_layers(&mut self, client_id: ClientId, layers: LayerSet) {
+        self.client_layers.insert(client_id, layers);
+    }
+
+    /// Look up the layer set advertised by `client_id`. Defaults to
+    /// [`LayerSet::all`] for clients we never saw a HELLO from — the
+    /// permissive default matches test scaffolding that skips HELLO.
+    #[must_use]
+    pub fn client_layers(&self, client_id: ClientId) -> LayerSet {
+        self.client_layers
+            .get(&client_id)
+            .copied()
+            .unwrap_or_else(LayerSet::all)
+    }
+
+    /// `true` iff `client_id` has L3 in its negotiated `HELLO.layers`.
+    /// Gates emission of `METADATA_CHANGED` per SPEC §16.4.
+    #[must_use]
+    pub fn client_speaks_l3(&self, client_id: ClientId) -> bool {
+        self.client_layers(client_id).contains(Layer::L3)
+    }
+
+    /// Allocate the next monotonic [`ClientId`].
+    ///
+    /// Ids are never reused. `0` is intentionally skipped so log entries
+    /// printing `client=0` are obviously a placeholder, not a real client.
+    pub const fn new_client_id(&mut self) -> ClientId {
+        let id = ClientId(self.next_client_id);
+        self.next_client_id = self.next_client_id.saturating_add(1);
+        id
+    }
+
+    /// Attach a client to the session with `session_name`.
+    ///
+    /// On success the client is recorded in `attached` and subscribed to the
+    /// session's currently active pane (if any). Returns a borrow of the
+    /// [`phux_core::Session`] for callers that want to build an `ATTACHED`
+    /// snapshot.
+    ///
+    /// `client_caps` are the capabilities the client advertised in HELLO
+    /// (SPEC §6.1/§6.2).
+    /// Callers that never observed a HELLO (test scaffolding) MAY pass
+    /// [`ClientCapabilities::default`]; the convenience wrapper
+    /// [`Self::attach_default_caps`] does that for them.
+    pub fn attach(
+        &mut self,
+        client_id: ClientId,
+        session_name: &str,
+        tx: mpsc::Sender<Outbound>,
+        client_caps: ClientCapabilities,
+    ) -> Result<SessionId, AttachError> {
+        if self.attached.contains_key(&client_id) {
+            return Err(AttachError::AlreadyAttached(client_id));
+        }
+        let session_id = self
+            .find_session_by_name(session_name)
+            .ok_or_else(|| AttachError::UnknownSession(session_name.to_owned()))?;
+
+        self.attached.insert(
+            client_id,
+            AttachedClient {
+                id: client_id,
+                session: session_id,
+                tx,
+                client_caps,
+                viewport: None,
+                viewport_seq: 0,
+            },
+        );
+        // Attaching arms tmux-model last-session self-exit (phux-60s).
+        self.arm_self_exit();
+
+        // Subscribe to EVERY pane in the session, across all its windows —
+        // not just the active one (phux-fysb.2). A multi-pane client renders
+        // all panes (it receives a TERMINAL_SNAPSHOT for each via
+        // `attach_snapshot_panes`) and must be able to route input to whichever
+        // it focuses. The input gate in `handle_terminal_input` DROPS keystrokes
+        // to panes the client isn't subscribed to, so the old active-pane-only
+        // subscription left every other pane unable to receive input on
+        // (re-)attach — the user could see the prompts but not type into them,
+        // while a freshly spawned pane worked because `handle_spawn_terminal`
+        // auto-subscribes it. Subscribing every pane also lets the per-pane
+        // actor fan out live output to this client (terminal_actor's
+        // subscriber loop), so non-focused panes stay live too.
+        let session_panes: Vec<TerminalId> = self
+            .registry
+            .session(session_id)
+            .map(|s| s.windows.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|wid| {
+                self.registry
+                    .window(wid)
+                    .map(|w| w.panes.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        for pane in session_panes {
+            let subs = self.terminal_subscribers.entry(pane).or_default();
+            if !subs.contains(&client_id) {
+                subs.push(client_id);
+            }
+        }
+        Ok(session_id)
+    }
+
+    /// Convenience wrapper around [`Self::attach`] that passes
+    /// [`ColorSupport::default`] for the client tier. Intended for test
+    /// scaffolding and in-tree call sites that don't carry a HELLO-derived
+    /// capability value.
+    pub fn attach_default_caps(
+        &mut self,
+        client_id: ClientId,
+        session_name: &str,
+        tx: mpsc::Sender<Outbound>,
+    ) -> Result<SessionId, AttachError> {
+        self.attach(client_id, session_name, tx, ClientCapabilities::default())
+    }
+
+    /// Update the recorded [`ClientCapabilities`] for an already-attached
+    /// client. Returns `false` if the client is not in [`Self::attached`].
+    ///
+    /// Used by the HELLO handler if a HELLO arrives after ATTACH (out of
+    /// spec, but tolerated for forward-compat — the alternative is a
+    /// protocol-error close that gives the operator no breadcrumbs).
+    pub fn set_client_capabilities(
+        &mut self,
+        client_id: ClientId,
+        client_caps: ClientCapabilities,
+    ) -> bool {
+        self.attached
+            .get_mut(&client_id)
+            .map(|c| {
+                c.client_caps = client_caps;
+            })
+            .is_some()
+    }
+
+    /// Compatibility wrapper for tests that still update color only.
+    pub fn set_client_color_support(
+        &mut self,
+        client_id: ClientId,
+        color_support: ColorSupport,
+    ) -> bool {
+        self.attached
+            .get_mut(&client_id)
+            .map(|c| {
+                c.client_caps = c.client_caps.with_color_support(color_support);
+            })
+            .is_some()
+    }
+
+    /// Detach `client_id`, removing it from `attached` and from every
+    /// `terminal_subscribers` list it appears in.
+    ///
+    /// Silent no-op if the client is not currently attached — detach must be
+    /// idempotent for the EOF cleanup path in `handle_client`.
+    pub fn detach(&mut self, client_id: ClientId) {
+        self.attached.remove(&client_id);
+        // Release any input leases this client held (ADR-0033) so a
+        // disconnect never strands the wheel. The runtime broadcasts the
+        // `Released` events (via `leases_held_by`) before calling detach;
+        // this clears the state regardless of that path running.
+        self.input_leases.retain(|_, holder| *holder != client_id);
+        // Hub-side satellite leases follow the same rule (phux-v45.7): the
+        // runtime relays the detached RELEASE_INPUT before calling detach;
+        // this clears the ledger regardless of that path running.
+        self.satellite_leases
+            .retain(|_, lease| lease.holder != client_id);
+        // Cancel every ATTACH_TERMINAL output pump this client owns
+        // (phux-v45.7) so no task keeps streaming into a dead mailbox.
+        self.attach_terminal_pumps.retain(|(owner, _), token| {
+            if *owner == client_id {
+                token.cancel();
+                false
+            } else {
+                true
+            }
+        });
+        for subs in self.terminal_subscribers.values_mut() {
+            subs.retain(|c| *c != client_id);
+        }
+        // Drop entries that became empty so the map doesn't grow unboundedly
+        // across attach/detach churn.
+        self.terminal_subscribers.retain(|_, subs| !subs.is_empty());
+        // Drop any L3 metadata subscriptions this client owned (SPEC §7.4
+        // says subscriptions are connection-scoped) plus its cached layer
+        // negotiation. Keeps the maps bounded across attach churn.
+        self.metadata.drop_client(client_id);
+        if let Some(keys) = self.session_create_results.remove(&client_id) {
+            for key in keys {
+                let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, &key);
+            }
+        }
+        self.client_layers.remove(&client_id);
+        // Agent-event subscriptions are connection-scoped (SPEC §7.5),
+        // same as L3 metadata subscriptions above. Drop them so the map
+        // stays bounded across attach churn.
+        self.event_subscriptions.remove(&client_id);
+    }
+
+    /// Collect the `(client, outbound mailbox)` pairs to force-detach for the
+    /// `phux detach` verb (`DETACH_CLIENTS`).
+    ///
+    /// `session = Some(name)` selects only clients attached to that session
+    /// (empty when the name is unknown); `None` selects every attached client.
+    /// Each mailbox is cloned so the caller can push a `DETACHED` frame before
+    /// running the normal per-client detach teardown, which re-locks state and
+    /// so must run off this borrow.
+    #[must_use]
+    pub fn attached_clients_to_detach(
+        &self,
+        session: Option<&str>,
+    ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
+        let target_session = match session {
+            Some(name) => match self.find_session_by_name(name) {
+                Some(id) => Some(id),
+                None => return Vec::new(),
+            },
+            None => None,
+        };
+        self.attached
+            .values()
+            .filter(|c| target_session.is_none_or(|sid| c.session == sid))
+            .map(|c| (c.id, c.tx.clone()))
+            .collect()
+    }
+
+    /// Collect session-attached clients observing `session` by its stable id.
+    ///
+    /// Unlike [`Self::attached_clients_to_detach`], this remains usable after
+    /// the registry has reaped the session and its name can no longer resolve.
+    /// Per-terminal `ATTACH_TERMINAL` consumers are not in [`Self::attached`]
+    /// and are deliberately excluded.
+    #[must_use]
+    pub fn attached_clients_in_session(
+        &self,
+        session: SessionId,
+    ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
+        self.attached
+            .values()
+            .filter(|client| client.session == session)
+            .map(|client| (client.id, client.tx.clone()))
+            .collect()
+    }
 }

@@ -62,7 +62,7 @@ pub(crate) async fn resolve_attach_target(
         AttachTarget::ByName(name) => Some(name),
         AttachTarget::ById(id) => {
             let resolved = state
-                .with(|s| s.session_id_bridge.resolve(id))
+                .with(|s| s.idspace.resolve_session(id))
                 .and_then(|sid| {
                     state.with(|s| s.registry.session(sid).map(|sess| sess.name.clone()))
                 });

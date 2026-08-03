@@ -39,25 +39,41 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::agent_asked::AskedDetector;
 use crate::agent_state::AgentRecordArbiter;
-use crate::id_bridge::IdBridge;
 use crate::terminal_actor::TerminalHandle;
 use phux_core::ids::{SessionId, TerminalId, WindowId};
 use phux_core::registry::Registry;
 use phux_protocol::caps::LayerSet;
-use phux_protocol::ids::{GroupId, TerminalId as WireTerminalId, WindowId as WireWindowId};
-use portable_pty::CommandBuilder;
+use phux_protocol::ids::GroupId;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+mod agent;
 mod client;
+mod config;
+mod construct;
+mod cwd;
+mod defaults;
 mod events;
+mod hook_dispatch;
+mod hub;
+mod id_space;
 mod input_log;
+mod leases;
+mod lifecycle;
 mod metadata;
-mod registry;
+mod policy;
+mod reap;
+mod sessions;
+mod snapshot;
+mod terminals;
 mod upgrade_blob;
+mod viewport;
+mod wire_ids;
 
 pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
+use config::ServerConfig;
 pub use events::{EventScope, EventSubscription};
+pub use id_space::IdSpace;
 pub use input_log::{DEFAULT_CLIENT_MAILBOX, Outbound, TerminalInput};
 pub use metadata::{MetadataSetOutcome, MetadataStore, RenameOutcome};
 pub use upgrade_blob::RebuildError;
@@ -168,11 +184,12 @@ pub struct ServerState {
     /// holds the client's outbound sender) would keep streaming until the
     /// connection died.
     attach_terminal_pumps: HashMap<(ClientId, TerminalId), tokio_util::sync::CancellationToken>,
-    /// Bridge between core slotmap [`SessionId`]s and wire-level
-    /// `phux_protocol::ids::SessionId` (u32). Lives in this crate (and only
-    /// this crate) because `phux-core` and `phux-protocol` must not depend
-    /// on each other — see [`crate::id_bridge`] module docs.
-    pub session_id_bridge: IdBridge,
+    /// Every core-id ↔ wire-id mapping the server owns (sessions,
+    /// terminals, windows) plus the allocators that mint fresh wire ids.
+    /// Lives in this crate (and only this crate) because `phux-core` and
+    /// `phux-protocol` must not depend on each other — see [`IdSpace`] and
+    /// [`crate::id_bridge`] for the allocation contract.
+    pub idspace: IdSpace,
     /// Per-pane actor handles, keyed by core [`TerminalId`]. The
     /// `TerminalHandle` is `Send`; the underlying `TerminalActor` (which owns
     /// the `!Send` `Terminal`) lives on the `LocalSet` — see ADR-0014.
@@ -205,23 +222,6 @@ pub struct ServerState {
     /// always on the spawning thread — no cross-thread poll of
     /// `!Send` futures occurs.
     terminal_tasks: JoinSet<()>,
-    /// Wire-side identifier for each core pane id. Allocated
-    /// monotonically from `1` in [`Self::register_terminal_handle`]. Mirrors
-    /// the `IdBridge` shape used for session ids — kept inline because
-    /// adding a second `IdBridge` generic over an arbitrary id pair is
-    /// out of scope for `phux-byc.8` (the session bridge has its own
-    /// reverse-lookup story; pane reverse lookup is needed too for
-    /// future `INPUT_KEY` routing).
-    terminal_wire_forward: HashMap<TerminalId, WireTerminalId>,
-    terminal_wire_reverse: HashMap<WireTerminalId, TerminalId>,
-    next_terminal_wire_id: u32,
-    /// Wire-side identifier for each core window id. Same shape as
-    /// the pane bridge above; used to populate
-    /// [`phux_protocol::wire::info::WindowInfo::id`] in
-    /// the `ATTACHED` snapshot.
-    window_wire_forward: HashMap<WindowId, WireWindowId>,
-    window_wire_reverse: HashMap<WireWindowId, WindowId>,
-    next_window_wire_id: u32,
     next_client_id: u64,
     /// Per-session last-touch order used to resolve
     /// [`phux_protocol::wire::frame::AttachTarget::Last`].
@@ -272,88 +272,15 @@ pub struct ServerState {
     /// declaration of `state` outranks the detector, which stands down until
     /// the record is deleted.
     agent_records: AgentRecordArbiter,
-    /// Whether `AttachTarget::CreateIfMissing` (phux-k61.3) should spawn
-    /// a real PTY-backed actor for the newly created session's seed
-    /// pane. Mirrors [`crate::runtime::ServerConfig::seed_with_pty`] so
-    /// the attach-time creation path matches the server's startup
-    /// configuration. Set by the runtime via
-    /// [`Self::set_attach_create_pty`] right after `SharedState::new`.
+    /// Boot-time configuration mirrored from [`crate::runtime::ServerConfig`]
+    /// (scrollback cap, cwd-inheritance policy, `TERM`, default shell,
+    /// socket path, window-size policy, policy bundle).
     ///
-    /// Defaults to `false` so tests that never call the setter exercise
-    /// the cheaper no-PTY actor (matches every existing integration
-    /// test that uses `spawn_server`).
-    attach_create_seeds_pty: bool,
-    /// Optional pre-built `CommandBuilder` used when
-    /// [`Self::attach_create_seeds_pty`] is `true` and `CreateIfMissing`
-    /// fires. `None` falls back to
-    /// [`crate::terminal_actor::default_shell_command`] over the resolved
-    /// default shell ([`Self::shell`]: `defaults.shell`, `$SHELL`, or
-    /// `/bin/sh`).
-    attach_create_seed_command: Option<CommandBuilder>,
-    /// Lines of scrollback retained per pane (`defaults.history-limit`).
-    /// Mirrors [`crate::runtime::ServerConfig::history_limit`] so the
-    /// attach-time creation path (`AttachTarget::CreateIfMissing`) and
-    /// `SPAWN_TERMINAL` build their `TerminalActor`s with the configured
-    /// cap without an extra channel to the runtime. Set by the runtime
-    /// via [`Self::set_history_limit`] right after `SharedState::new`.
-    ///
-    /// Defaults to the `phux_config` schema default so tests that never
-    /// call the setter still get a sane bound.
-    history_limit: u32,
-    /// How a freshly-spawned pane chooses its working directory
-    /// (`defaults.cwd-inheritance`). Mirrors
-    /// [`crate::runtime::ServerConfig::cwd_inheritance`] so the
-    /// `SPAWN_TERMINAL` handler resolves the new pane's CWD without an
-    /// extra channel to the runtime. Set by the runtime via
-    /// [`Self::set_cwd_inheritance`] right after `SharedState::new`.
-    ///
-    /// Defaults to the `phux_config` schema default
-    /// ([`phux_config::CwdInheritance::InheritFocused`]) so tests that
-    /// never call the setter exercise the tmux-default behavior.
-    cwd_inheritance: phux_config::CwdInheritance,
-    /// `TERM` advertised to the inner program of every server-spawned pane
-    /// (`defaults.term`, phux-ign). Mirrors
-    /// [`crate::runtime::ServerConfig::term`] so the attach-time creation
-    /// path and `SPAWN_TERMINAL` apply it as the PTY's `TERM` baseline
-    /// without an extra channel to the runtime. A per-spawn
-    /// `SPAWN_TERMINAL.env` entry for `TERM` overrides it. Set by the
-    /// runtime via [`Self::set_term`] right after `SharedState::new`.
-    ///
-    /// Defaults to the `phux_config` schema default (`xterm-256color`) so
-    /// tests that never call the setter get the safe baseline.
-    term: String,
-    /// Resolved default shell for server-spawned panes (phux-i0e8.4.1):
-    /// `defaults.shell` → `$SHELL` → `/bin/sh`, resolved once by the
-    /// binary from its single config load. Mirrors
-    /// [`crate::runtime::ServerConfig::shell`] so the attach-time
-    /// creation path, `SESSION_CREATE_KEY`, and a command-less
-    /// `SPAWN_TERMINAL` spawn the configured shell without an extra
-    /// channel to the runtime. A wire `command` always wins over this
-    /// default. Set by the runtime via [`Self::set_shell`] right after
-    /// `SharedState::new`.
-    ///
-    /// Defaults to `resolve_shell(None)` (`$SHELL`, else `/bin/sh`) so
-    /// state-only tests keep the pre-config behavior.
-    shell: String,
-    /// The UDS path this server listens on. Mirrors
-    /// [`crate::runtime::ServerConfig::socket_path`] so every pane spawn
-    /// site can inject it into the child environment as `PHUX_SOCKET`
-    /// (phux-cufw) without an extra channel to the runtime. Set by the
-    /// runtime via [`Self::set_server_socket_path`] right after
-    /// `SharedState::new`.
-    ///
-    /// `None` when the runtime never mirrors it (state-only tests):
-    /// spawned panes then carry no `PHUX_SOCKET` and an in-pane `phux`
-    /// falls back to the default-socket resolution.
-    server_socket_path: Option<std::path::PathBuf>,
-    /// How a Terminal viewed by clients of differing sizes resolves its one
-    /// authoritative PTY geometry (`defaults.window-size`, phux-nk07). Mirrors
-    /// [`crate::runtime::ServerConfig::window_size`] so `handle_viewport_resize`
-    /// can apply the policy across every subscriber's viewport instead of
-    /// last-writer-wins. Set by the runtime via [`Self::set_window_size`] right
-    /// after `SharedState::new`; defaults to the `phux_config` schema default
-    /// ([`phux_config::WindowSize::Smallest`] — never crops).
-    window_size: phux_config::WindowSize,
+    /// Every field is written once by [`ServerConfig::default`] and once by
+    /// the matching `set_*` method during `ServerRuntime::run_async`, before
+    /// the accept loops start; none of them changes while the server is
+    /// serving. See [`config`] for the per-field documentation.
+    config: ServerConfig,
     /// Frozen session-creation directory per session (phux-nyx,
     /// `defaults.cwd-inheritance = session-root`). Captured the first time
     /// a `session-root` spawn resolves a session's seed-pane CWD and reused
@@ -379,8 +306,6 @@ pub struct ServerState {
     /// clients so [`Self::resolve_terminal_cell_px`] can pick the most
     /// recent usable pixel report deterministically.
     viewport_clock: u64,
-    /// Optional policy extension bundle. Defaults to permissive.
-    policy_bundle: crate::policy::PolicyBundle,
     /// Per-client peer identities, keyed by server-assigned client id.
     peer_identities: HashMap<ClientId, phux_protocol::policy::PeerIdentity>,
     /// Graceful-upgrade context (ADR-0032): the listening socket's raw fd,

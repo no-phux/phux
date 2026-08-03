@@ -16,7 +16,9 @@
 //! The two ID types are therefore deliberately distinct and live in two
 //! crates that **must not depend on each other** (ADR boundary: `phux-core`
 //! is pure domain; `phux-protocol` is pure wire). This bridge lives only in
-//! `phux-server`, the one place that holds both.
+//! `phux-server`, the one place that holds both, and is owned by
+//! [`IdSpace`](crate::state::IdSpace) alongside the terminal and window id
+//! spaces.
 //!
 //! # Allocation model
 //!
@@ -38,8 +40,13 @@ use phux_protocol::ids::SessionId as WireSessionId;
 /// Bidirectional `CoreSessionId <-> WireSessionId` map plus a monotonic
 /// allocator for fresh wire ids.
 ///
-/// Held inside [`ServerState`](crate::state::ServerState). Not thread-safe
-/// on its own; the surrounding `Mutex<ServerState>` provides synchronization.
+/// Held inside [`IdSpace`](crate::state::IdSpace), which is itself a field
+/// of [`ServerState`](crate::state::ServerState) — reach it through
+/// `IdSpace`'s `*_session` methods rather than the field. `IdSpace` also
+/// carries the terminal and window id spaces, which are the same shape
+/// open-coded; see its module doc for why they are not this type. Not
+/// thread-safe on its own; the surrounding `Mutex<ServerState>` provides
+/// synchronization.
 #[derive(Debug, Default)]
 pub struct IdBridge {
     /// Forward: core slotmap key → wire id.

@@ -79,8 +79,9 @@ pub struct ServerState {
     pub pane_subscribers: HashMap<PaneId, Vec<ClientId>>,
     // Per-pane input log; merge point for multi-client keystrokes.
     pane_inputs:         HashMap<PaneId, Vec<PaneInput>>,
-    // Core SessionId (slotmap key, generational) <-> wire SessionId (u32).
-    pub session_id_bridge: IdBridge,
+    // Core ids (slotmap keys, generational) <-> wire ids (u32), for
+    // sessions, terminals, and windows. Sessions go through `IdBridge`.
+    pub idspace:         IdSpace,
     next_client_id:      u64,
 }
 
