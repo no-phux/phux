@@ -470,14 +470,24 @@ fn enroll_role_mismatch(role: HostRole, has_session: bool) -> Option<CliError> {
 
 /// Map a failure from the shared ssh middle onto the CLI error contract,
 /// with a `host enroll`-flavored remedy per failure class.
-fn enroll_failure_error(ssh_host: &str, failure: &enroll::EnrollFailure) -> CliError {
+fn enroll_failure_error(
+    ssh_host: &str,
+    role: HostRole,
+    failure: &enroll::EnrollFailure,
+) -> CliError {
+    // A remedy the operator can paste verbatim: it must carry the role they
+    // asked for, or following it would enroll into the wrong registry.
+    let role_flag = match role {
+        HostRole::Remote => String::new(),
+        HostRole::Satellite => " --role satellite".to_owned(),
+    };
     match failure {
         enroll::EnrollFailure::MissingPhux(message) => CliError::new(
             codes::REGISTRY,
             message.clone(),
             format!(
                 "install phux on {ssh_host} first, or run \
-                 `phux host enroll {ssh_host} --ssh-only` to register it anyway"
+                 `phux host enroll {ssh_host}{role_flag} --ssh-only` to register it anyway"
             ),
         ),
         enroll::EnrollFailure::Pair(message) => CliError::new(
@@ -485,7 +495,7 @@ fn enroll_failure_error(ssh_host: &str, failure: &enroll::EnrollFailure) -> CliE
             message.clone(),
             format!(
                 "retry once the ssh path works, or register the entry without \
-                 probing via `phux host enroll {ssh_host} --ssh-only`"
+                 probing via `phux host enroll {ssh_host}{role_flag} --ssh-only`"
             ),
         ),
     }
@@ -546,7 +556,11 @@ fn run_enroll(args: &EnrollArgs<'_>) -> ExitCode {
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(failure) => {
-            return json_err::emit(json, &enroll_failure_error(ssh_host, &failure), 1);
+            return json_err::emit(
+                json,
+                &enroll_failure_error(ssh_host, args.role, &failure),
+                1,
+            );
         }
     };
 
@@ -1029,6 +1043,7 @@ mod tests {
     fn enroll_failures_carry_host_enroll_remedies() {
         let err = enroll_failure_error(
             "mini",
+            HostRole::Remote,
             &EnrollFailure::MissingPhux("`ssh mini phux --version` failed: not found".to_owned()),
         );
         assert_eq!(err.code, codes::REGISTRY);
@@ -1041,6 +1056,7 @@ mod tests {
 
         let err = enroll_failure_error(
             "mini",
+            HostRole::Remote,
             &EnrollFailure::Pair("remote `phux pair --json` reported no token".to_owned()),
         );
         assert_eq!(err.code, codes::REGISTRY);
@@ -1053,6 +1069,23 @@ mod tests {
             err.message.contains("no token"),
             "the middle's message passes through: {}",
             err.message
+        );
+    }
+
+    /// Under `--role satellite`, the pasteable remedy must carry the role,
+    /// or following it verbatim would enroll into the remote registry.
+    #[test]
+    fn enroll_failure_remedies_carry_the_satellite_role() {
+        let err = enroll_failure_error(
+            "mini",
+            HostRole::Satellite,
+            &EnrollFailure::Pair("remote `phux pair --json` reported no token".to_owned()),
+        );
+        assert!(
+            err.remedy
+                .contains("`phux host enroll mini --role satellite --ssh-only`"),
+            "got {}",
+            err.remedy
         );
     }
 
