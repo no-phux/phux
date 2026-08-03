@@ -31,17 +31,17 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-
 use phux_client::attach::run_headless_rendered;
 use phux_client::snapshot::RenderedFrame;
 use phux_protocol::wire::frame::AttachTarget;
-use phux_server::{ServerConfig, ServerError, ServerRuntime};
+// The server fixture, the connect-poll, and the `LocalSet` bootstrap used to
+// be hand-copied into this file. They are the testkit's versions verbatim,
+// down to the 10s connect ceiling (`SOCKET_CONNECT_DEADLINE`), so the copies
+// were pure drift risk.
+use phux_server_testkit::{
+    SOCKET_CONNECT_DEADLINE, run_local, spawn_server_seed_pty_no_cmd, wait_for_socket,
+};
 use tempfile::TempDir;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-use tokio::time::sleep;
 
 /// Branch name written into the fixture `HEAD`. Deliberately distinctive:
 /// it must not be a substring of any temp path, command line, or shell
@@ -54,58 +54,6 @@ const SESSION: &str = "branch-e2e";
 
 /// Composite viewport. Sidebar (default width 20, left) + panes.
 const VIEW: (u16, u16) = (80, 24);
-
-/// Spawn a `ServerRuntime` on `socket_path` with PTY-backed
-/// attach-create (`seed_with_pty` mirrors into
-/// `attach_create_seeds_pty`, so `CreateIfMissing` honors its wire
-/// `command` and spawns a real PTY child).
-fn spawn_server(
-    socket_path: PathBuf,
-) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
-    let (tx, rx) = oneshot::channel::<()>();
-    let cfg = ServerConfig {
-        socket_path,
-        pre_seeded_session: None,
-        seed_with_pty: true,
-        seed_command: None,
-        ..ServerConfig::with_default_socket()
-    };
-    let handle = tokio::task::spawn_local(async move {
-        let server = ServerRuntime::new(cfg);
-        server
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
-}
-
-/// Wait for the server's UDS to become connectable.
-async fn wait_for_socket(path: &Path) {
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(10) {
-        if tokio::net::UnixStream::connect(path).await.is_ok() {
-            return;
-        }
-        sleep(Duration::from_millis(5)).await;
-    }
-    panic!("socket {} never became connectable", path.display());
-}
-
-/// Run `fut` inside a `current_thread` runtime + `LocalSet` (the server's
-/// per-pane actors are `!Send`, ADR-0014).
-fn run_local<F>(fut: F)
-where
-    F: std::future::Future<Output = ()>,
-{
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let local = tokio::task::LocalSet::new();
-    local.block_on(&rt, fut);
-}
 
 /// The leftmost `width` columns of `frame` row `row`, joined as text —
 /// the sidebar strip occupies exactly those cells (left edge, default).
@@ -160,8 +108,10 @@ fn sidebar_branch_line_derives_from_attached_snapshot_cwd() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone());
-        wait_for_socket(&socket_path).await;
+        let (shutdown_tx, server_handle) = spawn_server_seed_pty_no_cmd(socket_path.clone(), None);
+        // The probe connection is dropped immediately: this only proves the
+        // listener is bound, and `run_headless_rendered` below dials its own.
+        drop(wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await);
 
         // The seed shell blocks on the PTY inside the fixture repo,
         // reached via the wire `cwd` (phux-3mtf). The snapshot cwd must

@@ -2166,6 +2166,7 @@ dependencies = [
  "phux-protocol",
  "phux-record",
  "phux-server",
+ "phux-server-testkit",
  "proptest",
  "quinn",
  "ratatui",
