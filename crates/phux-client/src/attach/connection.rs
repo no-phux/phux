@@ -653,8 +653,13 @@ impl Connection {
 ///
 /// Distinct from an uncorrelated `ERROR`, which answers nothing and reaches
 /// the caller through [`Reply::interleaved`].
+///
+/// The `Display` renders the code through
+/// [`crate::explain::error_code_label`] — lowercase spaced words, not the
+/// `Debug` of a wire enum — because this string reaches users verbatim
+/// through every CLI verb that reports a refusal (phux-i0e8.7.4).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{code:?}: {message}")]
+#[error("{}: {message}", crate::explain::error_code_label(*.code))]
 pub struct Refusal {
     /// The typed code the peer refused with.
     pub code: ErrorCode,
@@ -1278,6 +1283,21 @@ mod tests {
             }
             Ok(other) => panic!("a correlated ERROR is this read's answer, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn refusal_display_renders_the_code_as_words_not_debug() {
+        // phux-i0e8.7.4: the old `{code:?}` render leaked the wire enum's
+        // CamelCase Debug name (`TerminalNotFound: ...`) to users through
+        // every verb that prints a refusal.
+        let refused = Refusal {
+            code: ErrorCode::TerminalNotFound,
+            message: "pane @9 does not exist".to_owned(),
+        };
+        assert_eq!(
+            refused.to_string(),
+            "terminal not found: pane @9 does not exist"
+        );
     }
 
     #[test]

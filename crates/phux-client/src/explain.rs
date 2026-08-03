@@ -16,7 +16,7 @@
 //! definition meaningless to the human reading it.
 
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::wire::frame::CommandResult;
+use phux_protocol::wire::frame::{CommandResult, ErrorCode};
 
 /// Explain a [`CommandResult`] a caller did not expect, attributed to `verb`.
 ///
@@ -48,9 +48,35 @@ pub fn unexpected_reply(verb: &str) -> String {
     )
 }
 
+/// Human-readable rendering of a wire [`ErrorCode`]: the variant name as
+/// lowercase spaced words (`TerminalNotFound` becomes `terminal not found`).
+///
+/// [`ErrorCode`] is `#[non_exhaustive]`, so a per-variant match here would
+/// need a wildcard arm that silently falls back to `Debug` for every code a
+/// newer protocol adds — exactly the render this module exists to remove.
+/// Deriving the words from the variant name instead covers future codes for
+/// free, and the digit/uppercase handling keeps a hypothetical `Http2Error`
+/// readable (`http2 error`).
+#[must_use]
+pub fn error_code_label(code: ErrorCode) -> String {
+    let name = format!("{code:?}");
+    let mut label = String::with_capacity(name.len() + 4);
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if i > 0 {
+                label.push(' ');
+            }
+            label.push(ch.to_ascii_lowercase());
+        } else {
+            label.push(ch);
+        }
+    }
+    label
+}
+
 #[cfg(test)]
 mod tests {
-    use phux_protocol::wire::frame::{CommandValue, ErrorCode};
+    use phux_protocol::wire::frame::CommandValue;
 
     use super::*;
 
@@ -104,5 +130,24 @@ mod tests {
             assert!(!sentence.contains('{'), "{sentence}");
             assert!(!sentence.contains("OkWith"), "{sentence}");
         }
+    }
+
+    /// The label is the variant name as lowercase spaced words — never the
+    /// CamelCase `Debug` render.
+    #[test]
+    fn error_code_labels_are_spaced_lowercase() {
+        assert_eq!(
+            error_code_label(ErrorCode::TerminalNotFound),
+            "terminal not found"
+        );
+        assert_eq!(
+            error_code_label(ErrorCode::PermissionDenied),
+            "permission denied"
+        );
+        assert_eq!(error_code_label(ErrorCode::InternalError), "internal error");
+        assert_eq!(
+            error_code_label(ErrorCode::UnsupportedSatelliteRoute),
+            "unsupported satellite route"
+        );
     }
 }
