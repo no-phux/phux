@@ -781,7 +781,7 @@ pub(crate) fn run_attach_rec(
         other => rt.block_on(attach_with_reconnect(&dial, other, predict_cfg, None, rec)),
     };
     finalize_recording(rec);
-    match result {
+    let exit = match result {
         Ok(end) => {
             report_attach_end(end);
             ExitCode::SUCCESS
@@ -796,7 +796,13 @@ pub(crate) fn run_attach_rec(
             print_attach_error(&err, &socket_path, &session_for_spawn);
             ExitCode::FAILURE
         }
-    }
+    };
+    // `tokio::io::stdin` delegates reads to a blocking-pool task. An attach
+    // whose transport disappears while stdin is idle has no way to cancel
+    // that OS read; dropping the runtime would therefore wait forever and
+    // leave the CLI stuck after it has already restored the terminal.
+    rt.shutdown_timeout(Duration::ZERO);
+    exit
 }
 
 /// Stderr hint appended when a non-loopback dial got no answer at all —

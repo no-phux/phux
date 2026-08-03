@@ -1563,6 +1563,11 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             }
             _ => Ok(FrameOutcome::default()),
         },
+        // Lifecycle/activity events share the subscribed agent-event stream,
+        // but most do not affect the interactive client's projection. They
+        // remain valid server traffic: ignoring them must not tear down an
+        // otherwise healthy attach.
+        FrameKind::Event { .. } => Ok(FrameOutcome::default()),
         // phux-i0e8.2.1 (second consumer, closing phux-i0e8.2's otherwise
         // orphaned lifecycle event): a spontaneous, uncorrelated
         // `ERROR { SATELLITE_UNREACHABLE }` is the hub announcing a
@@ -4323,6 +4328,18 @@ mod tests {
         );
         assert!(!cwd.chrome_dirty && !exit.chrome_dirty);
         assert!(!panes.contains_key(&unknown));
+    }
+
+    /// Activity-only events are valid on an attached subscription but carry
+    /// no client projection state; they must not abort the attach.
+    #[test]
+    fn idle_event_is_ignored() {
+        use phux_protocol::wire::frame::AgentEvent;
+        let pane = tid(1);
+        let mut panes = panes_for(&[&pane]);
+
+        let outcome = drive_event(&mut panes, &pane, AgentEvent::Idle);
+        assert!(!outcome.chrome_dirty);
     }
 
     /// phux-i0e8.2.1: a `TerminalControl` event carrying `holder` and a
