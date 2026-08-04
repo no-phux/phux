@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.12.1](https://github.com/phall1/phux/compare/v0.12.0...v0.12.1) (2026-08-04)
+
+
+### Documentation
+
+* **spec:** relay tunnel addendum + ADR status hygiene (phux-bd3) ([#375](https://github.com/phall1/phux/issues/375)) ([1a83d5a](https://github.com/phall1/phux/commit/1a83d5afa7f9f904cb34539f6dcd273a0fdb0ef7))
+
 ## [0.12.0](https://github.com/phall1/phux/compare/v0.11.0...v0.12.0) (2026-08-04)
 
 
