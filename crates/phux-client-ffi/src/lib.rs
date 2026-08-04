@@ -1548,6 +1548,47 @@ pub unsafe extern "C" fn phux_client_search(
     })
 }
 
+/// Releases all anchors owned by the currently borrowed search result array.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_search_results_release(
+    client: *mut PhuxClient,
+) -> PhuxClientResult {
+    let Some(client_ref) = (unsafe { client.as_mut() }) else {
+        return PhuxClientResult::InvalidArgument;
+    };
+    if client_ref.inner.in_callback {
+        return PhuxClientResult::InvalidState;
+    }
+    let result = match catch_unwind(AssertUnwindSafe(|| {
+        client_ref.inner.release_search_results()
+    })) {
+        Ok(Ok(())) => {
+            client_ref.inner.last_error.clear();
+            PhuxClientResult::Ok
+        }
+        Ok(Err(error)) => {
+            client_ref.inner.set_error(&error.message);
+            error.result
+        }
+        Err(_) => {
+            client_ref
+                .inner
+                .set_error("panic contained at phux-client FFI boundary");
+            PhuxClientResult::Panic
+        }
+    };
+    if result == PhuxClientResult::Ok {
+        result
+    } else {
+        invoke_failure(client, result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1600,6 +1641,28 @@ mod tests {
             }),
             _not_send_sync: std::marker::PhantomData,
         }))
+    }
+
+    #[test]
+    fn search_result_release_consumes_the_borrowed_set_in_one_mutation() {
+        let client = boxed_client();
+        unsafe {
+            (*client).inner.search_results.push(PhuxSearchResult {
+                start: PhuxDocumentAnchor { opaque_id: 41 },
+                end: PhuxDocumentAnchor { opaque_id: 42 },
+            });
+            assert_eq!(
+                phux_client_search_results_release(client),
+                PhuxClientResult::Ok
+            );
+            assert!((*client).inner.search_results.is_empty());
+            assert_eq!(
+                phux_client_search_results_release(client),
+                PhuxClientResult::Ok
+            );
+
+            phux_client_free(client);
+        }
     }
 
     #[test]

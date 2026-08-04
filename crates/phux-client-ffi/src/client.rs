@@ -179,6 +179,37 @@ impl Client {
         self.search_results.clear();
     }
 
+    pub(crate) fn release_search_results(&mut self) -> Result<(), BridgeError> {
+        let results = std::mem::take(&mut self.search_results);
+        let mut first_error = None;
+        let mut failed = Vec::new();
+        for result in results {
+            let mut result_failed = false;
+            for anchor in [result.start, result.end] {
+                let Some((terminal_id, engine_anchor)) = self.anchors.remove(&anchor.opaque_id)
+                else {
+                    continue;
+                };
+                if let Err(error) = self
+                    .session
+                    .release_document_anchor(&terminal_id, engine_anchor)
+                {
+                    self.anchors
+                        .insert(anchor.opaque_id, (terminal_id, engine_anchor));
+                    result_failed = true;
+                    if first_error.is_none() {
+                        first_error = Some(BridgeError::engine(error.to_string()));
+                    }
+                }
+            }
+            if result_failed {
+                failed.push(result);
+            }
+        }
+        self.search_results = failed;
+        first_error.map_or(Ok(()), Err)
+    }
+
     pub(crate) const fn state(&self) -> PhuxClientState {
         if self.detached {
             PhuxClientState::Detached

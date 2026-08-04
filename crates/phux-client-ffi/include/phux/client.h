@@ -601,7 +601,15 @@ PhuxClientResult phux_client_history_follow_live(PhuxClient *client, const PhuxT
 PhuxClientResult phux_client_selection_set(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor start, PhuxDocumentAnchor end, bool rectangle);
 PhuxClientResult phux_client_selection_clear(PhuxClient *client, const PhuxTerminalId *terminal_id);
 PhuxClientResult phux_client_selection_text(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxBytes *out_text);
+/**
+ * Every returned anchor handle is transferred to the caller and remains valid
+ * until explicitly released or its terminal generation is replaced. Before
+ * the next mutable client call invalidates this borrowed array, callers must
+ * either copy the handles for later individual release or call
+ * phux_client_search_results_release to release the entire set atomically.
+ */
 PhuxClientResult phux_client_search(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxBytes query_utf8, bool case_sensitive, const PhuxSearchResult **out_results, size_t *out_count);
+PhuxClientResult phux_client_search_results_release(PhuxClient *client);
 
 #ifdef __cplusplus
 }
