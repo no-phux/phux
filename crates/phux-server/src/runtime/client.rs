@@ -368,7 +368,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
             let targets: Vec<tokio::sync::mpsc::Sender<Outbound>> = s
                 .subscribers_for_terminal(pane)
                 .iter()
-                .filter_map(|cid| s.attached.get(cid).map(|c| c.tx.clone()))
+                .filter_map(|cid| s.attached().get(cid).map(|c| c.tx.clone()))
                 .collect();
             // phux-60s: reap the dead pane, cascading to its window and
             // session when they empty. Done here (inside the same lock
@@ -522,8 +522,8 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     // but the `client-detached` hook fires only for attached clients —
     // a connection that never attached never "detaches".
     let attached_session: Option<Option<String>> = state.with(|s| {
-        s.attached.get(&client_id).map(|client| {
-            s.registry
+        s.attached().get(&client_id).map(|client| {
+            s.registry()
                 .session(client.session)
                 .map(|session| session.name.clone())
         })

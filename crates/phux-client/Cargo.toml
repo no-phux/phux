@@ -110,6 +110,13 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 
 [dev-dependencies]
 phux-server.workspace = true
+# `tests/sidebar_branch_e2e.rs` stands up a real `ServerRuntime` and waits for
+# its UDS, which is exactly what the server's own integration scaffolding
+# already does. Sharing it deletes a hand-copied server fixture, connect-poll,
+# and `LocalSet` bootstrap that had drifted out of sync with the originals.
+# Workspace-internal, dev-only, and it depends on phux-server — which this
+# crate already dev-depends on — so no new third-party row enters the lockfile.
+phux-server-testkit.workspace = true
 # QUIC dialer round-trip test (tests/quic_dial.rs) stands up a real quinn
 # server with a self-signed cert in a tempdir and dials it via Connection.
 tempfile.workspace = true

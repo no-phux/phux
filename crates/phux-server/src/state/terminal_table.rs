@@ -1,0 +1,401 @@
+//! The per-pane actor table: every map keyed on a live pane's identity,
+//! plus the `JoinSet` that owns the pane actors' futures.
+//!
+//! Five maps that were flat fields on [`super::ServerState`] live here
+//! because they share one lifetime: an entry appears when
+//! `ServerState::register_terminal_handle` records a freshly-spawned actor
+//! and disappears when the pane is reaped. Keeping them together makes the
+//! "forget everything about this pane" and "forget everything about this
+//! client" teardowns single calls instead of four open-coded map
+//! operations spread across `state::reap` and `state::client`, which is
+//! where they drifted out of step before.
+//!
+//! # Ownership boundary
+//!
+//! This type owns the *bookkeeping*, not the policy. Anything that needs a
+//! second cluster stays on `ServerState` and calls in:
+//!
+//! * `register_terminal_handle` / `spawn_terminal_actor` mint a wire id
+//!   from `state::id_space` in the same breath as the insert, so they stay
+//!   on `ServerState` and hand the already-interned pieces down here.
+//! * `reap_terminal`'s bookkeeping also retires wire ids and per-Terminal
+//!   metadata; it calls [`TerminalTable::forget_terminal`] for the five
+//!   maps and keeps the rest.
+//! * `build_upgrade_blob` and `request_pane_handoff` are `async` and must
+//!   not be — nothing on this type awaits, so the state lock can never be
+//!   held across a suspension point through it.
+//!
+//! The struct and every method are `pub(super)`: the accessors the runtime
+//! calls stay on `ServerState` (see `state::terminals`), so the crate's
+//! public surface is unchanged and three of these five maps
+//! (`tokens`, `tasks`, `pumps`) stay exactly as unreachable from outside
+//! `state` as they were when they were private fields.
+
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+
+use phux_core::ids::TerminalId;
+use phux_protocol::ids::BootstrapId;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
+
+use super::ClientId;
+use crate::terminal_actor::TerminalHandle;
+
+/// Last `PANE_OUTPUT` sequence a pump emitted before it was superseded.
+///
+/// Shared with the pump task so a replacement generation can resume from
+/// where the prior one stopped rather than replaying from zero.
+pub(super) type LastValidAttachSequence = Arc<AtomicU64>;
+
+/// What a superseded pump generation leaves behind: its bootstrap id (to
+/// tombstone), a token that resolves once it has actually exited, and the
+/// sequence it reached.
+pub(super) type PriorAttachTerminalPump = (BootstrapId, CancellationToken, LastValidAttachSequence);
+
+/// The new generation's `(cancel, done, last_valid_seq)` plus whatever it
+/// displaced.
+pub(super) type AttachTerminalPumpReplacement = (
+    CancellationToken,
+    CancellationToken,
+    LastValidAttachSequence,
+    Option<PriorAttachTerminalPump>,
+);
+
+/// One generation of an `ATTACH_TERMINAL` output pump.
+///
+/// `ATTACH_TERMINAL` used to be idempotent-or-nothing: a second attach for a
+/// live `(client, terminal)` was refused so the pane could not double-stream.
+/// Negotiated bootstrap makes re-attach meaningful — a client re-bootstraps to
+/// change profile or recover — so a generation now *replaces* its predecessor:
+/// the prior `cancel` fires, `done` reports when it has drained, and its
+/// bootstrap id is tombstoned so late frames from the dead pump are dropped
+/// rather than attributed to the new one.
+#[derive(Debug)]
+pub(super) struct AttachTerminalGeneration {
+    /// Fires to stop this pump.
+    pub(super) cancel: CancellationToken,
+    /// Resolves once the pump task has actually exited.
+    pub(super) done: CancellationToken,
+    /// Highest sequence this generation emitted.
+    pub(super) last_valid_seq: LastValidAttachSequence,
+    /// Bootstrap id this generation streams under.
+    pub(super) bootstrap_id: BootstrapId,
+}
+
+/// Every pane-keyed table the server owns, plus the client subscriptions
+/// and output pumps that hang off them.
+///
+/// Held as a single field on [`super::ServerState`]. Not thread-safe on
+/// its own; the surrounding `Mutex<ServerState>` provides synchronization.
+#[derive(Debug)]
+pub(super) struct TerminalTable {
+    /// Per-pane actor handles, keyed by core [`TerminalId`]. The
+    /// `TerminalHandle` is `Send`; the underlying `TerminalActor` (which
+    /// owns the `!Send` `Terminal`) lives on the `LocalSet` — see
+    /// ADR-0014.
+    ///
+    /// Populated by [`super::ServerState::register_terminal_handle`] after
+    /// the actor is spawned. Looked up by the ATTACH handler to request
+    /// snapshots and by the input path to forward keystrokes.
+    handles: HashMap<TerminalId, TerminalHandle>,
+    /// Per-pane cancellation tokens. Cancelling a token fires the matching
+    /// `TerminalActor`'s shutdown branch (see `TerminalActor::run`'s
+    /// `select!`). Typically a child of the per-server root token, so a
+    /// root cancel cascades to every pane in one step.
+    ///
+    /// Distinct from the prior `oneshot::Sender<()>` shutdown channel:
+    /// dropping the token does NOT cancel — cancellation must be explicit
+    /// (see `detach_actor`).
+    tokens: HashMap<TerminalId, CancellationToken>,
+    /// `JoinSet` collecting the `TerminalActor::run` futures spawned via
+    /// [`super::ServerState::spawn_terminal_actor`]. Owned at this scope so
+    /// cancellation of the per-server root token (or drop of
+    /// `ServerState`) aborts every still-running pane actor in one go.
+    ///
+    /// **Drop-safety note:** `JoinSet<()>` is `Send`, but the futures it
+    /// holds are `!Send` (pane actors own a `!Send` `Terminal` per
+    /// ADR-0014). They were spawned via `JoinSet::spawn_local`, which is
+    /// only legal inside a `LocalSet`. `ServerState` — and therefore this
+    /// table — is dropped at the tail of
+    /// `runtime::ServerRuntime::run_async` on the same thread that ran the
+    /// `LocalSet`, so this `JoinSet`'s `Drop` is always on the spawning
+    /// thread — no cross-thread poll of `!Send` futures occurs.
+    tasks: JoinSet<()>,
+    /// For each pane, the clients currently observing it (and thus
+    /// eligible to receive `TERMINAL_OUTPUT` frames for it).
+    ///
+    /// Empty lists are garbage-collected rather than left behind, so the
+    /// map stays bounded across attach/detach churn.
+    subscribers: HashMap<TerminalId, Vec<ClientId>>,
+    /// Per-`(client, terminal)` cancellation for `ATTACH_TERMINAL` output
+    /// pumps (phux-v45.7). `DETACH_TERMINAL` cancels one entry; client
+    /// detach / disconnect cancels all of the client's entries; pane reap
+    /// cancels the pane's entries. Without the token the pump task (which
+    /// holds the client's outbound sender) would keep streaming until the
+    /// connection died.
+    pumps: HashMap<(ClientId, TerminalId), AttachTerminalGeneration>,
+    /// Next connection-global bootstrap id for per-terminal attaches, keyed
+    /// by client. Monotonic, so a tombstoned generation's id is never reused.
+    next_bootstrap: HashMap<ClientId, u64>,
+}
+
+impl Default for TerminalTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TerminalTable {
+    /// Build an empty table.
+    #[must_use]
+    pub(super) fn new() -> Self {
+        Self {
+            handles: HashMap::new(),
+            tokens: HashMap::new(),
+            tasks: JoinSet::new(),
+            subscribers: HashMap::new(),
+            pumps: HashMap::new(),
+            next_bootstrap: HashMap::new(),
+        }
+    }
+
+    // -- actor handles ------------------------------------------------
+
+    /// Look up the [`TerminalHandle`] for `terminal`, if registered.
+    #[must_use]
+    pub(super) fn handle(&self, terminal: TerminalId) -> Option<&TerminalHandle> {
+        self.handles.get(&terminal)
+    }
+
+    /// Every registered pane id. Cheap relative to [`Self::all_handles`]:
+    /// no `TerminalHandle` clones.
+    #[must_use]
+    pub(super) fn terminal_ids(&self) -> Vec<TerminalId> {
+        self.handles.keys().copied().collect()
+    }
+
+    /// Clone every registered `(pane, handle)` pair, so callers can talk to
+    /// the actors *outside* the `ServerState` lock.
+    #[must_use]
+    pub(super) fn all_handles(&self) -> Vec<(TerminalId, TerminalHandle)> {
+        self.handles
+            .iter()
+            .map(|(tid, handle)| (*tid, handle.clone()))
+            .collect()
+    }
+
+    /// Record a freshly-spawned actor's `handle` and shutdown `token`
+    /// against `terminal`.
+    ///
+    /// Overwrites any prior entry. The wire-id allocation that pairs with
+    /// this deliberately stays on
+    /// [`super::ServerState::register_terminal_handle`] — it belongs to the
+    /// id space, not to this table.
+    pub(super) fn register(
+        &mut self,
+        terminal: TerminalId,
+        handle: TerminalHandle,
+        token: CancellationToken,
+    ) {
+        self.handles.insert(terminal, handle);
+        self.tokens.insert(terminal, token);
+    }
+
+    /// Spawn a pane actor's future onto the per-server `JoinSet`.
+    ///
+    /// Must be called from inside a `LocalSet` (ADR-0014): pane actors own
+    /// `!Send` `Terminal`s, so this goes through `JoinSet::spawn_local`.
+    /// See the drop-safety note on the `tasks` field for why holding those
+    /// futures behind a `Send` `JoinSet` is sound.
+    pub(super) fn spawn_actor<F>(&mut self, actor_future: F)
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        self.tasks.spawn_local(actor_future);
+    }
+
+    /// Cancel `terminal`'s actor token, signalling the `TerminalActor` to
+    /// exit, and forget the token. Idempotent.
+    ///
+    /// The actor task itself is drained from the per-server `JoinSet` when
+    /// it returns from `run`; we don't need to touch `tasks` here.
+    pub(super) fn detach_actor(&mut self, terminal: TerminalId) {
+        if let Some(token) = self.tokens.remove(&terminal) {
+            token.cancel();
+        }
+    }
+
+    // -- subscriptions ------------------------------------------------
+
+    /// Subscribers (snapshot) for `terminal`. Returns an empty slice if no
+    /// clients are currently observing the pane.
+    #[must_use]
+    pub(super) fn subscribers_for(&self, terminal: TerminalId) -> &[ClientId] {
+        self.subscribers.get(&terminal).map_or(&[], Vec::as_slice)
+    }
+
+    /// Subscribe `client` to `terminal`, deduplicating: a client already on
+    /// the list is not pushed twice, so a re-attach cannot double-fan
+    /// `TERMINAL_OUTPUT` at it.
+    pub(super) fn subscribe(&mut self, client: ClientId, terminal: TerminalId) {
+        let subs = self.subscribers.entry(terminal).or_default();
+        if !subs.contains(&client) {
+            subs.push(client);
+        }
+    }
+
+    /// Remove `client` from `terminal`'s subscriber list (the
+    /// `DETACH_TERMINAL` counterpart of the attach-time registration).
+    /// Drops the entry when it empties.
+    pub(super) fn unsubscribe(&mut self, client: ClientId, terminal: TerminalId) {
+        if let Some(subs) = self.subscribers.get_mut(&terminal) {
+            subs.retain(|c| *c != client);
+            if subs.is_empty() {
+                self.subscribers.remove(&terminal);
+            }
+        }
+    }
+
+    /// Drop `client` from every subscriber list, garbage-collecting the
+    /// lists it emptied so the map doesn't grow unboundedly across
+    /// attach/detach churn.
+    pub(super) fn drop_client_subscriptions(&mut self, client: ClientId) {
+        for subs in self.subscribers.values_mut() {
+            subs.retain(|c| *c != client);
+        }
+        self.subscribers.retain(|_, subs| !subs.is_empty());
+    }
+
+    /// Clone the [`TerminalHandle`] of every pane `client` currently
+    /// subscribes to (phux-0q8).
+    #[must_use]
+    pub(super) fn subscribed_handles(&self, client: ClientId) -> Vec<TerminalHandle> {
+        self.subscribers
+            .iter()
+            .filter(|(_, subs)| subs.contains(&client))
+            .filter_map(|(terminal, _)| self.handle(*terminal).cloned())
+            .collect()
+    }
+
+    /// `true` when no pane has any subscriber left — the observable form of
+    /// the empty-list GC invariant that [`Self::drop_client_subscriptions`]
+    /// and [`Self::unsubscribe`] maintain.
+    ///
+    /// Test-only: production code asks about one pane
+    /// ([`Self::subscribers_for`]), never about the map as a whole, and the
+    /// GC invariant is otherwise unobservable from outside this type.
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn subscriber_map_is_empty(&self) -> bool {
+        self.subscribers.is_empty()
+    }
+
+    // -- ATTACH_TERMINAL output pumps ---------------------------------
+
+    /// Install a new `ATTACH_TERMINAL` pump generation for `(client,
+    /// terminal)`, displacing any live one.
+    ///
+    /// Returns the new generation's `(cancel, done, last_valid_seq)` plus, when
+    /// one was displaced, the prior generation's bootstrap id, its `done` token
+    /// and the sequence it reached. The caller awaits that `done` before
+    /// tombstoning the old bootstrap id, so a late frame from the dying pump is
+    /// never attributed to the new generation.
+    ///
+    /// This replaced a register-or-refuse form that returned `None` for a live
+    /// pair. Under negotiated bootstrap a second `ATTACH_TERMINAL` is a
+    /// meaningful request — re-bootstrap at a different profile, or recover —
+    /// so refusing it would strand the client on the old stream.
+    pub(super) fn replace_pump(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+        bootstrap_id: BootstrapId,
+    ) -> AttachTerminalPumpReplacement {
+        let cancel = CancellationToken::new();
+        let done = CancellationToken::new();
+        let last_valid_seq: LastValidAttachSequence = Arc::new(AtomicU64::new(0));
+        let prior = self
+            .pumps
+            .insert(
+                (client, terminal),
+                AttachTerminalGeneration {
+                    cancel: cancel.clone(),
+                    done: done.clone(),
+                    last_valid_seq: Arc::clone(&last_valid_seq),
+                    bootstrap_id,
+                },
+            )
+            .map(|prior| {
+                prior.cancel.cancel();
+                (prior.bootstrap_id, prior.done, prior.last_valid_seq)
+            });
+        (cancel, done, last_valid_seq, prior)
+    }
+
+    /// Allocate the next per-terminal bootstrap id for `client`.
+    ///
+    /// `None` once the per-client counter would overflow — the connection has
+    /// exhausted its id space and must reconnect rather than reuse an id a
+    /// tombstone still refers to.
+    pub(super) fn next_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {
+        let next = self.next_bootstrap.entry(client).or_insert(1);
+        let raw = *next;
+        *next = raw.checked_add(1)?;
+        BootstrapId::new(raw)
+    }
+
+    /// Cancel and forget the `ATTACH_TERMINAL` pump for `(client,
+    /// terminal)`, if one is live. Idempotent.
+    pub(super) fn cancel_pump(&mut self, client: ClientId, terminal: TerminalId) {
+        if let Some(generation) = self.pumps.remove(&(client, terminal)) {
+            generation.cancel.cancel();
+        }
+    }
+
+    /// Cancel every `ATTACH_TERMINAL` output pump `client` owns
+    /// (phux-v45.7) so no task keeps streaming into a dead mailbox.
+    pub(super) fn cancel_pumps_for_client(&mut self, client: ClientId) {
+        self.pumps.retain(|(owner, _), generation| {
+            if *owner == client {
+                generation.cancel.cancel();
+                false
+            } else {
+                true
+            }
+        });
+        self.next_bootstrap.remove(&client);
+    }
+
+    // -- teardown -----------------------------------------------------
+
+    /// Drop every entry in this table keyed on a now-removed pane.
+    ///
+    /// Cancels the actor token defensively (the actor has usually already
+    /// exited by the time we reap, but a still-live token is cleanly
+    /// resolved by the cancel) and cancels the pane's `ATTACH_TERMINAL`
+    /// pumps: the broadcast channel is closing anyway, but the cancel keeps
+    /// the token map bounded and the teardown prompt.
+    ///
+    /// The wire-id retirement and the per-Terminal metadata / agent-record
+    /// cleanup that pair with this stay on
+    /// [`super::ServerState::reap_terminal`] — they are not pane-keyed, they
+    /// are keyed on the wire id this pane is about to give up.
+    pub(super) fn forget_terminal(&mut self, terminal: TerminalId) {
+        self.handles.remove(&terminal);
+        if let Some(token) = self.tokens.remove(&terminal) {
+            token.cancel();
+        }
+        self.subscribers.remove(&terminal);
+        self.pumps.retain(|(_, pane), generation| {
+            if *pane == terminal {
+                generation.cancel.cancel();
+                false
+            } else {
+                true
+            }
+        });
+    }
+}

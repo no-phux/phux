@@ -4,8 +4,10 @@
 //!
 //! This module owns:
 //!
-//! * The [`Registry`] of sessions, windows, and panes (the canonical
-//!   domain state from `phux-byc.1`/`phux-byc.2`).
+//! * The [`Registry`](phux_core::registry::Registry) of sessions, windows,
+//!   and panes (the canonical domain state from
+//!   `phux-byc.1`/`phux-byc.2`), grouped with its per-session ledgers in
+//!   `state::session_table` and reached through [`ServerState::registry`].
 //! * The set of currently attached clients ([`AttachedClient`]) keyed by a
 //!   server-assigned monotonic [`ClientId`].
 //! * The list of subscribers per pane — used to fan diffs out to every client
@@ -33,35 +35,54 @@
 //! every section in this module is sync and finite — we never `.await`
 //! while holding it.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::agent_asked::AskedDetector;
-use crate::agent_state::AgentRecordArbiter;
-use crate::id_bridge::IdBridge;
-use crate::terminal_actor::TerminalHandle;
-use phux_core::ids::{SessionId, TerminalId, WindowId};
-use phux_core::registry::Registry;
-use phux_protocol::caps::LayerSet;
-use phux_protocol::ids::{
-    BootstrapId, GroupId, TerminalId as WireTerminalId, WindowId as WireWindowId,
-};
-use portable_pty::CommandBuilder;
-use tokio::task::JoinSet;
-use tokio_util::sync::CancellationToken;
+use phux_protocol::ids::GroupId;
 
+mod agent;
+mod agent_tracking;
 mod client;
+mod client_table;
+mod config;
+mod construct;
+mod cwd;
+mod defaults;
 mod events;
+mod hook_dispatch;
+mod hub;
+mod hub_state;
+mod id_space;
 mod input_log;
+mod lease_table;
+mod leases;
+mod lifecycle;
+mod lifecycle_state;
 mod metadata;
-mod registry;
+mod policy;
+mod reap;
+mod session_table;
+mod sessions;
+mod snapshot;
+mod terminal_table;
+mod terminals;
 mod upgrade_blob;
+mod viewport;
+mod wire_ids;
 
+use agent_tracking::AgentState;
 pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
+use client_table::ClientTable;
+use config::ServerConfig;
 pub use events::{EventScope, EventSubscription};
+use hub_state::HubState;
+pub use id_space::IdSpace;
 pub use input_log::{DEFAULT_CLIENT_MAILBOX, Outbound, TerminalInput};
+use lease_table::LeaseTable;
+pub(crate) use lease_table::SatelliteLease;
+use lifecycle_state::Lifecycle;
 pub use metadata::{MetadataSetOutcome, MetadataStore, RenameOutcome};
+use session_table::SessionTable;
+use terminal_table::TerminalTable;
 pub use upgrade_blob::RebuildError;
 
 /// Default Group identifier exposed by v0.1 servers.
@@ -104,144 +125,61 @@ impl core::fmt::Debug for ServerIncarnation {
     }
 }
 
-/// One hub-side satellite input lease (phux-v45.7, phux-v45.13).
-///
-/// Records which hub consumer holds the relayed ADR-0033 lease over a
-/// satellite terminal **and** that consumer's outbound mailbox. The
-/// mailbox is what lets a SEIZE takeover by a *different* hub consumer
-/// notify the evicted prior holder directly (a hub-synthesized
-/// `TerminalControl(Seized)` event, mirroring the local takeover
-/// broadcast) — the satellite cannot do it, because every hub consumer
-/// reaches it through the link's single client identity, so its own lease
-/// change reads as a same-identity re-acquire.
-#[derive(Debug, Clone)]
-pub(crate) struct SatelliteLease {
-    /// The hub consumer that holds the lease.
-    pub(crate) holder: ClientId,
-    /// The holder's outbound mailbox, for the eviction notification.
-    pub(crate) out_tx: tokio::sync::mpsc::Sender<Outbound>,
-}
-#[derive(Debug)]
-struct AttachTerminalGeneration {
-    cancel: CancellationToken,
-    done: CancellationToken,
-    last_valid_seq: Arc<std::sync::atomic::AtomicU64>,
-    bootstrap_id: BootstrapId,
-}
-
 /// Single owner of all server-side state.
 ///
 /// See the module-level doc for the concurrency model. Wrap this in
 /// [`SharedState`] before sharing with per-client tasks.
 #[derive(Debug)]
 pub struct ServerState {
-    /// Random identity for this in-memory state incarnation.
-    server_incarnation: ServerIncarnation,
-    /// Canonical domain state.
-    pub registry: Registry,
-    /// Currently attached clients, keyed by server-assigned id.
-    pub attached: HashMap<ClientId, AttachedClient>,
-    /// For each pane, the clients currently observing it (and thus eligible
-    /// to receive `TERMINAL_OUTPUT` frames for it).
-    pub terminal_subscribers: HashMap<TerminalId, Vec<ClientId>>,
-    /// Per-pane input lease (ADR-0033, "take the wheel"). When a pane has an
-    /// entry, only that `ClientId`'s input reaches the PTY; everyone else's
-    /// `INPUT_*` / `ROUTE_INPUT` is dropped at the gate (still acked, per the
-    /// fire-and-forget input invariant). Absent = `Open`: any subscriber's
-    /// input passes (the back-compat default). Released automatically when the
-    /// holder detaches or its connection drops.
-    input_leases: HashMap<TerminalId, ClientId>,
-    /// Hub-side ledger of which **hub consumer** owns the input lease over
-    /// a satellite terminal (phux-v45.7). All hub consumers share the
-    /// link's single client identity on the satellite, so the satellite's
-    /// own lease map cannot tell them apart: without this ledger, consumer
-    /// A's `ACQUIRE_INPUT` over a satellite terminal would not exclude
-    /// consumer B's relayed input, and B's `RELEASE_INPUT` would release
-    /// A's lease. The hub therefore gates relayed `ACQUIRE_INPUT` /
-    /// `RELEASE_INPUT` / `ROUTE_INPUT` / `INPUT_*` on this map *before*
-    /// forwarding, and the satellite-side lease (held by the link
-    /// identity) keeps excluding the satellite's own local clients.
-    /// Entries are keyed `(host, satellite-local id)` and cleared when the
-    /// holder detaches (with a detached `RELEASE_INPUT` relayed so the
-    /// satellite-side lease follows). Each entry carries the holder's
-    /// outbound mailbox so a SEIZE takeover by another hub consumer can
-    /// notify the evicted prior holder directly (phux-v45.13) — the
-    /// satellite cannot, since it sees only the shared link identity. See
-    /// L1 §9.1.
-    satellite_leases:
-        std::collections::BTreeMap<(phux_protocol::ids::SatelliteHost, u32), SatelliteLease>,
-    /// Successful satellite `ATTACH_TERMINAL` proxy ownership mirrored at the
-    /// hub authority boundary. Opaque reply/input frames must name one of
-    /// these exact `(client, host, terminal)` registrations before relay.
-    satellite_proxy_attaches: HashSet<(ClientId, phux_protocol::ids::SatelliteHost, u32)>,
-    /// Per-`(client, terminal)` `ATTACH_TERMINAL` generation. Replacement
-    /// cancels and joins the prior pump before tombstoning its bootstrap id.
-    attach_terminal_pumps: HashMap<(ClientId, TerminalId), AttachTerminalGeneration>,
-    /// Next connection-global bootstrap id for per-terminal attaches.
-    attach_terminal_next_bootstrap: HashMap<ClientId, u64>,
-    /// Bridge between core slotmap [`SessionId`]s and wire-level
-    /// `phux_protocol::ids::SessionId` (u32). Lives in this crate (and only
-    /// this crate) because `phux-core` and `phux-protocol` must not depend
-    /// on each other — see [`crate::id_bridge`] module docs.
-    pub session_id_bridge: IdBridge,
-    /// Per-pane actor handles, keyed by core [`TerminalId`]. The
-    /// `TerminalHandle` is `Send`; the underlying `TerminalActor` (which owns
-    /// the `!Send` `Terminal`) lives on the `LocalSet` — see ADR-0014.
+    /// The canonical session/window/pane
+    /// [`Registry`](phux_core::registry::Registry) plus the per-session
+    /// and per-window ledgers keyed on it: last-touch ordering
+    /// (`AttachTarget::Last`), frozen session roots, and per-window last
+    /// CWDs (the two halves of `defaults.cwd-inheritance`, phux-nyx).
     ///
-    /// Populated by [`Self::register_terminal_handle`] after the actor is
-    /// spawned. Looked up by the ATTACH handler to request snapshots
-    /// and by future PTY-input branches to forward keystrokes.
-    pub terminals: HashMap<TerminalId, TerminalHandle>,
-    /// Per-pane cancellation tokens. Cancelling a token fires the
-    /// matching `TerminalActor`'s shutdown branch (see
-    /// `TerminalActor::run`'s `select!`). Typically a child of the
-    /// per-server root token, so a root cancel cascades to every
-    /// pane in one step.
+    /// Accessors stay on this type (see `state::sessions`, `state::cwd`);
+    /// the table is an internal grouping, so nothing outside `state` names
+    /// it. The registry alone is reachable from outside, through
+    /// [`Self::registry`] / [`Self::registry_mut`]. See [`session_table`]
+    /// for the per-field documentation.
+    sessions: SessionTable,
+    /// Everything keyed on a connected client's identity: the attached-client
+    /// records, the monotonic [`ClientId`] allocator, per-client negotiated
+    /// layers, agent-event subscriptions, peer identities, and the unread
+    /// one-shot session-create results.
     ///
-    /// Distinct from the prior `oneshot::Sender<()>` shutdown channel:
-    /// dropping the token does NOT cancel — cancellation must be
-    /// explicit (see [`Self::detach_terminal_actor`]).
-    terminal_tokens: HashMap<TerminalId, CancellationToken>,
-    /// `JoinSet` collecting the `TerminalActor::run` futures spawned via
-    /// [`Self::spawn_terminal_actor`]. Owned at this scope so cancellation
-    /// of the per-server root token (or drop of `ServerState`) aborts
-    /// every still-running pane actor in one go.
+    /// Accessors stay on this type (see `state::client`, `state::events`,
+    /// `state::policy`, `state::metadata`); the table is an internal
+    /// grouping, so nothing outside `state` names it. The attached-client
+    /// map alone is readable from outside, through [`Self::attached`]. See
+    /// [`client_table`] for the per-field documentation.
+    clients: ClientTable,
+    /// Everything keyed on a live pane's identity: actor handles, shutdown
+    /// tokens, the pane-actor `JoinSet`, per-pane client subscriptions, and
+    /// the `ATTACH_TERMINAL` output pumps.
     ///
-    /// **Drop-safety note:** `JoinSet<()>` is `Send`, but the futures it
-    /// holds are `!Send` (pane actors own a `!Send` `Terminal` per
-    /// ADR-0014). They were spawned via `JoinSet::spawn_local`, which
-    /// is only legal inside a `LocalSet`. `ServerState` is dropped at
-    /// the tail of `runtime::ServerRuntime::run_async` on the same
-    /// thread that ran the `LocalSet`, so this `JoinSet`'s `Drop` is
-    /// always on the spawning thread — no cross-thread poll of
-    /// `!Send` futures occurs.
-    terminal_tasks: JoinSet<()>,
-    /// Wire-side identifier for each core pane id. Allocated
-    /// monotonically from `1` in [`Self::register_terminal_handle`]. Mirrors
-    /// the `IdBridge` shape used for session ids — kept inline because
-    /// adding a second `IdBridge` generic over an arbitrary id pair is
-    /// out of scope for `phux-byc.8` (the session bridge has its own
-    /// reverse-lookup story; pane reverse lookup is needed too for
-    /// future `INPUT_KEY` routing).
-    terminal_wire_forward: HashMap<TerminalId, WireTerminalId>,
-    terminal_wire_reverse: HashMap<WireTerminalId, TerminalId>,
-    next_terminal_wire_id: u32,
-    /// Wire-side identifier for each core window id. Same shape as
-    /// the pane bridge above; used to populate
-    /// [`phux_protocol::wire::info::WindowInfo::id`] in
-    /// the `ATTACHED` snapshot.
-    window_wire_forward: HashMap<WindowId, WireWindowId>,
-    window_wire_reverse: HashMap<WireWindowId, WindowId>,
-    next_window_wire_id: u32,
-    next_client_id: u64,
-    /// Per-session last-touch order used to resolve
-    /// [`phux_protocol::wire::frame::AttachTarget::Last`].
+    /// Accessors stay on this type (see `state::terminals`); the table is
+    /// an internal grouping, so nothing outside `state` names it. See
+    /// [`terminal_table`] for the per-field documentation, including the
+    /// ADR-0014 drop-safety contract on the `JoinSet`.
+    terminal_table: TerminalTable,
+    /// Both input-lease ledgers (ADR-0033, "take the wheel"): the local
+    /// per-pane leases and, on a federation hub, the per-satellite-pane
+    /// leases that tell hub consumers apart behind the link's single client
+    /// identity (phux-v45.7, L1 §9.1).
     ///
-    /// Updated by the runtime after successful attach and after valid
-    /// input/focus dispatch. The value is a server-local monotonic
-    /// timestamp: ordering is the only observable contract.
-    session_last_touched: HashMap<SessionId, u64>,
-    next_touch_timestamp: u64,
+    /// Accessors stay on this type (see `state::leases`); the table is an
+    /// internal grouping, so nothing outside `state` names it. Both ledgers
+    /// are released together for a departing client by
+    /// `LeaseTable::release_all_for`, called from [`Self::detach`]. See
+    /// [`lease_table`] for the per-field documentation.
+    leases: LeaseTable,
+    /// Every core-id ↔ wire-id mapping the server owns (sessions,
+    /// terminals, windows) plus the allocators that mint fresh wire ids.
+    /// Lives in this crate (and only this crate) because `phux-core` and
+    /// `phux-protocol` must not depend on each other — see [`IdSpace`] and
+    /// [`crate::id_bridge`] for the allocation contract.
+    pub idspace: IdSpace,
     /// Per-scope K/V store backing SPEC §7.4 / §11.L3 metadata.
     ///
     /// Three independently-keyed maps mirror the three `Scope` variants
@@ -249,181 +187,34 @@ pub struct ServerState {
     /// nothing beyond per-key size limits (currently un-enforced; the
     /// SPEC §11.L3 recommended 256 KiB cap is a follow-up).
     metadata: MetadataStore,
-    /// Nonce-bearing session-create result keys owned by each connection.
+    /// What the server knows about the agents running inside its panes: the
+    /// pending-question detector (`phux.agent.asked/v1`, ADR-0046 §D) and
+    /// the `phux.agent/v1` record arbiter (ADR-0046 §E).
     ///
-    /// Results are one-shot and connection-scoped even though their transport
-    /// uses Global L3 metadata. Tracking ownership lets disconnect cleanup
-    /// remove abandoned results, while the per-client cap bounds a connected
-    /// client that submits creates without reading replies.
-    session_create_results: HashMap<ClientId, VecDeque<String>>,
-    /// Per-client cache of the negotiated [`LayerSet`] from HELLO (SPEC
-    /// §6.2). The dispatcher consults this before emitting any L3
-    /// frame; non-L3 consumers MUST NOT see `METADATA_CHANGED` (SPEC
-    /// §16.4). Default for a client that never sent HELLO (test
-    /// scaffolding) is [`LayerSet::all`] — the most-permissive default
-    /// keeps test setups simple; production clients always advertise.
-    client_layers: HashMap<ClientId, LayerSet>,
-    /// Per-client agent-event subscriptions (SPEC §7.5, phux-y2t). Each
-    /// subscribed client maps to its outbound mailbox plus the set of
-    /// scopes it watches: `EventScope::Server` (every event) or one or
-    /// more `EventScope::Terminal(id)` (per-pane). The push half of the
-    /// agent surface; an additive accelerator of the CLI poll-floor
-    /// `wait`. Cleared on detach, matching the L3 metadata subscription
-    /// lifecycle.
+    /// Accessors stay on this type (see `state::agent`); the grouping is
+    /// internal, so nothing outside `state` names it. Both ledgers are
+    /// keyed on a pane and both are cleared in `state::reap`'s cascade. See
+    /// [`agent_tracking`] for the per-field documentation.
+    agent: AgentState,
+    /// Boot-time configuration mirrored from [`crate::runtime::ServerConfig`]
+    /// (scrollback cap, cwd-inheritance policy, `TERM`, default shell,
+    /// socket path, window-size policy, policy bundle).
     ///
-    /// The mailbox is stored here (rather than resolved through
-    /// [`Self::attached`]) because a `watch` client subscribes WITHOUT
-    /// attaching — it connects, sends `SUBSCRIBE_EVENTS`, and streams. So
-    /// event fanout must not depend on an `attached` entry that a pure
-    /// watcher never creates.
-    event_subscriptions: HashMap<ClientId, EventSubscription>,
-    agent_asked: AskedDetector,
-    /// Who owns each Terminal's `phux.agent/v1` record: a human's explicit
-    /// `SET_METADATA`, or the server-side detector (ADR-0046 §E). An explicit
-    /// declaration of `state` outranks the detector, which stands down until
-    /// the record is deleted.
-    agent_records: AgentRecordArbiter,
-    /// Whether `AttachTarget::CreateIfMissing` (phux-k61.3) should spawn
-    /// a real PTY-backed actor for the newly created session's seed
-    /// pane. Mirrors [`crate::runtime::ServerConfig::seed_with_pty`] so
-    /// the attach-time creation path matches the server's startup
-    /// configuration. Set by the runtime via
-    /// [`Self::set_attach_create_pty`] right after `SharedState::new`.
+    /// Every field is written once by [`ServerConfig::default`] and once by
+    /// the matching `set_*` method during `ServerRuntime::run_async`, before
+    /// the accept loops start; none of them changes while the server is
+    /// serving. See [`config`] for the per-field documentation.
+    config: ServerConfig,
+    /// The federation-hub handles this server holds while acting as a hub
+    /// (phux-v45, ADR-0007): the validated satellite table, the
+    /// per-satellite link statuses, and the per-satellite frame relays.
     ///
-    /// Defaults to `false` so tests that never call the setter exercise
-    /// the cheaper no-PTY actor (matches every existing integration
-    /// test that uses `spawn_server`).
-    attach_create_seeds_pty: bool,
-    /// Optional pre-built `CommandBuilder` used when
-    /// [`Self::attach_create_seeds_pty`] is `true` and `CreateIfMissing`
-    /// fires. `None` falls back to
-    /// [`crate::terminal_actor::default_shell_command`] over the resolved
-    /// default shell ([`Self::shell`]: `defaults.shell`, `$SHELL`, or
-    /// `/bin/sh`).
-    attach_create_seed_command: Option<CommandBuilder>,
-    /// Lines of scrollback retained per pane (`defaults.history-limit`).
-    /// Mirrors [`crate::runtime::ServerConfig::history_limit`] so the
-    /// attach-time creation path (`AttachTarget::CreateIfMissing`) and
-    /// `SPAWN_TERMINAL` build their `TerminalActor`s with the configured
-    /// cap without an extra channel to the runtime. Set by the runtime
-    /// via [`Self::set_history_limit`] right after `SharedState::new`.
-    ///
-    /// Defaults to the `phux_config` schema default so tests that never
-    /// call the setter still get a sane bound.
-    history_limit: u32,
-    /// How a freshly-spawned pane chooses its working directory
-    /// (`defaults.cwd-inheritance`). Mirrors
-    /// [`crate::runtime::ServerConfig::cwd_inheritance`] so the
-    /// `SPAWN_TERMINAL` handler resolves the new pane's CWD without an
-    /// extra channel to the runtime. Set by the runtime via
-    /// [`Self::set_cwd_inheritance`] right after `SharedState::new`.
-    ///
-    /// Defaults to the `phux_config` schema default
-    /// ([`phux_config::CwdInheritance::InheritFocused`]) so tests that
-    /// never call the setter exercise the tmux-default behavior.
-    cwd_inheritance: phux_config::CwdInheritance,
-    /// `TERM` advertised to the inner program of every server-spawned pane
-    /// (`defaults.term`, phux-ign). Mirrors
-    /// [`crate::runtime::ServerConfig::term`] so the attach-time creation
-    /// path and `SPAWN_TERMINAL` apply it as the PTY's `TERM` baseline
-    /// without an extra channel to the runtime. A per-spawn
-    /// `SPAWN_TERMINAL.env` entry for `TERM` overrides it. Set by the
-    /// runtime via [`Self::set_term`] right after `SharedState::new`.
-    ///
-    /// Defaults to the `phux_config` schema default (`xterm-256color`) so
-    /// tests that never call the setter get the safe baseline.
-    term: String,
-    /// Resolved default shell for server-spawned panes (phux-i0e8.4.1):
-    /// `defaults.shell` → `$SHELL` → `/bin/sh`, resolved once by the
-    /// binary from its single config load. Mirrors
-    /// [`crate::runtime::ServerConfig::shell`] so the attach-time
-    /// creation path, `SESSION_CREATE_KEY`, and a command-less
-    /// `SPAWN_TERMINAL` spawn the configured shell without an extra
-    /// channel to the runtime. A wire `command` always wins over this
-    /// default. Set by the runtime via [`Self::set_shell`] right after
-    /// `SharedState::new`.
-    ///
-    /// Defaults to `resolve_shell(None)` (`$SHELL`, else `/bin/sh`) so
-    /// state-only tests keep the pre-config behavior.
-    shell: String,
-    /// The UDS path this server listens on. Mirrors
-    /// [`crate::runtime::ServerConfig::socket_path`] so every pane spawn
-    /// site can inject it into the child environment as `PHUX_SOCKET`
-    /// (phux-cufw) without an extra channel to the runtime. Set by the
-    /// runtime via [`Self::set_server_socket_path`] right after
-    /// `SharedState::new`.
-    ///
-    /// `None` when the runtime never mirrors it (state-only tests):
-    /// spawned panes then carry no `PHUX_SOCKET` and an in-pane `phux`
-    /// falls back to the default-socket resolution.
-    server_socket_path: Option<std::path::PathBuf>,
-    /// How a Terminal viewed by clients of differing sizes resolves its one
-    /// authoritative PTY geometry (`defaults.window-size`, phux-nk07). Mirrors
-    /// [`crate::runtime::ServerConfig::window_size`] so `handle_viewport_resize`
-    /// can apply the policy across every subscriber's viewport instead of
-    /// last-writer-wins. Set by the runtime via [`Self::set_window_size`] right
-    /// after `SharedState::new`; defaults to the `phux_config` schema default
-    /// ([`phux_config::WindowSize::Smallest`] — never crops).
-    window_size: phux_config::WindowSize,
-    /// Frozen session-creation directory per session (phux-nyx,
-    /// `defaults.cwd-inheritance = session-root`). Captured the first time
-    /// a `session-root` spawn resolves a session's seed-pane CWD and reused
-    /// thereafter, so later `cd`s in the seed pane do not move the root.
-    /// Cleared with the rest of a session's bookkeeping on teardown.
-    session_root: HashMap<SessionId, PathBuf>,
-    /// Most-recent observed working directory per window (phux-nyx,
-    /// `defaults.cwd-inheritance = last-cwd-per-window`). Updated whenever a
-    /// `last-cwd-per-window` spawn resolves the window's active-pane CWD;
-    /// new panes in that window inherit the latest value. Cleared with the
-    /// window's bookkeeping on teardown.
-    window_last_cwd: HashMap<WindowId, PathBuf>,
-    /// Whether last-session self-exit has been armed.
-    ///
-    /// A client attach or successful headless session create arms the
-    /// tmux-model self-exit (phux-60s). A freshly auto-spawned server whose
-    /// seed pane dies before either interaction stays alive instead of
-    /// vanishing mid-handshake — the launching `phux` can repopulate it via
-    /// `CreateIfMissing`.
-    has_served_client: bool,
-    /// Monotonic stamp handed out on every viewport announcement
-    /// ([`Self::set_client_viewport`]). Orders announcements across
-    /// clients so [`Self::resolve_terminal_cell_px`] can pick the most
-    /// recent usable pixel report deterministically.
-    viewport_clock: u64,
-    /// Optional policy extension bundle. Defaults to permissive.
-    policy_bundle: crate::policy::PolicyBundle,
-    /// Per-client peer identities, keyed by server-assigned client id.
-    peer_identities: HashMap<ClientId, phux_protocol::policy::PeerIdentity>,
-    /// Graceful-upgrade context (ADR-0032): the listening socket's raw fd,
-    /// its path, and the server's effective runtime flags (phux-v45.10),
-    /// captured at startup. `handle_upgrade` reads these to build the handoff
-    /// blob and to re-pass `--socket` / `--listen` / `--quic` / `--hub` to
-    /// the re-exec'd image. `None` until [`Self::set_upgrade_context`] runs
-    /// (i.e. before serving).
-    upgrade_ctx: Option<(
-        std::os::fd::RawFd,
-        std::path::PathBuf,
-        crate::runtime::RuntimeFlags,
-    )>,
-    /// Validated satellite table for a federation hub (phux-v45.1,
-    /// ADR-0007). `None` on every non-hub server — the registry is never
-    /// read outside hub mode. Set once at startup by the runtime via
-    /// [`Self::set_hub_table`] after `crate::hub::resolve_hub_table`
-    /// succeeds. Held for the upcoming dial (phux-v45.3) and route
-    /// (phux-v45.4) beads; nothing consumes it for I/O yet.
-    hub_table: Option<crate::hub::HubTable>,
-    /// Per-satellite link statuses published by the hub's outbound link
-    /// supervisors (phux-v45.3). `None` on every non-hub server. Set once
-    /// at startup via [`Self::set_hub_link_statuses`] alongside the link
-    /// spawn; the handle is the read surface a future `LIST` aggregation
-    /// (phux-v45.5) consumes.
-    hub_link_statuses: Option<crate::hub::link::HubLinkStatuses>,
-    /// Per-satellite frame-relay handles (phux-v45.4, ADR-0007 §4).
-    /// `None` on every non-hub server. Set once at hub startup via
-    /// [`Self::set_hub_relays`] alongside the link spawn; command and
-    /// input dispatch resolve `TerminalId::Satellite { host, .. }`
-    /// through it to the owning link's relay mailbox.
-    hub_relays: Option<crate::hub::relay::HubRelays>,
+    /// Accessors stay on this type (see `state::hub`); the grouping is
+    /// internal, so nothing outside `state` names it. All three handles are
+    /// `None` on a non-hub server — that is the mode gate, not a
+    /// not-yet-initialized marker. See [`hub_state`] for the per-field
+    /// documentation.
+    hub: HubState,
     /// Server-side event-hook dispatcher handle (`docs/consumers/tui.md`
     /// §9, phux-r82.1). `None` until the runtime spawns the dispatcher
     /// (it does so only when the hook catalog is non-empty), which is
@@ -431,26 +222,19 @@ pub struct ServerState {
     /// firing an event is then a no-op. Set once at startup via
     /// [`Self::set_hook_dispatcher`].
     hook_dispatcher: Option<crate::hooks::HookDispatcher>,
-    /// Number of client connections currently open across every transport
-    /// (UDS, WebSocket, QUIC, WebTransport). Incremented the instant an
-    /// accept succeeds and decremented when that connection's task ends —
-    /// see [`Self::note_connection_opened`] / [`Self::note_connection_closed`].
+    /// Everything scoped to this server *process* rather than to anything
+    /// it serves: its [`ServerIncarnation`], the open-connection count and
+    /// idle clock that drive `--exit-after-idle` (ADR-0063), the
+    /// last-session self-exit arming (phux-60s), the monotonic viewport
+    /// stamp source, and the graceful-upgrade context (ADR-0032).
     ///
-    /// This counts *connections*, not attached clients: a one-shot control
-    /// verb (`phux ls`, `phux send-keys`, `phux new --json`) connects,
-    /// issues a `COMMAND`, and leaves without ever appearing in
-    /// [`Self::attached`]. Only the connection count sees it.
-    live_connections: u32,
-    /// When the server last had zero open connections, or `None` while at
-    /// least one is open.
-    ///
-    /// Seeded to "now" at construction so a server that has *never* been
-    /// connected to is idle from birth — the leak shape that motivated
-    /// `--exit-after-idle` is a bootstrapped daemon whose harness died
-    /// before it ever dialed in. Read by the runtime's idle-exit watchdog;
-    /// nothing else consumes it, and it is inert unless that watchdog was
-    /// spawned.
-    idle_since: Option<std::time::Instant>,
+    /// Accessors stay on this type (see `state::lifecycle`,
+    /// `state::upgrade_blob`, and [`Self::server_incarnation`]); the
+    /// grouping is internal, so nothing outside `state` names it. See
+    /// [`lifecycle_state`] for the per-field documentation, including why
+    /// the connection count and the idle clock may only be written
+    /// together.
+    lifecycle: Lifecycle,
 }
 
 impl Default for ServerState {
@@ -463,7 +247,7 @@ impl ServerState {
     /// Return this state's stable, redaction-safe process incarnation.
     #[must_use]
     pub const fn server_incarnation(&self) -> ServerIncarnation {
-        self.server_incarnation
+        self.lifecycle.server_incarnation()
     }
 }
 
@@ -530,6 +314,7 @@ mod tests {
 
     use super::*;
     use crate::terminal_actor::TerminalHandle;
+    use phux_core::ids::TerminalId;
     use phux_protocol::caps::{
         BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, LayerSet,
     };
@@ -626,9 +411,10 @@ mod tests {
         );
         assert_eq!(
             state
+                .clients
                 .session_create_results
                 .get(&client_id)
-                .map(VecDeque::len),
+                .map(std::collections::VecDeque::len),
             Some(256),
         );
 
@@ -647,7 +433,12 @@ mod tests {
                 .is_none(),
             "disconnect cleanup must remove abandoned one-shot results",
         );
-        assert!(!state.session_create_results.contains_key(&client_id));
+        assert!(
+            !state
+                .clients
+                .session_create_results
+                .contains_key(&client_id)
+        );
     }
 
     #[test]
@@ -665,7 +456,7 @@ mod tests {
         let cid = s.new_client_id();
         let returned_sid = s.attach_default_caps(cid, "default", mk_tx()).unwrap();
         assert_eq!(returned_sid, sid);
-        assert!(s.attached.contains_key(&cid));
+        assert!(s.attached().contains_key(&cid));
         assert_eq!(s.subscribers_for_terminal(pid), &[cid]);
     }
 
@@ -774,13 +565,16 @@ mod tests {
 
     #[test]
     fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
+        // A second ATTACH naming the SAME session is a re-bootstrap, not an
+        // error: the client is renegotiating its profile or recovering. Only
+        // switching sessions on one connection is refused.
         let mut s = ServerState::new();
         let (default, window, original) = s.seed_session("default");
         let _ = s.seed_session("other");
         let cid = s.new_client_id();
         s.attach_default_caps(cid, "default", mk_tx()).unwrap();
         let added = s
-            .registry
+            .registry_mut()
             .new_terminal(window)
             .expect("pane added after initial attach");
         assert_eq!(
@@ -818,7 +612,7 @@ mod tests {
             limits,
         )
         .unwrap();
-        let attached = &s.attached[&cid];
+        let attached = &s.attached()[&cid];
         assert_eq!(attached.bootstrap_profile, profile);
         assert_eq!(attached.bootstrap_limits, limits);
     }
@@ -935,10 +729,10 @@ mod tests {
         s.attach_default_caps(cid, "default", mk_tx()).unwrap();
         assert!(!s.subscribers_for_terminal(pid).is_empty());
         s.detach(cid);
-        assert!(!s.attached.contains_key(&cid));
+        assert!(!s.attached().contains_key(&cid));
         assert!(s.subscribers_for_terminal(pid).is_empty());
         assert!(
-            s.terminal_subscribers.is_empty(),
+            s.terminal_table.subscriber_map_is_empty(),
             "empty lists should be GC'd"
         );
     }
@@ -964,13 +758,13 @@ mod tests {
         let attached = s.new_client_id();
         s.attach_default_caps(attached, "a", mk_tx()).unwrap();
 
-        s.registry
+        s.registry_mut()
             .move_terminal(pid_a, wid_b)
             .expect("cross-session move succeeds");
         s.reap_window_if_empty(wid_a);
 
         assert!(
-            s.registry.session(sid_a).is_none(),
+            s.registry().session(sid_a).is_none(),
             "emptied session reaped"
         );
         assert_eq!(
@@ -981,35 +775,38 @@ mod tests {
             vec![attached],
             "session-attached clients remain discoverable by stable id after reap"
         );
-        assert!(s.registry.session(sid_b).is_some());
+        assert!(s.registry().session(sid_b).is_some());
         assert_eq!(
-            s.registry.terminal(pid_a).expect("pane survives").window,
+            s.registry().terminal(pid_a).expect("pane survives").window,
             wid_b
         );
 
         // A move that leaves the source window populated reaps nothing.
         let (sid_c, wid_c, pid_c) = s.seed_session("c");
-        let pid_c2 = s.registry.new_terminal(wid_c).unwrap();
-        s.registry
+        let pid_c2 = s.registry_mut().new_terminal(wid_c).unwrap();
+        s.registry_mut()
             .move_terminal(pid_c2, wid_b)
             .expect("move succeeds");
         s.reap_window_if_empty(wid_c);
-        assert!(s.registry.session(sid_c).is_some(), "populated source kept");
-        assert!(s.registry.terminal(pid_c).is_some());
+        assert!(
+            s.registry().session(sid_c).is_some(),
+            "populated source kept"
+        );
+        assert!(s.registry().terminal(pid_c).is_some());
     }
 
     #[test]
     fn reap_last_pane_empties_server() {
         let mut s = ServerState::new();
         let (sid, _wid, pid) = s.seed_session("default");
-        assert_eq!(s.registry.session_count(), 1);
+        assert_eq!(s.registry().session_count(), 1);
 
         let server_empty = s.reap_terminal(pid);
 
         assert!(server_empty, "reaping the only pane must empty the server");
-        assert_eq!(s.registry.session_count(), 0);
-        assert!(s.registry.session(sid).is_none(), "session cascaded away");
-        assert!(s.registry.terminal(pid).is_none());
+        assert_eq!(s.registry().session_count(), 0);
+        assert!(s.registry().session(sid).is_none(), "session cascaded away");
+        assert!(s.registry().terminal(pid).is_none());
     }
 
     #[test]
@@ -1021,9 +818,9 @@ mod tests {
         let server_empty = s.reap_terminal(pid_a);
 
         assert!(!server_empty, "a second session is still live");
-        assert_eq!(s.registry.session_count(), 1);
-        assert!(s.registry.session(sid_a).is_none(), "session a reaped");
-        assert!(s.registry.session(sid_b).is_some(), "session b untouched");
+        assert_eq!(s.registry().session_count(), 1);
+        assert!(s.registry().session(sid_a).is_none(), "session a reaped");
+        assert!(s.registry().session(sid_b).is_some(), "session b untouched");
     }
 
     #[test]
@@ -1032,17 +829,20 @@ mod tests {
         let (sid, wid, pid1) = s.seed_session("default");
         // Add a second pane to the same window so reaping one does not
         // empty the window.
-        let pid2 = s.registry.new_terminal(wid).unwrap();
+        let pid2 = s.registry_mut().new_terminal(wid).unwrap();
 
         let server_empty = s.reap_terminal(pid1);
 
         assert!(!server_empty);
-        assert_eq!(s.registry.session_count(), 1);
-        assert!(s.registry.session(sid).is_some());
-        assert!(s.registry.terminal(pid1).is_none(), "reaped pane gone");
-        assert!(s.registry.terminal(pid2).is_some(), "sibling pane survives");
+        assert_eq!(s.registry().session_count(), 1);
+        assert!(s.registry().session(sid).is_some());
+        assert!(s.registry().terminal(pid1).is_none(), "reaped pane gone");
+        assert!(
+            s.registry().terminal(pid2).is_some(),
+            "sibling pane survives"
+        );
         assert_eq!(
-            s.registry.window(wid).map(|w| w.panes.len()),
+            s.registry().window(wid).map(|w| w.panes.len()),
             Some(1),
             "window keeps the surviving pane",
         );
@@ -1057,7 +857,7 @@ mod tests {
         // Second reap of the now-unknown pane must not panic and must
         // report the server is (still) empty.
         assert!(s.reap_terminal(pid));
-        assert_eq!(s.registry.session_count(), 0);
+        assert_eq!(s.registry().session_count(), 0);
     }
 
     #[test]
@@ -1109,7 +909,7 @@ mod tests {
         let _ = s.seed_session("default");
         let cid = s.new_client_id();
         s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-        let client = s.attached.get(&cid).unwrap();
+        let client = s.attached().get(&cid).unwrap();
         assert_eq!(client.client_caps.color_support, ColorSupport::TrueColor);
     }
 
@@ -1128,8 +928,28 @@ mod tests {
             BootstrapLimits::default(),
         )
         .unwrap();
-        let client = s.attached.get(&cid).unwrap();
+        let client = s.attached().get(&cid).unwrap();
         assert_eq!(client.client_caps.color_support, ColorSupport::Indexed16);
+    }
+
+    #[test]
+    fn set_client_color_support_updates_live_attached_client() {
+        // Out-of-order HELLO after ATTACH (out of spec, but tolerated):
+        // the setter patches the live record so downsample picks up the
+        // newer tier.
+        let mut s = ServerState::new();
+        let _ = s.seed_session("default");
+        let cid = s.new_client_id();
+        s.attach_default_caps(cid, "default", mk_tx()).unwrap();
+        assert!(s.set_client_color_support(cid, ColorSupport::Indexed256));
+        let client = s.attached().get(&cid).unwrap();
+        assert_eq!(client.client_caps.color_support, ColorSupport::Indexed256);
+    }
+
+    #[test]
+    fn set_client_color_support_returns_false_for_unknown_client() {
+        let mut s = ServerState::new();
+        assert!(!s.set_client_color_support(ClientId(999), ColorSupport::Indexed16));
     }
 
     #[test]
@@ -1137,12 +957,12 @@ mod tests {
         let mut s = ServerState::new();
         let (sid, wid, pid_a) = s.seed_session("default");
         let pid_b = s
-            .registry
+            .registry_mut()
             .new_terminal(wid)
             .expect("same window second pane");
-        let wid_2 = s.registry.new_window(sid).expect("second window");
+        let wid_2 = s.registry_mut().new_window(sid).expect("second window");
         let pid_c = s
-            .registry
+            .registry_mut()
             .new_terminal(wid_2)
             .expect("pane in second window");
 

@@ -15,69 +15,21 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::BytesMut;
 use phux_protocol::wire::frame::FrameKind;
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
+// `spawn_server`, `wait_for_socket`, and `run_local` used to be hand-copied
+// into this file. They are the testkit's versions verbatim (same config
+// shape, same connect-poll cadence, same `LocalSet` bootstrap), so the
+// copies were pure drift risk.
+use phux_server_testkit::{run_local, spawn_server, wait_for_socket};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 use tokio::time::sleep;
-
-/// Spawn a server task and return its shutdown channel + `JoinHandle`.
-///
-/// Per ADR-0014, `ServerRuntime::run_async` returns a `!Send` future
-/// because the per-pane `TerminalActor` it spawns owns a libghostty
-/// `Terminal` (which is `!Send`). Tests therefore call this helper
-/// inside a `tokio::task::LocalSet::run_until` and use
-/// `tokio::task::spawn_local` instead of `tokio::spawn`.
-fn spawn_server(
-    socket_path: PathBuf,
-) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
-    let (tx, rx) = oneshot::channel::<()>();
-    let cfg = ServerConfig {
-        socket_path,
-        pre_seeded_session: None,
-        seed_with_pty: false,
-        seed_command: None,
-        ..ServerConfig::with_default_socket()
-    };
-    let handle = tokio::task::spawn_local(async move {
-        let server = ServerRuntime::new(cfg);
-        server
-            .run_async(async move {
-                // If the sender is dropped, treat that as a shutdown too.
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
-}
-
-/// Poll until a `UnixStream` can connect to `path` (with a deadline). Just
-/// checking `path.exists()` isn't sufficient because a stale regular file
-/// at the same path also makes `exists()` true while the server is still
-/// removing it; the only race-free signal is "connect actually succeeds".
-async fn wait_for_socket(path: &Path, deadline: Duration) -> UnixStream {
-    let start = Instant::now();
-    let mut last_err: Option<std::io::Error> = None;
-    while start.elapsed() < deadline {
-        match UnixStream::connect(path).await {
-            Ok(s) => return s,
-            Err(e) => last_err = Some(e),
-        }
-        sleep(Duration::from_millis(5)).await;
-    }
-    panic!(
-        "socket {} never became connectable: last_err={:?}",
-        path.display(),
-        last_err,
-    );
-}
 
 /// Encode a PING frame using the protocol crate (the canonical encoder).
 fn encode_ping(nonce: u64) -> BytesMut {
@@ -101,28 +53,13 @@ async fn read_one_frame(stream: &mut UnixStream) -> FrameKind {
     frame
 }
 
-/// Drive an async test body inside a `LocalSet` so the helpers can
-/// call `spawn_local`. Wrapping at the function level (instead of
-/// inside each test) keeps the test bodies focused on assertions.
-fn run_local<F>(fut: F)
-where
-    F: std::future::Future<Output = ()>,
-{
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let local = tokio::task::LocalSet::new();
-    local.block_on(&rt, fut);
-}
-
 #[test]
 fn lifecycle_ping_pong() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
 
-        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone());
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), None);
         let mut stream = wait_for_socket(&socket_path, Duration::from_secs(2)).await;
 
         let nonce = 0xCAFE_BABE_1234_5678_u64;
@@ -161,7 +98,7 @@ fn lifecycle_stale_socket() {
         std::fs::write(&socket_path, b"stale leftover").unwrap();
         assert!(socket_path.exists());
 
-        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone());
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), None);
         // The server should have bound successfully — verify with a quick PING.
         let mut stream = wait_for_socket(&socket_path, Duration::from_secs(2)).await;
         let ping = encode_ping(7);
@@ -182,7 +119,7 @@ fn lifecycle_busy_socket() {
         let socket_path = tmp.path().join("phux.sock");
 
         // Start server A.
-        let (shutdown_a, handle_a) = spawn_server(socket_path.clone());
+        let (shutdown_a, handle_a) = spawn_server(socket_path.clone(), None);
         let _probe = wait_for_socket(&socket_path, Duration::from_secs(2)).await;
 
         // Start server B at the same path; it should error with SocketBusy.
@@ -219,7 +156,7 @@ fn lifecycle_partial_frame_disconnect() {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
 
-        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone());
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), None);
         let initial = wait_for_socket(&socket_path, Duration::from_secs(2)).await;
 
         // Connect, send only 2 of 4 length-prefix bytes, then drop.

@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use phux_protocol::ids::TerminalId as WireTerminalId;
 use tokio::sync::mpsc;
 
+use super::ServerState;
+use super::client::ClientId;
 use super::input_log::Outbound;
 
 /// Scope of an agent-event subscription (SPEC §7.5, phux-y2t).
@@ -35,4 +37,50 @@ pub struct EventSubscription {
     pub(crate) tx: mpsc::Sender<Outbound>,
     /// Scopes this client watches.
     pub(crate) scopes: HashSet<EventScope>,
+}
+
+impl ServerState {
+    /// Record an agent-event subscription for `client_id` at `scope`
+    /// (SPEC §7.5, phux-y2t). Idempotent: re-subscribing the same scope
+    /// is a no-op (the per-client scope set absorbs the duplicate). A
+    /// `terminal: None` `SUBSCRIBE_EVENTS` maps to [`EventScope::Server`];
+    /// a `Some(id)` maps to [`EventScope::Terminal`].
+    ///
+    /// `tx` is the client's outbound mailbox, captured here so event
+    /// fanout reaches a pure `watch` client that never attached. A
+    /// re-subscribe leaves the stored mailbox in place (the connection's
+    /// tx is stable, so this is a no-op in practice).
+    pub fn subscribe_events(
+        &mut self,
+        client_id: ClientId,
+        terminal: Option<WireTerminalId>,
+        tx: mpsc::Sender<Outbound>,
+    ) {
+        self.clients.subscribe_events(client_id, terminal, tx);
+    }
+
+    /// Collect the outbound mailbox of every client subscribed to an agent
+    /// event scoped to `terminal` (SPEC §7.5, phux-y2t).
+    ///
+    /// A client receives the event when it subscribed [`EventScope::Server`]
+    /// (server-wide) OR, when `terminal` is `Some(id)`, it subscribed
+    /// [`EventScope::Terminal`] for that same id. A server-scoped event
+    /// (`terminal == None`) reaches only the server-wide subscribers — it
+    /// has no single owning Terminal to match a per-pane subscription.
+    /// Order is unspecified; callers MUST NOT rely on it. Resolves the
+    /// mailbox from the subscription registry, NOT from
+    /// [`Self::attached`], so a pure `watch` client (subscribed without an
+    /// attach) is still reached.
+    #[must_use]
+    pub fn event_targets(&self, terminal: Option<&WireTerminalId>) -> Vec<mpsc::Sender<Outbound>> {
+        self.clients.event_targets(terminal)
+    }
+
+    /// Drop `client`'s per-terminal agent-event subscription for `wire`
+    /// (`DETACH_TERMINAL`, phux-v45.7). Server-wide subscriptions and
+    /// other terminals' scopes are untouched; an empty scope set drops
+    /// the whole entry so the map stays bounded.
+    pub fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireTerminalId) {
+        self.clients.unsubscribe_terminal_events(client, wire);
+    }
 }
