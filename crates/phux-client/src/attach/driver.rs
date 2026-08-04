@@ -3318,10 +3318,15 @@ async fn main_loop<W: super::RenderSink>(
                             if !overlays.is_active() {
                                 repaint.raise_full();
                             }
-                            // The GET reply is single-use; clear the
-                            // pending request id so a stray late
-                            // MetadataValue can't trample state.
-                            layout_get_request_id = None;
+                            // The GET reply is single-use; clear the pending
+                            // request id so a stray late MetadataValue can't
+                            // trample state. Gated on `layout_get_answered`,
+                            // NOT on `layout_replaced`: the latter is also
+                            // raised for pane damage during bootstrap, and
+                            // clearing on that dropped the real reply.
+                            if outcome.layout_get_answered {
+                                layout_get_request_id = None;
+                            }
                         }
                         // ADR-0040: a `phux.agent/v1` record changed (GET
                         // reply or subscribed broadcast). The window labels

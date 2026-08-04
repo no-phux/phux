@@ -131,10 +131,24 @@ pub(super) struct FrameOutcome {
     /// `GET_METADATA` + `SUBSCRIBE_METADATA` for the layout key so
     /// other clients' mutations broadcast back to us (ADR-0019).
     pub(super) subscribe_layout: bool,
-    /// `true` ⇒ the workspace was replaced by a server-side layout
-    /// envelope (`MetadataValue` reply or `MetadataChanged` broadcast).
-    /// The driver triggers a full repaint of the multi-pane composition.
+    /// `true` ⇒ the multi-pane composition needs a full repaint.
+    ///
+    /// Set both when the workspace was replaced by a server-side layout
+    /// envelope AND when a bootstrap/attach READY reported damaged panes.
+    /// It is a REPAINT signal, nothing more — do not use it to decide that a
+    /// pending request was answered. See [`Self::layout_get_answered`].
     pub(super) layout_replaced: bool,
+    /// `true` ⇒ this frame WAS the `MetadataValue` answer to the driver's
+    /// pending layout `GET_METADATA`, and the workspace has adopted it.
+    ///
+    /// Split out from [`Self::layout_replaced`] because that flag is also
+    /// raised for pane damage during bootstrap. The driver keyed
+    /// "the GET reply is single-use, clear the pending id" off the shared
+    /// flag, so an `ATTACH_READY`/`BOOTSTRAP_READY` arriving first cleared the
+    /// id and the real reply was then dropped as unsolicited — leaving the
+    /// client on a single-leaf tree, so `next-pane` had nothing to cycle to
+    /// and focus silently never moved.
+    pub(super) layout_get_answered: bool,
     /// Layout leaves newly discovered from peer metadata. The driver attaches
     /// each Terminal so its authoritative snapshot/output stream can populate
     /// a pane slot; this does not alter client-local focus.
@@ -1127,6 +1141,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                     *focused_pane = workspace.active_window().and_then(|ls| ls.focus.clone());
                     Ok(FrameOutcome {
                         layout_replaced: true,
+                        layout_get_answered: true,
                         attach_panes,
                         ..FrameOutcome::default()
                     })
