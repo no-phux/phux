@@ -378,7 +378,7 @@ pub struct NativePublicationReply {
     pub(crate) live: broadcast::Receiver<PaneOutput>,
 }
 
-/// Complete the READY/ATTACH_READY publication fence for one owner.
+/// Complete the `READY`/`ATTACH_READY` publication fence for one owner.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativePublicationRequest {

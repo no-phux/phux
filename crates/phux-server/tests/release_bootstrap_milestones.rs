@@ -6,6 +6,17 @@
     clippy::panic,
     clippy::future_not_send
 )]
+// The helpers below mirror the wire frames they assert on, one parameter per
+// field. Trimming the arity or borrowing the ids would make the call sites read
+// less like the frames they stand for, which is the whole point of the file.
+#![allow(
+    clippy::too_many_arguments,
+    clippy::needless_pass_by_value,
+    reason = "wire-shaped test helpers"
+)]
+// Each gate drives one long scripted scenario end to end. Splitting a scenario
+// across helpers hides the ordering it exists to pin down.
+#![allow(clippy::too_many_lines, reason = "scripted release gates")]
 
 use std::path::Path;
 use std::sync::Arc;
@@ -631,8 +642,9 @@ async fn detach_attached(mut client: AttachedClient) {
 #[test]
 fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
     run_local(async {
-        let _capture =
-            phux_server_testkit::tracing_capture::TracingCapture::install("release-bootstrap-milestones");
+        let _capture = phux_server_testkit::tracing_capture::TracingCapture::install(
+            "release-bootstrap-milestones",
+        );
         let tmp = TempDir::new().expect("tempdir");
         let socket = tmp.path().join("release-load.sock");
         let warm = tmp.path().join("warm.ready");

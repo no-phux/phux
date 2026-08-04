@@ -108,7 +108,8 @@ impl ServerState {
         host: &phux_protocol::ids::SatelliteHost,
         terminal: u32,
     ) -> bool {
-        self.leases.has_satellite_proxy_attach(client, host, terminal)
+        self.leases
+            .has_satellite_proxy_attach(client, host, terminal)
     }
 
     /// Record that `client` now proxies `terminal` on `host`.

@@ -612,7 +612,30 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     }
 }
 
-/// Prepare and validate the parent directory of `socket_path` with mode `0o700`.
+/// Prepare and validate the parent directory of `socket_path`.
+///
+/// The threat this closes is another user planting or swapping the socket
+/// before we bind. What actually prevents that is the parent not being
+/// writable by anyone else — either because we own it and it is `0o700`, or
+/// because it is a sticky world-writable directory, where the sticky bit stops
+/// non-owners from unlinking our entry. `/tmp` is the second kind, and it is a
+/// perfectly ordinary place to put a socket.
+///
+/// So the rule depends on who made the directory:
+///
+///   * **We create it** (the usual case — phux's own runtime dir): create it
+///     `0o700`, then verify owner and mode. We own it, so we may be strict.
+///   * **It already exists** (`--socket` pointing somewhere established):
+///     validate, never mutate. An earlier version unconditionally
+///     `chmod 0o700`-ed this directory, which for `--socket /tmp/x.sock` meant
+///     chmod-ing `/tmp` — and it rejected any parent it did not own, which is
+///     every shared temp dir on every machine (`/tmp` is root-owned on Linux
+///     and a symlink to `/private/tmp` on macOS). Both made a legitimate
+///     invocation fail to bind at all.
+///
+/// Symlinks are resolved rather than refused, for the same reason: `/tmp` is a
+/// symlink on macOS. What matters is the permissions of the directory the path
+/// actually lands on, so the checks run against the canonical target.
 pub(crate) fn prepare_socket_dir(socket_path: &Path) -> Result<(), ServerError> {
     let Some(parent) = socket_path.parent() else {
         return Ok(());
@@ -624,26 +647,47 @@ pub(crate) fn prepare_socket_dir(socket_path: &Path) -> Result<(), ServerError> 
         path: parent.to_path_buf(),
         source,
     };
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true).mode(0o700);
-    builder.create(parent).map_err(fail)?;
-    let metadata = std::fs::symlink_metadata(parent).map_err(fail)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    let expected_uid = rustix::process::geteuid().as_raw();
+    let pre_existing = parent.exists();
+
+    if !pre_existing {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder.create(parent).map_err(fail)?;
+    }
+
+    // Follow symlinks deliberately: the permissions that matter belong to the
+    // directory the path resolves to, not to a link pointing at it.
+    let real = std::fs::canonicalize(parent).map_err(fail)?;
+    let metadata = std::fs::metadata(&real).map_err(fail)?;
+    if !metadata.is_dir() {
         return Err(fail(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "socket parent must be a real directory, not a symlink",
+            "socket parent is not a directory",
         )));
     }
-    let expected_uid = rustix::process::geteuid().as_raw();
-    if metadata.uid() != expected_uid {
-        return Err(fail(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "socket parent is owned by another user",
-        )));
+
+    let mode = metadata.mode() & 0o7777;
+    let sticky = mode & 0o1000 != 0;
+    let others_may_write = mode & 0o022 != 0;
+
+    if pre_existing {
+        // Validate only. Ours-and-private, or sticky (the /tmp arrangement),
+        // are both safe; anything else lets another user swap the socket.
+        let ours_and_private = metadata.uid() == expected_uid && !others_may_write;
+        if !ours_and_private && !sticky {
+            return Err(fail(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "socket parent is writable by other users and not sticky; \
+                 point --socket at a directory you own, or at a sticky temp dir",
+            )));
+        }
+        return Ok(());
     }
-    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
-    let secured = std::fs::symlink_metadata(parent).map_err(fail)?;
-    if secured.uid() != expected_uid || secured.mode() & 0o777 != 0o700 {
+
+    // We just created it, so it must be exactly what we asked for. A mismatch
+    // means someone raced us between create and stat.
+    if metadata.uid() != expected_uid || mode & 0o777 != 0o700 {
         return Err(fail(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "socket parent ownership or permissions changed during setup",
@@ -678,36 +722,92 @@ mod socket_security_tests {
     use super::*;
 
     #[test]
-    fn existing_permissive_socket_directory_is_restricted() {
+    fn a_directory_we_create_is_private() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let parent = root.path().join("runtime");
+
+        prepare_socket_dir(&parent.join("phux.sock")).expect("create runtime dir");
+
+        let mode = std::fs::symlink_metadata(&parent)
+            .expect("created metadata")
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "a directory phux creates is its own and 0700");
+    }
+
+    #[test]
+    fn existing_world_writable_socket_directory_is_refused_not_seized() {
+        // The earlier contract chmod-ed this directory to 0700. For
+        // `--socket /tmp/x.sock` that meant chmod-ing /tmp. Refusing is both
+        // safer and honest: phux does not own a directory it did not create.
         let root = tempfile::tempdir().expect("tempdir");
         let parent = root.path().join("runtime");
         std::fs::create_dir(&parent).expect("runtime dir");
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777))
             .expect("permissive mode");
 
-        prepare_socket_dir(&parent.join("phux.sock")).expect("secure existing directory");
+        assert!(matches!(
+            prepare_socket_dir(&parent.join("phux.sock")),
+            Err(ServerError::PrepareDir { source, .. })
+                if source.kind() == io::ErrorKind::PermissionDenied
+        ));
 
-        let mode = std::fs::symlink_metadata(parent)
-            .expect("secured metadata")
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o700);
+        let mode = std::fs::symlink_metadata(&parent).expect("metadata").mode() & 0o777;
+        assert_eq!(mode, 0o777, "a refused directory must be left untouched");
     }
 
     #[test]
-    fn socket_parent_symlink_is_rejected() {
+    fn existing_sticky_world_writable_directory_is_accepted() {
+        // This is /tmp. The sticky bit is what makes it safe: other users can
+        // create entries but cannot unlink ours, so nobody can swap the socket.
+        let root = tempfile::tempdir().expect("tempdir");
+        let parent = root.path().join("shared-tmp");
+        std::fs::create_dir(&parent).expect("shared dir");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o1777))
+            .expect("sticky permissive mode");
+
+        prepare_socket_dir(&parent.join("phux.sock")).expect("sticky temp dir is usable");
+    }
+
+    #[test]
+    fn socket_parent_symlink_resolves_to_its_target() {
+        // /tmp is a symlink to /private/tmp on macOS, so refusing symlinks
+        // outright made every `--socket /tmp/...` fail to bind there. What
+        // matters is the permissions of the directory it resolves to.
         use std::os::unix::fs::symlink;
 
         let root = tempfile::tempdir().expect("tempdir");
         let target = root.path().join("target");
         std::fs::create_dir(&target).expect("target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700))
+            .expect("private target");
         let parent = root.path().join("runtime-link");
         symlink(&target, &parent).expect("symlink");
-        assert!(matches!(
-            prepare_socket_dir(&parent.join("phux.sock")),
-            Err(ServerError::PrepareDir { source, .. })
-                if source.kind() == io::ErrorKind::InvalidInput
-        ));
+
+        prepare_socket_dir(&parent.join("phux.sock"))
+            .expect("a symlink to a directory we own is fine");
+    }
+
+    #[test]
+    fn socket_parent_symlink_to_an_unsafe_directory_is_still_refused() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).expect("target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o777))
+            .expect("permissive target");
+        let parent = root.path().join("runtime-link");
+        symlink(&target, &parent).expect("symlink");
+
+        assert!(
+            matches!(
+                prepare_socket_dir(&parent.join("phux.sock")),
+                Err(ServerError::PrepareDir { source, .. })
+                    if source.kind() == io::ErrorKind::PermissionDenied
+            ),
+            "following the link must not lose the permission check"
+        );
     }
 }
 

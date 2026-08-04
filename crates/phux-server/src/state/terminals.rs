@@ -121,9 +121,10 @@ impl ServerState {
     /// Install a new `ATTACH_TERMINAL` pump generation for `(client,
     /// terminal)`, displacing any live one.
     ///
-    /// See [`super::terminal_table::TerminalTable::replace_pump`] for what the
-    /// returned tuple carries and why a second attach replaces rather than
-    /// being refused.
+    /// See `TerminalTable::replace_pump` for what the returned tuple carries
+    /// and why a second attach replaces rather than being refused. (Not a
+    /// rustdoc link: that method is `pub(super)`, and rustdoc does not document
+    /// private items.)
     pub fn replace_attach_terminal_pump(
         &mut self,
         client: ClientId,

@@ -3036,6 +3036,10 @@ impl TerminalActor {
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one cooperative step of the bootstrap state machine: each arm advances the same `pending` value to the next state and they share the buffer-growth retry, so splitting on an arm boundary would thread that scratch buffer and the pending record through a second signature for no reader benefit"
+    )]
     fn step_native_bootstrap(&mut self) {
         let Some(mut pending) = self.pending_native_bootstrap.take() else {
             return;
@@ -3209,6 +3213,10 @@ impl TerminalActor {
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the READY publication fence: install the generation, charge its reservation, notify every waiting owner, and unwind all of it on any failure. The unwind must see every resource the happy path acquired, so the two halves cannot be separated without duplicating the cleanup"
+    )]
     fn finish_native_bootstrap(
         &mut self,
         pending: PendingNativeBootstrap,
@@ -3475,6 +3483,10 @@ impl TerminalActor {
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one HISTORY request end to end: validate the cursor, size the caller buffer against the generation bounds, pull or serve-from-cache, and answer. Every early return needs the permit released and the request answered exactly once, which is what keeps this a single function"
+    )]
     fn handle_native_history(&mut self, req: NativeHistoryRequest) {
         let NativeHistoryRequest {
             permit,
@@ -3796,7 +3808,7 @@ impl TerminalActor {
         }
     }
 
-    fn native_bootstrap_pending(&self) -> bool {
+    const fn native_bootstrap_pending(&self) -> bool {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         {
             self.pending_native_bootstrap.is_some()

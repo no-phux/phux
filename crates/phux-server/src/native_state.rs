@@ -422,6 +422,10 @@ pub(crate) struct NativeManagerInitFailure {
 /// particular owner's request, so the first owner to reach the frontier cannot
 /// choose a different native page partition for later owners.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "every field IS a maximum; dropping the prefix would leave `rows`/`records` reading as counts rather than caps"
+)]
 pub(crate) struct NativeGenerationBounds {
     pub(crate) max_record_bytes: usize,
     pub(crate) max_rows: usize,
@@ -541,11 +545,6 @@ impl NativeRecordTable {
 
     const fn len(&self) -> usize {
         self.len
-    }
-
-    #[cfg(test)]
-    const fn is_empty(&self) -> bool {
-        self.len == 0
     }
 
     fn push(&mut self, record: CachedNativeHistoryRecord) {
@@ -1496,6 +1495,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "walks one generation through its whole life -- probe, cache, advance to FINISH, then release both owners -- and the assertions only mean anything in that order"
+    )]
     fn shared_generation_caches_frontier_once_and_drops_after_last_owner() {
         let limits = BootstrapLimits::new(phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES, 64 * 1024)
             .expect("test limits");
@@ -1525,14 +1528,19 @@ mod tests {
             required_rows, 0,
             "the zero-row HISTORY_BEGIN requirement must come from the native frontier"
         );
-        assert!(
+        assert_eq!(
             manager
                 .generations
                 .get(&cursor)
                 .expect("installed generation")
                 .records
-                .is_empty(),
-            "short-buffer retry must not advance the native frontier"
+                .len(),
+            1,
+            "a short-buffer probe still caches the record it measured: reporting \
+             `required_bytes` means the record was already pulled off the \
+             continuation, and dropping it there would lose it outright. The \
+             retry below is served from this cache — which is what makes the \
+             pointer-equality assertion further down meaningful."
         );
 
         let first = manager

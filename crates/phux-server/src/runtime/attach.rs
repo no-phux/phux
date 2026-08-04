@@ -1754,7 +1754,7 @@ pub(crate) async fn handle_spawn_terminal(
                     return;
                 }
             }
-            let publication = match activate_native_publication(
+            let Ok(publication) = activate_native_publication(
                 &handle,
                 client_id.0,
                 wire_terminal_id.clone(),
@@ -1763,14 +1763,11 @@ pub(crate) async fn handle_spawn_terminal(
                 cursor,
             )
             .await
-            {
-                Ok(publication) => publication,
-                Err(()) => {
-                    state.with_mut(|s| {
-                        s.reap_terminal(core_terminal_id);
-                    });
-                    return;
-                }
+            else {
+                state.with_mut(|s| {
+                    s.reap_terminal(core_terminal_id);
+                });
+                return;
             };
             let _ = bootstrap_gate_tx.send(OutputPumpStart {
                 published_cut: cut,
