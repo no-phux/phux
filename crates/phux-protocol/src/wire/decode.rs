@@ -1021,6 +1021,8 @@ impl<'a> Decoder<'a> {
                 let mut terminal_id: Option<TerminalId> = None;
                 let mut cols = 0u16;
                 let mut rows = 0u16;
+                let mut pixel_width = None;
+                let mut pixel_height = None;
                 while let Some((id, value)) = self.read_field()? {
                     match id {
                         field::terminal_resize::TERMINAL_ID => {
@@ -1032,6 +1034,12 @@ impl<'a> Decoder<'a> {
                         field::terminal_resize::ROWS => {
                             rows = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
                         }
+                        field::terminal_resize::PIXEL_WIDTH => {
+                            pixel_width = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                        }
+                        field::terminal_resize::PIXEL_HEIGHT => {
+                            pixel_height = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                        }
                         _ => {}
                     }
                 }
@@ -1039,6 +1047,8 @@ impl<'a> Decoder<'a> {
                     terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
                     cols,
                     rows,
+                    pixel_width,
+                    pixel_height,
                 }
             }
             TYPE_COMMAND => {

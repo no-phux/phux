@@ -122,6 +122,8 @@ fn pty_output_reaches_broadcast_and_terminal() {
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
+                state_sync_consumer: None,
+                include_raw_output: false,
                 reply: tx,
             })
             .await
@@ -129,7 +131,9 @@ fn pty_output_reaches_broadcast_and_terminal() {
         let snap = timeout(PUMP_DEADLINE, rx)
             .await
             .expect("snapshot timeout")
-            .expect("snapshot reply");
+            .expect("snapshot reply")
+            .expect("snapshot synthesis")
+            .snapshot;
         let snap_body = String::from_utf8_lossy(&snap.bytes);
         assert!(
             snap_body.contains("hello") && snap_body.contains("world"),
@@ -142,6 +146,75 @@ fn pty_output_reaches_broadcast_and_terminal() {
         timeout(PUMP_DEADLINE, join)
             .await
             .expect("actor did not exit within timeout")
+            .expect("actor task panicked");
+    }));
+}
+
+/// A raw receiver returned with a snapshot begins strictly after that
+/// snapshot's actor-owned cut: bytes already represented by the snapshot are
+/// not replayed through the live lane.
+#[test]
+fn snapshot_raw_receiver_has_an_exact_output_cut() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("rt");
+    let local = tokio::task::LocalSet::new();
+    rt.block_on(local.run_until(async {
+        let bundle = TerminalActor::new_with_command(CommandBuilder::new("/bin/cat"), 80, 24)
+            .expect("spawn cat");
+        let handle = bundle.handle.clone();
+        let token = bundle.token;
+        let mut before_cut = handle.output.subscribe();
+        let join = tokio::task::spawn_local(bundle.actor.run());
+
+        let key = |text: &str, key| KeyEvent {
+            action: KeyAction::Press,
+            key,
+            mods: ModSet::empty(),
+            consumed_mods: ModSet::empty(),
+            composing: false,
+            text: (!text.is_empty()).then(|| text.to_owned()),
+            unshifted_codepoint: text.chars().next().map(u32::from),
+        };
+        handle
+            .input
+            .send(TerminalInput::Key(key("a", PhysicalKey::A)))
+            .await
+            .expect("send pre-cut key");
+        let _ = collect_until(&mut before_cut, b"a", PUMP_DEADLINE).await;
+
+        let (reply, response) = oneshot::channel();
+        handle
+            .snapshot
+            .send(SnapshotRequest {
+                scrollback: None,
+                state_sync_consumer: None,
+                include_raw_output: true,
+                reply,
+            })
+            .await
+            .expect("request cut");
+        let response = response
+            .await
+            .expect("snapshot reply")
+            .expect("snapshot synthesis");
+        assert!(response.snapshot.bytes.contains(&b'a'));
+        let mut after_cut = response.raw_output.expect("raw receiver");
+
+        handle
+            .input
+            .send(TerminalInput::Key(key("z", PhysicalKey::Z)))
+            .await
+            .expect("send post-cut key");
+        let live = collect_until(&mut after_cut, b"z", PUMP_DEADLINE).await;
+        assert!(live.contains(&b'z'));
+        assert!(!live.contains(&b'a'), "pre-cut byte was replayed: {live:?}");
+
+        token.cancel();
+        timeout(PUMP_DEADLINE, join)
+            .await
+            .expect("actor did not exit")
             .expect("actor task panicked");
     }));
 }
@@ -277,6 +350,8 @@ fn snapshot_after_pty_output_round_trips_through_fresh_terminal() {
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
+                state_sync_consumer: None,
+                include_raw_output: false,
                 reply: tx,
             })
             .await
@@ -284,7 +359,9 @@ fn snapshot_after_pty_output_round_trips_through_fresh_terminal() {
         let snap = timeout(PUMP_DEADLINE, rx)
             .await
             .expect("snapshot timeout")
-            .expect("snapshot reply");
+            .expect("snapshot reply")
+            .expect("snapshot synthesis")
+            .snapshot;
 
         // Round-trip: write the snapshot into a fresh Terminal and
         // confirm libghostty parses it without panic. We can't easily
@@ -379,6 +456,7 @@ fn resize_path_does_not_panic_against_pty() {
                 cell_px: Some((8, 16)),
                 resync_clients: true,
                 resync_only: false,
+                reply: None,
             })
             .await
             .expect("resize");

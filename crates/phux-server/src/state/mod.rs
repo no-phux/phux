@@ -365,6 +365,7 @@ mod tests {
             output: output_tx,
             resize: resize_tx,
             consumer_attach: consumer_attach_tx,
+            consumer_ready: mpsc::channel(8).0,
             consumer_detach: consumer_detach_tx,
             consumer_ack: consumer_ack_tx,
             subscribe_to_events: subscribe_to_events_tx,
@@ -563,6 +564,55 @@ mod tests {
         s.attach_default_caps(cid, "default", mk_tx()).unwrap();
         let err = s.attach_default_caps(cid, "default", mk_tx()).unwrap_err();
         assert_eq!(err, AttachError::AlreadyAttached(cid));
+    }
+
+    #[test]
+    fn terminal_consumer_commit_is_subscription_guarded_and_replaces_emitter() {
+        let mut s = ServerState::new();
+        let (_sid, _wid, pane) = s.seed_session("default");
+        let client = s.new_client_id();
+        let first_sequence = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        assert!(
+            s.commit_terminal_consumer(client, pane, 10, first_sequence.clone())
+                .is_none(),
+            "a detach during actor registration must prevent a late commit",
+        );
+
+        s.subscribe_terminal(client, pane);
+        let (first_token, sequence) = s
+            .commit_terminal_consumer(client, pane, 10, first_sequence)
+            .expect("subscribed consumer commits");
+        sequence.store(7, std::sync::atomic::Ordering::Relaxed);
+        let replacement_sequence = s.attach_terminal_pump_sequence(client, pane);
+        assert!(std::sync::Arc::ptr_eq(&sequence, &replacement_sequence));
+
+        let (replacement_token, _) = s
+            .commit_terminal_consumer(client, pane, 11, replacement_sequence)
+            .expect("replacement commits");
+        assert!(
+            first_token.is_cancelled(),
+            "replacement cancels old emitter"
+        );
+        assert!(
+            !s.rollback_terminal_consumer(client, pane, 10),
+            "stale rollback must not remove the replacement",
+        );
+        assert!(s.rollback_terminal_consumer(client, pane, 11));
+        assert!(replacement_token.is_cancelled());
+        assert!(!s.subscribers_for_terminal(pane).contains(&client));
+    }
+
+    #[test]
+    fn late_resize_acknowledgement_cannot_overwrite_newer_dimensions() {
+        let mut s = ServerState::new();
+        let (_sid, _wid, pane) = s.seed_session("default");
+        let older = crate::terminal_actor::ResizeApplied::next(90, 30);
+        let newer = crate::terminal_actor::ResizeApplied::next(120, 40);
+
+        assert!(s.record_applied_terminal_resize(pane, newer));
+        assert!(!s.record_applied_terminal_resize(pane, older));
+        assert_eq!(s.registry().terminal(pane).expect("pane").dims, (120, 40));
     }
 
     #[test]

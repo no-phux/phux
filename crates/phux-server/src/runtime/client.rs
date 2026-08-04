@@ -479,11 +479,12 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     state.with_mut(|s| s.remove_peer_identity(client_id));
     let wire_client_id =
         phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
-    let handles = state.with(|s| s.subscribed_terminal_handles(client_id));
-    for handle in handles {
+    let handles = state.with(|s| s.subscribed_terminal_consumer_handles(client_id));
+    for (handle, generation) in handles {
         let (reply_tx, _reply_rx) = oneshot::channel();
         match handle.consumer_detach.try_send(ConsumerDetachRequest {
             client_id: wire_client_id,
+            generation,
             reply: reply_tx,
         }) {
             Ok(()) => {}
@@ -1030,7 +1031,7 @@ where
                     rows = viewport.rows,
                     "VIEWPORT_RESIZE"
                 );
-                handle_viewport_resize(&state, client_id, &viewport);
+                handle_viewport_resize(&state, client_id, &viewport).await;
             }
             FrameKind::InputKey { terminal_id, event } => {
                 route_client_input(
@@ -1168,8 +1169,19 @@ where
                 terminal_id,
                 cols,
                 rows,
+                pixel_width,
+                pixel_height,
             } => {
-                handle_terminal_resize(&state, client_id, &terminal_id, cols, rows);
+                handle_terminal_resize(
+                    &state,
+                    client_id,
+                    &terminal_id,
+                    cols,
+                    rows,
+                    pixel_width,
+                    pixel_height,
+                )
+                .await;
             }
             FrameKind::Command {
                 request_id,
@@ -1182,6 +1194,7 @@ where
                     command,
                     &out_tx,
                     input_lane.as_ref(),
+                    negotiated_client_caps,
                 )
                 .await;
             }

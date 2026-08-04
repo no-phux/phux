@@ -250,8 +250,8 @@ impl ServerState {
         // detach; this clears both ledgers regardless of those paths
         // running.
         self.leases.release_all_for(client_id);
-        // Cancel every ATTACH_TERMINAL output pump this client owns
-        // (phux-v45.7) so no task keeps streaming into a dead mailbox, then
+        // Cancel every terminal output emitter this client owns so no task
+        // keeps streaming into a dead mailbox, then
         // drop it from every subscriber list (empty lists are GC'd so the
         // map doesn't grow unboundedly across attach/detach churn).
         self.terminal_table.cancel_pumps_for_client(client_id);

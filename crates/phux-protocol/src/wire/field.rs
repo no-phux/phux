@@ -305,6 +305,10 @@ pub mod terminal_resize {
     pub const COLS: u32 = 2;
     /// New row count (`u16`).
     pub const ROWS: u32 = 3;
+    /// Optional viewport pixel width (`u16`).
+    pub const PIXEL_WIDTH: u32 = 4;
+    /// Optional viewport pixel height (`u16`).
+    pub const PIXEL_HEIGHT: u32 = 5;
 }
 
 /// `COMMAND` body fields (`docs/spec/L1.md` §5).

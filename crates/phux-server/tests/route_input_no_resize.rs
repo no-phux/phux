@@ -200,6 +200,8 @@ fn route_input_delivers_keys_without_resizing_the_pane() {
                 terminal_id: pane.clone(),
                 cols: 120,
                 rows: 40,
+                pixel_width: None,
+                pixel_height: None,
             },
         )
         .await;

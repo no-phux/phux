@@ -3,12 +3,28 @@
 use super::tick::RttEstimator;
 use crate::grid::ConsumerReference;
 use crate::state::Outbound;
+use bytes::Bytes;
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
     render::{CursorVisualStyle, Snapshot},
     terminal::Mode,
 };
 use tokio::sync::mpsc;
+
+#[derive(Debug, Clone)]
+/// Full-grid replacement waiting for ordered delivery to one state-sync client.
+pub struct PendingStateSnapshot {
+    /// Authoritative cell width.
+    pub cols: u16,
+    /// Authoritative cell height.
+    pub rows: u16,
+    /// Synthesized VT replay for the replacement grid.
+    pub bytes: Bytes,
+    /// Retained history replay that precedes `bytes` on a replacement.
+    pub scrollback: Vec<u8>,
+    /// Exact diff reference represented by `bytes`.
+    pub reference: ConsumerReference,
+}
 
 /// Snapshot of the live `Terminal`'s cursor + DEC mode bits captured at
 /// the moment a consumer is brought up-to-date.
@@ -142,6 +158,9 @@ pub const MAX_EMIT_INSTANTS: usize = 256;
               obscure the per-flag lifecycle each drives"
 )]
 pub struct ConsumerSyncState {
+    /// Fences delayed lifecycle messages from an older registration using the
+    /// same client id.
+    pub registration_generation: u64,
     /// Per-consumer reference grid for the lazy state-sync diff
     /// (phux-ia4). Holds the last-synced rendered body of every viewport
     /// row plus the last-synced cursor/mode state. The tick driver diffs
@@ -158,25 +177,35 @@ pub struct ConsumerSyncState {
     /// correct diff each tick regardless of attach/ack divergence. See
     /// [`crate::grid::SnapshotSynthesizer::synthesize_against_reference`].
     pub reference: ConsumerReference,
+    /// False until the initial snapshot is queued, and while a resize
+    /// snapshot is being debounced.
+    pub emission_ready: bool,
+    /// True once `reference` was primed at the exact initial snapshot state.
+    pub snapshot_primed: bool,
+    /// Authoritative geometry snapshot queued by a resize. The actor emits it
+    /// through this consumer's ordered mailbox before any later delta.
+    pub pending_snapshot: Option<PendingStateSnapshot>,
     /// Per-consumer outbound mailbox the tick driver pushes
     /// `TERMINAL_OUTPUT` frames into. Cloned from the
     /// [`crate::state::AttachedClient`]'s `tx` at ATTACH time.
     pub outbound: mpsc::Sender<Outbound>,
+    /// Negotiated rendering capabilities used to downsample snapshots.
+    pub client_caps: phux_protocol::caps::ClientCapabilities,
+    /// Per-consumer retained-history policy for replacement snapshots.
+    pub scrollback: Option<u32>,
     /// Wire-level terminal id for the `TerminalOutput` frame
     /// (`docs/spec/L1.md` §2.1). Carried per-consumer because the runtime owns
     /// the mapping `(TerminalActor, WireTerminalId)` and may differ
     /// across consumers in future tier topologies.
     pub wire_terminal_id: u32,
-    /// Per-consumer monotonic sequence id for `TERMINAL_OUTPUT`
-    /// (`docs/spec/L1.md` §2.1, §12). Starts at `1` and increments on each
-    /// emitted frame. Per-consumer (not shared) so each consumer can
-    /// `FRAME_ACK` against its own stream — this matches the existing
-    /// per-pump scheme in `runtime.rs::handle_attach`.
-    pub next_seq: u64,
+    /// Last per-consumer sequence allocated for `TERMINAL_OUTPUT`
+    /// (`docs/spec/L1.md` §2.1, §12). Shared with any raw pump that can replace
+    /// this actor emitter so mode changes preserve one monotonic stream.
+    pub sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// `FrameId` of the most recent `TERMINAL_OUTPUT` this consumer has
-    /// `ACK`ed. `0` means "no acks yet — the next emission is the only
-    /// thing this consumer has seen" (matches `FrameId::ZERO`'s "empty
-    /// initial frame" semantics).
+    /// `ACK`ed. `0` means a fresh consumer has no acks; on emitter replacement
+    /// this starts at the snapshot baseline so delayed ACKs from the replaced
+    /// stream cannot enter the new registration's accounting.
     pub last_acked_seq: u64,
     /// Cursor + DEC mode bits captured at the last sync point. Used by
     /// the tick driver to decide whether to re-emit cursor placement /
@@ -261,7 +290,10 @@ impl std::fmt::Debug for ConsumerSyncState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsumerSyncState")
             .field("wire_terminal_id", &self.wire_terminal_id)
-            .field("next_seq", &self.next_seq)
+            .field(
+                "sequence",
+                &self.sequence.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .field("last_acked_seq", &self.last_acked_seq)
             .field("last_cursor_mode", &self.last_cursor_mode)
             .field("wants_state_sync", &self.wants_state_sync)

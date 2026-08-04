@@ -229,6 +229,7 @@ jobs:
           timed clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
           timed doc    env RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --workspace --all-features
           timed deny   cargo deny check
+          timed ffi    just client-ffi-check
           EOF
       # Compile-free guard rails. None of these build anything (bash, python3,
       # jq — all from the devshell), so they run in seconds and stay OUTSIDE

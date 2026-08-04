@@ -9,6 +9,53 @@ use phux_protocol::ClientId;
 use phux_protocol::wire::frame::{ControlAction, TerminalEventType, TerminalSignal};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+static NEXT_CONSUMER_REGISTRATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+static NEXT_RESIZE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Actor-ordered authoritative result of one grid resize.
+#[derive(Debug, Clone, Copy)]
+pub struct ResizeApplied {
+    /// Process-wide monotonic ordering fence.
+    pub revision: u64,
+    /// Applied width after clamping.
+    pub cols: u16,
+    /// Applied height after clamping.
+    pub rows: u16,
+}
+
+impl ResizeApplied {
+    pub(crate) fn next(cols: u16, rows: u16) -> Self {
+        Self {
+            revision: NEXT_RESIZE_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            cols,
+            rows,
+        }
+    }
+}
+
+/// One actor registration of a client. The generation fences delayed
+/// snapshot, ready, and detach messages from a replaced registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsumerRegistration {
+    /// Client identity shared by all of its pane subscriptions.
+    pub client_id: ClientId,
+    /// Process-local unique registration generation.
+    pub generation: u64,
+}
+
+impl ConsumerRegistration {
+    /// Mint a registration generation for one client/pane attachment.
+    #[must_use]
+    pub fn new(client_id: ClientId) -> Self {
+        Self {
+            client_id,
+            generation: NEXT_CONSUMER_REGISTRATION
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
 /// A supervisory control request delivered to a [`super::TerminalActor`] over
 /// its `control` mailbox (ADR-0033, "take the wheel + kill").
 ///
@@ -76,7 +123,11 @@ pub struct ConsumerAttachRequest {
     /// Identifier the actor will key the per-consumer state by. Must
     /// match the `ClientId` the caller uses in subsequent
     /// `ConsumerDetachRequest`s and `FRAME_ACK` routing.
-    pub client_id: ClientId,
+    pub registration: ConsumerRegistration,
+    /// Shared sequence counter for every emitter serving this consumer/pane.
+    /// Raw pumps and the actor both allocate from it so emitter replacement
+    /// cannot reuse a sequence observed by the client.
+    pub sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Per-consumer outbound mailbox. The actor stores a clone in the
     /// per-consumer [`super::ConsumerSyncState`] and uses it on every tick
     /// (phux-q0e.3) to push a `TerminalOutput` frame carrying the
@@ -93,6 +144,12 @@ pub struct ConsumerAttachRequest {
     /// suppresses its broadcast pump for it; when `false` the consumer
     /// stays on the raw PTY broadcast (the human-TUI default).
     pub wants_state_sync: bool,
+    /// Full negotiated caps used when an actor-owned resize snapshot must be
+    /// downsampled for this consumer.
+    pub client_caps: phux_protocol::caps::ClientCapabilities,
+    /// Retained history requested for authoritative replacement snapshots.
+    /// `None` means viewport-only; `Some(0)` means all retained rows.
+    pub scrollback: Option<u32>,
     /// Whether this consumer is on a lossy/forwarded leg and should use the
     /// advance-on-ack loss-tolerant emission model (phux-v45.8, ADR-0042).
     ///
@@ -154,9 +211,22 @@ pub enum ConsumerAttachError {
 pub struct ConsumerDetachRequest {
     /// Identifier whose [`super::ConsumerSyncState`] entry to remove.
     pub client_id: ClientId,
+    /// Exact registration to remove.
+    pub generation: u64,
     /// Fired once the entry has been removed (or was already absent).
     /// The caller can use this to sequence later operations against
     /// the actor; dropping the receiver is benign.
+    pub reply: oneshot::Sender<()>,
+}
+
+/// Finalizes a staged replacement after its snapshot is queued.
+#[derive(Debug)]
+pub struct ConsumerReadyRequest {
+    /// Exact registration whose predecessor may now be discarded.
+    pub registration: ConsumerRegistration,
+    /// Fired after the actor has processed finalization. This orders any
+    /// subsequent detach against readiness even though they use separate
+    /// mailboxes.
     pub reply: oneshot::Sender<()>,
 }
 
@@ -278,10 +348,26 @@ pub struct SnapshotRequest {
     /// the most-recent `n` rows. The actor primes
     /// [`SnapshotBytes::scrollback`] accordingly.
     pub scrollback: Option<u32>,
+    /// State-sync consumer whose reference must be primed atomically with this
+    /// snapshot. `None` for raw and administrative snapshots.
+    pub state_sync_consumer: Option<ConsumerRegistration>,
+    /// Capture a raw-output receiver at the same actor turn as the snapshot.
+    /// This creates an exact cut: the snapshot contains all earlier PTY bytes,
+    /// while the receiver can observe only bytes applied afterward.
+    pub include_raw_output: bool,
     /// Channel the actor uses to ship the synthesized snapshot back.
     /// Dropping the sender on the receiver side is benign — the actor
     /// just discards the reply.
-    pub reply: oneshot::Sender<SnapshotBytes>,
+    pub reply: oneshot::Sender<Result<SnapshotResponse, String>>,
+}
+
+/// Authoritative snapshot and, for raw consumers, its atomically cut live lane.
+#[derive(Debug)]
+pub struct SnapshotResponse {
+    /// Synthesized terminal state at the actor cut.
+    pub snapshot: SnapshotBytes,
+    /// Receiver subscribed only after the snapshot state was synthesized.
+    pub raw_output: Option<broadcast::Receiver<PaneOutput>>,
 }
 
 /// Install the effective default palette reported by an interactive client.
@@ -403,7 +489,7 @@ pub struct PwdRequest {
 /// and `false` for the ATTACH-time resize — the attach handshake already
 /// sends an authoritative `TERMINAL_SNAPSHOT`, and a resync broadcast
 /// there would race ahead of it and reorder the handshake.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct ResizeRequest {
     /// New grid width in cells.
     pub cols: u16,
@@ -428,6 +514,9 @@ pub struct ResizeRequest {
     /// past the broadcast buffer reconverges — without disturbing the grid
     /// geometry. `cols`/`rows`/`cell_px` are ignored when this is set.
     pub resync_only: bool,
+    /// Optional acknowledgement carrying the dimensions actually applied after
+    /// the actor's one-cell clamp. Administrative resync requests may omit it.
+    pub reply: Option<oneshot::Sender<ResizeApplied>>,
 }
 
 /// Cross-task handle to a [`super::TerminalActor`].
@@ -482,6 +571,8 @@ pub struct TerminalHandle {
     /// (phux-q0e.3 tick driver, phux-q0e.4 `FRAME_ACK`) reads from the
     /// resulting per-consumer state map.
     pub consumer_attach: mpsc::Sender<ConsumerAttachRequest>,
+    /// Activates state-sync emission after the initial snapshot is queued.
+    pub consumer_ready: mpsc::Sender<ConsumerReadyRequest>,
     /// Counterpart to [`Self::consumer_attach`]. The runtime sends
     /// this on DETACH (and on the EOF cleanup path) to free the
     /// per-consumer `RenderState`. Silent no-op if the consumer was

@@ -40,5 +40,6 @@ pub use state::{
     TerminalInput,
 };
 pub use terminal_actor::{
-    SnapshotRequest, TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle,
+    SnapshotRequest, SnapshotResponse, TerminalActor, TerminalActorBundle, TerminalActorError,
+    TerminalHandle,
 };

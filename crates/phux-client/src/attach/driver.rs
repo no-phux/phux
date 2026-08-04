@@ -2909,6 +2909,8 @@ async fn main_loop<W: super::RenderSink>(
                                     terminal_id: terminal_id.clone(),
                                     cols: new_rect.w,
                                     rows: new_rect.h,
+                                    pixel_width: None,
+                                    pixel_height: None,
                                 })
                                 .await?;
                             }
@@ -3466,6 +3468,8 @@ async fn main_loop<W: super::RenderSink>(
                             terminal_id: terminal_id.clone(),
                             cols: new_rect.w,
                             rows: new_rect.h,
+                            pixel_width: None,
+                            pixel_height: None,
                         })
                         .await?;
                     }
@@ -4278,6 +4282,8 @@ async fn emit_view_reflow(
             terminal_id: terminal_id.clone(),
             cols: new_rect.w,
             rows: new_rect.h,
+            pixel_width: None,
+            pixel_height: None,
         })
         .await?;
     }

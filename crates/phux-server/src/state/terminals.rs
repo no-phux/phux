@@ -8,6 +8,26 @@ use super::{ClientId, ServerState};
 use crate::terminal_actor::TerminalHandle;
 
 impl ServerState {
+    /// Commit actor-applied dimensions only if no newer resize already won.
+    pub fn record_applied_terminal_resize(
+        &mut self,
+        terminal: TerminalId,
+        applied: crate::terminal_actor::ResizeApplied,
+    ) -> bool {
+        if !self
+            .terminal_table
+            .accept_resize_revision(terminal, applied.revision)
+        {
+            return false;
+        }
+        if let Some(pane) = self.registry_mut().terminal_mut(terminal) {
+            pane.dims = (applied.cols, applied.rows);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Subscribers (snapshot) for `pane`. Returns an empty slice if no
     /// clients are currently observing the pane.
     #[must_use]
@@ -34,8 +54,107 @@ impl ServerState {
     /// made. Gathered under-lock; the sends happen off-lock in the
     /// runtime to avoid awaiting inside `with_mut`.
     #[must_use]
-    pub fn subscribed_terminal_handles(&self, client_id: ClientId) -> Vec<TerminalHandle> {
-        self.terminal_table.subscribed_handles(client_id)
+    pub fn subscribed_terminal_consumer_handles(
+        &self,
+        client_id: ClientId,
+    ) -> Vec<(TerminalHandle, u64)> {
+        self.terminal_table.subscribed_consumer_handles(client_id)
+    }
+
+    /// Commit an actor registration and its emitter token only while the
+    /// subscription that initiated the asynchronous registration is live.
+    pub fn commit_terminal_consumer(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+        generation: u64,
+        sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Option<(
+        CancellationToken,
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+    )> {
+        let staged = self.stage_terminal_consumer(client, terminal, sequence)?;
+        self.commit_staged_terminal_consumer(
+            client,
+            terminal,
+            generation,
+            staged.0.clone(),
+            staged.1.clone(),
+        )?;
+        Some(staged)
+    }
+
+    /// Allocate a replacement emitter without disturbing the live one.
+    pub fn stage_terminal_consumer(
+        &self,
+        client: ClientId,
+        terminal: TerminalId,
+        sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Option<(
+        CancellationToken,
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+    )> {
+        if !self
+            .terminal_table
+            .subscribers_for(terminal)
+            .contains(&client)
+        {
+            return None;
+        }
+        Some((CancellationToken::new(), sequence))
+    }
+
+    /// Publish a staged registration after its authoritative snapshot exists.
+    pub fn commit_staged_terminal_consumer(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+        generation: u64,
+        token: CancellationToken,
+        sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Option<()> {
+        if !self
+            .terminal_table
+            .subscribers_for(terminal)
+            .contains(&client)
+        {
+            token.cancel();
+            return None;
+        }
+        self.terminal_table
+            .record_consumer_registration(client, terminal, generation);
+        self.terminal_table
+            .register_staged_pump(client, terminal, generation, token, sequence);
+        Some(())
+    }
+
+    /// Roll back one failed attach without disturbing a newer replacement.
+    pub fn rollback_terminal_consumer(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+        generation: u64,
+    ) -> bool {
+        if !self
+            .terminal_table
+            .remove_consumer_registration_if(client, terminal, generation)
+        {
+            return false;
+        }
+        self.terminal_table
+            .cancel_pump_if(client, terminal, generation);
+        self.terminal_table.unsubscribe(client, terminal);
+        true
+    }
+
+    /// Remove and return the actor registration for one pane subscription.
+    pub fn take_consumer_registration(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+    ) -> Option<u64> {
+        self.terminal_table
+            .take_consumer_registration(client, terminal)
     }
 
     /// Record a freshly-spawned [`TerminalHandle`] against `pane` and
@@ -117,22 +236,24 @@ impl ServerState {
         self.terminal_table.all_handles()
     }
 
-    /// Register (and return the token for) an `ATTACH_TERMINAL` output
-    /// pump for `(client, terminal)` (phux-v45.7). Returns `None` when a
-    /// pump is already live for the pair — the idempotent re-attach must
-    /// not double-stream.
-    pub fn register_attach_terminal_pump(
-        &mut self,
+    /// Shared sequence counter from the current emitter, or a fresh counter.
+    #[must_use]
+    pub fn attach_terminal_pump_sequence(
+        &self,
         client: ClientId,
         terminal: TerminalId,
-    ) -> Option<CancellationToken> {
-        self.terminal_table.register_pump(client, terminal)
+    ) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.terminal_table.pump_sequence(client, terminal)
     }
 
     /// Cancel and forget the `ATTACH_TERMINAL` pump for `(client,
     /// terminal)`, if one is live. Idempotent.
-    pub fn cancel_attach_terminal_pump(&mut self, client: ClientId, terminal: TerminalId) {
-        self.terminal_table.cancel_pump(client, terminal);
+    pub fn cancel_attach_terminal_pump(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+    ) -> Option<u64> {
+        self.terminal_table.cancel_pump(client, terminal)
     }
 
     /// Remove `client` from `terminal`'s subscriber list (the

@@ -20,8 +20,8 @@ use super::{
 };
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use crate::terminal_actor::{
-    ConsumerAttachRequest, PaneOutput, PwdRequest, ResizeRequest, SetDefaultColorsRequest,
-    SnapshotRequest,
+    ConsumerAttachRequest, ConsumerDetachRequest, ConsumerRegistration, PaneOutput, PwdRequest,
+    ResizeRequest, SetDefaultColorsRequest, SnapshotRequest,
 };
 
 /// Adapt a broadcast byte chunk to a client's capabilities for the wire:
@@ -1165,7 +1165,7 @@ pub(crate) async fn handle_attach(
     // the existing `handle_viewport_resize` convention; the off-by-one
     // for a host-side status bar is the client's concern via the
     // post-attach `TERMINAL_RESIZE` reflow path used by multi-pane).
-    apply_attach_viewport(state, client_id, &panes_to_snapshot, viewport);
+    apply_attach_viewport(state, client_id, &panes_to_snapshot, viewport).await;
 
     if out_tx
         .send(Outbound::Frame(FrameKind::Attached {
@@ -1204,13 +1204,18 @@ pub(crate) async fn handle_attach(
     // PTY-active pane races output ahead of its snapshot and the client sees
     // frame 2 = OUTPUT instead of SNAPSHOT. The pump parks on `gate_rx`; the
     // drain loop fires `gate_tx` right after sending the snapshot.
-    let mut snapshot_gates: Vec<(TerminalId, oneshot::Sender<()>)> = Vec::new();
+    let mut raw_receiver_gates: Vec<(
+        TerminalId,
+        oneshot::Sender<tokio::sync::broadcast::Receiver<PaneOutput>>,
+    )> = Vec::new();
 
     let mut pending: FuturesUnordered<_> = FuturesUnordered::new();
     for pane in panes_to_snapshot {
         let terminal_id = pane.terminal_id;
         let handle = pane.handle;
         let wire_terminal_id = pane.wire_terminal_id;
+        let registration = ConsumerRegistration::new(wire_client_id);
+        let sequence = state.with(|s| s.attach_terminal_pump_sequence(client_id, terminal_id));
         // ADR-0018 / phux-0q8: register the per-consumer state-sync entry
         // so the actor allocates and primes a per-consumer `RenderState`
         // cache for this client/pane, keyed by `wire_client_id`. We do
@@ -1223,21 +1228,22 @@ pub(crate) async fn handle_attach(
         // so, the actor's `tick_emit` is the sole emitter and we MUST
         // suppress the broadcast pump below — otherwise two independent
         // `seq` streams land on one consumer mailbox (double-paint, SPEC
-        // §12.2 monotonic-per-consumer violation). If not tick-managed
-        // (gate off, or register failed / actor gone / no local id), the
-        // broadcast pump stays the live emitter and the per-consumer
+        // §12.2 monotonic-per-consumer violation). If not tick-managed, the
+        // registered broadcast pump is the live emitter and the per-consumer
         // entry just drives the dormant `FRAME_ACK` eviction loop.
         //
         // Awaited (not fire-and-forget) so the cache is primed before the
-        // pump starts streaming deltas; a dropped reply or actor-gone is
-        // logged and we fall back to the broadcast path.
+        // pump starts streaming deltas. Bookkeeping is committed only after
+        // actor success, so a failed replacement leaves the prior stream live.
         let mut tick_managed = false;
+        let mut emitter = None;
         if let Some(wire_id) = wire_terminal_id.local_id() {
             let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
             if handle
                 .consumer_attach
                 .send(ConsumerAttachRequest {
-                    client_id: wire_client_id,
+                    registration,
+                    sequence: sequence.clone(),
                     outbound: out_tx.clone(),
                     wire_terminal_id: wire_id,
                     // phux-fseo: honor the consumer's negotiated output mode.
@@ -1248,6 +1254,8 @@ pub(crate) async fn handle_attach(
                         client_caps.output_mode,
                         phux_protocol::caps::OutputMode::StateSync
                     ),
+                    client_caps,
+                    scrollback: scrollback_req,
                     // phux-v45.8: a directly-attached consumer rides a reliable,
                     // ordered transport (UDS / SSH stdio / WebSocket / QUIC
                     // stream), so the emit-once model is correct and cheapest —
@@ -1265,6 +1273,26 @@ pub(crate) async fn handle_attach(
             {
                 match attach_reply_rx.await {
                     Ok(Ok(outcome)) => {
+                        let staged = state
+                            .with(|s| s.stage_terminal_consumer(client_id, terminal_id, sequence));
+                        let Some(staged) = staged else {
+                            release_registered_terminal_consumer(
+                                state,
+                                client_id,
+                                terminal_id,
+                                &handle,
+                                registration,
+                            )
+                            .await;
+                            super::client::detach_and_release_consumer_state(state, client_id);
+                            send_attachment_abort(
+                                out_tx,
+                                "terminal attachment was cancelled during setup",
+                            )
+                            .await;
+                            return;
+                        };
+                        emitter = Some(staged);
                         tick_managed = outcome.tick_managed;
                         trace!(
                             ?terminal_id,
@@ -1275,14 +1303,25 @@ pub(crate) async fn handle_attach(
                         warn!(
                             ?terminal_id,
                             error = %err,
-                            "per-consumer state-sync register failed; broadcast path still serves this pane",
+                            "per-consumer state-sync register failed; aborting attachment",
                         );
+                        super::client::detach_and_release_consumer_state(state, client_id);
+                        let message = format!("terminal attachment failed: {err}");
+                        send_attachment_abort(out_tx, &message).await;
+                        return;
                     }
                     Err(_) => {
                         warn!(
                             ?terminal_id,
                             "per-consumer state-sync register: actor dropped reply",
                         );
+                        super::client::detach_and_release_consumer_state(state, client_id);
+                        send_attachment_abort(
+                            out_tx,
+                            "terminal attachment actor dropped its registration reply",
+                        )
+                        .await;
+                        return;
                     }
                 }
             } else {
@@ -1290,20 +1329,15 @@ pub(crate) async fn handle_attach(
                     ?terminal_id,
                     "per-consumer state-sync register: actor mailbox closed",
                 );
+                super::client::detach_and_release_consumer_state(state, client_id);
+                send_attachment_abort(out_tx, "terminal attachment actor is unavailable").await;
+                return;
             }
         }
 
-        // phux-3uv: suppress the broadcast pump for a tick-managed
-        // consumer — the actor's `tick_emit` is the single emitter for
-        // this pane. Non-tick-managed consumers keep the broadcast pump.
-        if !tick_managed {
-            // Subscribe to live PTY output BEFORE requesting the snapshot.
-            // Subscribing first means anything the TerminalActor broadcasts
-            // after this point lands in our receiver; we then ask for a
-            // snapshot so the client has a complete starting picture, and
-            // any subsequent TerminalOutput we forward is "post-snapshot
-            // delta" rather than racing against it.
-            let mut output_rx = handle.output.subscribe();
+        // Tick-managed consumers receive resize snapshots from the actor on
+        // their ordered state-sync mailbox. Raw consumers keep this pump.
+        if !tick_managed && let Some((pump_token, pump_sequence)) = emitter.as_ref() {
             let pump_out_tx = out_tx.clone();
             let pump_wire_terminal_id = wire_terminal_id.clone();
             let pump_client_caps = client_caps;
@@ -1311,20 +1345,23 @@ pub(crate) async fn handle_attach(
             // in-band resync (a full grid snapshot on the same ordered channel)
             // so a consumer that dropped bytes reconverges.
             let pump_resize = handle.resize.clone();
-            // phux-7w1j: hold this pump's first forward until the pane's
-            // snapshot has been sent (the drain loop fires `gate_tx`).
-            let (gate_tx, gate_rx) = oneshot::channel::<()>();
-            snapshot_gates.push((terminal_id, gate_tx));
+            let pump_token = pump_token.clone();
+            let pump_sequence = pump_sequence.clone();
+            // The actor supplies a receiver created atomically after snapshot
+            // synthesis. Holding it behind this oneshot also prevents output
+            // from being forwarded before the snapshot reaches `out_tx`.
+            let (receiver_tx, receiver_rx) = oneshot::channel();
+            raw_receiver_gates.push((terminal_id, receiver_tx));
             output_pumps.spawn_local(async move {
-                // `output_rx` is already subscribed, so bytes produced while we
-                // wait are buffered by the broadcast (or surface as `Lagged`) —
-                // never lost, and never forwarded ahead of the snapshot. A
-                // dropped gate (attach aborted / snapshot failed) falls through
-                // to forwarding live output rather than going silent.
-                let _ = gate_rx.await;
-                let mut seq: u64 = 0;
+                let Ok(mut output_rx) = receiver_rx.await else {
+                    return;
+                };
                 loop {
-                    match output_rx.recv().await {
+                    let msg = tokio::select! {
+                        () = pump_token.cancelled() => break,
+                        msg = output_rx.recv() => msg,
+                    };
+                    match msg {
                         Ok(msg) => {
                             // phux-3ns5: `Live` chunks forward as
                             // TERMINAL_OUTPUT (seq'd delta); `Resync`
@@ -1333,7 +1370,9 @@ pub(crate) async fn handle_attach(
                             // and repaints from authoritative state.
                             let frame = match msg {
                                 PaneOutput::Live(bytes) => {
-                                    seq = seq.wrapping_add(1);
+                                    let seq = pump_sequence
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                        .wrapping_add(1);
                                     let out_bytes = downsample_for_caps(&bytes, pump_client_caps);
                                     FrameKind::TerminalOutput {
                                         terminal_id: pump_wire_terminal_id.clone(),
@@ -1352,7 +1391,12 @@ pub(crate) async fn handle_attach(
                                     }
                                 }
                             };
-                            if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
+                            let send_result = tokio::select! {
+                                biased;
+                                () = pump_token.cancelled() => break,
+                                result = pump_out_tx.send(Outbound::Frame(frame)) => result,
+                            };
+                            if send_result.is_err() {
                                 // Client mailbox closed (detach or disconnect).
                                 break;
                             }
@@ -1379,6 +1423,7 @@ pub(crate) async fn handle_attach(
                                 cell_px: None,
                                 resync_clients: true,
                                 resync_only: true,
+                                reply: None,
                             });
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -1392,24 +1437,101 @@ pub(crate) async fn handle_attach(
             .snapshot
             .send(SnapshotRequest {
                 scrollback: scrollback_req,
+                state_sync_consumer: tick_managed.then_some(registration),
+                include_raw_output: !tick_managed,
                 reply: reply_tx,
             })
             .await
             .is_err()
         {
-            warn!(?terminal_id, "pane actor dropped; skipping snapshot");
-            continue;
+            if emitter.is_some() {
+                release_registered_terminal_consumer(
+                    state,
+                    client_id,
+                    terminal_id,
+                    &handle,
+                    registration,
+                )
+                .await;
+            }
+            warn!(
+                ?terminal_id,
+                "pane actor dropped before attachment snapshot"
+            );
+            super::client::detach_and_release_consumer_state(state, client_id);
+            send_attachment_abort(
+                out_tx,
+                "terminal attachment actor is unavailable for snapshot",
+            )
+            .await;
+            return;
         }
         // Tag each in-flight receiver with its identifiers so the drain
         // loop can warn / build a frame without re-deriving them.
-        pending.push(async move { (terminal_id, wire_terminal_id, reply_rx.await) });
+        let ready = Some((handle.consumer_ready.clone(), registration));
+        let cleanup = emitter.map(|staged| (handle, registration, staged));
+        pending.push(async move {
+            (
+                terminal_id,
+                wire_terminal_id,
+                ready,
+                cleanup,
+                reply_rx.await,
+            )
+        });
     }
 
-    while let Some((terminal_id, wire_terminal_id, reply)) = pending.next().await {
-        let Ok(snap) = reply else {
+    while let Some((terminal_id, wire_terminal_id, ready, cleanup, reply)) = pending.next().await {
+        let Ok(Ok(response)) = reply else {
+            if let Some((handle, registration, _)) = cleanup {
+                release_registered_terminal_consumer(
+                    state,
+                    client_id,
+                    terminal_id,
+                    &handle,
+                    registration,
+                )
+                .await;
+            }
             warn!(?terminal_id, "pane actor failed to reply with snapshot");
+            super::client::detach_and_release_consumer_state(state, client_id);
+            send_attachment_abort(
+                out_tx,
+                "terminal attachment actor failed to produce a snapshot",
+            )
+            .await;
+            return;
+        };
+        let crate::terminal_actor::SnapshotResponse {
+            snapshot: snap,
+            raw_output,
+        } = response;
+        let Some((handle, registration, (pump_token, pump_sequence))) = cleanup else {
+            warn!(?terminal_id, "snapshot has no staged consumer emitter");
             continue;
         };
+        if state
+            .with_mut(|s| {
+                s.commit_staged_terminal_consumer(
+                    client_id,
+                    terminal_id,
+                    registration.generation,
+                    pump_token,
+                    pump_sequence,
+                )
+            })
+            .is_none()
+        {
+            release_registered_terminal_consumer(
+                state,
+                client_id,
+                terminal_id,
+                &handle,
+                registration,
+            )
+            .await;
+            continue;
+        }
         let replay = downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps).into();
         if out_tx
             .send(Outbound::Frame(FrameKind::TerminalSnapshot {
@@ -1426,18 +1548,67 @@ pub(crate) async fn handle_attach(
             .await
             .is_err()
         {
+            super::client::detach_and_release_consumer_state(state, client_id);
             return;
         }
-        // phux-7w1j: snapshot for this pane is on the wire — release its
-        // output pump so any buffered/live `TerminalOutput` now follows the
-        // snapshot in order rather than racing ahead of it.
-        if let Some(pos) = snapshot_gates
+        if let Some((ready_tx, registration)) = ready {
+            let (ready_reply, ready_done) = oneshot::channel();
+            let finalized = ready_tx
+                .send(crate::terminal_actor::ConsumerReadyRequest {
+                    registration,
+                    reply: ready_reply,
+                })
+                .await
+                .is_ok()
+                && ready_done.await.is_ok();
+            if !finalized {
+                super::client::detach_and_release_consumer_state(state, client_id);
+                send_attachment_abort(out_tx, "terminal attachment actor dropped finalization")
+                    .await;
+                return;
+            }
+        }
+        // Snapshot is queued first; now hand the atomically-cut receiver to
+        // the pump. Any live bytes buffered since the actor cut follow it.
+        if let Some(pos) = raw_receiver_gates
             .iter()
             .position(|(tid, _)| *tid == terminal_id)
         {
-            let (_, gate_tx) = snapshot_gates.swap_remove(pos);
-            let _ = gate_tx.send(());
+            let (_, receiver_tx) = raw_receiver_gates.swap_remove(pos);
+            if let Some(raw_output) = raw_output {
+                let _ = receiver_tx.send(raw_output);
+            }
         }
+    }
+}
+
+async fn send_attachment_abort(out_tx: &tokio::sync::mpsc::Sender<Outbound>, message: &str) {
+    send_error(out_tx, ErrorCode::InternalError, message).await;
+    let _ = out_tx.send(Outbound::Frame(FrameKind::Detached)).await;
+}
+
+async fn release_registered_terminal_consumer(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: TerminalId,
+    handle: &crate::terminal_actor::TerminalHandle,
+    registration: ConsumerRegistration,
+) {
+    state.with_mut(|s| {
+        s.rollback_terminal_consumer(client_id, terminal_id, registration.generation);
+    });
+    let (reply_tx, reply_rx) = oneshot::channel();
+    if handle
+        .consumer_detach
+        .send(ConsumerDetachRequest {
+            client_id: registration.client_id,
+            generation: registration.generation,
+            reply: reply_tx,
+        })
+        .await
+        .is_ok()
+    {
+        let _ = reply_rx.await;
     }
 }
 
@@ -1466,7 +1637,7 @@ pub(crate) async fn handle_attach(
 /// report; the resize sends are emitted while holding the same lock,
 /// matching `handle_viewport_resize`'s pattern (the actor's mailbox is
 /// independent of the state lock).
-pub(crate) fn apply_attach_viewport(
+pub(crate) async fn apply_attach_viewport(
     state: &SharedState,
     client_id: ClientId,
     panes_to_snapshot: &[AttachSnapshotPane],
@@ -1479,7 +1650,7 @@ pub(crate) fn apply_attach_viewport(
         // rather than kernel errors. Skip the resize entirely.
         return;
     }
-    state.with_mut(|s| {
+    let requests = state.with_mut(|s| {
         // phux-nk07: this client now contributes its viewport to every pane
         // it just subscribed to; each pane's geometry is the window-size
         // policy applied across all subscribers (so a second, smaller client
@@ -1487,43 +1658,47 @@ pub(crate) fn apply_attach_viewport(
         // last-writer winning). `Manual` (or no usable viewport) skips the
         // resize, leaving the pane at its current size.
         s.set_client_viewport(client_id, viewport);
-        for pane in panes_to_snapshot {
-            let Some((cols, rows)) =
-                s.resolve_terminal_geometry(pane.terminal_id, Some(viewport))
-            else {
-                continue;
-            };
-            if let Some(pane_entry) = s.registry_mut().terminal_mut(pane.terminal_id) {
-                pane_entry.dims = (cols, rows);
-            }
-            // ATTACH-time resize: do NOT resync — the attach handshake
-            // already sends an authoritative TERMINAL_SNAPSHOT, and a
-            // resync broadcast here would race ahead of it (phux-8v1).
-            // Pixel geometry rides along (most recent usable subscriber
-            // report — normally the viewport recorded above).
-            match pane.handle.resize.try_send(ResizeRequest {
+        panes_to_snapshot
+            .iter()
+            .filter_map(|pane| {
+                let (cols, rows) = s.resolve_terminal_geometry(pane.terminal_id, Some(viewport))?;
+                // ATTACH-time resize: do NOT resync — the attach handshake
+                // already sends an authoritative TERMINAL_SNAPSHOT, and a
+                // resync broadcast here would race ahead of it (phux-8v1).
+                // Pixel geometry rides along (most recent usable subscriber
+                // report — normally the viewport recorded above).
+                Some((
+                    pane.terminal_id,
+                    pane.handle.clone(),
+                    cols,
+                    rows,
+                    s.resolve_terminal_cell_px(pane.terminal_id),
+                ))
+            })
+            .collect::<Vec<_>>()
+    });
+    for (terminal_id, handle, cols, rows, cell_px) in requests {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if handle
+            .resize
+            .send(ResizeRequest {
                 cols,
                 rows,
-                cell_px: s.resolve_terminal_cell_px(pane.terminal_id),
+                cell_px,
                 resync_clients: false,
                 resync_only: false,
-            }) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    warn!(
-                        terminal_id = ?pane.terminal_id,
-                        cols,
-                        rows,
-                        "ATTACH viewport apply: pane resize mailbox full; dropping (next VIEWPORT_RESIZE will retry)",
-                    );
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    debug!(
-                        terminal_id = ?pane.terminal_id,
-                        "ATTACH viewport apply: pane actor gone; dropping resize",
-                    );
-                }
-            }
+                reply: Some(reply_tx),
+            })
+            .await
+            .is_err()
+        {
+            debug!(?terminal_id, "ATTACH viewport apply: pane actor gone");
+            continue;
         }
-    });
+        if let Ok(applied) = reply_rx.await {
+            state.with_mut(|s| {
+                s.record_applied_terminal_resize(terminal_id, applied);
+            });
+        }
+    }
 }

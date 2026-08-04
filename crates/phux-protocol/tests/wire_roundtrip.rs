@@ -1308,8 +1308,16 @@ proptest! {
         terminal_id in arb_terminal_id(),
         cols in any::<u16>(),
         rows in any::<u16>(),
+        pixel_width in proptest::option::of(any::<u16>()),
+        pixel_height in proptest::option::of(any::<u16>()),
     ) {
-        assert_round_trip(&FrameKind::TerminalResize { terminal_id, cols, rows });
+        assert_round_trip(&FrameKind::TerminalResize {
+            terminal_id,
+            cols,
+            rows,
+            pixel_width,
+            pixel_height,
+        });
     }
 
     #[test]

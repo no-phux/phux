@@ -250,6 +250,26 @@ deny:
 doc:
     RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features
 
+# Build the panic-containing native archive and prove the public C header both
+# lays out and links against it on the supported macOS arm64 host.
+client-ffi-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --profile ffi-release -p phux-client-ffi
+    link_args=()
+    case "$(uname -s)" in
+        Darwin) link_args=(-framework Security -framework CoreFoundation) ;;
+        Linux) link_args=(-ldl -lpthread -lm) ;;
+        *) echo "client-ffi-check: unsupported host" >&2; exit 2 ;;
+    esac
+    cc -std=c11 -Wall -Wextra -Werror \
+      -I crates/phux-client-ffi/include \
+      crates/phux-client-ffi/tests/header_smoke.c \
+      target/ffi-release/libphux_client_ffi.a \
+      "${link_args[@]}" \
+      -o target/ffi-release/phux-client-ffi-header-smoke
+    target/ffi-release/phux-client-ffi-header-smoke
+
 # Watch loop — re-check + test on every save.
 watch:
     cargo watch -x check -x 'nextest run --workspace'
@@ -316,7 +336,7 @@ e2e-lane-check:
 # no `ratatui` dependency.
 
 # The inner-loop bar — every deterministic gate CI runs. Run before pushing.
-ci: fmt-check lint docs-check formula-check font-check e2e-lane-check zig-pin-check install-surface-check test deny doc
+ci: fmt-check lint docs-check formula-check font-check e2e-lane-check zig-pin-check install-surface-check test deny doc client-ffi-check
     @echo "ok"
 
 # The COMPLETE PR bar: `ci` plus the two lanes that spawn real processes.

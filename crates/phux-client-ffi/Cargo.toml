@@ -1,0 +1,23 @@
+[package]
+name = "phux-client-ffi"
+description = "Stable native C ABI for the phux terminal projection."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+bytes.workspace = true
+libghostty-vt.workspace = true
+phux-protocol.workspace = true
+
+[dev-dependencies]

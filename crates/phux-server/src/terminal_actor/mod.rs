@@ -337,6 +337,9 @@ pub struct TerminalActor {
     /// so probing them here could miss a write a sibling handler already
     /// consumed. A self-owned flag cannot be clobbered that way.
     terminal_dirty_since_tick: bool,
+    /// Raw PTY fanout pauses across resize until an authoritative snapshot is
+    /// synthesized; otherwise geometry-less bytes can reach an old-size mirror.
+    raw_emission_ready: bool,
     color_query_scanner: ColorQueryScanner,
     key_enc: RefCell<PerTerminalKeyEncoder>,
     mouse_enc: RefCell<PerTerminalMouseEncoder>,
@@ -354,6 +357,7 @@ pub struct TerminalActor {
     pwd_rx: mpsc::Receiver<PwdRequest>,
     resize_rx: mpsc::Receiver<ResizeRequest>,
     consumer_attach_rx: mpsc::Receiver<ConsumerAttachRequest>,
+    consumer_ready_rx: mpsc::Receiver<ConsumerReadyRequest>,
     consumer_detach_rx: mpsc::Receiver<ConsumerDetachRequest>,
     /// Per-consumer state-sync `FRAME_ACK` channel (phux-q0e.4). Drained
     /// by a select! arm that walks `consumer_states[client_id]` and
@@ -366,6 +370,10 @@ pub struct TerminalActor {
     /// holds the `!Send` `Terminal` — fine; the whole actor lives on the
     /// `LocalSet` thread (ADR-0014).
     consumer_states: HashMap<ClientId, ConsumerSyncState>,
+    /// Prior state retained until a replacement snapshot is published. A
+    /// failed staged replacement restores this entry instead of silencing the
+    /// previously working consumer.
+    consumer_replacements: HashMap<ClientId, (u64, ConsumerSyncState)>,
     /// Whether the per-consumer state-sync tick (phux-q0e.3) is the live
     /// emitter of `TerminalOutput` frames (ADR-0018).
     ///
@@ -836,6 +844,8 @@ impl TerminalActor {
         let (resize_tx, resize_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (consumer_attach_tx, consumer_attach_rx) =
             mpsc::channel::<ConsumerAttachRequest>(DEFAULT_INPUT_MAILBOX);
+        let (consumer_ready_tx, consumer_ready_rx) =
+            mpsc::channel::<ConsumerReadyRequest>(DEFAULT_INPUT_MAILBOX);
         let (consumer_detach_tx, consumer_detach_rx) =
             mpsc::channel::<ConsumerDetachRequest>(DEFAULT_INPUT_MAILBOX);
         let (consumer_ack_tx, consumer_ack_rx) =
@@ -871,6 +881,7 @@ impl TerminalActor {
             // A pane may carry initial content (PTY banner, restored
             // scrollback); start dirty so the first tick always emits.
             terminal_dirty_since_tick: true,
+            raw_emission_ready: true,
             color_query_scanner: ColorQueryScanner::default(),
             key_enc: RefCell::new(key_enc),
             mouse_enc: RefCell::new(mouse_enc),
@@ -886,9 +897,11 @@ impl TerminalActor {
             pwd_rx,
             resize_rx,
             consumer_attach_rx,
+            consumer_ready_rx,
             consumer_detach_rx,
             consumer_ack_rx,
             consumer_states: HashMap::new(),
+            consumer_replacements: HashMap::new(),
             // phux-yeca: keep the human attach path on the raw PTY
             // broadcast pump by default. The per-consumer synthesized-VT
             // tick path is correct for state-sync experiments, but as the
@@ -938,6 +951,7 @@ impl TerminalActor {
             output: output_tx,
             resize: resize_tx,
             consumer_attach: consumer_attach_tx,
+            consumer_ready: consumer_ready_tx,
             consumer_detach: consumer_detach_tx,
             consumer_ack: consumer_ack_tx,
             subscribe_to_events: subscribe_to_events_tx,
@@ -1085,6 +1099,7 @@ impl TerminalActor {
     ///
     /// Idempotent: re-attaching the same `client_id` (e.g. on a runtime
     /// bug) overwrites the prior entry.
+    #[cfg(test)]
     fn register_consumer(
         &mut self,
         client_id: ClientId,
@@ -1092,6 +1107,40 @@ impl TerminalActor {
         wire_terminal_id: u32,
         wants_state_sync: bool,
     ) -> Result<(), ConsumerAttachError> {
+        self.register_consumer_with_caps(
+            ConsumerRegistration {
+                client_id,
+                generation: 1,
+            },
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            outbound,
+            wire_terminal_id,
+            wants_state_sync,
+            phux_protocol::caps::ClientCapabilities::default(),
+            None,
+        )?;
+        if let Some(state) = self.consumer_states.get_mut(&client_id) {
+            state.emission_ready = true;
+            state.snapshot_primed = true;
+        }
+        Ok(())
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "private registration constructor keeps independent wire, capability, and history policy explicit"
+    )]
+    fn register_consumer_with_caps(
+        &mut self,
+        registration: ConsumerRegistration,
+        sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        outbound: mpsc::Sender<Outbound>,
+        wire_terminal_id: u32,
+        wants_state_sync: bool,
+        client_caps: phux_protocol::caps::ClientCapabilities,
+        scrollback: Option<u32>,
+    ) -> Result<(), ConsumerAttachError> {
+        let client_id = registration.client_id;
         // Priming the per-consumer reference + cursor/mode capture costs two
         // full-grid render passes, but a raw broadcast-pump consumer (the
         // human attach path) never reads either: the tick serves only
@@ -1124,17 +1173,37 @@ impl TerminalActor {
         } else {
             (LastAckedCursorMode::unprimed(), ConsumerReference::new())
         };
+        // A replacement snapshot supersedes every prior in-flight frame. Merge
+        // a prior actor-owned counter into the runtime-supplied counter before
+        // replacement so every raw/state-sync transition retains one sequence
+        // space, even when the previous registration predates shared counters.
+        // A newer staged replacement supersedes an older staging attempt; the
+        // currently active entry is the only rollback point it needs.
+        self.consumer_replacements.remove(&client_id);
+        let previous = self.consumer_states.remove(&client_id);
+        let previous_sequence = previous.as_ref().map_or(0, |previous| {
+            previous.sequence.load(std::sync::atomic::Ordering::Relaxed)
+        });
+        let current_sequence = sequence
+            .fetch_max(previous_sequence, std::sync::atomic::Ordering::Relaxed)
+            .max(previous_sequence);
+        let last_acked_seq = current_sequence;
         self.consumer_states.insert(
             client_id,
             ConsumerSyncState {
+                registration_generation: registration.generation,
                 reference,
+                emission_ready: !tick_managed,
+                snapshot_primed: !tick_managed,
+                pending_snapshot: None,
                 outbound,
+                client_caps,
+                scrollback,
                 wire_terminal_id,
-                // First emission gets `seq == 1`. `0` is reserved for
-                // the "empty initial frame" sentinel matching
-                // `FrameId::ZERO` in [`LastAckedCursorMode`]'s doc.
-                next_seq: 1,
-                last_acked_seq: 0,
+                // The first allocation from a fresh counter gets `seq == 1`.
+                // `0` remains the empty-initial-frame sentinel.
+                sequence,
+                last_acked_seq,
                 last_cursor_mode,
                 // Force one synthesis pass on the next tick even if the
                 // terminal is Clean since the previous tick (phux-4l0).
@@ -1156,6 +1225,10 @@ impl TerminalActor {
                 pending_refs: std::collections::BTreeMap::new(),
             },
         );
+        if let Some(previous) = previous {
+            self.consumer_replacements
+                .insert(client_id, (registration.generation, previous));
+        }
         Ok(())
     }
 
@@ -1203,10 +1276,30 @@ impl TerminalActor {
     /// Drop the per-consumer state for `client_id` if present
     /// (phux-q0e.2). Silent no-op if absent — matches the idempotency
     /// of `ServerState::detach`.
-    fn unregister_consumer(&mut self, client_id: ClientId) {
-        // `HashMap::remove` returns the entry; dropping it frees the
-        // per-consumer reference grid.
-        let _ = self.consumer_states.remove(&client_id);
+    fn unregister_consumer(&mut self, client_id: ClientId, generation: u64) {
+        if self
+            .consumer_states
+            .get(&client_id)
+            .is_some_and(|state| state.registration_generation == generation)
+        {
+            let _ = self.consumer_states.remove(&client_id);
+            if let Some((replacement_generation, previous)) =
+                self.consumer_replacements.remove(&client_id)
+                && replacement_generation == generation
+            {
+                self.consumer_states.insert(client_id, previous);
+            }
+            return;
+        }
+        // A detach for the prior generation racing a staged replacement makes
+        // that prior state ineligible for rollback.
+        if self
+            .consumer_replacements
+            .get(&client_id)
+            .is_some_and(|(_, previous)| previous.registration_generation == generation)
+        {
+            self.consumer_replacements.remove(&client_id);
+        }
     }
 
     /// Handle an inbound `FRAME_ACK` from `client_id` carrying cumulative
@@ -1252,14 +1345,10 @@ impl TerminalActor {
             );
             return false;
         };
-        // phux-38k6: only a tick-managed consumer's acks belong to this
-        // per-consumer seq space. A raw (broadcast-pump) consumer acks the
-        // pump's *local* seq, which is unrelated to this state's `next_seq` /
-        // `emit_instants`; folding it in would set `last_acked_seq` from a
-        // foreign counter and skew the RTT/backpressure accounting once the
-        // consumer is (or becomes) state-sync. Drop it — the pump owns no
-        // per-consumer state to update (phux-fseo made modes negotiable, so
-        // this is now reachable, not just defensive).
+        // phux-38k6: only a tick-managed consumer's acks have matching actor
+        // `emit_instants` and pending references. Raw pumps share the monotonic
+        // sequence counter but own no actor-side ACK state, so folding their
+        // ACKs in would still skew RTT/backpressure accounting.
         if !force_all_consumers && !consumer.wants_state_sync {
             trace!(
                 ?client_id,
@@ -1940,9 +2029,7 @@ impl TerminalActor {
         (evt_tx, writer_rx)
     }
 
-    /// Synthesize a snapshot of the current `Terminal` state. Exposed
-    /// for tests that want to drive the synthesis path synchronously
-    /// without going through the actor's `select!` loop.
+    #[cfg(test)]
     fn synthesize(&self) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
         self.synthesize_with_scrollback(None)
     }
@@ -2194,38 +2281,96 @@ impl TerminalActor {
     /// state-sync path (`consumer_states`) because the runtime drives the
     /// broadcast/pump path; the q0e per-consumer tick is not wired into
     /// the runtime today.
-    fn broadcast_resync(&self) {
-        // No subscribers → nothing to resync. `receiver_count` is the
-        // broadcast channel's live-subscriber count; the seed receiver
-        // held by the actor was dropped at construction, so this is the
-        // attached-pump count.
-        if self.output_tx.receiver_count() == 0 {
-            return;
+    fn broadcast_resync(&mut self) -> bool {
+        let has_state_sync = self.consumer_tick_emits
+            || self
+                .consumer_states
+                .values()
+                .any(|state| state.wants_state_sync);
+        if self.output_tx.receiver_count() == 0 && !has_state_sync {
+            self.raw_emission_ready = true;
+            return true;
         }
-        match self.synthesize() {
+        match self.synthesize_with_scrollback(None) {
             Ok(snap) => {
                 debug!(
                     bytes = snap.bytes.len(),
                     "resize resync: snapshot broadcast"
                 );
-                // A `Lagged`/no-receiver send error is benign here — the
-                // next PTY output or a re-attach snapshot re-syncs.
-                // phux-3ns5: ship the post-reflow grid as a `Resync` (→
-                // `TERMINAL_SNAPSHOT`) carrying the settled dims, so the
-                // client mirror resizes to `(cols, rows)` before applying
-                // the replay. Delivered as raw output it could not resize
-                // the mirror, stranding a resize-grow with blank space.
-                let _ = self.output_tx.send(PaneOutput::Resync {
-                    cols: self.cols,
-                    rows: self.rows,
-                    bytes: Bytes::from(snap.bytes),
-                });
+                let bytes = Bytes::from(snap.bytes);
+                let mut scrollbacks = HashMap::new();
+                if has_state_sync {
+                    for (client_id, state) in &self.consumer_states {
+                        if !(self.consumer_tick_emits || state.wants_state_sync) {
+                            continue;
+                        }
+                        let history = if let Some(limit) = state.scrollback {
+                            match self.synthesize_with_scrollback(Some(limit)) {
+                                Ok(history_snapshot) => history_snapshot.scrollback,
+                                Err(err) => {
+                                    warn!(
+                                        ?client_id,
+                                        error = %err,
+                                        "resize resync: scrollback synthesis failed",
+                                    );
+                                    return false;
+                                }
+                            }
+                        } else {
+                            Vec::new()
+                        };
+                        scrollbacks.insert(*client_id, history);
+                    }
+                }
+                if self.output_tx.receiver_count() != 0 {
+                    let _ = self.output_tx.send(PaneOutput::Resync {
+                        cols: self.cols,
+                        rows: self.rows,
+                        bytes: bytes.clone(),
+                    });
+                }
+                self.raw_emission_ready = true;
+                if has_state_sync {
+                    let mut reference = ConsumerReference::new();
+                    let prime_result = {
+                        let terminal = self.terminal.borrow();
+                        self.synth
+                            .borrow_mut()
+                            .prime_reference(&terminal, &mut reference)
+                    };
+                    match prime_result {
+                        Ok(()) => {
+                            for (client_id, state) in &mut self.consumer_states {
+                                if self.consumer_tick_emits || state.wants_state_sync {
+                                    state.pending_snapshot = Some(PendingStateSnapshot {
+                                        cols: self.cols,
+                                        rows: self.rows,
+                                        bytes: bytes.clone(),
+                                        scrollback: scrollbacks
+                                            .remove(client_id)
+                                            .unwrap_or_default(),
+                                        reference: reference.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                error = %err,
+                                "resize resync: state-sync reference prime failed",
+                            );
+                            return false;
+                        }
+                    }
+                }
+                true
             }
             Err(err) => {
                 warn!(
                     error = %err,
-                    "resize resync: snapshot synthesis failed; clients recover on next output",
+                    "resize resync: snapshot synthesis failed; retrying authoritative snapshot",
                 );
+                false
             }
         }
     }
@@ -2680,7 +2825,9 @@ impl TerminalActor {
                             // subscribers exist; that's a normal
                             // steady-state (no attached clients) and
                             // we silently drop.
-                            let _ = self.output_tx.send(PaneOutput::Live(payload));
+                            if self.raw_emission_ready {
+                                let _ = self.output_tx.send(PaneOutput::Live(payload));
+                            }
                             if saw_eof {
                                 self.handle_pty_eof();
                             } else if hit_byte_cap {
@@ -2703,16 +2850,46 @@ impl TerminalActor {
                     let snap = match self.synthesize_with_scrollback(req.scrollback) {
                         Ok(s) => s,
                         Err(err) => {
-                            warn!(error = %err, "snapshot synthesis failed; replying with empty");
-                            SnapshotBytes {
-                                cols: self.cols,
-                                rows: self.rows,
-                                bytes: Vec::new(),
-                                scrollback: Vec::new(),
-                            }
+                            warn!(error = %err, "snapshot synthesis failed");
+                            let _ = req.reply.send(Err(err.to_string()));
+                            continue;
                         }
                     };
-                    let _ = req.reply.send(snap);
+                    if let Some(registration) = req.state_sync_consumer {
+                        let mut reference = ConsumerReference::new();
+                        let prime_result = {
+                            let terminal = self.terminal.borrow();
+                            self.synth.borrow_mut().prime_reference(&terminal, &mut reference)
+                        };
+                        match prime_result {
+                            Ok(()) => {
+                                if let Some(state) = self.consumer_states.get_mut(&registration.client_id)
+                                    && state.registration_generation == registration.generation
+                                {
+                                    state.reference = reference.clone();
+                                    if state.loss_tolerant {
+                                        state.acked_reference = reference;
+                                        state.pending_refs.clear();
+                                    }
+                                    state.snapshot_primed = true;
+                                }
+                            }
+                            Err(err) => {
+                                warn!(
+                                    client_id = ?registration.client_id,
+                                    error = %err,
+                                    "initial state-sync reference prime failed",
+                                );
+                                let _ = req.reply.send(Err(err.to_string()));
+                                continue;
+                            }
+                        }
+                    }
+                    let raw_output = req.include_raw_output.then(|| self.output_tx.subscribe());
+                    let _ = req.reply.send(Ok(SnapshotResponse {
+                        snapshot: snap,
+                        raw_output,
+                    }));
                 }
 
                 Some(req) = self.set_default_colors_rx.recv() => {
@@ -2811,6 +2988,9 @@ impl TerminalActor {
                     if !req.resync_only {
                         self.handle_resize(req.cols, req.rows, req.cell_px);
                     }
+                    if let Some(reply) = req.reply {
+                        let _ = reply.send(ResizeApplied::next(self.cols, self.rows));
+                    }
                     // phux-8v1: re-broadcast a full snapshot for live
                     // resizes so client mirrors reconverge after their
                     // independent reflow. Suppressed for the ATTACH-time
@@ -2819,6 +2999,13 @@ impl TerminalActor {
                     // lag-resync requests — coalesces into a single snapshot
                     // rather than flooding the client.
                     if req.resync_clients {
+                        self.raw_emission_ready = false;
+                        for state in self.consumer_states.values_mut() {
+                            if self.consumer_tick_emits || state.wants_state_sync {
+                                state.emission_ready = false;
+                                state.pending_snapshot = None;
+                            }
+                        }
                         resync_pending = true;
                         resync_debounce
                             .as_mut()
@@ -2833,15 +3020,23 @@ impl TerminalActor {
                 // fires spuriously.
                 () = &mut resync_debounce, if resync_pending => {
                     resync_pending = false;
-                    self.broadcast_resync();
+                    if !self.broadcast_resync() {
+                        resync_pending = true;
+                        resync_debounce
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + RESIZE_RESYNC_DEBOUNCE);
+                    }
                 }
 
                 Some(req) = self.consumer_attach_rx.recv() => {
                     let ConsumerAttachRequest {
-                        client_id,
+                        registration,
+                        sequence,
                         outbound,
                         wire_terminal_id,
                         wants_state_sync,
+                        client_caps,
+                        scrollback,
                         loss_tolerant,
                         reply,
                     } = req;
@@ -2854,25 +3049,33 @@ impl TerminalActor {
                     // global test gate forces every consumer onto the tick.
                     let tick_managed = self.consumer_tick_emits || wants_state_sync;
                     let result = self
-                        .register_consumer(client_id, outbound, wire_terminal_id, wants_state_sync)
+                        .register_consumer_with_caps(
+                            registration,
+                            sequence,
+                            outbound,
+                            wire_terminal_id,
+                            wants_state_sync,
+                            client_caps,
+                            scrollback,
+                        )
                         .map(|()| ConsumerAttachOutcome { tick_managed });
                     // phux-v45.8: a forwarded/lossy-leg state-sync consumer
                     // opts into the advance-on-ack loss-tolerant model right
                     // after a successful registration. No-op for a direct
                     // reliable-transport consumer (`loss_tolerant == false`).
                     if result.is_ok() && loss_tolerant && tick_managed {
-                        self.enable_loss_tolerance(client_id);
+                        self.enable_loss_tolerance(registration.client_id);
                     }
                     if let Err(err) = &result {
                         warn!(
-                            ?client_id,
+                            client_id = ?registration.client_id,
                             wire_terminal_id,
                             error = %err,
                             "consumer attach: per-consumer synthesizer setup failed",
                         );
                     } else {
                         trace!(
-                            ?client_id,
+                            client_id = ?registration.client_id,
                             wire_terminal_id,
                             tick_managed,
                             "consumer attached: per-consumer synthesizer primed"
@@ -2881,9 +3084,23 @@ impl TerminalActor {
                     let _ = reply.send(result);
                 }
 
+                Some(request) = self.consumer_ready_rx.recv() => {
+                    let ConsumerReadyRequest { registration, reply } = request;
+                    if let Some(state) = self.consumer_states.get_mut(&registration.client_id)
+                        && state.registration_generation == registration.generation
+                        && state.snapshot_primed
+                    {
+                        state.emission_ready = true;
+                        state.needs_initial_emit = true;
+                        self.terminal_dirty_since_tick = true;
+                        self.consumer_replacements.remove(&registration.client_id);
+                    }
+                    let _ = reply.send(());
+                }
+
                 Some(req) = self.consumer_detach_rx.recv() => {
-                    let ConsumerDetachRequest { client_id, reply } = req;
-                    self.unregister_consumer(client_id);
+                    let ConsumerDetachRequest { client_id, generation, reply } = req;
+                    self.unregister_consumer(client_id, generation);
                     trace!(?client_id, "consumer detached: per-consumer RenderState freed");
                     // phux-q0e.5: losing a consumer can raise the minimum
                     // desired interval (e.g. the fastest peer left), so
@@ -3061,7 +3278,10 @@ impl TerminalActor {
                 // retransmit timer can fire and re-diff a suspected-lost frame
                 // against the acked reference. `pending_refs` is empty for the
                 // reliable emit-once path, so this adds nothing there.
-                s.needs_initial_emit || s.behind || !s.pending_refs.is_empty()
+                s.needs_initial_emit
+                    || s.behind
+                    || s.pending_snapshot.is_some()
+                    || !s.pending_refs.is_empty()
             })
         {
             return;
@@ -3094,11 +3314,18 @@ impl TerminalActor {
         let mut emitted: u64 = 0;
         let mut total_out_bytes: usize = 0;
         for (client_id, state) in &mut self.consumer_states {
+            if state.outbound.is_closed() {
+                closed.push(*client_id);
+                continue;
+            }
             // phux-fseo: serve only tick-managed consumers. A raw consumer
             // sharing this pane is served by the broadcast pump; emitting here
             // too would double-paint it, so skip it (reference left untouched
             // for a later mode flip).
             if !force_all_consumers && !state.wants_state_sync {
+                continue;
+            }
+            if !state.emission_ready && state.pending_snapshot.is_none() {
                 continue;
             }
             // Captured before the `behind` reset below: whether a prior tick
@@ -3121,7 +3348,7 @@ impl TerminalActor {
             //
             // Reserving first inverts the ordering: a `Full` mailbox means we
             // skip this consumer entirely this tick WITHOUT synthesizing, so
-            // the reference (and `next_seq`) stay put and the delta is
+            // the reference (and shared sequence counter) stay put and the delta is
             // re-diffed intact on the next tick once the client drains. A
             // `Closed` mailbox reaps the entry (phux-ddg self-heal). Only when
             // we hold a permit — which guarantees the subsequent send cannot
@@ -3164,6 +3391,39 @@ impl TerminalActor {
             // diff is empty and the reference is already at the live grid).
             // Either way it is no longer behind.
             state.behind = false;
+            if let Some(pending) = state.pending_snapshot.take() {
+                let replay =
+                    crate::runtime::attach::downsample_for_caps(&pending.bytes, state.client_caps)
+                        .into();
+                let scrollback = (!pending.scrollback.is_empty()).then(|| {
+                    crate::runtime::attach::downsample_for_caps(
+                        &Bytes::from(pending.scrollback),
+                        state.client_caps,
+                    )
+                    .to_vec()
+                });
+                permit.send(Outbound::Frame(FrameKind::TerminalSnapshot {
+                    terminal_id: phux_protocol::ids::TerminalId::local(state.wire_terminal_id),
+                    cols: pending.cols,
+                    rows: pending.rows,
+                    vt_replay_bytes: replay,
+                    scrollback_bytes: scrollback,
+                }));
+                state.reference = pending.reference.clone();
+                state.snapshot_primed = true;
+                state.emission_ready = true;
+                if state.loss_tolerant {
+                    state.acked_reference = pending.reference;
+                    state.pending_refs.clear();
+                }
+                state.emit_instants.clear();
+                // Force one following diff pass: output may have mutated after
+                // the snapshot was synthesized but before mailbox admission.
+                state.behind = true;
+                emitted += 1;
+                total_out_bytes += pending.bytes.len();
+                continue;
+            }
             // Per-consumer synthesis span (debug; the per-tick CPU sink —
             // its duration is the key server-side lag signal). Carries the
             // consumer correlation fields; the diff size lands in
@@ -3215,12 +3475,11 @@ impl TerminalActor {
                     continue;
                 }
             }
-            let seq = state.next_seq;
+            let seq = state
+                .sequence
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .wrapping_add(1);
             let out_bytes = bytes.len();
-            // Wrapping_add for paranoia; `u64` will not realistically
-            // roll over at 33 Hz, but the existing `runtime.rs` pump
-            // uses the same idiom and we match it.
-            state.next_seq = state.next_seq.wrapping_add(1);
             let frame = FrameKind::TerminalOutput {
                 terminal_id: phux_protocol::ids::TerminalId::local(state.wire_terminal_id),
                 seq,
@@ -3499,11 +3758,17 @@ mod tests {
                     .snapshot
                     .send(SnapshotRequest {
                         scrollback: None,
+                        state_sync_consumer: None,
+                        include_raw_output: false,
                         reply: reply_tx,
                     })
                     .await
                     .expect("send snapshot request");
-                let snap = reply_rx.await.expect("snapshot reply");
+                let snap = reply_rx
+                    .await
+                    .expect("snapshot reply")
+                    .expect("snapshot synthesis")
+                    .snapshot;
                 assert_eq!(snap.cols, 20);
                 assert_eq!(snap.rows, 5);
                 let body = String::from_utf8_lossy(&snap.bytes);
@@ -3597,11 +3862,20 @@ mod tests {
                 .snapshot
                 .send(SnapshotRequest {
                     scrollback: None,
+                    state_sync_consumer: None,
+                    include_raw_output: false,
                     reply,
                 })
                 .await
                 .expect("send snapshot");
-            String::from_utf8_lossy(&rx.await.expect("snapshot reply").bytes).into_owned()
+            String::from_utf8_lossy(
+                &rx.await
+                    .expect("snapshot reply")
+                    .expect("snapshot synthesis")
+                    .snapshot
+                    .bytes,
+            )
+            .into_owned()
         }
 
         let local = tokio::task::LocalSet::new();
@@ -4144,6 +4418,8 @@ mod tests {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 let _ = handle.snapshot.try_send(SnapshotRequest {
                     scrollback: None,
+                    state_sync_consumer: None,
+                    include_raw_output: false,
                     reply: reply_tx,
                 });
                 drop(reply_rx);
@@ -4208,17 +4484,196 @@ mod tests {
             .expect("register b");
         assert_eq!(actor.consumer_count(), 2);
 
-        actor.unregister_consumer(a);
+        actor.unregister_consumer(a, 1);
         assert_eq!(actor.consumer_count(), 1, "one entry after first detach");
         assert!(actor.consumer_state(a).is_none(), "a removed");
         assert!(actor.consumer_state(b).is_some(), "b retained");
 
         // Idempotent detach: re-detaching `a` is a no-op.
-        actor.unregister_consumer(a);
+        actor.unregister_consumer(a, 1);
         assert_eq!(actor.consumer_count(), 1);
 
-        actor.unregister_consumer(b);
+        actor.unregister_consumer(b, 1);
         assert_eq!(actor.consumer_count(), 0, "both removed");
+    }
+
+    #[test]
+    fn stale_detach_cannot_remove_replacement_registration() {
+        let bundle = TerminalActor::new(20, 5).expect("new");
+        let mut actor = bundle.actor;
+        let client = ClientId(3);
+        let (first_tx, _first_rx) = dummy_outbound();
+        let first_sequence = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        actor
+            .register_consumer_with_caps(
+                ConsumerRegistration {
+                    client_id: client,
+                    generation: 10,
+                },
+                first_sequence.clone(),
+                first_tx,
+                1,
+                false,
+                phux_protocol::caps::ClientCapabilities::default(),
+                None,
+            )
+            .expect("first registration");
+        first_sequence.store(8, std::sync::atomic::Ordering::Relaxed);
+        let (replacement_tx, _replacement_rx) = dummy_outbound();
+        let replacement_sequence = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        actor
+            .register_consumer_with_caps(
+                ConsumerRegistration {
+                    client_id: client,
+                    generation: 11,
+                },
+                replacement_sequence,
+                replacement_tx,
+                1,
+                false,
+                phux_protocol::caps::ClientCapabilities::default(),
+                None,
+            )
+            .expect("replacement registration");
+
+        actor.unregister_consumer(client, 10);
+        assert_eq!(
+            actor
+                .consumer_state(client)
+                .expect("replacement survives")
+                .registration_generation,
+            11,
+        );
+        let replacement = actor.consumer_state(client).expect("replacement survives");
+        assert_eq!(
+            replacement
+                .sequence
+                .load(std::sync::atomic::Ordering::Relaxed),
+            8,
+        );
+        assert_eq!(replacement.last_acked_seq, 8);
+        actor.unregister_consumer(client, 11);
+        assert!(actor.consumer_state(client).is_none());
+    }
+
+    #[test]
+    fn failed_staged_replacement_restores_prior_registration() {
+        let bundle = TerminalActor::new(20, 5).expect("new");
+        let mut actor = bundle.actor;
+        let client = ClientId(4);
+        let sequence = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(6));
+        let (first_tx, _first_rx) = dummy_outbound();
+        actor
+            .register_consumer_with_caps(
+                ConsumerRegistration {
+                    client_id: client,
+                    generation: 20,
+                },
+                sequence.clone(),
+                first_tx,
+                1,
+                false,
+                phux_protocol::caps::ClientCapabilities::default(),
+                None,
+            )
+            .expect("first registration");
+        let (replacement_tx, _replacement_rx) = dummy_outbound();
+        actor
+            .register_consumer_with_caps(
+                ConsumerRegistration {
+                    client_id: client,
+                    generation: 21,
+                },
+                sequence,
+                replacement_tx,
+                1,
+                false,
+                phux_protocol::caps::ClientCapabilities::default(),
+                None,
+            )
+            .expect("staged replacement");
+
+        actor.unregister_consumer(client, 21);
+        let restored = actor
+            .consumer_state(client)
+            .expect("prior registration restored");
+        assert_eq!(restored.registration_generation, 20);
+        assert_eq!(
+            restored.sequence.load(std::sync::atomic::Ordering::Relaxed),
+            6,
+        );
+        actor.unregister_consumer(client, 20);
+        assert!(actor.consumer_state(client).is_none());
+    }
+
+    #[test]
+    fn actor_and_raw_replacements_share_one_sequence_counter() {
+        let bundle = TerminalActor::new(20, 5).expect("new");
+        let mut actor = bundle.actor;
+        let client = ClientId(4);
+        let sequence = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (first_tx, mut first_rx) = dummy_outbound();
+        actor
+            .register_consumer_with_caps(
+                ConsumerRegistration {
+                    client_id: client,
+                    generation: 20,
+                },
+                sequence.clone(),
+                first_tx,
+                1,
+                true,
+                phux_protocol::caps::ClientCapabilities::default(),
+                None,
+            )
+            .expect("state-sync registration");
+        actor
+            .consumer_states
+            .get_mut(&client)
+            .expect("first state")
+            .emission_ready = true;
+        actor.vt_write_for_test(b"first");
+        actor.tick_emit();
+        let Outbound::Frame(FrameKind::TerminalOutput { seq, .. }) =
+            first_rx.try_recv().expect("actor emission")
+        else {
+            panic!("expected actor terminal output");
+        };
+        assert_eq!(seq, 1);
+
+        let raw_seq = sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1);
+        assert_eq!(raw_seq, 2);
+
+        let (replacement_tx, mut replacement_rx) = dummy_outbound();
+        actor
+            .register_consumer_with_caps(
+                ConsumerRegistration {
+                    client_id: client,
+                    generation: 21,
+                },
+                sequence,
+                replacement_tx,
+                1,
+                true,
+                phux_protocol::caps::ClientCapabilities::default(),
+                None,
+            )
+            .expect("replacement registration");
+        actor
+            .consumer_states
+            .get_mut(&client)
+            .expect("replacement state")
+            .emission_ready = true;
+        actor.vt_write_for_test(b" second");
+        actor.tick_emit();
+        let Outbound::Frame(FrameKind::TerminalOutput { seq, .. }) =
+            replacement_rx.try_recv().expect("replacement emission")
+        else {
+            panic!("expected replacement terminal output");
+        };
+        assert_eq!(seq, 3);
     }
 
     /// phux-q0e.2: right after `register_consumer` returns, the
@@ -4244,7 +4699,11 @@ mod tests {
 
         let state = actor.consumer_state(client).expect("state present");
         assert_eq!(state.last_acked_seq, 0, "no acks yet");
-        assert_eq!(state.next_seq, 1, "first emission gets seq=1");
+        assert_eq!(
+            state.sequence.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "first emission gets seq=1",
+        );
         assert_eq!(
             state.wire_terminal_id, 11,
             "wire id stored on the per-consumer entry"
@@ -4293,15 +4752,19 @@ mod tests {
                 let join = tokio::task::spawn_local(bundle.actor.run());
 
                 let client = ClientId(42);
+                let registration = ConsumerRegistration::new(client);
                 let (out_tx, _out_rx) = dummy_outbound();
                 let (tx_a, rx_a) = oneshot::channel();
                 handle
                     .consumer_attach
                     .send(ConsumerAttachRequest {
-                        client_id: client,
+                        registration,
+                        sequence: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                         outbound: out_tx,
                         wire_terminal_id: 99,
                         wants_state_sync: false,
+                        client_caps: phux_protocol::caps::ClientCapabilities::default(),
+                        scrollback: None,
                         loss_tolerant: false,
                         reply: tx_a,
                     })
@@ -4314,6 +4777,7 @@ mod tests {
                     .consumer_detach
                     .send(ConsumerDetachRequest {
                         client_id: client,
+                        generation: registration.generation,
                         reply: tx_d,
                     })
                     .await
@@ -4448,7 +4912,7 @@ mod tests {
         actor.on_frame_ack(client, 2);
         assert_eq!(actor.consumer_state(client).unwrap().last_acked_seq, 2);
 
-        actor.unregister_consumer(client);
+        actor.unregister_consumer(client, 1);
         assert!(actor.consumer_state(client).is_none());
 
         // Late ack after detach: must not resurrect the entry.
@@ -4491,8 +4955,12 @@ mod tests {
         // only emission is suppressed.
         assert_eq!(actor.consumer_count(), 1);
         assert_eq!(
-            actor.consumer_state(client).expect("state").next_seq,
-            1,
+            actor
+                .consumer_state(client)
+                .expect("state")
+                .sequence
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
             "no emission means the per-consumer seq never advanced",
         );
     }
@@ -5003,9 +5471,13 @@ mod tests {
             "gate on: an unchanged grid stays silent after ack",
         );
         assert_eq!(
-            actor.consumer_state(client).expect("state").next_seq,
-            3,
-            "two emissions advanced next_seq to 3; the post-ack tick was silent",
+            actor
+                .consumer_state(client)
+                .expect("state")
+                .sequence
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "two emissions advanced the sequence to 2; the post-ack tick was silent",
         );
         assert_eq!(
             actor.consumer_state(client).expect("state").last_acked_seq,
@@ -5082,7 +5554,7 @@ mod tests {
         // Per-consumer independence: a consumer that detaches does not
         // perturb the other. A fresh write reaches the survivor exactly
         // once.
-        actor.unregister_consumer(client_a);
+        actor.unregister_consumer(client_a, 1);
         actor.vt_write_for_test(b" again");
         actor.tick_emit();
         let frame = rx_b.try_recv().expect("consumer B: must get the new write");
@@ -5310,6 +5782,7 @@ mod tests {
                         cell_px: None,
                         resync_clients: false,
                         resync_only: false,
+                        reply: None,
                     })
                     .await
                     .expect("send resize");
@@ -5379,6 +5852,7 @@ mod tests {
                         cell_px: Some((9, 18)),
                         resync_clients: false,
                         resync_only: false,
+                        reply: None,
                     })
                     .await
                     .expect("send resize");
@@ -5393,6 +5867,7 @@ mod tests {
                         cell_px: None,
                         resync_clients: false,
                         resync_only: false,
+                        reply: None,
                     })
                     .await
                     .expect("send resize");
@@ -5470,6 +5945,7 @@ mod tests {
                         cell_px: None,
                         resync_clients: false,
                         resync_only: false,
+                        reply: None,
                     })
                     .await
                     .expect("send resize");
@@ -5515,6 +5991,7 @@ mod tests {
                         cell_px: Some((9, 18)),
                         resync_clients: false,
                         resync_only: false,
+                        reply: None,
                     })
                     .await
                     .expect("send resize");
@@ -5606,6 +6083,7 @@ mod tests {
                         cell_px: None,
                         resync_clients: true,
                         resync_only: false,
+                        reply: None,
                     })
                     .await
                     .expect("send resize");
@@ -5621,7 +6099,9 @@ mod tests {
                 let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
                 while tokio::time::Instant::now() < deadline {
                     match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
-                        Ok(Ok(PaneOutput::Resync { cols, rows, bytes })) => {
+                        Ok(Ok(PaneOutput::Resync {
+                            cols, rows, bytes, ..
+                        })) => {
                             resync_dims = Some((cols, rows));
                             acc.extend_from_slice(&bytes);
                             if contains_subslice(&acc, b"\x1b[!p")
@@ -5689,6 +6169,7 @@ mod tests {
                         cell_px: None,
                         resync_clients: true,
                         resync_only: true,
+                        reply: None,
                     })
                     .await
                     .expect("send resync_only");
@@ -5698,7 +6179,9 @@ mod tests {
                 let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
                 while tokio::time::Instant::now() < deadline {
                     match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
-                        Ok(Ok(PaneOutput::Resync { cols, rows, bytes })) => {
+                        Ok(Ok(PaneOutput::Resync {
+                            cols, rows, bytes, ..
+                        })) => {
                             resync_dims = Some((cols, rows));
                             acc.extend_from_slice(&bytes);
                             if contains_subslice(&acc, b"\x1b[!p")
@@ -5769,6 +6252,7 @@ mod tests {
                             cell_px: None,
                             resync_clients: true,
                             resync_only: false,
+                            reply: None,
                         })
                         .await
                         .expect("send resize");
@@ -5860,6 +6344,7 @@ mod tests {
                             cell_px: None,
                             resync_clients: false,
                             resync_only: false,
+                            reply: None,
                         })
                         .await
                         .expect("send resize");
@@ -5879,6 +6364,7 @@ mod tests {
                         cell_px: None,
                         resync_clients: false,
                         resync_only: false,
+                        reply: None,
                     })
                     .await
                     .expect("send final resize");
@@ -6044,7 +6530,7 @@ mod tests {
 
     /// wave-hunt/server-lifecycle: the per-consumer monotonic `seq` must have
     /// no gaps in the delivered stream. A frame that is NOT shipped must NOT
-    /// consume a `seq`. Pre-fix, `tick_emit` incremented `next_seq` and then
+    /// consume a `seq`. Pre-fix, `tick_emit` incremented the sequence and then
     /// dropped the frame on `Full`, burning a seq for a frame the consumer
     /// never saw — the client would observe a hole in the otherwise
     /// contiguous reliable-transport stream (SPEC §12.2) and could not
@@ -6257,13 +6743,13 @@ mod tests {
         // The slow peer leaving must not regress the floor (fast peer still
         // present), and dropping the fast peer reverts to the cold-start
         // default (no samples left to consult).
-        actor.unregister_consumer(slow);
+        actor.unregister_consumer(slow, 1);
         assert_eq!(
             actor.adaptive_tick_interval_for_test(),
             MIN_TICK_INTERVAL,
             "fast peer still present -> still at the floor",
         );
-        actor.unregister_consumer(fast);
+        actor.unregister_consumer(fast, 1);
         assert_eq!(
             actor.adaptive_tick_interval_for_test(),
             DEFAULT_TICK_INTERVAL,

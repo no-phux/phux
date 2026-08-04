@@ -53,8 +53,8 @@ use phux_protocol::ClientId;
 use phux_protocol::wire::frame::FrameKind;
 use phux_server::state::Outbound;
 use phux_server::terminal_actor::{
-    ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_TICK_INTERVAL,
-    TerminalActor, TerminalHandle,
+    ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, ConsumerRegistration,
+    DEFAULT_TICK_INTERVAL, TerminalActor, TerminalHandle,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::LocalSet;
@@ -82,6 +82,7 @@ struct ActorFixture {
     join: tokio::task::JoinHandle<()>,
     /// Per-consumer outbound mailboxes, indexed `ClientId(i + 1)`.
     consumers: Vec<mpsc::Receiver<Outbound>>,
+    registrations: Vec<ConsumerRegistration>,
 }
 
 impl ActorFixture {
@@ -97,16 +98,21 @@ impl ActorFixture {
         let join = tokio::task::spawn_local(bundle.actor.run());
 
         let mut consumers = Vec::new();
+        let mut registrations = Vec::new();
         for i in 1..=n_consumers {
             let (out_tx, out_rx) = mpsc::channel::<Outbound>(32);
             let (reply_tx, reply_rx) = oneshot::channel();
+            let registration = ConsumerRegistration::new(ClientId(i));
             handle
                 .consumer_attach
                 .send(ConsumerAttachRequest {
-                    client_id: ClientId(i),
+                    registration,
+                    sequence: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                     outbound: out_tx,
                     wire_terminal_id: WIRE_TID,
                     wants_state_sync: false,
+                    client_caps: phux_protocol::caps::ClientCapabilities::default(),
+                    scrollback: None,
                     loss_tolerant: false,
                     reply: reply_tx,
                 })
@@ -117,6 +123,7 @@ impl ActorFixture {
                 .expect("attach reply")
                 .expect("attach succeeded");
             consumers.push(out_rx);
+            registrations.push(registration);
         }
 
         Self {
@@ -124,16 +131,23 @@ impl ActorFixture {
             token,
             join,
             consumers,
+            registrations,
         }
     }
 
     /// Detach `client_id` and wait for the actor's acknowledgement.
     async fn detach(&self, client_id: ClientId) {
+        let registration = self
+            .registrations
+            .iter()
+            .find(|registration| registration.client_id == client_id)
+            .expect("fixture registration");
         let (det_tx, det_rx) = oneshot::channel();
         self.handle
             .consumer_detach
             .send(ConsumerDetachRequest {
                 client_id,
+                generation: registration.generation,
                 reply: det_tx,
             })
             .await

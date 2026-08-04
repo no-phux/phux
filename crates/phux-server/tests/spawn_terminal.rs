@@ -998,6 +998,8 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
                 terminal_id: new_id.clone(),
                 cols: 120,
                 rows: 40,
+                pixel_width: None,
+                pixel_height: None,
             },
         )
         .await;

@@ -400,12 +400,14 @@ pub(crate) const AGENT_STATE_SINK_CAPACITY: usize = 8;
 ///
 /// No reply frame: the S→C `TERMINAL_RESIZED` discriminant is spec-only, so
 /// every not-found path here is a `debug!` and a drop.
-pub(crate) fn handle_terminal_resize(
+pub(crate) async fn handle_terminal_resize(
     state: &SharedState,
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
     cols: u16,
     rows: u16,
+    pixel_width: Option<u16>,
+    pixel_height: Option<u16>,
 ) {
     if !wire_terminal_id.is_local() {
         // Federation relay (phux-v45.4): forward the frame verbatim with
@@ -420,6 +422,8 @@ pub(crate) fn handle_terminal_resize(
                 terminal_id: id,
                 cols,
                 rows,
+                pixel_width,
+                pixel_height,
             },
         ) {
             warn!(
@@ -432,17 +436,8 @@ pub(crate) fn handle_terminal_resize(
         }
         return;
     }
-    state.with_mut(|s| {
-        let Some(terminal) = s.terminal_from_wire(wire_terminal_id) else {
-            debug!(
-                ?client_id,
-                ?wire_terminal_id,
-                cols,
-                rows,
-                "TERMINAL_RESIZE: unknown pane; dropping (no-reply per wire frame design)",
-            );
-            return;
-        };
+    let resolved = state.with(|s| {
+        let terminal = s.terminal_from_wire(wire_terminal_id)?;
         // Clamp to the same one-cell floor `TerminalActor::handle_resize`
         // applies. libghostty has no zero-dimension grid, so a `0` on either
         // axis becomes a `1` down there regardless; recording the raw request
@@ -454,52 +449,75 @@ pub(crate) fn handle_terminal_resize(
         // applied consistently on both sides of the actor boundary.
         let cols = cols.max(1);
         let rows = rows.max(1);
-        // Keep the registry's recorded dims in sync so future
-        // `TERMINAL_SNAPSHOT` payloads report the post-resize cols/rows.
-        // Mirrors what `handle_viewport_resize` does for VIEWPORT_RESIZE.
-        if let Some(pane) = s.registry_mut().terminal_mut(terminal) {
-            pane.dims = (cols, rows);
-        }
-        let Some(handle) = s.terminal_handle(terminal) else {
-            debug!(
-                ?client_id,
-                ?terminal,
-                cols,
-                rows,
-                "TERMINAL_RESIZE: no TerminalHandle registered for pane; dropping",
-            );
-            return;
-        };
-        // Live per-pane resize (TERMINAL_RESIZE): resync clients so their
-        // mirrors reconverge after reflow (phux-8v1). An agent's explicit
-        // resize carries cell counts only — no pixel truth — so the actor
-        // keeps its last-known cell pixel size.
-        match handle.resize.try_send(ResizeRequest {
+        let handle = s.terminal_handle(terminal).cloned()?;
+        // Total pixels are scoped to this pane, unlike VIEWPORT_RESIZE. Reject
+        // incomplete or sub-cell reports rather than replacing good metrics.
+        let cell_px = terminal_resize_cell_px(cols, rows, pixel_width, pixel_height);
+        Some((terminal, handle, cols, rows, cell_px))
+    });
+    let Some((terminal, handle, cols, rows, cell_px)) = resolved else {
+        debug!(
+            ?client_id,
+            ?wire_terminal_id,
             cols,
             rows,
-            cell_px: None,
+            "TERMINAL_RESIZE: unknown pane or actor; dropping (no-reply per wire frame design)",
+        );
+        return;
+    };
+    let (reply_tx, reply_rx) = oneshot::channel();
+    if handle
+        .resize
+        .send(ResizeRequest {
+            cols,
+            rows,
+            cell_px,
             resync_clients: true,
             resync_only: false,
-        }) {
-            Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                warn!(
-                    ?client_id,
-                    ?terminal,
-                    cols,
-                    rows,
-                    "TERMINAL_RESIZE: pane resize mailbox full; dropping",
-                );
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                debug!(
-                    ?client_id,
-                    ?terminal,
-                    "TERMINAL_RESIZE: pane actor gone; dropping resize",
-                );
-            }
-        }
+            reply: Some(reply_tx),
+        })
+        .await
+        .is_err()
+    {
+        debug!(?client_id, ?terminal, "TERMINAL_RESIZE: pane actor gone");
+        return;
+    }
+    let Ok(applied) = reply_rx.await else {
+        debug!(
+            ?client_id,
+            ?terminal,
+            "TERMINAL_RESIZE: actor dropped acknowledgement"
+        );
+        return;
+    };
+    state.with_mut(|s| {
+        s.record_applied_terminal_resize(terminal, applied);
     });
+}
+
+const fn terminal_resize_cell_px(
+    cols: u16,
+    rows: u16,
+    pixel_width: Option<u16>,
+    pixel_height: Option<u16>,
+) -> Option<(u16, u16)> {
+    match (pixel_width, pixel_height) {
+        (Some(width), Some(height)) if width >= cols && height >= rows => {
+            Some((width / cols, height / rows))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn targeted_resize_derives_only_complete_usable_pixel_geometry() {
+    assert_eq!(
+        terminal_resize_cell_px(100, 40, Some(900), Some(720)),
+        Some((9, 18))
+    );
+    assert_eq!(terminal_resize_cell_px(100, 40, Some(900), None), None);
+    assert_eq!(terminal_resize_cell_px(100, 40, Some(99), Some(720)), None);
 }
 
 /// Perform the attach mutation in one critical section: call
@@ -589,6 +607,7 @@ pub(crate) async fn handle_command(
     command: Command,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     input_lane: Option<&InputLaneHandle>,
+    client_caps: phux_protocol::caps::ClientCapabilities,
 ) {
     // UPGRADE is handled out-of-band: `handle_upgrade` acks the client itself
     // and then re-execs the process, so it never returns a `CommandResult` for
@@ -662,7 +681,7 @@ pub(crate) async fn handle_command(
 
     let result = match command {
         Command::AttachTerminal { terminal_id } => {
-            handle_attach_terminal(state, client_id, &terminal_id, out_tx).await
+            handle_attach_terminal(state, client_id, &terminal_id, out_tx, client_caps).await
         }
         Command::DetachTerminal { terminal_id } => {
             handle_detach_terminal(state, client_id, &terminal_id)
@@ -834,88 +853,132 @@ async fn handle_attach_terminal(
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::TerminalId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    client_caps: phux_protocol::caps::ClientCapabilities,
 ) -> CommandResult {
-    use crate::terminal_actor::{ConsumerAttachRequest, PaneOutput, SnapshotRequest};
+    use crate::terminal_actor::{
+        ConsumerAttachRequest, ConsumerRegistration, PaneOutput, SnapshotRequest,
+    };
 
-    // Resolve, register the subscription, and snapshot the client's caps in
-    // one critical section. A client that never attached a session (the
-    // agent / hub-link shape) has no stored caps and gets the pass-through
-    // default — for the hub link that is exactly right: the hub relays
-    // satellite bytes verbatim (ADR-0007 opaque relay).
+    let Some(wire_id) = terminal_id.local_id() else {
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "local ATTACH_TERMINAL resolved without a local id".to_owned(),
+        };
+    };
+
+    // Resolve and register the subscription in one critical section. Caps come
+    // directly from this connection's HELLO, including for headless consumers
+    // that never performed a session ATTACH.
     let resolved = state.with_mut(|s| {
         let core = s.terminal_from_wire(terminal_id)?;
         let handle = s.terminal_handle(core).cloned()?;
-        let caps = s
-            .attached()
-            .get(&client_id)
-            .map(|c| c.client_caps)
-            .unwrap_or_default();
+        let newly_subscribed = !s.subscribers_for_terminal(core).contains(&client_id);
         s.subscribe_terminal(client_id, core);
-        Some((core, handle, caps))
+        Some((core, handle, newly_subscribed))
     });
-    let Some((core, handle, client_caps)) = resolved else {
+    let Some((core, handle, newly_subscribed)) = resolved else {
         return CommandResult::Error {
             code: ErrorCode::TerminalNotFound,
             message: format!("no such terminal: {terminal_id:?}"),
         };
     };
+    let registration = ConsumerRegistration::new(wire_client_id(client_id));
+    let sequence = state.with(|s| s.attach_terminal_pump_sequence(client_id, core));
 
     // Register the per-consumer state-sync entry (ADR-0018) so FRAME_ACK
     // from this consumer drives the actor's eviction loop. Mirrors the
-    // handle_attach registration; a failure degrades to the broadcast
-    // path, never fails the attach.
-    let mut tick_managed = false;
-    if let Some(wire_id) = terminal_id.local_id() {
-        let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
-        if handle
-            .consumer_attach
-            .send(ConsumerAttachRequest {
-                client_id: wire_client_id(client_id),
-                outbound: out_tx.clone(),
-                wire_terminal_id: wire_id,
-                wants_state_sync: matches!(
-                    client_caps.output_mode,
-                    phux_protocol::caps::OutputMode::StateSync
-                ),
-                // phux-v45.8: `ATTACH_TERMINAL` over a reliable transport; the
-                // emit-once model is correct. Forwarded-leg loss-tolerance is
-                // the deferred activation (ADR-0042).
-                loss_tolerant: false,
-                reply: attach_reply_tx,
-            })
-            .await
-            .is_ok()
-            && let Ok(Ok(outcome)) = attach_reply_rx.await
-        {
-            tick_managed = outcome.tick_managed;
+    // handle_attach registration. Registration is fallible, so do not cancel
+    // the prior pump or publish replacement bookkeeping until the actor
+    // confirms success.
+    let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
+    if handle
+        .consumer_attach
+        .send(ConsumerAttachRequest {
+            registration,
+            sequence: sequence.clone(),
+            outbound: out_tx.clone(),
+            wire_terminal_id: wire_id,
+            wants_state_sync: matches!(
+                client_caps.output_mode,
+                phux_protocol::caps::OutputMode::StateSync
+            ),
+            client_caps,
+            scrollback: None,
+            // phux-v45.8: `ATTACH_TERMINAL` over a reliable transport; the
+            // emit-once model is correct. Forwarded-leg loss-tolerance is
+            // the deferred activation (ADR-0042).
+            loss_tolerant: false,
+            reply: attach_reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        if newly_subscribed {
+            state.with_mut(|s| s.unsubscribe_terminal(client_id, core));
         }
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "pane actor unavailable for ATTACH_TERMINAL".to_owned(),
+        };
     }
+    let tick_managed = match attach_reply_rx.await {
+        Ok(Ok(outcome)) => outcome.tick_managed,
+        Ok(Err(err)) => {
+            if newly_subscribed {
+                state.with_mut(|s| s.unsubscribe_terminal(client_id, core));
+            }
+            return CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: format!("ATTACH_TERMINAL registration failed: {err}"),
+            };
+        }
+        Err(_) => {
+            if newly_subscribed {
+                state.with_mut(|s| s.unsubscribe_terminal(client_id, core));
+            }
+            return CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: "pane actor dropped the ATTACH_TERMINAL registration".to_owned(),
+            };
+        }
+    };
+
+    let staged = state.with(|s| s.stage_terminal_consumer(client_id, core, sequence));
+    let Some((pump_token, pump_sequence)) = staged else {
+        release_terminal_consumer_registration(
+            state,
+            client_id,
+            core,
+            &handle,
+            registration,
+            newly_subscribed,
+        )
+        .await;
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "consumer detached during ATTACH_TERMINAL".to_owned(),
+        };
+    };
+    let (raw_receiver_tx, raw_receiver_rx) =
+        oneshot::channel::<tokio::sync::broadcast::Receiver<PaneOutput>>();
 
     // Spawn the output pump — unless one is already live for this
     // (client, terminal) pair (idempotent re-attach) or the actor's tick
     // is this consumer's emitter (state-sync consumers, phux-3uv).
-    // Subscribing to the broadcast BEFORE the snapshot request and gating
-    // the pump's first forward on the snapshot send preserves the
-    // snapshot-then-deltas order (phux-7w1j).
-    let pump_token = state.with_mut(|s| s.register_attach_terminal_pump(client_id, core));
-    let mut snapshot_gate: Option<oneshot::Sender<()>> = None;
+    // The actor supplies the raw receiver at the exact snapshot cut.
     // When the actor's tick manages this consumer (state-sync mode) no
     // pump is spawned, but the token stays registered so DETACH_TERMINAL
     // bookkeeping is uniform (cancelling a pump-less token is a no-op).
-    if let Some(token) = pump_token
-        && !tick_managed
-    {
-        let mut output_rx = handle.output.subscribe();
+    if !tick_managed {
+        let token = pump_token.clone();
+        let sequence = pump_sequence.clone();
         let pump_out_tx = out_tx.clone();
         let pump_wire_terminal_id = terminal_id.clone();
         let pump_resize = handle.resize.clone();
-        let (gate_tx, gate_rx) = oneshot::channel::<()>();
-        snapshot_gate = Some(gate_tx);
         tokio::task::spawn_local(async move {
-            // A dropped gate (snapshot failed) falls through to live
-            // forwarding rather than going silent.
-            let _ = gate_rx.await;
-            let mut seq: u64 = 0;
+            let Ok(mut output_rx) = raw_receiver_rx.await else {
+                return;
+            };
             loop {
                 let msg = tokio::select! {
                     () = token.cancelled() => break,
@@ -927,7 +990,9 @@ async fn handle_attach_terminal(
                         // mapping as the session-attach pump.
                         let frame = match msg {
                             PaneOutput::Live(bytes) => {
-                                seq = seq.wrapping_add(1);
+                                let seq = sequence
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                    .wrapping_add(1);
                                 FrameKind::TerminalOutput {
                                     terminal_id: pump_wire_terminal_id.clone(),
                                     seq,
@@ -951,7 +1016,12 @@ async fn handle_attach_terminal(
                                 }
                             }
                         };
-                        if pump_out_tx.send(Outbound::Frame(frame)).await.is_err() {
+                        let send_result = tokio::select! {
+                            biased;
+                            () = token.cancelled() => break,
+                            result = pump_out_tx.send(Outbound::Frame(frame)) => result,
+                        };
+                        if send_result.is_err() {
                             break;
                         }
                     }
@@ -969,6 +1039,7 @@ async fn handle_attach_terminal(
                             cell_px: None,
                             resync_clients: true,
                             resync_only: true,
+                            reply: None,
                         });
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -984,22 +1055,72 @@ async fn handle_attach_terminal(
         .snapshot
         .send(SnapshotRequest {
             scrollback: None,
+            state_sync_consumer: tick_managed.then_some(registration),
+            include_raw_output: !tick_managed,
             reply: reply_tx,
         })
         .await
         .is_err()
     {
+        release_terminal_consumer_registration(
+            state,
+            client_id,
+            core,
+            &handle,
+            registration,
+            newly_subscribed,
+        )
+        .await;
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "pane actor unavailable for ATTACH_TERMINAL".to_owned(),
         };
     }
-    let Ok(snap) = reply_rx.await else {
+    let Ok(Ok(response)) = reply_rx.await else {
+        release_terminal_consumer_registration(
+            state,
+            client_id,
+            core,
+            &handle,
+            registration,
+            newly_subscribed,
+        )
+        .await;
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "pane actor dropped the ATTACH_TERMINAL snapshot".to_owned(),
         };
     };
+    let crate::terminal_actor::SnapshotResponse {
+        snapshot: snap,
+        raw_output,
+    } = response;
+    if state
+        .with_mut(|s| {
+            s.commit_staged_terminal_consumer(
+                client_id,
+                core,
+                registration.generation,
+                pump_token,
+                pump_sequence,
+            )
+        })
+        .is_none()
+    {
+        release_terminal_consumer_registration(
+            state,
+            client_id,
+            core,
+            &handle,
+            registration,
+            newly_subscribed,
+        )
+        .await;
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "consumer detached during ATTACH_TERMINAL snapshot".to_owned(),
+        };
+    }
     let replay =
         crate::runtime::attach::downsample_for_caps(&bytes::Bytes::from(snap.bytes), client_caps)
             .into();
@@ -1014,16 +1135,91 @@ async fn handle_attach_terminal(
         .await
         .is_err()
     {
+        // The mailbox is gone, so finalize the replacement before detach;
+        // restoring its obsolete predecessor would leak actor state.
+        let _ = finalize_terminal_consumer(&handle, registration).await;
+        release_terminal_consumer_registration(
+            state,
+            client_id,
+            core,
+            &handle,
+            registration,
+            newly_subscribed,
+        )
+        .await;
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "consumer went away during ATTACH_TERMINAL".to_owned(),
         };
     }
-    if let Some(gate) = snapshot_gate {
-        let _ = gate.send(());
+    if !finalize_terminal_consumer(&handle, registration).await {
+        release_terminal_consumer_registration(
+            state,
+            client_id,
+            core,
+            &handle,
+            registration,
+            newly_subscribed,
+        )
+        .await;
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "pane actor dropped ATTACH_TERMINAL finalization".to_owned(),
+        };
+    }
+    if let Some(raw_output) = raw_output {
+        let _ = raw_receiver_tx.send(raw_output);
     }
     debug!(?client_id, ?terminal_id, "ATTACH_TERMINAL subscribed");
     CommandResult::Ok
+}
+
+async fn finalize_terminal_consumer(
+    handle: &TerminalHandle,
+    registration: crate::terminal_actor::ConsumerRegistration,
+) -> bool {
+    let (reply, done) = oneshot::channel();
+    handle
+        .consumer_ready
+        .send(crate::terminal_actor::ConsumerReadyRequest {
+            registration,
+            reply,
+        })
+        .await
+        .is_ok()
+        && done.await.is_ok()
+}
+
+async fn release_terminal_consumer_registration(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: phux_core::ids::TerminalId,
+    handle: &TerminalHandle,
+    registration: crate::terminal_actor::ConsumerRegistration,
+    newly_subscribed: bool,
+) {
+    use crate::terminal_actor::ConsumerDetachRequest;
+
+    state.with_mut(|s| {
+        let committed =
+            s.rollback_terminal_consumer(client_id, terminal_id, registration.generation);
+        if newly_subscribed && !committed {
+            s.unsubscribe_terminal(client_id, terminal_id);
+        }
+    });
+    let (reply_tx, reply_rx) = oneshot::channel();
+    if handle
+        .consumer_detach
+        .send(ConsumerDetachRequest {
+            client_id: registration.client_id,
+            generation: registration.generation,
+            reply: reply_tx,
+        })
+        .await
+        .is_ok()
+    {
+        let _ = reply_rx.await;
+    }
 }
 
 /// Handle `DETACH_TERMINAL` (SPEC §5.1 tag 0x02, phux-v45.7): drop the
@@ -1039,20 +1235,24 @@ fn handle_detach_terminal(
 ) -> CommandResult {
     use crate::terminal_actor::ConsumerDetachRequest;
 
-    let handle = state.with_mut(|s| {
+    let detached = state.with_mut(|s| {
         s.unsubscribe_terminal_events(client_id, terminal_id);
         let core = s.terminal_from_wire(terminal_id)?;
-        s.cancel_attach_terminal_pump(client_id, core);
+        let generation = s.take_consumer_registration(client_id, core);
+        let _ = s.cancel_attach_terminal_pump(client_id, core);
         s.unsubscribe_terminal(client_id, core);
-        s.terminal_handle(core).cloned()
+        s.terminal_handle(core)
+            .cloned()
+            .map(|handle| (handle, generation))
     });
-    if let Some(handle) = handle {
+    if let Some((handle, Some(generation))) = detached {
         // Release the per-consumer RenderState cache (ADR-0018). Best
         // effort, same discipline as detach_and_release_consumer_state:
         // a full mailbox self-heals via the actor's closed-mailbox reap.
         let (reply_tx, _reply_rx) = oneshot::channel();
         let _ = handle.consumer_detach.try_send(ConsumerDetachRequest {
             client_id: wire_client_id(client_id),
+            generation,
             reply: reply_tx,
         });
     }
@@ -2477,34 +2677,30 @@ pub(crate) const fn empty_session_snapshot() -> phux_protocol::wire::info::Sessi
 /// Silent on every "not-found" path. A `VIEWPORT_RESIZE` from an
 /// unattached client is a benign race (the client may have sent it
 /// before its ATTACH completed); logging at `debug!` is enough.
-pub(crate) fn handle_viewport_resize(
+pub(crate) async fn handle_viewport_resize(
     state: &SharedState,
     client_id: ClientId,
     viewport: &ViewportInfo,
 ) {
-    state.with_mut(|s| {
+    let resolved = state.with_mut(|s| {
         let Some(client) = s.attached().get(&client_id) else {
             debug!(
                 ?client_id,
                 "VIEWPORT_RESIZE from non-attached client; ignoring"
             );
-            return;
+            return None;
         };
         let session_id = client.session;
         let Some(session) = s.registry().session(session_id) else {
             debug!(?client_id, "VIEWPORT_RESIZE: client's session vanished");
-            return;
+            return None;
         };
         let Some(window_id) = session.active else {
             debug!(?client_id, "VIEWPORT_RESIZE: no active window in session");
-            return;
+            return None;
         };
-        let Some(window) = s.registry().window(window_id) else {
-            return;
-        };
-        let Some(terminal_id) = window.active else {
-            return;
-        };
+        let window = s.registry().window(window_id)?;
+        let terminal_id = window.active?;
         // phux-nk07: record this client's viewport, then resolve the
         // Terminal's authoritative geometry by applying the window-size policy
         // across EVERY subscriber's viewport — not last-writer-wins, which let
@@ -2517,11 +2713,8 @@ pub(crate) fn handle_viewport_resize(
                 ?terminal_id,
                 "VIEWPORT_RESIZE: window-size policy yielded no geometry; PTY size unchanged",
             );
-            return;
+            return None;
         };
-        if let Some(pane) = s.registry_mut().terminal_mut(terminal_id) {
-            pane.dims = (cols, rows);
-        }
         // Pixel geometry rides along: the most recent usable pixel report
         // among this Terminal's subscribers — normally the viewport just
         // recorded above — fixes the cell size the PTY winsize and
@@ -2541,41 +2734,39 @@ pub(crate) fn handle_viewport_resize(
         // dropped resize is recoverable (the next resize, or the
         // next snapshot, re-syncs) and SPEC §10.5 explicitly classes
         // VIEWPORT_RESIZE as best-effort.
-        if let Some(handle) = s.terminal_handle(terminal_id) {
-            // Live viewport resize (SIGWINCH): resync clients (phux-8v1).
-            match handle.resize.try_send(ResizeRequest {
-                cols,
-                rows,
-                cell_px,
-                resync_clients: true,
-                resync_only: false,
-            }) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    warn!(
-                        ?client_id,
-                        ?terminal_id,
-                        cols,
-                        rows,
-                        "VIEWPORT_RESIZE: pane resize mailbox full; dropping (fire-and-forget per SPEC §10.5)",
-                    );
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    debug!(
-                        ?client_id,
-                        ?terminal_id,
-                        "VIEWPORT_RESIZE: pane actor gone; dropping resize",
-                    );
-                }
-            }
-        } else {
-            debug!(
-                ?client_id,
-                ?terminal_id,
-                "VIEWPORT_RESIZE: no TerminalHandle registered for pane; dropping resize",
-            );
-        }
+        Some((
+            terminal_id,
+            s.terminal_handle(terminal_id).cloned()?,
+            cols,
+            rows,
+            cell_px,
+        ))
     });
+    let Some((terminal_id, handle, cols, rows, cell_px)) = resolved else {
+        return;
+    };
+    let (reply_tx, reply_rx) = oneshot::channel();
+    if handle
+        .resize
+        .send(ResizeRequest {
+            cols,
+            rows,
+            cell_px,
+            resync_clients: true,
+            resync_only: false,
+            reply: Some(reply_tx),
+        })
+        .await
+        .is_err()
+    {
+        debug!(?client_id, ?terminal_id, "VIEWPORT_RESIZE: pane actor gone");
+        return;
+    }
+    if let Ok(applied) = reply_rx.await {
+        state.with_mut(|s| {
+            s.record_applied_terminal_resize(terminal_id, applied);
+        });
+    }
 }
 
 /// Route an `INPUT_*` frame body to the target pane's [`TerminalActor`].

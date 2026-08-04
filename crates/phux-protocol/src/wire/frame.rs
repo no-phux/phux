@@ -2253,6 +2253,10 @@ pub enum FrameKind {
         cols: u16,
         /// New height in cells.
         rows: u16,
+        /// Optional total viewport width in pixels.
+        pixel_width: Option<u16>,
+        /// Optional total viewport height in pixels.
+        pixel_height: Option<u16>,
     },
 
     /// `COMMAND` — the generic control-plane request envelope
@@ -2745,12 +2749,24 @@ impl FrameKind {
                 terminal_id,
                 cols,
                 rows,
+                pixel_width,
+                pixel_height,
             } => {
                 enc.write_field_with(field::terminal_resize::TERMINAL_ID, |e| {
                     encode_terminal_id(terminal_id, e);
                 });
                 enc.write_field_with(field::terminal_resize::COLS, |e| e.write_u16_be(*cols));
                 enc.write_field_with(field::terminal_resize::ROWS, |e| e.write_u16_be(*rows));
+                if let Some(width) = pixel_width {
+                    enc.write_field_with(field::terminal_resize::PIXEL_WIDTH, |e| {
+                        e.write_u16_be(*width);
+                    });
+                }
+                if let Some(height) = pixel_height {
+                    enc.write_field_with(field::terminal_resize::PIXEL_HEIGHT, |e| {
+                        e.write_u16_be(*height);
+                    });
+                }
             }
             Self::Command {
                 request_id,

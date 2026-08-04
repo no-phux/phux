@@ -107,6 +107,8 @@ pub async fn resize_to(
         terminal_id: pane.clone(),
         cols: cols.get(),
         rows: rows.get(),
+        pixel_width: None,
+        pixel_height: None,
     })
     .await?;
     // Ordered behind the frame above on this connection; see the module

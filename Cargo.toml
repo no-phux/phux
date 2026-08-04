@@ -44,6 +44,7 @@ phux-core = { path = "crates/phux-core" }
 phux-server = { path = "crates/phux-server" }
 phux-client = { path = "crates/phux-client" }
 phux-client-core = { path = "crates/phux-client-core" }
+phux-client-ffi = { path = "crates/phux-client-ffi" }
 phux-config = { path = "crates/phux-config" }
 phux-dial = { path = "crates/phux-dial" }
 phux-relay = { path = "crates/phux-relay" }
@@ -195,3 +196,8 @@ strip = "none"
 inherits = "release"
 debug = 1
 strip = "none"
+
+# Native consumers need panics to unwind into the C boundary rather than abort.
+[profile.ffi-release]
+inherits = "release"
+panic = "unwind"

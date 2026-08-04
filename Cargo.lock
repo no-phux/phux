@@ -2199,6 +2199,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-client-ffi"
+version = "0.11.0"
+dependencies = [
+ "bytes",
+ "libghostty-vt",
+ "phux-protocol",
+]
+
+[[package]]
 name = "phux-config"
 version = "0.11.0"
 dependencies = [

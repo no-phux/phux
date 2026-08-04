@@ -35,9 +35,11 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::{ClientCapabilities, ImageProtocolSet, OutputMode};
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_SNAPSHOT,
-    ViewportInfo,
+    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_HELLO_OK, TYPE_TERMINAL_OUTPUT,
+    TYPE_TERMINAL_SNAPSHOT, ViewportInfo,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -153,6 +155,108 @@ fn attach_resizes_seed_pty_to_client_viewport() {
 
         // Clean teardown — the seed command is an infinite loop, so the
         // shutdown_tx + JoinHandle cancellation cascade is what kills it.
+        drop(stream);
+        shutdown_tx.send(()).ok();
+        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
+            .await
+            .expect("server did not shut down after the shutdown signal")
+            .expect("server join")
+            .expect("server run_async ok");
+    });
+}
+
+#[test]
+fn state_sync_terminal_resize_returns_authoritative_geometry_snapshot() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "sleep 30"]);
+        let (shutdown_tx, server_handle) =
+            spawn_server_with_seed_cmd(socket_path.clone(), "default", cmd);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        let caps = ClientCapabilities::new()
+            .with_output_mode(OutputMode::StateSync)
+            .with_image_protocols(ImageProtocolSet::new());
+        send_frame(
+            &mut stream,
+            &FrameKind::Hello {
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                client_name: "state-sync resize test".to_owned(),
+                client_caps: caps,
+            },
+        )
+        .await;
+        let (type_byte, _) = recv_typed(&mut stream).await;
+        assert_eq!(type_byte, TYPE_HELLO_OK);
+
+        send_frame(
+            &mut stream,
+            &FrameKind::Attach {
+                target: AttachTarget::ByName("default".to_owned()),
+                viewport: ViewportInfo::new(80, 24),
+                request_scrollback: false,
+                scrollback_limit_lines: 0,
+            },
+        )
+        .await;
+        let (type_byte, _) = recv_typed(&mut stream).await;
+        assert_eq!(type_byte, TYPE_ATTACHED);
+        let (type_byte, snapshot) = recv_typed(&mut stream).await;
+        assert_eq!(type_byte, TYPE_TERMINAL_SNAPSHOT);
+        let FrameKind::TerminalSnapshot { terminal_id, .. } = snapshot else {
+            panic!("expected initial terminal snapshot");
+        };
+
+        send_frame(
+            &mut stream,
+            &FrameKind::TerminalResize {
+                terminal_id,
+                cols: 96,
+                rows: 28,
+                pixel_width: None,
+                pixel_height: None,
+            },
+        )
+        .await;
+        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+        let resized = loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let Ok((_, frame)) = timeout(remaining, recv_typed(&mut stream)).await else {
+                break false;
+            };
+            assert!(
+                !matches!(&frame, FrameKind::TerminalOutput { .. }),
+                "state-sync resize must not emit a geometry-less delta before its snapshot"
+            );
+            if matches!(
+                frame,
+                FrameKind::TerminalSnapshot {
+                    cols: 96,
+                    rows: 28,
+                    ..
+                }
+            ) {
+                break true;
+            }
+        };
+        assert!(
+            resized,
+            "state-sync resize must return a 96x28 authoritative snapshot"
+        );
+        assert!(
+            timeout(
+                std::time::Duration::from_millis(300),
+                recv_typed(&mut stream)
+            )
+            .await
+            .is_err(),
+            "resize snapshot must re-prime state sync rather than emit a duplicate delta"
+        );
+
         drop(stream);
         shutdown_tx.send(()).ok();
         timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)

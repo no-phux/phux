@@ -708,6 +708,18 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 terminal_id: TerminalId::local(0x0000_002A),
                 cols: 80,
                 rows: 24,
+                pixel_width: None,
+                pixel_height: None,
+            },
+        ),
+        (
+            "snap_terminal_resize_pixels",
+            FrameKind::TerminalResize {
+                terminal_id: TerminalId::local(0x0000_002A),
+                cols: 100,
+                rows: 40,
+                pixel_width: Some(900),
+                pixel_height: Some(720),
             },
         ),
     ]

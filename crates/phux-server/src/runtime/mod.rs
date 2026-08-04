@@ -1428,53 +1428,18 @@ mod tests {
         });
     }
 
-    /// `VIEWPORT_RESIZE` updates the focused pane's stored dims on the
-    /// canonical `Registry`. byc.5's PTY-resize integration will read
-    /// this state when it lands; today we just observe the mutation.
-    #[test]
-    fn viewport_resize_updates_focused_pane_dims() {
-        use phux_core::ids::TerminalId as CoreTerminalId;
-
-        let state = SharedState::new();
-        // Seed a session with a pane, then attach a client. Mirrors what
-        // `seed_session_with_actor` does on the real path, minus the
-        // TerminalActor spawn (we're not exercising the actor here — just
-        // the state-side dim update).
-        let (sid, _wid, pid): (_, _, CoreTerminalId) =
-            state.with_mut(|s| s.seed_session("test-session"));
-        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
-        let (tx, _rx) = tokio::sync::mpsc::channel(8);
-        state
-            .with_mut(|s| s.attach_default_caps(client_id, "test-session", tx))
-            .expect("attach");
-
-        // Sanity: starts at 80x24 (default core::Pane::dims).
-        let before = state
-            .with(|s| s.registry().terminal(pid).map(|p| p.dims))
-            .expect("pane exists");
-        assert_eq!(before, (80, 24));
-
-        let viewport = ViewportInfo::new(132, 50).with_pixels(Some(1320), Some(750));
-        handle_viewport_resize(&state, client_id, &viewport);
-
-        let after = state
-            .with(|s| s.registry().terminal(pid).map(|p| p.dims))
-            .expect("pane exists");
-        assert_eq!(after, (132, 50));
-
-        // Sanity: the session linkage didn't get clobbered.
-        let attached_session = state.with(|s| s.attached().get(&client_id).map(|c| c.session));
-        assert_eq!(attached_session, Some(sid));
-    }
-
     /// `VIEWPORT_RESIZE` fans the new (cols, rows) tuple onto the
     /// `TerminalHandle::resize` channel byc.5 added. We inject a hand-
     /// built `TerminalHandle` (no real actor) so the test can observe the
     /// receiver side directly — this pins the wire from
     /// `handle_viewport_resize` into the actor without needing to
     /// stand up libghostty or a PTY pair.
-    #[test]
-    fn viewport_resize_sends_to_terminal_actor_resize_channel() {
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the complete mock TerminalHandle keeps the acknowledged resize wiring explicit"
+    )]
+    async fn viewport_resize_sends_to_terminal_actor_resize_channel() {
         use crate::terminal_actor::TerminalHandle;
         use phux_core::ids::TerminalId as CoreTerminalId;
         use tokio::sync::{broadcast, mpsc};
@@ -1513,6 +1478,7 @@ mod tests {
             output: output_tx,
             resize: resize_tx,
             consumer_attach: consumer_attach_tx,
+            consumer_ready: mpsc::channel(8).0,
             consumer_detach: consumer_detach_tx,
             consumer_ack: consumer_ack_tx,
             subscribe_to_events: subscribe_to_events_tx,
@@ -1536,13 +1502,19 @@ mod tests {
             .expect("attach");
 
         let viewport = ViewportInfo::new(132, 50);
-        handle_viewport_resize(&state, client_id, &viewport);
-
-        // The connector ran inside the same task; the channel must
-        // already carry exactly one resize request.
-        let observed = resize_rx
-            .try_recv()
-            .expect("resize request must be queued on the channel");
+        let ((), observed) = tokio::join!(
+            handle_viewport_resize(&state, client_id, &viewport),
+            async {
+                let mut observed = resize_rx.recv().await.expect("resize request");
+                observed
+                    .reply
+                    .take()
+                    .expect("resize acknowledgement")
+                    .send(crate::terminal_actor::ResizeApplied::next(132, 50))
+                    .expect("resize waiter");
+                observed
+            }
+        );
         assert_eq!(
             (observed.cols, observed.rows),
             (132, 50),
@@ -1551,6 +1523,11 @@ mod tests {
         assert!(
             observed.resync_clients,
             "a live VIEWPORT_RESIZE must request a client resync (phux-8v1)",
+        );
+        assert_eq!(
+            state.with(|s| s.registry().terminal(pid).map(|pane| pane.dims)),
+            Some((132, 50)),
+            "registry updates only after the actor acknowledgement",
         );
         assert_eq!(
             observed.cell_px, None,
@@ -1564,10 +1541,19 @@ mod tests {
         // A pixel-bearing report resolves the per-cell size and rides the
         // same request: 1320x750 px over 132x50 cells -> 10x15 px cells.
         let viewport = ViewportInfo::new(132, 50).with_pixels(Some(1320), Some(750));
-        handle_viewport_resize(&state, client_id, &viewport);
-        let observed = resize_rx
-            .try_recv()
-            .expect("second resize request must be queued on the channel");
+        let ((), observed) = tokio::join!(
+            handle_viewport_resize(&state, client_id, &viewport),
+            async {
+                let mut observed = resize_rx.recv().await.expect("second resize request");
+                observed
+                    .reply
+                    .take()
+                    .expect("resize acknowledgement")
+                    .send(crate::terminal_actor::ResizeApplied::next(132, 50))
+                    .expect("resize waiter");
+                observed
+            }
+        );
         assert_eq!(
             observed.cell_px,
             Some((10, 15)),
@@ -1592,7 +1578,7 @@ mod tests {
     )]
     async fn handle_attach_fans_out_snapshot_requests_concurrently() {
         use phux_core::ids::TerminalId as CoreTerminalId;
-        use tokio::sync::{broadcast, mpsc, oneshot};
+        use tokio::sync::{broadcast, mpsc};
         use tokio::task::LocalSet;
 
         use crate::grid::SnapshotBytes;
@@ -1624,6 +1610,8 @@ mod tests {
 
                 // Build N TerminalHandles; keep the snapshot receivers in the test.
                 let mut snapshot_rxs: Vec<mpsc::Receiver<SnapshotRequest>> = Vec::with_capacity(N);
+                let mut consumer_attach_rxs = Vec::with_capacity(N);
+                let mut consumer_ready_rxs = Vec::with_capacity(N);
                 for &pid in &terminal_ids {
                     let (input_tx, _input_rx) = mpsc::channel(8);
                     let (snapshot_tx, snapshot_rx) = mpsc::channel(8);
@@ -1632,7 +1620,8 @@ mod tests {
                     let (output_tx, _output_rx_seed) =
                         broadcast::channel::<crate::terminal_actor::PaneOutput>(8);
                     let (resize_tx, _resize_rx) = mpsc::channel::<ResizeRequest>(8);
-                    let (consumer_attach_tx, _consumer_attach_rx) = mpsc::channel(8);
+                    let (consumer_attach_tx, consumer_attach_rx) = mpsc::channel(8);
+                    let (consumer_ready_tx, consumer_ready_rx) = mpsc::channel(8);
                     let (consumer_detach_tx, _consumer_detach_rx) = mpsc::channel(8);
                     let (consumer_ack_tx, _consumer_ack_rx) = mpsc::channel(8);
                     let (subscribe_to_events_tx, _subscribe_to_events_rx) = mpsc::channel(8);
@@ -1653,6 +1642,7 @@ mod tests {
                         output: output_tx,
                         resize: resize_tx,
                         consumer_attach: consumer_attach_tx,
+                        consumer_ready: consumer_ready_tx,
                         consumer_detach: consumer_detach_tx,
                         consumer_ack: consumer_ack_tx,
                         subscribe_to_events: subscribe_to_events_tx,
@@ -1665,6 +1655,8 @@ mod tests {
                         let _ = s.register_terminal_handle(pid, handle, CancellationToken::new());
                     });
                     snapshot_rxs.push(snapshot_rx);
+                    consumer_attach_rxs.push(consumer_attach_rx);
+                    consumer_ready_rxs.push(consumer_ready_rx);
                 }
 
                 // Outbound channel for the would-be writer task; we read
@@ -1706,13 +1698,26 @@ mod tests {
                     "expected Attached, got {frame:?}",
                 );
 
+                for rx in &mut consumer_attach_rxs {
+                    let request = tokio::time::timeout(MAILBOX_DEADLINE, rx.recv())
+                        .await
+                        .expect("consumer registration did not arrive")
+                        .expect("consumer registration channel closed");
+                    request
+                        .reply
+                        .send(Ok(crate::terminal_actor::ConsumerAttachOutcome {
+                            tick_managed: false,
+                        }))
+                        .expect("registration receiver dropped");
+                }
+
                 // Now collect all N SnapshotRequests BEFORE replying to
                 // any of them. Under the old sequential loop the
                 // handler would block on pane 0's reply forever (we
                 // haven't replied yet), so only the first request
                 // would land. With the concurrent fan-out all N land
                 // up front.
-                let mut replies: Vec<oneshot::Sender<SnapshotBytes>> = Vec::with_capacity(N);
+                let mut replies = Vec::with_capacity(N);
                 for (i, rx) in snapshot_rxs.iter_mut().enumerate() {
                     let req = tokio::time::timeout(MAILBOX_DEADLINE, rx.recv())
                         .await
@@ -1732,7 +1737,21 @@ mod tests {
                         bytes: format!("snap-{i}").into_bytes(),
                         scrollback: Vec::new(),
                     };
-                    let _ = reply.send(payload);
+                    let _ = reply.send(Ok(crate::terminal_actor::SnapshotResponse {
+                        snapshot: payload,
+                        raw_output: None,
+                    }));
+                }
+
+                let mut ready_tasks = JoinSet::new();
+                for mut ready_rx in consumer_ready_rxs {
+                    ready_tasks.spawn_local(async move {
+                        let ready = ready_rx
+                            .recv()
+                            .await
+                            .expect("consumer readiness channel closed");
+                        ready.reply.send(()).expect("readiness waiter dropped");
+                    });
                 }
 
                 // Drain N TERMINAL_SNAPSHOT frames out of the writer channel.
@@ -1749,6 +1768,9 @@ mod tests {
                     }
                 }
                 assert_eq!(snaps_seen, N, "expected one TERMINAL_SNAPSHOT per pane");
+                while let Some(result) = ready_tasks.join_next().await {
+                    result.expect("readiness task panicked");
+                }
 
                 attach_task.await.expect("attach task panicked");
             })
@@ -1791,9 +1813,10 @@ mod tests {
                 let (pwd_tx, _pwd_rx) = mpsc::channel(8);
                 let (output_tx, _output_rx_seed) =
                     broadcast::channel::<crate::terminal_actor::PaneOutput>(8);
-                let (resize_tx, _resize_rx) = mpsc::channel::<ResizeRequest>(8);
+                let (resize_tx, mut resize_rx) = mpsc::channel::<ResizeRequest>(8);
                 let (consumer_attach_tx, mut consumer_attach_rx) =
                     mpsc::channel::<ConsumerAttachRequest>(8);
+                let (consumer_ready_tx, mut consumer_ready_rx) = mpsc::channel(8);
                 let (consumer_detach_tx, mut consumer_detach_rx) =
                     mpsc::channel::<ConsumerDetachRequest>(8);
                 let (consumer_ack_tx, _consumer_ack_rx) = mpsc::channel(8);
@@ -1814,6 +1837,7 @@ mod tests {
                     output: output_tx,
                     resize: resize_tx,
                     consumer_attach: consumer_attach_tx,
+                    consumer_ready: consumer_ready_tx,
                     consumer_detach: consumer_detach_tx,
                     consumer_ack: consumer_ack_tx,
                     subscribe_to_events: subscribe_to_events_tx,
@@ -1849,6 +1873,17 @@ mod tests {
                     .await;
                 });
 
+                let mut resize = tokio::time::timeout(MAILBOX_DEADLINE, resize_rx.recv())
+                    .await
+                    .expect("attach resize did not arrive")
+                    .expect("resize channel closed");
+                resize
+                    .reply
+                    .take()
+                    .expect("attach resize acknowledgement")
+                    .send(crate::terminal_actor::ResizeApplied::next(80, 24))
+                    .expect("attach resize waiter");
+
                 // ATTACHED first.
                 let attached = tokio::time::timeout(MAILBOX_DEADLINE, out_rx.recv())
                     .await
@@ -1865,8 +1900,10 @@ mod tests {
                     .await
                     .expect("ConsumerAttachRequest never arrived — register not wired?")
                     .expect("consumer_attach channel closed");
+                let actor_sequence = attach_req.sequence.clone();
+                let actor_generation = attach_req.registration.generation;
                 assert_eq!(
-                    attach_req.client_id,
+                    attach_req.registration.client_id,
                     phux_protocol::ids::ClientId::new(
                         u32::try_from(client_id.0).unwrap_or(u32::MAX)
                     ),
@@ -1894,15 +1931,31 @@ mod tests {
                     .expect("snapshot channel closed");
                 snap_req
                     .reply
-                    .send(SnapshotBytes {
-                        cols: 80,
-                        rows: 24,
-                        bytes: b"snap".to_vec(),
-                        scrollback: Vec::new(),
-                    })
+                    .send(Ok(crate::terminal_actor::SnapshotResponse {
+                        snapshot: SnapshotBytes {
+                            cols: 80,
+                            rows: 24,
+                            bytes: b"snap".to_vec(),
+                            scrollback: Vec::new(),
+                        },
+                        raw_output: None,
+                    }))
                     .expect("send snapshot reply");
 
+                let ready = tokio::time::timeout(MAILBOX_DEADLINE, consumer_ready_rx.recv())
+                    .await
+                    .expect("consumer readiness did not arrive")
+                    .expect("consumer readiness channel closed");
+                assert_eq!(ready.registration.generation, actor_generation);
+                ready.reply.send(()).expect("readiness waiter dropped");
+
                 attach_task.await.expect("attach task panicked");
+                let runtime_sequence =
+                    state.with(|s| s.attach_terminal_pump_sequence(client_id, pid));
+                assert!(
+                    std::sync::Arc::ptr_eq(&actor_sequence, &runtime_sequence),
+                    "actor and runtime pump must share one sequence counter",
+                );
 
                 // Now tear the client down. The helper must send a
                 // ConsumerDetachRequest for the subscribed pane.
@@ -1918,6 +1971,7 @@ mod tests {
                     ),
                     "consumer detach keyed by the same wire client id",
                 );
+                assert_eq!(detach_req.generation, actor_generation);
 
                 // And the client is gone from ServerState.
                 assert!(
@@ -2025,6 +2079,7 @@ mod tests {
                 output: output_tx,
                 resize: mpsc::channel::<ResizeRequest>(8).0,
                 consumer_attach: mpsc::channel(8).0,
+                consumer_ready: mpsc::channel(8).0,
                 consumer_detach: mpsc::channel(8).0,
                 consumer_ack: mpsc::channel(8).0,
                 subscribe_to_events: mpsc::channel(8).0,
@@ -2127,15 +2182,15 @@ mod tests {
 
     /// A `VIEWPORT_RESIZE` from a non-attached client is a benign no-op —
     /// the handler must not panic or mutate state.
-    #[test]
-    fn viewport_resize_from_unattached_client_is_noop() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn viewport_resize_from_unattached_client_is_noop() {
         let state = SharedState::new();
         let (_sid, _wid, pid) = state.with_mut(|s| s.seed_session("session"));
         let bogus_client = ClientId(9999);
         let before = state
             .with(|s| s.registry().terminal(pid).map(|p| p.dims))
             .expect("pane exists");
-        handle_viewport_resize(&state, bogus_client, &ViewportInfo::new(200, 60));
+        handle_viewport_resize(&state, bogus_client, &ViewportInfo::new(200, 60)).await;
         let after = state
             .with(|s| s.registry().terminal(pid).map(|p| p.dims))
             .expect("pane exists");

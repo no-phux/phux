@@ -38,6 +38,13 @@ use phux_core::ids::TerminalId;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+#[derive(Debug)]
+struct PumpState {
+    token: CancellationToken,
+    consumer_generation: u64,
+    sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
 use super::ClientId;
 use crate::terminal_actor::TerminalHandle;
 
@@ -86,13 +93,15 @@ pub(super) struct TerminalTable {
     /// Empty lists are garbage-collected rather than left behind, so the
     /// map stays bounded across attach/detach churn.
     subscribers: HashMap<TerminalId, Vec<ClientId>>,
-    /// Per-`(client, terminal)` cancellation for `ATTACH_TERMINAL` output
-    /// pumps (phux-v45.7). `DETACH_TERMINAL` cancels one entry; client
-    /// detach / disconnect cancels all of the client's entries; pane reap
-    /// cancels the pane's entries. Without the token the pump task (which
-    /// holds the client's outbound sender) would keep streaming until the
-    /// connection died.
-    pumps: HashMap<(ClientId, TerminalId), CancellationToken>,
+    /// Active actor registration generation for each subscribed client/pane.
+    /// Runtime teardown uses this to fence delayed detach messages.
+    consumer_registrations: HashMap<(ClientId, TerminalId), u64>,
+    /// Per-`(client, terminal)` cancellation for the active output emitter,
+    /// whether installed by session `ATTACH` or `ATTACH_TERMINAL` (phux-v45.7).
+    /// Reattach replaces one entry; client detach/disconnect cancels all of
+    /// the client's entries; pane reap cancels the pane's entries.
+    pumps: HashMap<(ClientId, TerminalId), PumpState>,
+    resize_revisions: HashMap<TerminalId, u64>,
 }
 
 impl Default for TerminalTable {
@@ -110,7 +119,9 @@ impl TerminalTable {
             tokens: HashMap::new(),
             tasks: JoinSet::new(),
             subscribers: HashMap::new(),
+            consumer_registrations: HashMap::new(),
             pumps: HashMap::new(),
+            resize_revisions: HashMap::new(),
         }
     }
 
@@ -221,15 +232,50 @@ impl TerminalTable {
         self.subscribers.retain(|_, subs| !subs.is_empty());
     }
 
-    /// Clone the [`TerminalHandle`] of every pane `client` currently
-    /// subscribes to (phux-0q8).
-    #[must_use]
-    pub(super) fn subscribed_handles(&self, client: ClientId) -> Vec<TerminalHandle> {
-        self.subscribers
+    pub(super) fn subscribed_consumer_handles(
+        &self,
+        client: ClientId,
+    ) -> Vec<(TerminalHandle, u64)> {
+        self.consumer_registrations
             .iter()
-            .filter(|(_, subs)| subs.contains(&client))
-            .filter_map(|(terminal, _)| self.handle(*terminal).cloned())
+            .filter(|((owner, _), _)| *owner == client)
+            .filter_map(|((_, terminal), generation)| {
+                self.handle(*terminal)
+                    .cloned()
+                    .map(|handle| (handle, *generation))
+            })
             .collect()
+    }
+
+    pub(super) fn record_consumer_registration(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+        generation: u64,
+    ) {
+        self.consumer_registrations
+            .insert((client, terminal), generation);
+    }
+
+    pub(super) fn take_consumer_registration(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+    ) -> Option<u64> {
+        self.consumer_registrations.remove(&(client, terminal))
+    }
+
+    pub(super) fn remove_consumer_registration_if(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+        generation: u64,
+    ) -> bool {
+        if self.consumer_registrations.get(&(client, terminal)) != Some(&generation) {
+            return false;
+        }
+        self.consumer_registrations.remove(&(client, terminal));
+        true
     }
 
     /// `true` when no pane has any subscriber left — the observable form of
@@ -247,45 +293,85 @@ impl TerminalTable {
 
     // -- ATTACH_TERMINAL output pumps ---------------------------------
 
-    /// Register (and return the token for) an `ATTACH_TERMINAL` output
-    /// pump for `(client, terminal)` (phux-v45.7). Returns `None` when a
-    /// pump is already live for the pair — the idempotent re-attach must
-    /// not double-stream.
-    pub(super) fn register_pump(
+    pub(super) fn register_staged_pump(
         &mut self,
         client: ClientId,
         terminal: TerminalId,
-    ) -> Option<CancellationToken> {
-        use std::collections::hash_map::Entry;
-        match self.pumps.entry((client, terminal)) {
-            Entry::Occupied(_) => None,
-            Entry::Vacant(slot) => {
-                let token = CancellationToken::new();
-                slot.insert(token.clone());
-                Some(token)
-            }
+        consumer_generation: u64,
+        token: CancellationToken,
+        sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        if let Some(previous) = self.pumps.insert(
+            (client, terminal),
+            PumpState {
+                token,
+                consumer_generation,
+                sequence,
+            },
+        ) {
+            previous.token.cancel();
         }
+    }
+
+    pub(super) fn pump_sequence(
+        &self,
+        client: ClientId,
+        terminal: TerminalId,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.pumps.get(&(client, terminal)).map_or_else(
+            || std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            |pump| pump.sequence.clone(),
+        )
+    }
+
+    pub(super) fn accept_resize_revision(&mut self, terminal: TerminalId, revision: u64) -> bool {
+        let current = self.resize_revisions.entry(terminal).or_default();
+        if revision <= *current {
+            return false;
+        }
+        *current = revision;
+        true
     }
 
     /// Cancel and forget the `ATTACH_TERMINAL` pump for `(client,
     /// terminal)`, if one is live. Idempotent.
-    pub(super) fn cancel_pump(&mut self, client: ClientId, terminal: TerminalId) {
-        if let Some(token) = self.pumps.remove(&(client, terminal)) {
-            token.cancel();
+    pub(super) fn cancel_pump(&mut self, client: ClientId, terminal: TerminalId) -> Option<u64> {
+        if let Some(pump) = self.pumps.remove(&(client, terminal)) {
+            pump.token.cancel();
+            Some(pump.consumer_generation)
+        } else {
+            None
         }
     }
 
-    /// Cancel every `ATTACH_TERMINAL` output pump `client` owns
-    /// (phux-v45.7) so no task keeps streaming into a dead mailbox.
+    pub(super) fn cancel_pump_if(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+        generation: u64,
+    ) {
+        if self
+            .pumps
+            .get(&(client, terminal))
+            .is_some_and(|pump| pump.consumer_generation == generation)
+        {
+            let _ = self.cancel_pump(client, terminal);
+        }
+    }
+
+    /// Cancel every terminal output emitter `client` owns so no task keeps
+    /// streaming into a dead mailbox.
     pub(super) fn cancel_pumps_for_client(&mut self, client: ClientId) {
-        self.pumps.retain(|(owner, _), token| {
+        self.pumps.retain(|(owner, _), pump| {
             if *owner == client {
-                token.cancel();
+                pump.token.cancel();
                 false
             } else {
                 true
             }
         });
+        self.consumer_registrations
+            .retain(|(owner, _), _| *owner != client);
     }
 
     // -- teardown -----------------------------------------------------
@@ -308,9 +394,12 @@ impl TerminalTable {
             token.cancel();
         }
         self.subscribers.remove(&terminal);
-        self.pumps.retain(|(_, pane), token| {
+        self.consumer_registrations
+            .retain(|(_, pane), _| *pane != terminal);
+        self.resize_revisions.remove(&terminal);
+        self.pumps.retain(|(_, pane), pump| {
             if *pane == terminal {
-                token.cancel();
+                pump.token.cancel();
                 false
             } else {
                 true
