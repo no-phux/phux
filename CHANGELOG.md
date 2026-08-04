@@ -9,6 +9,24 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.12.0](https://github.com/phall1/phux/compare/v0.11.0...v0.12.0) (2026-08-04)
+
+
+### Features
+
+* negotiated native terminal state replication ([#364](https://github.com/phall1/phux/issues/364)) ([b442296](https://github.com/phall1/phux/commit/b442296c32056f71b5c3c1478efb1e52339755fe))
+
+
+### Bug Fixes
+
+* **ffi:** release borrowed search anchors safely ([#374](https://github.com/phall1/phux/issues/374)) ([75c4515](https://github.com/phall1/phux/commit/75c4515d394227ccd2b4f3251b874275d4ac9493))
+
+
+### Refactors
+
+* **server:** decompose ServerState into cohesive concerns ([6478e1c](https://github.com/phall1/phux/commit/6478e1c72cbb19d8474edace548c1df9fc111121))
+* **server:** finish the ServerState decomposition ([294a7e6](https://github.com/phall1/phux/commit/294a7e6cfe4b20823967f8ab4cafa6eee244fed0))
+
 ## [0.11.0](https://github.com/phall1/phux/compare/v0.10.0...v0.11.0) (2026-08-03)
 
 
