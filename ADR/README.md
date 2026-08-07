@@ -60,7 +60,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0026](./0026-overlays-theme-stack-single-dispatch.md) | Overlays: one theme, a real stack, and a single dispatch path | Accepted (builds on [0020](./0020-layered-render.md)) |
 | [0027](./0027-terminal-references-and-l3-links.md) | Terminals are referenced, not owned: views, links, and L3 tags | Accepted (builds on [0017](./0017-tui-not-protocol-privileged.md), [0015](./0015-protocol-layering.md)) |
 | [0028](./0028-runtime-log-control.md) | Runtime log control | Accepted (forward-compat, builds on [0024](./0024-wire-owns-input-atoms.md)) |
-| [0029](./0029-one-cursor-authority-and-repaint-scheduler.md) | One cursor authority and a repaint scheduler | Accepted (forward-compat, extends [0020](./0020-layered-render.md)) |
+| [0029](./0029-one-cursor-authority-and-repaint-scheduler.md) | One cursor authority and a repaint scheduler | Accepted (extends [0020](./0020-layered-render.md); shipped — `end_of_frame_cursor` and the `RepaintLevel` accumulator both live, see [0046](./0046-server-side-agent-state-detection.md)) |
 | [0030](./0030-engine-delegated-wire-and-projection-consumers.md) | Engine-delegated wire and projection consumers | Accepted (supersedes the L2 tier of [0015](./0015-protocol-layering.md)) |
 | [0031](./0031-remote-consumer-auth-and-encryption.md) | Remote-consumer authentication and encryption (no SSH tunnel) | Proposed |
 | [0032](./0032-graceful-server-upgrade.md) | Graceful server upgrade (sessions survive a binary update) | Accepted |

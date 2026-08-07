@@ -14,7 +14,7 @@ and five repaint triggers paint inline with no scheduler so two in one
 emitter (the sole CUP+DECTCEM+flush authority) and one monotone
 `RepaintLevel` accumulator drained once per loop iteration.
 
-Status: Accepted (forward-compat)
+Status: Accepted
 Date: 2026-06-06
 
 ## Context
