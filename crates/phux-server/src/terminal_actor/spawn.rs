@@ -236,20 +236,47 @@ fn canonical_refusal(
     if !termios.local_flags.contains(LocalFlags::ICANON) {
         return None;
     }
-    // `MAX_CANON` is not a portable compile-time constant — it differs by
-    // platform (empirically 1024 on this darwin build, per phux-mjmc's
-    // repro), and several `libc` targets do not expose it as one at all —
-    // so ask the running kernel via `fpathconf(_PC_MAX_CANON)` on this same
-    // fd instead of hardcoding a platform table.
-    let limit = fpathconf(borrowed, PathconfVar::MAX_CANON)
+    let limit = canonical_limit(borrowed);
+    let cr_terminates = termios.input_flags.contains(InputFlags::ICRNL)
+        && !termios.input_flags.contains(InputFlags::IGNCR);
+    exceeds_canonical_limit(bytes, limit, cr_terminates).then_some(CanonicalOverflow { limit })
+}
+
+/// The pane's real canonical-line byte limit.
+///
+/// `MAX_CANON` is not a portable compile-time constant, so the kernel is
+/// asked via `fpathconf(_PC_MAX_CANON)` on the pane's own fd rather than a
+/// hardcoded platform table. But that number is a **floor, not the truth**:
+/// POSIX specifies `_PC_MAX_CANON` as the minimum a conforming
+/// implementation must support, and Linux answers with the 255-byte POSIX
+/// floor while its `N_TTY` line discipline actually buffers 4096. Darwin
+/// reports its real 1024.
+///
+/// Taking the larger of the two matters because the two ways of being wrong
+/// are not symmetric. Refusing a payload the kernel would have accepted
+/// breaks working pastes — on Linux, every newline-free payload over 255
+/// bytes, which is the common case this guard is supposed to leave alone.
+/// Accepting one the kernel drops leaves phux-mjmc's wedge in place for a
+/// narrow band. The first is a regression phux would ship to every Linux
+/// user; the second is the status quo ante. So the guard refuses only what
+/// it is confident overflows.
+fn canonical_limit(fd: std::os::fd::BorrowedFd<'_>) -> usize {
+    /// Linux's `N_TTY_BUF_SIZE`, the real canonical queue capacity its
+    /// `fpathconf` under-reports as the POSIX floor.
+    const LINUX_N_TTY_BUF_SIZE: usize = 4096;
+
+    let reported = fpathconf(fd, PathconfVar::MAX_CANON)
         .ok()
         .flatten()
         .and_then(|value| usize::try_from(value).ok())
         .filter(|&value| value > 0)
         .unwrap_or(POSIX_MAX_CANON_FLOOR);
-    let cr_terminates = termios.input_flags.contains(InputFlags::ICRNL)
-        && !termios.input_flags.contains(InputFlags::IGNCR);
-    exceeds_canonical_limit(bytes, limit, cr_terminates).then_some(CanonicalOverflow { limit })
+    let known_floor = if cfg!(target_os = "linux") {
+        LINUX_N_TTY_BUF_SIZE
+    } else {
+        POSIX_MAX_CANON_FLOOR
+    };
+    reported.max(known_floor)
 }
 
 /// Whether the writer thread's loop should keep draining requests or shut
@@ -1290,12 +1317,12 @@ mod canonical_guard_tests {
         // the `master` binding for the whole function; the borrow does not
         // outlive this synchronous call.
         let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw_fd) };
-        let limit = usize::try_from(
-            fpathconf(borrowed, PathconfVar::MAX_CANON)
-                .expect("fpathconf must succeed on a real pty")
-                .expect("MAX_CANON must report a limit"),
-        )
-        .expect("MAX_CANON fits usize");
+        // Resolve the limit exactly as the guard does. Reading `fpathconf`
+        // directly here sized the payload at 255+37 on Linux, which does not
+        // overflow that platform's real 4096-byte queue, so this
+        // demonstration failed on CI while passing on darwin. See
+        // `canonical_limit` for why the reported value is only a floor.
+        let limit = canonical_limit(borrowed);
 
         // Oversized, newline-free payload, then a terminator to flush the
         // line — without a terminator nothing would be readable at all
