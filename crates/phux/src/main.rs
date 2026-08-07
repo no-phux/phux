@@ -230,6 +230,62 @@ fn misplaced_scoped_flag(err: &clap::Error) -> Option<String> {
     any_verb_has_long(&Cli::command(), long).then(|| flag.to_owned())
 }
 
+/// If `err` is clap refusing a spelling this binary used to accept, return
+/// the replacement to name.
+///
+/// Clap's nearest-match is computed on string distance, so for a removed
+/// spelling it is usually wrong in a way that costs the reader a search:
+/// `phux remote add` resolved to "a similar subcommand exists: `rename`",
+/// and `--vertical` to "to pass `--vertical` as a value, use `-- --vertical`".
+/// Neither is the migration. The rows in [`deprecations::REMOVED`] are, and
+/// they age out once nobody is still mid-upgrade.
+fn removed_spelling_hint(err: &clap::Error) -> Option<&'static deprecations::Removal> {
+    removed_spelling_hint_in(err, std::env::args().skip(1))
+}
+
+/// [`removed_spelling_hint`] over an explicit argv, so the flag arm is
+/// testable without mutating the process environment (this crate
+/// `forbid`s unsafe, and `env::set_var` is unsafe under edition 2024).
+fn removed_spelling_hint_in<I, S>(
+    err: &clap::Error,
+    argv: I,
+) -> Option<&'static deprecations::Removal>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    use clap::error::{ContextKind, ErrorKind};
+
+    match err.kind() {
+        ErrorKind::InvalidSubcommand => {
+            let bad = err.get(ContextKind::InvalidSubcommand)?.to_string();
+            deprecations::REMOVED
+                .iter()
+                .find(|row| row.old_root_verb() == Some(bad.as_str()))
+        }
+        ErrorKind::UnknownArgument => {
+            let invalid = err.get(ContextKind::InvalidArg)?.to_string();
+            // `--flag=value` reports the whole token; the flag alone is the id.
+            let flag = invalid.split('=').next().unwrap_or(&invalid);
+            // A removed flag is only a useful hint on the verb it hung off:
+            // `--vertical` never meant anything on `phux ls`, so do not
+            // offer `--split` there. Clap does not report which subcommand
+            // was being parsed, so match on the invocation instead.
+            let words: Vec<String> = argv
+                .into_iter()
+                .map(|s| s.as_ref().to_owned())
+                .collect();
+            deprecations::REMOVED.iter().find(|row| {
+                row.old_flag() == Some(flag)
+                    && row
+                        .flag_verb()
+                        .is_some_and(|verb| words.iter().any(|word| word == verb))
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Print a clap parse failure, appending the scoped-flag teaching hint when
 /// it applies, and map it to the exit code clap itself would use (0 for
 /// `--help`/`--version`, 2 for a usage error).
@@ -241,6 +297,12 @@ fn report_parse_error(err: &clap::Error) -> ExitCode {
         if let Some(flag) = misplaced_scoped_flag(err) {
             eprintln!(
                 "hint: `{flag}` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> {flag} ...`"
+            );
+        }
+        if let Some(row) = removed_spelling_hint(err) {
+            eprintln!(
+                "hint: `{}` was removed in {}; use `{}`",
+                row.old, row.removed_in, row.new
             );
         }
         return ExitCode::from(2);
@@ -1119,6 +1181,56 @@ mod tests {
         let err = Cli::try_parse_from(["phux", "--no-such-flag", "ls"])
             .expect_err("unknown flags are refused");
         assert_eq!(super::misplaced_scoped_flag(&err), None);
+    }
+
+    /// Every removed spelling names its actual replacement, because clap's
+    /// nearest-match does not: `phux remote add` resolves to `rename`, and
+    /// `--vertical` to "use `-- --vertical`". Both are dead ends for the
+    /// person this error exists to help — someone upgrading past v0.12.1.
+    #[test]
+    fn every_removed_spelling_names_its_replacement() {
+        for row in super::deprecations::REMOVED {
+            let (argv, expected): (Vec<&str>, &str) = match row.surface {
+                super::deprecations::DeprecatedSurface::Verb => {
+                    let verb = row.old_root_verb().expect("verb rows carry a root verb");
+                    (vec!["phux", verb], row.new)
+                }
+                super::deprecations::DeprecatedSurface::Flag => {
+                    let verb = row.flag_verb().expect("flag rows carry a verb");
+                    let flag = row.old_flag().expect("flag rows carry a flag");
+                    (vec!["phux", verb, "@1", "@2", flag], row.new)
+                }
+            };
+            let err = Cli::try_parse_from(argv.iter().copied())
+                .expect_err(&format!("{argv:?} must no longer parse"));
+            let hit = super::removed_spelling_hint_in(&err, argv.iter().skip(1).copied())
+                .unwrap_or_else(|| panic!("{argv:?} must get a removal hint"));
+            assert_eq!(hit.new, expected, "wrong replacement for {argv:?}");
+        }
+    }
+
+    /// A removed flag is only a hint on the verb it hung off. `--vertical`
+    /// never meant anything on `phux ls`, so offering `--split` there would
+    /// invent a flag that verb does not have.
+    #[test]
+    fn a_removed_flag_is_not_suggested_on_an_unrelated_verb() {
+        let argv = ["phux", "ls", "--vertical"];
+        let err = Cli::try_parse_from(argv).expect_err("`--vertical` is gone everywhere");
+        assert!(
+            super::removed_spelling_hint_in(&err, argv.iter().skip(1).copied()).is_none(),
+            "`--split` belongs to insert-pane/move-pane, not to `ls`"
+        );
+    }
+
+    /// A spelling that never existed gets no removal hint — the table is a
+    /// migration aid, not a guess.
+    #[test]
+    fn an_unrelated_unknown_subcommand_gets_no_removal_hint() {
+        let argv = ["phux", "definitely-not-a-verb"];
+        let err = Cli::try_parse_from(argv).expect_err("unknown verbs are refused");
+        assert!(
+            super::removed_spelling_hint_in(&err, argv.iter().skip(1).copied()).is_none()
+        );
     }
 
     /// Parse `argv` to its resolved [`Command`], panicking with the argv on

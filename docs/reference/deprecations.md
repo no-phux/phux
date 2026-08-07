@@ -26,3 +26,17 @@ No spelling is currently deprecated. When one is added to `crate::deprecations::
 
 | Deprecated spelling | Use instead | Deprecated in | Planned removal |
 |---|---|---|---|
+
+## Removed
+
+These spellings no longer parse. They are listed because a parse error names the replacement for them: clap's nearest-match is computed on string distance and is usually wrong here (`phux remote add` resolves to `rename`), so each row below adds a `hint:` line naming the real migration. Rows age out once nobody is still upgrading past the release that removed them, after which clap's ordinary message is the honest answer.
+
+| Removed spelling | Use instead | Removed in |
+|---|---|---|
+| `phux remote` | `phux host` | v0.12.1 |
+| `phux satellite` | `phux host --role satellite` | v0.12.1 |
+| `phux enroll` | `phux host enroll` | v0.12.1 |
+| `phux insert-pane --horizontal` | `phux insert-pane --split horizontal` | v0.12.1 |
+| `phux insert-pane --vertical` | `phux insert-pane --split vertical` | v0.12.1 |
+| `phux move-pane --horizontal` | `phux move-pane --split horizontal` | v0.12.1 |
+| `phux move-pane --vertical` | `phux move-pane --split vertical` | v0.12.1 |

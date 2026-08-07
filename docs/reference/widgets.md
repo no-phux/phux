@@ -59,14 +59,6 @@ Options:
 - `prefix` — string, optional — literal text prepended verbatim to the formatted output.
 - `max-len` (also spelled `max_len`) — integer `> 0`, optional — truncate the session name itself to this many characters (prefix and format literals not counted); no ellipsis.
 
-## `text`
-
-A literal string, rendered verbatim. The building block for separators, labels, and fixed decoration in a custom bar.
-
-Options:
-
-- `value` — string, REQUIRED — the literal text to render. May be empty, which renders nothing; there is no default, because a `text` widget with no `value` is always a mistake rather than a request for a blank.
-
 ## `time`
 
 The wall clock, strftime-formatted, rendered in the local time zone and repainted every second.

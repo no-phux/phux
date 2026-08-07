@@ -107,3 +107,108 @@ impl Deprecation {
 /// `main.rs`), stay wired up for the next spelling that needs one release
 /// cycle of warning before it goes.
 pub(crate) const DEPRECATED: &[Deprecation] = &[];
+
+/// One spelling that is gone: what it was, what replaced it, and when it
+/// went.
+///
+/// A removed spelling no longer parses, so clap answers it with a generic
+/// nearest-match — which is actively misleading here, because the nearest
+/// string is rarely the right migration (`phux remote add` resolved to
+/// "a similar subcommand exists: `rename`"). These rows let the parse
+/// error name the actual replacement for a release or two after removal,
+/// after which the row ages out and clap's ordinary message is the honest
+/// answer.
+pub(crate) struct Removal {
+    /// The kind of surface the old spelling was.
+    pub(crate) surface: DeprecatedSurface,
+    /// The old spelling as the user typed it, in the same shape as
+    /// [`Deprecation::old`]: `phux remote add`, or a verb followed by the
+    /// removed long flag.
+    pub(crate) old: &'static str,
+    /// The visible replacement spelling.
+    pub(crate) new: &'static str,
+    /// The release the spelling stopped parsing in.
+    pub(crate) removed_in: &'static str,
+}
+
+impl Removal {
+    /// The first subcommand word of a [`DeprecatedSurface::Verb`] row
+    /// (`"phux remote add"` yields `Some("remote")`); `None` on flag rows.
+    /// This is what clap reports back as the invalid subcommand.
+    pub(crate) fn old_root_verb(&self) -> Option<&'static str> {
+        match self.surface {
+            DeprecatedSurface::Verb => self.old.split_whitespace().nth(1),
+            DeprecatedSurface::Flag => None,
+        }
+    }
+
+    /// The removed long flag of a [`DeprecatedSurface::Flag`] row
+    /// (`Some("--horizontal")`); `None` on verb rows.
+    pub(crate) fn old_flag(&self) -> Option<&'static str> {
+        self.old
+            .split_whitespace()
+            .next_back()
+            .filter(|word| word.starts_with("--"))
+    }
+
+    /// The verb a [`DeprecatedSurface::Flag`] row's flag hung off
+    /// (`"phux insert-pane --horizontal"` yields `Some("insert-pane")`).
+    pub(crate) fn flag_verb(&self) -> Option<&'static str> {
+        match self.surface {
+            DeprecatedSurface::Flag => self.old.split_whitespace().nth(1),
+            DeprecatedSurface::Verb => None,
+        }
+    }
+}
+
+/// Every spelling removed recently enough that naming its replacement in a
+/// parse error still helps someone upgrading.
+///
+/// Rows are dropped once the release that removed them is far enough back
+/// that anyone still typing the old spelling is not mid-upgrade — at which
+/// point clap's generic message is the honest answer and this table should
+/// shrink rather than accumulate.
+pub(crate) const REMOVED: &[Removal] = &[
+    Removal {
+        surface: DeprecatedSurface::Verb,
+        old: "phux remote",
+        new: "phux host",
+        removed_in: "v0.12.1",
+    },
+    Removal {
+        surface: DeprecatedSurface::Verb,
+        old: "phux satellite",
+        new: "phux host --role satellite",
+        removed_in: "v0.12.1",
+    },
+    Removal {
+        surface: DeprecatedSurface::Verb,
+        old: "phux enroll",
+        new: "phux host enroll",
+        removed_in: "v0.12.1",
+    },
+    Removal {
+        surface: DeprecatedSurface::Flag,
+        old: "phux insert-pane --horizontal",
+        new: "phux insert-pane --split horizontal",
+        removed_in: "v0.12.1",
+    },
+    Removal {
+        surface: DeprecatedSurface::Flag,
+        old: "phux insert-pane --vertical",
+        new: "phux insert-pane --split vertical",
+        removed_in: "v0.12.1",
+    },
+    Removal {
+        surface: DeprecatedSurface::Flag,
+        old: "phux move-pane --horizontal",
+        new: "phux move-pane --split horizontal",
+        removed_in: "v0.12.1",
+    },
+    Removal {
+        surface: DeprecatedSurface::Flag,
+        old: "phux move-pane --vertical",
+        new: "phux move-pane --split vertical",
+        removed_in: "v0.12.1",
+    },
+];
