@@ -63,16 +63,23 @@ impl Manager {
     }
 
     /// Where the unit file for this manager belongs.
-    fn unit_path(self) -> PathBuf {
+    ///
+    /// Fallible: with `HOME` (and, for systemd, `XDG_CONFIG_HOME`) unset,
+    /// the naive join used to produce a *relative* path — `Library/...` or
+    /// `.config/...` — and every caller would then create directories and
+    /// write the unit under whatever the current working directory
+    /// happened to be, silently. Fail here instead, at the one place that
+    /// knows why.
+    fn unit_path(self) -> Result<PathBuf, String> {
         match self {
-            Self::Launchd => home_dir()
+            Self::Launchd => Ok(home_dir()?
                 .join("Library")
                 .join("LaunchAgents")
-                .join(format!("{LAUNCHD_LABEL}.plist")),
-            Self::Systemd => config_home()
+                .join(format!("{LAUNCHD_LABEL}.plist"))),
+            Self::Systemd => Ok(config_home()?
                 .join("systemd")
                 .join("user")
-                .join(SYSTEMD_UNIT),
+                .join(SYSTEMD_UNIT)),
         }
     }
 }
@@ -431,12 +438,20 @@ pub(crate) fn run_install(
         return ExitCode::SUCCESS;
     }
 
-    if let Err(err) = write_unit_files(manager, &plan) {
+    let unit_path = match manager.unit_path() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("phux service: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(err) = write_unit_files(manager, &plan, &unit_path) {
         eprintln!("phux service: {err}");
         return ExitCode::FAILURE;
     }
 
-    match reload(manager, &plan) {
+    match reload(manager, &plan, &unit_path) {
         Ok(()) => {}
         Err(err) => {
             eprintln!("phux service: unit written, but the init system rejected it: {err}");
@@ -444,14 +459,13 @@ pub(crate) fn run_install(
         }
     }
 
-    report_install(manager, &plan);
+    report_install(manager, &plan, &unit_path);
     ExitCode::SUCCESS
 }
 
 /// Write the unit file (and the wrapper, when `--restore` is on), creating
 /// the directories the init system expects.
-fn write_unit_files(manager: Manager, plan: &ServicePlan) -> Result<(), String> {
-    let unit_path = manager.unit_path();
+fn write_unit_files(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> Result<(), String> {
     if let Some(parent) = unit_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
@@ -468,7 +482,7 @@ fn write_unit_files(manager: Manager, plan: &ServicePlan) -> Result<(), String> 
         set_mode(&plan.wrapper, 0o755)?;
     }
 
-    std::fs::write(&unit_path, render_unit(manager, plan))
+    std::fs::write(unit_path, render_unit(manager, plan))
         .map_err(|err| format!("could not write {}: {err}", unit_path.display()))
 }
 
@@ -504,7 +518,7 @@ fn uid() -> u32 {
 }
 
 /// Hand the written unit to the init system, replacing any loaded copy.
-fn reload(manager: Manager, plan: &ServicePlan) -> Result<(), String> {
+fn reload(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> Result<(), String> {
     match manager {
         Manager::Launchd => {
             // Bootout first so a reinstall picks up the new plist; a job
@@ -515,7 +529,7 @@ fn reload(manager: Manager, plan: &ServicePlan) -> Result<(), String> {
                 &[
                     "bootstrap".to_owned(),
                     format!("gui/{}", uid()),
-                    path_string(&manager.unit_path()),
+                    path_string(unit_path),
                 ],
             )?;
             let _ = plan;
@@ -561,9 +575,9 @@ fn run_tool(program: &str, args: &[String]) -> Result<(), String> {
 
 /// Report what an install did, including the caveats an operator only
 /// discovers later otherwise.
-fn report_install(manager: Manager, plan: &ServicePlan) {
+fn report_install(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
     outln!("phux service installed.");
-    outln!("  unit    {}", manager.unit_path().display());
+    outln!("  unit    {}", unit_path.display());
     outln!("  binary  {}", plan.binary.display());
     if let Some(quic) = &plan.quic {
         outln!("  quic    {quic}");
@@ -635,7 +649,13 @@ pub(crate) fn run_uninstall() -> ExitCode {
         eprintln!("phux service: note: {err}");
     }
 
-    let unit_path = manager.unit_path();
+    let unit_path = match manager.unit_path() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("phux service: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     match std::fs::remove_file(&unit_path) {
         Ok(()) => outln!("Removed {}", unit_path.display()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -676,7 +696,13 @@ pub(crate) fn run_status() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let unit_path = manager.unit_path();
+    let unit_path = match manager.unit_path() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("phux service: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     if !unit_path.exists() {
         outln!("not installed (no unit at {})", unit_path.display());
         outln!("Install one with `phux service install`.");
@@ -814,9 +840,18 @@ fn systemd_escape(arg: &str) -> String {
 }
 
 /// Escape the characters systemd treats specially inside a double-quoted
-/// value: the quote itself, and the backslash that would escape it.
+/// `ExecStart=`/`Environment=` value: the quote itself and the backslash
+/// that would escape it, plus systemd's own two expansion sigils — `%`
+/// triggers unit-file specifier expansion (`%h`, `%t`, ...) and `$` triggers
+/// shell-style variable expansion — both of which run over this value
+/// regardless of the surrounding quoting, so a literal `%` or `$` in an
+/// operator-supplied path must be doubled to survive unexpanded.
 fn systemd_quote(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%")
+        .replace('$', "$$")
 }
 
 /// Single-quote a value for POSIX `sh`, closing and reopening the quote
@@ -832,25 +867,53 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// `$HOME`, or an empty path when it is unset — the caller's own file
-/// operations then fail with a real error rather than this guessing.
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from)
+/// `$HOME`, or an error when it is unset (or empty).
+///
+/// An empty fallback here used to let every join downstream silently
+/// produce a path relative to the current working directory instead of
+/// failing — see [`Manager::unit_path`].
+fn home_dir() -> Result<PathBuf, String> {
+    home_dir_from(std::env::var_os("HOME"))
+}
+
+/// [`home_dir`] with `$HOME` injectable, so a test can drive the unset case
+/// without mutating the process environment (`env::set_var` is unsafe
+/// under edition 2024 and this crate forbids unsafe code).
+fn home_dir_from(home: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    home.filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set; cannot determine the per-user unit directory".to_owned())
 }
 
 /// `$XDG_CONFIG_HOME`, falling back to `$HOME/.config` per the XDG base
-/// directory spec.
-fn config_home() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| home_dir().join(".config"), PathBuf::from)
+/// directory spec. Errors when neither is available, for the same reason
+/// [`home_dir`] does.
+fn config_home() -> Result<PathBuf, String> {
+    config_home_from(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// [`config_home`] with both environment variables injectable; see
+/// [`home_dir_from`] for why this crate cannot just mutate the environment
+/// in a test instead.
+fn config_home_from(
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    if let Some(value) = xdg_config_home.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(value));
+    }
+    Ok(home_dir_from(home)?.join(".config"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Manager, ServicePlan, render_launchd_plist, render_systemd_unit, render_wrapper_script,
-        sh_quote, systemd_escape, xml_escape,
+        Manager, ServicePlan, config_home_from, home_dir_from, render_launchd_plist,
+        render_systemd_unit, render_wrapper_script, sh_quote, systemd_escape, systemd_quote,
+        xml_escape,
     };
     use std::path::PathBuf;
 
@@ -1019,6 +1082,38 @@ mod tests {
         assert_eq!(systemd_escape("a\"b"), "\"a\\\"b\"");
     }
 
+    /// phux-8wm regression: an operator path containing `%` or `$` must
+    /// come out doubled, or systemd's specifier (`%h`, `%t`, ...) and
+    /// shell-style (`$FOO`, `${FOO}`) expansion silently rewrite the unit's
+    /// `ExecStart=`/`Environment=` values into something the operator never
+    /// wrote.
+    #[test]
+    fn systemd_escape_doubles_percent_and_dollar() {
+        assert_eq!(systemd_escape("/opt/100%/bin"), "\"/opt/100%%/bin\"");
+        assert_eq!(systemd_escape("/opt/$HOME/bin"), "\"/opt/$$HOME/bin\"");
+        assert_eq!(systemd_quote("100%"), "100%%");
+        assert_eq!(systemd_quote("$FOO"), "$$FOO");
+        assert_eq!(systemd_quote("${FOO}"), "$${FOO}");
+    }
+
+    /// The same hazard through the real renderer: a token/cert/key path or
+    /// socket path containing `%`/`$` must not leak unescaped into the
+    /// generated `[Service]` block.
+    #[test]
+    fn systemd_unit_escapes_percent_and_dollar_in_paths() {
+        let mut plan = plan();
+        plan.tokens = PathBuf::from("/home/u/100%/$HOME/remote-tokens");
+        let unit = render_systemd_unit(&plan);
+        assert!(
+            unit.contains("100%%") && unit.contains("$$HOME"),
+            "unescaped %/$ leaked into the unit:\n{unit}"
+        );
+        assert!(
+            !unit.contains("/100%/") && !unit.contains("/$HOME/"),
+            "a bare %/$ must not survive rendering:\n{unit}"
+        );
+    }
+
     #[test]
     fn sh_quote_survives_an_embedded_single_quote() {
         assert_eq!(sh_quote("/plain/path"), "'/plain/path'");
@@ -1029,11 +1124,47 @@ mod tests {
     fn unit_paths_are_user_scope() {
         // ADR-0055: never a system-wide unit — that implies a multi-user
         // server, which ADR-0003 does not have.
-        let launchd = Manager::Launchd.unit_path();
+        let launchd = Manager::Launchd
+            .unit_path()
+            .expect("HOME is set in this test process");
         assert!(launchd.ends_with("Library/LaunchAgents/com.phux.server.plist"));
         assert!(!launchd.starts_with("/Library"));
-        let systemd = Manager::Systemd.unit_path();
+        let systemd = Manager::Systemd
+            .unit_path()
+            .expect("HOME is set in this test process");
         assert!(systemd.ends_with("systemd/user/phux.service"));
         assert!(!systemd.starts_with("/etc"));
+    }
+
+    /// phux-8wm regression: with `HOME` unset, the naive
+    /// `home_dir().join(...)` used to fold into a *relative* path, so
+    /// `phux service install` would silently create
+    /// `./Library/LaunchAgents/...` under whatever directory the operator
+    /// happened to run it from instead of failing loudly. Both managers
+    /// must refuse instead.
+    ///
+    /// Drives [`home_dir_from`]/[`config_home_from`] directly with the
+    /// unset case rather than mutating the real process environment
+    /// (`env::set_var`/`remove_var` are unsafe under edition 2024, and this
+    /// crate forbids unsafe code).
+    #[test]
+    fn unit_path_errors_instead_of_writing_into_the_cwd_when_home_is_unset() {
+        let home_err = home_dir_from(None)
+            .expect_err("HOME-unset must be refused, not silently empty-then-relative");
+        assert!(home_err.contains("HOME"), "got {home_err}");
+
+        let config_err = config_home_from(None, None)
+            .expect_err("HOME-and-XDG_CONFIG_HOME-unset must be refused");
+        assert!(config_err.contains("HOME"), "got {config_err}");
+
+        // XDG_CONFIG_HOME alone is enough even with HOME unset.
+        let config = config_home_from(Some("/xdg-config".into()), None)
+            .expect("XDG_CONFIG_HOME alone must be sufficient");
+        assert_eq!(config, PathBuf::from("/xdg-config"));
+
+        // An empty (but present) HOME is exactly as absent as an unset one.
+        let empty_home_err = home_dir_from(Some(std::ffi::OsString::new()))
+            .expect_err("an empty HOME must be refused the same as an unset one");
+        assert!(empty_home_err.contains("HOME"), "got {empty_home_err}");
     }
 }
