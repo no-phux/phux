@@ -24,13 +24,13 @@ version would mean. The README's Status section names surfaces as "still
 pre-1.0" without saying what 1.0 would change about them.
 
 Two version axes already exist and are routinely conflated. The workspace
-version (`0.12.1`) tracks the binary. `PROTOCOL_VERSION` (`0.7.0`, ADR-0067)
+version (`0.12.1`) tracks the binary. `PROTOCOL_VERSION` (`0.7.0`, ADR-0070)
 tracks the wire, and [ADR-0061](./0061-capabilities-add-versions-break.md)
 already declares that a wire `minor` bump is a fleet-wide break with no grace
 window: a `0.7.0` client cannot talk to a `0.6.0` server at all, for anyone,
 for any reason. That is deliberate — a silently half-compatible peer is worse
 than a loud refusal — but it means the wire cannot honestly carry a 1.0
-compatibility promise while the ADR-0067 client kernel, history lanes, and
+compatibility promise while the ADR-0070 client kernel, history lanes, and
 frontend adapters are mid-migration.
 
 Meanwhile the surfaces consumers actually script against are stable in
@@ -77,7 +77,7 @@ production never builds (the ADR-0030 demotion cascade).
    has run.
 
 5. **What 1.0 explicitly does not include** is named, so its absence is not
-   read as a regression: the ADR-0067 native engine-state program beyond the
+   read as a regression: the ADR-0070 native engine-state program beyond the
    protocol layer that already shipped, the native GUI, Blackbird workload
    authentication, per-consumer federation sub-identities, and the residual
    Mosh-SSP loss bound.
@@ -91,7 +91,7 @@ survives an upgrade; it never sees a discriminant. Freezing the consumer
 surface buys the whole benefit of a 1.0 for the people who have one.
 
 Freezing the wire at the same moment would buy nothing and cost honesty.
-ADR-0067 retired `TERMINAL_SNAPSHOT` outright and the client kernel that
+ADR-0070 retired `TERMINAL_SNAPSHOT` outright and the client kernel that
 consumes the new bootstrap lifecycle is still being migrated onto its
 frontends; a 1.0 stamp on that would be a promise made during a move.
 
@@ -120,7 +120,7 @@ deliberately not blocked on it.
 ## Alternatives
 
 **Freeze the wire at 1.0 too.** One version, one promise, no explaining. It
-would require either stopping the ADR-0067 migration at its current line or
+would require either stopping the ADR-0070 migration at its current line or
 committing to compatibility shims that ADR-0061 exists to refuse. Rejected as
 a promise phux cannot currently keep.
 
