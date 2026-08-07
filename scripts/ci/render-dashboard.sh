@@ -33,6 +33,14 @@ summary=$(jq -c --argjson now "$now" --arg generated "$generated" '
     def median: sort | if length == 0 then null else .[(length - 1) / 2 | floor] end;
     def p95: sort | if length == 0 then null else .[(length - 1) * 0.95 | floor] end;
     def r1: if . == null then null else . * 10 | round / 10 end;
+    # A run that was skipped (draft PR) or cancelled (superseded push) never
+    # reached a verdict, so counting it against success understates CI health.
+    # Rate over concluded runs only; the rest are reported as their own column.
+    def concluded: map(select(.conclusion == "success" or .conclusion == "failure"));
+    def rate: . as $c
+        | if ($c | length) == 0 then null
+          else ($c | map(select(.conclusion == "success")) | length)
+               / ($c | length) * 100 | round end;
 
     (map(select(.kind == "run")) | sort_by(-ts)) as $runs
     | ($runs | map(select(ts > $now - 2592000))) as $runs30
@@ -50,7 +58,11 @@ summary=$(jq -c --argjson now "$now" --arg generated "$generated" '
        workflows_30d: ($runs30 | group_by(.workflow) | map({
            workflow: .[0].workflow,
            runs: length,
-           success_rate: ((map(select(.conclusion == "success")) | length) / length * 100 | round),
+           concluded: (concluded | length),
+           success_rate: (concluded | rate),
+           main_concluded: (map(select(.branch == "main")) | concluded | length),
+           main_success_rate: (map(select(.branch == "main")) | concluded | rate),
+           not_run: (map(select(.conclusion != "success" and .conclusion != "failure")) | length),
            median_s: ([.[].duration_s // empty] | median),
            p95_s: ([.[].duration_s // empty] | p95),
            runner_minutes: ([.[].jobs[].duration_s // 0] | add / 60 | round)})
@@ -138,11 +150,23 @@ hms() { # seconds (may be float/null) -> "3m42s" / "42s" / "-"
     echo
     echo "## Workflows, last 30 days"
     echo
-    echo "| workflow | runs | success | median | p95 | runner minutes |"
-    echo "|---|---:|---:|---:|---:|---:|"
-    while IFS=$'\t' read -r wf runs ok med p95 mins; do
-        echo "| ${wf} | ${runs} | ${ok}% | $(hms "$med") | $(hms "$p95") | ${mins} |"
-    done < <(jq -r '.workflows_30d[] | [.workflow, .runs, .success_rate, .median_s, .p95_s, .runner_minutes] | @tsv' <<<"$summary")
+    echo "Success is over **concluded** runs only. Skipped (draft PRs, which the"
+    echo "workflow deliberately does not run) and cancelled (superseded pushes)"
+    echo "runs never reached a verdict and are counted under \"not run\"."
+    echo
+    echo "| workflow | runs | concluded | success | main | not run | median | p95 | runner minutes |"
+    echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|"
+    while IFS=$'\t' read -r wf runs conc ok mainconc mainok notrun med p95 mins; do
+        # A workflow with no concluded run has no rate. jq nulls are coalesced
+        # to the literal "null" below: @tsv would emit an EMPTY field, and
+        # `read` with a tab IFS collapses runs of tabs, silently shifting every
+        # later column left. Same trap the binary-size table documents.
+        if [ "$mainok" = "null" ]; then main_cell="--"; else main_cell="${mainok}% (${mainconc})"; fi
+        if [ "$ok" = "null" ]; then ok_cell="--"; else ok_cell="${ok}%"; fi
+        echo "| ${wf} | ${runs} | ${conc} | ${ok_cell} | ${main_cell} | ${notrun} | $(hms "$med") | $(hms "$p95") | ${mins} |"
+    done < <(jq -r '.workflows_30d[] | [.workflow, .runs, .concluded, (.success_rate // "null"),
+        .main_concluded, (.main_success_rate // "null"), .not_run,
+        (.median_s // "null"), (.p95_s // "null"), (.runner_minutes // "null")] | @tsv' <<<"$summary")
     echo
     echo "## ci jobs, last 30 days"
     echo
@@ -150,7 +174,8 @@ hms() { # seconds (may be float/null) -> "3m42s" / "42s" / "-"
     echo "|---|---:|---:|---:|---:|"
     while IFS=$'\t' read -r job runs q med p95; do
         echo "| ${job} | ${runs} | $(hms "$q") | $(hms "$med") | $(hms "$p95") |"
-    done < <(jq -r '.ci_jobs_30d[] | [.job, .runs, .median_queue_s, .median_s, .p95_s] | @tsv' <<<"$summary")
+    done < <(jq -r '.ci_jobs_30d[] | [.job, .runs, (.median_queue_s // "null"),
+        (.median_s // "null"), (.p95_s // "null")] | @tsv' <<<"$summary")
     echo
     echo "## Slowest ci steps (median, last 30 days)"
     echo
@@ -158,7 +183,7 @@ hms() { # seconds (may be float/null) -> "3m42s" / "42s" / "-"
     echo "|---|---|---:|---:|"
     while IFS=$'\t' read -r job step med n; do
         echo "| ${job} | ${step} | $(hms "$med") | ${n} |"
-    done < <(jq -r '.slow_steps[] | [.job, .step, .median_s, .n] | @tsv' <<<"$summary")
+    done < <(jq -r '.slow_steps[] | [.job, .step, (.median_s // "null"), .n] | @tsv' <<<"$summary")
     echo
     echo "## Cargo phases inside the lanes (median, last 30 days)"
     echo
@@ -166,15 +191,16 @@ hms() { # seconds (may be float/null) -> "3m42s" / "42s" / "-"
     echo "|---|---|---:|---:|"
     while IFS=$'\t' read -r wf job phase med n; do
         echo "| ${wf} / ${job} | ${phase} | $(hms "$med") | ${n} |"
-    done < <(jq -r '.phase_medians[] | [.workflow, .job, .phase, .median_s, .n] | @tsv' <<<"$summary")
+    done < <(jq -r '.phase_medians[] | [.workflow, .job, .phase, (.median_s // "null"), .n] | @tsv' <<<"$summary")
     echo
     echo "## Cache effectiveness (last 30 days)"
     echo
     echo "| workflow / job | rust-cache hit rate | samples |"
     echo "|---|---:|---:|"
     while IFS=$'\t' read -r wf job rate n; do
-        echo "| ${wf} / ${job} | ${rate}% | ${n} |"
-    done < <(jq -r '.cache[] | [.workflow, .job, .hit_rate, .samples] | @tsv' <<<"$summary")
+        if [ "$rate" = "null" ]; then rate_cell="--"; else rate_cell="${rate}%"; fi
+        echo "| ${wf} / ${job} | ${rate_cell} | ${n} |"
+    done < <(jq -r '.cache[] | [.workflow, .job, (.hit_rate // "null"), .samples] | @tsv' <<<"$summary")
     echo
 
     if jq -e '.build_timings | length > 0' <<<"$summary" >/dev/null; then
