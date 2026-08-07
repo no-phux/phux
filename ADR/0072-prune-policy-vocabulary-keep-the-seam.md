@@ -26,7 +26,7 @@ types in `phux-protocol`. The bead asked: activate, or prune?
 
 Two facts the bead did not have decide it.
 
-First, ADR-0071 freezes the *consumer surface* at 1.0 while `phux-protocol`
+First, [ADR-0071](./0071-what-phux-1-0-commits-to.md) freezes the *consumer surface* at 1.0 while `phux-protocol`
 stays on its own `0.x` line. Dead `pub` types in that crate are free to
 delete today and load-bearing after 1.0. The window is now.
 
@@ -124,13 +124,13 @@ and they already work. Removing them buys ~100 LOC and costs a rebuild plus
 the risk that the refusal path comes back subtly different.
 
 **Keep the vocabulary, defer the decision to 1.0.** Rejected on the
-ADR-0071 window: after 1.0 the same prune is a semver break on a published
+[ADR-0071](./0071-what-phux-1-0-commits-to.md) window: after 1.0 the same prune is a semver break on a published
 crate, and "we will clean it later" is how the surface got here.
 
 ## Related
 
 - [ADR-0031](./0031-remote-consumer-auth-and-encryption.md) — the pairing
   and token model that motivated this vocabulary.
-- ADR-0071 — why the prune window is open now and closes at 1.0.
+- [ADR-0071](./0071-what-phux-1-0-commits-to.md) — why the prune window is open now and closes at 1.0.
 - phux-3djs — the audit bead this closes; phux-pjc5 — the feature that
   implements the seam.
