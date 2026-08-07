@@ -192,6 +192,33 @@ forbid_fixed .github/workflows/release-please.yml 'token: ${{ secrets.GITHUB_TOK
 require_fixed .github/workflows/publish-crate.yml 'workflow_dispatch'
 require_fixed .github/workflows/publish-crate.yml 'environment: crates-io'
 
+# --- Self-update contract (ADR-0074) ------------------------------------------
+#
+# `phux update` derives its download URLs and its archive-member allowlist from
+# release.yml's packaging step. That makes the artifact naming a consumed
+# contract, not a convention: rename an artifact or drop the sidecar and every
+# already-installed phux loses the ability to update itself. The pins below tie
+# the three halves together — what the workflow writes, what the code expects,
+# and what the docs promise — so a change to any one of them fails here rather
+# than at a user's terminal.
+require_fixed .github/workflows/release.yml 'stage="phux-${tag}-${target}"'
+require_fixed .github/workflows/release.yml 'echo "${sha}  ${stage}.tar.gz" > "${stage}.tar.gz.sha256"'
+require_fixed crates/phux/src/commands/update/release.rs 'format!("phux-{tag}-{target}")'
+require_fixed crates/phux/src/commands/update/release.rs 'releases/download/{tag}/{archive}'
+require_fixed crates/phux/src/commands/update/release.rs 'format!("{archive_url}.sha256")'
+# The verification must precede the unpack; these two are the load-bearing
+# functions and their order is asserted by the unit tests next to them.
+require_fixed crates/phux/src/commands/update/apply.rs 'pub(crate) fn verify_archive'
+require_fixed crates/phux/src/commands/update/apply.rs 'pub(crate) fn unpack_verified'
+# Installs phux does not own are never mutated.
+require_fixed docs/INSTALL.md '## Updating'
+require_fixed docs/INSTALL.md 'brew upgrade phall1/tap/phux'
+require_fixed docs/INSTALL.md 'nix profile upgrade phux'
+require_fixed docs/INSTALL.md 'nixos-rebuild switch'
+require_fixed docs/INSTALL.md 'Verifies the checksum before unpacking anything'
+require_fixed docs/INSTALL.md 'phux update --rollback'
+require_fixed docs/RELEASING.md 'This layout is a consumed contract'
+
 if [ "$failures" -ne 0 ]; then
   printf 'install surface check failed: %d missing contract item(s)\n' "$failures" >&2
   exit 1

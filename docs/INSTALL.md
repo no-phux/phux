@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-08-02
+last-reviewed: 2026-08-07
 ---
 
 # Install
@@ -9,7 +9,9 @@ last-reviewed: 2026-08-02
 **TL;DR.** Homebrew is the recommended install on supported macOS and Linux
 machines. The verified curl installer and release tarballs install the same
 `phux` and `phux-mcp` binaries. Source builds use the Nix-pinned Rust and Zig
-toolchain. Windows and `cargo install phux` are not supported.
+toolchain. `phux update` maintains a direct-release install in place and prints
+the exact native command for a Homebrew, Cargo, or Nix one. Windows and
+`cargo install phux` are not supported.
 
 ---
 
@@ -21,6 +23,9 @@ toolchain. Windows and `cargo install phux` are not supported.
 | Curl installer | Scripted install from GitHub release tarballs | Installs the latest GitHub release by default |
 | Release tarball | Manual install and verification | CI-built tarballs include `phux`, `phux-mcp`, licenses, README, and `.sha256` sidecars |
 | From source | Contributors and source-first users | Clone, build, and install through the Nix-pinned toolchain |
+
+Once installed, `phux update` is the one command that moves any of them
+forward; see [Updating](#updating).
 
 Not supported: `cargo install phux`, Windows, and mise/asdf shims. The
 crates.io package is `phux-protocol`, not the CLI.
@@ -122,6 +127,150 @@ the same-path re-exec mechanism. Detach and stop that server once, verify
 `command -v phux` resolves to `~/.cargo/bin/phux`, then start `phux` again.
 Existing source-installed servers under `~/.cargo/bin` can upgrade in place;
 subsequent `just rebuild` invocations stay entirely on the developer binary.
+
+## Updating
+
+```sh
+phux update --check     # what is installed, what is published, how it got there
+phux update             # install it, then hand a running server off to it
+```
+
+### Why phux ships an update command
+
+A phux deployment is a lockstep set. [ADR-0071](../ADR/0071-what-phux-1-0-commits-to.md)
+freezes the consumer surface at 1.0 but deliberately leaves the **wire** on its
+own `0.x` line under [ADR-0061](../ADR/0061-capabilities-add-versions-break.md),
+where a minor protocol bump is a fleet-wide break with no grace window:
+mismatched peers refuse each other at HELLO rather than half-working. The
+compatibility unit is therefore the **release**, not the frame — a server, the
+clients attached to it, its satellites, and its relays must all run the same
+one. That is why a one-command update path is 1.0 scope rather than a
+convenience: a fleet that is hard to move between releases is a fleet that will
+sit on a mismatch.
+
+### What `phux update` does
+
+1. Resolves the current GitHub release (or the tag you pass to `--version`).
+2. Downloads `phux-<tag>-<target>.tar.gz` and its `.sha256` sidecar.
+3. **Verifies the checksum before unpacking anything.** A mismatch refuses,
+   names both digests, and installs nothing.
+4. Unpacks to a staging directory beside the installed binaries — same
+   filesystem — and replaces them with an atomic `rename`, preserving the mode
+   of the file being replaced. `phux-mcp` is replaced alongside `phux` when it
+   is installed next to it, because a new `phux` beside a stale `phux-mcp` is
+   the mismatch this command exists to prevent.
+5. Asks a running server to graceful-upgrade (the `phux upgrade` path), so live
+   panes survive the swap. Pass `--no-restart` to skip that.
+
+The full trust boundary — including what the checksum does and does not prove
+— is [ADR-0074](../ADR/0074-self-update-trust-boundary.md).
+
+### Install sources it recognizes
+
+`phux update` decides how phux was installed from the **symlink-resolved** path
+of the running binary, and only ever writes to installs it maintains.
+
+| Source | Recognized by | What `phux update` does |
+|---|---|---|
+| Direct release | The binary sits in `$PHUX_INSTALL_DIR`, `~/.local/bin`, `~/bin`, `/usr/local/bin`, or `/opt/phux/bin` | Downloads, verifies, replaces atomically |
+| Homebrew | The resolved path is inside a `Cellar` (`/opt/homebrew`, `/usr/local`, Linuxbrew, or a relocated `HOMEBREW_PREFIX`) | Refuses; prints `brew upgrade phall1/tap/phux` |
+| Cargo | The binary is in `$CARGO_HOME/bin` (default `~/.cargo/bin`) | Refuses; prints the source-install commands |
+| Nix / NixOS | The path is under the Nix store (`/nix/store`, or `$NIX_STORE`) | Refuses; prints `nix profile upgrade phux`, or a flake update plus `nixos-rebuild switch` on NixOS |
+| Unknown | Anything else | Refuses, names the path, and lists the locations it does maintain |
+
+An unknown location is a **refusal, not a best-effort overwrite**. If you keep
+phux somewhere else on purpose, set `PHUX_INSTALL_DIR` to that directory and
+`phux update` will maintain it.
+
+### macOS and Linux
+
+Both platforms use the same command and the same artifact contract. macOS ships
+arm64 only; an Intel Mac has no release artifact and `phux update` says so
+rather than installing something that cannot exec. Linux ships x86\_64 and
+arm64.
+
+### Homebrew
+
+```sh
+brew upgrade phall1/tap/phux
+phux upgrade                    # hand the running server off to the new binary
+```
+
+`brew upgrade` replaces the binary but does not touch a running server;
+`phux upgrade` is the second half. A server that was started from Homebrew
+re-execs its own path, so the two steps together preserve live panes.
+
+### Direct archives
+
+If you installed with the curl installer or by unpacking a tarball,
+`phux update` is the supported path — it repeats exactly what you did by hand,
+with the checksum verified for you. Re-running the curl installer also works
+and is equivalent:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/phall1/phux/main/scripts/install.sh | bash
+```
+
+### NixOS and Nix profiles
+
+Nix store paths are read-only by construction, so `phux update` never modifies
+them — detecting the store and printing the right command is the correct
+behavior, not a fallback.
+
+```sh
+# NixOS, phux from a flake input
+nix flake update phux
+sudo nixos-rebuild switch
+
+# nix profile install
+nix profile upgrade phux
+
+# home-manager: update the input, then
+home-manager switch
+```
+
+Then `phux upgrade` to move a running server onto the new store path — unless
+the store path changed, in which case stop the server and start it again, since
+the re-exec mechanism replays the *same* path.
+
+### Checking and previewing
+
+```sh
+phux update --check              # report only; never downloads an archive
+phux update --check --json       # the stable document (schema_version 1)
+phux update --dry-run            # download and verify, install nothing
+phux update --version vX.Y.Z     # install a specific release (downgrades too)
+phux update --no-restart         # replace binaries, leave the server alone
+```
+
+`--check` exits 0 whether or not an update exists; read `update_available` in
+the JSON document rather than the exit status. A refusal (package-managed,
+immutable store, unknown location) exits 2 with the remedy; a failure to fetch,
+verify, or install exits 1. Under `--json`, stdout carries only the document
+and a failure puts one JSON object on stderr.
+
+### Rolling back
+
+The previous binaries are kept in `.phux-update-backup/` beside the new ones,
+with a manifest naming the version they are:
+
+```sh
+phux update --rollback
+```
+
+They are ordinary files in an ordinary directory, which is the point: if the
+release you installed is old enough that it has no `phux update` verb, restore
+by hand and nothing is lost.
+
+```sh
+cd ~/.local/bin
+mv -f .phux-update-backup/phux ./phux
+mv -f .phux-update-backup/phux-mcp ./phux-mcp   # if it is installed
+rm -rf .phux-update-backup
+```
+
+`phux update` keeps exactly one generation of backup — the release you were on
+before the last successful update.
 
 ## crates.io
 

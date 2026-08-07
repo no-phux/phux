@@ -159,6 +159,7 @@ phux tag add
 phux tag ls
 phux tag rm
 phux take
+phux update
 phux upgrade
 phux wait
 phux watch

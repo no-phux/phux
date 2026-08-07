@@ -30,6 +30,7 @@ ATTACH / SERVE
   server     Run a server in the foreground
   host       Register the machines phux talks to: remotes and satellites
   service    Keep a server running across logout and reboot
+  update     Update phux to the latest release, keeping sessions alive
   upgrade    Hot-swap the running server binary, keeping sessions alive
 
 INSPECT
@@ -98,6 +99,7 @@ Commands:
   take         Take the input wheel of a pane
   give         Give back the input wheel of a pane
   signal       Signal a pane's process group
+  update       Update phux to the latest release, keeping sessions alive
   upgrade      Graceful-upgrade the running server in place
   rename       Rename a session
   snapshot     Capture a pane's screen as JSON or a boxed text view
@@ -2266,12 +2268,58 @@ Options:
           Print help (see a summary with '-h')
 ```
 
+## `phux update`
+
+```text
+Update phux to the latest release, keeping sessions alive.
+
+Checks the published release, downloads the archive for this platform, verifies it against the checksum published beside it, replaces the binaries atomically, and asks a running server to re-exec so live panes survive. A server, its local clients, its satellites, and its relays must all run the same release, so this is the command that moves a whole deployment in one step.
+
+phux updates only installs it maintains: a release archive unpacked into $PHUX_INSTALL_DIR, ~/.local/bin, ~/bin, /usr/local/bin, or /opt/phux/bin. A Homebrew, Cargo, or Nix install is never modified — the exact native command is printed instead — and an unrecognized location is refused rather than overwritten.
+
+The previous binaries are kept beside the new ones; `--rollback` puts them back.
+
+Examples:
+  phux update --check
+  phux update --check --json
+  phux update
+  phux update --dry-run --version v1.2.3
+  phux update --rollback
+
+Usage: phux update [OPTIONS]
+
+Options:
+      --check
+          Report the current and latest release and the install source, then stop. Changes nothing and never downloads an archive
+
+      --dry-run
+          Do everything except the replacement: resolve, download, and verify the checksum, then report what would have been installed
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --version <TAG>
+          Install this release tag instead of the latest one. Accepts any tag from the releases page, including an older one (a downgrade)
+
+      --rollback
+          Restore the binaries saved by the previous `phux update`
+
+      --no-restart
+          Replace the binaries but do not ask a running server to re-exec. Live panes keep the old image until the server is upgraded or restarted
+
+      --json
+          Emit the stable, versioned JSON document on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
 ## `phux upgrade`
 
 ```text
 Graceful-upgrade the running server in place.
 
-Asks the server to snapshot every pane, re-exec the on-disk binary, and re-adopt the live PTYs, so the shells / editors / agents in every session survive a binary update (e.g. after `cargo install` / `brew upgrade`). Clients briefly disconnect and reconnect.
+Asks the server to snapshot every pane, re-exec the on-disk binary, and re-adopt the live PTYs, so the shells / editors / agents in every session survive a binary update (e.g. after `cargo install` / `brew upgrade`). Clients briefly disconnect and reconnect. This is the low-level primitive: it re-execs whatever is already on disk and downloads nothing. `phux update` is the command that puts a new binary there first.
 
 Usage: phux upgrade [OPTIONS]
 

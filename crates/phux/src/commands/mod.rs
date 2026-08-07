@@ -179,6 +179,7 @@ pub(crate) mod stdio_bridge;
 pub(crate) mod supervise;
 pub(crate) mod tag;
 pub(crate) mod toml_registry;
+pub(crate) mod update;
 pub(crate) mod upgrade;
 pub(crate) mod wait;
 pub(crate) mod watch;
@@ -760,12 +761,48 @@ pub(crate) enum Command {
         signal: SignalArg,
     },
 
+    /// Update phux to the latest release, keeping sessions alive.
+    // `long_about` spelled out for the same reason `rec` and `signal` do it:
+    // clap reflows doc-comment paragraphs and the worked examples need real
+    // newlines.
+    #[command(
+        about = "Update phux to the latest release, keeping sessions alive",
+        long_about = "Update phux to the latest release, keeping sessions alive.\n\n\
+            Checks the published release, downloads the archive for this platform, \
+            verifies it against the checksum published beside it, replaces the \
+            binaries atomically, and asks a running server to re-exec so live panes \
+            survive. A server, its local clients, its satellites, and its relays must \
+            all run the same release, so this is the command that moves a whole \
+            deployment in one step.\n\n\
+            phux updates only installs it maintains: a release archive unpacked into \
+            $PHUX_INSTALL_DIR, ~/.local/bin, ~/bin, /usr/local/bin, or /opt/phux/bin. \
+            A Homebrew, Cargo, or Nix install is never modified — the exact native \
+            command is printed instead — and an unrecognized location is refused \
+            rather than overwritten.\n\n\
+            The previous binaries are kept beside the new ones; `--rollback` puts \
+            them back.\n\n\
+            Examples:\n  \
+            phux update --check\n  \
+            phux update --check --json\n  \
+            phux update\n  \
+            phux update --dry-run --version v1.2.3\n  \
+            phux update --rollback"
+    )]
+    Update {
+        /// Update options.
+        #[command(flatten)]
+        opts: update::UpdateOpts,
+    },
+
     /// Graceful-upgrade the running server in place.
     ///
     /// Asks the server to snapshot every pane, re-exec the on-disk binary, and
     /// re-adopt the live PTYs, so the shells / editors / agents in every
     /// session survive a binary update (e.g. after `cargo install` /
-    /// `brew upgrade`). Clients briefly disconnect and reconnect.
+    /// `brew upgrade`). Clients briefly disconnect and reconnect. This is the
+    /// low-level primitive: it re-execs whatever is already on disk and
+    /// downloads nothing. `phux update` is the command that puts a new binary
+    /// there first.
     Upgrade {},
 
     /// Rename a session.

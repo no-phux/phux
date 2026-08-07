@@ -302,6 +302,19 @@ phux has two different continuity mechanisms. They are intentionally separate:
   existing PTYs alive across a server binary re-exec. Its e2e drill is
   `cargo test -p phux --test upgrade_e2e -- --ignored`, which checks that a
   pane child PID and scrollback marker survive the upgrade.
+- **Release update:** `phux update` is the user-facing verb built on that
+  handoff. It resolves the published release, verifies the `.sha256` sidecar
+  before unpacking, replaces the binaries atomically, and then calls the
+  `phux upgrade` path so panes survive. It writes only to installs it
+  maintains — a Homebrew, Cargo, or Nix install gets the exact native command
+  instead, and an unrecognized location is refused rather than overwritten
+  ([ADR-0074](../ADR/0074-self-update-trust-boundary.md), operator guide in
+  [`INSTALL.md`](./INSTALL.md#updating)). The compatibility unit is the
+  release: a server, its local clients, its satellites, and its relays must all
+  run the same one, because a wire `minor` bump refuses mismatched peers at
+  HELLO with no grace window
+  ([ADR-0061](../ADR/0061-capabilities-add-versions-break.md),
+  [ADR-0071](../ADR/0071-what-phux-1-0-commits-to.md)).
 
 The workspace archive stores sessions, windows, pane metadata, cwd, dimensions,
 and split-layout shape where the server reports it. Restore currently recreates

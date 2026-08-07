@@ -76,6 +76,7 @@ mod help_inventory;
           server     Run a server in the foreground\n  \
           host       Register the machines phux talks to: remotes and satellites\n  \
           service    Keep a server running across logout and reboot\n  \
+          update     Update phux to the latest release, keeping sessions alive\n  \
           upgrade    Hot-swap the running server binary, keeping sessions alive\n\n\
         INSPECT\n  \
           ls         List sessions\n  \
@@ -537,6 +538,7 @@ fn main() -> ExitCode {
         Some(Command::Signal { target, signal }) => {
             commands::supervise::run_signal(&target, signal, socket)
         }
+        Some(Command::Update { opts }) => commands::update::run_update(&opts, socket),
         Some(Command::Upgrade {}) => commands::upgrade::run_upgrade(socket),
         Some(Command::Rename { session, new_name }) => {
             commands::rename::run_rename(&session, &new_name, socket)

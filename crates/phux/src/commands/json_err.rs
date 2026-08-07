@@ -94,6 +94,36 @@ pub(crate) mod codes {
     /// TOML did not parse. Exit 2, mirroring the prose path's distinct
     /// "could not check" status.
     pub(crate) const INVALID_CONFIG: &str = "invalid_config";
+    /// `phux update` was pointed at something that is not a `vX.Y.Z` release
+    /// tag.
+    pub(crate) const UPDATE_INVALID_TAG: &str = "update_invalid_tag";
+    /// This OS/architecture has no published release artifact, so there is
+    /// nothing for `phux update` to install.
+    pub(crate) const UPDATE_UNSUPPORTED_PLATFORM: &str = "update_unsupported_platform";
+    /// The release index or a release artifact could not be downloaded.
+    pub(crate) const UPDATE_FETCH_FAILED: &str = "update_fetch_failed";
+    /// The published `.sha256` sidecar was unreadable or malformed, or the
+    /// download could not be hashed — distinct from a mismatch, where the two
+    /// digests were both readable and disagreed.
+    pub(crate) const UPDATE_CHECKSUM_INVALID: &str = "update_checksum_invalid";
+    /// The published checksum and the downloaded archive disagree. Nothing
+    /// was unpacked and nothing was installed.
+    pub(crate) const UPDATE_CHECKSUM_MISMATCH: &str = "update_checksum_mismatch";
+    /// The verified archive did not contain what a phux release tarball
+    /// contains.
+    pub(crate) const UPDATE_ARCHIVE_REJECTED: &str = "update_archive_rejected";
+    /// Staging or the atomic replacement failed.
+    pub(crate) const UPDATE_INSTALL_FAILED: &str = "update_install_failed";
+    /// `phux update --rollback` found nothing saved to roll back to.
+    pub(crate) const UPDATE_NO_BACKUP: &str = "update_no_backup";
+    /// The install lives in a read-only store (Nix/NixOS). Never mutated.
+    pub(crate) const UPDATE_IMMUTABLE_STORE: &str = "update_immutable_store";
+    /// The install is owned by a package manager (Homebrew, Cargo). The
+    /// native command is the remedy.
+    pub(crate) const UPDATE_PACKAGE_MANAGED: &str = "update_package_managed";
+    /// The install is in no recognized location, so it is refused rather
+    /// than overwritten on a guess.
+    pub(crate) const UPDATE_SOURCE_UNSUPPORTED: &str = "update_source_unsupported";
     /// A result document could not be serialized as JSON.
     pub(crate) const JSON_SERIALIZE: &str = "json_serialize";
     /// A client-side invariant this binary should never break.

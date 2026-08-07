@@ -106,6 +106,17 @@ The workflow smoke-checks both binaries in the staging directory before it
 creates `phux-<tag>-<target>.tar.gz` and the matching `.sha256` sidecar.
 Homebrew installs both binaries from the same tarball.
 
+**This layout is a consumed contract, not just a convention.** `phux update`
+(the in-binary self-update path, [ADR-0074](../ADR/0074-self-update-trust-boundary.md))
+resolves the release, derives `phux-<tag>-<target>.tar.gz` and its `.sha256`
+sidecar from exactly this naming, verifies the digest before unpacking, and
+refuses any archive whose members are not precisely the six above. Renaming an
+artifact, dropping the sidecar, changing the `"<64 hex>  <archive>"` sidecar
+format, or adding a member to the tarball breaks every installed phux's ability
+to update itself — silently for the naming, loudly for the members. Change them
+together with `crates/phux/src/commands/update/release.rs` and
+`crates/phux/src/commands/update/apply.rs`, or not at all.
+
 ## Versioning
 
 The workspace shares one `version` in the root `Cargo.toml`

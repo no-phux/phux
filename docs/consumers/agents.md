@@ -1255,7 +1255,16 @@ and **stderr carries one line of JSON** (ADR-0065 §4):
   parse), `invalid_config` (`config check` could not run at all —
   unreadable file or malformed TOML; exit 2, mirroring its prose path's
   distinct "could not check" status), and `json_serialize` (a result
-  document failed to render — a phux bug worth filing).
+  document failed to render — a phux bug worth filing). The update family
+  (`phux update`): `update_invalid_tag` and `update_unsupported_platform`
+  (exit 2 — a tag that is not `vX.Y.Z`, or a platform with no published
+  artifact); `update_source_unsupported`, `update_immutable_store`, and
+  `update_package_managed` (exit 2 — phux will not write to this install, and
+  `remedy` carries the exact native command); `update_fetch_failed`,
+  `update_checksum_invalid`, `update_checksum_mismatch`,
+  `update_archive_rejected`, `update_install_failed`, and `update_no_backup`
+  (exit 1). A `update_checksum_mismatch` means the published digest and the
+  downloaded bytes disagreed: nothing was unpacked and nothing was installed.
 - `remedy` is always present and non-empty: the next command to run, in
   prose.
 - `exit_code` mirrors the process's own exit status, so a consumer that

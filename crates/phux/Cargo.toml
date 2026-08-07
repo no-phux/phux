@@ -47,6 +47,16 @@ serde_json.workspace = true
 # `phux config show` renders the effective merged config table as TOML.
 toml.workspace = true
 toml_edit.workspace = true
+# `phux update` verifies a downloaded release archive against the `.sha256`
+# sidecar `release.yml` publishes beside it, BEFORE unpacking anything. That
+# checksum is the trust anchor of the whole self-update path, so the digest is
+# computed in-process rather than by shelling out to `shasum`/`sha256sum` and
+# parsing their output — one fewer external program whose absence, version, or
+# output format could turn "verify" into "skip". `sha2` is already a direct
+# dependency of phux-server, phux-relay, phux-dial, and phux-client-core (cert
+# fingerprints, ADR-0031), so this adds no new row to Cargo.lock; it is the
+# RustCrypto reference implementation, pure-safe Rust, no C deps.
+sha2 = "0.10"
 # `phux status` renders the server's up-since wall-clock timestamp. Already a
 # workspace dependency (protocol/server/config); no new third-party row
 # enters the lockfile.
