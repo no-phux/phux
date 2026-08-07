@@ -110,14 +110,47 @@
 
           env.RUST_BACKTRACE = "1";
 
-          # Ghostty's Darwin build needs both Zig SDK discovery and Xcode tools
-          # such as `nmedit`. Discard the nix cc hook's SDK-only
-          # DEVELOPER_DIR, then resolve the host Xcode installation exactly as
-          # xcrun does; calling xcode-select after the unset is load-bearing.
+          # Ghostty's Darwin build (src/build/libsystem_override.sh) shells
+          # out to `xcrun nmedit`, which resolves through $DEVELOPER_DIR. The
+          # nix apple-sdk package mimics an Xcode `Developer` directory
+          # closely enough that stdenv points DEVELOPER_DIR/SDKROOT at it,
+          # but it ships only an `nmedit` *specification* plist, not the
+          # binary -- so every cold macOS build of libghostty-vt-sys in this
+          # shell died with "error: tool 'nmedit' not found" (phux-4xdh).
+          # Only a full Xcode install carries the real binary; the Command
+          # Line Tools package alone does not, and pointing zig's SDK
+          # discovery at a CLT-only DEVELOPER_DIR makes it report
+          # DarwinSdkNotFound instead. So: prefer a host Xcode whose
+          # toolchain actually has nmedit (checked, not assumed), and only
+          # when none is found fall back to nix's own DEVELOPER_DIR (today's
+          # behavior) with a loud warning instead of a silent later failure.
           shellHook =
             pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-              unset DEVELOPER_DIR
-              export DEVELOPER_DIR="$(/usr/bin/xcode-select -p)"
+              _phux_nix_developer_dir=$DEVELOPER_DIR
+              _phux_xcode_select=$(/usr/bin/xcode-select -p 2>/dev/null)
+              _phux_host_developer_dir=""
+              for _phux_candidate in "$_phux_xcode_select" /Applications/Xcode.app/Contents/Developer; do
+                if [ -n "$_phux_candidate" ] && {
+                  [ -x "$_phux_candidate/usr/bin/nmedit" ] ||
+                  [ -x "$_phux_candidate/Toolchains/XcodeDefault.xctoolchain/usr/bin/nmedit" ]
+                }; then
+                  _phux_host_developer_dir=$_phux_candidate
+                  break
+                fi
+              done
+              if [ -n "$_phux_host_developer_dir" ]; then
+                export DEVELOPER_DIR=$_phux_host_developer_dir
+              else
+                export DEVELOPER_DIR=$_phux_nix_developer_dir
+                echo "phux: warning: no host Xcode with a real nmedit was found" >&2
+                echo "  (checked \`xcode-select -p\` = '$_phux_xcode_select' and" >&2
+                echo "  /Applications/Xcode.app). libghostty-vt-sys's Darwin build" >&2
+                echo "  will likely fail with \"tool 'nmedit' not found\"." >&2
+                echo "  Install full Xcode (the Command Line Tools package alone is" >&2
+                echo "  not enough -- zig reports DarwinSdkNotFound against it) and" >&2
+                echo "  run: sudo xcode-select -s /Applications/Xcode.app" >&2
+              fi
+              unset _phux_nix_developer_dir _phux_xcode_select _phux_host_developer_dir _phux_candidate
             ''
             + ''
               echo "phux dev shell — $(rustc --version)"

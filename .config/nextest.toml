@@ -54,6 +54,32 @@ test-group = 'pty-serial'
 filter = 'package(phux-server) & test(pane_kill_lets_foreground_process_flush_before_death)'
 threads-required = 'num-cpus'
 
+# `agent_detect` needs the same treatment, for the same reason, and the
+# measurement that justifies it is worth recording (phux-manu).
+#
+# These tests run a real agent process that paints a real permission dialog,
+# then wait for the server-side detector to scan the grid and publish
+# `state: "blocked"`. Every observed failure is the same shape — the record
+# arrives as `{"kind":"claude","name":"claude","state":"idle"}`, meaning the
+# identity was detected but the derivation never ran in time. That is a
+# scheduling symptom, not a logic one.
+#
+# Measured on a developer box deliberately loaded to a ~18 load average (many
+# concurrent cargo builds): 2 of 5 runs failed, and all three detector tests
+# failed together when they failed. The same runs on an idle machine pass.
+# `pty-serial` alone does not help here for the reason the block above already
+# documents: a `max-threads = 1` group only serialises members against EACH
+# OTHER, so these still ran alongside every non-group test in the pool.
+#
+# The convergence poll in the test (`await_agent_state`) is a real and separate
+# fix — sampling only the FIRST published record raced the detector's
+# idle-then-blocked convergence — but it is not sufficient on its own, because
+# under starvation the detector does not converge within the deadline at all.
+# Lengthening DETECT_DEADLINE would only hide that.
+[[profile.default.overrides]]
+filter = 'package(phux-server) & binary(agent_detect)'
+threads-required = 'num-cpus'
+
 # The `ci` profile is behavior-identical to `default` — nextest consults the
 # selected profile's settings first and falls back to profile.default, so the
 # retry policy and the pty-serial override above still apply. It exists only

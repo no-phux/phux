@@ -471,7 +471,11 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BLOCK_BEGIN, BLOCK_END, render_wrapper, shell_activation, without_managed_block};
+    use super::{
+        BLOCK_BEGIN, BLOCK_END, render_wrapper, sh_quote_path, shell_activation,
+        without_managed_block,
+    };
+    use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
 
     #[test]
@@ -512,5 +516,173 @@ mod tests {
         assert!(wrapper.contains("run_phux ask \"$target\" \"Claude needs attention\""));
         assert!(wrapper.contains("\"$real\" --settings \"$settings\" \"$@\""));
         assert!(wrapper.contains("run_phux agent clear \"$target\""));
+    }
+
+    /// Behavioral proof for phux-t2g: a rendered wrapper, run for real
+    /// (fake `phux` and fake `claude` standing in), must not relaunch
+    /// Claude after the phux session already started and later died.
+    ///
+    /// The outer dispatch-to-`phux new` block only runs when the wrapper
+    /// is invoked interactively (`[ -t 0 ] && [ -t 1 ]` — see
+    /// `render_wrapper`), so this drives the wrapper on a real pty rather
+    /// than asserting on the rendered text alone.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one linear pty-driven scenario")]
+    #[allow(
+        clippy::literal_string_with_formatting_args,
+        reason = "`${...}` here is shell parameter expansion in a fixture script, not a std format arg"
+    )]
+    fn wrapper_never_relaunches_claude_after_a_mid_session_crash() {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+        use std::io::Read as _;
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        fn write_script(path: &Path, body: &str) {
+            std::fs::write(path, body).expect("write fixture script");
+            let mut perms = std::fs::metadata(path)
+                .expect("stat fixture script")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).expect("chmod fixture script");
+        }
+
+        /// Run `wrapper` attached to a real pty (both stdin and stdout,
+        /// so the wrapper's tty guard sees an interactive session) and
+        /// return `(exit_code, combined_stdout_and_stderr)`.
+        fn run_on_pty(wrapper: &Path, envs: &[(&str, &str)]) -> (u32, String) {
+            let pty = native_pty_system();
+            let pair = pty
+                .openpty(PtySize {
+                    rows: 24,
+                    cols: 100,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .expect("open test pty");
+            let mut command = CommandBuilder::new(wrapper);
+            command.env("SHELL", "/bin/sh");
+            command.env("TERM", "xterm-256color");
+            for (key, value) in envs {
+                command.env(key, value);
+            }
+            let mut child = pair
+                .slave
+                .spawn_command(command)
+                .expect("spawn wrapper under pty");
+            drop(pair.slave);
+
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&output);
+            let mut reader = pair.master.try_clone_reader().expect("clone pty reader");
+            std::thread::spawn(move || {
+                let mut buf = [0_u8; 8192];
+                while let Ok(read) = reader.read(&mut buf) {
+                    if read == 0 {
+                        break;
+                    }
+                    sink.lock()
+                        .expect("output lock")
+                        .extend_from_slice(&buf[..read]);
+                }
+            });
+            drop(pair.master);
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let status = loop {
+                if let Some(status) = child.try_wait().expect("wrapper try_wait") {
+                    break status;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "wrapper did not exit within the deadline"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            // Let the reader thread drain whatever is left in the pty buffer.
+            std::thread::sleep(Duration::from_millis(50));
+            let text = String::from_utf8_lossy(&output.lock().expect("output lock")).into_owned();
+            (status.exit_code(), text)
+        }
+
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let real = dir.path().join("real-claude");
+        let fake_phux = dir.path().join("fake-phux");
+        let wrapper = dir.path().join("claude");
+        let settings = dir.path().join("claude-hooks.json");
+        let log = dir.path().join("real-claude.log");
+
+        // Stands in for the real `claude`: records that it ran, then exits
+        // with a caller-controlled status (simulating either a clean exit
+        // or Claude itself dying mid-session).
+        write_script(
+            &real,
+            &format!(
+                "#!/bin/sh\nprintf 'invoked\\n' >> {log}\nexit \"${{FAKE_CLAUDE_EXIT:-0}}\"\n",
+                log = sh_quote_path(&log),
+            ),
+        );
+        // Stands in for `phux new -c <cwd> -- <cmd...>`: either fails
+        // outright before ever running the session command (simulating a
+        // launch that never started), or execs the given command exactly
+        // like the real subcommand would.
+        write_script(
+            &fake_phux,
+            "#!/bin/sh\nset -u\nif [ \"${FAKE_PHUX_LAUNCH_FAIL:-0}\" = \"1\" ]; then\n  exit 3\nfi\nshift 4\nexec \"$@\"\n",
+        );
+        let rendered = render_wrapper(&real, &fake_phux, &wrapper, &settings).unwrap();
+        write_script(&wrapper, &rendered);
+
+        // Scenario A: the session runs and Claude exits cleanly.
+        std::fs::write(&log, b"").unwrap();
+        let (status, output) = run_on_pty(&wrapper, &[("FAKE_CLAUDE_EXIT", "0")]);
+        assert_eq!(status, 0, "clean session exit; output:\n{output}");
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().lines().count(),
+            1,
+            "Claude must run exactly once; output:\n{output}"
+        );
+        assert!(!output.contains("abnormally"), "{output}");
+        assert!(!output.contains("launch failed"), "{output}");
+
+        // Scenario B (the phux-t2g bug): the session starts, then Claude
+        // (or the server under it) dies mid-run. The old wrapper treated
+        // ANY nonzero `phux new` exit as a launch failure and silently
+        // re-exec'd a fresh, unhooked Claude with the original argv. The
+        // fix must propagate the real exit status and must NOT invoke
+        // Claude a second time.
+        std::fs::write(&log, b"").unwrap();
+        let (status, output) = run_on_pty(&wrapper, &[("FAKE_CLAUDE_EXIT", "17")]);
+        assert_eq!(
+            status, 17,
+            "mid-session crash status must propagate; output:\n{output}"
+        );
+        assert!(output.contains("phux session ended abnormally"), "{output}");
+        assert!(!output.contains("launch failed"), "{output}");
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().lines().count(),
+            1,
+            "Claude must not be relaunched after the session already started; output:\n{output}"
+        );
+
+        // Scenario C: `phux new` fails before the session ever starts (no
+        // marker stamped) — falling back to a direct, real Claude exactly
+        // once is still correct here.
+        std::fs::write(&log, b"").unwrap();
+        let (status, output) = run_on_pty(
+            &wrapper,
+            &[("FAKE_PHUX_LAUNCH_FAIL", "1"), ("FAKE_CLAUDE_EXIT", "0")],
+        );
+        assert_eq!(
+            status, 0,
+            "pre-launch failure falls back to direct Claude; output:\n{output}"
+        );
+        assert!(output.contains("phux launch failed"), "{output}");
+        assert!(!output.contains("abnormally"), "{output}");
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().lines().count(),
+            1,
+            "the direct fallback must still run Claude exactly once; output:\n{output}"
+        );
     }
 }

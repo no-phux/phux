@@ -162,6 +162,38 @@ async fn collect_agent_record(
     }
 }
 
+/// Drain `METADATA_CHANGED` frames for `terminal` until one carries
+/// `state: <want>`, or `deadline` elapses.
+///
+/// The detector derives its verdict incrementally — e.g. it can identify and
+/// publish a pane as `idle` a tick before it parses the grid and republishes
+/// `blocked` — so sampling only the FIRST published record (as
+/// `collect_agent_record` alone does) races that convergence: under the
+/// shared parallel nextest pool the first record is sometimes still `idle`
+/// when the test asserts `blocked` (phux-manu). This keeps consuming
+/// `METADATA_CHANGED` frames against ONE bounded deadline (never extended,
+/// never slept past) until the wanted state actually shows up, which is the
+/// honest fix — the assertion should wait for the real terminal state, not
+/// for however far the detector happened to get before the first frame.
+async fn await_agent_state(
+    stream: &mut UnixStream,
+    terminal: &TerminalId,
+    want: &str,
+    deadline: Duration,
+) -> Option<serde_json::Value> {
+    let end = tokio::time::Instant::now() + deadline;
+    loop {
+        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let record = collect_agent_record(stream, terminal, remaining).await?;
+        if record.get("state").and_then(serde_json::Value::as_str) == Some(want) {
+            return Some(record);
+        }
+    }
+}
+
 /// The end-to-end contract: a real agent process, painting a real permission
 /// dialog into a real grid, produces a `phux.agent/v1` record with
 /// `state: "blocked"` on a subscribed client — with no human ever running
@@ -201,7 +233,9 @@ fn detector_publishes_blocked_from_a_live_prompt_box() {
         .await;
 
         // ---- the detector should derive `blocked` and publish it ----
-        let record = collect_agent_record(&mut stream, &terminal, DETECT_DEADLINE).await;
+        // (poll for the converged state, not just the first publish: see
+        // `await_agent_state`.)
+        let record = await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE).await;
 
         let record = record.expect(
             "the detector must publish a phux.agent/v1 record for a pane running a known agent \
@@ -329,14 +363,16 @@ fn deleting_the_record_hands_it_back_to_the_detector() {
         )
         .await;
 
-        let first = collect_agent_record(&mut stream, &terminal, DETECT_DEADLINE).await;
-        assert_eq!(
-            first
-                .as_ref()
-                .and_then(|r| r.get("state"))
-                .and_then(serde_json::Value::as_str),
-            Some("blocked"),
-            "precondition: the detector published `blocked`",
+        // Poll for the converged `blocked` state rather than sampling the
+        // first publish (see `await_agent_state`): the detector can land on
+        // an intermediate state like `idle` a tick before it derives
+        // `blocked`, and under the shared parallel nextest pool that first
+        // tick sometimes wins the race, flaking this precondition
+        // (phux-manu).
+        let first = await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE).await;
+        assert!(
+            first.is_some(),
+            "precondition: the detector never converged on `blocked`",
         );
 
         // `phux agent clear`. The row is gone; the screen is unchanged and the
@@ -353,8 +389,10 @@ fn deleting_the_record_hands_it_back_to_the_detector() {
 
         // The detector must resume: the record comes back, WITHOUT the agent
         // having to change state. (`collect_agent_record` skips the delete's
-        // tombstone, which carries no value, so this is the republish.)
-        let again = collect_agent_record(&mut stream, &terminal, DETECT_DEADLINE).await;
+        // tombstone, which carries no value, so this is the republish.) Same
+        // convergence caveat as the precondition above: poll for `blocked`
+        // rather than trusting the first post-DELETE publish.
+        let again = await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE).await;
         let again = again.expect(
             "after a DELETE the detector must resume ownership and rewrite the record; \
              an idle or blocked agent never changes state again, so a detector whose edge \
