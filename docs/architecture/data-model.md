@@ -40,8 +40,8 @@ down; per [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consume
 (option B) the structured grouping that used to be proposed for the wire is a
 consumer-side projection, and the lone irreducible group operation — atomic
 multi-terminal teardown — is a single L1 op (`KILL_TERMINALS`) rather than a
-tier. Full removal of the `GroupId` remnant is tracked as bead
-phux-0bmc.
+tier. `GroupId`'s retention as an opaque grouping key is settled, not a
+remnant awaiting removal (bead phux-0bmc closed as resolved-by-rename).
 
 The `Registry`'s `Session` and `Window` types are the in-process carriers of
 that grouping metadata. They are domain bookkeeping, not a wire tier: under

@@ -81,7 +81,7 @@ sequentially. Implementers proposing new values open a PR against
 this document.
 
 `ErrorCode = 5` is permanently reserved for the withdrawn `OUT_OF_TIER`
-proposal and is never reused. `CODEC_UNAVAILABLE = 6` is allocated by ADR-0067.
+proposal and is never reused. `CODEC_UNAVAILABLE = 6` is allocated by ADR-0070.
 
 (Earlier drafts of the SPEC reserved a `DiffOp` tag range here; per
 [ADR-0013](../../ADR/0013-libghostty-bytes-on-wire.md), Terminal

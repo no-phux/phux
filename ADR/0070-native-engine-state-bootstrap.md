@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-08-02
 ---
 
-# 0067 — Native engine-state bootstrap and client-owned history
+# 0070 — Native engine-state bootstrap and client-owned history
 
 **TL;DR.** Native phux clients bootstrap from exact, versioned libghostty state
 instead of server-synthesized VT. The server sends state through the engine's

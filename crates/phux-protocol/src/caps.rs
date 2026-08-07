@@ -131,7 +131,7 @@ impl OutputMode {
     }
 }
 // -----------------------------------------------------------------------------
-// Native bootstrap negotiation — ADR-0067 / protocol 0.7.
+// Native bootstrap negotiation — ADR-0070 / protocol 0.7.
 // -----------------------------------------------------------------------------
 
 /// Hard upper bound for one `BOOTSTRAP_CHUNK.payload`.

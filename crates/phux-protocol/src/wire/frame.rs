@@ -134,7 +134,7 @@ pub const TYPE_PONG: u8 = 0xFF;
 /// bytes and are never capability-rewritten.
 pub const TYPE_TERMINAL_OUTPUT: u8 = 0x90;
 // 0x91 was `TERMINAL_SNAPSHOT` through protocol 0.6. It is permanently
-// retired by ADR-0067 and MUST NOT be decoded or reassigned.
+// retired by ADR-0070 and MUST NOT be decoded or reassigned.
 /// Discriminant for `BOOTSTRAP_BEGIN` (server to client, `docs/spec/L1.md` §4.3).
 pub const TYPE_BOOTSTRAP_BEGIN: u8 = 0x93;
 /// Discriminant for `BOOTSTRAP_CHUNK` (server to client, `docs/spec/L1.md` §4.3).
@@ -1800,7 +1800,7 @@ pub enum AgentEvent {
 /// The phux-6yl.4 scaffold populated `Hello`, `Ping`, and `PaneDiff`. The
 /// phux-4az pass added the message-catalog variants needed for the attach
 /// lifecycle. Protocol 0.7 replaces the retired synthesized snapshot frame with
-/// explicit bootstrap/profile/history frames from ADR-0067. `TerminalOutput`
+/// explicit bootstrap/profile/history frames from ADR-0070. `TerminalOutput`
 /// remains VT bytes, now bound to a non-zero stream and bootstrap generation.
 ///
 /// [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md

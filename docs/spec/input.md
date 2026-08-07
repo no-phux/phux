@@ -369,6 +369,34 @@ When `trust = UNTRUSTED`, the server's per-Terminal policy applies:
 When `trust = TRUSTED`, the server invokes `paste::encode` for
 bracketing but skips safety classification.
 
+### 5.1 Atomicity is per-event only
+
+One `INPUT_PASTE` event is atomic: `data` is one contiguous buffer that
+reaches the PTY through a single `write_all`. There is **no** delivery or
+ordering guarantee *across* separate fire-and-forget events. Attached and
+`ROUTE_INPUT` input share one Terminal mailbox; if it is full, the event is
+dropped and the enclosing command still acks `OK` — the drop is silent on the
+wire ([L1.md §6.2](./L1.md)).
+
+This matters only when a caller fragments one logical payload — a single
+shell command, a file body, anything where the interior matters — across
+multiple `INPUT_PASTE` or `ROUTE_INPUT` events. That is **unsafe**: nothing
+guarantees the fragments arrive, arrive in order, or all arrive. Losing a
+whole event is honest and recoverable — the terminal simply shows nothing
+happened, and the caller can tell and retry. Losing an interior fragment of a
+payload spread across several events is not: the receiving shell sees a
+syntactically valid but truncated command and may execute it as-is, with no
+signal on the wire that anything was dropped.
+
+A payload too large, or too important, for one fire-and-forget event MUST NOT
+be split across multiple `INPUT_PASTE` events. Use `APPLY_INPUT`
+([ADR-0053], §6.2.1 of [L1.md](./L1.md)) instead — it is acknowledged, caches
+its result by operation id, and is safe to retry after a reconnect — or
+`PUT_FILE` ([ADR-0059]) for binary or file-shaped payloads.
+
+[ADR-0053]: ../../ADR/0053-acknowledged-idempotent-input.md
+[ADR-0059]: ../../ADR/0059-sandboxed-chunked-file-upload.md
+
 ---
 
 ## 6. INPUT_TERMINAL_REPLY

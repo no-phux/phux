@@ -129,7 +129,13 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   opts into the server's safety gate: the payload is classified, and the
   pane's untrusted-paste policy (reject, by default) may silently drop an
   unsafe payload — notably anything multiline — so reserve the flag for
-  content you did not compose and cannot vouch for.
+  content you did not compose and cannot vouch for. One `paste` call is one
+  atomic `INPUT_PASTE` event; there is no guarantee across separate
+  fire-and-forget calls, so never split one logical payload (one command,
+  one file body) across multiple `paste`/`send-keys` invocations expecting it
+  to arrive whole — see [input.md §5.1](../spec/input.md) for why an
+  interior drop is worse than a whole-event drop, and use `APPLY_INPUT` or
+  `PUT_FILE` at the protocol layer when a payload cannot fit in one event.
 - **`phux run [--timeout SECS] [--json] [--socket P] TARGET CMD...`** — run a
   command in a pane and capture its exit code, output, and duration via printed
   sentinels (assumes a POSIX shell: sh/bash/zsh). `TARGET` is required.
@@ -154,17 +160,25 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   human line. Event names: `title_changed` (carries `title`), `bell`, `dirty`,
   `idle`, `pane_spawned`, `pane_closed` (carries `exit_status`), `asked`
   (carries `id`, `question`, `suggestions`, and nullable `elapsed_seconds`),
-  plus the deferred `command_started` / `command_finished` (carries a nullable
-  `exit_code` — see the gap note below). `watch` cuts `wait`'s poll-floor
-  latency: a `watch` consumer wakes the instant an event fires rather than on
-  the next poll tick. It is additive — `wait` still works without it, and a
-  dropped event (full mailbox) falls back to polling.
-  **Deferred:** `command_started` / `command_finished` are wire-allocated but
-  not emitted by the current server (the OSC-133 command boundary is not
-  cleanly observable without disturbing the per-consumer state-sync
-  synthesizer); `command_finished.exit_code` is likewise always null until that
-  shell-integration plumbing lands. The mechanism and the
-  lifecycle/title/bell/dirty/idle events ship today.
+  and `command_started` / `command_finished` (the latter carries a nullable
+  `exit_code`). `watch` cuts `wait`'s poll-floor latency: a `watch` consumer
+  wakes the instant an event fires rather than on the next poll tick. It is
+  additive — `wait` still works without it, and a dropped event (full
+  mailbox) falls back to polling.
+  **Command boundaries (phux-foz.4):** `command_started` / `command_finished`
+  are sourced from a direct scan of the raw PTY byte stream for `OSC 133 ; C`
+  / `OSC 133 ; D` shell-integration marks — `C` emits `command_started`, `D`
+  emits `command_finished` with the shell-reported exit code in `exit_code`
+  when the mark carries one (`OSC 133 ; D ; n`). `exit_code` is `null` only
+  when the shell's `D` mark omits the code or the shell has no OSC-133
+  integration at all; it is not always null. A pane whose shell never emits
+  OSC-133 marks (no shell integration configured) never produces these two
+  events — `dirty`/`idle` remain the fallback command-boundary signal in that
+  case. **Remaining caveat:** `idle` (and by extension the fallback boundary)
+  depends on the PTY actually going quiet; a live shell prompt whose program
+  keeps repainting (for example a blinking cursor or a redrawing status line)
+  can keep generating chunks that never settle, so idle cadence is only as
+  good as the prompt's own quiescence.
 - **`phux rec -o PATH [--format FMT] [--from FILE] [--duration SECS]
   [--fps N] [--idle-limit SECS] [--max-bytes N] [--cast-version N] [--json]
   [--socket P] [TARGET]`** — record a pane and export it as an asciinema cast,
@@ -376,8 +390,10 @@ via a nonce-correlated `phux.session.created/v1/<request_token>` one-shot
 result), and rename is an L3 metadata SET on the
 `phux.session.name/v1` key. Grouping conventions are owned by
 [`../spec/L3.md`](../spec/L3.md). The user-facing UX of `new` is unchanged; the
-divergence is on the wire, where the migration to this decomposition is tracked
-against ADR-0030 (full `GroupId` removal is bead phux-0bmc).
+divergence is on the wire, where the migration to this decomposition is
+tracked against ADR-0030. `GroupId`'s retention as an opaque grouping key is
+settled, not a remnant awaiting removal (bead phux-0bmc closed as
+resolved-by-rename).
 
 **Socket precedence (once, for every verb).** The `--socket` argument wins,
 then the `PHUX_SOCKET` environment variable, then the daemon default:

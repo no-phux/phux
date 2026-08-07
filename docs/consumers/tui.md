@@ -73,8 +73,8 @@ client logic, not a wire-level lifecycle entity.
 
 A consumer that doesn't want this vocabulary doesn't have to learn it;
 the substrate doesn't carry it. `GroupId` survives only as a
-documented opaque grouping key, not a lifecycle tier — its full removal is
-tracked by bead phux-0bmc.
+documented opaque grouping key, not a lifecycle tier — settled, not a
+remnant awaiting removal (bead phux-0bmc closed as resolved-by-rename).
 
 ---
 
