@@ -358,7 +358,7 @@ phux service install --hub
 phux host enroll --role satellite user@devbox
 ```
 
-(Formerly `phux satellite enroll` — see
+(Formerly `phux satellite enroll`, a spelling since removed — see
 [ADR-0066](../ADR/0066-host-namespace.md).)
 
 `host enroll --role satellite` verifies the remote binary, installs its service, runs

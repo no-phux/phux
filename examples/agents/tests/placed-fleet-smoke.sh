@@ -74,7 +74,7 @@ grep -F $'spawn\t--json\t--target\t@10\t--split\thorizontal' "$log" >/dev/null
 
 # Existing-pane topology plus one server-wide and two pane-scoped bounded
 # watch subprocesses ran concurrently.
-grep -F $'move-pane\t@12\t@13\t--vertical' "$log" >/dev/null
+grep -F $'move-pane\t@12\t@13\t--split\tvertical' "$log" >/dev/null
 grep -F $'swap-pane\t@11\t@12\t--json' "$log" >/dev/null
 [[ "$(grep -c '^watch' "$log")" -eq 3 ]]
 grep -Fx $'watch\t--json' "$log" >/dev/null

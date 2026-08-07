@@ -263,8 +263,7 @@ implicitly spawn. `--split` is the same axis flag `spawn` and `launch` take
 (`h` / `v` are accepted shorthands); omitted, it defaults to horizontal (a
 horizontal divider, so panes are stacked), while `--split vertical` means a
 vertical divider and side-by-side panes. The pre-unification boolean
-`--horizontal` / `--vertical` spellings still parse for one release, hidden
-from help and each printing a one-line deprecation warning. `R` defaults to
+`--horizontal` / `--vertical` spellings have been removed. `R` defaults to
 `0.5`; ratios must be finite and strictly between zero and one, checked at
 parse time. `move-pane SOURCE TARGET` accepts the same user-facing direction
 and ratio flags. A cross-session move preserves the Terminal's process, PTY, scrollback,

@@ -82,7 +82,7 @@ coordinator="@$coordinator_id"
 # Existing-pane layout verbs are topology edits, not focus commands. These two
 # calls demonstrate deterministic reshaping after launch without moving any
 # attached human's viewport.
-"$PHUX" move-pane "$reviewer" "$coordinator" --vertical --ratio 0.5 --json >/dev/null
+"$PHUX" move-pane "$reviewer" "$coordinator" --split vertical --ratio 0.5 --json >/dev/null
 "$PHUX" swap-pane "$builder" "$reviewer" --json >/dev/null
 
 printf 'Watching %s and %s concurrently for %ss\n' "$builder" "$reviewer" "$WATCH_SECONDS"

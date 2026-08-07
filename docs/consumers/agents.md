@@ -332,9 +332,8 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   same session. `--split` is the same axis flag `spawn` and `launch` take
   (`h` / `v` shorthands accepted): `vertical` means a vertical divider
   (side-by-side panes); `horizontal` means a horizontal divider (stacked
-  panes) and is the default. The deprecated boolean `--horizontal` /
-  `--vertical` spellings still parse for one release with a one-line stderr
-  warning. Shape in §4.12.
+  panes) and is the default. The pre-unification boolean `--horizontal` /
+  `--vertical` spellings have been removed. Shape in §4.12.
 - **`phux move-pane SOURCE TARGET [--split horizontal|vertical] [--ratio R]
   [--json] [--socket P]`** — collapse `SOURCE` out of its old position and
   insert it beside `TARGET`. When the panes belong to different sessions, the
