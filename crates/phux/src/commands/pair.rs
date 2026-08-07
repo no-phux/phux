@@ -12,11 +12,22 @@ use std::process::ExitCode;
 /// Scheme + host for the one-tap connect deep-link (and the QR that encodes
 /// it). A device that opens or scans it gets the server URL, the cert
 /// fingerprint (MITM defense), and the token (credential) in one shot —
-/// no typing a 32-byte hex token by hand. The shape is owned by the mobile
-/// consumer's parser (`ServerConfig.fromConnectLink` in phux-mobile):
+/// no typing a 32-byte hex token by hand:
 /// `phux://connect?url=<ws(s)-url>[&name=<n>][&fp=<sha256>]&token=<hex>`,
 /// where `url` is mandatory — without it the device has nothing to dial and
 /// rejects the link — so a link is only emitted when an address is known.
+///
+/// THIS SHAPE IS OWNED HERE, not by any consumer. [ADR-0031] is the decision
+/// record: "A remote consumer parsing the link must accept this exact shape."
+/// An earlier version of this comment said the opposite — that the shape
+/// belonged to phux-mobile's parser — and the resulting circular ownership
+/// cost a real outage: phux-mobile rejected every token-bearing link (which is
+/// every link this function emits, since `&token=` is unconditional), so
+/// one-tap pairing and QR pairing were both dead while each repo's own tests
+/// stayed green. Changing the shape is a change to ADR-0031 and a coordinated
+/// consumer update, never a silent edit here.
+///
+/// [ADR-0031]: ../../../../ADR/0031-remote-consumer-auth-and-encryption.md
 const CONNECT_URI_PREFIX: &str = "phux://connect";
 
 /// Build the `phux://connect?...` one-tap link. `url` is a ws(s):// URL,

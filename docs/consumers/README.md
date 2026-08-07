@@ -48,6 +48,7 @@ project locally, the way the web client does.
 |---|---|
 | [tui.md](./tui.md) | Reference TUI, the adoption wedge: CLI, keybinds, status bar, layout, hooks, recording. |
 | [web.md](./web.md) | Reference projection consumer: Rust-to-WASM browser client that carries its own engine over the WebSocket wire codec. |
+| [ios.md](./ios.md) | Native projection consumer: the Swift/UniFFI iOS client, its `wss://` + pinned-certificate transport, and the normative `phux pair` connect-link contract. |
 | [agents.md](./agents.md) | Agent surface: the CLI verb set, public agent state, asks, workspace save/restore, and versioned JSON contracts. (See [`../../AGENTS.md`](../../AGENTS.md) for universal agent substrate instructions.) |
 | [opencode.md](./opencode.md) | OpenCode package: loading, six tools, cache-preserving fleet context, target precedence, lifecycle metadata, shared adapter boundary, and safety. |
 | [pi.md](./pi.md) | Pi package: local installation, nineteen terminal tools, cache-preserving fleet context, target persistence, lifecycle metadata, human handoff, and safety. |
@@ -55,7 +56,7 @@ project locally, the way the web client does.
 | [sdk.md](./sdk.md) | The workspace-internal `phux-client` free-function surface over the `phux-protocol` wire codec. |
 | [recording.md](./recording.md) | Session recording: the two capture surfaces, asciicast and the self-contained GIF/APNG renderer, tuning, and the limits. |
 
-Future consumers — a native GUI, a tmux-CC adapter — get their
+Future consumers — a desktop GUI, a tmux-CC adapter — get their
 own files here when they materialize. Each file's frontmatter declares its
 own `stability`; a shipped surface is `stable`, a forward-looking sketch is
 `evolving`. Today the consumer surfaces are real but still pre-1.0, so most
