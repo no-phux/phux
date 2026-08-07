@@ -33,6 +33,7 @@ pub use widgets::exec::{ExecFeed, ExecWidget};
 pub use widgets::exit_status::ExitWidget;
 pub use widgets::help_hints::HelpHintsWidget;
 pub use widgets::session_name::SessionNameWidget;
+pub use widgets::text::TextWidget;
 pub use widgets::time::TimeWidget;
 pub use widgets::windows::WindowsWidget;
 
@@ -348,6 +349,7 @@ pub const BUILTIN_WIDGET_SPECS: &[&WidgetKindSpec] = &[
     &widgets::exit_status::SPEC,
     &widgets::help_hints::SPEC,
     &widgets::session_name::SPEC,
+    &widgets::text::SPEC,
     &widgets::time::SPEC,
     &widgets::windows::SPEC,
 ];
@@ -472,6 +474,7 @@ impl WidgetRegistry {
         r.register("help-hints", widgets::help_hints::factory);
         r.register("time", widgets::time::factory);
         r.register("session-name", widgets::session_name::factory);
+        r.register("text", widgets::text::factory);
         r.register("windows", widgets::windows::factory);
         r
     }

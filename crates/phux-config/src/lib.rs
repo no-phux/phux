@@ -47,9 +47,9 @@ pub use schema::{
     WidgetSpec, WindowSize,
 };
 pub use widget::{
-    Cell, CellStyle, SessionNameWidget, StatusBar, StatusWidget, TimeWidget, WidgetCells,
-    WidgetContext, WidgetError, WidgetFactory, WidgetRegistry, WindowInfo, WindowsWidget,
-    row_to_string,
+    Cell, CellStyle, SessionNameWidget, StatusBar, StatusWidget, TextWidget, TimeWidget,
+    WidgetCells, WidgetContext, WidgetError, WidgetFactory, WidgetRegistry, WindowInfo,
+    WindowsWidget, row_to_string,
 };
 
 use std::path::Path;

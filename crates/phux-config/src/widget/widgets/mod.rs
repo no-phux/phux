@@ -8,5 +8,6 @@ pub(super) mod exec;
 pub(super) mod exit_status;
 pub(super) mod help_hints;
 pub(super) mod session_name;
+pub(super) mod text;
 pub(super) mod time;
 pub(super) mod windows;
