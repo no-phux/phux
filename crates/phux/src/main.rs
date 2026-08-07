@@ -271,10 +271,7 @@ where
             // `--vertical` never meant anything on `phux ls`, so do not
             // offer `--split` there. Clap does not report which subcommand
             // was being parsed, so match on the invocation instead.
-            let words: Vec<String> = argv
-                .into_iter()
-                .map(|s| s.as_ref().to_owned())
-                .collect();
+            let words: Vec<String> = argv.into_iter().map(|s| s.as_ref().to_owned()).collect();
             deprecations::REMOVED.iter().find(|row| {
                 row.old_flag() == Some(flag)
                     && row
@@ -1228,9 +1225,7 @@ mod tests {
     fn an_unrelated_unknown_subcommand_gets_no_removal_hint() {
         let argv = ["phux", "definitely-not-a-verb"];
         let err = Cli::try_parse_from(argv).expect_err("unknown verbs are refused");
-        assert!(
-            super::removed_spelling_hint_in(&err, argv.iter().skip(1).copied()).is_none()
-        );
+        assert!(super::removed_spelling_hint_in(&err, argv.iter().skip(1).copied()).is_none());
     }
 
     /// Parse `argv` to its resolved [`Command`], panicking with the argv on

@@ -859,11 +859,21 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::apply::BACKUP_DIR;
-    use super::release::{Artifact, ReleaseSource, Version};
+    use super::release::{Artifact, ReleaseSource, Version, host_target};
     use super::source::{Install, InstallSource};
     use super::{Action, Handoff, Refusal, UpdateEnv, UpdateError, UpdateOpts, execute, plan};
 
-    const TARGET: &str = "aarch64-apple-darwin";
+    /// The triple these tests publish artifacts under.
+    ///
+    /// It MUST be resolved the same way the code under test resolves it.
+    /// Hardcoding a triple here passes on whichever platform happens to
+    /// match and fails everywhere else: `aarch64-apple-darwin` was baked in
+    /// during development on macOS, and the four tests that publish an
+    /// archive then 404'd against their own fake on Linux CI, because
+    /// `execute` asked for `aarch64-unknown-linux-gnu`.
+    fn target() -> &'static str {
+        host_target().expect("tests run on a platform with a published artifact")
+    }
 
     /// A [`ReleaseSource`] backed by a map of URL to bytes. Nothing in this
     /// module's tests touches the network.
@@ -961,7 +971,7 @@ mod tests {
     /// Build a release tarball plus its sidecar and serve both at the URLs
     /// the real artifact naming would use.
     fn publish(fake: &mut FakeReleases, workdir: &Path, tag: &str) -> Artifact {
-        let artifact = Artifact::new(tag, TARGET);
+        let artifact = Artifact::new(tag, target());
         let build = workdir.join("build").join(&artifact.stage);
         fs::create_dir_all(&build).unwrap();
         fs::write(build.join("phux"), format!("phux {tag}")).unwrap();
@@ -1010,7 +1020,7 @@ mod tests {
             Path::new("/home/ada/.local/bin/phux"),
             InstallSource::DirectRelease,
         );
-        let plan = plan(install, version("0.12.1"), "v0.13.0", None, TARGET).unwrap();
+        let plan = plan(install, version("0.12.1"), "v0.13.0", None, target()).unwrap();
         assert!(plan.update_available);
         assert!(plan.changes_version);
         assert_eq!(plan.target_tag, "v0.13.0");
@@ -1027,7 +1037,7 @@ mod tests {
             version("0.12.1"),
             "v0.13.0",
             Some("v0.11.0"),
-            TARGET,
+            target(),
         )
         .unwrap();
         assert!(!plan.update_available);
@@ -1046,7 +1056,7 @@ mod tests {
             version("0.12.1"),
             "v0.13.0",
             Some("nightly"),
-            TARGET,
+            target(),
         )
         .unwrap_err();
         assert!(matches!(err, UpdateError::InvalidTag(_)), "{err:?}");
