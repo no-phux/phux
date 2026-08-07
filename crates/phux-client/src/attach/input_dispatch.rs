@@ -1208,6 +1208,44 @@ pub(super) fn focused_pane_rect_for(
         .unwrap_or(content)
 }
 
+/// phux-z6wt: single choke point for "the focused pane's rect may have
+/// changed without a SIGWINCH firing" — recomputes it via
+/// [`focused_pane_rect_for`] and fans it out to every surviving overlay
+/// ([`OverlayState::on_viewport_resize`]).
+///
+/// PR #331 (phux-d26y) added that fan-out only on the SIGWINCH edge, but a
+/// peer's layout broadcast (`FrameOutcome::layout_replaced` in
+/// `server_frame.rs`) moves the focused pane's rect too, with no SIGWINCH
+/// involved. The same flag also covers the TerminalSpawned/TerminalClosed
+/// reflow path — every `reflow_panes: true` in `server_frame.rs` is emitted
+/// alongside `layout_replaced: true` — so routing through `layout_replaced`
+/// picks up both triggers via one call site instead of three. Toggling zoom
+/// or the sidebar can move the rect too, but both are local keybindings
+/// dispatched through this same module, which routes every key to the
+/// active overlay while one is up (copy-mode included); they cannot fire
+/// while an overlay needs this fan-out, so they are deliberately not wired
+/// here.
+///
+/// Copy-mode is the only overlay this matters to today (see
+/// [`crate::render::overlay::copy_mode`]); every other overlay's
+/// `on_viewport_resize` is a no-op, and the `is_active` guard keeps the
+/// steady-state (no overlay up) cost at one `Vec::is_empty`.
+pub(super) fn sync_overlays_to_focused_pane(
+    overlays: &mut OverlayState,
+    workspace: &Workspace,
+    zoomed: Option<&TerminalId>,
+    focused_pane: Option<&TerminalId>,
+    viewport: (u16, u16),
+    bar: Option<crate::render::chrome::status_bar::Position>,
+    sidebar: Option<SidebarReservation>,
+) {
+    if !overlays.is_active() {
+        return;
+    }
+    let pane = focused_pane_rect_for(workspace, zoomed, focused_pane, viewport, bar, sidebar);
+    overlays.on_viewport_resize(pane.w, pane.h);
+}
+
 /// Apply one drag step: re-tune the grabbed split so its divider tracks
 /// `mouse`, returning `true` iff the layout changed (the caller repaints).
 ///
@@ -3060,6 +3098,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    use crate::render::overlay::CopyModeOverlay;
+
     /// Ceiling for draining a scripted peer connection whose writer has
     /// already been dropped.
     ///
@@ -3548,6 +3588,116 @@ mod tests {
             crate::layout::LayoutNode::Split { ratio, .. } => *ratio,
             other => panic!("expected root Split, got {other:?}"),
         }
+    }
+
+    /// Like [`two_pane_workspace`], but with a caller-chosen root ratio —
+    /// stands in for the workspace a peer's layout broadcast lands
+    /// (`server_frame`'s `is_layout_key` arm decodes and swaps it in
+    /// wholesale; a peer dragging the divider is the same shape as a
+    /// smaller `ratio` here).
+    fn two_pane_workspace_with_ratio(ratio: f32) -> Workspace {
+        use crate::layout::{LayoutState, WindowState, split_at};
+        let tree = split_at(
+            &crate::layout::LayoutNode::Leaf(tid(1)),
+            &tid(1),
+            &tid(2),
+            SplitDir::Horizontal,
+            ratio,
+        )
+        .unwrap();
+        Workspace {
+            windows: vec![WindowState {
+                name: "1".to_owned(),
+                state: LayoutState {
+                    tree: Some(tree),
+                    focus: Some(tid(1)),
+                },
+            }],
+            active: 0,
+        }
+    }
+
+    /// phux-z6wt: a peer's layout broadcast can shrink the focused pane with
+    /// no SIGWINCH involved — `server_frame`'s `is_layout_key` arm decodes
+    /// the peer's `Workspace`, swaps it in wholesale, and returns
+    /// `FrameOutcome { layout_replaced: true, .. }`. PR #331 (phux-d26y)
+    /// only fanned the focused pane's new size out to overlays on the
+    /// SIGWINCH edge, so before this fix nothing on the `layout_replaced`
+    /// path called it: copy-mode kept clamping the selection into the pane
+    /// size it had when it opened. Stale-large strands the corner outside
+    /// the new, smaller grid, and the copy path resolves that corner
+    /// through `terminal.grid_ref(..).ok()?` — so `extract_selection_text`
+    /// returns `None` and Enter dismisses copy-mode having silently copied
+    /// nothing.
+    ///
+    /// This drives `sync_overlays_to_focused_pane` — the driver helper the
+    /// `layout_replaced` block (and the SIGWINCH arm) both call — directly
+    /// against a workspace shaped like the "already reconciled" state
+    /// `server_frame` hands the driver, so the assertion exercises the
+    /// exact rect recomputation + fan-out the fix wires in, without needing
+    /// a two-client pty harness to produce the broadcast itself.
+    #[test]
+    fn layout_replace_reclaims_the_focused_pane_rect_for_overlays() {
+        let viewport = (80, 24);
+
+        // The wide workspace: a 50/50 split, so the focused left pane
+        // (tid(1)) is roughly half the viewport.
+        let wide = two_pane_workspace_with_ratio(0.5);
+        let wide_pane = focused_pane_rect_for(&wide, None, Some(&tid(1)), viewport, None, None);
+
+        // Copy-mode opens against that size and the selection is dragged to
+        // the pane's bottom-right corner.
+        let mut overlays = OverlayState::new();
+        overlays.push(Box::new(CopyModeOverlay::new(
+            wide_pane.h.saturating_sub(1),
+            wide_pane.w.saturating_sub(1),
+            wide_pane.w,
+            wide_pane.h,
+        )));
+
+        // A peer shrinks the same divider hard to the left — this is the
+        // workspace `server_frame` has already swapped in by the time the
+        // driver's `layout_replaced` block runs, with no SIGWINCH anywhere
+        // in the sequence.
+        let narrow = two_pane_workspace_with_ratio(0.1);
+        let narrow_pane = focused_pane_rect_for(&narrow, None, Some(&tid(1)), viewport, None, None);
+        assert!(
+            narrow_pane.w < wide_pane.w,
+            "sanity: the shrink actually narrowed the focused pane",
+        );
+
+        // Precondition: the stale selection really is stranded outside the
+        // narrower pane the peer just produced — this is the bug's exact
+        // consequence, reproduced without touching any driver code.
+        let stale = overlays
+            .copy_selection()
+            .expect("copy-mode retains its selection across the broadcast");
+        assert!(
+            stale.end_col >= narrow_pane.w,
+            "sanity: the pre-fix corner ({stale:?}) must sit outside the \
+             narrower pane ({narrow_pane:?}) for this test to mean anything",
+        );
+
+        // The fix: the driver's `layout_replaced` block calls this exact
+        // helper with the already-swapped workspace.
+        sync_overlays_to_focused_pane(
+            &mut overlays,
+            &narrow,
+            None,
+            Some(&tid(1)),
+            viewport,
+            None,
+            None,
+        );
+
+        let fixed = overlays
+            .copy_selection()
+            .expect("copy-mode survives the resize (ADR-0045: it does not dismiss)");
+        assert!(
+            fixed.end_row < narrow_pane.h && fixed.end_col < narrow_pane.w,
+            "every corner of the selection must be inside the pane the peer's \
+             broadcast produced: {fixed:?} vs {narrow_pane:?}",
+        );
     }
 
     /// phux-foz.3: `resize-pane { direction, amount }` dispatches through

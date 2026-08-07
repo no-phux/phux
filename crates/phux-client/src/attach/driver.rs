@@ -58,7 +58,8 @@ use super::connection::{Connection, Dial};
 use super::exec_widgets::spawn_exec_feed_runners;
 use super::input::StdinParser;
 use super::input_dispatch::{
-    DispatchCtx, ReattachTarget, dispatch_input_events, encode_layout_or_log, focused_pane_rect_for,
+    DispatchCtx, ReattachTarget, dispatch_input_events, encode_layout_or_log,
+    sync_overlays_to_focused_pane,
 };
 use super::paint::{
     SidebarEdge, SidebarReservation, content_rect, paint_bar_after_pane, paint_chrome_in_place,
@@ -3312,6 +3313,25 @@ async fn main_loop<W: super::RenderSink>(
                                 &agent_meta,
                             &mut vcs,
                             );
+                            // phux-z6wt: this arm fires for a peer's layout
+                            // broadcast and for the TerminalSpawned/
+                            // TerminalClosed reflow — neither goes through
+                            // SIGWINCH, so the phux-d26y fan-out never ran
+                            // for them. A surviving copy-mode overlay would
+                            // keep clamping against the pane size it opened
+                            // with, silently dropping or clipping a copy.
+                            // Recompute the focused pane's rect the same way
+                            // the SIGWINCH arm does and hand it to every
+                            // surviving overlay before the repaint below.
+                            sync_overlays_to_focused_pane(
+                                &mut overlays,
+                                &workspace,
+                                zoomed.as_ref(),
+                                focused_pane.as_ref(),
+                                viewport_dims,
+                                status_bar.as_ref().map(StatusBarPainter::position),
+                                sidebar,
+                            );
                             // The pane rects moved: only a full-viewport
                             // repaint (ED2 + every pane + dividers) is a
                             // coherent base. ADR-0029: raise, drain once.
@@ -3824,26 +3844,28 @@ async fn main_loop<W: super::RenderSink>(
                     tracing::debug!("resize: dropped a pinned overlay whose geometry went stale");
                 }
                 if overlays.is_active() {
-                    // phux-d26y: the survivors keep their state but must adopt
-                    // the focused pane's NEW size before they are painted.
-                    // Copy-mode is the one that cares: it clamps its cursor and
-                    // picks Line mode's right edge from pane dimensions
-                    // captured when it opened, so without this a copy after a
-                    // resize either resolves to nothing (a stale-large corner
-                    // the engine cannot address) or stops at the old edge
-                    // (stale-small). Runs after the stale sweep above, so an
-                    // overlay about to be dropped is never handed geometry it
-                    // will not use.
-                    let bar = status_bar.as_ref().map(StatusBarPainter::position);
-                    let pane = focused_pane_rect_for(
+                    // phux-d26y / phux-z6wt: the survivors keep their state
+                    // but must adopt the focused pane's NEW size before they
+                    // are painted. Copy-mode is the one that cares: it
+                    // clamps its cursor and picks Line mode's right edge
+                    // from pane dimensions captured when it opened, so
+                    // without this a copy after a resize either resolves to
+                    // nothing (a stale-large corner the engine cannot
+                    // address) or stops at the old edge (stale-small). Runs
+                    // after the stale sweep above, so an overlay about to be
+                    // dropped is never handed geometry it will not use.
+                    // Same choke point the `layout_replaced` arm uses for
+                    // the non-SIGWINCH triggers (a peer's layout broadcast,
+                    // TerminalSpawned/TerminalClosed reflow).
+                    sync_overlays_to_focused_pane(
+                        &mut overlays,
                         &workspace,
                         zoomed.as_ref(),
                         focused_pane.as_ref(),
                         viewport_dims,
-                        bar,
+                        status_bar.as_ref().map(StatusBarPainter::position),
                         sidebar,
                     );
-                    overlays.on_viewport_resize(pane.w, pane.h);
                     paint_active_overlay(
                         out,
                         &overlays,

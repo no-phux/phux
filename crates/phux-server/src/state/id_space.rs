@@ -64,10 +64,6 @@ pub struct IdSpace {
     /// [`phux_protocol::wire::info::WindowInfo::id`] in the `ATTACHED`
     /// snapshot.
     window_forward: HashMap<WindowId, WireWindowId>,
-    /// Reverse of [`Self::window_forward`]. Kept consistent by every
-    /// mutator for symmetry with the terminal space; nothing reads it yet
-    /// (there is no wire-to-core window resolve on any code path).
-    window_reverse: HashMap<WireWindowId, WindowId>,
     /// Next window wire id to hand out.
     next_window_wire_id: u32,
 }
@@ -88,7 +84,6 @@ impl IdSpace {
             terminal_reverse: HashMap::new(),
             next_terminal_wire_id: 1,
             window_forward: HashMap::new(),
-            window_reverse: HashMap::new(),
             next_window_wire_id: 1,
         }
     }
@@ -218,7 +213,6 @@ impl IdSpace {
         self.next_window_wire_id = self.next_window_wire_id.saturating_add(1);
         let wire = WireWindowId(raw);
         self.window_forward.insert(window, wire);
-        self.window_reverse.insert(wire, window);
         wire
     }
 
@@ -234,15 +228,12 @@ impl IdSpace {
     /// [`Self::set_next_window_wire`].
     pub(super) fn bind_window(&mut self, window: WindowId, wire: WireWindowId) {
         self.window_forward.insert(window, wire);
-        self.window_reverse.insert(wire, window);
     }
 
-    /// Drop both directions of `window`'s mapping. Idempotent; the retired
-    /// wire id is not reused.
+    /// Drop `window`'s mapping. Idempotent; the retired wire id is not
+    /// reused.
     pub(super) fn retire_window(&mut self, window: WindowId) {
-        if let Some(wire) = self.window_forward.remove(&window) {
-            self.window_reverse.remove(&wire);
-        }
+        self.window_forward.remove(&window);
     }
 
     /// The next window wire id this space would allocate.
