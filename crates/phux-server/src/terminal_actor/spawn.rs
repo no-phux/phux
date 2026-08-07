@@ -1307,6 +1307,23 @@ mod canonical_guard_tests {
         (pair.master, pair.slave)
     }
 
+    /// The canonical-line limit the guard will resolve for any pane on this
+    /// platform, read off a scratch pty.
+    ///
+    /// Tests that need an over-limit payload derive its size from this
+    /// rather than hardcoding a number: darwin's queue is 1024 and Linux's
+    /// is 4096, so a literal that overflows one sits comfortably inside the
+    /// other and silently stops testing anything.
+    fn platform_canonical_limit() -> usize {
+        let (master, _slave) = open_default_pty();
+        let raw_fd = master.as_raw_fd().expect("real pty has a raw fd");
+        // SAFETY: `raw_fd` names `master`, kept alive by the binding above
+        // for the whole call; the borrow does not outlive this function and
+        // is never used to close or duplicate the fd.
+        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw_fd) };
+        canonical_limit(borrowed)
+    }
+
     #[test]
     fn write_all_resilient_alone_truncates_a_canonical_mode_line() {
         let (master, _slave) = open_default_pty();
@@ -1402,17 +1419,25 @@ mod canonical_guard_tests {
         let _ = pty.child.kill();
     }
 
-    /// phux-mjmc's second, more dangerous repro: 1800 newline-free bytes
-    /// followed by a terminating CR. Old code lost the CR along with the
-    /// rest of the overflow, so the line never completed and the pane was
-    /// permanently wedged. The guard must refuse the whole batch up front.
+    /// phux-mjmc's second, more dangerous repro: a newline-free run past the
+    /// canonical limit followed by a terminating CR. Old code lost the CR
+    /// along with the rest of the overflow, so the line never completed and
+    /// the pane was permanently wedged. The guard must refuse the whole
+    /// batch up front.
+    ///
+    /// The bead's own repro used a literal 1800 bytes, which overflows
+    /// darwin's 1024-byte queue but sits comfortably inside Linux's 4096 --
+    /// where the guard then correctly does NOT refuse, and this test failed
+    /// asserting a refusal that should not happen. The payload is sized from
+    /// the platform's real limit so the test asserts the invariant rather
+    /// than one machine's arithmetic.
     #[tokio::test(flavor = "current_thread")]
     async fn terminating_cr_past_the_limit_is_refused_not_wedged() {
         let cmd = CommandBuilder::new("cat");
         let (mut pty_rx, input_tx, mut pty) =
             spawn_pty(cmd, 80, 24).expect("spawn cat under a real pty");
 
-        let mut payload = vec![b'a'; 1800];
+        let mut payload = vec![b'a'; platform_canonical_limit() + 776];
         payload.push(b'\r');
         let (completion_tx, completed) = std::sync::mpsc::channel();
         input_tx
