@@ -628,13 +628,14 @@ pub(crate) async fn resolve_create_if_missing(
     // Slow path: create the session + seed pane. Snapshot the server's
     // configured PTY mode and (optional) override command before
     // releasing the state borrow.
-    let (with_pty, override_cmd, history_limit, term, shell) = state.with(|s| {
+    let (with_pty, override_cmd, history_limit, term, shell, login_shell) = state.with(|s| {
         (
             s.attach_create_seeds_pty(),
             s.attach_create_seed_command(),
             s.history_limit(),
             s.term().to_owned(),
             s.shell().to_owned(),
+            s.login_shell(),
         )
     });
 
@@ -661,7 +662,7 @@ pub(crate) async fn resolve_create_if_missing(
                 }
                 builder
             }
-            _ => crate::terminal_actor::default_shell_command(&shell),
+            _ => crate::terminal_actor::default_shell_command(&shell, login_shell),
         });
         // phux-3mtf / phux-0v1l: honor the wire `cwd` through the shared
         // validate-and-fall-back helper, uniform with the
@@ -1245,8 +1246,8 @@ pub(crate) async fn handle_spawn_terminal(
             b
         }
         _ => {
-            let shell = state.with(|s| s.shell().to_owned());
-            crate::terminal_actor::default_shell_command(&shell)
+            let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
+            crate::terminal_actor::default_shell_command(&shell, login_shell)
         }
     };
     // TERM precedence (phux-ign): each later tier overrides the prior via

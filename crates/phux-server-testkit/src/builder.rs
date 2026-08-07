@@ -197,7 +197,9 @@ impl E2eBuilder {
 
         // A seed command is required to get a real PTY-backed pane (the
         // no-PTY `spawn_server` path produces an empty grid). Default to a
-        // login shell so a bare `E2eBuilder::new()` still yields an
+        // plain interactive shell (not a login shell — see phux-87rr's
+        // `login_flag_for_shell` for what that distinction now means in
+        // this codebase) so a bare `E2eBuilder::new()` still yields an
         // interactive pane.
         let cmd = self
             .seed_cmd

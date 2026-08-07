@@ -979,7 +979,11 @@ impl TerminalActor {
         cols: u16,
         rows: u16,
     ) -> Result<TerminalActorBundle, TerminalActorError> {
-        Self::new_with_command(default_shell_command(&resolve_shell(None)), cols, rows)
+        Self::new_with_command(
+            default_shell_command(&resolve_shell(None), false),
+            cols,
+            rows,
+        )
     }
 
     /// Build an actor whose cancellation token is `token` (typically a
@@ -4770,7 +4774,7 @@ mod tests {
     /// passed in by the caller.
     #[test]
     fn shell_command_wraps_in_shell_dash_c() {
-        let cmd = shell_command("/opt/fancy/fish", "btop --utf-force");
+        let cmd = shell_command("/opt/fancy/fish", "btop --utf-force", false);
         let argv = cmd.get_argv();
         assert_eq!(argv.len(), 3, "expected [shell, -c, command]");
         assert_eq!(argv[0], "/opt/fancy/fish");

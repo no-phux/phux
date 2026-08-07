@@ -345,7 +345,7 @@ fn encoder_emits_legacy_bytes_for_q_in_default_terminal_mode() {
 /// advertising `fullkbd`) must update this test deliberately.
 #[test]
 fn default_shell_command_advertises_xterm_256color() {
-    let cmd = default_shell_command(&phux_server::terminal_actor::resolve_shell(None));
+    let cmd = default_shell_command(&phux_server::terminal_actor::resolve_shell(None), false);
     let term = cmd
         .get_env("TERM")
         .map(|s| s.to_string_lossy().into_owned())

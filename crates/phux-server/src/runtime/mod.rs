@@ -137,6 +137,28 @@ pub struct ServerConfig {
     /// [`Self::with_default_socket`] resolves with no configured value
     /// (`$SHELL`, else `/bin/sh`).
     pub shell: String,
+    /// Whether every command-less pane spawn should invoke [`Self::shell`]
+    /// in its platform login mode (phux-87rr): `bash`/`zsh`/`sh` get `-l`,
+    /// `fish` gets `--login` (see
+    /// [`crate::terminal_actor::login_flag_for_shell`]); an unrecognized
+    /// shell gets no flag at all rather than risking a fatal exec on one
+    /// it may not understand.
+    ///
+    /// This is `true` only for a server the `phux` binary detects was
+    /// started by a service manager's generated unit (`phux service
+    /// install`) — launchd and systemd both start their unit with a
+    /// minimal environment that never ran a login shell, so Homebrew/Nix
+    /// `PATH` entries added by profile scripts are otherwise invisible to
+    /// every pane. It is `false` (the default here and in
+    /// [`Self::with_default_socket`]) for every other server: a server a
+    /// human started directly from their own terminal already has a
+    /// fully profile-initialized environment, and re-running login-shell
+    /// initialization a second time is not idempotent for every setup
+    /// (PATH duplication is the mild failure mode; `nvm`/`rbenv`/`direnv`
+    /// guards misfiring is not) — see `docs/operations.md`'s
+    /// "Service-managed pane environment" section and ADR-0073 for the
+    /// full semantics.
+    pub login_shell: bool,
     /// How a Terminal viewed by clients of differing sizes resolves its one
     /// authoritative PTY geometry (`defaults.window-size`, phux-nk07).
     /// Threaded into shared state so `handle_viewport_resize` applies the
@@ -245,6 +267,7 @@ impl ServerConfig {
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
             shell: crate::terminal_actor::resolve_shell(None),
+            login_shell: false,
             window_size: phux_config::WindowSize::default(),
             policy_engine: None,
             hook_catalog: crate::hooks::HookCatalog::default(),
@@ -754,6 +777,12 @@ impl ServerRuntime {
         // command-less spawn path runs the configured shell.
         let shell = self.cfg.shell.clone();
         state.with_mut(|s| s.set_shell(shell));
+        // Mirror whether command-less pane spawns should invoke `shell` in
+        // its platform login mode (phux-87rr) — `true` only when the
+        // binary detected this server was started by a service manager's
+        // generated unit; see `ServerConfig::login_shell`'s doc for why.
+        let login_shell = self.cfg.login_shell;
+        state.with_mut(|s| s.set_login_shell(login_shell));
         // Mirror `defaults.window-size` into shared state so
         // `handle_viewport_resize` resolves a shared Terminal's geometry from
         // the configured multi-client policy (phux-nk07).
@@ -904,8 +933,9 @@ impl ServerRuntime {
                         // (`defaults.shell` → `$SHELL` → `/bin/sh`,
                         // phux-i0e8.4.1) mirrored into state above.
                         let mut cmd = seed_command.unwrap_or_else(|| {
-                            let shell = state.with(|s| s.shell().to_owned());
-                            crate::terminal_actor::default_shell_command(&shell)
+                            let (shell, login_shell) =
+                                state.with(|s| (s.shell().to_owned(), s.login_shell()));
+                            crate::terminal_actor::default_shell_command(&shell, login_shell)
                         });
                         // Apply the configured `defaults.term` over the
                         // builder's baseline so the seed pane advertises the

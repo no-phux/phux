@@ -75,6 +75,19 @@ pub(super) struct ServerConfig {
     /// Defaults to `resolve_shell(None)` (`$SHELL`, else `/bin/sh`) so
     /// state-only tests keep the pre-config behavior.
     pub(super) shell: String,
+    /// Whether a command-less pane spawn invokes [`Self::shell`] in its
+    /// platform login mode (phux-87rr). Mirrors
+    /// [`crate::runtime::ServerConfig::login_shell`] so every spawn site
+    /// that reads [`Self::shell`] reads this alongside it without an
+    /// extra channel to the runtime. Set by the runtime via
+    /// [`super::ServerState::set_login_shell`] right after
+    /// `SharedState::new`.
+    ///
+    /// Defaults to `false` so state-only tests (and
+    /// [`crate::terminal_actor::TerminalActor::new_with_default_shell`],
+    /// which has no server config in scope at all) exercise the
+    /// pre-existing plain-shell behavior.
+    pub(super) login_shell: bool,
     /// The UDS path this server listens on. Mirrors
     /// [`crate::runtime::ServerConfig::socket_path`] so every pane spawn
     /// site can inject it into the child environment as `PHUX_SOCKET`
@@ -126,6 +139,7 @@ impl Default for ServerConfig {
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
             shell: crate::terminal_actor::resolve_shell(None),
+            login_shell: false,
             server_socket_path: None,
             window_size: phux_config::WindowSize::default(),
             policy_engine: std::sync::Arc::new(crate::policy::PermissivePolicy::INSTANCE),

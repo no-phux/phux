@@ -170,13 +170,33 @@ pub(crate) fn run_server(
     // must stay below the config load.
     let shell = phux_server::terminal_actor::resolve_shell(config.defaults.shell.as_deref());
 
+    // phux-87rr: a server started via `phux service install`'s generated
+    // launchd/systemd unit inherits the init system's minimal environment
+    // — no login shell ever ran, so profile-provided `PATH` entries
+    // (Homebrew, Nix) are invisible to every pane even though markers
+    // like `NIX_PROFILES` may still be inherited and fool a guard into
+    // thinking initialization already happened. Detect that case from
+    // `SERVICE_MANAGED_ENV`, the marker `phux service install` stamps
+    // into the unit's OWN environment (see `commands::service`) —
+    // deliberately not sniffed from environment shape (a short `PATH`, an
+    // unfamiliar parent pid): both are true of setups that never went
+    // through the installer, and wrong is exactly the failure mode this
+    // bug is about. Its absence is the correct default for a server a
+    // human started directly from their own already-initialized
+    // terminal, where re-running login-shell initialization a second
+    // time is not idempotent for every setup (PATH duplication is the
+    // mild failure; `nvm`/`rbenv`/`direnv` guards misfiring is not).
+    let login_shell = std::env::var_os(super::service::SERVICE_MANAGED_ENV).is_some();
+
     // phux-07y: `--seed-command` runs that command (via `<shell> -c`) as
     // the pre-seeded session's initial program instead of a bare shell.
     // The naked-`phux` auto-spawn path passes `defaults.spawn-on-attach`
     // here; `phux new`'s auto-spawn and a hand-started `phux server`
     // pass nothing, so an explicitly-created session still gets a shell.
-    let seed_command =
-        seed_command.map(|command| phux_server::terminal_actor::shell_command(&shell, command));
+    // `login_shell` carries through so a service-managed server's seeded
+    // command also runs with a profile-initialized `PATH` (phux-87rr).
+    let seed_command = seed_command
+        .map(|command| phux_server::terminal_actor::shell_command(&shell, command, login_shell));
 
     // `[[hooks.<name>]]` entries plus enabled plugin manifests' `[[events]]`
     // feed the server-side hook dispatcher (docs/consumers/tui.md §9,
@@ -219,6 +239,7 @@ pub(crate) fn run_server(
         cwd_inheritance,
         term,
         shell,
+        login_shell,
         window_size,
         // Permissive HELLO authorization (ADR-0072): the local trust model
         // is "same OS user, kernel-enforced". phux-pjc5 installs the

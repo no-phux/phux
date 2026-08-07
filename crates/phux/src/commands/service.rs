@@ -27,6 +27,24 @@ const LAUNCHD_LABEL: &str = "com.phux.server";
 /// `$XDG_CONFIG_HOME/systemd/user/`.
 const SYSTEMD_UNIT: &str = "phux.service";
 
+/// Marker `phux service install` stamps into the unit's OWN
+/// `EnvironmentVariables` (launchd) / `Environment=` (systemd) block, and
+/// [`crate::commands::server::run_server`] reads back at startup to decide
+/// whether server-spawned panes need login-shell treatment (phux-87rr).
+///
+/// This is the reliable half of "reliable, not a heuristic": launchd and
+/// systemd both start their unit with a minimal environment that never ran
+/// a login shell, so profile-provided `PATH` entries (Homebrew, Nix) are
+/// invisible to every pane — but environment markers like `NIX_PROFILES`
+/// can still be inherited from whatever *built* the unit, which is exactly
+/// what makes sniffing "is my PATH short" or "is my parent launchd"
+/// unreliable: both can be true, or false, independent of how this
+/// specific server process was actually started. A value this code itself
+/// wrote into the unit at install time, and only there, has no such
+/// ambiguity — a server without it was not started from a unit this
+/// `phux` ever wrote, full stop.
+pub(crate) const SERVICE_MANAGED_ENV: &str = "PHUX_SERVICE_MANAGED";
+
 /// Which init system this host's unit targets.
 ///
 /// Resolved from the compile target rather than probed at runtime: a macOS
@@ -140,7 +158,13 @@ impl ServicePlan {
     /// last one for the same inputs — an install that reshuffles keys looks
     /// like a real change in `diff` and in version control.
     fn environment(&self) -> Vec<(&'static str, String)> {
-        let mut env = Vec::with_capacity(6);
+        let mut env = Vec::with_capacity(7);
+        // Unconditional (phux-87rr): the marker the server reads to know it
+        // was started from a unit this `phux` wrote, and therefore needs
+        // login-shell treatment for its spawned panes. See
+        // `SERVICE_MANAGED_ENV`'s doc for why this is the reliable signal
+        // rather than a heuristic sniffed from the process environment.
+        env.push((SERVICE_MANAGED_ENV, "1".to_owned()));
         if let Some(quic) = &self.quic {
             env.push(("PHUX_QUIC_ADDR", quic.clone()));
         }
@@ -911,9 +935,9 @@ fn config_home_from(
 #[cfg(test)]
 mod tests {
     use super::{
-        Manager, ServicePlan, config_home_from, home_dir_from, render_launchd_plist,
-        render_systemd_unit, render_wrapper_script, sh_quote, systemd_escape, systemd_quote,
-        xml_escape,
+        Manager, SERVICE_MANAGED_ENV, ServicePlan, config_home_from, home_dir_from,
+        render_launchd_plist, render_systemd_unit, render_wrapper_script, resolve_plan, sh_quote,
+        systemd_escape, systemd_quote, xml_escape,
     };
     use std::path::PathBuf;
 
@@ -949,6 +973,21 @@ mod tests {
         assert!(plist.contains("<key>RunAtLoad</key>\n  <true/>"));
         assert!(plist.contains("<key>KeepAlive</key>\n  <true/>"));
         assert!(plist.contains("<string>com.phux.server</string>"));
+    }
+
+    /// phux-87rr: both generated units carry the marker
+    /// [`crate::commands::server::run_server`] reads back to decide
+    /// whether spawned panes need login-shell treatment. Unconditional —
+    /// present with no listeners configured too (`omitted_listeners_emit_
+    /// no_environment_key` below covers that shape).
+    #[test]
+    fn both_units_carry_the_service_managed_marker() {
+        let plist = render_launchd_plist(&plan());
+        assert!(plist.contains(&format!("<key>{SERVICE_MANAGED_ENV}</key>")));
+        assert!(plist.contains("<string>1</string>"));
+
+        let unit = render_systemd_unit(&plan());
+        assert!(unit.contains(&format!("Environment=\"{SERVICE_MANAGED_ENV}=1\"")));
     }
 
     #[test]
@@ -1166,5 +1205,48 @@ mod tests {
         let empty_home_err = home_dir_from(Some(std::ffi::OsString::new()))
             .expect_err("an empty HOME must be refused the same as an unset one");
         assert!(empty_home_err.contains("HOME"), "got {empty_home_err}");
+    }
+
+    /// phux-87rr acceptance criterion 4: whatever `PATH` happens to be
+    /// active when `phux service install` runs must never be frozen into
+    /// the generated unit — the init system supplies its own `PATH` at
+    /// spawn time regardless of what built the unit, so anything captured
+    /// here would only ever be a stale snapshot of some past shell (the
+    /// canonical case: a `nix develop` or direnv session, which is
+    /// exactly what runs this test suite).
+    ///
+    /// Deliberately does not mutate `PATH` to prove this: this crate
+    /// `forbid(unsafe_code)`s, and `env::set_var`/`remove_var` are unsafe
+    /// under edition 2024, so an injected-marker version of this test is
+    /// not an option here (see `commands::overlay`'s
+    /// `run_tailscale_ip`/`run_tailscale_ip_with_deadline` split for the
+    /// established alternative — dependency injection — used where that
+    /// matters more than a simple read does here). Instead this reads the
+    /// test process's own ambient `PATH` — under `nix develop`, already a
+    /// real instance of the "transient installer shell" case — and
+    /// asserts `resolve_plan` never echoes it anywhere. A real regression
+    /// catch, not a simulated one.
+    #[test]
+    fn install_never_captures_the_process_path() {
+        let ambient_path = std::env::var("PATH").unwrap_or_default();
+        assert!(
+            !ambient_path.is_empty(),
+            "test process has no PATH; this assertion would be vacuous"
+        );
+
+        let plan = resolve_plan(None, None, false, None, false).expect("resolve_plan");
+        assert!(
+            plan.environment().iter().all(|(key, _)| *key != "PATH"),
+            "the generated unit's environment must never carry a PATH key at all — \
+             the init system supplies its own"
+        );
+        assert!(
+            !render_launchd_plist(&plan).contains(&ambient_path),
+            "launchd plist captured the process's ambient PATH"
+        );
+        assert!(
+            !render_systemd_unit(&plan).contains(&ambient_path),
+            "systemd unit captured the process's ambient PATH"
+        );
     }
 }

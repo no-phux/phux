@@ -2063,13 +2063,14 @@ pub(crate) fn create_named_session(
         return Err(format!("session {name:?} already exists"));
     }
 
-    let (with_pty, override_cmd, history_limit, term, shell) = state.with(|s| {
+    let (with_pty, override_cmd, history_limit, term, shell, login_shell) = state.with(|s| {
         (
             s.attach_create_seeds_pty(),
             s.attach_create_seed_command(),
             s.history_limit(),
             s.term().to_owned(),
             s.shell().to_owned(),
+            s.login_shell(),
         )
     });
 
@@ -2087,7 +2088,7 @@ pub(crate) fn create_named_session(
                 }
                 builder
             }
-            _ => crate::terminal_actor::default_shell_command(&shell),
+            _ => crate::terminal_actor::default_shell_command(&shell, login_shell),
         });
         // phux-0v1l: apply the wire cwd through the shared validate-and-fall-
         // back helper, uniform with the attach CreateIfMissing seed path.

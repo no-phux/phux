@@ -230,9 +230,78 @@ fn resolve_shell_from(configured: Option<&str>, env_shell: Option<String>) -> St
         .unwrap_or_else(|| "/bin/sh".to_owned())
 }
 
+/// Which single argv flag puts `shell` into its platform login mode
+/// (phux-87rr).
+///
+/// Spawning with this flag re-runs the profile scripts a login shell
+/// reads (macOS `/etc/zprofile` + `~/.zprofile`, `/etc/profile` +
+/// `~/.bash_profile`, etc.) — the mechanism [`default_shell_command`]
+/// and [`shell_command`] use when `login` is `true`. Matched on the
+/// shell's basename so a full path (`/opt/homebrew/bin/fish`) resolves
+/// the same as a bare name. Researched per-shell, not assumed:
+///
+/// | shell        | flag       |
+/// |--------------|------------|
+/// | `bash`       | `-l`       |
+/// | `zsh`        | `-l`       |
+/// | `fish`       | `--login`  |
+/// | `sh`         | `-l`       |
+///
+/// `sh` is included because `/bin/sh` is the documented last-resort
+/// fallback ([`resolve_shell`]): on macOS it is bash built with its `sh`
+/// personality, and on Linux it is almost always `dash` — both accept
+/// `-l` to mean "act as a login shell" (dash documents this explicitly;
+/// bash-as-sh reads `/etc/profile` then `$ENV` under `-l` same as plain
+/// bash).
+///
+/// Anything else — a custom shell, a wrapper script, a typo in
+/// `defaults.shell` — returns `None` and gets NO login flag. This is a
+/// deliberate, documented choice over guessing: an unrecognized program
+/// has unknown flag semantics, and handing it a flag it does not
+/// understand can fail the exec outright (`bash: -l: invalid option` is
+/// forgiving; plenty of programs are not). A pane whose profile never
+/// ran is a documented limitation; a pane that never starts is a much
+/// worse regression. See `docs/operations.md`'s "Service-managed pane
+/// environment" section for the user-facing version of this table, and
+/// ADR-0073 for the decision record.
+#[must_use]
+pub fn login_flag_for_shell(shell: &str) -> Option<&'static str> {
+    let name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or(shell);
+    match name {
+        "bash" | "zsh" | "sh" => Some("-l"),
+        "fish" => Some("--login"),
+        _ => None,
+    }
+}
+
+/// Add `shell`'s login flag (see [`login_flag_for_shell`]) to `cmd` when
+/// `login` is `true` and the shell is recognized. A no-op otherwise, so
+/// callers can pass `login` unconditionally without an extra branch.
+fn apply_login_mode(cmd: &mut CommandBuilder, shell: &str, login: bool) {
+    if !login {
+        return;
+    }
+    if let Some(flag) = login_flag_for_shell(shell) {
+        cmd.arg(flag);
+    }
+}
+
 /// Build the [`CommandBuilder`] for a pane that runs a plain interactive
 /// shell — `shell` is the already-resolved program (see
 /// [`resolve_shell`]).
+///
+/// `login` puts the shell into its platform login mode (see
+/// [`login_flag_for_shell`]) when `true` — the treatment a
+/// service-managed server's panes need so profile-provided `PATH`
+/// entries (Homebrew, Nix) exist, since launchd/systemd never ran a
+/// login shell to source them (phux-87rr). An ordinary terminal-launched
+/// server passes `false`: its own environment is already a fully
+/// initialized login shell's, so re-sourcing profile scripts a second
+/// time is not idempotent for every setup (PATH duplication is the mild
+/// failure; nvm/rbenv/direnv guards misfiring is not).
 ///
 /// Sets `TERM=xterm-256color` on the spawned process. This is deliberate
 /// (phux-7vx): we previously advertised `TERM=ghostty`, but ghostty's
@@ -270,8 +339,9 @@ fn resolve_shell_from(configured: Option<&str>, env_shell: Option<String>) -> St
 /// deliberately stays `xterm-256color`; flip it only with fresh htop
 /// evidence (the harness has an `#[ignore]`d htop probe ready).
 #[must_use]
-pub fn default_shell_command(shell: &str) -> CommandBuilder {
+pub fn default_shell_command(shell: &str, login: bool) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(shell);
+    apply_login_mode(&mut cmd, shell, login);
     cmd.env("TERM", DEFAULT_TERM);
     cmd
 }
@@ -407,15 +477,18 @@ fn dir_is_enterable(path: &std::path::Path) -> bool {
 /// seed pane's initial program (e.g. `defaults.spawn-on-attach`,
 /// phux-07y).
 ///
-/// The command runs via `<shell> -c <command>` — `shell` is the resolved
-/// default shell (see [`resolve_shell`]: `defaults.shell`, then `$SHELL`,
-/// then `/bin/sh`) — so shell quoting and arguments inside `command`
-/// behave the same as they would at an interactive prompt, and the pane
-/// closes when the command exits. `TERM` is set to match
-/// [`default_shell_command`].
+/// The command runs via `<shell> -c <command>` (or `<shell> -l -c
+/// <command>` when `login` is `true` — see [`login_flag_for_shell`] and
+/// [`default_shell_command`]'s doc for why a service-managed server
+/// needs this) — `shell` is the resolved default shell (see
+/// [`resolve_shell`]: `defaults.shell`, then `$SHELL`, then `/bin/sh`) —
+/// so shell quoting and arguments inside `command` behave the same as
+/// they would at an interactive prompt, and the pane closes when the
+/// command exits. `TERM` is set to match [`default_shell_command`].
 #[must_use]
-pub fn shell_command(shell: &str, command: &str) -> CommandBuilder {
+pub fn shell_command(shell: &str, command: &str, login: bool) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(shell);
+    apply_login_mode(&mut cmd, shell, login);
     cmd.arg("-c");
     cmd.arg(command);
     cmd.env("TERM", DEFAULT_TERM);
@@ -825,12 +898,95 @@ mod tests {
     /// drives the spawned child, not `$SHELL`.
     #[test]
     fn default_shell_command_spawns_the_resolved_shell() {
-        let cmd = default_shell_command(&resolve_shell_from(
-            Some("/opt/fancy/fish"),
-            Some("/bin/zsh".to_owned()),
-        ));
+        let cmd = default_shell_command(
+            &resolve_shell_from(Some("/opt/fancy/fish"), Some("/bin/zsh".to_owned())),
+            false,
+        );
         let argv = cmd.get_argv();
         assert_eq!(argv.len(), 1, "a plain shell takes no arguments");
         assert_eq!(argv[0], "/opt/fancy/fish");
+    }
+
+    /// `CommandBuilder::get_argv` returns `Vec<OsString>`; collect it into
+    /// plain `String`s so assertions can compare against string literals
+    /// without an `OsString` on every expected side.
+    fn argv_strings(cmd: &CommandBuilder) -> Vec<String> {
+        cmd.get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// phux-87rr acceptance criterion 6: an ordinary (non-service) server
+    /// spawns plain, non-login panes — `login = false` must add no flag
+    /// even for a shell that has one.
+    #[test]
+    fn non_login_spawn_adds_no_flag() {
+        let cmd = default_shell_command("/bin/zsh", false);
+        assert_eq!(argv_strings(&cmd), vec!["/bin/zsh".to_owned()]);
+    }
+
+    /// phux-87rr acceptance criterion 3: bash, zsh, and the `/bin/sh`
+    /// fallback all take `-l` for login mode.
+    #[test]
+    fn login_spawn_passes_dash_l_to_bash_zsh_and_sh() {
+        for shell in ["/bin/bash", "/bin/zsh", "/bin/sh", "bash", "zsh", "sh"] {
+            let cmd = default_shell_command(shell, true);
+            assert_eq!(
+                argv_strings(&cmd),
+                vec![shell.to_owned(), "-l".to_owned()],
+                "shell = {shell}"
+            );
+        }
+    }
+
+    /// phux-87rr acceptance criterion 3: fish uses `--login`, not `-l`.
+    #[test]
+    fn login_spawn_passes_dash_dash_login_to_fish() {
+        let cmd = default_shell_command("/opt/homebrew/bin/fish", true);
+        assert_eq!(
+            argv_strings(&cmd),
+            vec!["/opt/homebrew/bin/fish".to_owned(), "--login".to_owned()]
+        );
+    }
+
+    /// phux-87rr: an unrecognized `defaults.shell` gets no login flag at
+    /// all, even when `login` is requested — an explicit, documented
+    /// choice over risking a fatal exec on a flag the shell may not
+    /// understand.
+    #[test]
+    fn login_spawn_adds_no_flag_for_an_unknown_shell() {
+        let cmd = default_shell_command("/opt/exotic/rc", true);
+        assert_eq!(argv_strings(&cmd), vec!["/opt/exotic/rc".to_owned()]);
+        assert_eq!(login_flag_for_shell("/opt/exotic/rc"), None);
+    }
+
+    /// phux-87rr: `shell_command` (the `defaults.spawn-on-attach` /
+    /// `--seed-command` path) applies the same login flag ahead of
+    /// `-c <command>`, so a service-managed server's seeded command also
+    /// sees a profile-initialized `PATH`.
+    #[test]
+    fn shell_command_applies_login_flag_before_dash_c() {
+        let cmd = shell_command("/bin/zsh", "htop", true);
+        assert_eq!(
+            argv_strings(&cmd),
+            vec![
+                "/bin/zsh".to_owned(),
+                "-l".to_owned(),
+                "-c".to_owned(),
+                "htop".to_owned(),
+            ]
+        );
+    }
+
+    /// Basename matching: a full path to a recognized shell resolves the
+    /// same flag as the bare name.
+    #[test]
+    fn login_flag_matches_on_basename() {
+        assert_eq!(login_flag_for_shell("/usr/local/bin/bash"), Some("-l"));
+        assert_eq!(
+            login_flag_for_shell("/opt/homebrew/bin/fish"),
+            Some("--login")
+        );
     }
 }

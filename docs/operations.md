@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-08-02
+last-reviewed: 2026-08-07
 ---
 
 # Operations
@@ -234,6 +234,59 @@ cargo nextest run -p phux-server server_idle_exit
 # no-flag control stays up.
 cargo test -p phux --test idle_exit_e2e -- --ignored
 ```
+
+## Service-managed pane environment
+
+`phux service install` (ADR-0055) runs the server under launchd or
+systemd, both of which start their unit with a minimal environment: no
+login shell ever ran, so `PATH` additions a Homebrew or Nix installer
+put in `~/.zprofile` / `~/.profile` never take effect. Left alone, every
+pane the server spawns would inherit that minimal `PATH` — `nvim` and
+`brew` reporting "command not found" even though an ordinary interactive
+shell on the same machine has them. [ADR-0073](../ADR/0073-service-managed-pane-login-shell.md)
+is the decision record; this is the operator-facing summary.
+
+**The fix is conditional, not a blanket default.** `phux service install`
+stamps `PHUX_SERVICE_MANAGED=1` into the unit it generates (both the
+launchd `EnvironmentVariables` dict and the systemd `Environment=`
+lines). `phux server` checks for that marker at its own startup and,
+only when present, spawns every command-less pane's shell in its
+platform **login** mode instead of a plain interactive shell:
+
+| shell        | login flag |
+|--------------|------------|
+| `bash`       | `-l`       |
+| `zsh`        | `-l`       |
+| `fish`       | `--login`  |
+| `sh`         | `-l`       |
+
+A `defaults.shell` naming anything else gets no login flag at all, even
+under a service-managed server — an unrecognized program has unknown
+flag semantics, and a pane that fails to spawn is a worse outcome than
+one whose profile did not run.
+
+**A hand-started server is unaffected.** `phux server` run directly from
+a terminal, or auto-spawned by a bare `phux`/`phux new`, never carries
+the marker and keeps spawning plain, non-login panes exactly as before —
+that environment is already profile-initialized, and re-sourcing it a
+second time is not idempotent for every setup (`nvm`/`rbenv`/`direnv`
+guards misfiring, not just PATH duplication). This is why the marker is
+something the installer writes and the server reads back, rather than a
+guess from environment shape (a short `PATH`, an unfamiliar parent
+process): the same markers that make a profile guard think
+initialization already happened (`NIX_PROFILES` and similar) would make
+a shape-based guess just as unreliable.
+
+**Applying the fix to an already-installed service** requires rerunning
+`phux service install`: the marker is only in units generated after this
+change, and the server reads it once, at its own startup.
+
+`phux service install` also never freezes the installing shell's own
+transient `PATH` into the generated unit — running the installer from
+inside `nix develop` or direnv leaves the unit exactly as portable as
+running it from a plain shell. The init system's own `PATH` reaches the
+server unmodified; login-shell treatment is how a *pane* recovers the
+profile's `PATH`, not a baked-in snapshot of the installer's.
 
 ## Workspace continuity and update survival
 

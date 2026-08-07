@@ -95,6 +95,21 @@ impl ServerState {
         &self.config.shell
     }
 
+    /// Set whether a command-less pane spawn should invoke [`Self::shell`]
+    /// in its platform login mode (phux-87rr). Called once at server
+    /// startup to mirror [`crate::runtime::ServerConfig::login_shell`]
+    /// into state; `true` only when the binary detected it was started
+    /// under a service manager's generated unit.
+    pub const fn set_login_shell(&mut self, login_shell: bool) {
+        self.config.login_shell = login_shell;
+    }
+
+    /// Read the login-shell flag set by [`Self::set_login_shell`].
+    #[must_use]
+    pub const fn login_shell(&self) -> bool {
+        self.config.login_shell
+    }
+
     /// Set the UDS path this server listens on. Called once at server
     /// startup to mirror [`crate::runtime::ServerConfig::socket_path`]
     /// into state so every pane spawn site can inject it as
