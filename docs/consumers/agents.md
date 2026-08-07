@@ -381,10 +381,8 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   These never contact a running server and never open a transport; they only
   edit local config. `--json` emits the host registry document (§4.10);
   failure paths leave stdout empty and report one contract line on stderr.
-  Formerly the separate `phux remote` and `phux satellite` verbs, which
-  remain hidden deprecated aliases for one release cycle: they run the
-  `host` implementation, print a stderr deprecation note on the human path,
-  and suppress it under `--json` (ADR-0066).
+  Formerly the separate `phux remote` and `phux satellite` verbs, absorbed
+  into this one namespace (ADR-0066).
 
 `insert-pane` is intentionally not named `split`: it edits topology around a
 pane that already exists and performs no implicit spawn. Spawn-and-place remains
@@ -864,11 +862,6 @@ and `enroll --json` wrap one such object under `"host"`; `rm --json` emits
 names, invalid endpoint URIs, duplicate configured names, and refused
 registry writes are hard failures: exit nonzero, stdout empty, one contract
 line (§5.3) on stderr.
-
-The deprecated `phux satellite ... --json` and `phux remote ... --json`
-spellings emit these same host-shaped documents while they last; the
-retired per-verb shapes (`"satellites"`, `"satellite"`, `"remotes"`) are
-gone.
 
 ### 4.11 `phux spawn --json`
 

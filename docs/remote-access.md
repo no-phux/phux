@@ -46,9 +46,7 @@ command from the client:
 phux host enroll mini
 ```
 
-(Before the `phux host` namespace this verb was spelled `phux enroll`; the
-old spelling still works for one release cycle as a hidden alias that
-prints a deprecation note. See
+(Before the `phux host` namespace this verb was spelled `phux enroll`. See
 [ADR-0066](../ADR/0066-host-namespace.md).)
 
 It confirms phux is installed on `mini`, installs the host's service unit so

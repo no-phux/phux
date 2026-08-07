@@ -1,7 +1,6 @@
 //! Satellite-registry lifecycle through the visible `phux host` verbs
-//! (ADR-0066). Formerly `satellite_lifecycle.rs`, driving the deprecated
-//! `phux satellite` spellings; the alias behavior itself is pinned in
-//! `deprecated_aliases.rs`.
+//! (ADR-0066). Formerly `satellite_lifecycle.rs`, driving the now-removed
+//! `phux satellite` spellings (phux-dpjf).
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

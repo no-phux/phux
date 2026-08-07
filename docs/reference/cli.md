@@ -979,9 +979,6 @@ Options:
           [default: horizontal]
           [possible values: horizontal, vertical]
 
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
       --ratio <RATIO>
           Fraction assigned to TARGET; must be strictly between 0 and 1
           
@@ -989,6 +986,9 @@ Options:
 
       --json
           Emit a schema-versioned JSON result or error
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
   -h, --help
           Print help (see a summary with '-h')
@@ -1149,9 +1149,6 @@ Options:
           [default: horizontal]
           [possible values: horizontal, vertical]
 
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
-
       --ratio <RATIO>
           Fraction assigned to TARGET; must be strictly between 0 and 1
           
@@ -1159,6 +1156,9 @@ Options:
 
       --json
           Emit a schema-versioned JSON result or error
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
   -h, --help
           Print help (see a summary with '-h')

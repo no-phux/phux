@@ -26,37 +26,53 @@ pub(crate) fn page() -> Page {
          A deprecated spelling survives at least one full release cycle \
          with the warning in place; the planned-removal release is the \
          earliest it can disappear. Move scripts to the replacement before \
-         then.\n\n\
-         | Deprecated spelling | Use instead | Deprecated in | Planned removal |\n\
-         |---|---|---|---|\n",
+         then.\n\n",
     );
-    for row in DEPRECATED {
-        let _ = writeln!(
-            body,
-            "| `{}` | `{}` | {} | {} |",
-            row.old, row.new, row.deprecated_in, row.removed_in
-        );
+
+    // Matched as a slice pattern (not `.is_empty()`) so the empty arm stays
+    // live: `DEPRECATED` is a `const`, and clippy's `const_is_empty` flags an
+    // `is_empty()` call on it as always-true dead logic while the table has
+    // no rows.
+    match DEPRECATED {
+        [] => body.push_str(
+            "No spelling is currently deprecated. When one is added to \
+             `crate::deprecations::DEPRECATED`, it appears here as a row \
+             of this table:\n\n\
+             | Deprecated spelling | Use instead | Deprecated in | Planned removal |\n\
+             |---|---|---|---|\n",
+        ),
+        [first, ..] => {
+            body.push_str(
+                "| Deprecated spelling | Use instead | Deprecated in | Planned removal |\n\
+                 |---|---|---|---|\n",
+            );
+            for row in DEPRECATED {
+                let _ = writeln!(
+                    body,
+                    "| `{}` | `{}` | {} | {} |",
+                    row.old, row.new, row.deprecated_in, row.removed_in
+                );
+            }
+            let _ = write!(
+                body,
+                "\nThe warning is one greppable stderr line per invocation, of \
+                 the form:\n\n```text\n{}\n```\n",
+                first.note
+            );
+        }
     }
-    let _ = write!(
-        body,
-        "\nThe warning is one greppable stderr line per invocation, of \
-         the form:\n\n```text\n{}\n```\n",
-        DEPRECATED[0].note
-    );
 
     Page {
         file: "deprecations.md",
         title: "phux deprecations reference",
         summary: "Every deprecated spelling, its replacement, and its \
                   removal release.",
-        tldr: "Deprecated spellings the binary still accepts: the \
-               machine-registry verbs (`remote`, `satellite`, top-level \
-               `enroll`) absorbed into `phux host`, and the \
-               `--horizontal`/`--vertical` booleans absorbed into \
-               `--split`. Each still parses, warns once on stderr with \
-               its replacement, is hidden from help and completions, and \
-               is scheduled for removal one release cycle or more after \
-               deprecation.",
+        tldr: "Deprecated spellings the current binary still accepts, \
+               each pinned with its replacement and lifecycle releases; \
+               empty when nothing is currently deprecated. Every row still \
+               parses, warns once on stderr with its replacement, is \
+               hidden from help and completions, and is scheduled for \
+               removal one release cycle or more after deprecation.",
         body,
     }
 }

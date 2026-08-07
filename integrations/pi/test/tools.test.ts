@@ -326,8 +326,8 @@ test("placement and spatial tools execute exact bounded CLI actions", async () =
   assert.deepEqual(requests.map((request) => request.args), [
     ["spawn", "--json", "--target", "@3", "--split", "vertical", "--ratio", "0.4", "--socket", "/tmp/phux.sock"],
     ["launch", "--json", "--target", "@3", "--split", "horizontal", "--ratio", "0.6", "--socket", "/tmp/phux.sock", "codex"],
-    ["insert-pane", "--json", "--vertical", "--ratio", "0.4", "--socket", "/tmp/phux.sock", "@3", "@4"],
-    ["move-pane", "--json", "--horizontal", "--ratio", "0.6", "--socket", "/tmp/phux.sock", "@4", "@3"],
+    ["insert-pane", "--json", "--split", "vertical", "--ratio", "0.4", "--socket", "/tmp/phux.sock", "@3", "@4"],
+    ["move-pane", "--json", "--split", "horizontal", "--ratio", "0.6", "--socket", "/tmp/phux.sock", "@4", "@3"],
     ["swap-pane", "--json", "--socket", "/tmp/phux.sock", "@3", "@4"],
   ]);
   assert.equal(requests[0]?.timeoutMs, 700);

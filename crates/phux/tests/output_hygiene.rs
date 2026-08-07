@@ -582,7 +582,7 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
 // ---------------------------------------------------------------------------
 // The JSON error contract across the registry verbs (phux-i0e8.8.3)
 //
-// The sub-registries (`plugin`, `remote`, `satellite`, `worktree`,
+// The sub-registries (`plugin`, `host`, `worktree`,
 // `workspace`, `config check`, plus `tag`'s serverless selector error)
 // mostly never dial a server; their failures are local — a broken config, an
 // unknown id, not-a-repository. Under `--json` each must still leave stdout
@@ -678,24 +678,6 @@ fn json_error_contract_holds_across_registry_verbs() {
         (
             "plugin",
             vec!["plugin", "unlink", "no.such.plugin", "--json"],
-            Some(&empty_xdg),
-            "registry",
-            1,
-        ),
-        // `remote` and `satellite` are hidden deprecated aliases of `host`
-        // (ADR-0066); they stay in this table on purpose, proving the
-        // one-line contract holds THROUGH the alias path — the deprecation
-        // note is suppressed under `--json`, never a second stderr line.
-        (
-            "remote",
-            vec!["remote", "list", "--json"],
-            Some(&broken_xdg),
-            "registry",
-            1,
-        ),
-        (
-            "satellite",
-            vec!["satellite", "remove", "no-such-name", "--json"],
             Some(&empty_xdg),
             "registry",
             1,

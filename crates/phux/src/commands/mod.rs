@@ -238,12 +238,9 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             ServiceAction::PruneLogs { .. } => Some("service prune-logs"),
         },
         Command::Plugin { .. } => Some("plugin"),
-        Command::Satellite { .. } => Some("satellite"),
-        Command::Remote { .. } => Some("remote"),
         Command::Host { .. } => Some("host"),
         Command::Relay { .. } => Some("relay"),
         Command::Pair { .. } => Some("pair"),
-        Command::Enroll { .. } => Some("enroll"),
         Command::Completion { .. } => Some("completion"),
         Command::Logs { .. } => Some("logs"),
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
@@ -621,12 +618,6 @@ pub(crate) enum Command {
         /// them side-by-side.
         #[arg(long, value_enum, default_value = "horizontal")]
         split: SpawnSplit,
-        /// Deprecated spelling of `--split horizontal`.
-        #[arg(long, hide = true, conflicts_with_all = ["vertical", "split"])]
-        horizontal: bool,
-        /// Deprecated spelling of `--split vertical`.
-        #[arg(long, hide = true, conflicts_with = "split")]
-        vertical: bool,
         /// Fraction assigned to TARGET; must be strictly between 0 and 1.
         #[arg(long, default_value_t = 0.5, value_parser = parse_spawn_ratio)]
         ratio: f32,
@@ -651,12 +642,6 @@ pub(crate) enum Command {
         /// `vertical` places them side-by-side.
         #[arg(long, value_enum, default_value = "horizontal")]
         split: SpawnSplit,
-        /// Deprecated spelling of `--split horizontal`.
-        #[arg(long, hide = true, conflicts_with_all = ["vertical", "split"])]
-        horizontal: bool,
-        /// Deprecated spelling of `--split vertical`.
-        #[arg(long, hide = true, conflicts_with = "split")]
-        vertical: bool,
         /// Fraction assigned to TARGET; must be strictly between 0 and 1.
         #[arg(long, default_value_t = 0.5, value_parser = parse_spawn_ratio)]
         ratio: f32,
@@ -1247,19 +1232,6 @@ pub(crate) enum Command {
         action: WorkspaceAction,
     },
 
-    /// Deprecated alias of `phux host --role satellite`.
-    ///
-    /// Every `satellite` action still parses and runs through the `host`
-    /// implementation, printing a one-line deprecation note on stderr. Use
-    /// `phux host add|ls|rm|enroll --role satellite` instead; this spelling
-    /// will be removed after one release cycle.
-    // Hidden per ADR-0066's deprecation contract (phux-i0e8.12.4).
-    #[command(hide = true)]
-    Satellite {
-        #[command(subcommand)]
-        action: SatelliteAction,
-    },
-
     /// Read and write a Terminal's L3 tags.
     ///
     /// Tags are freeform strings stored as L3 metadata (`phux.tags/v1`),
@@ -1354,60 +1326,6 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Deprecated alias of `phux host enroll`.
-    ///
-    /// Still parses and runs through the `host enroll` implementation,
-    /// printing a one-line deprecation note on stderr. Use
-    /// `phux host enroll HOST` instead; this spelling will be removed after
-    /// one release cycle.
-    // Hidden per ADR-0066's deprecation contract (phux-i0e8.12.4).
-    #[command(hide = true)]
-    Enroll {
-        /// ssh destination, exactly as you would type it after `ssh`
-        /// (`mini`, `me@mini`, or a `~/.ssh/config` alias).
-        host: String,
-
-        /// Local label to register. Defaults to HOST without any `user@`.
-        #[arg(long, value_name = "NAME")]
-        name: Option<String>,
-
-        /// Address to register instead of the remote's detected overlay
-        /// address. Accepts `HOST:PORT` (dialed over QUIC) or a full
-        /// `quic://`/`wss://` URI.
-        #[arg(long, value_name = "HOST:PORT")]
-        endpoint: Option<String>,
-
-        /// QUIC port to configure on the remote and register.
-        #[arg(long, value_name = "PORT", default_value_t = crate::commands::enroll::default_quic_port())]
-        quic_port: u16,
-
-        /// Skip installing the remote's service unit. The server will not
-        /// come back on its own after a reboot.
-        #[arg(long)]
-        no_service: bool,
-
-        /// Register an ssh:// entry without contacting the host at all.
-        #[arg(long, conflicts_with_all = ["endpoint", "no_service"])]
-        ssh_only: bool,
-
-        /// Session to attach on arrival.
-        #[arg(long, value_name = "NAME")]
-        session: Option<String>,
-    },
-
-    /// Deprecated alias of `phux host` (role `remote`).
-    ///
-    /// Every `remote` action still parses and runs through the `host`
-    /// implementation, printing a one-line deprecation note on stderr. Use
-    /// `phux host add|ls|rm` instead; this spelling will be removed after
-    /// one release cycle.
-    // Hidden per ADR-0066's deprecation contract (phux-i0e8.12.4).
-    #[command(hide = true)]
-    Remote {
-        #[command(subcommand)]
-        action: RemoteAction,
-    },
-
     /// Register the machines phux talks to: remotes and satellites.
     ///
     /// One namespace over both machine registries. `--role remote` (the
@@ -1416,9 +1334,9 @@ pub(crate) enum Command {
     /// The two registries stay separate in config (`[[remote]]` vs
     /// `[[satellites]]`) because they encode opposite trust directions;
     /// this verb absorbs the split into a flag.
-    // The visible successor to `remote`, `satellite`, and top-level
-    // `enroll` (ADR-0066); those verbs are hidden deprecated aliases for
-    // one release cycle and dispatch through this implementation.
+    // The successor to the former `remote`, `satellite`, and top-level
+    // `enroll` verbs (ADR-0066), removed in v0.12.1 once their deprecation
+    // window closed (phux-dpjf).
     Host {
         #[command(subcommand)]
         action: host::HostAction,
@@ -1535,53 +1453,6 @@ pub(crate) enum Command {
         /// generated-reference tree; run from the repository root.
         #[arg(long, value_name = "DIR")]
         out: Option<std::path::PathBuf>,
-    },
-}
-
-/// `phux remote <action>` — CRUD over the client-side server registry.
-#[derive(Debug, Subcommand)]
-pub(crate) enum RemoteAction {
-    /// Register a remote server, or replace an entry with the same name.
-    Add {
-        /// Local label. This is what `phux attach <name>` resolves.
-        name: String,
-
-        /// `quic://HOST:PORT`, `wss://HOST:PORT`, or `ssh://HOST`.
-        ///
-        /// `ssh://` needs no pairing — it rides your existing ssh trust and
-        /// re-execs `ssh -t HOST phux attach`. The other two need a token
-        /// and a certificate pin.
-        endpoint: String,
-
-        /// Absolute path to a file holding the pairing token minted by
-        /// `phux pair` on the remote host.
-        #[arg(long, value_name = "PATH")]
-        token_file: Option<std::path::PathBuf>,
-
-        /// The remote's TLS certificate SHA-256 fingerprint, as printed by
-        /// `phux pair`. Required for `quic://` and `wss://`.
-        #[arg(long, value_name = "FP")]
-        cert_fingerprint: Option<String>,
-
-        /// Session to attach on arrival. Omitted: the remote server's own
-        /// last-attach memory decides.
-        #[arg(long, value_name = "NAME")]
-        session: Option<String>,
-    },
-
-    /// List registered remotes.
-    #[command(visible_alias = "ls")]
-    List {
-        /// Emit JSON on stdout instead of the table.
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Remove a registered remote. Its token file is left in place.
-    #[command(visible_alias = "rm")]
-    Remove {
-        /// Registered name.
-        name: String,
     },
 }
 
@@ -1929,106 +1800,6 @@ pub(crate) enum WorkspaceAction {
     Restore {
         /// JSON archive path, or '-' to read from stdin.
         archive: std::path::PathBuf,
-    },
-}
-
-/// `phux satellite <action>` — local satellite registry lifecycle.
-#[derive(Debug, Subcommand)]
-pub(crate) enum SatelliteAction {
-    /// List configured satellites.
-    #[command(visible_alias = "ls")]
-    List {
-        /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Bootstrap a satellite over SSH and register it on this hub.
-    ///
-    /// Confirms phux is installed on HOST, installs its always-on service,
-    /// mints and stores its transport credentials, then writes the complete
-    /// `[[satellites]]` entry locally. If no routable listener is available,
-    /// the route falls back to `ssh://HOST`.
-    Enroll {
-        /// SSH destination, e.g. `devbox` or `user@cloud.example`.
-        host: String,
-
-        /// Hub-local satellite name. Defaults to HOST without user or domain
-        /// punctuation that is not valid in a satellite name.
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Dialable satellite endpoint. Bare values become `quic://...`;
-        /// full `ssh://`, `quic://`, `ws://`, and `wss://` URIs are accepted.
-        #[arg(long, value_name = "URI")]
-        endpoint: Option<String>,
-
-        /// QUIC port used for service installation and overlay discovery.
-        #[arg(
-            long,
-            default_value_t = enroll::default_quic_port(),
-            value_name = "PORT"
-        )]
-        quic_port: u16,
-
-        /// Skip installing the satellite's always-on service.
-        #[arg(long)]
-        no_service: bool,
-
-        /// Register `ssh://HOST` without probing, pairing, or installing.
-        #[arg(long)]
-        ssh_only: bool,
-
-        /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Add or update a satellite endpoint in `config.toml`.
-    ///
-    /// Updating replaces the whole entry, so repeat `--token-file` /
-    /// `--cert-fingerprint` when re-adding a name or the auth material
-    /// is cleared.
-    Add {
-        /// Hub-local satellite name.
-        name: String,
-
-        /// Endpoint URI, e.g. `<ssh://devbox>`, `<quic://host:8788>`, or
-        /// `<wss://host:8787>`.
-        endpoint: String,
-
-        /// Register the satellite but leave it disabled.
-        #[arg(long)]
-        disabled: bool,
-
-        /// Path to a file holding the pairing bearer token for this
-        /// satellite, minted by running `phux pair` on the satellite host.
-        /// The file holds one hex token and should be
-        /// owner-only (0600); only the path lands in `config.toml` — the
-        /// token itself is never written to config or printed.
-        #[arg(long, value_name = "PATH")]
-        token_file: Option<std::path::PathBuf>,
-
-        /// SHA-256 fingerprint of the satellite server's TLS certificate,
-        /// as printed by `phux pair` on the satellite host. Pins the
-        /// certificate for routable endpoints; not a secret.
-        #[arg(long, value_name = "FINGERPRINT")]
-        cert_fingerprint: Option<String>,
-
-        /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Remove a configured satellite by name.
-    #[command(visible_alias = "rm")]
-    Remove {
-        /// Hub-local satellite name.
-        name: String,
-
-        /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
-        json: bool,
     },
 }
 

@@ -34,7 +34,8 @@
 //! `phux attach --quic/--ws`. Loopback endpoints keep the loopback dev
 //! carve-out. A refused link is never dialed and never retried — the
 //! refusal is a configuration error, surfaced as
-//! [`LinkStatus::Refused`] and fixed by `phux satellite add`. Malformed
+//! [`LinkStatus::Refused`] and fixed by `phux host add --role satellite`.
+//! Malformed
 //! `ssh://` endpoints fail earlier still, at hub-table validation.
 //!
 //! A lost or failed link is re-dialed with capped exponential backoff.

@@ -6,9 +6,9 @@
 //! the name through it.
 //!
 //! The user-facing verbs live in [`super::host`]: `phux host add|ls|rm`
-//! (role `remote`, the default) operates on this registry. The old
-//! `phux remote` spelling survives one release as a hidden deprecated alias
-//! that dispatches through the same `host` implementation.
+//! (role `remote`, the default) operates on this registry. The former
+//! `phux remote` verb tree was absorbed into `phux host` (ADR-0066) and
+//! removed in v0.12.1 once its deprecation window closed (phux-dpjf).
 //!
 //! Three endpoint schemes, in increasing order of setup cost:
 //!
@@ -66,7 +66,7 @@ pub(crate) enum Endpoint {
 impl Endpoint {
     /// Classify a registry endpoint URI.
     ///
-    /// Validation lives here rather than at dial time so `phux remote add`
+    /// Validation lives here rather than at dial time so `phux host add`
     /// rejects a typo while the operator is still looking at what they
     /// typed.
     pub(crate) fn parse(endpoint: &str) -> Result<Self, String> {

@@ -117,10 +117,10 @@ direction labels:
 
 ```sh
 # NEW_PANE already exists but is not in the persisted tree
-phux insert-pane @10 @14 --vertical --ratio 0.4 --json
+phux insert-pane @10 @14 --split vertical --ratio 0.4 --json
 
 # collapse SOURCE, then insert it beside TARGET
-phux move-pane @12 @14 --horizontal --ratio 0.5 --json
+phux move-pane @12 @14 --split horizontal --ratio 0.5 --json
 
 # exchange leaf positions without changing split geometry
 phux swap-pane @11 @12 --json

@@ -738,7 +738,7 @@ function validateDistinctTargets(first: string, second: string): void {
 }
 
 function pushSpatialGeometry(args: string[], options: SpatialOptions): void {
-  if (options.direction !== undefined) args.push(`--${options.direction}`);
+  if (options.direction !== undefined) args.push("--split", options.direction);
   if (options.ratio !== undefined) args.push("--ratio", String(options.ratio));
 }
 

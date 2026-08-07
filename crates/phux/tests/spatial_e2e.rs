@@ -322,7 +322,8 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
         "insert-pane",
         &format!("@{}", seed.local_id().expect("seed id")),
         &format!("@{}", second.local_id().expect("second id")),
-        "--vertical",
+        "--split",
+        "vertical",
         "--json",
     ]);
     assert_eq!(inserted["direction"], "vertical");
@@ -346,7 +347,8 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
         "insert-pane",
         &format!("@{}", second.local_id().expect("second id")),
         &format!("@{}", third.local_id().expect("third id")),
-        "--horizontal",
+        "--split",
+        "horizontal",
         "--json",
     ]);
     assert_eq!(inserted["direction"], "horizontal");
@@ -367,7 +369,8 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
         "move-pane",
         &format!("@{}", seed.local_id().expect("seed id")),
         &format!("@{}", third.local_id().expect("third id")),
-        "--vertical",
+        "--split",
+        "vertical",
     ]);
     assert_tree(
         &server,

@@ -1064,7 +1064,7 @@ pub enum SpawnError {
     /// server cannot route to it: it is not a federation hub, or the host
     /// is absent from its satellite registry (phux-v45.6). The spawn-reply
     /// mirror of `ErrorCode::UnsupportedSatelliteRoute` — a configuration
-    /// refusal, fixed by `phux server --hub` / `phux satellite add`.
+    /// refusal, fixed by `phux server --hub` / `phux host add --role satellite`.
     UnsupportedSatelliteRoute,
     /// The spawn named a satellite this hub dials, but the link is down,
     /// dialing, refused fail-closed, or did not answer within the relay

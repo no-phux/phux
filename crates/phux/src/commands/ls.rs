@@ -42,7 +42,7 @@ pub(crate) fn run_ls(json: bool, socket: Option<PathBuf>) -> ExitCode {
     }
 }
 
-/// The empty listing, in the `phux remote list` mold: say what is missing,
+/// The empty listing, in the `phux host ls` mold: say what is missing,
 /// then name the exact next commands. Stdout (it answers the question asked)
 /// and exit 0 (an empty enumeration is a true answer, not a failure — the
 /// non-zero case is *no server*, which never reaches this).
@@ -168,7 +168,7 @@ mod tests {
         assert!(session_lines(&snapshot).is_empty());
 
         // The two-line empty state: what is missing, then the exact commands
-        // that fix it (the `phux remote list` precedent).
+        // that fix it (the `phux host ls` precedent).
         assert_eq!(EMPTY_STATE.len(), 2);
         assert_eq!(EMPTY_STATE[0], "No sessions.");
         assert!(EMPTY_STATE[1].contains("`phux`"));

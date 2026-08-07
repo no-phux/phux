@@ -1,9 +1,10 @@
 //! Shared `config.toml` array-of-tables plumbing for the CLI's registries.
 //!
-//! `phux satellite` (ADR-0038) and `phux remote` (ADR-0055) both maintain an
-//! array of tables in the user's `config.toml`, and both must do it without
-//! destroying the operator's comments and formatting — hence `toml_edit`
-//! rather than a serialize round-trip.
+//! The satellite registry (ADR-0038) and the remote registry (ADR-0055),
+//! both reachable through `phux host --role satellite|remote` (ADR-0066),
+//! each maintain an array of tables in the user's `config.toml`, and both
+//! must do it without destroying the operator's comments and formatting —
+//! hence `toml_edit` rather than a serialize round-trip.
 //!
 //! The document-level discipline is identical for both and lives here once:
 //! refuse a symlinked config (a registry write must not be redirected into a

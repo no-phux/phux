@@ -121,7 +121,7 @@ pub enum HubTableError {
     /// Two registry entries share a name. Names key the table (and tag
     /// `TerminalId::Satellite` on the wire), so duplicates are rejected
     /// outright — including duplicates involving disabled entries, to
-    /// match the `phux satellite add` CRUD invariant.
+    /// match the `phux host add --role satellite` CRUD invariant.
     #[error("duplicate satellite name {name:?} in registry")]
     DuplicateName {
         /// The name that appears more than once.
@@ -164,7 +164,7 @@ impl HubTable {
     /// Disabled entries are skipped (their endpoints are not validated —
     /// a disabled satellite must never block hub startup), but their
     /// names still count for duplicate detection, matching the CRUD
-    /// invariant enforced by `phux satellite add`.
+    /// invariant enforced by `phux host add --role satellite`.
     ///
     /// # Errors
     ///

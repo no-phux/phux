@@ -212,9 +212,8 @@ phux host <add|ls|rm>         # one namespace over both machine registries
                               # satellite the peers a federation hub dials;
                               # aliases: list, remove). Formerly the
                               # separate `phux remote`, `phux satellite`,
-                              # and top-level `phux enroll` verbs, which
-                              # remain hidden deprecated aliases for one
-                              # release cycle (ADR-0066)
+                              # and top-level `phux enroll` verbs, absorbed
+                              # into this one namespace (ADR-0066)
 phux service <install|uninstall|status|logs|prune-logs>
                               # per-user service unit (launchd LaunchAgent on
                               # macOS, systemd user unit on Linux) that keeps

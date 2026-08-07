@@ -266,8 +266,8 @@ test("spatial methods emit exact canonical argv and parse versioned results", as
   assert.equal((await cli.swapPane("@3", "@4")).operation, "swap-pane");
 
   assert.deepEqual(requests.map((request) => request.args), [
-    ["insert-pane", "--json", "--vertical", "--ratio", "0.4", "--socket", "/tmp/shared.sock", "@3", "@4"],
-    ["move-pane", "--json", "--horizontal", "--ratio", "0.6", "--socket", "/tmp/shared.sock", "@4", "@3"],
+    ["insert-pane", "--json", "--split", "vertical", "--ratio", "0.4", "--socket", "/tmp/shared.sock", "@3", "@4"],
+    ["move-pane", "--json", "--split", "horizontal", "--ratio", "0.6", "--socket", "/tmp/shared.sock", "@4", "@3"],
     ["swap-pane", "--json", "--socket", "/tmp/shared.sock", "@3", "@4"],
   ]);
   await assert.rejects(cli.swapPane("@3", "@3"), /distinct/);

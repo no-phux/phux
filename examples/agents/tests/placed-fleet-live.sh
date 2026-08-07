@@ -52,11 +52,11 @@ first="@$(printf '%s' "$first_json" | json_field terminal_id)"
 # Real unplaced spawn followed by existing-pane insertion.
 second_json="$($PHUX spawn --json --socket "$socket" -c "$tmp")"
 second="@$(printf '%s' "$second_json" | json_field terminal_id)"
-insert_json="$($PHUX insert-pane --socket "$socket" "$first" "$second" --horizontal --ratio 0.5 --json)"
+insert_json="$($PHUX insert-pane --socket "$socket" "$first" "$second" --split horizontal --ratio 0.5 --json)"
 [[ "$(printf '%s' "$insert_json" | json_field direction)" == "horizontal" ]]
 
 # Exercise both remaining existing-pane topology edits against the live server.
-move_json="$($PHUX move-pane --socket "$socket" "$seed" "$second" --vertical --ratio 0.5 --json)"
+move_json="$($PHUX move-pane --socket "$socket" "$seed" "$second" --split vertical --ratio 0.5 --json)"
 [[ "$(printf '%s' "$move_json" | json_field direction)" == "vertical" ]]
 "$PHUX" swap-pane --socket "$socket" "$first" "$second" --json >/dev/null
 

@@ -47,42 +47,6 @@ impl From<SpawnSplit> for Direction {
     }
 }
 
-/// Resolve the unified `--split` axis against the hidden deprecated boolean
-/// spellings (`--horizontal` / `--vertical`).
-///
-/// The booleans conflict with an explicit `--split` at the clap level, so
-/// when one is set, `split` necessarily holds its default and the boolean
-/// wins. Returns the direction plus at most one deprecation line for the
-/// caller to print on stderr — pinned to exactly one line so scripts see a
-/// single, greppable warning (phux-i0e8.8.4).
-pub(crate) fn resolve_split(
-    split: SpawnSplit,
-    horizontal: bool,
-    vertical: bool,
-) -> (Direction, Option<String>) {
-    if vertical {
-        (
-            Direction::Vertical,
-            Some(deprecated_split_flag_line("--vertical", "vertical")),
-        )
-    } else if horizontal {
-        (
-            Direction::Horizontal,
-            Some(deprecated_split_flag_line("--horizontal", "horizontal")),
-        )
-    } else {
-        (split.into(), None)
-    }
-}
-
-/// The one-line warning for a deprecated boolean split flag.
-fn deprecated_split_flag_line(flag: &str, value: &str) -> String {
-    format!(
-        "phux: {flag} is deprecated and will be removed; use `--split {value}` (or `--split {short}`)",
-        short = &value[..1]
-    )
-}
-
 impl Direction {
     /// Map the user-facing divider direction onto the internal child axis.
     /// A horizontal divider stacks panes (`SplitDir::Vertical`); a vertical

@@ -107,7 +107,6 @@ phux config run
 phux config show
 phux detach
 phux doctor
-phux enroll
 phux gen-reference-docs
 phux give
 phux host
@@ -138,18 +137,9 @@ phux rec
 phux relay
 phux relay pair
 phux relay run
-phux remote
-phux remote add
-phux remote list
-phux remote remove
 phux rename
 phux resize
 phux run
-phux satellite
-phux satellite add
-phux satellite enroll
-phux satellite list
-phux satellite remove
 phux send-keys
 phux server
 phux service
@@ -207,25 +197,6 @@ fn top_level_help_lists_every_subcommand() {
         assert!(
             long.contains(name),
             "top-level `phux --help` omits `{name}` from its curated inventory"
-        );
-    }
-}
-
-/// The deprecated machine-registry aliases (`remote`, `satellite`,
-/// top-level `enroll`) are hidden: neither clap's generated command list
-/// nor the curated `long_about` inventory may advertise them. Matched as a
-/// line-leading verb column so prose mentions of e.g. "remotes and
-/// satellites" in `host`'s row stay legal.
-#[test]
-fn top_level_help_hides_the_deprecated_aliases() {
-    let mut root = Cli::command();
-    let long = root.render_long_help().to_string();
-    for verb in ["enroll", "remote", "satellite"] {
-        assert!(
-            !long
-                .lines()
-                .any(|line| line.trim_start().starts_with(&format!("{verb} "))),
-            "top-level `phux --help` still advertises the hidden alias `{verb}`:\n{long}"
         );
     }
 }

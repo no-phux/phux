@@ -45,8 +45,8 @@ impl PairReport {
     /// Parse the document `phux pair --json` writes.
     ///
     /// Tolerant of fields it does not know so a newer remote phux can add
-    /// keys without breaking an older `phux enroll`; strict about the two it
-    /// cannot proceed without.
+    /// keys without breaking an older `phux host enroll`; strict about the
+    /// two it cannot proceed without.
     pub(crate) fn parse(stdout: &str) -> Result<Self, String> {
         let value: serde_json::Value = serde_json::from_str(stdout.trim())
             .map_err(|err| format!("remote `phux pair --json` emitted unparseable JSON: {err}"))?;
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn tolerates_unknown_fields_from_a_newer_remote() {
         // A newer remote phux must be able to add keys without breaking an
-        // older `phux enroll`.
+        // older `phux host enroll`.
         let parsed = PairReport::parse(r#"{"token":"t","brand_new_field":42}"#).expect("parse");
         assert_eq!(parsed.token, "t");
         assert_eq!(parsed.cert_fingerprint, None);
