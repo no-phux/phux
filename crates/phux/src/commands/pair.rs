@@ -260,18 +260,15 @@ fn print_pair_json(
     connect_link: Option<&str>,
     tokens_path: &std::path::Path,
 ) -> ExitCode {
-    let document = serde_json::json!({
-        "token": token,
-        "cert_fingerprint": fingerprint,
-        "overlay_addresses": overlay
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<_>>(),
-        "ws_addr": ws_addr,
-        "quic_addr": std::env::var("PHUX_QUIC_ADDR").ok(),
-        "connect_link": connect_link,
-        "tokens_path": tokens_path.display().to_string(),
-    });
+    let document = pair_document(
+        token,
+        fingerprint,
+        overlay,
+        ws_addr,
+        std::env::var("PHUX_QUIC_ADDR").ok().as_deref(),
+        connect_link,
+        tokens_path,
+    );
     match serde_json::to_string_pretty(&document) {
         Ok(text) => {
             outln!("{text}");
@@ -284,10 +281,86 @@ fn print_pair_json(
     }
 }
 
+/// The `phux pair --json` document. Pure, so the shape (including
+/// `schema_version`) is unit-testable without touching the environment.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one field per documented key; a struct would only move the same seven names one level up"
+)]
+fn pair_document(
+    token: &str,
+    fingerprint: Option<&str>,
+    overlay: &[IpAddr],
+    ws_addr: Option<&str>,
+    quic_addr: Option<&str>,
+    connect_link: Option<&str>,
+    tokens_path: &std::path::Path,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "token": token,
+        "cert_fingerprint": fingerprint,
+        "overlay_addresses": overlay
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>(),
+        "ws_addr": ws_addr,
+        "quic_addr": quic_addr,
+        "connect_link": connect_link,
+        "tokens_path": tokens_path.display().to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_connect_link, percent_encode, render_qr, resolve_server_url};
+    use super::{build_connect_link, pair_document, percent_encode, render_qr, resolve_server_url};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::path::Path;
+
+    /// `phux pair --json` pins `schema_version` 1 plus the seven documented
+    /// fields, with absent addresses/link reported as `null` rather than
+    /// omitted.
+    #[test]
+    fn pair_document_pins_the_contract_shape() {
+        let overlay = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
+        let doc = pair_document(
+            "deadbeef",
+            Some("AB:CD"),
+            &overlay,
+            Some("0.0.0.0:8787"),
+            Some("0.0.0.0:8788"),
+            Some("phux://connect?url=wss://100.64.0.2:8787&token=deadbeef"),
+            Path::new("/state/remote-tokens"),
+        );
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["token"], "deadbeef");
+        assert_eq!(doc["cert_fingerprint"], "AB:CD");
+        assert_eq!(doc["overlay_addresses"], serde_json::json!(["100.64.0.2"]));
+        assert_eq!(doc["ws_addr"], "0.0.0.0:8787");
+        assert_eq!(doc["quic_addr"], "0.0.0.0:8788");
+        assert_eq!(
+            doc["connect_link"],
+            "phux://connect?url=wss://100.64.0.2:8787&token=deadbeef"
+        );
+        assert_eq!(doc["tokens_path"], "/state/remote-tokens");
+        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(8));
+
+        // No address material known: nulls, not absent keys.
+        let doc = pair_document(
+            "deadbeef",
+            None,
+            &[],
+            None,
+            None,
+            None,
+            Path::new("/state/remote-tokens"),
+        );
+        assert!(doc["cert_fingerprint"].is_null());
+        assert!(doc["ws_addr"].is_null());
+        assert!(doc["quic_addr"].is_null());
+        assert!(doc["connect_link"].is_null());
+        assert_eq!(doc["overlay_addresses"], serde_json::json!([]));
+    }
 
     #[test]
     fn link_includes_only_present_fields_in_stable_order() {

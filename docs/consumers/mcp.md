@@ -294,7 +294,8 @@ Creates a named session without attaching through canonical
 | `cwd` | string | no | Working directory for the seed pane. |
 | `socket` | string | no | Override the UDS path (see §2). |
 
-Result: the new session's name and seed pane id.
+Result: the canonical `phux new --json` document verbatim — `{
+"schema_version": 1, "session", "terminal_id" }`.
 
 ### 3.7 `phux_kill`
 

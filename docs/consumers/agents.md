@@ -165,6 +165,23 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   wakes the instant an event fires rather than on the next poll tick. It is
   additive — `wait` still works without it, and a dropped event (full
   mailbox) falls back to polling.
+
+  **No `schema_version` on this stream, by design (ADR-0071).** Every other
+  `--json` document in this catalog stamps a `schema_version`; this NDJSON
+  stream deliberately does not, on either of the two shapes you might expect
+  instead — a per-line field (repeated overhead on a hot, high-volume path,
+  for a value that essentially never changes mid-run) or a versioned header
+  line (invisible to the consumer shape this stream actually has: one that
+  attaches, disconnects, reconnects, or `tail`s an existing pipe, and so may
+  never see line one). The stream is versioned by the *binary* (`phux
+  --version`), and the compatibility unit is the `event` name vocabulary
+  above: a consumer ignores an `event` value or a field it does not
+  recognize, the same way the reference decoder already renders an unknown
+  wire event tag generically instead of failing the stream. A shape-breaking
+  change to an existing event is a breaking change to the CLI's frozen JSON
+  surface exactly like any other and requires the major version bump
+  ADR-0071 already mandates for one — nothing here is exempt, only unmarked
+  per line.
   **Command boundaries (phux-foz.4):** `command_started` / `command_finished`
   are sourced from a direct scan of the raw PTY byte stream for `OSC 133 ; C`
   / `OSC 133 ; D` shell-integration marks — `C` emits `command_started`, `D`
@@ -210,9 +227,9 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   instead of writing a `phux-ask` title sentinel themselves. It resolves
   `TARGET` client-side, does not attach or resize, and asks the server to emit
   the normal `asked` event on the existing watch stream. `--json` echoes the
-  reported `{ event, terminal, id, question, suggestions, elapsed_seconds }`
-  object after the server accepts the payload. Empty questions, empty
-  suggestions, excessive suggestion counts, and unknown panes fail without
+  reported `{ schema_version, event, terminal, id, question, suggestions,
+  elapsed_seconds }` object after the server accepts the payload. Empty
+  questions, empty suggestions, excessive suggestion counts, and unknown panes fail without
   emitting an event. The reference TUI presents that event as advisory
   attention: `C-a q` cycles asking panes and `C-a Q` returns to the saved local
   origin. A headless agent reports the ask and prints that guidance; it does not
@@ -554,16 +571,14 @@ exists in the MCP `phux_run` tool ([`mcp.md`](./mcp.md) §3.4), not in the CLI's
 and its seed pane's wire-local id, then exits `0` without attaching:
 
 ```json
-{ "session": "NAME", "terminal_id": 2 }
+{ "schema_version": 1, "session": "NAME", "terminal_id": 2 }
 ```
 
 It is create-only: `--json` requires an explicit `-s NAME` (a parse-time rule;
 omitting `-s` is a usage error, exit `2`) and errors (exit `1`)
 if that name is already in use. Repeat `--env KEY=VALUE` to inject environment
 entries into the seed process; values may contain additional `=` characters.
-Unlike the versioned `ScreenState` / `RunResult` / `SessionListJson` shapes,
-this is a flat ad-hoc object with no `schema_version`. The wire decomposition
-behind it is in §2.
+The wire decomposition behind it is in §2.
 
 ### 4.5 Plugin registry — `phux plugin ... --json`
 
@@ -861,6 +876,7 @@ gone.
 
 ```json
 {
+  "schema_version": 1,
   "terminal_id": 7,
   "satellite": null
 }
@@ -939,6 +955,7 @@ every diagnostic go to stderr, and progress is suppressed entirely under
 
 ```json
 {
+  "schema_version": 1,
   "path": "demo.gif",
   "format": "gif",
   "bytes": 188742,
@@ -957,9 +974,9 @@ so it reports the cast's event count instead. `cols`/`rows` are the recorded
 grid. `truncated` is `true` when encoding stopped at `--max-bytes`: the file is
 a complete, playable container, just shorter than the capture.
 
-**Divergence from §4:** this object carries no `schema_version`. It is a
-result line rather than a projection of engine state, and it has no producing
-struct in `phux-core`. Read the keys, not a version.
+Unlike §4.1–§4.3's engine-state projections, this object has no producing
+struct in `phux-core` — it is a plain result line — but it carries the same
+`schema_version` contract as every other `--json` verb in this catalog.
 
 Exit codes: `0` on success, including a capture you ended with Ctrl-C; `1` on
 failure (no server, unresolvable target, unknown output extension, unreadable
@@ -1002,6 +1019,7 @@ playing:
 
 ```json
 {
+  "schema_version": 1,
   "terminal_id": 7,
   "path": "/home/me/demo.cast",
   "cols": 80,
@@ -1025,8 +1043,9 @@ recording's raw length. `idle_limit` is the clamp that was applied (`null`
 when none was). `passes` is the number of times the recording will play, and
 `null` means it repeats until the pane is killed.
 
-**Divergence from §4:** like §4.14 this object carries no `schema_version` —
-it is a result line, not a projection of engine state. Read the keys.
+Like §4.14, this object has no producing struct in `phux-core` — it is a
+result line, not a projection of engine state — but it carries the same
+`schema_version` contract as every other `--json` verb in this catalog.
 
 Exit codes: `0` once the pane exists; `1` on failure (no server, unreadable or
 malformed cast, unresolvable TARGET, a refused spawn). A failure creates no
@@ -1062,6 +1081,38 @@ unparseable TARGET `invalid_selector`, and a selector miss splits
 `no_such_target` (exit 1) from `partial_view` (exit 3) exactly as the prose
 path splits the exit codes (§5.2). Partial-fleet warnings on a *successful*
 resolution stay prose on stderr ahead of the document.
+
+### 4.18 `phux pair --json`
+
+`phux pair --json` never contacts a running server (see [`remote-access.md`
+§"Pairing"](../remote-access.md)); it mints or reads a bearer token and
+reports it alongside everything a device needs to dial this host:
+
+```json
+{
+  "schema_version": 1,
+  "token": "deadbeef...64 hex chars",
+  "cert_fingerprint": "AB:CD:...64 hex chars",
+  "overlay_addresses": ["100.64.0.2"],
+  "ws_addr": "0.0.0.0:8787",
+  "quic_addr": null,
+  "connect_link": "phux://connect?url=wss://100.64.0.2:8787&token=deadbeef...",
+  "tokens_path": "/home/me/.local/state/phux/remote-tokens"
+}
+```
+
+`ws_addr` and `quic_addr` are the server's *configured bind* (from the
+environment its listener reads), not a resolved dialable address — pair them
+with an `overlay_addresses` entry to build one, which is exactly what
+`connect_link` already did for you. Each is `null` when this host has no
+listener of that kind configured; `phux host enroll` reads that as the
+signal to fall back to `ssh://`. `overlay_addresses` is best-effort
+(ADR-0037) and empty, never absent, when nothing was detected.
+`connect_link` is `null` whenever no address source (neither `--host` nor a
+detected overlay address plus a known port) exists to build one from — a
+device then has to be given the address by another channel. The token
+printed in this document is a secret and is only ever emitted once; it is
+not re-derivable from the token store afterwards.
 
 ## 5. The read-act-wait loop and exit-code mirroring
 

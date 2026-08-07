@@ -276,18 +276,8 @@ fn report(pane: &TerminalId, file: &Path, loaded: &Loaded, args: &PlayArgs<'_>) 
     let length = pass_duration(&loaded.events, args.speed);
     let name = short_name(file);
     if args.json {
-        let doc = serde_json::json!({
-            "terminal_id": pane.local_id(),
-            "path": file.display().to_string(),
-            "cols": loaded.header.cols,
-            "rows": loaded.header.rows,
-            "events": loaded.events.len(),
-            "speed": args.speed.get(),
-            "idle_limit": loaded.idle_limit,
-            "duration_ms": u64::try_from(length.as_millis()).unwrap_or(u64::MAX),
-            "passes": args.passes,
-        });
-        outln!("{doc}");
+        let duration_ms = u64::try_from(length.as_millis()).unwrap_or(u64::MAX);
+        outln!("{}", play_json(pane, file, loaded, args, duration_ms));
         return ExitCode::SUCCESS;
     }
     let id = crate::selector::format_terminal_id(pane);
@@ -296,6 +286,29 @@ fn report(pane: &TerminalId, file: &Path, loaded: &Loaded, args: &PlayArgs<'_>) 
     let events = loaded.events.len();
     outln!("playing {name} in terminal {id} ({events} events, {secs:.1}s at {speed}x)");
     ExitCode::SUCCESS
+}
+
+/// The `phux play --json` result document. Pure, so the shape (including
+/// `schema_version`) is unit-testable without spawning a pane.
+fn play_json(
+    pane: &TerminalId,
+    file: &Path,
+    loaded: &Loaded,
+    args: &PlayArgs<'_>,
+    duration_ms: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "terminal_id": pane.local_id(),
+        "path": file.display().to_string(),
+        "cols": loaded.header.cols,
+        "rows": loaded.header.rows,
+        "events": loaded.events.len(),
+        "speed": args.speed.get(),
+        "idle_limit": loaded.idle_limit,
+        "duration_ms": duration_ms,
+        "passes": args.passes,
+    })
 }
 
 /// The file's basename, for a title or a one-liner.
@@ -666,6 +679,36 @@ mod tests {
             socket: None,
             pty_writer: false,
         }
+    }
+
+    /// `phux play --json` pins `schema_version` 1 plus the documented result
+    /// fields (§4.16).
+    #[test]
+    fn play_json_pins_the_contract_shape() {
+        let file = Path::new("/home/me/demo.cast");
+        let loaded = Loaded {
+            header: header(Some(2.0)),
+            events: vec![CastEvent {
+                time_ms: 0,
+                code: EventCode::Output,
+                data: "hi".to_owned(),
+            }],
+            idle_limit: Some(2.0),
+        };
+        let spec = args(file, Some(1), Some(2.0));
+        let pane = TerminalId::local(7);
+        let doc = play_json(&pane, file, &loaded, &spec, 17_198);
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["terminal_id"], 7);
+        assert_eq!(doc["path"], "/home/me/demo.cast");
+        assert_eq!(doc["cols"], 80);
+        assert_eq!(doc["rows"], 24);
+        assert_eq!(doc["events"], 1);
+        assert_eq!(doc["speed"], 1.0);
+        assert_eq!(doc["idle_limit"], 2.0);
+        assert_eq!(doc["duration_ms"], 17_198);
+        assert_eq!(doc["passes"], 1);
+        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(10));
     }
 
     #[test]

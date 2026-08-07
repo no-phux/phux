@@ -165,7 +165,7 @@ tool and needs no phux server at all.
 phux play demo.cast                        # a pane beside the focused one
 phux play demo.cast work:1.0 --speed 2     # twice as fast, beside that pane
 phux play demo.cast --loop --idle-limit 0.5
-phux play demo.cast --json                 # {"terminal_id": 7, ...}
+phux play demo.cast --json                 # {"schema_version": 1, "terminal_id": 7, ...}
 ```
 
 The point is what the result *is*: an ordinary pane. Attach to it, read its

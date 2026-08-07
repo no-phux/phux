@@ -417,17 +417,7 @@ fn report_export_failure(spec: &RecordSpec, err: &RecordError) {
 /// Print the completion one-liner, or the `--json` object.
 fn report(outcome: &RecOutcome, json: bool) {
     if json {
-        let object = serde_json::json!({
-            "path": outcome.path.to_string_lossy(),
-            "format": outcome.format.as_str(),
-            "bytes": outcome.bytes,
-            "duration_ms": outcome.duration_ms,
-            "frames": outcome.frames,
-            "cols": outcome.cols,
-            "rows": outcome.rows,
-            "truncated": outcome.truncated,
-        });
-        outln!("{object}");
+        outln!("{}", rec_json(outcome));
         return;
     }
 
@@ -443,6 +433,22 @@ fn report(outcome: &RecOutcome, json: bool) {
             "phux: rec: stopped at the --max-bytes limit; the artifact is complete but short"
         );
     }
+}
+
+/// The `phux rec --json` result document. Pure, so the shape (including
+/// `schema_version`) is unit-testable without a capture.
+fn rec_json(outcome: &RecOutcome) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "path": outcome.path.to_string_lossy(),
+        "format": outcome.format.as_str(),
+        "bytes": outcome.bytes,
+        "duration_ms": outcome.duration_ms,
+        "frames": outcome.frames,
+        "cols": outcome.cols,
+        "rows": outcome.rows,
+        "truncated": outcome.truncated,
+    })
 }
 
 /// Binary-prefix byte count, one decimal place above a kibibyte.
@@ -497,10 +503,39 @@ fn idle_limit(secs: f64) -> Option<f64> {
 )]
 mod tests {
     use super::{
-        cast_version, human_bytes, human_duration, idle_limit, into_timeline, parse_resize,
+        RecOutcome, cast_version, human_bytes, human_duration, idle_limit, into_timeline,
+        parse_resize, rec_json,
     };
     use phux_client::record::HeadlessRecording;
     use phux_record::cast::{CastEvent, CastVersion, EventCode};
+    use phux_record::render::OutputFormat;
+
+    /// `phux rec --json` pins `schema_version` 1 plus the documented result
+    /// fields.
+    #[test]
+    fn rec_json_pins_the_contract_shape() {
+        let outcome = RecOutcome {
+            path: "demo.gif".into(),
+            format: OutputFormat::Gif,
+            bytes: 188_742,
+            duration_ms: 42_130,
+            frames: 211,
+            cols: 120,
+            rows: 34,
+            truncated: false,
+        };
+        let doc = rec_json(&outcome);
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["path"], "demo.gif");
+        assert_eq!(doc["format"], "gif");
+        assert_eq!(doc["bytes"], 188_742);
+        assert_eq!(doc["duration_ms"], 42_130);
+        assert_eq!(doc["frames"], 211);
+        assert_eq!(doc["cols"], 120);
+        assert_eq!(doc["rows"], 34);
+        assert_eq!(doc["truncated"], false);
+        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(9));
+    }
 
     /// A capture with `cols`x`rows` and one output event.
     fn recording(cols: u16, rows: u16) -> HeadlessRecording {

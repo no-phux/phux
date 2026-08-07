@@ -353,7 +353,7 @@ fn print_spawned(terminal_id: &TerminalId, json: bool) -> ExitCode {
         TerminalId::Satellite { host, id } => (*id, Some(host.as_str())),
     };
     if json {
-        let payload = serde_json::json!({ "terminal_id": id, "satellite": host });
+        let payload = spawned_json(id, host);
         match serde_json::to_string_pretty(&payload) {
             Ok(s) => {
                 outln!("{s}");
@@ -371,6 +371,16 @@ fn print_spawned(terminal_id: &TerminalId, json: bool) -> ExitCode {
         }
         ExitCode::SUCCESS
     }
+}
+
+/// The `phux spawn --json` result document. Pure, so the shape (including
+/// `schema_version`) is unit-testable without a server.
+fn spawned_json(id: u32, host: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "terminal_id": id,
+        "satellite": host,
+    })
 }
 
 /// Map the typed `SpawnError` to an actionable stderr diagnostic.
@@ -594,6 +604,20 @@ mod tests {
                     .await;
             });
         })
+    }
+
+    /// `phux spawn --json` pins `schema_version` 1 plus the two documented
+    /// fields (§4.11) for both a local and a satellite-routed spawn.
+    #[test]
+    fn spawned_json_pins_the_contract_shape() {
+        let doc = spawned_json(7, None);
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["terminal_id"], 7);
+        assert!(doc["satellite"].is_null());
+        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(3));
+
+        let doc = spawned_json(3, Some("edge"));
+        assert_eq!(doc["satellite"], "edge");
     }
 
     fn spawn_frame() -> FrameKind {

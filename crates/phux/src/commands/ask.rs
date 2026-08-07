@@ -72,6 +72,7 @@ fn print_success(pane: &TerminalId, payload: &AskedPayload, json: bool) -> ExitC
 
 fn success_json(pane: &TerminalId, payload: &AskedPayload) -> serde_json::Value {
     serde_json::json!({
+        "schema_version": 1,
         "event": "asked",
         "terminal": format_terminal_id(pane),
         "id": payload.id,
@@ -102,10 +103,9 @@ mod tests {
             suggestions: vec!["yes".to_owned()],
             elapsed_seconds: Some(5),
         };
-        assert_eq!(
-            success_json(&pane, &payload)["terminal"],
-            "region/@build/@7"
-        );
+        let doc = success_json(&pane, &payload);
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["terminal"], "region/@build/@7");
         assert_eq!(
             success_text(&pane, &payload),
             "reported ask q1 to region/@build/@7"

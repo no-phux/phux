@@ -212,7 +212,7 @@ pub(crate) fn run_new_json(
         true,
     )) {
         Ok(terminal_id) => {
-            let payload = serde_json::json!({ "session": name, "terminal_id": terminal_id });
+            let payload = new_session_json(name, terminal_id);
             match serde_json::to_string_pretty(&payload) {
                 Ok(s) => {
                     outln!("{s}");
@@ -226,6 +226,17 @@ pub(crate) fn run_new_json(
         }
         Err(code) => code,
     }
+}
+
+/// The `phux new --json` result document: the created session's name and its
+/// seed pane's wire-local id. Pure, so the shape (including `schema_version`)
+/// is unit-testable without a server.
+fn new_session_json(session: &str, terminal_id: u64) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "session": session,
+        "terminal_id": terminal_id,
+    })
 }
 
 async fn require_atomic_agent_session_create(
@@ -475,7 +486,18 @@ pub(crate) fn unique_session_name(existing: &[String], base: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AttachTarget, PathBuf, new_session_target, unique_session_name};
+    use super::{AttachTarget, PathBuf, new_session_json, new_session_target, unique_session_name};
+
+    /// `phux new --json` pins `schema_version` 1 plus the two documented
+    /// fields — the shape `docs/consumers/agents.md` §4.4 promises.
+    #[test]
+    fn new_session_json_pins_the_contract_shape() {
+        let doc = new_session_json("work", 2);
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["session"], "work");
+        assert_eq!(doc["terminal_id"], 2);
+        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(3));
+    }
 
     /// phux-0db: `phux new` without `--cwd` seeds the session in the
     /// *client's* cwd, not `None` (= the daemon's CWD).

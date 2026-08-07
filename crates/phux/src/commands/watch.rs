@@ -19,6 +19,23 @@ use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 /// `--json` emits one JSON object per line and keeps stdout pure (the
 /// resolved-target diagnostics and connect errors go to stderr); the
 /// human form is a compact one-liner.
+///
+/// **Decision: no `schema_version` field on this stream** (ADR-0071,
+/// phux-k8u0), unlike every other `--json` document in this crate. Two
+/// alternatives were rejected: a per-line field is repeated overhead on a
+/// hot, high-volume path for a value that essentially never changes within
+/// a run; a versioned header line would be invisible to the common consumer
+/// shape here — one that attaches, disconnects, and reconnects, or `tail`s
+/// an existing pipe, and so may never observe line one. Instead the stream
+/// is versioned by the binary itself (`phux --version`) and the
+/// compatibility unit is the closed-but-growing `event` name vocabulary: a
+/// consumer that does not recognize an `event` value, or a field on one it
+/// does, ignores it exactly as [`watch_event_kind`]'s catch-all arm and
+/// [`AgentEvent::Unknown`] already do server-side. A shape-breaking change
+/// to an existing event is a breaking change to the CLI's frozen JSON
+/// surface like any other and requires the major version bump ADR-0071
+/// already mandates. Written up in full at `docs/consumers/agents.md`
+/// (the `phux watch` entry, §3).
 pub(crate) fn run_watch(session: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCode {
     let selector = match parse_selector(session) {
         Ok(sel) => sel,
