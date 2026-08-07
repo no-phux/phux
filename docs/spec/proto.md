@@ -720,6 +720,14 @@ ErrorCode = enum {
                                  //   to an existing input-lease holder
     INPUT_DELIVERY_UNKNOWN = 205,// APPLY_INPUT reached PTY handoff but write /
                                  //   flush completion is indeterminate
+    CANONICAL_LIMIT_EXCEEDED = 206, // phux-mjmc: the pane is in canonical
+                                 //   (ICANON) mode and the batch's encoded
+                                 //   bytes contain a line longer than the
+                                 //   pane's canonical-line limit with no
+                                 //   terminator; refused before any bytes
+                                 //   were written, distinct from 205 (that
+                                 //   code means delivery is unconfirmed,
+                                 //   this one means delivery is known unsafe)
 
     INTERNAL_ERROR       = 65535,
 }

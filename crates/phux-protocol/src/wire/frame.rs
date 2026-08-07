@@ -744,6 +744,15 @@ pub enum ErrorCode {
     InputLeaseHeld = 204,
     /// Input reached the pane write path, but final PTY delivery is unknown.
     InputDeliveryUnknown = 205,
+    /// phux-mjmc: the pane's line discipline is in canonical mode
+    /// (`ICANON`) and the input batch's encoded PTY bytes contain a line
+    /// longer than the pane's canonical-line limit with no terminator to
+    /// flush it. Writing it would have silently truncated at the kernel's
+    /// canonical queue boundary instead of delivering it — refused before
+    /// any bytes reached the pane. Distinct from [`Self::InputDeliveryUnknown`]:
+    /// that code means delivery could not be *confirmed*; this one means
+    /// delivery is *known* to be unsafe and nothing was written.
+    CanonicalLimitExceeded = 206,
 
     /// Catch-all for unexpected server-side failures. Carries
     /// `u16::MAX = 65535` on the wire.
@@ -781,6 +790,7 @@ impl ErrorCode {
             203 => Self::UnsafePaste,
             204 => Self::InputLeaseHeld,
             205 => Self::InputDeliveryUnknown,
+            206 => Self::CanonicalLimitExceeded,
             65535 => Self::InternalError,
             _ => return None,
         })

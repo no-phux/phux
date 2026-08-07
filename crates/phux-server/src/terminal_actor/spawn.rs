@@ -1,6 +1,8 @@
 //! Submodule for terminal actor internals.
 
-use super::{EncodedInputRequest, TerminalActorError};
+use super::{EncodedInputRequest, TerminalActorError, WriteCompletion};
+use nix::sys::termios::{InputFlags, LocalFlags};
+use nix::unistd::{PathconfVar, fpathconf};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -132,6 +134,222 @@ fn flush_resilient(writer: &mut (dyn Write + Send)) -> Result<(), WriteError> {
                     written: 0,
                 });
             }
+        }
+    }
+}
+
+/// `_POSIX_MAX_CANON` (POSIX.1-2017 `<limits.h>`): the minimum canonical-mode
+/// line length every conforming implementation must support. Real limits are
+/// almost always larger and platform-specific (empirically 1024 on this
+/// darwin build's `MAX_CANON`, per phux-mjmc's repro) — [`canonical_refusal`]
+/// asks the kernel for the real number via `fpathconf(_PC_MAX_CANON)` on the
+/// pane's own master fd rather than hardcoding a platform table. This floor
+/// is used only as the fallback when that query is unavailable.
+const POSIX_MAX_CANON_FLOOR: usize = 255;
+
+/// Below this size, no POSIX-conformant canonical-mode line discipline can
+/// possibly overflow — [`POSIX_MAX_CANON_FLOOR`] is the guaranteed minimum
+/// every implementation supports. Skipping the termios syscall below this
+/// size keeps the interactive fast path (individual keystrokes and short
+/// escape sequences — the overwhelming majority of writes) free of the extra
+/// `tcgetattr` [`canonical_refusal`] would otherwise cost on every write.
+const CANONICAL_CHECK_SKIP_THRESHOLD: usize = POSIX_MAX_CANON_FLOOR;
+
+/// Why [`canonical_refusal`] refused to hand a payload to the PTY writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CanonicalOverflow {
+    /// The pane's real canonical-line byte limit, as reported by
+    /// [`canonical_refusal`] at refusal time.
+    limit: usize,
+}
+
+/// Pure predicate (phux-mjmc): does `bytes`, delivered to a canonical-mode
+/// (`ICANON`) line discipline, contain any *line* — a run between two
+/// terminators, or from the last terminator to the end of the payload —
+/// longer than `limit` bytes?
+///
+/// This is the actual overflow condition, not "is the whole payload longer
+/// than `limit`": the canonical queue resets on every completed line, so a
+/// payload built from many short newline-terminated lines can be arbitrarily
+/// large and still fit, while a single overlong line anywhere in the batch
+/// overflows regardless of what surrounds it — including the pathological
+/// case phux-mjmc reported, where the overflowing line's own terminating CR
+/// arrives after the queue is already full and is itself dropped, wedging
+/// the pane forever.
+///
+/// A line terminates on `\n` unconditionally, and on `\r` only when
+/// `cr_terminates` is set — that is, when the line discipline's `ICRNL`
+/// input flag translates `\r` to `\n` on the way in (the default on a
+/// freshly opened PTY, and the mechanism behind phux-mjmc's "terminating
+/// CR" repro). Other discipline-configurable terminators (`VEOL`, `VEOF`)
+/// are deliberately not modeled: they are rarely reconfigured in practice,
+/// and getting `\n` / `\r` right covers every case in the bug report.
+fn exceeds_canonical_limit(bytes: &[u8], limit: usize, cr_terminates: bool) -> bool {
+    let mut run = 0_usize;
+    for &b in bytes {
+        let terminates = b == b'\n' || (cr_terminates && b == b'\r');
+        if terminates {
+            run = 0;
+        } else {
+            run += 1;
+            if run > limit {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// If `master`'s pane is currently in canonical mode (`ICANON`) and `bytes`
+/// would overflow it (see [`exceeds_canonical_limit`]), return why —
+/// otherwise `None`, meaning the write should proceed on the normal path.
+///
+/// Queries termios itself (`tcgetattr`) rather than going through
+/// [`MasterPty::get_termios`]: `portable-pty` 0.9 depends on `nix` 0.28,
+/// while this crate depends on `nix` 0.29 for [`LocalFlags`] /
+/// [`InputFlags`] (already pulled in for the process-group / signal
+/// surface — see this crate's `Cargo.toml`), and cargo happily resolves
+/// both into the same binary as unrelated types. Comparing `Termios`
+/// bitflags across that version split does not type-check, so this calls
+/// `nix::sys::termios::tcgetattr` directly on the master's raw fd instead,
+/// which also means an adopted graceful-upgrade master (whose
+/// `get_termios` would return `None`) is checked exactly like a freshly
+/// spawned one.
+///
+/// `None` covers both "not canonical" and "cannot tell" (fd unavailable,
+/// `tcgetattr` errors) — a query failure must never newly refuse a write
+/// this guard cannot actually evaluate.
+fn canonical_refusal(
+    master: &Mutex<Box<dyn MasterPty + Send>>,
+    bytes: &[u8],
+) -> Option<CanonicalOverflow> {
+    if bytes.len() <= CANONICAL_CHECK_SKIP_THRESHOLD {
+        return None;
+    }
+    let raw_fd = master.lock().ok()?.as_raw_fd()?;
+    // SAFETY: `raw_fd` is the pane's live PTY master fd, owned by the
+    // `PtyOwned::master` this function is always called through and open
+    // for the pane's whole lifetime. The borrow does not outlive this
+    // synchronous call and is never used to close or duplicate the fd.
+    let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw_fd) };
+    let termios = nix::sys::termios::tcgetattr(borrowed).ok()?;
+    if !termios.local_flags.contains(LocalFlags::ICANON) {
+        return None;
+    }
+    // `MAX_CANON` is not a portable compile-time constant — it differs by
+    // platform (empirically 1024 on this darwin build, per phux-mjmc's
+    // repro), and several `libc` targets do not expose it as one at all —
+    // so ask the running kernel via `fpathconf(_PC_MAX_CANON)` on this same
+    // fd instead of hardcoding a platform table.
+    let limit = fpathconf(borrowed, PathconfVar::MAX_CANON)
+        .ok()
+        .flatten()
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(POSIX_MAX_CANON_FLOOR);
+    let cr_terminates = termios.input_flags.contains(InputFlags::ICRNL)
+        && !termios.input_flags.contains(InputFlags::IGNCR);
+    exceeds_canonical_limit(bytes, limit, cr_terminates).then_some(CanonicalOverflow { limit })
+}
+
+/// Whether the writer thread's loop should keep draining requests or shut
+/// down, as decided by [`service_write_request`].
+enum WriterLoopControl {
+    /// Keep looping — either the write succeeded, or it was refused but the
+    /// pane's input path is still alive (phux-mjmc: a canonical-limit
+    /// refusal is not a writer fault).
+    Continue,
+    /// The child is gone or the write hit a genuinely fatal error; the
+    /// caller returns from the thread.
+    Stop,
+}
+
+/// Handle one [`EncodedInputRequest`] on the writer thread: refuse it up
+/// front if it would overflow the pane's canonical-mode line discipline
+/// (phux-mjmc), otherwise write and flush it — reporting the outcome on
+/// `request.completion` if the caller is waiting for one either way.
+///
+/// Split out of [`start_pty_bridge`]'s writer-thread closure purely to keep
+/// that closure under the line-count lint; the split has no behavioral
+/// significance.
+fn service_write_request(
+    writer: &mut (dyn Write + Send),
+    master: &Mutex<Box<dyn MasterPty + Send>>,
+    request: EncodedInputRequest,
+) -> WriterLoopControl {
+    let len = request.bytes.len();
+    if let Some(overflow) = canonical_refusal(master, &request.bytes) {
+        // Loud on purpose (phux-mjmc): silently calling `write_all_resilient`
+        // here would succeed from the kernel's point of view while the
+        // canonical-mode line discipline dropped everything past
+        // `overflow.limit` — and, if the payload's own terminator falls past
+        // that point, drops the terminator too, wedging the pane's input
+        // permanently (the queue never empties because nothing ever
+        // completes the line). Refusing before the write means zero bytes
+        // reach the pane instead of a truncated, uncompletable prefix. The
+        // pane's input path stays alive — this is not a fatal writer error,
+        // just one rejected payload — so the loop continues rather than
+        // stopping.
+        error!(
+            len,
+            limit = overflow.limit,
+            "pty writer: refusing write; pane is in canonical mode and this \
+             payload has no line terminator within its canonical-line limit, \
+             so writing it would silently truncate rather than deliver it — \
+             send it as newline-terminated lines, or switch the pane to raw \
+             mode first",
+        );
+        if let Some(completion) = request.completion {
+            let _ = completion.send(WriteCompletion::CanonicalLimitExceeded {
+                limit: overflow.limit,
+            });
+        }
+        return WriterLoopControl::Continue;
+    }
+    let outcome =
+        write_all_resilient(writer, &request.bytes).and_then(|()| flush_resilient(writer));
+    match outcome {
+        Ok(()) => {
+            debug!(len, "pty write flushed");
+            if let Some(completion) = request.completion {
+                let _ = completion.send(WriteCompletion::Delivered);
+            }
+            WriterLoopControl::Continue
+        }
+        Err(WriteError {
+            failure: WriteFailure::PaneGone,
+            source,
+            written,
+        }) => {
+            // The child exited or closed the slave. Routine teardown, not a
+            // fault: the reader thread is reporting EOF on its own path and
+            // the actor will close the pane. Anything still queued is moot.
+            debug!(
+                ?source,
+                written, len, "pty writer: child gone; input path closing"
+            );
+            if let Some(completion) = request.completion {
+                let _ = completion.send(WriteCompletion::Failed);
+            }
+            WriterLoopControl::Stop
+        }
+        Err(WriteError {
+            failure: WriteFailure::Fatal,
+            source,
+            written,
+        }) => {
+            // Genuinely unexpected. The pane's input path is dead and cannot
+            // be revived; say so loudly, with the partial-write count,
+            // because output, snapshots, and command acks all keep working
+            // while input silently goes nowhere.
+            error!(
+                ?source,
+                written, len, "pty writer: write failed; pane input is now dead"
+            );
+            if let Some(completion) = request.completion {
+                let _ = completion.send(WriteCompletion::Failed);
+            }
+            WriterLoopControl::Stop
         }
     }
 }
@@ -579,6 +797,10 @@ fn start_pty_bridge(
         .take_writer()
         .map_err(|e| TerminalActorError::PtyIo(e.to_string()))?;
     let master = Arc::new(Mutex::new(master));
+    // The writer thread needs its own handle on the master to inspect its
+    // termios before a write (phux-mjmc); `PtyOwned::master` below keeps the
+    // other clone alive for resize ioctls.
+    let master_for_writer = Arc::clone(&master);
 
     let (pty_tx_to_actor, pty_rx_for_actor) = mpsc::unbounded_channel::<PtyEvent>();
     let (input_tx_to_writer, mut input_rx_for_writer) =
@@ -636,53 +858,9 @@ fn start_pty_bridge(
                     std::mem::ManuallyDrop::into_inner(writer);
                     return;
                 };
-                let len = request.bytes.len();
-                let outcome = write_all_resilient(&mut **writer, &request.bytes)
-                    .and_then(|()| flush_resilient(&mut **writer));
-                match outcome {
-                    Ok(()) => {
-                        debug!(len, "pty write flushed");
-                        if let Some(completion) = request.completion {
-                            let _ = completion.send(true);
-                        }
-                    }
-                    Err(WriteError {
-                        failure: WriteFailure::PaneGone,
-                        source,
-                        written,
-                    }) => {
-                        // The child exited or closed the slave. Routine
-                        // teardown, not a fault: the reader thread is
-                        // reporting EOF on its own path and the actor will
-                        // close the pane. Anything still queued is moot.
-                        debug!(
-                            ?source,
-                            written, len, "pty writer: child gone; input path closing"
-                        );
-                        if let Some(completion) = request.completion {
-                            let _ = completion.send(false);
-                        }
-                        return;
-                    }
-                    Err(WriteError {
-                        failure: WriteFailure::Fatal,
-                        source,
-                        written,
-                    }) => {
-                        // Genuinely unexpected. The pane's input path is
-                        // dead and cannot be revived; say so loudly, with
-                        // the partial-write count, because output,
-                        // snapshots, and command acks all keep working
-                        // while input silently goes nowhere.
-                        error!(
-                            ?source,
-                            written, len, "pty writer: write failed; pane input is now dead"
-                        );
-                        if let Some(completion) = request.completion {
-                            let _ = completion.send(false);
-                        }
-                        return;
-                    }
+                match service_write_request(&mut **writer, &master_for_writer, request) {
+                    WriterLoopControl::Continue => {}
+                    WriterLoopControl::Stop => return,
                 }
             }
         })
@@ -988,5 +1166,360 @@ mod tests {
             login_flag_for_shell("/opt/homebrew/bin/fish"),
             Some("--login")
         );
+    }
+}
+
+/// phux-mjmc: canonical-mode PTY write guard. Two layers — the pure
+/// terminator/line-length predicate (fast, no PTY needed) and real-PTY
+/// integration tests that exercise the actual writer thread through
+/// [`spawn_pty`], since the bug and the fix both live at the boundary
+/// between phux's write path and the kernel's line discipline.
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod canonical_guard_tests {
+    use super::*;
+    use portable_pty::CommandBuilder;
+    use std::time::Duration;
+
+    /// Ceiling for "and nothing else arrives" checks — the opposite
+    /// polarity from a delivery wait, so it must stay short (load can only
+    /// make an absence check pass harder, never flakier).
+    const NOTHING_ARRIVES_WINDOW: Duration = Duration::from_millis(300);
+    /// Generous ceiling for "this must complete" waits against a real PTY
+    /// and a real `cat` child.
+    const DELIVERY_DEADLINE: Duration = Duration::from_secs(10);
+
+    // -------------------------------------------------------------------
+    // Pure predicate: exceeds_canonical_limit
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn single_line_exactly_at_limit_fits() {
+        assert!(!exceeds_canonical_limit(&vec![b'a'; 1024], 1024, true));
+    }
+
+    #[test]
+    fn single_line_one_byte_over_limit_overflows() {
+        assert!(exceeds_canonical_limit(&vec![b'a'; 1025], 1024, true));
+    }
+
+    /// The total payload size is irrelevant; only the longest line is. A
+    /// payload many times the limit, built entirely from short
+    /// newline-terminated lines, must fit.
+    #[test]
+    fn many_short_terminated_lines_never_overflow_regardless_of_total_size() {
+        let mut bytes = Vec::new();
+        for _ in 0..50 {
+            bytes.extend(std::iter::repeat_n(b'x', 100));
+            bytes.push(b'\n');
+        }
+        assert!(
+            bytes.len() > 1024,
+            "test is only meaningful if the total exceeds the limit"
+        );
+        assert!(!exceeds_canonical_limit(&bytes, 1024, true));
+    }
+
+    /// phux-mjmc's second repro, exactly: 1800 newline-free bytes then a
+    /// terminating CR. The CR arrives 776 bytes past the overflow point and
+    /// cannot rescue the line — this is the "permanent wedge" mechanism,
+    /// not just data loss.
+    #[test]
+    fn terminating_cr_past_the_limit_cannot_rescue_the_line() {
+        let mut bytes = vec![b'a'; 1800];
+        bytes.push(b'\r');
+        assert!(exceeds_canonical_limit(&bytes, 1024, true));
+    }
+
+    /// `cr_terminates` is what makes a CR meaningful at all: with it clear
+    /// (no `ICRNL` translation), a mid-payload CR is just another ordinary
+    /// byte and does not end the line.
+    #[test]
+    fn cr_terminates_only_when_the_flag_says_so() {
+        let mut bytes = vec![b'a'; 1024];
+        bytes.push(b'\r');
+        bytes.extend(std::iter::repeat_n(b'b', 10));
+        assert!(
+            !exceeds_canonical_limit(&bytes, 1024, true),
+            "with ICRNL, the CR at position 1024 ends the first line \
+             before it can overflow"
+        );
+        assert!(
+            exceeds_canonical_limit(&bytes, 1024, false),
+            "without ICRNL, the CR is an ordinary byte and the whole \
+             1035-byte run is one overlong line"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Real-PTY mechanism proof: the low-level primitive does not protect
+    // against this on its own, which is why the guard has to sit in front
+    // of `write_all_resilient` rather than inside it. This is true both
+    // before and after phux-mjmc's fix — the fix never touches
+    // `write_all_resilient` — so this test documents the mechanism the fix
+    // exists to route around, rather than the fix itself.
+    // -------------------------------------------------------------------
+
+    /// Open a real PTY pair with the exact call [`spawn_pty`] uses
+    /// (`native_pty_system().openpty(..)`, no explicit termios — the OS
+    /// default, which is cooked/`ICANON` mode). The slave is kept open
+    /// (never read) so the line discipline stays alive without a foreground
+    /// process complicating the byte stream with its own echo-back.
+    fn open_default_pty() -> (
+        Box<dyn portable_pty::MasterPty + Send>,
+        Box<dyn portable_pty::SlavePty + Send>,
+    ) {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        (pair.master, pair.slave)
+    }
+
+    #[test]
+    fn write_all_resilient_alone_truncates_a_canonical_mode_line() {
+        let (master, _slave) = open_default_pty();
+        let mut writer = master.take_writer().expect("take writer");
+        let mut reader = master.try_clone_reader().expect("clone reader");
+        let raw_fd = master.as_raw_fd().expect("real pty has a raw fd");
+        // SAFETY: `raw_fd` names `master`, which this test keeps alive via
+        // the `master` binding for the whole function; the borrow does not
+        // outlive this synchronous call.
+        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw_fd) };
+        let limit = usize::try_from(
+            fpathconf(borrowed, PathconfVar::MAX_CANON)
+                .expect("fpathconf must succeed on a real pty")
+                .expect("MAX_CANON must report a limit"),
+        )
+        .expect("MAX_CANON fits usize");
+
+        // Oversized, newline-free payload, then a terminator to flush the
+        // line — without a terminator nothing would be readable at all
+        // (phux-mjmc's own repro methodology).
+        let payload = vec![b'a'; limit + 37];
+        write_all_resilient(&mut *writer, &payload)
+            .expect("the kernel write(2) itself succeeds regardless");
+        write_all_resilient(&mut *writer, b"\n").expect("terminator write succeeds");
+        flush_resilient(&mut *writer).expect("flush");
+
+        let mut buf = [0u8; 8192];
+        let n = reader.read(&mut buf).expect("the echoed, completed line");
+        // The line discipline's ECHO reflects exactly what its canonical
+        // queue accepted before the line terminated. If the platform's real
+        // `MAX_CANON` ever changed, this bounds still hold: `n` must be
+        // capped at the queue's real capacity, strictly less than what was
+        // written.
+        assert!(
+            n <= limit + 1,
+            "expected at most {} bytes (limit + newline) echoed back, got \
+             {n}: the canonical queue did not overflow, so this payload \
+             was too small to reproduce phux-mjmc on this platform",
+            limit + 1
+        );
+        assert!(
+            n < payload.len() + 1,
+            "expected fewer than the {} bytes written to come back; if \
+             this fails, this platform's canonical queue held the whole \
+             oversized line and the guard's premise does not hold here",
+            payload.len() + 1
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Real-PTY integration through the actual writer thread
+    // (`spawn_pty` -> the production `canonical_refusal` guard).
+    // -------------------------------------------------------------------
+
+    /// phux-mjmc's first repro: 4097 entirely newline-free bytes. Old code
+    /// wrote this straight through (`write_all_resilient` reports success —
+    /// the kernel's `write(2)` itself never fails) and lost everything past
+    /// the canonical limit with zero feedback. The guard must refuse it
+    /// before any byte reaches the kernel.
+    #[tokio::test(flavor = "current_thread")]
+    async fn newline_free_write_over_the_limit_is_refused_before_any_byte_is_sent() {
+        let cmd = CommandBuilder::new("cat");
+        let (mut pty_rx, input_tx, mut pty) =
+            spawn_pty(cmd, 80, 24).expect("spawn cat under a real pty");
+
+        let payload = vec![b'a'; 4097];
+        let (completion_tx, completed) = std::sync::mpsc::channel();
+        input_tx
+            .try_send(EncodedInputRequest::acknowledged(payload, completion_tx))
+            .expect("writer mailbox has room");
+
+        // The refusal is synchronous (`tcgetattr` + `fpathconf` + a linear
+        // scan, no PTY I/O) so it resolves almost immediately.
+        let outcome =
+            tokio::task::spawn_blocking(move || completed.recv_timeout(DELIVERY_DEADLINE))
+                .await
+                .expect("blocking task")
+                .expect("writer thread must reply");
+        match outcome {
+            WriteCompletion::CanonicalLimitExceeded { limit } => {
+                assert!(limit > 0, "must report a real limit, not a placeholder");
+            }
+            other => panic!("expected CanonicalLimitExceeded, got {other:?}"),
+        }
+
+        // Nothing reached the kernel: no echo, and `cat` never saw a
+        // completed line to forward.
+        let extra = tokio::time::timeout(NOTHING_ARRIVES_WINDOW, pty_rx.recv()).await;
+        assert!(
+            extra.is_err(),
+            "a refused payload must not put any bytes on the wire"
+        );
+        let _ = pty.child.kill();
+    }
+
+    /// phux-mjmc's second, more dangerous repro: 1800 newline-free bytes
+    /// followed by a terminating CR. Old code lost the CR along with the
+    /// rest of the overflow, so the line never completed and the pane was
+    /// permanently wedged. The guard must refuse the whole batch up front.
+    #[tokio::test(flavor = "current_thread")]
+    async fn terminating_cr_past_the_limit_is_refused_not_wedged() {
+        let cmd = CommandBuilder::new("cat");
+        let (mut pty_rx, input_tx, mut pty) =
+            spawn_pty(cmd, 80, 24).expect("spawn cat under a real pty");
+
+        let mut payload = vec![b'a'; 1800];
+        payload.push(b'\r');
+        let (completion_tx, completed) = std::sync::mpsc::channel();
+        input_tx
+            .try_send(EncodedInputRequest::acknowledged(payload, completion_tx))
+            .expect("writer mailbox has room");
+
+        let outcome =
+            tokio::task::spawn_blocking(move || completed.recv_timeout(DELIVERY_DEADLINE))
+                .await
+                .expect("blocking task")
+                .expect("writer thread must reply");
+        assert!(matches!(
+            outcome,
+            WriteCompletion::CanonicalLimitExceeded { .. }
+        ));
+
+        let extra = tokio::time::timeout(NOTHING_ARRIVES_WINDOW, pty_rx.recv()).await;
+        assert!(
+            extra.is_err(),
+            "a refused payload must not put any bytes on the wire, \
+             including the terminator that old code would have dropped"
+        );
+        let _ = pty.child.kill();
+    }
+
+    /// A refusal must not kill the pane's input path: a normal
+    /// newline-terminated write handed to the writer immediately afterward
+    /// must still be delivered.
+    #[tokio::test(flavor = "current_thread")]
+    async fn refusal_does_not_wedge_the_pane_for_later_writes() {
+        let cmd = CommandBuilder::new("cat");
+        let (mut pty_rx, input_tx, mut pty) =
+            spawn_pty(cmd, 80, 24).expect("spawn cat under a real pty");
+
+        let oversized = vec![b'a'; 5000];
+        let (tx1, rx1) = std::sync::mpsc::channel();
+        input_tx
+            .try_send(EncodedInputRequest::acknowledged(oversized, tx1))
+            .expect("writer mailbox has room");
+        let outcome1 = tokio::task::spawn_blocking(move || rx1.recv_timeout(DELIVERY_DEADLINE))
+            .await
+            .expect("blocking task")
+            .expect("writer thread must reply");
+        assert!(matches!(
+            outcome1,
+            WriteCompletion::CanonicalLimitExceeded { .. }
+        ));
+
+        let (tx2, rx2) = std::sync::mpsc::channel();
+        input_tx
+            .try_send(EncodedInputRequest::acknowledged(b"hello\n".to_vec(), tx2))
+            .expect("writer mailbox has room");
+        let outcome2 = tokio::task::spawn_blocking(move || rx2.recv_timeout(DELIVERY_DEADLINE))
+            .await
+            .expect("blocking task")
+            .expect("writer thread must reply");
+        assert_eq!(outcome2, WriteCompletion::Delivered);
+
+        let got = tokio::time::timeout(DELIVERY_DEADLINE, pty_rx.recv())
+            .await
+            .expect("must not hang")
+            .expect("pty output channel open");
+        match got {
+            PtyEvent::Bytes(bytes) => {
+                assert!(bytes.windows(5).any(|w| w == b"hello"));
+            }
+            PtyEvent::Eof => panic!("pane closed unexpectedly"),
+        }
+        let _ = pty.child.kill();
+    }
+
+    /// Raw mode (`ICANON` clear) must stay on the unchecked fast path: a
+    /// large, entirely newline-free payload — the shape of the 1.9 MiB JPEG
+    /// from ADR-0059's slow-upload report — is delivered byte-for-byte,
+    /// with no refusal.
+    #[tokio::test(flavor = "current_thread")]
+    async fn raw_mode_delivers_a_large_newline_free_payload_intact() {
+        let cmd = CommandBuilder::new("cat");
+        let (mut pty_rx, input_tx, mut pty) =
+            spawn_pty(cmd, 80, 24).expect("spawn cat under a real pty");
+
+        // Enter raw mode on the shared master fd, the same way a TUI or a
+        // shell with readline in raw mode would from the slave side — the
+        // discipline is a property of the pty, not of which end changed it.
+        // ECHO is cleared too so only `cat`'s own forwarded copy reaches
+        // this test's reader (a realistic raw-mode program disables both
+        // together).
+        {
+            let raw_fd = pty
+                .master
+                .lock()
+                .expect("master lock")
+                .as_raw_fd()
+                .expect("raw fd");
+            // SAFETY: `raw_fd` names `pty.master`, kept alive by `pty` for
+            // the rest of this test; the borrow does not outlive this call.
+            let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw_fd) };
+            let mut termios = nix::sys::termios::tcgetattr(borrowed).expect("tcgetattr");
+            termios
+                .local_flags
+                .remove(LocalFlags::ICANON | LocalFlags::ECHO);
+            nix::sys::termios::tcsetattr(borrowed, nix::sys::termios::SetArg::TCSANOW, &termios)
+                .expect("tcsetattr");
+        }
+
+        let payload = vec![b'x'; 8192];
+        let (completion_tx, completed) = std::sync::mpsc::channel();
+        input_tx
+            .try_send(EncodedInputRequest::acknowledged(
+                payload.clone(),
+                completion_tx,
+            ))
+            .expect("writer mailbox has room");
+
+        let outcome =
+            tokio::task::spawn_blocking(move || completed.recv_timeout(DELIVERY_DEADLINE))
+                .await
+                .expect("blocking task")
+                .expect("writer thread must reply");
+        assert_eq!(outcome, WriteCompletion::Delivered);
+
+        let mut received = Vec::new();
+        while received.len() < payload.len() {
+            let chunk = tokio::time::timeout(DELIVERY_DEADLINE, pty_rx.recv())
+                .await
+                .expect("must not hang")
+                .expect("pty output channel open");
+            match chunk {
+                PtyEvent::Bytes(bytes) => received.extend_from_slice(&bytes),
+                PtyEvent::Eof => panic!("pty closed before full delivery"),
+            }
+        }
+        assert_eq!(received.len(), payload.len());
+        assert_eq!(received, payload);
+        let _ = pty.child.kill();
     }
 }

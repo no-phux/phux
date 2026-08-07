@@ -345,6 +345,7 @@ fn arb_error_code() -> impl Strategy<Value = ErrorCode> {
         Just(ErrorCode::UnsafePaste),
         Just(ErrorCode::InputDeliveryUnknown),
         Just(ErrorCode::InputLeaseHeld),
+        Just(ErrorCode::CanonicalLimitExceeded),
         Just(ErrorCode::InternalError),
     ]
 }
@@ -1031,6 +1032,7 @@ fn error_code_wire_values_match_spec() {
     assert_eq!(ErrorCode::UnsafePaste.as_wire(), 203);
     assert_eq!(ErrorCode::InputLeaseHeld.as_wire(), 204);
     assert_eq!(ErrorCode::InputDeliveryUnknown.as_wire(), 205);
+    assert_eq!(ErrorCode::CanonicalLimitExceeded.as_wire(), 206);
     assert_eq!(ErrorCode::InternalError.as_wire(), 65535);
 }
 

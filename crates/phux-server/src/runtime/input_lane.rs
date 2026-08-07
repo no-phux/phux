@@ -67,7 +67,7 @@ use crate::input::{
     PerTerminalMouseEncoder, PerTerminalPasteEncoder,
 };
 use crate::state::{ClientId, SharedState, TerminalInput};
-use crate::terminal_actor::{EncodedInputRequest, TerminalHandle};
+use crate::terminal_actor::{EncodedInputRequest, TerminalHandle, WriteCompletion};
 
 /// Bound on the lane's inbound queue. Input events are tiny and low-rate, so a
 /// generous cap absorbs a paste-expanded burst without unbounded growth. On
@@ -819,8 +819,18 @@ fn process_apply_input(
     }
 
     let result = match completed.recv_timeout(completion_timeout) {
-        Ok(true) => CommandResult::Ok,
-        Ok(false) | Err(_) => CommandResult::Error {
+        Ok(WriteCompletion::Delivered) => CommandResult::Ok,
+        Ok(WriteCompletion::CanonicalLimitExceeded { limit }) => CommandResult::Error {
+            code: ErrorCode::CanonicalLimitExceeded,
+            message: format!(
+                "the pane is in canonical (cooked) mode and this batch's encoded PTY \
+                 bytes contain a line longer than {limit} bytes with no line \
+                 terminator; split it into newline-terminated lines, or have the pane \
+                 enter raw mode (e.g. run a program that disables ICANON) before \
+                 sending it"
+            ),
+        },
+        Ok(WriteCompletion::Failed) | Err(_) => CommandResult::Error {
             code: ErrorCode::InputDeliveryUnknown,
             message: "PTY input delivery could not be confirmed".to_owned(),
         },
@@ -1329,7 +1339,7 @@ mod tests {
                 request
                     .completion
                     .expect("acknowledged completion")
-                    .send(true)
+                    .send(WriteCompletion::Delivered)
                     .expect("lane waiting");
                 assert_eq!(first.await.expect("apply task"), CommandResult::Ok);
 
@@ -1369,7 +1379,11 @@ mod tests {
                         .await
                 });
                 let request = fx.writer_rx.recv().await.expect("first write");
-                request.completion.expect("completion").send(true).unwrap();
+                request
+                    .completion
+                    .expect("completion")
+                    .send(WriteCompletion::Delivered)
+                    .unwrap();
                 assert_eq!(first.await.unwrap(), CommandResult::Ok);
 
                 let conflict = handle
@@ -1561,7 +1575,11 @@ mod tests {
                         .await
                 });
                 let request = fx.writer_rx.recv().await.expect("writer request");
-                request.completion.expect("completion").send(false).unwrap();
+                request
+                    .completion
+                    .expect("completion")
+                    .send(WriteCompletion::Failed)
+                    .unwrap();
                 let first_result = first.await.unwrap();
                 assert!(matches!(
                     first_result,
@@ -1646,7 +1664,11 @@ mod tests {
                 });
                 let request = fx.writer_rx.recv().await.expect("retry write");
                 assert_eq!(request.bytes.as_ref(), b"blocked");
-                request.completion.expect("completion").send(true).unwrap();
+                request
+                    .completion
+                    .expect("completion")
+                    .send(WriteCompletion::Delivered)
+                    .unwrap();
                 assert_eq!(retry.await.unwrap(), CommandResult::Ok);
                 fx.token.cancel();
             })
@@ -1719,7 +1741,7 @@ mod tests {
                         ..
                     }
                 ));
-                assert!(late_completion.send(true).is_err());
+                assert!(late_completion.send(WriteCompletion::Delivered).is_err());
                 assert_eq!(
                     handle
                         .apply_input(fx.client_a, id, fx.wire.clone(), events)
@@ -1751,7 +1773,11 @@ mod tests {
                     .expect("admit operation");
                 let request = fx.writer_rx.recv().await.expect("writer request");
                 drop(waiter);
-                request.completion.expect("completion").send(true).unwrap();
+                request
+                    .completion
+                    .expect("completion")
+                    .send(WriteCompletion::Delivered)
+                    .unwrap();
                 while handle.acknowledged_admitted.load(Ordering::Acquire) {
                     tokio::task::yield_now().await;
                 }
@@ -1868,7 +1894,7 @@ mod tests {
                 first_request
                     .completion
                     .expect("completion")
-                    .send(true)
+                    .send(WriteCompletion::Delivered)
                     .unwrap();
                 assert_eq!(first.await.unwrap(), CommandResult::Ok);
 
@@ -1889,7 +1915,7 @@ mod tests {
                 third_request
                     .completion
                     .expect("completion")
-                    .send(true)
+                    .send(WriteCompletion::Delivered)
                     .unwrap();
                 assert_eq!(third.await.unwrap(), CommandResult::Ok);
                 fx.token.cancel();

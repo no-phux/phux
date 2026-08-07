@@ -220,15 +220,42 @@ pub struct ConsumerAckRequest {
 /// has stalled, which is its own bug to investigate.
 pub const DEFAULT_INPUT_MAILBOX: usize = 64;
 
+/// Final disposition of a PTY write, reported on
+/// [`EncodedInputRequest::completion`].
+///
+/// A plain `bool` used to be enough ("delivered" or "not"), but phux-mjmc
+/// added a third, distinct outcome: the writer can now refuse a payload
+/// *before* touching the kernel at all, because writing it would silently
+/// truncate inside the pane's canonical-mode line discipline rather than
+/// fail loudly. That is neither "delivered" nor the old catch-all
+/// "something went wrong, indeterminate" — the caller knows exactly why and
+/// exactly nothing reached the child, so it gets its own variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteCompletion {
+    /// `write_all` and `flush` both succeeded.
+    Delivered,
+    /// A writer failure occurred after bytes may have partially landed;
+    /// delivery is indeterminate (matches the old `false`).
+    Failed,
+    /// Refused before any bytes were written: the pane's line discipline is
+    /// in canonical mode (`ICANON`) and `bytes` contains a line longer than
+    /// `limit` with no terminator to flush it, so the kernel would have
+    /// silently dropped the overflow (and, per phux-mjmc, potentially
+    /// wedged the pane permanently by also dropping the terminator that
+    /// would have completed the truncated line). `limit` is the pane's real
+    /// canonical-line byte limit as queried at refusal time.
+    CanonicalLimitExceeded { limit: usize },
+}
+
 /// Bytes destined for the PTY writer, optionally carrying final write/flush
 /// completion for acknowledged input.
 #[derive(Debug)]
 pub(crate) struct EncodedInputRequest {
     /// Fully encoded PTY bytes.
     pub(crate) bytes: Bytes,
-    /// `true` after `write_all` and `flush` both succeed; `false` on either
-    /// writer failure. Dropping the sender reports indeterminate delivery.
-    pub(crate) completion: Option<std::sync::mpsc::Sender<bool>>,
+    /// See [`WriteCompletion`]. Dropping the sender reports indeterminate
+    /// delivery (the receiver observes a closed channel).
+    pub(crate) completion: Option<std::sync::mpsc::Sender<WriteCompletion>>,
 }
 
 impl EncodedInputRequest {
@@ -246,7 +273,10 @@ impl EncodedInputRequest {
         }
     }
 
-    pub(crate) fn acknowledged(bytes: Vec<u8>, completion: std::sync::mpsc::Sender<bool>) -> Self {
+    pub(crate) fn acknowledged(
+        bytes: Vec<u8>,
+        completion: std::sync::mpsc::Sender<WriteCompletion>,
+    ) -> Self {
         Self {
             bytes: Bytes::from(bytes),
             completion: Some(completion),

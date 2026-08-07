@@ -87,7 +87,18 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 # to print). `nix` is used here rather than `libc` because `libc` is declared
 # under a `cfg(target_os = "macos")` gate below and is therefore unavailable
 # on Linux; the safe `nix` wrapper is cross-platform and adds no new crate.
-nix = { version = "0.29", default-features = false, features = ["signal", "term"] }
+#
+# `fs` + `feature` additionally gate `nix::unistd::{fpathconf, PathconfVar}`
+# (phux-mjmc): the canonical-mode PTY-write guard queries the pane's real
+# `MAX_CANON` via `fpathconf(fd, _PC_MAX_CANON)` rather than hardcoding a
+# platform table, since `MAX_CANON` is not a portable compile-time constant
+# and several `libc` targets do not expose it as one at all.
+nix = { version = "0.29", default-features = false, features = [
+    "signal",
+    "term",
+    "fs",
+    "feature",
+] }
 # The agent-state detector's rules are user-editable TOML manifests
 # (ADR-0046 §C): its predicates are DATA compiled at load, not code, so that
 # agent-TUI churn is decoupled from our release cadence. A hand-rolled matcher
