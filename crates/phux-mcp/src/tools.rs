@@ -435,7 +435,12 @@ async fn phux_watch(args: &Value) -> Result<Value, ToolError> {
 
     let events = phux_client::watch::collect_events(&socket, terminal, max_events, timeout).await?;
     let rendered: Vec<Value> = events.iter().map(agent_event_json).collect();
-    Ok(json!({ "events": rendered, "count": rendered.len() }))
+    // Versioned, unlike the CLI's `phux watch --json`. That surface is an
+    // unbounded NDJSON stream a consumer may join mid-flight, so it is
+    // versioned by the binary instead; this one is an ordinary bounded
+    // request/response document, so it carries `schema_version` like every
+    // other MCP result.
+    Ok(json!({ "schema_version": 1, "events": rendered, "count": rendered.len() }))
 }
 
 /// Project one [`phux_client::watch::WatchEvent`] to the stable JSON shape the

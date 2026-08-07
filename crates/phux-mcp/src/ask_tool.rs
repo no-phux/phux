@@ -46,6 +46,7 @@ pub(crate) fn schema() -> Value {
 
 fn success_value(pane: &TerminalId, payload: &AskedPayload) -> Value {
     json!({
+        "schema_version": 1,
         "event": "asked",
         "terminal": selector::format_terminal_id(pane),
         "id": payload.id,
@@ -143,6 +144,22 @@ mod tests {
         assert_eq!(value["terminal"], json!("region/@build/@7"));
         assert_eq!(value["event"], json!("asked"));
         assert_eq!(value["id"], json!("q1"));
+        assert_eq!(value["schema_version"], json!(1));
+    }
+
+    /// The result document is a frozen surface under ADR-0071, so it carries
+    /// a version. Pinned separately from the selector test above so a future
+    /// edit to the payload cannot quietly drop it.
+    #[test]
+    fn success_output_is_versioned() {
+        let payload = AskedPayload {
+            id: "q1".to_owned(),
+            question: "Continue?".to_owned(),
+            suggestions: Vec::new(),
+            elapsed_seconds: None,
+        };
+        let value = success_value(&TerminalId::local(3), &payload);
+        assert_eq!(value["schema_version"], json!(1));
     }
 
     #[test]

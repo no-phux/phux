@@ -329,9 +329,13 @@ shells out to `phux watch --json`.
 | `timeout_secs` | number | no | Return after this many seconds. Canonical orchestration always supplies this and/or `max_events`; without either the call blocks until the server exits. |
 | `socket` | string | no | Override the UDS path (see §2). |
 
-Result: `{ events: [ { event, terminal?, ...payload } ], count: N }`, the
-same per-event JSON shape as `phux watch --json`, including `asked` payloads
-with `id`, `question`, `suggestions`, and nullable `elapsed_seconds`. It is an
+Result: `{ schema_version: 1, events: [ { event, terminal?, ...payload } ],
+count: N }`, the same per-event JSON shape as `phux watch --json`, including
+`asked` payloads with `id`, `question`, `suggestions`, and nullable
+`elapsed_seconds`. The envelope is versioned here even though the CLI's
+`phux watch --json` is not: that surface is an unbounded NDJSON stream a
+consumer may join mid-flight, so it is versioned by the binary, while this
+one is an ordinary bounded document. It is an
 accelerator of `phux_wait`'s poll floor, not a replacement: `phux_wait` is
 still the way to block on a specific screen condition.
 
@@ -369,8 +373,9 @@ the target PTY.
 | `elapsed_seconds` | number | no | Seconds the agent has already been waiting. |
 | `socket` | string | no | Override the UDS path (see §2). |
 
-Result: `{ event: "asked", terminal: "@N", id, question, suggestions,
-elapsed_seconds }`, matching the CLI's `phux ask --json` projection. This is
+Result: `{ schema_version: 1, event: "asked", terminal: "@N", id, question,
+suggestions, elapsed_seconds }`, matching the CLI's `phux ask --json`
+projection. This is
 advisory attention, not focus authority: present the payload to the human and
 point them to TUI `C-a q` (next ask) / `C-a Q` (return); do not synthesize those
 keys from MCP.
