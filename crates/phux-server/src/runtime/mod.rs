@@ -144,9 +144,12 @@ pub struct ServerConfig {
     /// from `phux_config`'s `defaults.window-size`; [`Self::with_default_socket`]
     /// uses the schema default ([`phux_config::WindowSize::Smallest`]).
     pub window_size: phux_config::WindowSize,
-    /// Optional policy extension bundle. When `None`, the server uses the
-    /// default permissive policy (allow everything, audit nothing).
-    pub policy_bundle: Option<crate::policy::PolicyBundle>,
+    /// Optional HELLO authorization engine (ADR-0072). `None` — what the
+    /// `phux` binary passes today — leaves the default
+    /// [`crate::policy::PermissivePolicy`] in place. This is the injection
+    /// point phux-pjc5 will use to install a scope-enforcing engine; see
+    /// [`crate::policy`] for why the seam is kept while permissive.
+    pub policy_engine: Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>,
     /// Event-hook catalog (`docs/consumers/tui.md` §9, phux-r82.1): config
     /// `[[hooks.<name>]]` entries plus enabled plugin manifests'
     /// `[[events]]`, resolved by [`crate::hooks::HookCatalog::from_config`].
@@ -243,7 +246,7 @@ impl ServerConfig {
             term: phux_config::DefaultsCfg::default().term,
             shell: crate::terminal_actor::resolve_shell(None),
             window_size: phux_config::WindowSize::default(),
-            policy_bundle: None,
+            policy_engine: None,
             hook_catalog: crate::hooks::HookCatalog::default(),
             exit_after_idle: None,
         }
@@ -767,9 +770,9 @@ impl ServerRuntime {
         // inside the accept setup.
         #[cfg(feature = "webtransport")]
         let webtransport_addr_override = self.wt_addr;
-        // Wire policy bundle from config into shared state.
-        if let Some(bundle) = self.cfg.policy_bundle.clone() {
-            state.with_mut(|s| s.set_policy_bundle(bundle));
+        // Wire the policy engine from config into shared state.
+        if let Some(engine) = self.cfg.policy_engine.clone() {
+            state.with_mut(|s| s.set_policy_engine(engine));
         }
         // Event-hook catalog (phux-r82.1): moved into the LocalSet block
         // below, where the dispatcher task can `spawn_local`. The listening

@@ -1,15 +1,17 @@
 use super::{ClientId, ServerState};
 
 impl ServerState {
-    /// Set the policy extension bundle. Called once at server startup.
-    pub fn set_policy_bundle(&mut self, bundle: crate::policy::PolicyBundle) {
-        self.config.policy_bundle = bundle;
+    /// Install the HELLO authorization engine. Called once at server
+    /// startup, before the accept loops start.
+    pub fn set_policy_engine(&mut self, engine: std::sync::Arc<dyn crate::policy::PolicyEngine>) {
+        self.config.policy_engine = engine;
     }
 
-    /// Read the policy extension bundle.
+    /// Read the HELLO authorization engine. Defaults to
+    /// [`crate::policy::PermissivePolicy`] (ADR-0072).
     #[must_use]
-    pub fn policy_bundle(&self) -> &crate::policy::PolicyBundle {
-        &self.config.policy_bundle
+    pub fn policy_engine(&self) -> &std::sync::Arc<dyn crate::policy::PolicyEngine> {
+        &self.config.policy_engine
     }
 
     /// Store a peer identity for a client.

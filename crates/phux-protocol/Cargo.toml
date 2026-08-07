@@ -17,7 +17,8 @@ workspace = true
 [features]
 # By default phux-protocol is a near-empty shell: stable IDs, capability
 # atoms, the protocol-version constant, and the policy vocabulary (ALPN
-# constants, peer identity). This is what docs.rs and crates.io see — it
+# constants, peer identity, capabilities). This is what docs.rs and crates.io
+# see — it
 # has no git-only deps, so it publishes cleanly.
 default = []
 # `server` activates the full type surface, including libghostty-vt input-
@@ -31,7 +32,6 @@ bytes.workspace = true
 bitflags = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 serde = { workspace = true }
-serde_json = { workspace = true }
 # Derives TryFrom<u32> for the wire's PhysicalKey enum (ADR-0024). Pure Rust,
 # wasm-safe; the same crate libghostty-vt uses for its key discriminants.
 int-enum = "1.2"

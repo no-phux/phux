@@ -103,6 +103,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0069](./0069-generated-reference-docs.md) | Generated reference docs from the compiled binary | Accepted |
 | [0070](./0070-native-engine-state-bootstrap.md) | Native engine-state bootstrap and client-owned history | Accepted (replaces native clients' synthesized-VT bootstrap under [0013](./0013-libghostty-bytes-on-wire.md) with an opaque libghostty READY/history lifecycle; compatibility clients retain synthesized VT, and one PTY retains one authoritative geometry) |
 | [0071](./0071-what-phux-1-0-commits-to.md) | What phux 1.0 commits to | Proposed (freezes the consumer surface under semver while the wire keeps its own `0.x` line per [0061](./0061-capabilities-add-versions-break.md)) |
+| [0072](./0072-prune-policy-vocabulary-keep-the-seam.md) | Prune the policy vocabulary, keep the authorization seam | Proposed (prunes the unreferenced half of the vocabulary [0031](./0031-remote-consumer-auth-and-encryption.md) introduced, and keeps the HELLO seam a post-1.0 paired-workload feature must implement) |
 
 ## When to write an ADR
 

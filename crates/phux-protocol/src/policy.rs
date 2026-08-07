@@ -1,12 +1,19 @@
-//! Policy and extensibility types for server-side policy engines, audit
-//! logging, and consumer identity tracking.
+//! Transport-derived peer identity and the capability vocabulary the
+//! server's authorization seam speaks.
 //!
-//! These types are wire-friendly and serializable so they can be embedded
-//! in audit events, capability tokens, and structured logs. They carry no
-//! policy logic — that lives in the consumer of these types (typically
-//! `phux-server` or a downstream policy crate).
+//! Scope is deliberately narrow (ADR-0072): this module carries only the
+//! vocabulary that live code produces or consumes — the ALPN tokens the
+//! QUIC listeners and dialers pin (`docs/spec/proto.md` §10), the
+//! [`PeerIdentity`] every transport stamps on an accepted connection, and
+//! the [`Capability`] set `phux-server`'s HELLO authorization seam passes
+//! and returns. It carries no policy logic; that lives in `phux-server`.
+//!
+//! None of these types are encoded on the wire. Authorization vocabulary
+//! that no encoder, decoder, or call site referenced — an audit-event
+//! taxonomy, an input-provenance tag, and a per-operation decision enum —
+//! was removed rather than frozen into a published crate; see ADR-0072 and
+//! the feature that will reintroduce whatever it actually needs (phux-pjc5).
 
-use std::collections::HashMap;
 use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
@@ -70,15 +77,14 @@ pub enum TransportType {
     Localhost,
 }
 
-/// A consumer identifier.
-#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
-pub struct ConsumerId(pub String);
-
-/// A capability token grants fine-grained access to operations.
+/// A capability grants fine-grained access to operations.
 ///
-/// Capability tokens are exchanged at HELLO time and scoped for the
-/// lifetime of the connection. The server may attenuate the requested
-/// capabilities based on its own policy.
+/// A capability set is scoped to the lifetime of one connection: the server
+/// derives the requested set at HELLO and its policy engine returns the
+/// granted set, which may be an attenuation of what was requested. **Not a
+/// wire type** — HELLO carries no capability request today, so the set is
+/// server-internal until phux-pjc5 mints connection-bound scopes from a
+/// paired workload credential.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Capability {
     /// The protocol layer this capability applies to.
@@ -95,211 +101,6 @@ pub struct Capability {
     /// Optional expiry time. `None` means the capability is valid for
     /// the lifetime of the connection.
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-/// Decision from a policy authorization check.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Decision {
-    /// The operation is permitted.
-    Allow,
-    /// The operation is denied with a human-readable reason.
-    Deny {
-        /// Human-readable explanation for the denial.
-        reason: String,
-    },
-    /// The operation is permitted but flagged with a threat score.
-    /// The policy engine may also trigger an alert via the audit sink.
-    Alert {
-        /// Heuristic threat score in `[0.0, 1.0]`; higher is riskier.
-        threat_score: f64,
-    },
-    /// The operation requires an additional challenge before proceeding.
-    Challenge {
-        /// The challenge mechanism the consumer must satisfy.
-        mechanism: ChallengeType,
-    },
-}
-
-/// Challenge mechanism for `Decision::Challenge`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ChallengeType {
-    /// Time-based one-time password.
-    Totp,
-    /// Force re-authentication at the transport layer.
-    ReAuthenticate,
-}
-
-/// Structured audit event for external observers.
-///
-/// Audit events are emitted at every security-relevant decision point.
-/// They are intentionally self-contained so they can be shipped to an
-/// external sink without server-side state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuditEvent {
-    /// Event timestamp (UTC).
-    pub ts: chrono::DateTime<chrono::Utc>,
-    /// Server-unique event identifier.
-    pub event_id: String,
-    /// The consumer that initiated the action.
-    pub consumer: ConsumerId,
-    /// Transport-level identity of the peer.
-    pub peer: PeerIdentity,
-    /// The action that was attempted.
-    pub action: AuditAction,
-    /// The resource the action targeted.
-    pub target: AuditTarget,
-    /// The policy decision that was applied.
-    pub decision: Decision,
-    /// Microseconds spent in the policy check.
-    pub latency_us: u64,
-    /// Opaque metadata for policy-engine-specific extensions.
-    pub metadata: HashMap<String, serde_json::Value>,
-}
-
-/// Actions that may be audited.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AuditAction {
-    /// HELLO handshake.
-    Hello,
-    /// L1 terminal operation.
-    TerminalOp(TerminalOp),
-    /// Group operation.
-    GroupOp(GroupOp),
-    /// L3 metadata operation.
-    MetadataOp(MetadataOp),
-    /// Satellite routing operation (federation).
-    SatelliteRoute {
-        /// Originating satellite host.
-        from: String,
-        /// Destination satellite host.
-        to: String,
-    },
-}
-
-/// Terminal-level operations that may be audited.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TerminalOp {
-    /// Snapshot of terminal state.
-    Snapshot {
-        /// Whether scrollback was included in the snapshot.
-        scrollback: bool,
-    },
-    /// Key input.
-    InputKey,
-    /// Mouse input.
-    InputMouse,
-    /// Paste input.
-    InputPaste,
-    /// Spawn a new terminal.
-    Spawn,
-    /// Kill a terminal.
-    Kill,
-    /// Resize a terminal.
-    Resize,
-    /// Attach to a terminal.
-    Attach,
-    /// Detach from a terminal.
-    Detach,
-}
-
-/// Group-level operations that may be audited.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum GroupOp {
-    /// Create a new group.
-    Create,
-    /// Kill a group and its terminals.
-    Kill,
-    /// Add a terminal to a group.
-    AddTerminal,
-    /// Remove a terminal from a group.
-    RemoveTerminal,
-    /// Rename a group.
-    Rename,
-    /// List groups.
-    List,
-}
-
-/// Metadata-level operations that may be audited.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MetadataOp {
-    /// Read a metadata value.
-    Get,
-    /// Write a metadata value of the given byte size.
-    Set {
-        /// Size in bytes of the value being written.
-        size: usize,
-    },
-    /// Delete a metadata value.
-    Delete,
-    /// List metadata keys.
-    List,
-}
-
-/// Scope for metadata operations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MetadataScope {
-    /// Global scope.
-    Global,
-    /// Terminal-scoped.
-    Terminal {
-        /// The terminal the metadata is scoped to.
-        id: TerminalId,
-    },
-    /// Group-scoped.
-    Group {
-        /// The group the metadata is scoped to.
-        id: GroupId,
-    },
-}
-
-/// Target resource of an audited action.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuditTarget {
-    /// Terminal id, when applicable.
-    pub terminal_id: Option<TerminalId>,
-    /// Group id, when applicable.
-    pub group_id: Option<GroupId>,
-    /// Satellite host, when applicable.
-    pub satellite: Option<String>,
-}
-
-/// Classification of a consumer for provenance tracking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ConsumerClass {
-    /// Human using the reference TUI.
-    HumanTui,
-    /// Agent via MCP adapter.
-    AgentMcp,
-    /// Agent via SDK or direct API.
-    AgentSdk,
-    /// Automated system (CI, cron, etc.).
-    Automation,
-    /// Unclassified.
-    Unknown,
-}
-
-/// Provenance tag attached to an input frame.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InputTag {
-    /// The consumer that produced the input.
-    pub consumer: ConsumerId,
-    /// Classification of the consumer.
-    pub class: ConsumerClass,
-    /// Chain of intermediaries (e.g. `["mcp", "claude", "phux-mcp"]`).
-    pub chain: Vec<String>,
-    /// Timestamp of the input.
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-/// A raw input frame with provenance metadata attached.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaggedInput {
-    /// The terminal this input targets.
-    pub terminal_id: TerminalId,
-    /// The raw input payload.
-    pub payload: Vec<u8>,
-    /// Provenance tag.
-    pub tag: InputTag,
 }
 
 #[cfg(test)]

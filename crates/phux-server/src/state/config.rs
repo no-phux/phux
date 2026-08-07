@@ -95,8 +95,10 @@ pub(super) struct ServerConfig {
     /// defaults to the `phux_config` schema default
     /// ([`phux_config::WindowSize::Smallest`] — never crops).
     pub(super) window_size: phux_config::WindowSize,
-    /// Optional policy extension bundle. Defaults to permissive.
-    pub(super) policy_bundle: crate::policy::PolicyBundle,
+    /// HELLO authorization engine (ADR-0072). Defaults to
+    /// [`crate::policy::PermissivePolicy`]; the runtime overwrites it only
+    /// when [`crate::runtime::ServerConfig::policy_engine`] is `Some`.
+    pub(super) policy_engine: std::sync::Arc<dyn crate::policy::PolicyEngine>,
     /// Whether an `AttachTarget::CreateIfMissing` that fires seeds a real
     /// PTY pane. Mirrors [`crate::runtime::ServerConfig::seed_with_pty`] so
     /// the attach-time creation path matches the server's startup
@@ -126,7 +128,7 @@ impl Default for ServerConfig {
             shell: crate::terminal_actor::resolve_shell(None),
             server_socket_path: None,
             window_size: phux_config::WindowSize::default(),
-            policy_bundle: crate::policy::PolicyBundle::default(),
+            policy_engine: std::sync::Arc::new(crate::policy::PermissivePolicy::INSTANCE),
             attach_create_seeds_pty: false,
             attach_create_seed_command: None,
         }

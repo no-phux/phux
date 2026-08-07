@@ -13,7 +13,6 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet, ServerCapabilities,
     ServerFeature, ServerFeatureSet, select_bootstrap_profile,
 };
-use phux_protocol::policy::ConsumerId as PolicyConsumerId;
 use phux_protocol::wire::frame::{AgentEvent, ErrorCode, FrameKind, TERMINAL_AGENT_KEY};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
@@ -1179,9 +1178,14 @@ where
                     return Ok(());
                 };
                 let policy_ok = {
-                    let bundle = state.with(|s| s.policy_bundle().clone());
-                    let _consumer = PolicyConsumerId(client_id.0.to_string());
-                    // Build a capability list from the advertised layers.
+                    let engine = state.with(|s| s.policy_engine().clone());
+                    // Placeholder requested-capability set: HELLO carries no
+                    // capability request on the wire, so there is nothing to
+                    // derive one from yet. phux-pjc5 replaces this with the
+                    // scopes minted from the peer's paired credential, and
+                    // starts enforcing the granted set the engine returns —
+                    // which is why the return value is discarded today
+                    // (ADR-0072).
                     let requested_caps = vec![phux_protocol::policy::Capability {
                         layer: phux_protocol::caps::Layer::L1,
                         ops: vec![],
@@ -1189,7 +1193,7 @@ where
                         groups: None,
                         expires_at: None,
                     }];
-                    match bundle.engine.authorize_hello(&peer, requested_caps).await {
+                    match engine.authorize_hello(&peer, requested_caps).await {
                         Ok(_granted) => true,
                         Err(err) => {
                             warn!(?client_id, error = %err, "HELLO denied by policy");

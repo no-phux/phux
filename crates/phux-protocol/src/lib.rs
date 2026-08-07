@@ -28,7 +28,7 @@
 // The wire codec and its input atoms are libghostty-free (ADR-0024) and so
 // build for any target, including wasm browser consumers. libghostty
 // conversions for the atoms live behind the `server` feature. The policy
-// vocabulary (ALPN constants, peer-identity/audit types) is likewise on the
+// vocabulary (ALPN constants, peer identity, capabilities) is likewise on the
 // ungated shell: it is pure std/serde, and the wire crate must own the ALPN
 // bytes for consumers like `phux-dial` that deliberately stay off the
 // `server` feature.

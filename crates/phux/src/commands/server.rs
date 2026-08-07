@@ -220,7 +220,10 @@ pub(crate) fn run_server(
         term,
         shell,
         window_size,
-        policy_bundle: None,
+        // Permissive HELLO authorization (ADR-0072): the local trust model
+        // is "same OS user, kernel-enforced". phux-pjc5 installs the
+        // scope-enforcing engine here for paired/remote deployments.
+        policy_engine: None,
         hook_catalog,
         // Ephemeral lifetime (ADR-0063). Absent by default: the multiplexer
         // contract — live until the last pane is gone — is what a human
