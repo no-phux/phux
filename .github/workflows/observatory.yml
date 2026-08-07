@@ -42,7 +42,12 @@ concurrency:
 jobs:
   timings:
     name: cold build timings (${{ matrix.profile }})
-    runs-on: ubuntu-latest
+    # Same arm fleet as ci.yml. This lane keeps no cache, so the move is about
+    # comparability, not warmth: the old ubuntu-latest x64 pool is mixed, so
+    # week-over-week timings carried CPU-model noise the homogeneous Cobalt 100
+    # fleet does not. Expect one step discontinuity in DASHBOARD.md at the
+    # commit that lands this — trends before and after it are not comparable.
+    runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
@@ -103,7 +108,9 @@ jobs:
 
   deps:
     name: dependency stats
-    runs-on: ubuntu-latest
+    # Compile-free (cargo metadata), so the arch is immaterial here; matched to
+    # the rest of the fleet only so one runner label describes the whole repo.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22

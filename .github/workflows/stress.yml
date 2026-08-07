@@ -48,11 +48,18 @@ jobs:
     # schedule + workflow_dispatch always run; a pull_request fires this lane
     # only when tagged with the `stress` label.
     if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'stress' }}
-    runs-on: ubuntu-latest
+    # Matches ci.yml's check/test lanes: the homogeneous Cobalt 100 arm fleet
+    # gives one stable CPU_KEY, so this lane's rust-cache entries share warmth
+    # with what ci.yml saves on main pushes instead of scattering across the
+    # mixed x64 fleet.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
+      # Covers both cpuinfo dialects: flags/model name/vendor_id on x86,
+      # Features/CPU implementer/CPU part on aarch64 (which has none of the
+      # x86 field names — without these the arm key would hash empty input).
       - name: CPU fingerprint
-        run: echo "CPU_KEY=$(grep -E '^(flags|model name|vendor_id)' /proc/cpuinfo | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
+        run: echo "CPU_KEY=$(grep -E '^(flags|model name|vendor_id|Features|CPU implementer|CPU part)' /proc/cpuinfo | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: cachix/cachix-action@v17
         with:

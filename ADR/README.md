@@ -102,6 +102,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0067](./0067-native-engine-state-bootstrap.md) | Native engine-state bootstrap and client-owned history | Accepted (replaces native clients' synthesized-VT bootstrap under [0013](./0013-libghostty-bytes-on-wire.md) with an opaque libghostty READY/history lifecycle; compatibility clients retain synthesized VT, and one PTY retains one authoritative geometry) |
 | [0068](./0068-native-agent-session-restore.md) | Native agent-session restore | Accepted (bridges [0040](./0040-agent-identity-metadata.md), [0042](./0042-launch-executor.md), and workspace archives through bounded L3 provenance; adds no wire under [0061](./0061-capabilities-add-versions-break.md)) |
 | [0069](./0069-generated-reference-docs.md) | Generated reference docs from the compiled binary | Accepted |
+| [0071](./0071-what-phux-1-0-commits-to.md) | What phux 1.0 commits to | Proposed (freezes the consumer surface under semver while the wire keeps its own `0.x` line per [0061](./0061-capabilities-add-versions-break.md)) |
 
 ## When to write an ADR
 
