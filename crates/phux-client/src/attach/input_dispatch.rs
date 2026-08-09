@@ -20,13 +20,18 @@ use phux_protocol::wire::frame::{
 
 use super::actions::{self, ActionError, PendingSplit, PendingWindow};
 use super::connection::Connection;
-use super::driver::{AttachError, AttentionNavigation, DEFAULT_GROUP_ID, PaneSlot, layout_key};
 use super::focus::FocusHistory;
 use super::input::make_named_key;
+use super::outcome::AttachError;
 use super::paint::{SidebarReservation, content_rect};
+use super::pane_state::{
+    AttentionNavigation, PaneSlot, clear_attention_on_input, published_terminal,
+    reanchor_predict_to_pane,
+};
 use super::plugin_actions::{PluginActionEntry, PluginRunResult};
 use super::plugin_panes::{HostedPlacement, PluginPaneEntry};
 use crate::layout::{Direction, SplitDir, Workspace};
+use crate::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 use crate::predict::{Overlay, PredictionState};
 use crate::render::Theme;
 use crate::render::overlay::{
@@ -39,7 +44,7 @@ use crate::render::overlay::{
 /// list past clippy's threshold.
 pub(super) struct DispatchCtx<'a> {
     /// Connection-owned engine replicas used for terminal queries and local scrolling.
-    pub engine_kernel: &'a mut super::driver::AttachKernel,
+    pub engine_kernel: &'a mut super::pane_state::AttachKernel,
     /// Keybind resolver state. `None` when the on-disk config failed
     /// to parse; the dispatcher then forwards every key to the focused
     /// pane unchanged.
@@ -238,7 +243,7 @@ pub(super) struct DispatchCtx<'a> {
     /// phux-foz.7 / phux-p4vp: the driver's pane-cwd index + memoized
     /// branch cache. The fleet rows resolve each pane's branch through it
     /// (mut only for the memo).
-    pub vcs: &'a mut super::driver::VcsIndex,
+    pub vcs: &'a mut super::pane_state::VcsIndex,
 }
 
 /// An active divider drag (ADR-0048).
@@ -388,8 +393,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                         // clipboard via OSC 52. Client-local per ADR-0030 —
                         // no wire traffic.
                         if let Some(fid) = focused_pane.as_ref()
-                            && let Some(terminal) =
-                                super::driver::published_terminal(ctx.engine_kernel, fid)
+                            && let Some(terminal) = published_terminal(ctx.engine_kernel, fid)
                         {
                             super::copy::copy_to_host_clipboard(out, terminal, req)?;
                         }
@@ -433,8 +437,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                 match ctx.overlays.handle_mouse(&routed) {
                     OverlayOutcome::Copy(req) => {
                         if let Some(fid) = focused_pane.as_ref()
-                            && let Some(terminal) =
-                                super::driver::published_terminal(ctx.engine_kernel, fid)
+                            && let Some(terminal) = published_terminal(ctx.engine_kernel, fid)
                         {
                             super::copy::copy_to_host_clipboard(out, terminal, req)?;
                         }
@@ -794,7 +797,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                         // to the new pane, so a keystroke before the next
                         // reconcile echoes at the right place rather than
                         // the old pane's (mid-screen) coordinates (phux-7ry0).
-                        super::driver::reanchor_predict_to_pane(predict, panes, &target);
+                        reanchor_predict_to_pane(predict, panes, &target);
                         // Heavy-edge chrome moves with focus; repaint
                         // dividers + all leaves so the focused pane's
                         // surrounding edges render heavy.
@@ -818,8 +821,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                     routed.x = pane_x;
                     routed.y = pane_y;
                     if let Some(delta) = wheel_scroll_delta(&routed)
-                        && let Some(terminal) =
-                            super::driver::published_terminal(ctx.engine_kernel, &target)
+                        && let Some(terminal) = published_terminal(ctx.engine_kernel, &target)
                         && !terminal_wants_mouse_tracking(terminal)
                     {
                         // xterm "alternate scroll" (DECSET 1007, on by
@@ -878,7 +880,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                     // on the pane you pointed at, not the one you left.
                     if matches!(mouse.action, MouseAction::Press)
                         && mouse.button == MouseButton::Right
-                        && super::driver::published_terminal(ctx.engine_kernel, &target)
+                        && published_terminal(ctx.engine_kernel, &target)
                             .is_some_and(|terminal| !terminal_wants_mouse_tracking(terminal))
                     {
                         let zoomed = ctx.zoomed.as_ref() == Some(&target);
@@ -900,7 +902,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                     // their events untouched.
                     if matches!(mouse.action, MouseAction::Press)
                         && mouse.button == MouseButton::Left
-                        && super::driver::published_terminal(ctx.engine_kernel, &target)
+                        && published_terminal(ctx.engine_kernel, &target)
                             .is_some_and(|terminal| !terminal_wants_mouse_tracking(terminal))
                     {
                         let rect = focused_pane_rect(ctx, focused_pane.as_ref());
@@ -998,7 +1000,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
         if let InputEvent::Key(key_event) = &ev
             && predict.is_enabled()
             && let Some(fid) = ctx.workspace.active_window().and_then(|w| w.focus.as_ref())
-            && let Some(terminal) = super::driver::published_terminal(ctx.engine_kernel, fid)
+            && let Some(terminal) = published_terminal(ctx.engine_kernel, fid)
             && !terminal_in_alt_screen(terminal)
             && let Some(slot) = panes.get_mut(fid)
         {
@@ -1032,7 +1034,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
         // at a pane is not answering it. A real transition schedules the
         // chrome repaint via `layout_changed`.
         if matches!(ev, InputEvent::Key(_) | InputEvent::Paste(_))
-            && super::driver::clear_attention_on_input(panes, pane)
+            && clear_attention_on_input(panes, pane)
         {
             layout_changed = true;
         }
@@ -1124,7 +1126,7 @@ fn terminal_in_alt_screen(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
     .any(|mode| terminal.mode(mode).unwrap_or(false))
 }
 fn scroll_focused_pane_viewport(
-    kernel: &mut super::driver::AttachKernel,
+    kernel: &mut super::pane_state::AttachKernel,
     panes: &mut HashMap<TerminalId, PaneSlot>,
     focused_pane: Option<&TerminalId>,
     delta: isize,
@@ -1156,7 +1158,7 @@ fn scroll_focused_pane_viewport(
 /// Snap `focused_pane`'s viewport back to the live screen if a wheel /
 /// copy-mode scroll left it pinned in scrollback. Returns `true` iff the
 fn snap_scrolled_viewport(
-    kernel: &mut super::driver::AttachKernel,
+    kernel: &mut super::pane_state::AttachKernel,
     panes: &mut HashMap<TerminalId, PaneSlot>,
     focused_pane: Option<&TerminalId>,
 ) -> bool {
@@ -1505,7 +1507,7 @@ async fn apply_action_effects<W: super::RenderSink>(
         // right place rather than the old pane's (mid-screen) coordinates
         // (phux-7ry0). Subsumes the plain `clear_predict` drop below.
         if let Some(fid) = focused_pane.as_ref() {
-            super::driver::reanchor_predict_to_pane(predict, panes, fid);
+            reanchor_predict_to_pane(predict, panes, fid);
         }
     } else if effects.clear_predict {
         predict.clear();
@@ -3149,7 +3151,7 @@ mod tests {
         TerminalId::local(id)
     }
 
-    fn test_engine_kernel() -> super::super::driver::AttachKernel {
+    fn test_engine_kernel() -> super::super::pane_state::AttachKernel {
         phux_client_core::session::SessionKernel::new(
             phux_client_core::engine::ghostty::GhosttyAdapter::new(
                 phux_protocol::BootstrapLimits::default(),
@@ -3335,7 +3337,7 @@ mod tests {
         let mut mouse_optout: std::collections::HashSet<TerminalId> =
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
@@ -3839,7 +3841,7 @@ mod tests {
         let mut mouse_optout: std::collections::HashSet<TerminalId> =
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
@@ -3909,7 +3911,7 @@ mod tests {
         // A second toggle disables it again.
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
@@ -4014,7 +4016,7 @@ mod tests {
         let effects = {
             let mut reload_request = false;
             let fleet_agent_meta = HashMap::new();
-            let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+            let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
             let mut engine_kernel = test_engine_kernel();
             let mut ctx = DispatchCtx {
                 engine_kernel: &mut engine_kernel,
@@ -4182,7 +4184,7 @@ mod tests {
         let mut mouse_optout = std::collections::HashSet::new();
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
@@ -4613,7 +4615,7 @@ mod tests {
         let mut reload_request = false;
         let mut mouse_optout = std::collections::HashSet::new();
         let agent_meta = HashMap::new();
-        let mut vcs = crate::attach::driver::VcsIndex::default();
+        let mut vcs = crate::attach::pane_state::VcsIndex::default();
         let focus_history = FocusHistory::default();
         let focused = workspace.active_window().and_then(|w| w.focus.clone());
         let mut engine_kernel = test_engine_kernel();
@@ -5100,7 +5102,7 @@ mod tests {
         let mut mouse_optout: std::collections::HashSet<TerminalId> =
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
@@ -5191,7 +5193,7 @@ mod tests {
         let effects = {
             let mut reload_request = false;
             let fleet_agent_meta = HashMap::new();
-            let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+            let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
             let mut engine_kernel = test_engine_kernel();
             let mut ctx = DispatchCtx {
                 engine_kernel: &mut engine_kernel,
@@ -5370,7 +5372,7 @@ mod tests {
         let mut mouse_optout: std::collections::HashSet<TerminalId> =
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
@@ -5487,7 +5489,7 @@ mod tests {
         let mut mouse_optout: std::collections::HashSet<TerminalId> =
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
@@ -5603,14 +5605,14 @@ mod tests {
         use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
         fn visible_prefix(
-            kernel: &super::super::driver::AttachKernel,
+            kernel: &super::super::pane_state::AttachKernel,
             panes: &mut HashMap<TerminalId, PaneSlot>,
             id: &TerminalId,
             row: u16,
         ) -> String {
             let slot = panes.get_mut(id).expect("pane");
-            let terminal =
-                super::super::driver::published_terminal(kernel, id).expect("published terminal");
+            let terminal = super::super::pane_state::published_terminal(kernel, id)
+                .expect("published terminal");
             (0..6)
                 .filter_map(|col| {
                     slot.renderer
@@ -5633,7 +5635,7 @@ mod tests {
             replay.extend_from_slice(format!("line{n:02}\r\n").as_bytes());
         }
         let (mut engine_kernel, _, mut panes) =
-            super::super::driver::published_test_state(&[(&tid(1), 8, 4, &replay)]);
+            super::super::pane_state::published_test_state(&[(&tid(1), 8, 4, &replay)]);
 
         let before = visible_prefix(&engine_kernel, &mut panes, &tid(1), 0);
 
@@ -5654,7 +5656,7 @@ mod tests {
         let mut mouse_optout: std::collections::HashSet<TerminalId> =
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -5854,7 +5856,7 @@ mod tests {
             std::collections::HashSet::new();
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
@@ -6075,7 +6077,7 @@ mod tests {
             std::collections::HashSet::new();
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         {
             let mut engine_kernel = test_engine_kernel();
             let mut ctx = DispatchCtx {
@@ -6384,7 +6386,7 @@ mod tests {
             .map(|(id, bytes)| (id, 39, 24, *bytes))
             .collect();
         let (mut engine_kernel, _, mut panes) =
-            super::super::driver::published_test_state(&entries);
+            super::super::pane_state::published_test_state(&entries);
         let mut next_request_id = 1;
         let mut pending_splits = HashMap::new();
         let mut pending_windows = HashMap::new();
@@ -6398,7 +6400,7 @@ mod tests {
             seed_optout.iter().cloned().collect();
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let repainted;
         {
             let mut ctx = DispatchCtx {
@@ -6883,7 +6885,7 @@ mod tests {
         let mut drag: Option<DragGrab> = None;
         let mut reload_request = false;
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
@@ -7102,7 +7104,7 @@ mod tests {
         // shell prompt); `?1049h` puts it in a full-screen app.
         let bootstrap: &[u8] = if alt_screen { b"\x1b[?1049h" } else { b"" };
         let (mut engine_kernel, _, mut panes) =
-            super::super::driver::published_test_state(&[(&tid(1), 80, 24, bootstrap)]);
+            super::super::pane_state::published_test_state(&[(&tid(1), 80, 24, bootstrap)]);
 
         let mut next_request_id = 1;
         let mut pending_splits = HashMap::new();
@@ -7116,7 +7118,7 @@ mod tests {
         let mut mouse_optout: std::collections::HashSet<TerminalId> =
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
-        let mut fleet_vcs = crate::attach::driver::VcsIndex::default();
+        let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             // No resolver: every key forwards straight through to the pane,

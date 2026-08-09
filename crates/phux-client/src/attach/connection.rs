@@ -7,7 +7,7 @@
 //! and payload, capped at [`MAX_FRAME_LEN`].
 //!
 //! Decoding lives in [`phux_protocol::wire`] — this module owns only the
-//! byte-level reassembly. Errors funnel into [`super::driver::AttachError`].
+//! byte-level reassembly. Errors funnel into [`super::outcome::AttachError`].
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -25,7 +25,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
-use super::driver::AttachError;
+use super::outcome::AttachError;
 use super::quic;
 pub use super::quic::{CertTrust, QuicDial};
 use super::ws;

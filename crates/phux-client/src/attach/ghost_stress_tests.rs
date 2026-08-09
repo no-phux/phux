@@ -33,8 +33,8 @@ use phux_protocol::{
     BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, StreamId,
 };
 
-use super::driver::PaneSlot;
 use super::paint::{SidebarEdge, SidebarReservation, content_rect, paint_full_frame};
+use super::pane_state::PaneSlot;
 use super::server_frame::{AgentMetaIndex, handle_server_frame};
 use crate::layout::{LayoutState, WindowState, Workspace};
 use crate::predict::{Overlay, PredictionState, PredictiveConfig};
@@ -361,7 +361,7 @@ impl Rig {
         let mut expected: Vec<Vec<Option<char>>> =
             vec![vec![None; usize::from(cols)]; usize::from(rows)];
         for (id, rect) in &rects {
-            let terminal = super::driver::published_terminal(&self.kernel, id)
+            let terminal = super::pane_state::published_terminal(&self.kernel, id)
                 .expect("published pane terminal");
             let mgrid = term_grid(terminal);
             let mcols = terminal.cols().expect("mirror cols");

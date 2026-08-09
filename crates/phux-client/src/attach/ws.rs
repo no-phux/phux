@@ -10,7 +10,7 @@
 
 pub use phux_dial::ws::{Ws, WsDial, WsReader, WsTarget, WsWriter};
 
-use super::driver::AttachError;
+use super::outcome::AttachError;
 
 /// Connect to the WebSocket listener; see [`phux_dial::ws::dial`].
 pub(super) async fn dial(d: &WsDial) -> Result<Ws, AttachError> {

@@ -42,7 +42,7 @@ use phux_config::keybind::ResolvedAction;
 use phux_config::plugin::{PluginManifest, PluginPanePlacement};
 use phux_protocol::wire::frame::FrameKind;
 
-use super::driver::DEFAULT_GROUP_ID;
+use crate::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 
 /// The dispatcher action plugin pane palette rows commit.
 ///

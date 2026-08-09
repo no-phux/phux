@@ -45,6 +45,13 @@ pub fn layout_key(session: SessionId) -> String {
     format!("{LAYOUT_KEY}/{}", session.get())
 }
 
+/// Whether `key` is any session's layout key — the bare [`LAYOUT_KEY`] (legacy
+/// persisted value) or a `LAYOUT_KEY/<session>` form. Used to recognise layout
+/// `SET_METADATA` broadcasts (a client only ever receives its own session's).
+pub(crate) fn is_layout_key_string(key: &str) -> bool {
+    key == LAYOUT_KEY || key.starts_with(&format!("{LAYOUT_KEY}/"))
+}
+
 /// One pure mutation of a decoded [`Workspace`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutMutation {
@@ -474,6 +481,17 @@ mod tests {
 
     fn tid(id: u32) -> TerminalId {
         TerminalId::local(id)
+    }
+
+    #[test]
+    fn is_layout_key_string_matches_the_family_only() {
+        // Bare legacy key + any session-suffixed key are layout keys.
+        assert!(is_layout_key_string(LAYOUT_KEY));
+        assert!(is_layout_key_string("phux.tui.layout/v1/7"));
+        // A different key that merely shares the prefix-without-separator is
+        // NOT matched, and unrelated keys aren't either.
+        assert!(!is_layout_key_string("phux.tui.layout/v12"));
+        assert!(!is_layout_key_string("phux.tui.other/v1"));
     }
 
     fn split(left: u32, right: u32, dir: SplitDir, ratio: f32) -> LayoutNode {

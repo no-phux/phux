@@ -11,7 +11,7 @@
 pub use phux_dial::CertTrust;
 pub use phux_dial::quic::QuicDial;
 
-use super::driver::AttachError;
+use super::outcome::AttachError;
 
 /// Decode a `phux pair` pairing token (hex) into the raw bytes the QUIC auth
 /// preamble carries.

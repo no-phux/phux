@@ -48,7 +48,14 @@ mod ghost_stress_tests;
 pub mod input;
 pub mod input_dispatch;
 mod onboarding;
+// phux-4fbs.4: the attach exit vocabulary (`AttachError` / `AttachEnd`).
+// Declared beside the driver rather than inside it so the eleven siblings that
+// need only the error type do not form a back-edge into the lifecycle file.
+mod outcome;
 pub mod paint;
+// phux-4fbs.4: `PaneSlot` and the client-local indices built over it. Shared
+// vocabulary the driver and its siblings both read; see the module doc.
+mod pane_state;
 pub mod plugin_actions;
 pub mod plugin_panes;
 pub mod quic;
@@ -72,9 +79,10 @@ pub mod ws;
 
 pub use connection::{CertTrust, Dial, QuicDial, WsDial};
 pub use driver::{
-    AttachEnd, AttachError, run_headless_rendered, run_recorded_dial, run_with_predict_dial,
-    run_with_stdout, write_terminal_reset,
+    run_headless_rendered, run_recorded_dial, run_with_predict_dial, run_with_stdout,
+    write_terminal_reset,
 };
+pub use outcome::{AttachEnd, AttachError};
 
 // Multi-pane composition moved to `phux-client-core` with phux-0fv
 // (ADR-0020): the pure layout-tree → pane-rects + divider-cells compute is

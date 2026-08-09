@@ -21,10 +21,12 @@ use phux_protocol::wire::info::SessionInfo;
 use phux_protocol::{BootstrapId, StreamId};
 
 use super::actions::{self, PendingSplit, PendingWindow, apply_spawned_ok, apply_terminal_closed};
-use super::driver::{AttachEnd, AttachError, DEFAULT_GROUP_ID, PaneSlot};
+use super::outcome::{AttachEnd, AttachError, describe_exit};
 use super::paint::{SidebarReservation, content_rect, paint_bar_after_pane, paint_focused_pane};
+use super::pane_state::{PaneSlot, published_terminal, reanchor_predict_to_pane};
 use crate::agent_meta::{AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
 use crate::layout::{self, LayoutState, Workspace};
+use crate::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, is_layout_key_string};
 use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell};
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 
@@ -272,19 +274,6 @@ fn input_authority_notice(holder: Option<ClientId>) -> String {
     )
 }
 
-/// phux-i0e8.2.2: human phrase for a `TERMINAL_CLOSED` exit status.
-///
-/// The wire carries `Some(n)` for a plain `_exit(n)` and `None` for
-/// signal kills / unknown causes (frame.rs `TerminalClosed`). One
-/// spelling shared by the survivor notice and the last-pane exit
-/// explanation, so both surfaces read as one vocabulary.
-pub(super) fn describe_exit(exit_status: Option<i32>) -> String {
-    exit_status.map_or_else(
-        || "killed (signal or unknown)".to_owned(),
-        |code| format!("exited {code}"),
-    )
-}
-
 /// phux-i0e8.2.2: user-facing name for a pane in a status-bar notice.
 ///
 /// A local terminal reads `pane N`; a federation satellite's pane keeps
@@ -346,7 +335,7 @@ const fn history_rejection_reason(
 )]
 fn route_engine_frame(
     frame: &FrameKind,
-    kernel: &mut super::driver::AttachKernel,
+    kernel: &mut super::pane_state::AttachKernel,
     effects: &mut KernelEffectBuffer,
 ) -> KernelRoute {
     let terminals;
@@ -608,7 +597,7 @@ fn route_engine_frame(
     reason = "cohesive ordered protocol dispatcher; keeping tombstones and request errors in their semantic groups preserves routing precedence"
 )]
 pub(super) fn handle_server_frame<W: super::RenderSink>(
-    engine_kernel: &mut super::driver::AttachKernel,
+    engine_kernel: &mut super::pane_state::AttachKernel,
     kernel_effects: &mut KernelEffectBuffer,
     out: &mut W,
     frame: FrameKind,
@@ -807,12 +796,9 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
         }
         FrameKind::BootstrapReady { terminal_id, .. } => {
             frame_span.record("terminal_id", tracing::field::debug(&terminal_id));
-            let terminal = super::driver::published_terminal(engine_kernel, &terminal_id)
-                .ok_or_else(|| {
-                    AttachError::Protocol(format!(
-                        "BOOTSTRAP_READY did not publish {terminal_id:?}"
-                    ))
-                })?;
+            let terminal = published_terminal(engine_kernel, &terminal_id).ok_or_else(|| {
+                AttachError::Protocol(format!("BOOTSTRAP_READY did not publish {terminal_id:?}"))
+            })?;
             let slot = panes
                 .get_mut(&terminal_id)
                 .ok_or_else(|| AttachError::Protocol("READY without pane slot".to_owned()))?;
@@ -862,12 +848,11 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             // whether the aggregate attach barrier permits paint damage.
             // A pre-barrier OSC title must update chrome caches even though
             // its visible repaint remains suppressed until ATTACH_READY.
-            let terminal = super::driver::published_terminal(engine_kernel, &terminal_id)
-                .ok_or_else(|| {
-                    AttachError::Protocol(format!(
-                        "TERMINAL_OUTPUT targeted unpublished {terminal_id:?}"
-                    ))
-                })?;
+            let terminal = published_terminal(engine_kernel, &terminal_id).ok_or_else(|| {
+                AttachError::Protocol(format!(
+                    "TERMINAL_OUTPUT targeted unpublished {terminal_id:?}"
+                ))
+            })?;
             let bar = status_bar.as_ref().map(|p| p.position());
             let content = content_rect(viewport_dims, bar, sidebar);
             let initial_dims = workspace
@@ -1295,7 +1280,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                             // pane's first snapshot would otherwise echo at
                             // the old pane's coordinates (mid-screen ghost).
                             if let Some(fid) = focused_pane.as_ref() {
-                                super::driver::reanchor_predict_to_pane(predict, panes, fid);
+                                reanchor_predict_to_pane(predict, panes, fid);
                             }
                             Ok(FrameOutcome {
                                 layout_replaced: true,
@@ -1515,7 +1500,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
         // attention flag so the next chrome paint renders the window-tab `!`
         // marker and the status-bar `[ ASK ]` hint. The flag clears when the
         // user sends key/paste input to the pane (see
-        // `driver::clear_attention_on_input`); a repeated `Asked` while
+        // `pane_state::clear_attention_on_input`); a repeated `Asked` while
         // already flagged changes nothing, so no repaint is requested for it.
         FrameKind::Event {
             terminal: Some(terminal),
@@ -1683,8 +1668,7 @@ fn focused_session_name(snapshot: &phux_protocol::wire::info::SessionSnapshot) -
 /// client only ever receives broadcasts for the key it subscribed to (its own
 /// session), so matching the family is sufficient.
 fn is_layout_key(scope: &Scope, key: &str) -> bool {
-    matches!(scope, Scope::Group(id) if *id == DEFAULT_GROUP_ID)
-        && super::driver::is_layout_key_string(key)
+    matches!(scope, Scope::Group(id) if *id == DEFAULT_GROUP_ID) && is_layout_key_string(key)
 }
 
 /// Adopt a decoded workspace's topology without adopting its sender's focus.
@@ -1811,7 +1795,8 @@ mod tests {
     use phux_protocol::wire::frame::FrameKind;
     use phux_protocol::wire::info::{LayoutNode, SessionSnapshot, SplitDir, TerminalInfo};
 
-    use crate::attach::driver::{AttachEnd, AttachError, PaneSlot};
+    use crate::attach::outcome::{AttachEnd, AttachError};
+    use crate::attach::pane_state::PaneSlot;
     use crate::layout::{LayoutState, Workspace};
     use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 
@@ -2651,14 +2636,14 @@ mod tests {
     }
 
     struct EngineFixture {
-        kernel: super::super::driver::AttachKernel,
+        kernel: super::super::pane_state::AttachKernel,
         effects: phux_client_core::session::EffectBuffer,
     }
 
     fn published_fixture(
         entries: &[(&TerminalId, u16, u16, &[u8])],
     ) -> (EngineFixture, HashMap<TerminalId, PaneSlot>) {
-        let (kernel, effects, panes) = super::super::driver::published_test_state(entries);
+        let (kernel, effects, panes) = super::super::pane_state::published_test_state(entries);
         (EngineFixture { kernel, effects }, panes)
     }
 
@@ -2774,7 +2759,7 @@ mod tests {
         let outcome = drive_layout_frame(
             FrameKind::MetadataChanged {
                 scope: Scope::Group(super::DEFAULT_GROUP_ID),
-                key: crate::attach::driver::layout_key(SessionId::new(1)),
+                key: crate::layout_ops::layout_key(SessionId::new(1)),
                 value: Some(bytes),
             },
             None,
@@ -2808,7 +2793,7 @@ mod tests {
         let outcome = drive_layout_frame(
             FrameKind::MetadataChanged {
                 scope: Scope::Group(super::DEFAULT_GROUP_ID),
-                key: crate::attach::driver::layout_key(SessionId::new(1)),
+                key: crate::layout_ops::layout_key(SessionId::new(1)),
                 value: Some(bytes),
             },
             None,
@@ -2841,7 +2826,7 @@ mod tests {
         let outcome = drive_layout_frame(
             FrameKind::MetadataChanged {
                 scope: Scope::Group(super::DEFAULT_GROUP_ID),
-                key: crate::attach::driver::layout_key(SessionId::new(1)),
+                key: crate::layout_ops::layout_key(SessionId::new(1)),
                 value: Some(bytes),
             },
             None,
@@ -2937,7 +2922,7 @@ mod tests {
         let outcome = drive_layout_frame(
             FrameKind::MetadataChanged {
                 scope: Scope::Group(super::DEFAULT_GROUP_ID),
-                key: crate::attach::driver::layout_key(SessionId::new(1)),
+                key: crate::layout_ops::layout_key(SessionId::new(1)),
                 value: None,
             },
             None,
@@ -3098,7 +3083,7 @@ mod tests {
             (120, 30),
         );
 
-        let terminal = super::super::driver::published_terminal(&engine.kernel, &pane)
+        let terminal = super::super::pane_state::published_terminal(&engine.kernel, &pane)
             .expect("published terminal");
         assert_eq!(terminal.cols().expect("cols"), 120);
         assert_eq!(terminal.rows().expect("rows"), 30);
@@ -3722,7 +3707,7 @@ mod tests {
         );
         // The mirror is warm: reading the grapheme grid back shows the
         // bytes landed in pane 2's libghostty Terminal.
-        let terminal = super::super::driver::published_terminal(&engine.kernel, &other_pane)
+        let terminal = super::super::pane_state::published_terminal(&engine.kernel, &other_pane)
             .expect("pane 2 terminal");
         let slot = panes.get_mut(&other_pane).expect("pane 2 slot");
         let cell = slot
@@ -4642,16 +4627,6 @@ mod tests {
             expected.is_empty(),
             "the expectation must be consumed by the close it predicted",
         );
-    }
-
-    /// phux-i0e8.2.2: one wording for every exit shape, shared by the
-    /// survivor notice and the last-pane explanation.
-    #[test]
-    fn describe_exit_covers_all_shapes() {
-        assert_eq!(super::describe_exit(Some(0)), "exited 0");
-        assert_eq!(super::describe_exit(Some(137)), "exited 137");
-        assert_eq!(super::describe_exit(Some(-1)), "exited -1");
-        assert_eq!(super::describe_exit(None), "killed (signal or unknown)");
     }
 
     #[test]

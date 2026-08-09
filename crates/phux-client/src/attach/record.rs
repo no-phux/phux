@@ -50,7 +50,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use phux_record::cast::{CastHeader, CastVersion, CastWriter};
 use phux_record::error::RecordError;
 
-use super::driver::AttachError;
+use super::outcome::AttachError;
 
 /// Bytes of trailing whitespace reserved after the header line so
 /// [`SessionRecorder::finish`] can rewrite it in place with the `duration`

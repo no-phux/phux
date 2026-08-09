@@ -153,7 +153,13 @@ src/
     mod.rs            — public run(socket, target); ties everything together
     connection.rs     — UDS transport, length-prefixed frame I/O
     quic.rs, ws.rs     — remote transports over phux-dial
-    driver.rs         — tokio::select! lifecycle, RawModeGuard RAII
+    driver.rs         — tokio::select! lifecycle, RawModeGuard RAII. A
+                        one-way orchestrator: it owns no shared vocabulary,
+                        so no sibling imports from it (phux-4fbs.4, guarded
+                        by tests/attach_layering.rs)
+    outcome.rs        — AttachError / AttachEnd, the attach exit vocabulary
+    pane_state.rs     — PaneSlot, the session-kernel alias, and the
+                        client-local VCS / attention indices over them
     server_frame.rs   — decodes server frames into client-side effects
     render.rs, paint.rs, repaint.rs, reflow.rs, rendered.rs
                         — PaneRenderer: feeds TERMINAL_OUTPUT bytes into the

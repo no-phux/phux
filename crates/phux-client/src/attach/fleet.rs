@@ -58,7 +58,7 @@ use phux_protocol::TerminalId;
 use phux_protocol::ids::SessionId;
 use phux_protocol::wire::info::SessionInfo;
 
-use super::driver::{PaneSlot, VcsIndex};
+use super::pane_state::{PaneSlot, VcsIndex};
 use crate::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 use crate::layout::Workspace;
 use crate::render::overlay::SelectItem;

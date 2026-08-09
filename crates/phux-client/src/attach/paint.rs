@@ -17,23 +17,12 @@ use std::time::SystemTime;
 use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_protocol::ids::TerminalId;
 
-use super::driver::PaneSlot;
-use super::driver::{AttachKernel, published_terminal};
+use super::pane_state::{AttachKernel, PaneSlot, published_terminal};
 use crate::layout::LayoutState;
 use crate::render::chrome::status_bar::{BarInset, Position, StatusBarPainter, make_context};
 
 const SYNC_OUTPUT_BEGIN: &[u8] = b"\x1b[?2026h";
 const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
-
-/// Fallback per-cell pixel size for client-side libghostty mirrors.
-///
-/// The server-side actor uses the same conventional 8x16 default until a real
-/// viewport pixel report arrives. The client mirror also needs nonzero cell
-/// pixels: classic Kitty placements without explicit `c/r` dimensions infer
-/// their grid footprint from pixel geometry, and a zero value makes the first
-/// live render skip the placement until a later snapshot supplies `c/r`.
-#[cfg(test)]
-pub(super) const FALLBACK_CELL_PX: (u32, u32) = (8, 16);
 
 /// The server-authoritative mirror grid `(cols, rows)` used to letterbox a
 /// pane within its render rect (phux-7ubw).
@@ -978,7 +967,7 @@ mod tests {
         assert_eq!(String::from_utf8(out).unwrap(), "\x1b[1;1H\x1b[?25l");
     }
 
-    use crate::attach::driver::PaneSlot;
+    use crate::attach::pane_state::PaneSlot;
     use phux_config::widget::WidgetRegistry;
     use phux_config::{StatusCfg, Widget};
     use phux_protocol::wire::info::{LayoutNode, SplitDir};

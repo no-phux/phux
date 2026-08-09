@@ -30,8 +30,8 @@ use phux_protocol::ids::TerminalId;
 use ratatui::buffer::{Buffer, Cell as RatatuiCell, CellDiffOption};
 use ratatui::style::{Color, Modifier};
 
-use super::driver::PaneSlot;
 use super::paint::{SidebarReservation, bar_inset, content_rect, sidebar_rect};
+use super::pane_state::PaneSlot;
 use crate::layout::LayoutState;
 use crate::render::chrome::dividers::compose_buffer as compose_divider_buffer;
 use crate::render::chrome::sidebar::SidebarPainter;
@@ -51,7 +51,7 @@ use crate::render::chrome::status_bar::{StatusBarPainter, make_context};
 pub(super) fn compose_full_frame_cells(
     layout_state: &LayoutState,
     panes: &mut HashMap<TerminalId, PaneSlot>,
-    kernel: &super::driver::AttachKernel,
+    kernel: &super::pane_state::AttachKernel,
     focused_pane: Option<&TerminalId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&StatusBarPainter>,
@@ -79,7 +79,7 @@ pub(super) fn compose_full_frame_cells(
         let Some(slot) = panes.get_mut(id) else {
             continue;
         };
-        let Some(terminal) = super::driver::published_terminal(kernel, id) else {
+        let Some(terminal) = super::pane_state::published_terminal(kernel, id) else {
             continue;
         };
         // A render error on one pane shouldn't sink the whole introspection
@@ -221,11 +221,13 @@ mod tests {
     use super::*;
     use std::time::UNIX_EPOCH;
 
-    use crate::attach::driver::PaneSlot;
+    use crate::attach::pane_state::PaneSlot;
     use crate::layout::{LayoutState, WindowState, Workspace};
     use crate::render::chrome::status_bar::{Position, StatusBarPainter};
     use phux_protocol::wire::info::{LayoutNode, SplitDir};
-    fn published_kernel(entries: &[(&TerminalId, &[u8])]) -> super::super::driver::AttachKernel {
+    fn published_kernel(
+        entries: &[(&TerminalId, &[u8])],
+    ) -> super::super::pane_state::AttachKernel {
         use phux_client_core::session::{
             EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel,
         };
