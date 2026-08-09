@@ -129,7 +129,7 @@ The `unsafe` is real, and confining it to its own crate is the point: it is
 raw pointer work and `sigaction` FFI that cannot be expressed in safe Rust,
 and putting it behind a crate boundary lets `phux-client` keep
 `#![forbid(unsafe_code)]` unchanged. This is the same shape as
-`portable-pty-adopt` ([ADR-0032](./0032-graceful-in-place-upgrade.md)):
+`portable-pty-adopt` ([ADR-0032](./0032-graceful-server-upgrade.md)):
 narrow, dependency-clean, `unsafe` where it must be, isolated from everything
 else.
 
