@@ -970,7 +970,9 @@ impl ServerRuntime {
                 // Opt-in via `phux server --listen <ADDR>` or the `PHUX_WS_ADDR`
                 // environment variable (e.g. "127.0.0.1:8787"); UDS is always
                 // on. The flag wins when both are set.
-                let ws_addr = ws_addr_override.or_else(|| env_socket_addr("PHUX_WS_ADDR"));
+                let ws_addr = ws_addr_override
+                    .or_else(|| env_socket_addr("PHUX_WS_ADDR"))
+                    .or_else(|| auto_overlay_addr(DEFAULT_WS_PORT));
                 let ws_listener = match ws_addr {
                     Some(addr) => build_ws_listener(addr).await,
                     None => None,
@@ -978,7 +980,9 @@ impl ServerRuntime {
                 // Optionally also accept QUIC connections (phux-y8v6, ADR-0007).
                 // Opt-in via `phux server --quic <ADDR>` or `PHUX_QUIC_ADDR`;
                 // QUIC carries the identical frames over a TLS 1.3 stream.
-                let quic_addr = quic_addr_override.or_else(|| env_socket_addr("PHUX_QUIC_ADDR"));
+                let quic_addr = quic_addr_override
+                    .or_else(|| env_socket_addr("PHUX_QUIC_ADDR"))
+                    .or_else(|| auto_overlay_addr(DEFAULT_QUIC_PORT));
                 let quic_listener = quic_addr.and_then(build_quic_listener);
                 // Optionally also accept WebTransport connections (phux-0wmf):
                 // HTTP/3 over QUIC, the browser's QUIC-class door (`phux-web`
@@ -1059,6 +1063,73 @@ impl ServerRuntime {
 
         result
     }
+}
+
+/// Default WebSocket port for the auto-configured overlay listener.
+pub const DEFAULT_WS_PORT: u16 = 8787;
+
+/// Default QUIC port for the auto-configured overlay listener.
+pub const DEFAULT_QUIC_PORT: u16 = 8788;
+
+/// Environment escape hatch disabling the overlay auto-listen entirely.
+const DISABLE_AUTO_LISTEN_ENV: &str = "PHUX_NO_AUTO_LISTEN";
+
+/// The address to auto-bind a remote listener on, when nothing was
+/// configured explicitly (phux-onbd).
+///
+/// Pairing a phone used to mean *reconfiguring and restarting* the server,
+/// because the listener only existed if the operator had set `PHUX_WS_ADDR`
+/// before startup. That is the wrong shape: a restart costs the running
+/// sessions, which are exactly what the user wanted on their phone. Binding
+/// the listener up front makes `phux pair` a pure credential operation — the
+/// door is already there; pairing turns the lock.
+///
+/// **Why this is safe to default on.** The listener is:
+///
+/// * bound to a detected *overlay* address (Tailscale/WireGuard, ADR-0037) —
+///   never `0.0.0.0`, so it is not exposed to whatever untrusted LAN the
+///   machine is on, and it does not exist at all on a host with no overlay;
+/// * TLS-only, with the auto-provisioned certificate whose fingerprint
+///   `phux pair` prints;
+/// * gated on the pairing-token store, which **rejects every connection
+///   while it is empty** (`auth::TokenStore::load` on a missing file yields
+///   an empty store; see `missing_file_is_empty_store_that_rejects_all`).
+///
+/// So before anyone runs `phux pair` this is a TLS port on an already
+/// authenticated network that authenticates nobody. `PHUX_NO_AUTO_LISTEN=1`
+/// turns it off for operators who want no unsolicited bind at all.
+fn auto_overlay_addr(port: u16) -> Option<SocketAddr> {
+    auto_overlay_addr_from(
+        std::env::var_os(DISABLE_AUTO_LISTEN_ENV).is_some(),
+        phux_config::instance::is_default_profile(),
+        // Best-effort by construction (ADR-0037): an empty result means no
+        // overlay, which means no listener, which is the correct outcome.
+        &phux_config::overlay::detect(),
+        port,
+    )
+}
+
+/// [`auto_overlay_addr`] with every input injected, so the gating matrix is
+/// testable without a tailnet, a profile, or process-global env mutation.
+fn auto_overlay_addr_from(
+    disabled: bool,
+    default_profile: bool,
+    overlay: &[std::net::IpAddr],
+    port: u16,
+) -> Option<SocketAddr> {
+    if disabled {
+        return None;
+    }
+    // Only the default profile auto-binds. Profile isolation (ADR-0080)
+    // scopes the *socket* per instance, but a TCP/UDP port is global to the
+    // host — so a development server would race the installed one for 8787
+    // and one of them would lose, at random, on every start. A dev build has
+    // no business serving anyone's phone either way; an explicit
+    // `--listen`/`--quic` still works for testing the remote path.
+    if !default_profile {
+        return None;
+    }
+    overlay.first().map(|addr| SocketAddr::new(*addr, port))
 }
 
 /// The `(device, inode)` of the entry at `path`, if it exists.
@@ -1392,6 +1463,52 @@ mod tests {
     use phux_protocol::caps::ClientCapabilities;
     use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
     use tokio::task::JoinSet;
+
+    /// phux-onbd: with an overlay present, the default profile binds it —
+    /// this is what lets `phux pair` be a pure credential operation instead
+    /// of a server reconfigure-and-restart.
+    #[test]
+    fn the_default_profile_auto_binds_the_overlay_address() {
+        let overlay = [std::net::IpAddr::from([100, 79, 155, 27])];
+        assert_eq!(
+            auto_overlay_addr_from(false, true, &overlay, DEFAULT_WS_PORT),
+            Some(SocketAddr::from(([100, 79, 155, 27], DEFAULT_WS_PORT))),
+            "the listener must bind the overlay address, never 0.0.0.0",
+        );
+    }
+
+    /// A host with no overlay gets no unsolicited listener at all.
+    #[test]
+    fn no_overlay_means_no_listener() {
+        assert_eq!(
+            auto_overlay_addr_from(false, true, &[], DEFAULT_WS_PORT),
+            None,
+            "without an overlay there is no address safe to bind unasked",
+        );
+    }
+
+    /// A TCP port is global to the host, so profile isolation (ADR-0080)
+    /// does NOT extend to it: two servers auto-binding 8787 would race, and
+    /// the loser would be whichever started second.
+    #[test]
+    fn a_non_default_profile_never_auto_binds() {
+        let overlay = [std::net::IpAddr::from([100, 79, 155, 27])];
+        assert_eq!(
+            auto_overlay_addr_from(false, false, &overlay, DEFAULT_WS_PORT),
+            None,
+            "a dev-profile server must not contend for the installed server's port",
+        );
+    }
+
+    /// The operator escape hatch wins over everything.
+    #[test]
+    fn the_disable_switch_suppresses_the_auto_listener() {
+        let overlay = [std::net::IpAddr::from([100, 79, 155, 27])];
+        assert_eq!(
+            auto_overlay_addr_from(true, true, &overlay, DEFAULT_WS_PORT),
+            None
+        );
+    }
 
     /// phux-zomb.3: a server that still owns the path cleans up after itself.
     #[test]

@@ -600,15 +600,31 @@ phux is **overlay-agnostic** — pick what fits your trust model:
 For step-by-step Tailscale, Headscale, and raw WireGuard walkthroughs, see
 [Remote access](./remote-access.md).
 
+With an overlay present, the whole flow is one command
+([ADR-0081](../ADR/0081-overlay-auto-listen-and-one-command-pairing.md)):
+
 ```sh
-# Before starting the server:
-phux pair                            # token + fingerprint, plus the detected overlay address
+phux pair        # mints a token and prints a complete one-tap link; add --qr to scan it
+```
 
-# Server, reachable on its overlay address:
-phux server --listen 0.0.0.0:8787   # binds all interfaces, including the overlay
+Nothing restarts, and running sessions are untouched — the server already
+bound a TLS listener on its overlay address at startup, and pairing only
+adds the credential that lets a device through it. Until you pair, the
+token store is empty and the listener rejects every connection.
 
-# Client, from anywhere on the overlay:
-phux attach --ws wss://<overlay-host>:8787 --token HEX --cert-fingerprint FP
+The listener binds the **detected overlay address**, not `0.0.0.0`, so it is
+invisible off your tailnet. `PHUX_NO_AUTO_LISTEN=1` suppresses it entirely;
+`--listen` / `--quic` (or `PHUX_WS_ADDR` / `PHUX_QUIC_ADDR`) still override
+the address explicitly. Only the default profile auto-binds — a port is
+global to the host, so a `dev`-profile server would otherwise race the
+installed one (see [ADR-0080](./../ADR/0080-socket-lifecycle-and-instance-isolation.md)).
+
+The explicit form, for a host with no detectable overlay:
+
+```sh
+phux pair --host <addr>:8787         # token + fingerprint + link for an address you name
+phux server --listen <addr>:8787     # bind a specific address
+phux attach --ws wss://<addr>:8787 --token HEX --cert-fingerprint FP
 ```
 
 Overlay-address detection in `phux pair` is best-effort (the `tailscale` CLI

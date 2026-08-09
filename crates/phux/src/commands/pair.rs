@@ -193,7 +193,7 @@ pub(crate) fn run_pair(
     // Best-effort (ADR-0037): `detect` is infallible by construction — it
     // returns an empty vec when nothing is detected — so this block can
     // never affect the exit code.
-    let overlay = super::overlay::detect();
+    let overlay = phux_config::overlay::detect();
     if !json && !overlay.is_empty() {
         outln!("Overlay network addresses (dial one of these from the device):");
         for addr in &overlay {
@@ -204,7 +204,15 @@ pub(crate) fn run_pair(
 
     // The one-tap link (and its QR form) carries the token — it is as much
     // a secret as the token line above, shown once on the same terminal.
-    let ws_addr = std::env::var("PHUX_WS_ADDR").ok();
+    //
+    // phux-onbd: fall back to the port the server auto-binds on the overlay
+    // address when `PHUX_WS_ADDR` is unset. Without this, pairing on an
+    // otherwise perfectly working host printed "--qr needs a server address"
+    // and left the user to discover a port number and pass `--host` by hand —
+    // while the server was already listening on exactly that address.
+    let ws_addr = std::env::var("PHUX_WS_ADDR").ok().or_else(|| {
+        (!overlay.is_empty()).then(|| format!(":{}", phux_server::runtime::DEFAULT_WS_PORT))
+    });
     let link = resolve_server_url(host.as_deref(), &overlay, ws_addr.as_deref())
         .map(|url| build_connect_link(&url, name.as_deref(), fingerprint.as_deref(), &token));
 

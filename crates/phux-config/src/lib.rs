@@ -21,6 +21,7 @@ mod error;
 pub mod instance; // phux-zomb.2 (profile-scoped runtime/state: dev never touches production)
 pub mod integration; // phux-ark7 (ADR-0042): agent integration templates + launch
 mod layer;
+pub mod overlay; // ADR-0037 (overlay detection: shared by `pair` and the server's auto-listen)
 pub mod plugin;
 pub mod remote;
 pub mod satellite;

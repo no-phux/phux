@@ -1,4 +1,4 @@
-//! Best-effort overlay-network address detection for `phux pair` (ADR-0037).
+//! Best-effort overlay-network address detection (ADR-0037).
 //!
 //! `phux pair` prints credentials but no address, leaving the operator to
 //! hunt down the host's overlay IP by hand. This module closes that gap:
@@ -22,7 +22,7 @@ use std::net::IpAddr;
 ///
 /// Returns an empty vec when nothing is detected — callers print nothing
 /// and detection can never affect an exit code.
-pub(crate) fn detect() -> Vec<IpAddr> {
+pub fn detect() -> Vec<IpAddr> {
     detect_with(tailscale_ip_output, cgnat_route_probe)
 }
 

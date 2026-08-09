@@ -155,7 +155,6 @@ pub(crate) mod launch;
 pub(crate) mod logs;
 pub(crate) mod ls;
 pub(crate) mod new;
-pub(crate) mod overlay;
 pub(crate) mod pair;
 pub(crate) mod partial;
 pub(crate) mod paste;
