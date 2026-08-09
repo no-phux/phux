@@ -243,6 +243,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Relay { .. } => Some("relay"),
         Command::Pair { .. } => Some("pair"),
         Command::Completion { .. } => Some("completion"),
+        Command::Skill {} => Some("skill"),
         Command::Logs { .. } => Some("logs"),
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
         _ => None,
@@ -1049,13 +1050,52 @@ pub(crate) enum Command {
     /// object (stdout stays pure JSON); otherwise each line is a compact
     /// human form.
     ///
+    /// `--until EVENT` and `--timeout SECS` bound the stream, so a script
+    /// need not background the watch and kill it on a sleep.
+    ///
     ///   phux watch build
     ///   phux watch --json work:1.0
-    #[command(about = "Stream a pane's live events (bell, title, dirty/idle, lifecycle)")]
+    ///   phux watch --until asked --timeout 120 reviewer
+    // `long_about` because clap reflows doc-comment paragraphs and the exit
+    // codes need to survive as their own lines.
+    #[command(
+        about = "Stream a pane's live events (bell, title, dirty/idle, lifecycle)",
+        long_about = "Stream a pane's live events (the push half of the agent surface).\n\n\
+            Subscribes to the server's event stream and prints one event per line. The \
+            subscription neither attaches nor resizes the pane — safe to watch a pane a human \
+            or another agent is actively using. TARGET is a selector (see the top-level help); \
+            omit it for the most-recently-focused session.\n\n\
+            With no bounds the stream runs until EOF or Ctrl-C. `--until EVENT` makes it a \
+            gate: the first matching event is printed and `watch` exits 0. `--timeout SECS` \
+            gives up and exits 124, the same code `phux wait` uses. If the server closes the \
+            stream before an `--until` event arrives, that is exit 1 — the event did not \
+            happen and can no longer happen.\n\n\
+            With `--json` each line is one JSON object and nothing else is written to stdout: \
+            no per-line schema_version, and no summary line on timeout.\n\n\
+            Examples:\n  \
+            phux watch build\n  \
+            phux watch --json work:1.0\n  \
+            phux watch --until asked --timeout 120 reviewer"
+    )]
     Watch {
         /// Target selector. Omit for the most-recently-focused session.
         #[arg(value_name = "TARGET")]
         session: Option<String>,
+
+        /// Exit 0 as soon as an event with this name arrives. Repeatable;
+        /// any one of them satisfies the watch. The vocabulary is the one
+        /// this stream prints: `agent_state`, `asked`, `bell`,
+        /// `command_finished`, `command_started`, `dirty`, `idle`,
+        /// `pane_closed`, `pane_spawned`, `title_changed`, `unknown`. An
+        /// unrecognized name is a usage error (exit 2) reported before the
+        /// watch starts, never a watch that quietly never matches.
+        #[arg(long, value_name = "EVENT")]
+        until: Vec<String>,
+
+        /// Give up after this many seconds (exit 124). Applies with or
+        /// without `--until`. Default: stream until EOF or Ctrl-C.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
 
         #[command(flatten)]
         json: JsonOpt,
@@ -1471,6 +1511,28 @@ pub(crate) enum Command {
         shell: clap_complete::Shell,
     },
 
+    /// Print the agent skill this binary ships with, on stdout.
+    // `long_about` spelled out for the same reason `completion` spells one
+    // out: clap reflows doc-comment paragraphs, and the install one-liners
+    // need real newlines or they run together and do copy-paste damage.
+    #[command(
+        about = "Print the agent skill this binary ships with, on stdout",
+        long_about = "Print the agent skill this binary ships with, on stdout.\n\n\
+            The text is compiled into the executable, so it describes the verbs \
+            and flags THIS build actually has — it cannot drift from the binary \
+            the way a copied file can. It contacts no server and reads no \
+            config.\n\n\
+            Give it to any agent that needs to drive phux: it teaches the \
+            read-act-wait loop, the selector grammar, the difference between a \
+            level read and an observed transition, the exit codes, and the \
+            safety rules for driving a terminal a human may also be using.\n\n\
+            Examples:\n  \
+            phux skill\n  \
+            phux skill > ~/.claude/skills/phux/SKILL.md\n  \
+            phux skill | pbcopy"
+    )]
+    Skill {},
+
     /// Diagnose a phux install: config, socket, server, plugins.
     ///
     /// Composes the checks that already exist as separate verbs and reports
@@ -1664,6 +1726,14 @@ pub(crate) enum WorktreeAction {
         #[arg(long)]
         attach: bool,
 
+        /// Emit a stable JSON document — branch, path, session, and the seed
+        /// pane's `terminal_id` — instead of human text. This is the first
+        /// call in a fan-out script, and the id it returns is the pane the
+        /// caller then sends its first prompt to. Cannot combine with
+        /// `--attach`: an attached session owns stdout.
+        #[arg(long, conflicts_with = "attach")]
+        json: bool,
+
         /// Command to run in the new session instead of the default shell.
         #[arg(last = true)]
         command: Vec<String>,
@@ -1684,6 +1754,12 @@ pub(crate) enum WorktreeAction {
         /// Attach to the session instead of only reporting its name.
         #[arg(long)]
         attach: bool,
+
+        /// Emit the same document `worktree new --json` emits, whether the
+        /// session was created now or was already live — so a script that
+        /// re-enters a fleet gets the seed pane without special-casing.
+        #[arg(long, conflicts_with = "attach")]
+        json: bool,
     },
 
     /// Remove a worktree, killing the session bound to it first.
@@ -1703,6 +1779,11 @@ pub(crate) enum WorktreeAction {
         /// Path inside the repository the worktree belongs to.
         #[arg(long, default_value = ".", value_name = "PATH")]
         repo: std::path::PathBuf,
+
+        /// Emit a stable JSON document instead of human text. A fan-out
+        /// teardown script has the same parsing problem creation does.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -2348,6 +2429,14 @@ mod tests {
                 id: 42,
             },
         );
+        // ADR-0075: `%name` addresses one agent by the name its
+        // `phux.agent/v1` record carries. Singular by construction — it
+        // resolves through `phux_client::selector::resolve_agent`, never
+        // through `resolve_targets` + `pick_target_pane`.
+        assert_eq!(
+            parse_selector(Some("%build")).unwrap(),
+            Selector::Agent("build".to_owned()),
+        );
     }
 
     /// Malformed targets fail at parse time with the CLI failure code,
@@ -2367,6 +2456,18 @@ mod tests {
         assert_eq!(
             parse_selector(Some("ghost")).unwrap(),
             Selector::Session("ghost".to_owned()),
+        );
+        // ADR-0075 point 4: the addressable agent grammar is
+        // `^[a-z][a-z0-9_-]{0,31}$`, checked here so a typo costs no round
+        // trip. A bare `%` is a parse error, as a bare `#` is.
+        assert!(parse_selector(Some("%")).is_err());
+        assert!(parse_selector(Some("%Build")).is_err());
+        assert!(parse_selector(Some("%my agent")).is_err());
+        // But an addressable name that no pane currently carries is NOT a
+        // parse error — it refuses later, as a selector miss.
+        assert_eq!(
+            parse_selector(Some("%ghost")).unwrap(),
+            Selector::Agent("ghost".to_owned()),
         );
     }
 }

@@ -1,6 +1,6 @@
 //! Test-only guards on the generated CLI help.
 //!
-//! Three properties are pinned here so they fail CI on drift:
+//! Four properties are pinned here so they fail CI on drift:
 //!
 //! 1. The full command inventory (every `phux …` invocation path) matches a
 //!    checked-in snapshot, so a newly-wired or removed subcommand forces this
@@ -12,6 +12,14 @@
 //!    docs, never in `--help` — an installed binary's user has no checkout.
 //! 3. The verbs that carry worked examples render them one per line
 //!    (`EXAMPLE_BLOCKS`), and the root help documents EXIT STATUS.
+//! 4. The compiled agent skill (`crate::SKILL`, printed by `phux skill`)
+//!    mentions every visible top-level verb, every `phux agent` subcommand,
+//!    and every selector sigil the parser accepts. That is the anti-drift
+//!    gate the skill exists for: it is compiled in so it cannot lag the
+//!    binary, and these tests are what make "it mentions the surface" true
+//!    by CI rather than by memory. The skill had already drifted before it
+//!    was compiled in — `agent wait` and `agent send-keys` shipped and the
+//!    example copy never learned they existed.
 
 use clap::CommandFactory;
 
@@ -86,13 +94,16 @@ fn ticket_like_tokens(help: &str) -> Vec<String> {
 const EXPECTED_INVENTORY: &str = "\
 phux
 phux agent
+phux agent answer
 phux agent clear
 phux agent explain
 phux agent install-claude
 phux agent list
+phux agent prompt
 phux agent send-keys
 phux agent set
 phux agent show
+phux agent start
 phux agent uninstall-claude
 phux agent wait
 phux ask
@@ -151,6 +162,7 @@ phux service prune-logs
 phux service status
 phux service uninstall
 phux signal
+phux skill
 phux snapshot
 phux spawn
 phux status
@@ -416,4 +428,183 @@ fn root_help_documents_exit_status() {
             "root --help's EXIT STATUS no longer documents {code}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The compiled agent skill vs the surface it describes
+//
+// `crate::SKILL` is `include_str!`d, so it always belongs to this build — but
+// "compiled in" only guarantees it ships together with the binary, not that it
+// still says true things about it. These three tests are the part that catches
+// drift, on the same principle as
+// `refdocs::tests::generated_reference_docs_match_the_tree`: derive the
+// expectation from the clap tree and the selector parser rather than from a
+// second checked-in list.
+// ---------------------------------------------------------------------------
+
+/// The remedy every skill-drift failure names. One string so the three tests
+/// cannot teach three different fixes.
+const SKILL_REMEDY: &str = "document it in skills/phux/SKILL.md (the file \
+     `phux skill` prints, compiled into the binary by include_str!)";
+
+/// Every visible top-level verb is named in the compiled skill.
+///
+/// The skill is the agent-to-agent UX: it is what another agent reads to learn
+/// what this CLI can do. A verb the skill never mentions is a verb no agent
+/// will ever call, which is how `take`, `give`, `signal`, `rec`, `play`, and
+/// `worktree` stayed invisible for releases at a time. Hidden verbs
+/// (`gen-reference-docs`, `stdio-bridge`) are machine plumbing and are
+/// deliberately excluded, exactly as they are from the curated `--help`.
+#[test]
+fn skill_names_every_visible_top_level_verb() {
+    for sub in Cli::command().get_subcommands() {
+        let name = sub.get_name();
+        if name == "help" || sub.is_hide_set() {
+            continue;
+        }
+        let needle = format!("phux {name}");
+        assert!(
+            crate::SKILL.contains(&needle),
+            "the compiled agent skill never mentions `{needle}`; {SKILL_REMEDY}"
+        );
+    }
+}
+
+/// Every visible `phux agent` subcommand is named in the compiled skill.
+///
+/// The `agent` namespace is the skill's whole subject, so this is where drift
+/// costs the most: `agent wait` and `agent send-keys` both shipped while the
+/// hand-maintained example skill still described a surface without them.
+#[test]
+fn skill_names_every_agent_subcommand() {
+    let root = Cli::command();
+    let agent = root
+        .get_subcommands()
+        .find(|sub| sub.get_name() == "agent")
+        .expect("no `agent` subcommand in the tree");
+    for sub in agent.get_subcommands() {
+        let name = sub.get_name();
+        if name == "help" || sub.is_hide_set() {
+            continue;
+        }
+        let needle = format!("agent {name}");
+        assert!(
+            crate::SKILL.contains(&needle),
+            "the compiled agent skill never mentions `phux {needle}`; {SKILL_REMEDY}"
+        );
+    }
+}
+
+/// The token the skill must use to teach the selector form `selector` is.
+///
+/// Deliberately an exhaustive match with **no wildcard arm**: adding a variant
+/// to `Selector` (a new sigil) fails to compile here, which is the point — a
+/// grammar the skill does not teach is a grammar an agent cannot type. Keep
+/// the tokens as they appear in the skill's selector table.
+fn taught_selector_token(selector: &crate::selector::Selector) -> &'static str {
+    use crate::selector::Selector;
+
+    match selector {
+        Selector::Current => "`.`",
+        Selector::Session(_) => "`name`",
+        Selector::Window(..) => "`name:W`",
+        Selector::Pane(..) => "`name:W.P`",
+        Selector::TerminalId(_) => "@N",
+        Selector::SatelliteTerminalId { .. } => "host/@N",
+        Selector::Tag(_) => "#tag",
+        Selector::Agent(_) => "%name",
+    }
+}
+
+/// Every selector form the parser accepts is taught in the compiled skill,
+/// and the one form it deliberately refuses is explained rather than omitted.
+///
+/// The probes go through the real parser, so a sigil that is added to the
+/// grammar starts failing this test the moment it parses — no second list to
+/// keep in step. `=` parses to an error on purpose (it means the attached
+/// TUI's focus history, which a headless caller does not have); an agent that
+/// meets that refusal with no explanation retries it, so the skill must name
+/// it too.
+#[test]
+fn skill_teaches_every_selector_sigil_the_parser_accepts() {
+    for probe in [
+        "@7",
+        "edge/@7",
+        ".",
+        "work",
+        "work:1",
+        "work:1.0",
+        "#build",
+        "%reviewer",
+    ] {
+        let Ok(selector) = crate::selector::parse(probe) else {
+            continue;
+        };
+        let token = taught_selector_token(&selector);
+        assert!(
+            crate::SKILL.contains(token),
+            "the parser accepts the selector `{probe}` but the compiled agent \
+             skill never teaches {token}; {SKILL_REMEDY}"
+        );
+    }
+
+    assert!(
+        crate::selector::parse("=").is_err(),
+        "`=` is refused for headless callers; if that changed, teach it"
+    );
+    assert!(
+        crate::SKILL.contains("`=`"),
+        "the compiled agent skill must explain why `=` is refused; {SKILL_REMEDY}"
+    );
+}
+
+/// The load-bearing rules the skill exists to carry, pinned by name.
+///
+/// Each of these is a sentence an orchestrating agent gets wrong without it,
+/// and each was a named gap before the skill was compiled in:
+/// the am-I-inside-phux check (phux injects both variables into every pane it
+/// spawns, and the skill never said so, so an agent could not avoid prompting
+/// itself); the level-versus-edge distinction (a level read of `idle` is
+/// equally true of a crashed pane, so a completion gate MUST require an
+/// observed transition); and the two timeout codes, which mean different
+/// things and are routinely conflated.
+#[test]
+fn skill_teaches_the_load_bearing_rules() {
+    for needle in [
+        "PHUX_TERMINAL_ID",
+        "PHUX_SOCKET",
+        "observed transition",
+        "level read",
+        "124",
+        "125",
+    ] {
+        assert!(
+            crate::SKILL.contains(needle),
+            "the compiled agent skill no longer teaches {needle:?}; it is one \
+             of the rules the skill exists to carry"
+        );
+    }
+}
+
+/// The skill is read by agents driving an INSTALLED binary, so it may not
+/// cite anything only a checkout has — the same rule `help_leaks_no_internal_ids`
+/// applies to `--help`. Repo paths, ADR numbers, and bead ids all belong in
+/// the source and the docs tree, not in the text a stranger's `phux skill`
+/// prints.
+#[test]
+fn skill_cites_nothing_only_a_checkout_has() {
+    assert!(
+        !crate::SKILL.contains("ADR-"),
+        "the compiled agent skill cites an ADR; its reader has no checkout"
+    );
+    assert!(
+        !crate::SKILL.contains("docs/"),
+        "the compiled agent skill cites a repo-internal docs/ path; point at \
+         `phux help <verb>` instead"
+    );
+    let leaks = ticket_like_tokens(crate::SKILL);
+    assert!(
+        leaks.is_empty(),
+        "the compiled agent skill leaks internal ticket id(s): {leaks:?}"
+    );
 }

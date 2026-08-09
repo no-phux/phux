@@ -41,6 +41,15 @@
 //! lands there. A subscriber must never observe one record whose `kind` and
 //! `state` come from two different processes, not even for a tick.
 //!
+//! I2 is what forces [`explicit_kind_is_contradicted`]. I1 reasserts a `kind`
+//! the DETECTOR authored, which repairs the occupant-change case on its own —
+//! but only where the detector owns the `kind`. Where an explicit writer owns
+//! it, `docs/spec/L3.md` §3.7 requires the server to preserve it, so the
+//! reassertion cannot run and a derived `state` would land beside a `kind`
+//! describing a process that is gone. The server may not correct that `kind`;
+//! what it can do, and what §3.7's withdrawal bullet names in as many words,
+//! is decline to assert a state about it. See that function for the rule.
+//!
 //! The declaration cannot be inferred from the stored bytes. The client's
 //! `AgentMetaState` decodes an absent or unrecognized `state` to `Unknown`,
 //! so `unknown` and "absent" are indistinguishable on the way back out — and
@@ -305,6 +314,76 @@ pub(crate) fn compose(
     record.encode()
 }
 
+/// Whether the detector has positive evidence that the `kind` an explicit
+/// writer stored describes a process that is NOT in the pane (phux-w7z2.45).
+///
+/// # The interaction this exists for
+///
+/// The Claude hook shim declares `--name claude --kind claude`, so a shim pane
+/// is `explicit_kind` for its whole life. On a `claude` -> `codex` handover in
+/// that pane the record therefore keeps `kind: claude` — `docs/spec/L3.md` §3.7
+/// requires a server to preserve the `kind` of an identity-only declaration —
+/// and then takes codex's DERIVED state beside it. Nothing looks stale: the
+/// state is fresh, the name is present, the kind is a lie. That is precisely
+/// the failure phux-w7z2.27 was filed to fix, surviving on the largest
+/// population of panes, and it is why I1's reassertion is not enough on its own.
+///
+/// # What the server is allowed to do about it
+///
+/// Not correct the `kind`: §3.7 lists it on two MUST-preserve lists and the
+/// server does not get to overrule an explicit writer's field. What §3.7 does
+/// permit, in the withdrawal bullet, is to set `state` to `"unknown"` "when it
+/// has positive evidence that the declared occupant of the pane is gone: for
+/// example, the PTY's foreground process group ... resolves to a different
+/// one" — our exact evidence, named in the spec's own example. So the server
+/// keeps every field the writer owns and stops asserting a state it cannot
+/// attribute honestly. Losing information only in the honest direction.
+///
+/// The landing shape (`kind` present, `state: unknown`) is the WITHDRAWN shape
+/// ADR-0075 point 6's `%name` write gate already refuses, so a fleet driver
+/// declines to deliver input into the pane rather than delivering it to the
+/// wrong agent. That is the outcome .27 was protecting.
+///
+/// # Why "contradicted" and not merely "different"
+///
+/// `phux agent set --name reviewer --kind my-agent` on a pane running claude
+/// is the documented useful half of the feature, and its `kind` differs from
+/// the detector's on every single tick. An open-vocabulary slug the detector
+/// has no manifest for asserts nothing the detector can check, so it cannot be
+/// contradicted and the detector keeps filling `state` in as before. Only a
+/// `kind` the detector could ITSELF have produced — one with a loaded manifest
+/// — is falsifiable, and only then by a different such kind.
+///
+/// # Self-healing, and free
+///
+/// Level-triggered, with no memory: the moment the pane's occupant matches the
+/// stored `kind` again, or an explicit writer refreshes it (the shim's next
+/// `SessionStart`), or `phux agent clear` removes it, the detector resumes.
+/// And the frozen write is byte-identical to the record already stored, so
+/// `metadata_set` suppresses it: a contradicted pane costs ZERO writes and
+/// ZERO broadcasts per tick, not one (ADR-0046 decision 7).
+pub(crate) fn explicit_kind_is_contradicted(
+    existing: Option<&[u8]>,
+    detected: &str,
+    rules: &crate::agent_detect::rules::RuleSet,
+) -> bool {
+    let Some(stored) = existing
+        .and_then(AgentRecordJson::decode)
+        .and_then(|record| record.kind)
+        .filter(|kind| !kind.is_empty())
+    else {
+        return false;
+    };
+    if stored.eq_ignore_ascii_case(detected) {
+        return false;
+    }
+    // Only a kind the detector could have derived is a claim the detector is
+    // in a position to falsify. Kinds are lowercase slugs; a writer who typed
+    // one in another case is given the benefit of the doubt by the lookup
+    // missing, which errs toward leaving them alone.
+    rules.manifest(&stored.to_lowercase()).is_some()
+}
+
 /// The `state` word currently stored for a pane, if any.
 ///
 /// Read before a detector write so the `agent-state-changed` hook can report
@@ -362,8 +441,12 @@ pub(crate) fn withdraw_state(existing: Option<&[u8]>) -> Option<Vec<u8>> {
 mod tests {
     use phux_protocol::ids::TerminalId as WireTerminalId;
 
-    use super::{AgentRecordArbiter, IdentityOwnership, compose, withdraw_state};
+    use super::{
+        AgentRecordArbiter, IdentityOwnership, compose, explicit_kind_is_contradicted,
+        withdraw_state,
+    };
     use crate::agent_detect::record::AgentRecordJson;
+    use crate::agent_detect::rules::{ManifestSpec, RuleSet};
 
     fn terminal(id: u32) -> WireTerminalId {
         WireTerminalId::new(id)
@@ -750,6 +833,106 @@ mod tests {
         let first = compose(None, "claude", "claude", "working", DETECTOR);
         let second = compose(Some(&first), "claude", "claude", "working", DETECTOR);
         assert_eq!(first, second, "a steady state must produce identical bytes");
+    }
+
+    // --- a contradicted explicit kind (phux-w7z2.45) ------------------------
+
+    /// Two kinds the detector has manifests for, so "the detector could have
+    /// derived this" is true of both — and one it has never heard of.
+    fn detectable() -> RuleSet {
+        let mut set = RuleSet::default();
+        for kind in ["claude", "codex"] {
+            let spec: ManifestSpec =
+                toml::from_str(&format!("kind = \"{kind}\"\nbinaries = [\"{kind}\"]\n"))
+                    .expect("manifest parses");
+            set.install(spec).expect("compiles");
+        }
+        set
+    }
+
+    /// THE .45 case. A shim pane declares `kind: claude`; the human kills
+    /// claude and runs codex in it. The record must not take codex's derived
+    /// state while still reading `kind: claude` — a state and a kind from two
+    /// different processes is exactly the lie .27 was filed to remove, and I2
+    /// forbids it whoever owns the field.
+    #[test]
+    fn a_declared_kind_the_pane_no_longer_runs_is_contradicted() {
+        let stored = br#"{"name":"claude","kind":"claude","state":"working"}"#;
+        assert!(explicit_kind_is_contradicted(
+            Some(stored),
+            "codex",
+            &detectable()
+        ));
+    }
+
+    /// The regression guard for the documented useful half. An
+    /// open-vocabulary slug the detector has no manifest for asserts nothing
+    /// the detector can check, so it is never contradicted and the detector
+    /// keeps filling `state` in around it — which is the entire point of
+    /// `phux agent set --name reviewer --kind my-agent`.
+    #[test]
+    fn an_open_vocabulary_kind_the_detector_cannot_derive_is_never_contradicted() {
+        let stored = br#"{"name":"reviewer","kind":"my-agent"}"#;
+        assert!(
+            !explicit_kind_is_contradicted(Some(stored), "claude", &detectable()),
+            "a label the detector could never have produced is not a claim it can falsify",
+        );
+    }
+
+    #[test]
+    fn a_kind_the_pane_actually_runs_is_not_contradicted() {
+        let stored = br#"{"name":"claude","kind":"claude","state":"idle"}"#;
+        let rules = detectable();
+        assert!(!explicit_kind_is_contradicted(
+            Some(stored),
+            "claude",
+            &rules
+        ));
+        assert!(
+            !explicit_kind_is_contradicted(
+                Some(br#"{"name":"c","kind":"Claude"}"#),
+                "claude",
+                &rules
+            ),
+            "the same kind in another case is the same kind",
+        );
+    }
+
+    /// Nothing to contradict: no record, no `kind`, an empty `kind`, or bytes
+    /// that do not decode. Every one of these leaves the detector free, which
+    /// is the fail-open direction — this predicate can only ever WITHHOLD a
+    /// state, so an over-eager one is the expensive mistake.
+    #[test]
+    fn a_record_without_a_usable_kind_contradicts_nothing() {
+        let rules = detectable();
+        assert!(!explicit_kind_is_contradicted(None, "codex", &rules));
+        assert!(!explicit_kind_is_contradicted(
+            Some(br#"{"name":"x"}"#),
+            "codex",
+            &rules
+        ));
+        assert!(!explicit_kind_is_contradicted(
+            Some(br#"{"name":"x","kind":""}"#),
+            "codex",
+            &rules
+        ));
+        assert!(!explicit_kind_is_contradicted(
+            Some(b"}{ nonsense"),
+            "codex",
+            &rules
+        ));
+    }
+
+    /// A server with no manifests loaded (`PHUX_AGENT_DETECT=0`, or an
+    /// operator whose overrides all failed to compile) can falsify nothing.
+    #[test]
+    fn an_empty_rule_set_contradicts_nothing() {
+        let stored = br#"{"name":"claude","kind":"claude"}"#;
+        assert!(!explicit_kind_is_contradicted(
+            Some(stored),
+            "codex",
+            &RuleSet::default()
+        ));
     }
 
     // --- withdraw_state ----------------------------------------------------

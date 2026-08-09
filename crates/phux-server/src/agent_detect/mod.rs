@@ -54,9 +54,11 @@
 //! §3.7, "Server as a producer"), which is the only path back to truth for a
 //! pane whose declared agent was `kill -9`'d.
 //!
-//! Occupancy also carries the foreground **pgid**, so `claude` restarted in
-//! the same pane is a different occupant rather than the same one — an event
-//! that was previously invisible by construction.
+//! Occupancy also carries the foreground **pgid paired with its leader's
+//! start time** ([`identify::Occupant`]), so `claude` restarted in the same
+//! pane is a different occupant rather than the same one — an event that was
+//! previously invisible by construction — and so a pgid the OS recycled to a
+//! new process cannot impersonate the one that held it before.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -280,7 +282,8 @@ pub(crate) struct AgentDetector {
     rules: Rc<RuleSet>,
     /// The agent kind currently running, if any.
     identified: Option<String>,
-    /// The foreground process group [`Self::identified`] was seen in.
+    /// The foreground process group [`Self::identified`] was seen in, paired
+    /// with that group leader's start time.
     ///
     /// The identity of the OCCUPANT, not merely of the software: `claude`
     /// killed and `claude` restarted in the same pane are two different
@@ -288,7 +291,11 @@ pub(crate) struct AgentDetector {
     /// indistinguishable thing. Also what re-anchors [`STARTUP_GRACE`], so a
     /// new instance's splash screen is judged against its own launch rather
     /// than against its predecessor's.
-    identified_pgid: Option<i32>,
+    ///
+    /// The start time is half of the identity and not decoration: a pgid is a
+    /// recycled small integer, so the pair is what actually distinguishes two
+    /// processes (see [`identify::Occupant`]).
+    identified_occupant: Option<identify::Occupant>,
     /// Consecutive *confirmed vacant* observations since the last time an
     /// agent was seen. Never incremented by an unanswerable query.
     ///
@@ -344,7 +351,7 @@ impl std::fmt::Debug for AgentDetector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentDetector")
             .field("identified", &self.identified)
-            .field("identified_pgid", &self.identified_pgid)
+            .field("identified_occupant", &self.identified_occupant)
             .field("vacant_streak", &self.vacant_streak)
             .field("published", &self.published)
             .field("current", &self.current)
@@ -361,7 +368,7 @@ impl AgentDetector {
         Self {
             rules,
             identified: None,
-            identified_pgid: None,
+            identified_occupant: None,
             vacant_streak: 0,
             next_identify: now,
             started: now,
@@ -634,7 +641,7 @@ impl AgentDetector {
                 Some(DetectOutcome::Quiet)
             }
             Occupancy::Vacant { .. } => Some(self.apply_vacancy()),
-            Occupancy::Agent { kind, pgid } => self.apply_agent(now, kind, pgid),
+            Occupancy::Agent { kind, occupant } => self.apply_agent(now, kind, occupant),
         }
     }
 
@@ -658,7 +665,7 @@ impl AgentDetector {
         // is re-derived on a fixed cadence and its *confirmed* absence is
         // actionable.
         self.identified = None;
-        self.identified_pgid = None;
+        self.identified_occupant = None;
         self.identified_at = None;
         self.pending_idle = None;
         self.current = None;
@@ -675,24 +682,44 @@ impl AgentDetector {
         DetectOutcome::Retract
     }
 
-    /// A *successful* observation that `kind` (at `pgid`) owns the pane.
-    fn apply_agent(&mut self, now: Instant, kind: String, pgid: i32) -> Option<DetectOutcome> {
+    /// A *successful* observation that `kind` (running as `occupant`) owns the
+    /// pane.
+    fn apply_agent(
+        &mut self,
+        now: Instant,
+        kind: String,
+        occupant: identify::Occupant,
+    ) -> Option<DetectOutcome> {
         self.vacant_streak = 0;
 
         let same_kind = self.identified.as_deref() == Some(kind.as_str());
-        // A `None` prior pgid heals silently rather than counting as a
-        // change: it means the identity came from somewhere with no pgid to
-        // record, and inventing a restart out of that would be a write.
-        let same_occupant = same_kind && self.identified_pgid.is_none_or(|prior| prior == pgid);
+        // A `None` prior occupant heals silently rather than counting as a
+        // change: it means the identity came from somewhere with no process to
+        // record, and inventing a restart out of that would be a write. The
+        // same reasoning inside `Occupant::same` covers an unreadable start
+        // time.
+        let same_occupant = same_kind
+            && self
+                .identified_occupant
+                .is_none_or(|prior| prior.same(occupant));
         if same_occupant {
-            self.identified_pgid = Some(pgid);
+            // Record the fresh reading, but never DOWNGRADE a start time we
+            // already know to a `None` this tick's query failed to produce:
+            // losing it would leave the pair permanently unable to notice a
+            // later recycle, one failed query at a time.
+            self.identified_occupant = Some(match self.identified_occupant {
+                Some(prior) if occupant.started.is_none() => {
+                    identify::Occupant::new(occupant.pgid, prior.started)
+                }
+                _ => occupant,
+            });
             return None;
         }
 
         let replaced = self.identified.is_some();
-        trace!(%kind, pgid, replaced, "agent-detect: identified");
+        trace!(%kind, pgid = occupant.pgid, replaced, "agent-detect: identified");
         self.identified = Some(kind.clone());
-        self.identified_pgid = Some(pgid);
+        self.identified_occupant = Some(occupant);
         // The splash screen paints from HERE — including for a RESTART of the
         // same kind, which would otherwise have its splash judged against its
         // predecessor's edge filter.
@@ -766,7 +793,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
-    use super::identify::Occupancy;
+    use super::identify::{Occupancy, Occupant};
     use super::rules::{ManifestSpec, RuleSet};
     use super::{
         AgentDetector, DetectOutcome, DetectedState, IDLE_CONFIRMATIONS, STARTUP_GRACE,
@@ -897,10 +924,7 @@ match = { contains = "WORKING" }
         /// The human types an agent's name at the pane's shell prompt. The
         /// agent paints, which sets the actor's dirty flag.
         fn launch_agent(&mut self, kind: &str) {
-            self.occupy(Occupancy::Agent {
-                kind: kind.to_owned(),
-                pgid: 100,
-            });
+            self.occupy(agent(kind, 100));
             self.dirty = true;
         }
 
@@ -941,6 +965,24 @@ match = { contains = "WORKING" }
 
         fn state(&self) -> Option<DetectedState> {
             self.detector.published.as_ref().map(|r| r.state)
+        }
+    }
+
+    /// The kernel's answer for a live agent in a pane.
+    ///
+    /// The start time is derived from the pgid, so two different pgids in a
+    /// test are never accidentally one occupant and the same pgid twice always
+    /// is. The pid-reuse cases state the pair themselves via `agent_started`.
+    fn agent(kind: &str, pgid: i32) -> Occupancy {
+        let started = u64::try_from(pgid).unwrap_or(0).saturating_mul(7);
+        agent_started(kind, pgid, Some(started))
+    }
+
+    /// As [`agent`], but stating the start time outright.
+    fn agent_started(kind: &str, pgid: i32, started: Option<u64>) -> Occupancy {
+        Occupancy::Agent {
+            kind: kind.to_owned(),
+            occupant: Occupant::new(pgid, started),
         }
     }
 
@@ -1335,10 +1377,7 @@ match = { contains = "WORKING" }
         h.occupy(Occupancy::Vacant { pgid: 100 });
         assert_eq!(h.identity_tick(), DetectOutcome::Quiet);
         // The subprocess exits and the agent is back in the foreground.
-        h.occupy(Occupancy::Agent {
-            kind: "t".to_owned(),
-            pgid: 100,
-        });
+        h.occupy(agent("t", 100));
         assert_eq!(h.identity_tick(), DetectOutcome::Quiet, "nothing happened");
         assert_eq!(h.state(), Some(DetectedState::Working), "badge untouched");
 
@@ -1355,10 +1394,7 @@ match = { contains = "WORKING" }
     /// published `working` badge.
     fn occupied(kind: &str, pgid: i32) -> Harness {
         let mut h = Harness::unidentified();
-        h.occupy(Occupancy::Agent {
-            kind: kind.to_owned(),
-            pgid,
-        });
+        h.occupy(agent(kind, pgid));
         assert_eq!(h.identity_tick(), DetectOutcome::Quiet, "acquiring");
         h.now += STARTUP_GRACE + Duration::from_millis(1);
         assert_eq!(published(&h.tick("WORKING")), DetectedState::Working);
@@ -1374,10 +1410,7 @@ match = { contains = "WORKING" }
     fn a_different_kind_in_the_same_pane_is_a_correction() {
         let mut h = occupied("t", 100);
 
-        h.occupy(Occupancy::Agent {
-            kind: "u".to_owned(),
-            pgid: 200,
-        });
+        h.occupy(agent("u", 200));
         assert_eq!(
             h.identity_tick(),
             DetectOutcome::Reidentified {
@@ -1394,10 +1427,7 @@ match = { contains = "WORKING" }
     #[test]
     fn a_kind_change_never_retracts() {
         let mut h = occupied("t", 100);
-        h.occupy(Occupancy::Agent {
-            kind: "u".to_owned(),
-            pgid: 200,
-        });
+        h.occupy(agent("u", 200));
         assert!(
             !matches!(h.identity_tick(), DetectOutcome::Retract),
             "the pane is occupied; there is nothing to retract",
@@ -1415,10 +1445,7 @@ match = { contains = "WORKING" }
 
         // Same binary, different process: the human hit ctrl-c and ran it
         // again.
-        h.occupy(Occupancy::Agent {
-            kind: "t".to_owned(),
-            pgid: 271,
-        });
+        h.occupy(agent("t", 271));
         assert_eq!(
             h.identity_tick(),
             DetectOutcome::Reidentified {
@@ -1445,6 +1472,104 @@ match = { contains = "WORKING" }
         assert_eq!(h.state(), Some(DetectedState::Working));
     }
 
+    // --- pid reuse (phux-w7z2.43) -------------------------------------------
+
+    /// THE hole .43 closes. A pgid is a small integer the OS recycles. `.27`
+    /// made a same-kind restart visible by retaining the pgid — but only when
+    /// the restart happened to land on a DIFFERENT id. Hand the new process
+    /// its predecessor's id and the detector reads it as the same occupant: no
+    /// correction, no re-anchored startup grace, and a fresh empty transcript
+    /// wearing the previous agent's badge.
+    #[test]
+    fn a_recycled_pgid_is_a_new_occupant_not_the_old_one() {
+        let mut h = occupied("t", 100);
+
+        // Same kind, same id, different process.
+        h.occupy(agent_started("t", 100, Some(999_999)));
+        assert_eq!(
+            h.identity_tick(),
+            DetectOutcome::Reidentified {
+                kind: "t".to_owned(),
+                name: "t-agent".to_owned(),
+            },
+            "the id was recycled; the start time is what says so",
+        );
+    }
+
+    /// The control, and the one that protects ADR-0046 decision 7: the same
+    /// process re-read is the same `(pgid, started)` pair, so an identified
+    /// fleet sitting still produces no corrections at all. A start-time query
+    /// that varied per call — a clock read, a formatting difference, a unit
+    /// conversion — would turn every identity recheck into a metadata write on
+    /// every pane, which is the whole cost model of the feature.
+    #[test]
+    fn a_stable_start_time_never_manufactures_a_restart() {
+        let mut h = occupied("t", 100);
+        for _ in 0..20 {
+            assert_eq!(
+                h.identity_tick(),
+                DetectOutcome::Quiet,
+                "same pgid, same start time: nothing happened",
+            );
+        }
+        assert_eq!(h.state(), Some(DetectedState::Working), "badge untouched");
+    }
+
+    /// A platform (or a transient failure) that cannot answer the start-time
+    /// question must degrade to the pre-.43 behaviour — compare pgids — and
+    /// NOT to "everything is new". The alternative is a correction and a
+    /// metadata write per pane per recheck on every unsupported platform.
+    #[test]
+    fn an_unavailable_start_time_degrades_to_comparing_pgids() {
+        let mut h = Harness::unidentified();
+        h.occupy(agent_started("t", 100, None));
+        assert_eq!(h.identity_tick(), DetectOutcome::Quiet, "acquiring");
+        h.now += STARTUP_GRACE + Duration::from_millis(1);
+        assert_eq!(published(&h.tick("WORKING")), DetectedState::Working);
+
+        for _ in 0..20 {
+            assert_eq!(
+                h.identity_tick(),
+                DetectOutcome::Quiet,
+                "no start time anywhere: fall back to the pgid, stay silent",
+            );
+        }
+        // ... and the pgid alone still catches the restarts it always caught.
+        h.occupy(agent_started("t", 271, None));
+        assert!(matches!(
+            h.identity_tick(),
+            DetectOutcome::Reidentified { .. }
+        ));
+    }
+
+    /// A start time we once read and then transiently failed to re-read must
+    /// not be forgotten. Overwriting the known pair with a `None` would leave
+    /// the detector permanently unable to notice a later recycle of that id —
+    /// the evidence leaking away one failed query at a time.
+    #[test]
+    fn a_transiently_unreadable_start_time_does_not_erase_the_one_we_have() {
+        let mut h = occupied("t", 100);
+
+        // Three rechecks where the start-time query fails. Same pgid, so this
+        // is the same occupant and nothing is emitted ...
+        for _ in 0..3 {
+            h.occupy(agent_started("t", 100, None));
+            assert_eq!(h.identity_tick(), DetectOutcome::Quiet);
+        }
+
+        // ... and the original start time is still what we compare against, so
+        // a recycle is still caught after the outage.
+        h.occupy(agent_started("t", 100, Some(999_999)));
+        assert_eq!(
+            h.identity_tick(),
+            DetectOutcome::Reidentified {
+                kind: "t".to_owned(),
+                name: "t-agent".to_owned(),
+            },
+            "the remembered start time survived the failed queries",
+        );
+    }
+
     /// The new occupant gets its OWN startup grace. Re-anchoring is what stops
     /// a fresh instance's splash screen from being judged against its
     /// predecessor's edge filter — and it is what guarantees the drain sees the
@@ -1452,10 +1577,7 @@ match = { contains = "WORKING" }
     #[test]
     fn a_new_occupant_re_anchors_the_startup_grace() {
         let mut h = occupied("t", 100);
-        h.occupy(Occupancy::Agent {
-            kind: "u".to_owned(),
-            pgid: 200,
-        });
+        h.occupy(agent("u", 200));
         assert!(matches!(
             h.identity_tick(),
             DetectOutcome::Reidentified { .. }
@@ -1492,10 +1614,7 @@ match = { contains = "WORKING" }
     #[test]
     fn a_correction_short_circuits_its_own_tick() {
         let mut h = occupied("t", 100);
-        h.occupy(Occupancy::Agent {
-            kind: "u".to_owned(),
-            pgid: 200,
-        });
+        h.occupy(agent("u", 200));
         // The screen says WORKING on this very tick, and it is still only a
         // correction that comes out.
         assert!(matches!(

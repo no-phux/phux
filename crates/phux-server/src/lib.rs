@@ -18,6 +18,10 @@ pub mod cwd_query;
 pub mod downsample;
 pub mod extract;
 pub mod grid;
+// Pure viewport-alignment core for the ADR-0078 alternate-screen history
+// harvest. Deliberately not wired to the terminal actor: that ADR is still
+// Proposed and nothing may scroll a live pane before it is accepted.
+pub(crate) mod history_merge;
 pub mod hooks;
 pub mod hub;
 pub mod id_bridge;

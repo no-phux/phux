@@ -286,6 +286,14 @@ fn drain_reidentified(
 /// `kind`, `name` and `state` are composed against ONE read of the store under
 /// ONE lock, from ONE report — invariant I1. That is what makes a dropped
 /// `Reidentified` harmless.
+///
+/// One further arbitration, and it is invariant I2 rather than an authority
+/// question (phux-w7z2.45): where an explicit writer owns a `kind` the detector
+/// positively contradicts — a shim pane declaring `kind: claude` that is now
+/// running codex — the `kind` is preserved (§3.7 requires it) and the DERIVED
+/// state is withheld, landing on `unknown` instead. The server may not correct
+/// their field, but it must not pair a state derived from one process with a
+/// `kind` naming another. See [`crate::agent_state::explicit_kind_is_contradicted`].
 fn drain_state(
     s: &mut crate::state::ServerState,
     wire_terminal_id: &phux_protocol::ids::TerminalId,
@@ -302,12 +310,41 @@ fn drain_state(
     let from = hooks_live
         .then(|| crate::agent_state::stored_state(existing.as_deref()))
         .flatten();
-    let to = report.state.as_str();
     let owned = s.agent_records().identity_ownership(wire_terminal_id);
-    let bytes =
-        crate::agent_state::compose(existing.as_deref(), &report.kind, &report.name, to, owned);
+    // I2: a state derived from THIS occupant must never be stored beside a
+    // `kind` naming a different one. Where the detector owns the `kind`,
+    // `compose` reasserts it and there is nothing to withhold; where an
+    // explicit writer owns it, preserving their field is the spec's
+    // requirement and withholding the state is the only honest pairing left.
+    let contradicted = owned.kind
+        && crate::agent_state::explicit_kind_is_contradicted(
+            existing.as_deref(),
+            &report.kind,
+            &crate::agent_detect::rules::global(),
+        );
+    let (to, bytes) = if contradicted {
+        // The withdrawal §3.7 sanctions, and the same write `drain_retract`
+        // makes: `name`, `kind` and `session` are the writer's and survive;
+        // `attention` does not, because its basis was the state being
+        // withdrawn and a pane asserting nothing must not still wear a badge.
+        // `explicit_kind_is_contradicted` only answers `true` for a record it
+        // decoded, so there is always something here to rewrite.
+        let bytes = crate::agent_state::withdraw_state(existing.as_deref())?;
+        (crate::hooks::AGENT_STATE_UNKNOWN, bytes)
+    } else {
+        let to = report.state.as_str();
+        let bytes =
+            crate::agent_state::compose(existing.as_deref(), &report.kind, &report.name, to, owned);
+        (to, bytes)
+    };
     s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
-    s.agent_records_mut().note_detector_write(wire_terminal_id);
+    if !contradicted {
+        // Deliberately skipped on the withheld path: withdrawing a state is not
+        // authoring the record, and the detector must not acquire the right to
+        // `DELETE` an explicit writer's row by having declined to describe it.
+        // A detector that already owned the record keeps that ownership.
+        s.agent_records_mut().note_detector_write(wire_terminal_id);
+    }
     hooks_live
         .then(|| {
             state_change_hook(
@@ -3520,6 +3557,273 @@ mod agent_drain_tests {
                 .await;
 
                 assert!(stored(&state, &terminal).is_none());
+            })
+            .await;
+    }
+
+    // --- a contradicted explicit kind (phux-w7z2.45) ------------------------
+
+    /// A report for an arbitrary kind, for the handover cases.
+    fn report_of(kind: &str, state: DetectedState) -> AgentReport {
+        AgentReport {
+            kind: kind.to_owned(),
+            name: kind.to_owned(),
+            state,
+        }
+    }
+
+    /// THE .45 bug, end to end through the real drain.
+    ///
+    /// The Claude hook shim writes `--name claude --kind claude` at
+    /// `SessionStart`, so every shim pane is `explicit_kind` for its whole
+    /// life — and `docs/spec/L3.md` §3.7 requires the server to preserve that
+    /// `kind`. So the .27 correction, which works by REASSERTING the kind the
+    /// detector authored, cannot run on the largest population of panes: after
+    /// a `claude` -> `codex` handover the record kept `kind: claude` and then
+    /// took codex's derived state beside it. Nothing looked stale. The state
+    /// was fresh, the name was present, and the kind was a lie.
+    ///
+    /// The server may not overwrite their field, so it withholds the state
+    /// instead: the record lands on the WITHDRAWN shape (`kind` present,
+    /// `state: unknown`) that ADR-0075 point 6's `%name` write gate refuses,
+    /// which is the outcome .27 was protecting.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_shim_pane_never_takes_a_state_from_an_occupant_its_kind_denies() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+                let scope = Scope::Terminal(terminal.clone());
+
+                // The shim's one identity write, at SessionStart.
+                let shim = br#"{"name":"claude","kind":"claude"}"#;
+                state.with_mut(|s| {
+                    s.agent_records_mut().note_explicit_set(&terminal, shim);
+                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, shim.to_vec());
+                });
+
+                // Claude runs, then the human kills it and starts codex. The
+                // correction lands first, then codex's own screen is derived.
+                drain(
+                    &state,
+                    &terminal,
+                    vec![
+                        AgentDetectEvent::State(report(DetectedState::Working)),
+                        AgentDetectEvent::Reidentified {
+                            kind: "codex".to_owned(),
+                            name: "codex".to_owned(),
+                        },
+                        AgentDetectEvent::State(report_of("codex", DetectedState::Working)),
+                    ],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("the record is still there");
+                assert_eq!(
+                    record.kind.as_deref(),
+                    Some("claude"),
+                    "their field is preserved: §3.7 is not ours to overrule",
+                );
+                assert_eq!(record.name, "claude", "and their name with it");
+                assert_eq!(
+                    record.state, "unknown",
+                    "but codex's state must NEVER be stored beside `kind: claude` — a \
+                     consumer reading that is told, with full confidence, that a claude \
+                     agent is working",
+                );
+            })
+            .await;
+    }
+
+    /// ADR-0046 decision 7, on the new path. A contradicted pane is not a
+    /// write per tick: the withheld state composes to bytes identical to what
+    /// is already stored, so `metadata_set` suppresses it and an idle fleet
+    /// with a stale shim declaration still costs zero broadcasts.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_contradicted_pane_writes_nothing_on_every_subsequent_tick() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+                let scope = Scope::Terminal(terminal.clone());
+
+                let shim = br#"{"name":"claude","kind":"claude"}"#;
+                state.with_mut(|s| {
+                    s.agent_records_mut().note_explicit_set(&terminal, shim);
+                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, shim.to_vec());
+                });
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report_of(
+                        "codex",
+                        DetectedState::Working,
+                    ))],
+                )
+                .await;
+                let first = state
+                    .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+                    .expect("written");
+
+                // Twenty more ticks, each deriving something different from
+                // codex's screen. Not one of them may move a byte.
+                let churn = [
+                    DetectedState::Blocked,
+                    DetectedState::Idle,
+                    DetectedState::Working,
+                    DetectedState::Done,
+                ];
+                let repeats = (0..20)
+                    .map(|i| AgentDetectEvent::State(report_of("codex", churn[i % churn.len()])))
+                    .collect();
+                drain(&state, &terminal, repeats).await;
+
+                let after = state
+                    .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+                    .expect("still there");
+                assert_eq!(
+                    first, after,
+                    "byte-identical: withholding a state is level-triggered and free",
+                );
+            })
+            .await;
+    }
+
+    /// The half that must NOT change, and the reason the predicate is
+    /// "contradicted" rather than "different". `phux agent set --name reviewer
+    /// --kind my-agent` is the documented useful half: a human labels the pane
+    /// and the detector keeps tracking its lifecycle. `my-agent` differs from
+    /// the detector's `claude` on every single tick and is not a claim the
+    /// detector can falsify, so the state must keep flowing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_custom_kind_the_detector_cannot_derive_still_gets_its_state_filled_in() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+                let scope = Scope::Terminal(terminal.clone());
+
+                let labelled = br#"{"name":"reviewer","kind":"my-agent","session":"fleet-7"}"#;
+                state.with_mut(|s| {
+                    s.agent_records_mut().note_explicit_set(&terminal, labelled);
+                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, labelled.to_vec());
+                });
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Blocked))],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("written");
+                assert_eq!(record.kind.as_deref(), Some("my-agent"), "their label");
+                assert_eq!(record.name, "reviewer");
+                assert_eq!(record.session.as_deref(), Some("fleet-7"));
+                assert_eq!(
+                    record.state, "blocked",
+                    "the detector must keep tracking the lifecycle around a name and a \
+                     kind it could never have derived",
+                );
+            })
+            .await;
+    }
+
+    /// Level-triggered, so it heals itself. Nothing is remembered about the
+    /// contradiction: the moment the pane runs the declared kind again, the
+    /// state resumes on the very next write, with no clear and no restart.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_state_resumes_the_moment_the_pane_runs_the_declared_kind_again() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+                let scope = Scope::Terminal(terminal.clone());
+
+                let shim = br#"{"name":"claude","kind":"claude"}"#;
+                state.with_mut(|s| {
+                    s.agent_records_mut().note_explicit_set(&terminal, shim);
+                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, shim.to_vec());
+                });
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report_of(
+                        "codex",
+                        DetectedState::Working,
+                    ))],
+                )
+                .await;
+                assert_eq!(stored(&state, &terminal).expect("written").state, "unknown");
+
+                // The human quits codex and starts claude again.
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Blocked))],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("written");
+                assert_eq!(record.kind.as_deref(), Some("claude"));
+                assert_eq!(
+                    record.state, "blocked",
+                    "no memory of the contradiction: the level is the whole state",
+                );
+            })
+            .await;
+    }
+
+    /// The other exit: `phux agent clear` drops the declaration, and with it
+    /// the `kind` that was blocking the derivation. The detector then owns
+    /// every field again and the .27 reassertion does the rest.
+    #[tokio::test(flavor = "current_thread")]
+    async fn clearing_the_declaration_hands_the_kind_back_to_the_detector() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+                let scope = Scope::Terminal(terminal.clone());
+
+                let shim = br#"{"name":"claude","kind":"claude"}"#;
+                state.with_mut(|s| {
+                    s.agent_records_mut().note_explicit_set(&terminal, shim);
+                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, shim.to_vec());
+                });
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report_of(
+                        "codex",
+                        DetectedState::Working,
+                    ))],
+                )
+                .await;
+                assert_eq!(stored(&state, &terminal).expect("written").state, "unknown");
+
+                state.with_mut(|s| {
+                    s.agent_records_mut().note_explicit_delete(&terminal);
+                    s.metadata_delete(&scope, TERMINAL_AGENT_KEY);
+                });
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report_of(
+                        "codex",
+                        DetectedState::Working,
+                    ))],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("rewritten from scratch");
+                assert_eq!(record.kind.as_deref(), Some("codex"), "the truth, at last");
+                assert_eq!(record.state, "working");
             })
             .await;
     }

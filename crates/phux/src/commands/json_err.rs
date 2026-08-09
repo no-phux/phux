@@ -133,6 +133,90 @@ pub(crate) mod codes {
     /// `phux agent explain --file` was given a `--kind` no loaded detection
     /// manifest claims (or `--kind` was omitted, which offline is required).
     pub(crate) const UNKNOWN_AGENT_KIND: &str = "unknown_agent_kind";
+    /// The pane declares no `phux.agent/v1` record, so there is no agent
+    /// lifecycle to wait on and no occupant to verify. Exit 2.
+    pub(crate) const NO_AGENT_RECORD: &str = "no_agent_record";
+    /// The agent went away mid-wait: the record was deleted, or its state
+    /// withdrew to `unknown`. Neither a completion nor a timeout. Exit 1.
+    pub(crate) const AGENT_DEPARTED: &str = "agent_departed";
+    /// The pane's declared occupant is not the agent the caller named, so a
+    /// write was refused before any byte reached the PTY. Exit 2.
+    pub(crate) const AGENT_MISMATCH: &str = "agent_mismatch";
+    /// A key spec did not parse. The whole batch is refused up front, so a
+    /// typo in the third key cannot leave the first two delivered. Exit 2.
+    pub(crate) const INVALID_KEY_SPEC: &str = "invalid_key_spec";
+    /// A wait was asked for on a target set nothing in this build can ever
+    /// satisfy, so it is refused up front instead of timing out. Exit 2.
+    pub(crate) const UNSATISFIABLE_WAIT: &str = "unsatisfiable_wait";
+    /// A prompt or answer contained no text.
+    pub(crate) const PROMPT_EMPTY: &str = "prompt_empty";
+    /// Prompt text contained a raw newline, whose submission count cannot be
+    /// known without observing the pane's private bracketed-paste mode.
+    pub(crate) const PROMPT_MULTILINE: &str = "prompt_multiline";
+    /// An acknowledged input batch exceeded a client or protocol bound.
+    pub(crate) const INPUT_TOO_LARGE: &str = "input_too_large";
+    /// Another client holds the pane's input lease.
+    pub(crate) const INPUT_LEASE_HELD: &str = "input_lease_held";
+    /// Canonical input would truncate the batch, so nothing was written.
+    pub(crate) const CANONICAL_LIMIT_EXCEEDED: &str = "canonical_limit_exceeded";
+    /// A paste failed the pane's untrusted-input policy.
+    pub(crate) const UNSAFE_PASTE: &str = "unsafe_paste";
+    /// The server rejected an input batch structurally.
+    pub(crate) const INVALID_INPUT_BATCH: &str = "invalid_input_batch";
+    /// The authenticated peer is not allowed to perform the operation.
+    pub(crate) const PERMISSION_DENIED: &str = "permission_denied";
+    /// PTY delivery is indeterminate; retrying under a new id risks a duplicate.
+    pub(crate) const DELIVERY_UNKNOWN: &str = "delivery_unknown";
+    /// The server-wide acknowledged input lane did not become available.
+    pub(crate) const INPUT_BUSY: &str = "input_busy";
+    /// The pane's occupant changed while acknowledged input was in flight.
+    pub(crate) const UNKNOWN_OCCUPANT: &str = "unknown_occupant";
+    /// An addressable agent name does not match the `%name` grammar.
+    pub(crate) const INVALID_AGENT_NAME: &str = "invalid_agent_name";
+    /// The requested agent kind has no loaded detection manifest.
+    pub(crate) const UNSUPPORTED_AGENT_KIND: &str = "unsupported_agent_kind";
+    /// No detection manifests are available, so readiness is unenforceable.
+    pub(crate) const AGENT_DETECTION_UNAVAILABLE: &str = "agent_detection_unavailable";
+    /// Another pane already carries the requested explicit agent name.
+    pub(crate) const AGENT_NAME_TAKEN: &str = "agent_name_taken";
+    /// The target pane already hosts an identified agent.
+    pub(crate) const AGENT_PANE_BUSY: &str = "agent_pane_busy";
+    /// The target pane is not an available shell, or phux cannot prove it is.
+    pub(crate) const AGENT_PANE_NOT_AVAILABLE: &str = "agent_pane_not_available";
+    /// The integration working directory differs from the pane's directory.
+    pub(crate) const AGENT_CWD_MISMATCH: &str = "agent_cwd_mismatch";
+    /// A launch argv element cannot be encoded as one shell word.
+    pub(crate) const INVALID_LAUNCH_ARGV: &str = "invalid_launch_argv";
+    /// No enabled integration resolves the requested agent launch.
+    pub(crate) const UNKNOWN_INTEGRATION: &str = "unknown_integration";
+    /// Agent startup failed before a readiness assertion could be made.
+    pub(crate) const AGENT_START_FAILED: &str = "agent_start_failed";
+    /// The detector published a different kind from the one requested.
+    pub(crate) const AGENT_KIND_MISMATCH: &str = "agent_kind_mismatch";
+    /// Startup input may have landed, but delivery cannot be established.
+    pub(crate) const AGENT_START_UNKNOWN: &str = "agent_start_unknown";
+    /// Agent readiness did not arrive before the startup deadline.
+    pub(crate) const AGENT_START_TIMEOUT: &str = "agent_start_timeout";
+    /// The pane carries no current identified ask to answer.
+    pub(crate) const NO_ACTIVE_ASK: &str = "no_active_ask";
+    /// The live ask id differs from the one the caller observed.
+    pub(crate) const ASK_STALE: &str = "ask_stale";
+    /// The live ask has no id and cannot be correlated safely.
+    pub(crate) const ASK_UNIDENTIFIED: &str = "ask_unidentified";
+    /// A numbered choice was requested for an ask with no suggestions.
+    pub(crate) const NO_SUGGESTIONS: &str = "no_suggestions";
+    /// A numbered choice lies outside the ask's suggestion list.
+    pub(crate) const CHOICE_OUT_OF_RANGE: &str = "choice_out_of_range";
+    /// Free-form answer text is outside a closed suggestion set.
+    pub(crate) const UNLISTED_ANSWER: &str = "unlisted_answer";
+    /// Answer text is empty, multiline, or too large to deliver safely.
+    pub(crate) const INVALID_ANSWER: &str = "invalid_answer";
+    /// Neither a numbered choice nor answer text was supplied.
+    pub(crate) const NO_ANSWER: &str = "no_answer";
+    /// Answer delivery is indeterminate after handoff.
+    pub(crate) const ANSWER_DELIVERY_UNKNOWN: &str = "answer_delivery_unknown";
+    /// The server refused an answer batch for another typed reason.
+    pub(crate) const ANSWER_REFUSED: &str = "answer_refused";
     /// A result document could not be serialized as JSON.
     pub(crate) const JSON_SERIALIZE: &str = "json_serialize";
     /// A client-side invariant this binary should never break.
@@ -307,5 +391,20 @@ mod tests {
         assert_eq!(err.code, codes::TRANSPORT);
         assert!(err.message.contains("policy said no"));
         assert!(!err.remedy.is_empty());
+    }
+
+    /// phux-w7z2.35 / ADR-0071 point 7(a): the agent verbs' codes are part of
+    /// the one closed vocabulary, spelled exactly as ADR-0071 point 6 froze
+    /// them. A consumer branches on these strings, so the spellings are
+    /// pinned here rather than only at the call sites that emit them.
+    #[test]
+    fn the_agent_verb_codes_live_in_the_single_closed_vocabulary() {
+        assert_eq!(codes::NO_AGENT_RECORD, "no_agent_record");
+        assert_eq!(codes::AGENT_DEPARTED, "agent_departed");
+        assert_eq!(codes::AGENT_MISMATCH, "agent_mismatch");
+        assert_eq!(codes::INVALID_KEY_SPEC, "invalid_key_spec");
+        // phux-w7z2.42, added after ADR-0071 point 6 was written: it needs
+        // carving into that enumeration in the PR that ships it.
+        assert_eq!(codes::UNSATISFIABLE_WAIT, "unsatisfiable_wait");
     }
 }

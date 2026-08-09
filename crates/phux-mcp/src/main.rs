@@ -34,6 +34,7 @@
     reason = "bin-internal modules expose items via `pub`; `pub(crate)` would trip unreachable_pub in a binary with no external API (matches crates/phux/src/main.rs)"
 )]
 
+mod agent_tools;
 mod ask_tool;
 mod cli_adapter;
 mod cli_tools;
@@ -518,7 +519,7 @@ mod tests {
             serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#).unwrap();
         let resp = handle_request(req).await.expect("tools/list replies");
         let tools = resp["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 22);
+        assert_eq!(tools.len(), 31);
         assert!(tools.iter().any(|t| t["name"] == json!("phux_ls")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_paste")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_new")));
@@ -527,7 +528,30 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == json!("phux_ask")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_launch")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_spawn")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_agent")));
+        assert!(tools.iter().any(|t| t["name"] == json!("phux_agent_list")));
+        assert!(tools.iter().any(|t| t["name"] == json!("phux_agent_wait")));
+        assert!(
+            tools
+                .iter()
+                .any(|t| t["name"] == json!("phux_agent_prompt"))
+        );
+        assert!(
+            tools
+                .iter()
+                .any(|t| t["name"] == json!("phux_agent_answer"))
+        );
+        assert!(tools.iter().any(|t| t["name"] == json!("phux_agent_start")));
+        assert!(
+            tools
+                .iter()
+                .any(|t| t["name"] == json!("phux_agent_send_keys"))
+        );
+        // The multiplexer is gone, not aliased: keeping it alive would
+        // freeze the argument union ADR-0071 point 7(b) exists to prevent.
+        assert!(
+            !tools.iter().any(|t| t["name"] == json!("phux_agent")),
+            "the phux_agent action multiplexer must not survive the split",
+        );
         assert!(tools.iter().any(|t| t["name"] == json!("phux_insert_pane")));
         assert!(
             tools

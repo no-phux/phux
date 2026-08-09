@@ -107,6 +107,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_socket_path(&socket_path),
         check_server(&socket_path),
         check_plugins(),
+        check_agent_shim(),
         check_logs(),
     ];
 
@@ -266,6 +267,97 @@ fn check_plugins() -> Check {
             err,
             "run `phux plugin validate` to see which manifest is at fault",
         ),
+    }
+}
+
+/// Is the installed Claude shim the one this binary knows how to write?
+///
+/// This check exists because the shim is **not part of the binary**
+/// (phux-w7z2.46). It is a `/bin/sh` script written once into a phux-owned
+/// directory, and it keeps running whatever text it was written with, so
+/// upgrading phux does not upgrade an installed shim. Someone who upgrades and
+/// never re-runs `phux agent install-claude` keeps last release's behavior
+/// indefinitely with nothing anywhere saying so.
+///
+/// That would be a cosmetic complaint if the versions were cosmetic, and they
+/// are not: a schema-1 shim declares an agent `state` on every Claude hook,
+/// which per `docs/spec/L3.md` §3.7 outranks the server's derivation for the
+/// life of the record — so on that machine the ADR-0046 detector is stood down
+/// on every Claude pane, and a `SIGKILL`ed Claude keeps a `working` badge. The
+/// bug is fixed in the binary and still live on disk. A silent, install-time
+/// mismatch with a one-command remedy is precisely doctor's remit.
+///
+/// `Warn`, never `Fail`: phux works fine, and doctor's exit code gates setup
+/// scripts that have nothing to do with Claude.
+fn check_agent_shim() -> Check {
+    use crate::commands::agent::shim;
+
+    let Some(path) = shim::installed_shim_path() else {
+        return Check::warn(
+            "agent-shim",
+            "cannot tell where the claude-in-phux shim would live because HOME is unset",
+            "set HOME and re-run `phux doctor`",
+        );
+    };
+    shim_check(shim::installed_shim_schema(&path), shim::SHIM_SCHEMA, &path)
+}
+
+/// The pure half of [`check_agent_shim`]: compare what is on disk against what
+/// this binary writes. Split out so every branch is testable without an
+/// installed shim or a mutated environment.
+fn shim_check(installed: Option<u32>, current: u32, path: &std::path::Path) -> Check {
+    let where_ = path.display();
+    match installed {
+        // Never installed is a normal state, not a missing precondition:
+        // `install-claude` is opt-in and most users never run it.
+        None => Check::pass("agent-shim", "no claude-in-phux shim installed"),
+        Some(found) if found == current => Check::pass(
+            "agent-shim",
+            format!("claude-in-phux shim at {where_} is current (schema {current})"),
+        ),
+        Some(found) if found < current => Check::warn(
+            "agent-shim",
+            format!(
+                "claude-in-phux shim at {where_} is schema {found}, but this phux writes \
+                 schema {current}"
+            ),
+            format!(
+                "re-run `phux agent install-claude` — {}",
+                stale_shim_consequence(found)
+            ),
+        ),
+        // Newer on disk than this binary writes: a downgraded or older phux.
+        // Still a mismatch worth naming, and the remedy differs.
+        Some(found) => Check::warn(
+            "agent-shim",
+            format!(
+                "claude-in-phux shim at {where_} is schema {found}, newer than the schema \
+                 {current} this phux writes"
+            ),
+            "this binary is older than the installed shim: upgrade it with `phux update`, \
+             or re-run `phux agent install-claude` to pin the shim to this binary",
+        ),
+    }
+}
+
+/// What the user is actually living with, per stale schema.
+///
+/// Deliberately concrete: "your shim is old" is not a diagnosis, and these two
+/// versions fail in different, individually recognizable ways. The wording
+/// tracks the `install-claude` upgrade notice so the two never disagree.
+const fn stale_shim_consequence(found: u32) -> &'static str {
+    match found {
+        0 | 1 => {
+            "schema 1 declares an agent state on every Claude hook, which stands the \
+             server-side detector down for the whole session, so a dead Claude keeps a \
+             live badge"
+        }
+        2 => {
+            "schema 2 rewrites the agent record on every Claude hook, which resets the \
+             detected state at the end of every turn and makes `phux agent wait` report \
+             the agent as departed"
+        }
+        _ => "the installed shim predates this binary's wrapper behavior",
     }
 }
 
@@ -463,6 +555,77 @@ mod tests {
         assert!(Check::warn("n", "d", "h").hint.is_some());
         assert!(Check::fail("n", "d", "h").hint.is_some());
         assert!(Check::pass("n", "d").hint.is_none());
+    }
+
+    /// phux-w7z2.46, the case this check was added for: the binary moved on
+    /// and the shim on disk did not. The line must say both numbers and name
+    /// the exact command that fixes it — the user has no way to guess that
+    /// re-running the installer is what closes a gap nothing else reports.
+    #[test]
+    fn a_stale_claude_shim_warns_and_names_the_reinstall_command() {
+        let path = std::path::Path::new("/data/phux/shims/claude");
+        let check = shim_check(Some(1), 3, path);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("schema 1"), "{}", check.detail);
+        assert!(check.detail.contains("schema 3"), "{}", check.detail);
+        assert!(check.detail.contains("/data/phux/shims/claude"));
+        let hint = check
+            .hint
+            .expect("a warn without a hint is half a diagnosis");
+        assert!(
+            hint.contains("phux agent install-claude"),
+            "the remedy must be the literal command: {hint}"
+        );
+        // Each stale schema fails in its own recognizable way, and the hint
+        // says which one the user is living with.
+        assert!(hint.contains("detector"), "{hint}");
+        assert!(
+            shim_check(Some(2), 3, path)
+                .hint
+                .expect("hint")
+                .contains("agent wait"),
+            "schema 2's consequence is the per-turn clobber, not the stand-down",
+        );
+    }
+
+    /// A machine that is already current gets no warning — the whole point of
+    /// a staleness check is that it stays quiet when nothing is stale.
+    #[test]
+    fn a_current_claude_shim_does_not_warn() {
+        let check = shim_check(Some(3), 3, std::path::Path::new("/data/phux/shims/claude"));
+        assert_eq!(check.status, Status::Pass);
+        assert!(check.hint.is_none());
+    }
+
+    /// `install-claude` is opt-in, so "never installed" is a normal state and
+    /// must not read as a problem on the many machines that never run it.
+    #[test]
+    fn an_absent_claude_shim_is_not_a_problem() {
+        let check = shim_check(None, 3, std::path::Path::new("/data/phux/shims/claude"));
+        assert_eq!(check.status, Status::Pass);
+        assert!(check.detail.contains("no claude-in-phux shim installed"));
+    }
+
+    /// The mismatch runs both ways: an older binary against a newer shim is
+    /// still a mismatch, and its remedy is the opposite one.
+    #[test]
+    fn a_shim_newer_than_the_binary_warns_with_the_other_remedy() {
+        let check = shim_check(Some(4), 3, std::path::Path::new("/data/phux/shims/claude"));
+        assert_eq!(check.status, Status::Warn);
+        let hint = check.hint.expect("hint");
+        assert!(hint.contains("phux update"), "{hint}");
+    }
+
+    /// A stale shim must never fail the run: phux itself works, and doctor's
+    /// exit code gates setup scripts that have nothing to do with Claude.
+    #[test]
+    fn a_stale_shim_never_fails_the_run() {
+        let checks = vec![shim_check(
+            Some(1),
+            3,
+            std::path::Path::new("/data/phux/shims/claude"),
+        )];
+        assert_eq!(report_human(&checks), ExitCode::SUCCESS);
     }
 
     /// The logs line on a machine where things have run: it names the

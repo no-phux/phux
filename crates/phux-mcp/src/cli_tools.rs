@@ -13,7 +13,7 @@ use crate::cli_adapter::{
 };
 use crate::tools::{ToolError, strict_object};
 
-fn string_schema() -> Value {
+pub(crate) fn string_schema() -> Value {
     json!({ "type": "string", "minLength": 1, "maxLength": 4096 })
 }
 
@@ -21,7 +21,7 @@ fn string_schema() -> Value {
     clippy::needless_pass_by_value,
     reason = "the schema takes ownership of its generated properties object"
 )]
-fn schema(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
+pub(crate) fn schema(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({
         "name": name,
         "description": description,
@@ -106,24 +106,6 @@ pub(crate) fn rename_schema() -> Value {
     )
 }
 
-pub(crate) fn agent_schema() -> Value {
-    schema(
-        "phux_agent",
-        "List/show/explain projected agent state, or set/clear a pane's declared agent identity.",
-        json!({
-            "action": { "type": "string", "enum": ["list", "show", "explain", "set", "clear"] },
-            "target": string_schema(),
-            "name": string_schema(),
-            "kind": string_schema(),
-            "state": { "type": "string", "enum": ["unknown", "idle", "working", "blocked", "done"] },
-            "attention": { "type": "string", "enum": ["none", "low", "normal", "high"] },
-            "session": string_schema(),
-            "socket": string_schema(),
-        }),
-        &["action"],
-    )
-}
-
 fn spatial_schema(name: &str, description: &str, roles: &[&str], geometry: bool) -> Value {
     let mut properties = Map::new();
     for role in roles {
@@ -199,7 +181,6 @@ async fn call_with_adapter(
         "phux_signal" => signal(args, adapter).await,
         "phux_tag" => tag(args, adapter).await,
         "phux_rename" => rename(args, adapter).await,
-        "phux_agent" => agent(args, adapter).await,
         "phux_insert_pane" => {
             spatial(args, "insert-pane", &["target", "new_pane"], true, adapter).await
         }
@@ -377,78 +358,6 @@ async fn rename(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> 
     }))
 }
 
-async fn agent(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
-    strict_object(
-        args,
-        &[
-            "action",
-            "target",
-            "name",
-            "kind",
-            "state",
-            "attention",
-            "session",
-            "socket",
-        ],
-        &["action"],
-    )?;
-    let action = enum_string(
-        args,
-        "action",
-        &["list", "show", "explain", "set", "clear"],
-        None,
-    )?;
-    let target = bounded_string(args, "target", false)?;
-    if action == "list" && target.is_some() {
-        return Err(ToolError::new("`target` is not valid for agent list"));
-    }
-    if args.get("state").is_some() {
-        let _ = enum_string(
-            args,
-            "state",
-            &["unknown", "idle", "working", "blocked", "done"],
-            None,
-        )?;
-    }
-    if args.get("attention").is_some() {
-        let _ = enum_string(args, "attention", &["none", "low", "normal", "high"], None)?;
-    }
-    let mut argv = vec!["agent".to_owned(), action.clone()];
-    if let Some(target) = target {
-        argv.push(target);
-    }
-    match action.as_str() {
-        "list" | "show" | "explain" => {
-            reject_present(args, &["name", "kind", "state", "attention", "session"])?;
-            argv.push("--json".to_owned());
-            push_socket(&mut argv, args)?;
-            adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
-        }
-        "set" => {
-            let name = bounded_string(args, "name", true)?.unwrap_or_default();
-            argv.extend(["--name".to_owned(), name]);
-            for (key, flag) in [
-                ("kind", "--kind"),
-                ("state", "--state"),
-                ("attention", "--attention"),
-                ("session", "--session"),
-            ] {
-                push_option(&mut argv, flag, bounded_string(args, key, false)?);
-            }
-            push_socket(&mut argv, args)?;
-            let output = adapter.run(argv, DEFAULT_CALL_TIMEOUT).await?;
-            parse_agent_record("set", &output.stdout)
-        }
-        "clear" => {
-            reject_present(args, &["name", "kind", "state", "attention", "session"])?;
-            push_socket(&mut argv, args)?;
-            let output = adapter.run(argv, DEFAULT_CALL_TIMEOUT).await?;
-            parse_agent_record("clear", &output.stdout)
-        }
-        _ => Err(ToolError::new("unsupported agent action")),
-    }
-}
-
 async fn spatial(
     args: &Value,
     command: &str,
@@ -532,7 +441,7 @@ fn push_placement(argv: &mut Vec<String>, target: Option<String>, split: &str, r
     }
 }
 
-fn push_option(argv: &mut Vec<String>, flag: &str, value: Option<String>) {
+pub(crate) fn push_option(argv: &mut Vec<String>, flag: &str, value: Option<String>) {
     if let Some(value) = value {
         argv.extend([flag.to_owned(), value]);
     }
@@ -572,25 +481,6 @@ fn parse_tag_lines(stdout: &str) -> Result<Vec<Value>, ToolError> {
             }))
         })
         .collect()
-}
-
-fn parse_agent_record(action: &str, stdout: &str) -> Result<Value, ToolError> {
-    let line = stdout.trim();
-    let (terminal, record) = line
-        .split_once('\t')
-        .ok_or_else(|| ToolError::new("phux agent returned malformed output"))?;
-    let record = if record == "-" {
-        Value::Null
-    } else {
-        serde_json::from_str(record)
-            .map_err(|err| ToolError::new(format!("phux agent returned malformed JSON: {err}")))?
-    };
-    Ok(json!({
-        "schema_version": 1,
-        "action": action,
-        "terminal": terminal,
-        "record": record,
-    }))
 }
 
 #[cfg(test)]
@@ -649,7 +539,6 @@ esac
             signal_schema(),
             tag_schema(),
             rename_schema(),
-            agent_schema(),
             insert_schema(),
             move_schema(),
             swap_schema(),
@@ -684,7 +573,6 @@ esac
             .await
             .is_err()
         );
-        assert!(agent(&json!({ "action": "set" }), &adapter).await.is_err());
     }
 
     #[tokio::test]
@@ -764,33 +652,6 @@ esac
         assert_argv(
             &adapter,
             &log,
-            "phux_agent",
-            json!({
-                "action": "set", "target": "@5", "name": "bot", "kind": "codex",
-                "state": "working", "attention": "high", "session": "s", "socket": "/sock"
-            }),
-            &[
-                "agent",
-                "set",
-                "@5",
-                "--name",
-                "bot",
-                "--kind",
-                "codex",
-                "--state",
-                "working",
-                "--attention",
-                "high",
-                "--session",
-                "s",
-                "--socket",
-                "/sock",
-            ],
-        )
-        .await;
-        assert_argv(
-            &adapter,
-            &log,
             "phux_insert_pane",
             json!({ "target": "@6", "new_pane": "@7", "direction": "vertical", "ratio": 0.3, "socket": "/sock" }),
             &["insert-pane", "@6", "@7", "--vertical", "--ratio", "0.3", "--json", "--socket", "/sock"],
@@ -827,8 +688,5 @@ esac
             vec![json!({ "terminal": "@1", "tags": ["build", "ci"] })]
         );
         assert!(parse_tag_lines("not-tabbed").is_err());
-        let agent = parse_agent_record("set", "@2\t{\"name\":\"codex\"}\n").unwrap();
-        assert_eq!(agent["record"]["name"], "codex");
-        assert!(parse_agent_record("set", "bad").is_err());
     }
 }

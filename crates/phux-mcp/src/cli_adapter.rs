@@ -77,6 +77,31 @@ impl CliAdapter {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        self.run_allowing(args, timeout, &[]).await
+    }
+
+    /// Like [`Self::run`], but treats each code in `allowed` as a successful
+    /// completion rather than a failure.
+    ///
+    /// This exists for one shape of verb: the ones whose *interesting*
+    /// answer rides out on stdout under a non-zero exit. `phux agent wait`
+    /// prints its whole result document — baseline, observed edge, the
+    /// detector's evidence — and then exits `124` when no transition was
+    /// observed. Treating that as a bare failure would throw the document
+    /// away and hand the caller an error string, which is precisely the
+    /// reading ADR-0076 warns against: a timeout there is not "the tool
+    /// broke", it is "no transition happened", and the difference is legible
+    /// only in the document.
+    pub(crate) async fn run_allowing<I, S>(
+        &self,
+        args: I,
+        timeout: Duration,
+        allowed: &[i32],
+    ) -> Result<CliOutput, ToolError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         let mut child = Command::new(&self.program)
             .args(args)
             .stdin(Stdio::null())
@@ -124,7 +149,7 @@ impl CliAdapter {
         }
         let stdout = String::from_utf8_lossy(&stdout.bytes).into_owned();
         let stderr = String::from_utf8_lossy(&stderr.bytes).into_owned();
-        if !status.success() {
+        if !status.success() && !status.code().is_some_and(|code| allowed.contains(&code)) {
             let message = stderr.trim();
             return Err(ToolError::new(if message.is_empty() {
                 format!("phux CLI exited with {status}")
@@ -301,6 +326,28 @@ mod tests {
 
         let sleeper = CliAdapter::new("sleep");
         assert!(sleeper.run(["1"], Duration::from_millis(10)).await.is_err());
+    }
+
+    /// The `agent wait` shape: a non-zero exit whose stdout is the answer.
+    /// An allowed code keeps the document and reports the code; the same
+    /// code un-allowed is still a failure.
+    #[tokio::test]
+    async fn an_allowed_nonzero_exit_keeps_stdout_instead_of_becoming_an_error() {
+        let adapter = CliAdapter::new("sh");
+        let script = r#"printf '{"satisfied":false}'; exit 124"#;
+        let output = adapter
+            .run_allowing(["-c", script], DEFAULT_CALL_TIMEOUT, &[124])
+            .await
+            .expect("124 is allowed here");
+        assert_eq!(output.stdout, r#"{"satisfied":false}"#);
+
+        assert!(
+            adapter
+                .run(["-c", script], DEFAULT_CALL_TIMEOUT)
+                .await
+                .is_err(),
+            "an un-allowed non-zero exit is still a failure",
+        );
     }
 
     #[test]

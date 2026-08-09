@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-08
+last-reviewed: 2026-08-09
 ---
 
 # 0077 — The agent read surface: sources, soft wrap, and truncation
@@ -12,7 +12,7 @@ optional soft-wrap indices, a truncation marker, and the pane title. Every
 match path unwraps when the server supplies wrap data. The alternate-screen
 harvest is split out to [ADR-0078](./0078-alternate-screen-history.md).
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-08
 
 ## Context
@@ -40,7 +40,8 @@ keys. Nothing below depends on it.
 1. **No read-source vocabulary.** `--scrollback[=N]` and `--cells` keep their
    meaning; phux does not grow a named `visible | recent | detection` enum over
    knobs that already express the same thing; what is missing is added as
-   orthogonal modifiers. The detector's region slices
+   orthogonal modifiers, which is the shape `--tail[=N]` and `--unwrap` took
+   when they shipped. The detector's region slices
    ([ADR-0046](./0046-server-side-agent-state-detection.md) §4) stay
    `pub(crate)` behind the offline `agent explain` facade that already prints
    them — a manifest-debugging surface, not a fourth way to read a pane.
@@ -69,8 +70,8 @@ keys. Nothing below depends on it.
    refused harvest rather than overloading these.
 
 5. **`ScreenState` gains `title: Option<String>`.** It is pane chrome: a consumer
-   rendering a pane header needs it, and `agent explain --file` currently
-   captures a screen and loses the title that was on it. It is deliberately
+   rendering a pane header needs it, and before this key `agent explain --file`
+   captured a screen and lost the title that was on it. It is deliberately
    *not* material for client-side state derivation —
    [ADR-0046](./0046-server-side-agent-state-detection.md) rejected that, and
    [`../docs/spec/L3.md`](../docs/spec/L3.md) §3.7 requires consumers to prefer
@@ -94,6 +95,13 @@ keys. Nothing below depends on it.
    optionality already carries the only capability signal a consumer needs.
    `agents.md` §4.2's field table and the `ScreenState` doc comment change
    with it.
+
+Accepted on shipped evidence rather than on argument: `crates/phux-core/src/screen.rs`
+carries all four keys with `#[serde(default)]`, holds `SCHEMA_VERSION` at `3`,
+and exposes `has_soft_wrap_info()` as the probe point 2 requires; `wait` joins
+wrapped runs before matching. Nothing here has an open question left, which is
+the whole reason the harvest was split to
+[ADR-0078](./0078-alternate-screen-history.md).
 
 ## Why
 

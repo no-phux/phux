@@ -139,11 +139,17 @@ phux agent install-claude
 
 After a new shell starts, plain interactive `claude` creates and attaches a
 phux session when invoked outside one, or runs in the current pane when already
-inside. The shim injects additional Claude hook settings for lifecycle
-publication: prompts set `working`, permissions/notifications set `blocked`
-and emit `phux ask`, stops set `done`, and session exit clears the record.
-Administrative and noninteractive Claude commands bypass the shim. Remove the
-owned files and the marked shell-rc block with `phux agent uninstall-claude`.
+inside. The shim injects Claude hook settings that declare the pane's agent
+**identity** — `name` and `kind`, written once at session start — and nothing
+about its state. A declared `state` would outrank the server's own derivation
+for the record's whole lifetime ([`../docs/spec/L3.md`](./spec/L3.md) §3.7,
+[ADR-0046](../ADR/0046-server-side-agent-state-detection.md) point 8), so a
+shim that reported one would stand the detector down on exactly the panes phux
+instruments most deeply. Permission and notification hooks still emit
+`phux ask`, which raises advisory attention without touching the record, and
+session exit clears the declaration. Administrative and noninteractive Claude
+commands bypass the shim. Remove the owned files and the marked shell-rc block
+with `phux agent uninstall-claude`.
 
 The server derives each pane's `phux.agent/v1` record on a timer
 ([ADR-0046](../ADR/0046-server-side-agent-state-detection.md)). What it reads,

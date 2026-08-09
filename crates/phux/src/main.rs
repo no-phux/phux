@@ -106,6 +106,7 @@ mod help_inventory;
           signal     Send a POSIX signal to a pane's process group\n\n\
         ORGANIZE\n  \
           tag        Read and write a pane's tags (address them with #tag)\n  \
+          skill      Print the agent skill this binary ships with\n  \
           completion Print a shell completion script for phux\n  \
           doctor     Diagnose the install: config, socket, server, plugins\n  \
           logs       Show where phux's logs live, or tail one of them\n  \
@@ -347,6 +348,38 @@ pub(crate) fn print_banner() {
 /// `docs/…` pointers are noise at best (the leak test in `help_inventory`
 /// scans this constant along with every help string).
 pub(crate) const BANNER: &str = concat!("phux ", env!("CARGO_PKG_VERSION"));
+
+/// The agent skill `phux skill` prints, compiled into the executable.
+///
+/// `include_str!` rather than a shipped file, and that is the entire point of
+/// the verb. The skill is the agent-to-agent UX: it is the document another
+/// agent reads to learn what this CLI can do, so a copy that lags the binary
+/// silently teaches verbs the binary does not have and hides the ones it
+/// gained. Baking it in makes "the skill matches the build" true by
+/// construction instead of by discipline — the same argument
+/// `phux completion` makes for generating completions from the live clap tree
+/// rather than checking scripts in.
+///
+/// Three tests in `help_inventory` keep the CONTENT honest against the tree
+/// (every visible top-level verb, every `phux agent` subcommand, and every
+/// selector sigil the parser accepts must appear in the text), so a new verb
+/// cannot land into a skill that does not mention it.
+pub(crate) const SKILL: &str = include_str!("../../../skills/phux/SKILL.md");
+
+/// `phux skill` — write the compiled skill to stdout and exit 0.
+///
+/// Contacts no server and reads no config, which is what makes it safe to run
+/// from anywhere, including a pane that has no server behind it yet.
+fn run_skill() -> ExitCode {
+    // `output::bytes` rather than `print!`: a reader that hangs up
+    // (`phux skill | head`) must end the process in silence like every other
+    // stdout write in this crate. Raw bytes rather than `out!` because the
+    // payload is a whole document, not a formatted line — the same path
+    // `phux completion` uses. The file ends in exactly one newline, so
+    // nothing is appended.
+    output::bytes(SKILL.as_bytes());
+    ExitCode::SUCCESS
+}
 
 /// Whether this invocation will enter the interactive TUI (raw mode +
 /// alt screen) and therefore MUST keep logs off stderr.
@@ -656,9 +689,18 @@ fn main() -> ExitCode {
             json: json.json,
             socket,
         }),
-        Some(Command::Watch { session, json }) => {
-            commands::watch::run_watch(session.as_deref(), json.json, socket)
-        }
+        Some(Command::Watch {
+            session,
+            until,
+            timeout,
+            json,
+        }) => commands::watch::run_watch(commands::watch::WatchArgs {
+            session: session.as_deref(),
+            until: &until,
+            timeout,
+            json: json.json,
+            socket,
+        }),
         Some(Command::Rec {
             target,
             out,
@@ -754,6 +796,7 @@ fn main() -> ExitCode {
             json,
         }) => commands::pair::run_pair(tokens, cert, qr, host, name, json),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell),
+        Some(Command::Skill {}) => run_skill(),
         Some(Command::Worktree(action)) => commands::worktree::run_worktree(&action, socket),
         Some(Command::Doctor { json }) => commands::doctor::run_doctor(json, socket),
         Some(Command::Logs {

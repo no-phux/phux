@@ -27,16 +27,29 @@ pub(crate) struct Screen<'a> {
 }
 
 /// A named sub-slice of [`Screen`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
+///
+/// Two variants carry a **line count**: the bottom-anchored and top-anchored
+/// windows are not one region but a family of them. `bottom-lines(1)` is a
+/// precise anchor on the status row an agent repaints every frame;
+/// `bottom-lines(14)` reaches a whole multi-row footer block. Collapsing the
+/// family to a single hardcoded 6 forced every manifest author to write a rule
+/// against whichever of those two the constant happened to be, and the
+/// mismatch is silent: the region resolves, the predicate simply never fires,
+/// and the detector's fail-safe reports `idle` forever (ADR-0046 Tradeoffs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Region {
     /// The OSC 0/2 window title. The cheapest and highest-value signal:
     /// it flips the instant the agent's state changes, costs no grid lock
     /// and no allocation, and agent CLIs already maintain it.
     Title,
-    /// The last [`BOTTOM_LINES`] **non-empty** rows, in screen order. Where
-    /// a TUI agent paints its status line and key hints.
-    BottomLines,
+    /// The last N **non-empty** rows, in screen order. Where a TUI agent
+    /// paints its status line and key hints. Spelled `bottom-lines` (N
+    /// defaults to [`DEFAULT_BOTTOM_LINES`]) or `bottom-lines(N)`.
+    BottomLines(u16),
+    /// The first N **non-empty** rows, in screen order. For agents that paint
+    /// a persistent header banner. Spelled `top-non-empty-lines` (N defaults
+    /// to [`DEFAULT_TOP_NON_EMPTY_LINES`]) or `top-non-empty-lines(N)`.
+    TopNonEmptyLines(u16),
     /// Everything below the last horizontal rule (see [`is_rule`]). Agents
     /// that separate their transcript from their live chrome with a rule
     /// make this the exact "live chrome" slice.
@@ -51,38 +64,131 @@ pub(crate) enum Region {
 }
 
 impl Region {
-    /// Every region a manifest may name, in the order the offline explainer
-    /// previews them: cheapest and most structural first.
+    /// The regions the offline explainer previews unconditionally, in the
+    /// order it prints them: cheapest and most structural first.
     ///
-    /// Exhaustive by construction — [`Self::as_str`] matches on the same
-    /// variants, so adding one without extending this list fails to compile
-    /// there and is caught by `every_region_is_previewable`.
+    /// The parameterized variants appear here in their **default** spelling
+    /// only — there is no enumerating `bottom-lines(N)` for every N. A
+    /// manifest that names a non-default window gets that window previewed
+    /// too; see [`crate::agent_detect::rules::CompiledManifest::explain`],
+    /// which unions this list with the regions its rules actually read. That
+    /// union is the property that matters: "the region I scoped my rule to is
+    /// empty" is the failure the explainer exists to make visible, and it
+    /// cannot show it for a window it never resolved.
     pub(crate) const ALL: [Self; 5] = [
         Self::Title,
         Self::PromptBox,
         Self::AfterLastRule,
-        Self::BottomLines,
+        Self::BottomLines(DEFAULT_BOTTOM_LINES),
         Self::Viewport,
     ];
 
-    /// The kebab-case word a manifest spells this region with.
+    /// The spelling a manifest writes this region with, N included.
     ///
-    /// The `Deserialize` derive owns the parse direction; this is the render
-    /// direction, so `phux agent explain` can name a region in exactly the
-    /// spelling an operator has to type back into their TOML.
-    pub(crate) const fn as_str(self) -> &'static str {
+    /// Returns an owned `String` rather than a `&'static str` because the
+    /// parameterized forms have no static spelling. This is the render
+    /// direction of [`Self::parse`], and the round trip is pinned by
+    /// `every_region_round_trips_its_manifest_spelling`: what the explainer
+    /// prints is exactly what an operator types back into their TOML,
+    /// including the N it resolved.
+    pub(crate) fn as_str(self) -> String {
         match self {
-            Self::Title => "title",
-            Self::BottomLines => "bottom-lines",
-            Self::AfterLastRule => "after-last-rule",
-            Self::PromptBox => "prompt-box",
-            Self::Viewport => "viewport",
+            Self::Title => "title".to_owned(),
+            Self::BottomLines(n) if n == DEFAULT_BOTTOM_LINES => "bottom-lines".to_owned(),
+            Self::BottomLines(n) => format!("bottom-lines({n})"),
+            Self::TopNonEmptyLines(n) if n == DEFAULT_TOP_NON_EMPTY_LINES => {
+                "top-non-empty-lines".to_owned()
+            }
+            Self::TopNonEmptyLines(n) => format!("top-non-empty-lines({n})"),
+            Self::AfterLastRule => "after-last-rule".to_owned(),
+            Self::PromptBox => "prompt-box".to_owned(),
+            Self::Viewport => "viewport".to_owned(),
+        }
+    }
+
+    /// Parse a manifest's `region = "..."` string.
+    ///
+    /// Accepts a bare word, or a word with a parenthesized line count on the
+    /// two windowed regions. The error text is the whole diagnostic an author
+    /// gets: a rejected region drops the manifest whole (ADR-0046 point 4), so
+    /// it has to say which spelling was wrong and why.
+    fn parse(spec: &str) -> Result<Self, String> {
+        let trimmed = spec.trim();
+        let (word, arg) = match trimmed.strip_suffix(')') {
+            Some(head) => match head.split_once('(') {
+                Some((word, count)) => (word.trim(), Some(count.trim())),
+                None => return Err(format!("region `{spec}`: `)` without a matching `(`")),
+            },
+            None => (trimmed, None),
+        };
+
+        // A count on a region that has no window is an authoring mistake that
+        // would otherwise be silently ignored — exactly the failure class
+        // `deny_unknown_fields` closes off elsewhere in this schema.
+        let unwindowed = |region: Self| -> Result<Self, String> {
+            if arg.is_some() {
+                return Err(format!("region `{spec}`: `{word}` takes no line count"));
+            }
+            Ok(region)
+        };
+        let windowed = |default: u16| -> Result<u16, String> {
+            let Some(text) = arg else { return Ok(default) };
+            let count: u16 = text
+                .parse()
+                .map_err(|_| format!("region `{spec}`: `{text}` is not a line count"))?;
+            if count == 0 {
+                return Err(format!(
+                    "region `{spec}`: a line count of 0 selects nothing, so no rule scoped \
+                     to it could ever match"
+                ));
+            }
+            // Clamped, not rejected: an N past the tallest plausible viewport
+            // asks for "all of them", which is a coherent request and is what
+            // the extractor already does. Rejecting it would fail a manifest
+            // over a harmless overshoot.
+            Ok(count.min(MAX_REGION_LINES))
+        };
+
+        match word {
+            "title" => unwindowed(Self::Title),
+            "after-last-rule" => unwindowed(Self::AfterLastRule),
+            "prompt-box" => unwindowed(Self::PromptBox),
+            "viewport" => unwindowed(Self::Viewport),
+            "bottom-lines" => Ok(Self::BottomLines(windowed(DEFAULT_BOTTOM_LINES)?)),
+            "top-non-empty-lines" => Ok(Self::TopNonEmptyLines(windowed(
+                DEFAULT_TOP_NON_EMPTY_LINES,
+            )?)),
+            _ => Err(format!(
+                "region `{spec}`: unknown region; expected one of title, prompt-box, \
+                 after-last-rule, bottom-lines[(N)], top-non-empty-lines[(N)], viewport"
+            )),
         }
     }
 }
 
-/// How many trailing non-empty rows [`Region::BottomLines`] yields.
-const BOTTOM_LINES: usize = 6;
+impl<'de> serde::Deserialize<'de> for Region {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
+/// How many trailing non-empty rows a bare `bottom-lines` yields.
+///
+/// Unchanged from the hardcoded constant it replaces, so every manifest
+/// written before the region took a parameter keeps its exact meaning.
+const DEFAULT_BOTTOM_LINES: u16 = 6;
+
+/// How many leading non-empty rows a bare `top-non-empty-lines` yields.
+///
+/// One, not six: a header banner is a banner because it is the first row, and
+/// the only shipped use of a top-anchored region anywhere (herdr's grok
+/// manifest) reads exactly one row.
+const DEFAULT_TOP_NON_EMPTY_LINES: u16 = 1;
+
+/// The largest window either parameterized region will resolve. Past this an
+/// N is clamped, not rejected — see [`Region::parse`].
+const MAX_REGION_LINES: u16 = 512;
 
 /// How many non-empty, non-box rows [`Region::PromptBox`] may skip while
 /// scanning up from the bottom before it gives up.
@@ -159,23 +265,39 @@ pub(crate) fn extract<'a>(region: Region, screen: &Screen<'a>) -> Vec<&'a str> {
     match region {
         Region::Title => vec![screen.title],
         Region::Viewport => screen.lines.iter().map(String::as_str).collect(),
-        Region::BottomLines => bottom_lines(screen.lines),
+        Region::BottomLines(count) => bottom_lines(screen.lines, count as usize),
+        Region::TopNonEmptyLines(count) => top_non_empty_lines(screen.lines, count as usize),
         Region::AfterLastRule => after_last_rule(screen.lines),
         Region::PromptBox => prompt_box(screen.lines),
     }
 }
 
-/// The last [`BOTTOM_LINES`] non-empty rows, in screen order.
-fn bottom_lines(lines: &[String]) -> Vec<&str> {
+/// The last `count` non-empty rows, in screen order.
+fn bottom_lines(lines: &[String], count: usize) -> Vec<&str> {
     let mut picked: Vec<&str> = lines
         .iter()
         .rev()
         .map(String::as_str)
         .filter(|l| !l.trim().is_empty())
-        .take(BOTTOM_LINES)
+        .take(count)
         .collect();
     picked.reverse();
     picked
+}
+
+/// The first `count` non-empty rows, in screen order.
+///
+/// Empty rows are skipped rather than counted, for the same reason
+/// [`bottom_lines`] skips them: an agent's banner sits under however much
+/// leading padding its layout happens to produce that frame, and a window that
+/// counted blanks would drift off the banner as the padding changed.
+fn top_non_empty_lines(lines: &[String], count: usize) -> Vec<&str> {
+    lines
+        .iter()
+        .map(String::as_str)
+        .filter(|l| !l.trim().is_empty())
+        .take(count)
+        .collect()
 }
 
 /// Everything strictly below the last horizontal rule.
@@ -300,26 +422,148 @@ mod tests {
         Screen { title, lines: buf }
     }
 
-    /// `Region::ALL` is what `phux agent explain` previews. A region missing
-    /// from it is a region an operator can name in a manifest but never see
-    /// the resolved text of — which is the exact blindness the offline
-    /// explainer exists to remove.
+    /// Whatever the explainer prints, an operator must be able to type back
+    /// into their TOML and get the same region. That round trip is the whole
+    /// contract between [`Region::as_str`] and [`Region::parse`], and it has
+    /// to hold for the parameterized forms too — a preview that said
+    /// `bottom-lines` for a `bottom-lines(14)` rule would send an author to
+    /// debug the wrong window.
     #[test]
-    fn every_region_is_previewable_and_round_trips_its_manifest_spelling() {
+    fn every_region_round_trips_its_manifest_spelling() {
         let buf = lines(&["x"]);
-        for region in Region::ALL {
+        let cases = [
+            Region::Title,
+            Region::PromptBox,
+            Region::AfterLastRule,
+            Region::Viewport,
+            Region::BottomLines(6),
+            Region::BottomLines(1),
+            Region::BottomLines(14),
+            Region::TopNonEmptyLines(1),
+            Region::TopNonEmptyLines(3),
+        ];
+        for region in cases {
             let word = region.as_str();
             let parsed: Region = serde_json::from_str(&format!("\"{word}\""))
                 .unwrap_or_else(|e| panic!("`{word}` must parse back as a region: {e}"));
-            assert_eq!(parsed, region);
+            assert_eq!(parsed, region, "round trip through `{word}`");
             // And it extracts without panicking on a degenerate screen.
             let _ = extract(region, &screen("t", &buf));
         }
-        // Every variant is listed exactly once.
-        let mut seen: Vec<&str> = Region::ALL.iter().map(|r| r.as_str()).collect();
+        // `ALL` lists each previewed region exactly once.
+        let mut seen: Vec<String> = Region::ALL.iter().map(|r| r.as_str()).collect();
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), Region::ALL.len());
+    }
+
+    /// The bare spellings are the ones every shipped manifest already uses.
+    /// They must keep their exact pre-parameterization meaning, or this change
+    /// silently rewrites five manifests' rules.
+    #[test]
+    fn a_bare_windowed_region_keeps_its_historical_default() {
+        assert_eq!(
+            serde_json::from_str::<Region>("\"bottom-lines\"").expect("parses"),
+            Region::BottomLines(6),
+            "bare `bottom-lines` is still the last six non-empty rows",
+        );
+        assert_eq!(
+            serde_json::from_str::<Region>("\"top-non-empty-lines\"").expect("parses"),
+            Region::TopNonEmptyLines(1),
+        );
+    }
+
+    #[test]
+    fn a_windowed_region_parses_its_line_count() {
+        for (spec, want) in [
+            ("bottom-lines(1)", Region::BottomLines(1)),
+            ("bottom-lines(14)", Region::BottomLines(14)),
+            ("bottom-lines( 8 )", Region::BottomLines(8)),
+            ("top-non-empty-lines(3)", Region::TopNonEmptyLines(3)),
+        ] {
+            let got: Region = serde_json::from_str(&format!("\"{spec}\"")).expect("parses");
+            assert_eq!(got, want, "{spec}");
+        }
+    }
+
+    /// An N past the tallest plausible viewport is a harmless overshoot that
+    /// already means "all of them", so it clamps. A zero is not: it selects
+    /// nothing, so a rule scoped to it can never match and the detector fails
+    /// safe to idle forever — the silent failure ADR-0046's Tradeoffs section
+    /// is about. That one is rejected, which drops the manifest whole and says
+    /// so out loud.
+    #[test]
+    fn a_windowed_region_clamps_a_huge_count_and_rejects_zero() {
+        let clamped: Region = serde_json::from_str("\"bottom-lines(60000)\"").expect("clamps");
+        assert_eq!(clamped, Region::BottomLines(512));
+
+        for spec in ["bottom-lines(0)", "top-non-empty-lines(0)"] {
+            let err = serde_json::from_str::<Region>(&format!("\"{spec}\""))
+                .expect_err("a zero-line window must be rejected")
+                .to_string();
+            assert!(err.contains("selects nothing"), "{spec}: {err}");
+        }
+    }
+
+    /// A count on a region that has no window, a malformed parenthesis, or an
+    /// unknown word must all FAIL rather than be quietly reinterpreted. A
+    /// silently-ignored region spec is the same class of trap as a
+    /// silently-ignored flag: the rule loads, reads the wrong text, and never
+    /// fires.
+    #[test]
+    fn a_malformed_region_spec_is_rejected_rather_than_reinterpreted() {
+        for (spec, needle) in [
+            ("title(3)", "takes no line count"),
+            ("viewport(1)", "takes no line count"),
+            ("prompt-box(2)", "takes no line count"),
+            ("bottom-lines(x)", "is not a line count"),
+            ("bottom-lines)", "without a matching"),
+            ("bottom_lines", "unknown region"),
+            ("bottom-lines(-1)", "is not a line count"),
+        ] {
+            let err = serde_json::from_str::<Region>(&format!("\"{spec}\""))
+                .map(Region::as_str)
+                .expect_err("must be rejected");
+            let err = err.to_string();
+            assert!(
+                err.contains(needle),
+                "{spec}: wanted `{needle}`, got `{err}`"
+            );
+        }
+    }
+
+    #[test]
+    fn a_windowed_bottom_region_takes_exactly_n_non_empty_rows() {
+        let buf = lines(&["1", "", "2", "3", "", "4", "5", "6", "7", "8", ""]);
+        assert_eq!(
+            extract(Region::BottomLines(1), &screen("", &buf)),
+            vec!["8"],
+            "N=1 is a precise anchor on the last painted row",
+        );
+        assert_eq!(
+            extract(Region::BottomLines(3), &screen("", &buf)),
+            vec!["6", "7", "8"],
+        );
+        assert_eq!(
+            extract(Region::BottomLines(512), &screen("", &buf)),
+            vec!["1", "2", "3", "4", "5", "6", "7", "8"],
+            "a window wider than the screen is the whole screen, blanks dropped",
+        );
+    }
+
+    #[test]
+    fn top_non_empty_lines_takes_the_first_n_non_empty_rows_in_screen_order() {
+        let buf = lines(&["", "  banner  ", "", "second", "third", "fourth"]);
+        assert_eq!(
+            extract(Region::TopNonEmptyLines(1), &screen("", &buf)),
+            vec!["  banner  "],
+            "leading blanks are skipped, not counted",
+        );
+        assert_eq!(
+            extract(Region::TopNonEmptyLines(3), &screen("", &buf)),
+            vec!["  banner  ", "second", "third"],
+        );
+        assert!(extract(Region::TopNonEmptyLines(2), &screen("", &[])).is_empty());
     }
 
     #[test]
@@ -341,7 +585,7 @@ mod tests {
     #[test]
     fn bottom_lines_takes_last_six_non_empty_in_screen_order() {
         let buf = lines(&["1", "", "2", "3", "", "4", "5", "6", "7", "8", ""]);
-        let got = extract(Region::BottomLines, &screen("", &buf));
+        let got = extract(Region::BottomLines(6), &screen("", &buf));
         assert_eq!(got, vec!["3", "4", "5", "6", "7", "8"]);
     }
 
@@ -349,7 +593,7 @@ mod tests {
     fn bottom_lines_on_short_screen_takes_what_exists() {
         let buf = lines(&["only"]);
         assert_eq!(
-            extract(Region::BottomLines, &screen("", &buf)),
+            extract(Region::BottomLines(6), &screen("", &buf)),
             vec!["only"]
         );
     }

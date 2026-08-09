@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-08
+last-reviewed: 2026-08-09
 ---
 
 # 0075 — Agent names are addressable, and a withdrawn name is refused
@@ -56,9 +56,10 @@ now and expensive later.
    and "we did not finish looking" must not collapse into one silence. The cost
    is named, not assumed: `send-keys`/`paste` have no exit 2 today
    (`agents.md` §5.2) and gain one; `run` mirrors its child's status, so a
-   refusal there stays exit 1 in words; exit 3 means "phux could not answer" —
-   [ADR-0076](./0076-agent-prompt-and-lifecycle-wait.md)'s reading — not
-   "retry".
+   refusal there stays exit 1 in words; and exit 3 keeps the meaning
+   `crates/phux/src/exit_codes.rs` publishes and `docs/reference/exit-codes.md`
+   renders — the answer was taken against a partial view, so unlike a `1` the
+   target may exist and a retry is correct once the link is back.
 
 4. **Uniqueness is enforced at resolve, and `%` addresses chosen names.** The
    addressable grammar is `^[a-z][a-z0-9_-]{0,31}$`, checked at parse time so a
@@ -89,28 +90,41 @@ now and expensive later.
    resolves normally. This is a **safety gate and it reads the level**: a
    non-`unknown` state asserts only that no state-bearing rule contradicts it
    right now — absence of contrary evidence, equally true of a crashed pane —
-   never that the occupant is who you named. Read-only verbs skip it.
+   never that the occupant is who you named. Read-only verbs skip it. **This
+   ADR owns that gate for every input-delivering verb, however the target was
+   spelled**, because it is a property of writing into an agent and not of one
+   verb: [ADR-0076](./0076-agent-prompt-and-lifecycle-wait.md) point 4 cites it
+   rather than restating it, and contributes only the orthogonal
+   `(kind, name)` comparison the shipped `phux agent send-keys
+   --expect-agent/--expect-kind` already performs.
 
 6. **What that leaves unprotected, stated exactly.** A name never outlives its
    pane (§3.7 drops the per-Terminal store at close), the agent-gone retraction
    ships, and a declared record is withdrawn rather than pinned when its
    occupant dies ([ADR-0046](./0046-server-side-agent-state-detection.md) points
    8 and 10). An occupant swap and a same-kind restart both land in point 5's
-   guard, because ADR-0046 point 11 pairs the correction with `unknown`. What is
-   left: the correction is only as prompt as the ~5 s identity cadence and its
-   vacancy confirmation, so a `%name` resolved inside that window can still
-   address the pane's new occupant.
+   guard: ADR-0046 point 11 pairs the correction with `unknown`, and that
+   shipped — the detector retains the foreground pgid, so a same-kind restart is
+   an identity change rather than being invisible, and `compose` reasserts a
+   kind the detector itself authored. Two holes are left, and both are filed.
+   The correction is only as prompt as the ~5 s identity cadence and its vacancy
+   confirmation, so a `%name` resolved inside that window still addresses the
+   pane's new occupant (phux-w7z2.43 adds the pgid start time). And a pane whose
+   `kind` an explicit writer set — every pane running the shipped Claude shim —
+   keeps that `kind` through the correction, because §3.7 requires a server to
+   preserve an identity-only declaration's fields (phux-w7z2.45).
 
 7. **Two dependencies, named rather than assumed.** (a) The shipped Claude shim
    wrote `--state` on every hook, standing the detector down on every Claude
    pane; it now declares `--name claude --kind claude` and nothing else. It
    keeps the manifest-constant name deliberately — a per-pane name there makes
    every shipped `--expect-agent claude` script refuse, and per-pane naming is
-   an explicit writer's job under point 4. (b) Closing point 6's hole is an
-   ADR-0046 change this ADR does not own: a `compose` that lets a detector
-   `kind` replace a detector prior, and a corrective single `SET` on an identity
-   change — not a `Retract`, whose tombstone opens a hole a concurrent wait
-   reads as death.
+   an explicit writer's job under point 4. (b) Point 6's guard is an ADR-0046
+   mechanism this ADR does not own and no longer waits for: a `compose` that
+   lets a detector `kind` replace a detector prior, plus a corrective single
+   `SET` on an identity change — not a `Retract`, whose tombstone opens a hole a
+   concurrent wait reads as death. Both shipped, so `%name` inherits the guard
+   rather than blocking on it.
 
 ## Why
 
@@ -135,7 +149,8 @@ makes the claim true rather than assuming it.
 - Point 3's third outcome is a client refactor, not reuse: the index moves into
   `phux-client` and `resolve_targets` gains a `Result` at every CLI and MCP site.
 - Point 7(b) closes the occupant-swap and same-kind-restart holes at the
-  identity cadence, not instantly; inside that window `%name` still retargets.
+  identity cadence, not instantly, and not at all on a pane whose `kind` an
+  explicit writer set; inside those gaps `%name` still retargets input.
 - Two name grammars leave some records listed but unaddressable, a session
   named `%foo` unaddressable, and a hub and satellite `build` each look unique.
 - An explicitly declared record locks the detector out while its occupant lives

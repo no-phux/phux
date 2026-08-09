@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-08
+last-reviewed: 2026-08-09
 ---
 
 # 0078 — Harvesting alternate-screen history
@@ -9,8 +9,9 @@ last-reviewed: 2026-08-08
 **TL;DR.** Full-screen agents keep their transcript where no `--scrollback`
 reaches it. The server may harvest it by driving the application's own
 scrollback with synthesized wheel events — opt-in per call, primary-only,
-lease-acquiring, actor-owned, always restored, returned in its own array. It is
-a multi-week subsystem, and the one read that moves a pane.
+lease-acquiring, actor-owned, restored by an obligation the actor owns rather
+than the caller, returned in its own array. It is a multi-week subsystem, and
+the one read that moves a pane.
 
 Status: Proposed
 Date: 2026-08-08
@@ -28,11 +29,16 @@ driven by input — a read that writes. That is why this was split out of
 needs the input lease, needs a wire capability bit, and is larger than
 everything else in its wave combined.
 
-**One empirical prerequisite.** Nothing in this tree establishes that the named
-agents use the alternate screen; the manifests in `crates/phux-server/rules/`
-key on titles and regions, not screen mode. If either paints to the primary
-screen, `--scrollback` already answers the motivating question. Capture live
-viewports before accepting this ADR — the Tradeoffs of
+**One empirical prerequisite, now partly discharged.** That the named agents
+paint to the alternate screen *is* established in this tree, though not by the
+manifests, which key on titles and regions rather than screen mode:
+`crates/phux-server/src/grid/synthesizer.rs` documents a shipped fix whose bug
+report names "opencode, Claude Code" as mouse-tracking TUIs and "on the alt
+screen with 1007 set" as the failing path, with a regression test that writes
+`\x1b[?1049h` plus the mouse modes. What remains unestablished is the part the
+fixtures actually gate: rows per wheel notch, repaint settle time, and the seam
+a merge has to splice. Capture live viewports before accepting this ADR — the
+Tradeoffs of
 [ADR-0046](./0046-server-side-agent-state-detection.md) record what writing
 against an imagined TUI cost last time.
 
@@ -106,7 +112,12 @@ against an imagined TUI cost last time.
    capture, and detector publication freezes by extending ADR-0046's existing
    `skip-state-update` clause — a deliberately scrolled alt screen is the
    transcript-viewer case that clause already names — rather than by inventing a
-   second freeze the implementation would then build twice.
+   second freeze the implementation would then build twice. That freeze is
+   visible to other consumers and this ADR owns saying so: for the traversal's
+   duration a `GET_METADATA` on that Terminal returns the settle-phase value,
+   not a current one, and an
+   [ADR-0076](./0076-agent-prompt-and-lifecycle-wait.md) `agent wait` on the
+   same pane observes no edge — bounded and self-healing, never lost.
 
 7. **Restore has two primitives, not one absolute, and three aborts.** A
    graceful phase handles soft exits; a synchronous inverse burst runs one line
@@ -136,7 +147,9 @@ against an imagined TUI cost last time.
    and `agent explain` paragraphs stay untouched, because those paths cannot
    trigger a harvest. MCP's `phux_snapshot` does **not** gain the flag, its
    arguments being frozen at 1.0
-   ([ADR-0071](./0071-what-phux-1-0-commits-to.md) §1).
+   ([ADR-0071](./0071-what-phux-1-0-commits-to.md) point 1 — itself still
+   Proposed, so this is a commitment to the freeze's shape rather than a
+   consequence of it).
 
 ## Why
 

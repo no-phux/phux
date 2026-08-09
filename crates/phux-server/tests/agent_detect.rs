@@ -907,6 +907,123 @@ fn a_kind_change_never_leaves_a_stale_kind_beside_a_live_state() {
     });
 }
 
+/// THE .45 case, end to end, and the one the .27 fix could not reach.
+///
+/// The Claude hook shim declares `--name claude --kind claude` at
+/// `SessionStart`, so every shim pane carries an EXPLICIT kind — and
+/// `docs/spec/L3.md` §3.7 requires a server to preserve the `kind` of an
+/// identity-only declaration. The .27 correction works by reasserting the kind
+/// the DETECTOR authored, so on a shim pane it cannot run: after a
+/// `claude` -> `codex` handover the record kept `kind: claude` and then took
+/// codex's derived state beside it. Fresh state, present name, and a kind that
+/// was a lie — on the largest population of panes phux instruments.
+///
+/// The server may not overwrite their field. So it stops asserting a state it
+/// cannot attribute honestly (§3.7's withdrawal bullet names this exact
+/// evidence: "the PTY's foreground process group ... resolves to a different
+/// one"), and the pane lands on the WITHDRAWN shape that ADR-0075 point 6's
+/// `%name` write gate refuses.
+///
+/// The assertion is deliberately the invariant and not the mechanism: NO
+/// record, at any point, may pair `kind: claude` with a live state once codex
+/// owns the pane.
+#[test]
+fn a_declared_kind_never_gains_a_state_derived_from_a_different_occupant() {
+    shorten_startup_grace();
+    shorten_identify_recheck();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let codex = write_fake_codex(tmp.path());
+        let depart = tmp.path().join("depart");
+        let agent =
+            write_fake_agent_departing_on(tmp.path(), &depart, &codex.display().to_string());
+
+        let cmd = CommandBuilder::new(&agent);
+        let (shutdown_tx, server_handle) =
+            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        send_frame(&mut stream, &attach_by_name("demo")).await;
+        let (_type_byte, attached) = recv_typed(&mut stream).await;
+        let FrameKind::Attached { snapshot, .. } = attached else {
+            panic!("expected ATTACHED");
+        };
+        let terminal = snapshot.focused_pane.clone();
+
+        send_frame(
+            &mut stream,
+            &FrameKind::SubscribeMetadata {
+                scope: Scope::Terminal(terminal.clone()),
+                key: TERMINAL_AGENT_KEY.to_owned(),
+            },
+        )
+        .await;
+
+        assert!(
+            await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE)
+                .await
+                .is_some(),
+            "precondition: claude was never detected in this pane",
+        );
+
+        // The shim's identity write. No `--state`, so the detector keeps
+        // running; `kind` is now an explicit writer's, and the server has to
+        // preserve it.
+        send_frame(
+            &mut stream,
+            &FrameKind::SetMetadata {
+                request_id: 11,
+                scope: Scope::Terminal(terminal.clone()),
+                key: TERMINAL_AGENT_KEY.to_owned(),
+                value: br#"{"name":"claude","kind":"claude"}"#.to_vec(),
+            },
+        )
+        .await;
+
+        std::fs::write(&depart, b"go").expect("signal the handover");
+
+        // Collect every record the subscriber sees until the pane has settled
+        // on `unknown` under the preserved kind. A run that never settles ends
+        // at the deadline with whatever it saw, which the assertions below read.
+        let records =
+            collect_agent_records_until(&mut stream, &terminal, DEPARTURE_DEADLINE, |record| {
+                kind_and_state(record) == ("claude", "unknown")
+            })
+            .await;
+        let pairs: Vec<(String, String)> = records
+            .iter()
+            .map(|r| {
+                let (k, s) = kind_and_state(r);
+                (k.to_owned(), s.to_owned())
+            })
+            .collect();
+
+        // THE invariant. Codex is what paints the screen from the handover on,
+        // so any live state under `kind: claude` after the withdrawal is a
+        // state derived from codex attributed to claude.
+        let withdrawn = pairs
+            .iter()
+            .position(|(kind, state)| kind == "claude" && state == "unknown")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the pane never withdrew its state after the occupant changed; the \
+                     record still asserts something about a process that is gone: {pairs:?}"
+                )
+            });
+        assert!(
+            pairs[withdrawn..]
+                .iter()
+                .all(|(kind, state)| kind != "claude" || state == "unknown"),
+            "`kind: claude` may only ever pair with `unknown` once codex owns the pane — \
+             a derived state beside it describes a different process: {pairs:?}",
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
+    });
+}
+
 /// The documented "useful half" of the feature (ADR-0046 §8): a human supplies
 /// the identity, the detector fills the lifecycle in around it. An
 /// identity-only `SET_METADATA` is deliberately NOT a declaration, so the

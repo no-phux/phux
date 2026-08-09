@@ -30,6 +30,12 @@
 #![deny(missing_docs)]
 
 pub mod agent_meta;
+// Acknowledged, idempotent input delivery to an agent (ADR-0053, ADR-0076
+// points 1-4/6/7). Sits above `attach::connection` and beside `agent_wait`,
+// whose `EdgeTracker` predicate it reuses rather than re-deriving: `prompt
+// --wait` differs from `agent wait` only in that its subscription, its
+// baseline read, its submit, and its wait all share ONE connection.
+pub mod agent_prompt;
 // Edge-triggered lifecycle wait over `phux.agent/v1` (ADR-0076 point 5).
 // Sits above `watch` (the subscription) and beside `wait` (the poll floor),
 // and is deliberately its own module: its predicate is "an observed

@@ -1,11 +1,14 @@
+mod answer;
 mod config;
 mod detect;
 mod model;
 mod offline;
+mod prompt;
 mod record;
 mod send_keys;
 mod session;
-mod shim;
+pub(crate) mod shim;
+mod start;
 mod wait;
 
 use std::path::{Path, PathBuf};
@@ -143,6 +146,61 @@ pub(crate) enum AgentAction {
         #[arg(long)]
         json: bool,
     },
+    /// Hand an agent a turn's worth of work, with a delivery receipt.
+    ///
+    /// The prompt text and Enter ride ONE acknowledged, idempotent operation,
+    /// so a caller that does not get an answer can ask again under the same
+    /// operation id without risking a duplicate turn — the failure
+    /// fire-and-forget input cannot avoid, because its only recovery is a
+    /// resend. Enter is last, so a partial write can only drop the
+    /// submission and leave unsubmitted text, never submit a truncated
+    /// prompt.
+    ///
+    /// The acknowledged path is required, not preferred: an older server or
+    /// a satellite target is refused rather than downgraded, because a
+    /// success code that means "the bytes are in the kernel queue" on one
+    /// host and "accepted, maybe dropped" on another is not branchable.
+    ///
+    /// An OK is a kernel-queue receipt, not a consumption receipt. If
+    /// delivery comes back UNKNOWN, do not resend: read the pane.
+    ///
+    /// With `--wait` the same process holds one connection across the
+    /// submit, so every state change it sees is strictly post-write, and the
+    /// gate is satisfied only by an observed TRANSITION — never by a level
+    /// read of the current state, which a crashed agent also reads as.
+    ///
+    /// The server has ONE acknowledged input lane, so do not prompt a fleet
+    /// in parallel: serialize it, or all but one caller collides.
+    Prompt {
+        /// Target selector (resolves to one pane).
+        target: String,
+        /// The prompt text. Single-line: a raw newline is refused, because a
+        /// pane that has not enabled bracketed paste turns each one into a
+        /// separate submission and no client can observe that mode.
+        text: String,
+        /// Require the pane's declared agent name to be this one.
+        #[arg(long, value_name = "NAME")]
+        expect_agent: Option<String>,
+        /// Require the pane's declared agent kind slug to be this one.
+        #[arg(long, value_name = "KIND")]
+        expect_kind: Option<String>,
+        /// After delivering, block until the agent transitions into a
+        /// lifecycle state.
+        #[arg(long)]
+        wait: bool,
+        /// Lifecycle state to wait for; repeat to OR several. Defaults to
+        /// `idle`, `blocked`, `done`. Requires `--wait`.
+        #[arg(long, value_name = "STATE", value_parser = ["idle", "working", "blocked", "done"])]
+        until: Vec<String>,
+        /// Give up waiting after this many seconds and exit 124. The prompt
+        /// was still delivered. Requires `--wait`.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
+        /// Emit the machine-readable result document instead of staying
+        /// quiet on success.
+        #[arg(long)]
+        json: bool,
+    },
     /// Send keys to a pane, but only if it still hosts the expected agent.
     ///
     /// The agent-addressed sibling of top-level `phux send-keys`, and it
@@ -152,7 +210,12 @@ pub(crate) enum AgentAction {
     /// checks no identity; use that one when a pane is what you mean.
     ///
     /// Every key is validated before any byte is written, so a typo in the
-    /// third key cannot leave the first two delivered.
+    /// third key cannot leave the first two delivered — and since the whole
+    /// batch now rides ONE acknowledged operation, that all-or-nothing
+    /// promise covers delivery as well as validation. A caller that loses
+    /// the answer can ask again under the same operation id instead of
+    /// guessing whether the keys landed. For prose you want an agent to act
+    /// on, `phux agent prompt` is the verb.
     SendKeys {
         /// Target selector (resolves to one pane).
         target: String,
@@ -171,13 +234,112 @@ pub(crate) enum AgentAction {
         #[arg(long)]
         json: bool,
     },
+    /// Answer a pane's pending agent question by validated choice.
+    ///
+    /// The `asked` event carries the question AND the suggestions the asking
+    /// agent itself published, so an orchestrator can reply with a string the
+    /// agent named instead of a blind keystroke. That is the contract: the
+    /// bytes phux types are always one of the agent's own published answers,
+    /// unless you pass `--allow-unlisted`.
+    ///
+    /// `--id` is required, and the pane must still be asking that exact
+    /// question. Answering one the agent already moved past would type into
+    /// whatever is on screen now, which is the failure this verb exists to
+    /// prevent — so a stale id, an unidentified ask, and a pane that is not
+    /// asking at all are all refusals with nothing written.
+    ///
+    /// The answer rides one acknowledged, idempotent input batch: a trusted
+    /// paste followed by Enter, written and confirmed as a single operation.
+    Answer {
+        /// Target selector (resolves to one pane).
+        target: String,
+        /// The id of the ask being answered, as carried by the `asked`
+        /// event. Required: answering "whatever is being asked right now" is
+        /// a level read, and a level read cannot tell one question from the
+        /// next.
+        #[arg(long, value_name = "ID")]
+        id: String,
+        /// Send the Nth published suggestion, 1-based, verbatim.
+        #[arg(long, value_name = "N", conflicts_with = "text")]
+        choice: Option<usize>,
+        /// Send exactly this text. Refused when the ask published a
+        /// suggestion set and this is not in it (see `--allow-unlisted`).
+        #[arg(long, value_name = "TEXT")]
+        text: Option<String>,
+        /// Permit a `--text` answer outside the ask's published suggestions.
+        #[arg(long, requires = "text")]
+        allow_unlisted: bool,
+        /// Emit machine-readable JSON instead of the one-line confirmation.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start an agent INSIDE an existing shell pane, and return when it is
+    /// ready for input.
+    ///
+    /// The layout-free sibling of `phux launch`: it creates, splits, and
+    /// moves nothing. `launch` returns a Terminal id ("a pane now exists");
+    /// this returns a readiness assertion about a pane that already existed,
+    /// which is a different success statement and therefore a different verb.
+    /// The launch resolver is shared — the same integration template, the
+    /// same argv, the same provider-native session identity — only the
+    /// delivery differs: the pane's child is a live shell, so the command is
+    /// typed as one quoted line and submitted as one acknowledged
+    /// `APPLY_INPUT` batch.
+    ///
+    /// Ready is the FIRST detector publication after submit, not
+    /// `state == idle`. No shipped detection manifest asserts `idle`
+    /// positively — it is the fail-safe fallthrough — so a gate built on it
+    /// would report ready for a pane where nothing launched. `--json`
+    /// therefore reports the provenance of the answer (which rule matched, or
+    /// that none did) rather than an opaque word.
+    ///
+    /// A `--kind` with no detection manifest is refused up front: without one
+    /// the readiness contract is unenforceable and the verb could only time
+    /// out, after having typed into the pane. `phux launch` and `phux spawn`
+    /// keep working for any agent whatsoever, because neither promises
+    /// readiness.
+    Start {
+        /// Human-facing agent name to bind to the pane. Must match
+        /// `^[a-z][a-z0-9_-]{0,31}$` so `%NAME` can address it afterwards.
+        name: String,
+        /// Detection-manifest kind the started agent must identify as
+        /// (`claude`, `codex`, ...). `phux agent explain --file` lists the
+        /// loaded roster.
+        #[arg(long, value_name = "KIND")]
+        kind: String,
+        /// Existing pane to start into. Never created, split, or moved.
+        #[arg(long, value_name = "TARGET")]
+        target: String,
+        /// Launch integration id, when it is not spelled like the kind slug
+        /// (e.g. `--kind claude --integration claude-code`).
+        #[arg(long, value_name = "ID")]
+        integration: Option<String>,
+        /// Give up waiting for readiness after this many seconds and exit
+        /// 124. The command was still typed.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
+        /// Submit and return without claiming readiness (exit 0,
+        /// `ready: false`).
+        #[arg(long)]
+        no_wait: bool,
+        /// Skip the available-shell precondition. Types the launch command
+        /// into the pane whatever is running there.
+        #[arg(long)]
+        force: bool,
+        /// Emit the machine-readable result document instead of a line.
+        #[arg(long)]
+        json: bool,
+        /// Extra arguments appended to the integration's launch command.
+        #[arg(last = true, value_name = "ARGS")]
+        args: Vec<String>,
+    },
     /// Clear a pane's declared agent identity (deletes phux.agent/v1).
     Clear {
         /// Target selector (resolves to one pane). Omit for the focused
         /// pane.
         target: Option<String>,
     },
-    /// Make plain `claude` launch inside phux and publish lifecycle state.
+    /// Make plain `claude` launch inside phux and declare its identity.
     InstallClaude {
         /// Shell rc file to activate (auto-detected from SHELL).
         #[arg(long, value_parser = ["zsh", "bash", "fish"])]
@@ -227,6 +389,23 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             session.as_deref(),
             socket,
         ),
+        AgentAction::Answer {
+            target,
+            id,
+            choice,
+            text,
+            allow_unlisted,
+            json,
+        } => answer::run_agent_answer(
+            target,
+            id,
+            *choice,
+            text.as_deref(),
+            *allow_unlisted,
+            *json,
+            socket,
+        ),
+        AgentAction::Start { .. } => start::run_agent_start(action, socket),
         AgentAction::Clear { target } => run_agent_clear(target.as_deref(), socket),
         AgentAction::Wait {
             target,
@@ -234,6 +413,26 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             timeout,
             json,
         } => wait::run_agent_wait(target.as_deref(), until, *timeout, *json, socket),
+        AgentAction::Prompt {
+            target,
+            text,
+            expect_agent,
+            expect_kind,
+            wait,
+            until,
+            timeout,
+            json,
+        } => prompt::run_agent_prompt(
+            target,
+            text,
+            expect_agent.as_deref(),
+            expect_kind.as_deref(),
+            *wait,
+            until,
+            *timeout,
+            *json,
+            socket,
+        ),
         AgentAction::SendKeys {
             target,
             keys,
@@ -286,12 +485,15 @@ fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
     let (target, json, view) = match action {
         AgentAction::Show { target, json } => (target.as_deref(), *json, AgentView::Show),
         AgentAction::Explain { target, json, .. } => (target.as_deref(), *json, AgentView::Explain),
-        AgentAction::List { .. }
+        AgentAction::Answer { .. }
+        | AgentAction::List { .. }
         | AgentAction::Set { .. }
         | AgentAction::Clear { .. }
         | AgentAction::Wait { .. }
+        | AgentAction::Prompt { .. }
         | AgentAction::SendKeys { .. }
         | AgentAction::InstallClaude { .. }
+        | AgentAction::Start { .. }
         | AgentAction::UninstallClaude => return ExitCode::FAILURE,
     };
     let selector = match parse_selector(target) {

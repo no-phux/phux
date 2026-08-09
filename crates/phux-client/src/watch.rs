@@ -222,6 +222,95 @@ where
     }
 }
 
+/// How a [`watch_bounded`] run ended.
+///
+/// The three endings are genuinely different answers and a caller that
+/// collapses them reports a lie: [`Self::Stopped`] is "the thing you were
+/// waiting for happened", [`Self::TimedOut`] is "it had not happened yet",
+/// and [`Self::Ended`] is "it can no longer happen on this stream". Plain
+/// [`watch_events`] cannot tell the first from the third — both are
+/// `Ok(())` — which is exactly why a gate needs this wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchOutcome {
+    /// The sink returned `false`, i.e. its condition was met. The item that
+    /// met it was handed to the sink before it asked to stop, so a printing
+    /// sink has already rendered it.
+    Stopped,
+    /// `timeout` elapsed with the sink still asking for more. The connection
+    /// is dropped where it stands; a partially-consumed burst is not
+    /// recovered.
+    TimedOut,
+    /// The server closed the stream first (it exited, or the pane's session
+    /// ended) without the sink ever asking to stop.
+    Ended,
+}
+
+/// [`watch_events`] under an optional deadline, reporting *which* of the
+/// three endings occurred.
+///
+/// The primitive behind `phux watch --timeout SECS [--until EVENT]`: a
+/// caller that wants "block until this pane emits `asked`, or 120 seconds"
+/// needs a deadline the stream owns, not an external `sleep`-and-`kill`
+/// around the whole process, and needs to tell a satisfied gate from a
+/// server that went away. `timeout` of `None` streams until the sink stops
+/// it or the server closes, which is exactly [`watch_events`].
+///
+/// The deadline covers the connect too, deliberately: "give me an answer
+/// within N seconds" is not honoured by a call that blocks indefinitely on a
+/// socket that never accepts.
+///
+/// # Errors
+///
+/// Returns [`AttachError`] on connect/transport/protocol failure. A clean
+/// EOF is not an error — it is [`WatchOutcome::Ended`].
+pub async fn watch_bounded<F>(
+    socket: &Path,
+    terminal: Option<TerminalId>,
+    timeout: Option<Duration>,
+    mut sink: F,
+) -> Result<WatchOutcome, AttachError>
+where
+    F: FnMut(WatchItem) -> bool,
+{
+    // Whether the sink asked to stop, recorded through the wrapper because
+    // `watch_events` reports a sink-stop and a server EOF identically.
+    let mut stopped = false;
+    let expired = {
+        let stream = watch_events(socket, terminal, |item| {
+            let keep_going = sink(item);
+            stopped |= !keep_going;
+            keep_going
+        });
+        if let Some(deadline) = timeout {
+            match tokio::time::timeout(deadline, stream).await {
+                Ok(result) => {
+                    result?;
+                    false
+                }
+                // Dropping the future drops the connection: the subscription
+                // is torn down by going away, which is all an un-attached
+                // subscriber has to do.
+                Err(_elapsed) => true,
+            }
+        } else {
+            stream.await?;
+            false
+        }
+    };
+
+    // No stop/expiry race to arbitrate: `tokio::time::timeout` polls the
+    // inner future before the timer, so a sink that stopped on the item that
+    // arrived as the deadline fired still resolves as `Ok`.
+    if expired {
+        return Ok(WatchOutcome::TimedOut);
+    }
+    Ok(if stopped {
+        WatchOutcome::Stopped
+    } else {
+        WatchOutcome::Ended
+    })
+}
+
 /// Bounded one-shot over [`watch_events`]: collect events until `max_events`
 /// are seen, `timeout` elapses, or the server closes — then return them.
 ///
@@ -491,6 +580,149 @@ mod tests {
 
         assert!(matches!(items[0], WatchItem::Event(_)));
         assert!(matches!(items[1], WatchItem::AgentState(_)));
+    }
+
+    // -- watch_bounded ----------------------------------------------------
+
+    /// Drive [`watch_bounded`] against the scripted server, stopping on the
+    /// first item the predicate accepts. `end` decides whether the server
+    /// hangs up after the script (an EOF) or stays connected (so a deadline
+    /// is the only way out).
+    async fn drive_bounded<P>(
+        terminal: Option<TerminalId>,
+        script: Vec<FrameKind>,
+        end: EndOfScript,
+        timeout: Option<Duration>,
+        mut accept: P,
+    ) -> (WatchOutcome, Vec<WatchItem>)
+    where
+        P: FnMut(&WatchItem) -> bool,
+    {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = UnixListener::bind(&socket).expect("bind scripted server");
+        let server = tokio::spawn(async move {
+            ScriptedServer::accept(&listener, ScriptSpec::new().extend(script).end(end)).await
+        });
+        let mut items = Vec::new();
+        let outcome = watch_bounded(&socket, terminal, timeout, |item| {
+            let stop = accept(&item);
+            items.push(item);
+            !stop
+        })
+        .await
+        .expect("scripted transport");
+        // The client's socket is gone either way by now (stopped, expired, or
+        // EOF), so a `ServeUntilDetach` server resolves rather than hanging.
+        server.await.expect("scripted server task");
+        (outcome, items)
+    }
+
+    /// The gate `phux watch --until` is built on: the matching item is
+    /// delivered to the sink *before* the stream stops, so the caller can
+    /// render the event that satisfied it.
+    #[tokio::test]
+    async fn watch_bounded_stops_on_the_first_matching_item_and_still_delivers_it() {
+        let pane = TerminalId::local(7);
+        let (outcome, items) = drive_bounded(
+            Some(pane.clone()),
+            vec![
+                FrameKind::Event {
+                    terminal: Some(pane.clone()),
+                    event: AgentEvent::Dirty,
+                },
+                FrameKind::Event {
+                    terminal: Some(pane.clone()),
+                    event: AgentEvent::Bell,
+                },
+                FrameKind::Event {
+                    terminal: Some(pane.clone()),
+                    event: AgentEvent::Idle,
+                },
+            ],
+            EndOfScript::HangUp,
+            None,
+            |item| matches!(item, WatchItem::Event(ev) if ev.event == AgentEvent::Bell),
+        )
+        .await;
+
+        assert_eq!(outcome, WatchOutcome::Stopped);
+        assert_eq!(
+            items.len(),
+            2,
+            "the matching item is rendered, then the stream stops: {items:?}"
+        );
+        assert!(matches!(&items[1], WatchItem::Event(ev) if ev.event == AgentEvent::Bell));
+    }
+
+    /// An agent-state change satisfies the gate too — it is one item kind on
+    /// the same stream, and `agent_state` is a name `--until` can spell.
+    #[tokio::test]
+    async fn watch_bounded_can_stop_on_an_agent_state_item() {
+        let pane = TerminalId::local(7);
+        let (outcome, items) = drive_bounded(
+            Some(pane.clone()),
+            vec![agent_record(
+                &pane,
+                r#"{"name":"reviewer","state":"blocked"}"#,
+            )],
+            EndOfScript::HangUp,
+            None,
+            |item| matches!(item, WatchItem::AgentState(_)),
+        )
+        .await;
+
+        assert_eq!(outcome, WatchOutcome::Stopped);
+        assert_eq!(items.len(), 1);
+    }
+
+    /// The deadline is the whole point: a server that stays connected and
+    /// says nothing must produce `TimedOut`, not a hang. This is the
+    /// `sleep`-and-`kill` shell workaround's replacement.
+    #[tokio::test]
+    async fn watch_bounded_reports_the_deadline_when_no_item_matches() {
+        let pane = TerminalId::local(7);
+        let (outcome, items) = drive_bounded(
+            Some(pane.clone()),
+            vec![FrameKind::Event {
+                terminal: Some(pane.clone()),
+                event: AgentEvent::Dirty,
+            }],
+            // Stay connected: only the deadline can end this watch.
+            EndOfScript::ServeUntilDetach,
+            Some(Duration::from_millis(150)),
+            |item| matches!(item, WatchItem::Event(ev) if ev.event == AgentEvent::Bell),
+        )
+        .await;
+
+        assert_eq!(outcome, WatchOutcome::TimedOut);
+        assert_eq!(
+            items.len(),
+            1,
+            "the non-matching prefix is still delivered: {items:?}"
+        );
+    }
+
+    /// A server that closes before the awaited event arrives is `Ended`, not
+    /// `Stopped` and not `TimedOut`. A gate that reported success here would
+    /// tell a caller its event happened when the stream carrying it went
+    /// away — the same class of false positive a level read of `idle` makes.
+    #[tokio::test]
+    async fn watch_bounded_distinguishes_a_server_eof_from_a_satisfied_gate() {
+        let pane = TerminalId::local(7);
+        let (outcome, _items) = drive_bounded(
+            Some(pane.clone()),
+            vec![FrameKind::Event {
+                terminal: Some(pane.clone()),
+                event: AgentEvent::Dirty,
+            }],
+            EndOfScript::HangUp,
+            Some(Duration::from_secs(30)),
+            |item| matches!(item, WatchItem::Event(ev) if ev.event == AgentEvent::Bell),
+        )
+        .await;
+
+        assert_eq!(outcome, WatchOutcome::Ended);
     }
 
     /// A server-wide watch has no `(scope, key)` to name, so it subscribes

@@ -21,6 +21,7 @@ use phux_client::attach::AttachError;
 use phux_client::selector::{self, Selector};
 use phux_client::state::{self, StateView};
 use phux_client::wait::{Condition, DEFAULT_IDLE_DWELL, DEFAULT_POLL_INTERVAL, WaitOutcome};
+use phux_client::watch::WatchItem;
 use phux_protocol::ids::TerminalId;
 use phux_protocol::input::paste::PasteTrust;
 use serde_json::{Value, json};
@@ -64,7 +65,7 @@ const TARGET_DESC: &str = "Target selector: session, session:window, \
     reason = "one flat JSON literal — the tool catalog; splitting it hurts readability"
 )]
 pub(crate) fn catalog() -> Value {
-    json!([
+    let mut tools = json!([
         {
             "name": "phux_ls",
             "description": "List phux sessions on the running server (names, window counts, attached-client counts).",
@@ -84,6 +85,8 @@ pub(crate) fn catalog() -> Value {
                     "target": { "type": "string", "description": TARGET_DESC },
                     "scrollback": { "type": "number", "description": "Include scrollback history. 0 = all retained history; N = the most-recent N rows. Omit for the viewport only." },
                     "cells": { "type": "boolean", "description": "When true, include per-cell OSC-133 marks and styles. Default false." },
+                    "tail": { "type": "number", "description": "Return only the last N rendered rows (history, then viewport). 0 = all, capped at 10000. The viewport is a floor — a grid is never returned in part — so a window narrower than the viewport returns more rows than asked, never fewer, and `truncated` reports what was dropped." },
+                    "unwrap": { "type": "boolean", "description": "Join soft-wrapped rows into logical lines (rows as written, not as painted), so a match straddling a wrap is findable. Cannot be combined with `cells`: cell coordinates are grid coordinates and do not survive the join." },
                     "socket": { "type": "string" }
                 }
             }
@@ -173,12 +176,12 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_watch",
-            "description": "Collect server-pushed events (command_started/finished, title_changed, asked, bell, pane_spawned/closed, dirty, idle) for a pane or server-wide. Bounded one-shot: returns after max_events or timeout_secs.",
+            "description": "Collect server-pushed events (command_started/finished, title_changed, asked, bell, pane_spawned/closed, dirty, idle) plus agent_state changes for a pane, or events alone server-wide. Bounded one-shot: returns after max_events or timeout_secs. An agent_state item reports one change to a pane's phux.agent/v1 record — name, kind, session, the new state, effective attention, and `from` when this call already saw a prior record; a present-and-null `state` is the tombstone (the record went away). agent_state items appear ONLY when `target` names a pane: the metadata subscription addresses one Terminal and L3 has no wildcard scope, so a server-wide watch carries events only. Observing an agent reach a state here is not a completion gate — see phux_agent_wait.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "target": { "type": "string", "description": "Pane selector to watch. Omit to watch server-wide events." },
-                    "max_events": { "type": "number", "description": "Return after collecting this many events. Omit for no count cap." },
+                    "target": { "type": "string", "description": "Pane selector to watch. Omit to watch server-wide events (no agent_state items)." },
+                    "max_events": { "type": "number", "description": "Return after collecting this many items, agent_state included. Omit for no count cap." },
                     "timeout_secs": { "type": "number", "description": "Return after this many seconds regardless of count. Strongly recommended — without it the call blocks until the server exits." },
                     "socket": { "type": "string" }
                 }
@@ -190,14 +193,20 @@ pub(crate) fn catalog() -> Value {
         crate::cli_tools::signal_schema(),
         crate::cli_tools::tag_schema(),
         crate::cli_tools::rename_schema(),
-        crate::cli_tools::agent_schema(),
         crate::cli_tools::insert_schema(),
         crate::cli_tools::move_schema(),
         crate::cli_tools::swap_schema(),
         crate::cli_tools::workspace_schema(),
         crate::plugin_action::schema(),
         crate::plugin_workspace::schema(),
-    ])
+    ]);
+    // The `phux_agent_*` family is appended rather than inlined because it
+    // is a list that grows one entry per agent verb, and each entry freezes
+    // its own argument shape (ADR-0071 point 7(b)).
+    if let Value::Array(entries) = &mut tools {
+        entries.extend(crate::agent_tools::schemas());
+    }
+    tools
 }
 
 /// Dispatch a `tools/call` by tool name. Returns the tool's JSON result on
@@ -221,10 +230,12 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
         "phux_watch" => phux_watch(args).await,
         "phux_ask" => crate::ask_tool::call(args).await,
         "phux_launch" | "phux_spawn" | "phux_signal" | "phux_tag" | "phux_rename"
-        | "phux_agent" | "phux_insert_pane" | "phux_move_pane" | "phux_swap_pane"
-        | "phux_workspace" => crate::cli_tools::call(name, args).await,
+        | "phux_insert_pane" | "phux_move_pane" | "phux_swap_pane" | "phux_workspace" => {
+            crate::cli_tools::call(name, args).await
+        }
         "phux_plugin_action" => crate::plugin_action::call(args).await,
         "phux_plugin_workspace" => crate::plugin_workspace::call(args),
+        agent if crate::agent_tools::owns(agent) => crate::agent_tools::call(agent, args).await,
         other => Err(ToolError::new(format!("unknown tool: {other}"))),
     }
 }
@@ -244,11 +255,36 @@ async fn phux_ls(args: &Value) -> Result<Value, ToolError> {
 /// `scrollback` is tri-state, matching `phux snapshot --scrollback`:
 /// absent ⇒ viewport only; `0` ⇒ all retained history; `N` ⇒ the
 /// most-recent `N` rows. `cells` adds per-cell OSC-133 marks + styles.
+/// `tail` and `unwrap` are the ADR-0077 read modifiers.
+///
+/// The read modifiers are the only reason this tool has two paths. They are
+/// **client-side projections** of the same `GET_SCREEN` reply, and the
+/// projection is subtle — unwrap-then-window ordering, the viewport floor,
+/// re-basing `soft_wrap.scrollback` indices after a clip, `truncated_reason`
+/// — so this delegates to the canonical `phux snapshot --json` rather than
+/// keeping a second copy of it here. ADR-0022 §5: MCP is a thin adapter over
+/// the surface the CLI uses, not a separate core. Without a modifier the
+/// direct in-process read stays, because a subprocess for the common read
+/// would be a real cost for no gain; the emitted document is the same
+/// `ScreenState` either way.
 async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
     let socket = socket::resolve(str_arg(args, "socket"));
     let selector = parse_target(args)?;
     let scrollback = u32_arg(args, "scrollback");
     let cells = bool_arg(args, "cells").unwrap_or(false);
+    let tail = u32_arg(args, "tail");
+    let unwrap = bool_arg(args, "unwrap").unwrap_or(false);
+
+    if unwrap && cells {
+        return Err(ToolError::new(
+            "`unwrap` cannot be combined with `cells`: cell coordinates are grid \
+             coordinates and do not survive the join",
+        ));
+    }
+    if tail.is_some() || unwrap {
+        return snapshot_projected(args, scrollback, cells, tail, unwrap).await;
+    }
+
     let view = state::get_state(&socket).await?;
     let terminal_id = resolve_one(&socket, &selector, &view).await?;
     let screen =
@@ -256,6 +292,41 @@ async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
             .await?;
     serde_json::to_value(&screen)
         .map_err(|err| ToolError::new(format!("failed to serialize screen: {err}")))
+}
+
+/// The `tail`/`unwrap` half of [`phux_snapshot`], executed as canonical
+/// `phux snapshot --json` so the ADR-0077 projection has exactly one
+/// implementation.
+async fn snapshot_projected(
+    args: &Value,
+    scrollback: Option<u32>,
+    cells: bool,
+    tail: Option<u32>,
+    unwrap: bool,
+) -> Result<Value, ToolError> {
+    let mut argv = vec!["snapshot".to_owned(), "--json".to_owned()];
+    if let Some(scrollback) = scrollback {
+        argv.extend(["--scrollback".to_owned(), scrollback.to_string()]);
+    }
+    if cells {
+        argv.push("--cells".to_owned());
+    }
+    if let Some(tail) = tail {
+        argv.extend(["--tail".to_owned(), tail.to_string()]);
+    }
+    if unwrap {
+        argv.push("--unwrap".to_owned());
+    }
+    crate::cli_adapter::push_socket(&mut argv, args)?;
+    // `--` before the selector: it is caller-supplied text, and a value
+    // beginning with `-` must reach the selector parser as a bad selector
+    // rather than be read as a flag.
+    if let Some(target) = crate::cli_adapter::bounded_string(args, "target", false)? {
+        argv.extend(["--".to_owned(), target]);
+    }
+    crate::cli_adapter::CliAdapter::discover()
+        .run_json(argv, crate::cli_adapter::DEFAULT_CALL_TIMEOUT)
+        .await
 }
 
 /// `phux_send_keys` — send input to the pane named by the selector.
@@ -411,16 +482,26 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     Ok(json!({ "schema_version": 1, "killed": true, "target": target }))
 }
 
-/// `phux_watch` — collect server-pushed agent events, bounded.
+/// `phux_watch` — collect server-pushed watch items, bounded.
 ///
 /// The streaming `phux watch` doesn't fit a request/response tool call, so
 /// this returns a finite batch: it stops at `max_events`, after
 /// `timeout_secs`, or when the server closes, whichever comes first, and
-/// returns the collected events as structured JSON. Omitting both bounds
+/// returns the collected items as structured JSON. Omitting both bounds
 /// blocks until the server exits — callers SHOULD pass `timeout_secs`.
+///
+/// It collects [`WatchItem`]s rather than calling
+/// `phux_client::watch::collect_events`, which filters agent-state changes
+/// out on purpose: that collector's contract is the `EVENT` taxonomy, and
+/// widening it is a decision about *this* document, not about the streaming
+/// layer. Both kinds ride one connection, so the returned array preserves
+/// the order the server pushed them in — an `agent_state` line sits exactly
+/// where it happened relative to the surrounding events.
 async fn phux_watch(args: &Value) -> Result<Value, ToolError> {
     let socket = socket::resolve(str_arg(args, "socket"));
-    // `target` is optional: absent ⇒ server-wide subscription.
+    // `target` is optional: absent ⇒ server-wide subscription, which carries
+    // no agent-state items (`SUBSCRIBE_METADATA` names one Terminal and L3
+    // has no wildcard scope).
     let terminal = match str_arg(args, "target") {
         None => None,
         Some(raw) => {
@@ -430,17 +511,113 @@ async fn phux_watch(args: &Value) -> Result<Value, ToolError> {
             Some(resolve_one(&socket, &selector, &view).await?)
         }
     };
-    let max_events = num_arg(args, "max_events").and_then(|n| usize::try_from(n).ok());
+    let max_items = num_arg(args, "max_events").and_then(|n| usize::try_from(n).ok());
     let timeout = num_arg(args, "timeout_secs").map(Duration::from_secs);
 
-    let events = phux_client::watch::collect_events(&socket, terminal, max_events, timeout).await?;
-    let rendered: Vec<Value> = events.iter().map(agent_event_json).collect();
+    let items = collect_watch_items(&socket, terminal, max_items, timeout).await?;
+    let rendered: Vec<Value> = items.iter().map(watch_item_json).collect();
     // Versioned, unlike the CLI's `phux watch --json`. That surface is an
     // unbounded NDJSON stream a consumer may join mid-flight, so it is
     // versioned by the binary instead; this one is an ordinary bounded
     // request/response document, so it carries `schema_version` like every
     // other MCP result.
-    Ok(json!({ "schema_version": 1, "events": rendered, "count": rendered.len() }))
+    //
+    // `2` because `events[].event` gained the `agent_state` value. Adding a
+    // *key* would not move the number — `docs/consumers/agents.md` §4.1 is
+    // explicit that consumers ignore unknown keys — but this widens the
+    // value domain of an existing discriminant a consumer branches on, and
+    // that is the case the version exists to signal. The CLI stream answers
+    // the same question by having no version at all and declaring the event
+    // name to *be* the contract; this document has a version, so it uses it.
+    Ok(json!({ "schema_version": 2, "events": rendered, "count": rendered.len() }))
+}
+
+/// Bounded one-shot collection of both watch item kinds.
+///
+/// The MCP twin of `phux_client::watch::collect_events`, differing only in
+/// that it keeps `WatchItem::AgentState`. `timeout` elapsing is success —
+/// the collected prefix is returned, not an error.
+async fn collect_watch_items(
+    socket: &std::path::Path,
+    terminal: Option<TerminalId>,
+    max_items: Option<usize>,
+    timeout: Option<Duration>,
+) -> Result<Vec<WatchItem>, AttachError> {
+    let mut collected: Vec<WatchItem> = Vec::new();
+    {
+        let sink = |item: WatchItem| {
+            collected.push(item);
+            max_items.is_none_or(|max| collected.len() < max)
+        };
+        let fut = phux_client::watch::watch_events(socket, terminal, sink);
+        match timeout {
+            // Timeout is a clean stop: drop the future, keep the prefix.
+            Some(deadline) => {
+                let _ = tokio::time::timeout(deadline, fut).await;
+            }
+            None => fut.await?,
+        }
+    }
+    Ok(collected)
+}
+
+/// Project one [`WatchItem`] to its JSON line.
+fn watch_item_json(item: &WatchItem) -> Value {
+    match item {
+        WatchItem::Event(event) => agent_event_json(event),
+        WatchItem::AgentState(update) => agent_state_json(update),
+    }
+}
+
+/// Project one `AgentStateUpdate` to the same `agent_state` shape the
+/// CLI's `phux watch --json` emits.
+///
+/// Three choices are load-bearing and mirror the CLI exactly, because a
+/// consumer should be able to read either stream with one parser:
+///
+/// - **Identity survives the tombstone.** `name`/`kind` fall back to the
+///   record last seen, so a consumer filtering by agent name still
+///   recognizes the line that says its agent went away.
+/// - **`state` is present-and-null on a deletion**, not absent, so a
+///   consumer keyed on `state` sees the record go rather than reading the
+///   previous value forever.
+/// - **`attention` is the *effective* level.** The ADR-0046 detector never
+///   writes the field and L3 §3.7 derives it from `state`, so the declared
+///   value would be absent on every server-derived line.
+fn agent_state_json(update: &phux_client::watch::AgentStateUpdate) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("event".to_owned(), Value::from("agent_state"));
+    if let Some(terminal) = &update.terminal {
+        obj.insert(
+            "terminal".to_owned(),
+            Value::from(selector::format_terminal_id(terminal)),
+        );
+    }
+    if let Some(record) = update.record.as_ref().or(update.previous.as_ref()) {
+        obj.insert("name".to_owned(), Value::from(record.name.clone()));
+        if let Some(kind) = &record.kind {
+            obj.insert("kind".to_owned(), Value::from(kind.clone()));
+        }
+    }
+    match &update.record {
+        Some(record) => {
+            obj.insert("state".to_owned(), Value::from(record.state.as_str()));
+            obj.insert(
+                "attention".to_owned(),
+                Value::from(record.effective_attention().as_str()),
+            );
+            if let Some(session) = &record.session {
+                obj.insert("session".to_owned(), Value::from(session.clone()));
+            }
+        }
+        None => {
+            obj.insert("state".to_owned(), Value::Null);
+        }
+    }
+    if let Some(previous) = &update.previous {
+        obj.insert("from".to_owned(), Value::from(previous.state.as_str()));
+    }
+    Value::Object(obj)
 }
 
 /// Project one [`phux_client::watch::WatchEvent`] to the stable JSON shape the
@@ -685,13 +862,22 @@ mod tests {
                 "phux_signal",
                 "phux_tag",
                 "phux_rename",
-                "phux_agent",
                 "phux_insert_pane",
                 "phux_move_pane",
                 "phux_swap_pane",
                 "phux_workspace",
                 "phux_plugin_action",
                 "phux_plugin_workspace",
+                "phux_agent_list",
+                "phux_agent_show",
+                "phux_agent_explain",
+                "phux_agent_set",
+                "phux_agent_clear",
+                "phux_agent_wait",
+                "phux_agent_send_keys",
+                "phux_agent_prompt",
+                "phux_agent_answer",
+                "phux_agent_start",
             ]
         );
         for tool in arr {
@@ -837,6 +1023,145 @@ mod tests {
             dispatch("phux_workspace", &json!({ "action": "delete" }))
                 .await
                 .is_err()
+        );
+        // The split agent family routes through `dispatch` by name, and the
+        // retired multiplexer spelling is now an unknown tool rather than a
+        // silently-accepted legacy shape.
+        assert_eq!(
+            dispatch("phux_agent", &json!({ "action": "list" }))
+                .await
+                .unwrap_err()
+                .0,
+            "unknown tool: phux_agent",
+        );
+        assert_eq!(
+            dispatch("phux_agent_set", &json!({ "target": "@1" }))
+                .await
+                .unwrap_err()
+                .0,
+            "missing required argument `name`",
+        );
+        assert_eq!(
+            dispatch("phux_agent_wait", &json!({ "until": ["unknown"] }))
+                .await
+                .unwrap_err()
+                .0,
+            "`until` must contain only: idle, working, blocked, done (got \"unknown\"; \
+             'unknown' is a departure, not a waitable state)",
+        );
+        // `unwrap` + `cells` is refused before any read: the join destroys
+        // the grid coordinates `cells` is expressed in.
+        assert_eq!(
+            dispatch(
+                "phux_snapshot",
+                &json!({ "target": "@1", "unwrap": true, "cells": true })
+            )
+            .await
+            .unwrap_err()
+            .0,
+            "`unwrap` cannot be combined with `cells`: cell coordinates are grid \
+             coordinates and do not survive the join",
+        );
+    }
+
+    /// `phux_snapshot` grew the ADR-0077 read modifiers, and `phux_watch`
+    /// documents that agent-state items need a named target.
+    #[test]
+    fn catalog_exposes_the_read_modifiers_and_the_agent_state_scope_caveat() {
+        let cat = catalog();
+        let arr = cat.as_array().expect("catalog is an array");
+        let tool = |name: &str| {
+            arr.iter()
+                .find(|t| t["name"] == json!(name))
+                .unwrap_or_else(|| panic!("missing tool {name}"))
+                .clone()
+        };
+
+        let snapshot = tool("phux_snapshot");
+        assert_eq!(
+            snapshot["inputSchema"]["properties"]["tail"]["type"],
+            json!("number"),
+        );
+        assert_eq!(
+            snapshot["inputSchema"]["properties"]["unwrap"]["type"],
+            json!("boolean"),
+        );
+
+        let watch = tool("phux_watch");
+        let description = watch["description"].as_str().expect("a description");
+        assert!(description.contains("agent_state"), "{description}");
+        assert!(
+            description.contains("ONLY when `target` names a pane"),
+            "a server-wide watch carries no agent_state; that must be stated: {description}",
+        );
+    }
+
+    /// `agent_state` items ride the same array as events, in push order,
+    /// with the same field shape the CLI's `phux watch --json` emits.
+    #[test]
+    fn agent_state_json_matches_the_cli_line_shape() {
+        use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
+        use phux_client::watch::AgentStateUpdate;
+
+        let record = |state: AgentMetaState| AgentRecord {
+            name: "bot".to_owned(),
+            kind: Some("codex".to_owned()),
+            state,
+            attention: None,
+            session: Some("fleet".to_owned()),
+        };
+
+        // A transition carries identity, the new state, the derived
+        // attention, and where it came from.
+        let moved = AgentStateUpdate {
+            terminal: Some(TerminalId::local(7)),
+            record: Some(record(AgentMetaState::Blocked)),
+            previous: Some(record(AgentMetaState::Working)),
+        };
+        let value = agent_state_json(&moved);
+        assert_eq!(value["event"], json!("agent_state"));
+        assert_eq!(value["terminal"], json!("@7"));
+        assert_eq!(value["name"], json!("bot"));
+        assert_eq!(value["kind"], json!("codex"));
+        assert_eq!(value["session"], json!("fleet"));
+        assert_eq!(value["state"], json!("blocked"));
+        assert_eq!(value["from"], json!("working"));
+        assert_eq!(
+            value["attention"],
+            json!(AgentAttention::High.as_str()),
+            "attention is the effective level derived from `blocked`, not the \
+             (absent) declared one",
+        );
+
+        // The tombstone: `state` is present-and-null so a consumer keyed on
+        // it sees the record go away instead of reading the last value
+        // forever, and the identity it had survives so that consumer still
+        // recognizes whose line it is.
+        let cleared = AgentStateUpdate {
+            terminal: Some(TerminalId::local(7)),
+            record: None,
+            previous: Some(record(AgentMetaState::Working)),
+        };
+        let value = agent_state_json(&cleared);
+        assert_eq!(value["event"], json!("agent_state"));
+        assert!(
+            value.get("state").is_some_and(Value::is_null),
+            "the tombstone's `state` must be present-and-null, got {value}",
+        );
+        assert_eq!(value["name"], json!("bot"));
+        assert_eq!(value["from"], json!("working"));
+        assert!(value.get("attention").is_none());
+
+        // Both kinds project through one function, so one array can carry
+        // them in the order the server pushed them.
+        let event = WatchItem::Event(phux_client::watch::WatchEvent {
+            terminal: None,
+            event: phux_protocol::wire::frame::AgentEvent::Bell,
+        });
+        assert_eq!(watch_item_json(&event)["event"], json!("bell"));
+        assert_eq!(
+            watch_item_json(&WatchItem::AgentState(moved))["event"],
+            json!("agent_state"),
         );
     }
 

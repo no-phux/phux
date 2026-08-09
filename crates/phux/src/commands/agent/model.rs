@@ -50,15 +50,24 @@ pub(super) enum AgentState {
     Done,
 }
 
+impl AgentState {
+    /// The wire spelling, shared with `phux.agent/v1`'s `state` vocabulary —
+    /// which is what makes a projected state and a record state directly
+    /// comparable rather than two parallel word lists.
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Blocked => "blocked",
+            Self::Done => "done",
+        }
+    }
+}
+
 impl std::fmt::Display for AgentState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unknown => f.write_str("unknown"),
-            Self::Idle => f.write_str("idle"),
-            Self::Working => f.write_str("working"),
-            Self::Blocked => f.write_str("blocked"),
-            Self::Done => f.write_str("done"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -71,12 +80,54 @@ pub(super) enum Attention {
     High,
 }
 
+/// One piece of evidence behind a reported state, as `sources[]` in
+/// `agent list --json`.
+///
+/// `rule` / `region` are additive keys (phux-w7z2.31): they carry the
+/// ADR-0046 detection-manifest rule that a record-backed state came from, so
+/// a consumer can tell "blocked, because the `permission-dialog` rule matched
+/// the `after-last-rule` region" from "blocked, because an integration
+/// declared it". They are absent on every source that is not a manifest rule,
+/// which is why they are `Option` rather than empty strings —
+/// `schema_version` does not move for an added key, but it would for a key
+/// that changed meaning.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(super) struct AgentSource {
     pub(super) kind: &'static str,
     pub(super) signal: String,
     pub(super) confidence: f32,
     pub(super) observed: String,
+    /// The ADR-0046 manifest rule id, when this source is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) rule: Option<String>,
+    /// The manifest region that rule read, in the spelling a manifest uses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) region: Option<String>,
+}
+
+impl AgentSource {
+    pub(super) fn new(
+        kind: &'static str,
+        signal: impl Into<String>,
+        confidence: f32,
+        observed: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            signal: signal.into(),
+            confidence,
+            observed: observed.into(),
+            rule: None,
+            region: None,
+        }
+    }
+
+    /// Attach the detection-manifest rule this source came from.
+    pub(super) fn with_rule(mut self, rule: impl Into<String>, region: impl Into<String>) -> Self {
+        self.rule = Some(rule.into());
+        self.region = Some(region.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone)]

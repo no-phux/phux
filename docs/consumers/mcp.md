@@ -128,7 +128,8 @@ takes a `target` selector string in the **same grammar as the CLI's
 `TARGET`**, whose table and examples live in
 [`tui.md`](./tui.md) §3. In one line, the forms are: `.` (current), `=`
 (last), `name` (session), `name:N` / `name:tag` (window), `name:N.M`
-(pane), `@N` (local opaque id), `host/@N` (satellite terminal), and `#tag`
+(pane), `@N` (local opaque id), `host/@N` (satellite terminal), `%name`
+(an explicitly declared agent name), and `#tag`
 (tag set, where the tool permits a set).
 
 Resolution is **client-side**, exactly as the CLI resolves it
@@ -150,7 +151,9 @@ attached-client focus history; callers must use `.` or an explicit target.
   must each resolve to exactly one local same-session pane rather than applying
   the focused-pane tiebreak.
 - `phux_launch` and `phux_spawn` use optional `target` only for explicit local
-  placement. `phux_agent` uses it for pane-specific actions.
+  placement. The pane-specific `phux_agent_*` tools document optionality in
+  their schemas. `%name` never matches detector-default kind labels and
+  refuses ambiguity rather than choosing among duplicate declarations.
 
 Server-facing tools also take an optional `socket` string naming the
 Unix-domain socket to connect to. Precedence: an explicit `socket`
@@ -163,7 +166,7 @@ the literal `default`).
 
 ## 3. The tool catalog
 
-Twenty-two tools, returned verbatim by `tools/list`. Each `inputSchema` is a
+Thirty-one tools, returned verbatim by `tools/list`. Each `inputSchema` is a
 JSON Schema `object`. Tools that take no required argument (e.g.
 `phux_ls`) work with no `arguments` at all. The return shapes are the
 shared agent shapes owned by [`agents.md`](./agents.md) §4; each tool
@@ -424,9 +427,9 @@ is the canonical direct selector (`@N` or `host/@N`). A dropped untrusted
 payload still reports `sent: true` — the route was accepted; the drop is
 the pane's policy.
 
-### 3.13–3.22 Orchestration parity tools
+### 3.13–3.31 Orchestration parity tools
 
-The remaining ten strict-schema tools execute the canonical `phux` CLI with
+The remaining strict-schema tools execute the canonical `phux` CLI with
 argv (never a shell), parse its JSON or small documented text shape, cap each
 string at 4096 bytes and arrays at 64 entries, cap stdout/stderr at 1 MiB/64
 KiB, and kill the child on cancellation or deadline.
@@ -438,7 +441,13 @@ KiB, and kill the child on cancellation or deadline.
 | `phux_signal` | `phux signal` | Explicit target and signal; `interrupt`, `terminate`, and `kill` require `confirm: true`. |
 | `phux_tag` | `phux tag` | `ls`/`add`/`rm`; returns a versioned projection of the CLI's tab-separated confirmation. |
 | `phux_rename` | `phux rename` | Explicit current and new session names. |
-| `phux_agent` | `phux agent` | `list`/`show`/`explain` use canonical JSON; `set`/`clear` parse the confirmed agent record. |
+| `phux_agent_list`, `phux_agent_show`, `phux_agent_explain` | matching `phux agent` read | Distinct schemas; level reads and detector provenance. No action multiplexer. |
+| `phux_agent_set`, `phux_agent_clear` | matching `phux agent` identity write | Declare or delete the exact L3 record; a declared state outranks detection. |
+| `phux_agent_wait` | `phux agent wait --json` | Edge-triggered and always bounded. Exit 124 returns as `satisfied: false`, not a tool failure. Do not compose it after a separate write to infer completion. |
+| `phux_agent_send_keys` | `phux agent send-keys --json` | Identity-checked acknowledged input. OK is a kernel tty-queue receipt; `delivery_unknown` is terminal. |
+| `phux_agent_prompt` | `phux agent prompt --wait --json` | Fused acknowledged submit-and-wait on one process, always bounded. Serialize fleet prompts because the acknowledged lane is per server. |
+| `phux_agent_answer` | `phux agent answer --json` | Requires the exact live ask id and exactly one choice or text answer; unlisted text needs an explicit override. |
+| `phux_agent_start` | `phux agent start --json` | Existing shell pane only; creates no layout. Waits for detector-backed readiness under a finite deadline. |
 | `phux_insert_pane` | `phux insert-pane --json` | Existing pane only; no implicit spawn and no focus operation. |
 | `phux_move_pane` | `phux move-pane --json` | Exact local panes, including cross-session moves; bounded ratio. |
 | `phux_swap_pane` | `phux swap-pane --json` | Exact local same-session panes; preserves client-local focus. |
@@ -459,10 +468,11 @@ configuration. Those remain intentionally outside the model-facing tool set.
 
 ### Composing the tools safely
 
-The canonical sequence is `phux_ls` → `phux_new` → placed `phux_launch` or
-`phux_spawn` → optional exact spatial edits → `phux_run`/`phux_send_keys` →
-bounded `phux_wait` plus bounded `phux_watch` → surface `phux_ask` events →
-re-read state. Serialize topology writes because layout metadata is
+The canonical sequence is `phux_ls` → `phux_new` → placed `phux_launch`,
+`phux_spawn`, or existing-pane `phux_agent_start` → optional exact spatial
+edits → `phux_run`/`phux_send_keys` or fused `phux_agent_prompt` → bounded
+`phux_wait` plus bounded `phux_watch` → surface `phux_ask` events and answer
+an exact one with `phux_agent_answer` → re-read state. Serialize topology writes because layout metadata is
 last-write-wins. No tool in this sequence moves a human's local focus, stores
 remote credentials, grants a persistent input lease, or schedules future work.
 

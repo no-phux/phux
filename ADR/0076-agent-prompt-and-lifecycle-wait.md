@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-08
+last-reviewed: 2026-08-09
 ---
 
 # 0076 — Prompting an agent is acknowledged; waiting on one is event-driven
@@ -70,15 +70,23 @@ declined a positive idle rule.
 
 4. **Ownership is re-verified from the record, not a fresh syscall.** The CLI
    reads `phux.agent/v1` and refuses when it is absent or names a different
-   `(kind, name)` than the target resolved to (exit 2). For a *detector-owned*
+   `(kind, name)` than the caller asserted (exit 2) — the check shipped
+   `phux agent send-keys --expect-agent/--expect-kind` already performs, which
+   `prompt` inherits rather than reinvents. It is an *identity comparison* and
+   nothing more: the level gate on the withdrawn record shape belongs to
+   [ADR-0075](./0075-agent-name-addressing.md) point 5, which owns it for every
+   input-delivering verb. The comparison bites only for a target spelled some
+   other way — `@N`, `host/@N`, `#tag`, a session path — since for `%name` the
+   name came out of the very record it re-reads. For a *detector-owned*
    record the staleness bound is one re-identification interval (~5 s, ADR-0046
    point 10) plus one detect tick, so a prompt can land in a shell that replaced
    the agent inside that window; the CLI holds its subscription across the
    submit and reports an identity change, a withdrawal to `unknown`, or a
    tombstone arriving before the result as delivery to an unknown occupant
    (exit 1). The bound holds only there. A record whose `state` was explicitly
-   declared (ADR-0046 point 8), which phux's own Claude shim writes on every
-   hook, stands the detector down: no staleness bound, no tombstone, and no way
+   declared (ADR-0046 point 8) stands the detector down — phux's own Claude shim
+   stopped declaring one for exactly that reason, but any other hook writer
+   may — so there is no staleness bound, no tombstone, and no way
    for a consumer to tell the two classes apart. `--json` reports the record the
    check passed on rather than claiming a freshness `prompt` lacks. The server
    gains no agent-aware precondition on `APPLY_INPUT`: detection fails safe
@@ -92,12 +100,17 @@ declined a positive idle rule.
    state-bearing rule matched and is equally true of a finished agent, a
    repainting TUI, a crashed one, and a pane running `less`. A completion gate
    firing on that returns success on a corpse — instantly, and on every pane
-   with no manifest at all. The fast path may satisfy the wait only on a
-   **positively asserted** level: `blocked`, which five shipped rules assert, or
-   `done`, which no manifest emits and only an explicit lifecycle writer
-   produces (phux's Claude shim, on `Stop`). Neither is reachable by
-   fallthrough, so `--until done` means "wait for an instrumented agent to
-   declare completion" and is inert elsewhere. Because `METADATA_CHANGED` is
+   with no manifest at all. **There is no level fast path, not even on a
+   positively asserted level.** An earlier draft carved one out for `blocked`
+   and `done`, on the argument that neither is reachable by fallthrough;
+   [`L3.md`](../docs/spec/L3.md) §3.7 makes no such carve-out — a completion
+   gate "MUST require an observed transition" — and phux ships no `done` writer
+   at all, so the carve-out bought one state, `blocked`, at the cost of the only
+   structural enforcement the rule has. The shipped `EdgeTracker` therefore
+   *seeds* the baseline and never evaluates it, and a pane already resting in a
+   target state times out at 124 with a diagnostic saying so. `--until done`
+   still means "wait for an instrumented agent to declare completion", and on
+   today's manifests it is inert. Because `METADATA_CHANGED` is
    `try_send` and dropped on a full mailbox, and publication is edge-filtered
    (ADR-0046 point 7), the CLI re-reads `GET_METADATA` on the existing `wait`
    cadence under the same deadline and treats a value differing from the last it
@@ -168,8 +181,16 @@ input path.
 
 Requiring an edge costs the sub-tick turn: a prompt answered inside one detect
 tick derives `idle -> idle`, publishes nothing, and times out at 124 on work
-that succeeded. That is the price of never returning 0 on a corpse, and
-`transition_observed: false` says which happened.
+that succeeded. Dropping the fast path widens that to any pane already resting
+in a target state. That is the price of never returning 0 on a corpse, and
+`transition_observed: false` says which happened. The default `--until` set
+keeps `done`, a member no shipped phux writer emits, so on an uninstrumented
+pane the set reduces to `idle` and `blocked`; whether to drop it is open
+(phux-w7z2.28) and is a CLI change, not a doc one. A concurrent ADR-0078
+transcript harvest freezes detector publication on the same Terminal, which
+this wait sees as a blind window on both its push and its poll path — bounded,
+self-healing under level-triggered recovery, and worth a timeout wide enough
+to outlast it.
 
 ## Alternatives
 

@@ -40,7 +40,16 @@ const SCHEMA_VERSION: u8 = 1;
 const PREVIEW_ROWS: usize = 12;
 
 /// Run the offline explainer. `format` is `auto` (the default), `json`, or
-/// `text`; `title` supplies the OSC title a capture cannot carry.
+/// `text`.
+///
+/// The OSC title comes from the capture itself when it carries one — a
+/// `phux snapshot --json` document does, since ADR-0077 added
+/// `ScreenState::title` — and `title` overrides it. A plain-text capture has
+/// nowhere to put a title, so there `--title` is the only way to exercise
+/// title-scoped rules. That distinction matters more than it looks: the
+/// detector ranks by `(is_title, priority, idx)`, so a title rule beats every
+/// screen rule regardless of priority, and silently blanking the region would
+/// misreport every title-derived rule in the manifest (phux-w7z2.41).
 pub(super) fn run(
     path: &Path,
     kind: Option<&str>,
@@ -52,18 +61,21 @@ pub(super) fn run(
         Ok(raw) => raw,
         Err(err) => return json_err::emit(json, &err, EXIT_FAILURE),
     };
-    let (lines, source) = match parse_capture(&raw, format.unwrap_or("auto")) {
+    let parsed = match parse_capture(&raw, format.unwrap_or("auto")) {
         Ok(parsed) => parsed,
         Err(err) => return json_err::emit(json, &err, EXIT_FAILURE),
     };
+    let ParsedCapture {
+        lines,
+        title: captured_title,
+        source,
+    } = parsed;
     let kind = match resolve_kind(kind) {
         Ok(kind) => kind,
         Err(err) => return json_err::emit(json, &err, EXIT_USAGE),
     };
-    let capture = Capture {
-        title: title.unwrap_or_default().to_owned(),
-        lines,
-    };
+    let (title, title_origin) = resolve_title(title, captured_title);
+    let capture = Capture { title, lines };
     let Some(explanation) = agent_explain::explain(&kind, &capture) else {
         // `resolve_kind` already proved a manifest exists, so this is
         // unreachable in practice; it stays an error rather than an unwrap.
@@ -79,9 +91,9 @@ pub(super) fn run(
     };
 
     if json {
-        emit_json(path, &source, &capture, &explanation)
+        emit_json(path, &source, title_origin, &capture, &explanation)
     } else {
-        emit_prose(path, &source, &capture, &explanation);
+        emit_prose(path, &source, title_origin, &capture, &explanation);
         ExitCode::SUCCESS
     }
 }
@@ -93,6 +105,61 @@ struct Source {
     format: &'static str,
     /// Grid width, when the capture declared one.
     cols: Option<u16>,
+}
+
+/// A capture, parsed: the viewport rows, the title the document carried, and
+/// how the bytes were read.
+#[derive(Debug)]
+struct ParsedCapture {
+    /// Viewport rows, top to bottom.
+    lines: Vec<String>,
+    /// The `ScreenState::title` the document carried (ADR-0077). Always
+    /// `None` for a text capture, which has nowhere to put one, and for a
+    /// JSON capture written by a producer that predates the field.
+    title: Option<String>,
+    /// Provenance for the report's header line.
+    source: Source,
+}
+
+/// Where the evaluated OSC title came from, for the report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitleOrigin {
+    /// `--title` supplied it, overriding whatever the capture carried.
+    Flag,
+    /// The capture document carried it (`ScreenState::title`).
+    Capture,
+    /// Nothing supplied one: every `title`-scoped rule sees an empty region.
+    None,
+}
+
+impl TitleOrigin {
+    /// The word the JSON document reports.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Flag => "flag",
+            Self::Capture => "capture",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Pick the title to evaluate title-scoped rules against.
+///
+/// `--title` wins so a capture can be re-explained under a hypothetical
+/// title, which is how a title rule gets authored. Otherwise the capture's
+/// own title is used — dropping it was phux-w7z2.41, and it made every
+/// title-scoped rule evaluate against an empty region even though the title
+/// was sitting in the file. An empty string from either source is "no title":
+/// a pane that set no title and a pane that set an empty one are the same
+/// thing to a region matcher.
+fn resolve_title(flag: Option<&str>, captured: Option<String>) -> (String, TitleOrigin) {
+    if let Some(title) = flag.filter(|title| !title.is_empty()) {
+        return (title.to_owned(), TitleOrigin::Flag);
+    }
+    captured.filter(|title| !title.is_empty()).map_or_else(
+        || (String::new(), TitleOrigin::None),
+        |title| (title, TitleOrigin::Capture),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -120,14 +187,19 @@ fn read_capture(path: &Path) -> Result<String, CliError> {
     })
 }
 
-/// Parse a capture into viewport rows.
+/// Parse a capture into viewport rows plus whatever else the document
+/// carried.
 ///
 /// Two shapes are accepted, because two shapes are what people have: the
 /// `phux snapshot --json` document (`ScreenState`, ADR-0022) and a plain text
 /// screen, one viewport row per line — which is what a human pastes and what
 /// the committed goldens under `crates/phux-server/src/agent_detect/fixtures/`
 /// already are.
-fn parse_capture(raw: &str, format: &str) -> Result<(Vec<String>, Source), CliError> {
+///
+/// The JSON form carries `title` since ADR-0077, so it is read here rather
+/// than left to `--title`; the text form has no room for one and returns
+/// `None`, which is what makes "the region really was empty" still reportable.
+fn parse_capture(raw: &str, format: &str) -> Result<ParsedCapture, CliError> {
     let looks_json = raw.trim_start().starts_with('{');
     let as_json = match format {
         "json" => true,
@@ -136,7 +208,7 @@ fn parse_capture(raw: &str, format: &str) -> Result<(Vec<String>, Source), CliEr
         _ => looks_json,
     };
 
-    let (lines, cols) = if as_json {
+    let (lines, cols, title) = if as_json {
         let screen: phux_core::screen::ScreenState = serde_json::from_str(raw).map_err(|err| {
             CliError::new(
                 codes::CAPTURE_INVALID,
@@ -145,9 +217,13 @@ fn parse_capture(raw: &str, format: &str) -> Result<(Vec<String>, Source), CliEr
                      plain screen dump",
             )
         })?;
-        (screen.lines, Some(screen.cols))
+        (screen.lines, Some(screen.cols), screen.title)
     } else {
-        (raw.lines().map(str::to_owned).collect::<Vec<_>>(), None)
+        (
+            raw.lines().map(str::to_owned).collect::<Vec<_>>(),
+            None,
+            None,
+        )
     };
 
     if lines.iter().all(|line| line.trim().is_empty()) {
@@ -158,13 +234,14 @@ fn parse_capture(raw: &str, format: &str) -> Result<(Vec<String>, Source), CliEr
         ));
     }
 
-    Ok((
+    Ok(ParsedCapture {
         lines,
-        Source {
+        title,
+        source: Source {
             format: if as_json { "json" } else { "text" },
             cols,
         },
-    ))
+    })
 }
 
 /// Resolve `--kind` against the loaded manifests, accepting a binary alias.
@@ -209,6 +286,7 @@ fn resolve_kind(kind: Option<&str>) -> Result<String, CliError> {
 fn emit_json(
     path: &Path,
     source: &Source,
+    title_origin: TitleOrigin,
     capture: &Capture,
     explanation: &Explanation,
 ) -> ExitCode {
@@ -220,6 +298,10 @@ fn emit_json(
             "rows": capture.lines.len(),
             "cols": source.cols,
             "title": capture.title,
+            // Additive since phux-w7z2.41: `flag`, `capture`, or `none`. A
+            // title-scoped rule that missed reads very differently depending
+            // on which of the three produced the region it read.
+            "title_source": title_origin.as_str(),
         },
         "explain": explanation,
     });
@@ -240,7 +322,13 @@ fn emit_json(
     }
 }
 
-fn emit_prose(path: &Path, source: &Source, capture: &Capture, explanation: &Explanation) {
+fn emit_prose(
+    path: &Path,
+    source: &Source,
+    title_origin: TitleOrigin,
+    capture: &Capture,
+    explanation: &Explanation,
+) {
     let cols = source
         .cols
         .map_or_else(String::new, |cols| format!(", {cols} cols"));
@@ -251,10 +339,15 @@ fn emit_prose(path: &Path, source: &Source, capture: &Capture, explanation: &Exp
         capture.lines.len(),
     );
     outln!("kind     {} ({})", explanation.kind, explanation.name);
-    if capture.title.is_empty() {
-        outln!("title    <none supplied — every `title` rule sees an empty region>");
-    } else {
-        outln!("title    {:?}", capture.title);
+    match title_origin {
+        TitleOrigin::Flag => outln!("title    {:?}  (from --title)", capture.title),
+        TitleOrigin::Capture => outln!("title    {:?}  (from the capture)", capture.title),
+        TitleOrigin::None => {
+            outln!("title    <none — every `title` rule sees an empty region>");
+            if source.format == "text" {
+                outln!("         a text capture carries no title; pass --title to supply one");
+            }
+        }
     }
 
     outln!();
@@ -381,7 +474,7 @@ fn display_path(path: &Path) -> String {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use super::{parse_capture, resolve_kind};
+    use super::{TitleOrigin, parse_capture, resolve_kind, resolve_title};
 
     /// A REAL committed golden: the captured Claude Code permission dialog
     /// the detector itself is pinned against. Not a screen written for this
@@ -391,17 +484,9 @@ mod tests {
         "../../../../phux-server/src/agent_detect/fixtures/claude/blocked_permission.txt"
     );
 
-    #[test]
-    fn a_plain_text_capture_parses_as_one_row_per_line() {
-        let (lines, source) = parse_capture(CLAUDE_BLOCKED, "auto").expect("text capture parses");
-        assert_eq!(source.format, "text");
-        assert_eq!(source.cols, None);
-        assert_eq!(lines.len(), CLAUDE_BLOCKED.lines().count());
-        assert!(lines.iter().any(|l| l.contains("Do you want")));
-    }
-
-    #[test]
-    fn a_snapshot_json_capture_parses_and_carries_the_grid_width() {
+    /// A `ScreenState` document with a `title`, as `phux snapshot --json`
+    /// writes it since ADR-0077.
+    fn json_capture(title: Option<&str>) -> String {
         let document = serde_json::json!({
             "schema_version": 1,
             "pane": 7,
@@ -409,12 +494,80 @@ mod tests {
             "rows": 3,
             "cursor": null,
             "lines": ["one", "two", "three"],
+            "title": title,
         });
-        let raw = serde_json::to_string(&document).expect("serialize");
-        let (lines, source) = parse_capture(&raw, "auto").expect("json capture parses");
-        assert_eq!(source.format, "json");
-        assert_eq!(source.cols, Some(120));
-        assert_eq!(lines, vec!["one", "two", "three"]);
+        serde_json::to_string(&document).expect("serialize")
+    }
+
+    #[test]
+    fn a_plain_text_capture_parses_as_one_row_per_line() {
+        let parsed = parse_capture(CLAUDE_BLOCKED, "auto").expect("text capture parses");
+        assert_eq!(parsed.source.format, "text");
+        assert_eq!(parsed.source.cols, None);
+        assert_eq!(parsed.lines.len(), CLAUDE_BLOCKED.lines().count());
+        assert!(parsed.lines.iter().any(|l| l.contains("Do you want")));
+    }
+
+    #[test]
+    fn a_snapshot_json_capture_parses_and_carries_the_grid_width() {
+        let raw = json_capture(None);
+        let parsed = parse_capture(&raw, "auto").expect("json capture parses");
+        assert_eq!(parsed.source.format, "json");
+        assert_eq!(parsed.source.cols, Some(120));
+        assert_eq!(parsed.lines, vec!["one", "two", "three"]);
+    }
+
+    /// phux-w7z2.41: the title is right there in the document, and the
+    /// detector ranks title rules above every screen rule — dropping it made
+    /// `agent explain --file` misreport every title-derived rule.
+    #[test]
+    fn a_json_capture_carries_its_osc_title_without_the_flag() {
+        let raw = json_capture(Some("claude — ~/repo"));
+        let parsed = parse_capture(&raw, "auto").expect("json capture parses");
+        assert_eq!(parsed.title.as_deref(), Some("claude — ~/repo"));
+
+        let (title, origin) = resolve_title(None, parsed.title);
+        assert_eq!(title, "claude — ~/repo");
+        assert_eq!(origin, TitleOrigin::Capture);
+    }
+
+    /// A text capture genuinely has nowhere to put a title, so the report has
+    /// to keep saying the region was empty rather than inventing one.
+    #[test]
+    fn a_text_capture_still_needs_the_title_flag() {
+        let parsed = parse_capture(CLAUDE_BLOCKED, "text").expect("text capture parses");
+        assert_eq!(parsed.title, None);
+
+        let (title, origin) = resolve_title(None, parsed.title);
+        assert!(title.is_empty());
+        assert_eq!(origin, TitleOrigin::None);
+    }
+
+    /// `--title` stays the override, which is how a title rule gets authored
+    /// against a capture taken before the rule existed.
+    #[test]
+    fn an_explicit_title_overrides_the_capture() {
+        let raw = json_capture(Some("from the capture"));
+        let parsed = parse_capture(&raw, "auto").expect("json capture parses");
+
+        let (title, origin) = resolve_title(Some("hypothetical"), parsed.title);
+        assert_eq!(title, "hypothetical");
+        assert_eq!(origin, TitleOrigin::Flag);
+    }
+
+    /// A pane that set an empty title and a pane that set none are the same
+    /// thing to a region matcher, from either source.
+    #[test]
+    fn an_empty_title_from_either_source_is_no_title() {
+        assert_eq!(resolve_title(Some(""), None).1, TitleOrigin::None);
+        assert_eq!(
+            resolve_title(Some(""), Some(String::new())).1,
+            TitleOrigin::None
+        );
+        assert_eq!(
+            resolve_title(Some(""), Some("real".to_owned())),
+            ("real".to_owned(), TitleOrigin::Capture)
+        );
     }
 
     /// `--format text` overrides the sniffer, so a screen that happens to
@@ -422,9 +575,9 @@ mod tests {
     #[test]
     fn an_explicit_format_overrides_the_sniffer() {
         let raw = "{ this is a shell prompt, not JSON\nsecond row";
-        let (lines, source) = parse_capture(raw, "text").expect("forced text parses");
-        assert_eq!(source.format, "text");
-        assert_eq!(lines.len(), 2);
+        let parsed = parse_capture(raw, "text").expect("forced text parses");
+        assert_eq!(parsed.source.format, "text");
+        assert_eq!(parsed.lines.len(), 2);
 
         let err = parse_capture(raw, "json").expect_err("forced json must fail");
         assert_eq!(err.code, "capture_invalid");

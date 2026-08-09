@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-07
+last-reviewed: 2026-08-09
 ---
 
 # 0071 — What phux 1.0 commits to
@@ -68,9 +68,9 @@ production never builds (the ADR-0030 demotion cascade).
    a session.
 
 4. **Anything that becomes a breaking change after 1.0 is resolved before
-   it.** That is exactly two things, both on frozen surfaces: the overdue
+   it.** Two on the surfaces this ADR opened with — the overdue
    deprecated-spelling removals, and dead `pub` surface in the published
-   `phux-protocol` crate. Wire shapes the spec allocates but production never
+   `phux-protocol` crate — plus the agent-surface preconditions in point 7. Wire shapes the spec allocates but production never
    constructs — the ADR-0030 demotion cascade — stay tracked rather than
    blocking, precisely because point 2 leaves the wire unfrozen; what 1.0 owes
    there is that `docs/CONCEPTS.md` and the wire agree, not that the cascade
@@ -81,6 +81,70 @@ production never builds (the ADR-0030 demotion cascade).
    protocol layer that already shipped, the native GUI, Blackbird workload
    authentication, per-consumer federation sub-identities, and the residual
    Mosh-SSP loss bound.
+
+6. **The agent surface is inside the freeze, enumerated rather than assumed.**
+   Point 1 named categories; the agent verbs grew faster than the categories
+   were read, so they are listed. **Verbs and flags:** `agent list` / `show` /
+   `explain` (`--file`, `--kind`) / `set` (`--name`, `--kind`, `--state`,
+   `--attention`, `--session`) / `clear` / `install-claude`; `agent wait
+   [TARGET] --until STATE... --timeout SECS --json`, `--until` spelling exactly
+   `idle|working|blocked|done` with `unknown` deliberately unspellable and
+   `idle,blocked,done` the default set; `agent send-keys TARGET KEYS...
+   --expect-agent --expect-kind --json`; `agent prompt TARGET TEXT`
+   (`--expect-agent`, `--expect-kind`, `--wait`, repeatable `--until`,
+   `--timeout`, `--json`); `agent answer TARGET --id ID` with exactly one of
+   `--choice` or `--text` and the explicit `--allow-unlisted` override; `agent
+   start NAME --kind KIND --target TARGET` (`--integration`, `--timeout`,
+   `--no-wait`, `--force`, trailing argv, `--json`); `%name` selectors over
+   explicit names only; `watch --until EVENT --timeout SECS`; `worktree new
+   --json`; `skill`; `snapshot --tail[=N]` and `--unwrap` with `--rendered`'s
+   conflict set; `wait --regex`, `--tail[=N]`, `--output-only`. **`--json`
+   documents:** `AgentExplainJson` (v1, `capture` +
+   `explain`); the `agent wait` document (v1: `terminal`, `satisfied`, `edge`
+   as `{from,to,via}`, `baseline`, `state`, `agent`, `observations` as
+   `{edges,pushes,polls}`, `detection`); the `agent send-keys` document (v1:
+   `terminal`, `agent`, `keys`, `verified`, `delivery`, `operation_id`,
+   `attempts`); the `agent prompt` receipt (v1: `terminal`, `delivery`,
+   `operation_id`, `agent`, `pre_submit_state`, nullable
+   `staleness_bound_ms`, `attempts`, `submit_ms`, `transition_observed`,
+   nullable `matched_by`, `edge`, `waited_ms`, `degraded_to_polling`); the
+   `agent answer` receipt (v1: `terminal`, `ask`, `answer`, `source`,
+   `operation_id`, `delivered`); the `agent start` result (v1: `terminal`,
+   `name`, `kind`, `integration`, `started`, `ready`, and readiness provenance
+   when waiting); the worktree binding (v1: `branch`, `path`, `session`,
+   `terminal_id`); `ScreenState`'s additive
+   `soft_wrap {lines, scrollback}`, `truncated`, `truncated_reason`, `title`,
+   held at `SCHEMA_VERSION` 3 and probed by presence, per
+   [ADR-0077](./0077-agent-read-surface.md). **Event vocabulary:** the `watch`
+   stream's `agent_state` event name and its `name` / `kind` / `session` /
+   `state` / `attention` / `from` fields, including a present-and-null `state`
+   as the tombstone — the stream carries no `schema_version` by design, so the
+   event-name vocabulary *is* the contract. `watch` also freezes the closed
+   gate names `agent_state`, `asked`, `bell`, `command_finished`,
+   `command_started`, `dirty`, `idle`, `pane_closed`, `pane_spawned`,
+   `title_changed`, `unknown`. **Error codes:**
+   `capture_unreadable`, `capture_invalid`, `unknown_agent_kind`,
+   `no_agent_record`, `agent_departed`, `agent_mismatch`, `invalid_key_spec`,
+   the acknowledged-input, ask-validation, agent-start, and watch families
+   enumerated in `commands::json_err::codes`.
+   **Exit-code semantics, both load-bearing:** `3` keeps the published
+   partial-view meaning (the target may exist behind an unreachable satellite,
+   so a retry is correct); and `agent wait` / `agent send-keys` use the shared
+   resolver, so a partial-fleet miss is `1` carrying `partial_view` in
+   `error.code` rather than the `3` the rest of the `agent` family spends.
+
+7. **Three preconditions the freeze does not survive without.** (a) Every
+   stable error code lives in `commands::json_err::codes`, matching the closed
+   single-file vocabulary advertised to consumers. (b) The former `phux_agent`
+   action multiplexer is frozen as ten distinct tools: `phux_agent_list`,
+   `show`, `explain`, `set`, `clear`, `wait`, `send_keys`, `prompt`, `answer`,
+   and `start` (each with the full prefix). (c) Anything ratified out
+   of [ADR-0075](./0075-agent-name-addressing.md) (the `%` sigil),
+   [ADR-0076](./0076-agent-prompt-and-lifecycle-wait.md) (`agent prompt`, its
+   `--wait`, and its receipt document) and
+   [ADR-0078](./0078-alternate-screen-history.md) (`snapshot --transcript` and
+   its `transcript` payload) is carved in by amending point 6 in the same PR
+   that ships it. No agent verb is discovered post-freeze.
 
 ## Why
 

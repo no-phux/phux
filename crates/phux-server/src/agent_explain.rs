@@ -239,7 +239,7 @@ pub fn explain(kind: &str, capture: &Capture) -> Option<Explanation> {
             .regions
             .into_iter()
             .map(|(region, lines)| RegionPreview {
-                region: region.as_str().to_owned(),
+                region: region.as_str(),
                 // A single empty string is what `title` yields for a pane
                 // with no title: the region exists but holds nothing a
                 // predicate can see, which is the same failure as no rows.
@@ -256,7 +256,7 @@ fn evaluated_rule(trace: RuleTrace) -> EvaluatedRule {
     EvaluatedRule {
         id: trace.id,
         priority: trace.priority,
-        region: Region::as_str(trace.region).to_owned(),
+        region: Region::as_str(trace.region),
         state: trace.state.map(|s| s.as_str().to_owned()),
         matched: trace.matched,
         visible_blocker: trace.visible_blocker,

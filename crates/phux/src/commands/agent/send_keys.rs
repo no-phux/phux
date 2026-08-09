@@ -11,35 +11,72 @@
 //! and whose reviewer has since exited leaving a bare shell, must not have its
 //! prompt land in that shell.
 //!
-//! Two contracts, both hard:
+//! Three contracts, all hard:
 //!
 //! 1. **All keys are validated before any byte is written.** Translation
 //!    happens up front, on the whole argument vector; a typo in the third key
 //!    cannot leave the first two delivered. There is no partial send.
-//! 2. **The identity check and the first write ride one connection.** The
-//!    server handles a connection's frames in order, so nothing this client
-//!    sends interleaves between the `GET_METADATA` answer and the first
-//!    `ROUTE_INPUT`. See [`STALENESS`] for what that bound does *not* cover.
+//! 2. **The identity check and the write ride one connection.** The server
+//!    handles a connection's frames in order, so nothing this client sends
+//!    interleaves between the `GET_METADATA` answer and the `APPLY_INPUT`.
+//!    See [`STALENESS`] for what that bound does *not* cover.
+//! 3. **The whole batch is one acknowledged operation** (phux-w7z2.36,
+//!    ADR-0053). Since the receipt landed, all-or-nothing covers *delivery*
+//!    as well as validation, and a caller that loses the answer can ask again
+//!    under the same operation id instead of guessing.
+//!
+//! # What changed when this verb moved off `ROUTE_INPUT`
+//!
+//! It shipped fire-and-forget, one `ROUTE_INPUT` per event, because `agent
+//! prompt` did not exist yet and nothing else called `APPLY_INPUT`. That
+//! version had a real hole, documented in its own help text: a transport
+//! failure part-way through the sequence left the caller unable to tell
+//! whether the keys landed, and its remedy deliberately did **not** say
+//! "retry", because once a `ROUTE_INPUT` is acked those bytes are in the tty
+//! input queue and no client can take them back.
+//!
+//! One `APPLY_INPUT` under an operation id closes both halves of that. The
+//! server encodes the whole batch against one mode snapshot into one byte
+//! vector and writes it as a single PTY job, so there is no interior seam to
+//! fail at; and a same-id resubmission is answered from the server's dedupe
+//! cache rather than written twice.
+//!
+//! The error contract is **inherited from ADR-0076 rather than re-derived**,
+//! including the two readings that matter: `OK` is a *kernel-queue* receipt
+//! (bytes accepted by `write(2)` on the PTY master and flushed — strictly
+//! more than `ROUTE_INPUT` states, strictly less than consumption), and
+//! `INPUT_DELIVERY_UNKNOWN` is **terminal**, exit 1, never retried under any
+//! id.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_client::agent_meta::{AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
+use phux_client::agent_meta::AgentRecord;
+use phux_client::agent_prompt::{
+    PromptError, PromptOutcome, Refusal, deliver_acknowledged, validate_batch,
+};
 use phux_client::attach::AttachError;
-use phux_client::attach::connection::Connection;
-use phux_protocol::ids::TerminalId;
-use phux_protocol::wire::frame::{Command, CommandResult, Scope};
+use phux_protocol::ids::InputOperationId;
 use phux_server::runtime::default_socket_path;
 
+use crate::commands::json_err::codes;
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+
+use super::prompt::refusal_code;
 
 /// The staleness bound this verb accepts, stated once so a reader does not
 /// have to infer it from the code.
 ///
-/// The identity read and the first input write are consecutive frames on one
+/// **Re-verified against the `APPLY_INPUT` frame ordering (phux-w7z2.36).**
+/// The identity read (`GET_METADATA`, correlation id 1) and the write
+/// (`APPLY_INPUT`, correlation id 2) are consecutive frames on one
 /// connection, and `phux-server` handles a connection's frames in arrival
-/// order, so **no frame from this client** can interleave between them. What
-/// still can, in that window:
+/// order, so **no frame from this client** can interleave between them. The
+/// move made that bound *tighter*, not looser: the batch used to be N
+/// `ROUTE_INPUT` frames with N-1 interior windows a concurrent writer could
+/// slip into, and it is now one frame with none.
+///
+/// What still can change inside the window between the read and the write:
 ///
 /// - another client's `SET_METADATA` / `DELETE_METADATA` on the same key;
 /// - the server-side detector's next tick (300 ms, ADR-0046) republishing a
@@ -52,22 +89,6 @@ use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 /// and typing into it, which is the window that actually bites; it does not
 /// close a race against a concurrent writer, and this verb does not claim to.
 const STALENESS: &str = "one server frame-handling turn on this connection";
-
-/// Stable error codes this verb reports.
-///
-/// These belong in `crate::commands::json_err::codes` alongside the rest of
-/// the closed vocabulary; they are declared here only because that module is
-/// owned by a concurrent change in this wave. Fold them in when the two land.
-mod codes {
-    /// A key argument would not translate to the key the caller clearly
-    /// meant, so the whole batch is refused before anything is written.
-    pub(super) const INVALID_KEY_SPEC: &str = "invalid_key_spec";
-    /// The pane declares no `phux.agent/v1` record, so there is no agent
-    /// identity to verify against.
-    pub(super) const NO_AGENT_RECORD: &str = "no_agent_record";
-    /// The pane is hosting a different agent than the caller named.
-    pub(super) const AGENT_MISMATCH: &str = "agent_mismatch";
-}
 
 /// Why one key argument was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,116 +190,102 @@ pub(super) fn run_agent_send_keys(
     // argument list, so the literal-run-before-Enter grouping is decided
     // before anything is on the wire.
     let events = phux_client::send_keys::events_for(keys);
+    // A literal run *not* followed by Enter is one event per character, so
+    // this verb — unlike `agent prompt`, which is always two events — can
+    // genuinely reach the 256-event protocol cap. Refuse locally, naming the
+    // count: splitting one logical batch across two operations would give up
+    // exactly the all-or-nothing property the verb exists for.
+    if let Err(refusal) = validate_batch(&events) {
+        return json_err::emit(
+            json,
+            &json_err::CliError::new(
+                refusal_code(&refusal),
+                format!("{refusal}; nothing was sent"),
+                "send fewer keys per invocation. phux will not split one batch across two \
+                 operations: a half-delivered key sequence is the failure all-or-nothing \
+                 exists to prevent",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        );
+    }
 
     let selector = match parse_selector(Some(target)) {
         Ok(selector) => selector,
         Err(code) => return code,
+    };
+    let Some(operation_id) = InputOperationId::new(uuid::Uuid::new_v4().into_bytes()) else {
+        return json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::INTERNAL_ERROR,
+                "could not generate an input operation id",
+                "report this: a v4 UUID is all-zero with probability 2^-128",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        );
     };
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let rt = match cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return code,
     };
+    let expect_agent = expect_agent.map(str::to_owned);
+    let expect_kind = expect_kind.map(str::to_owned);
+    let key_count = keys.len();
 
     rt.block_on(async move {
         let pane = match resolve_target(&socket_path, &selector, "agent send-keys", json).await {
             Ok(id) => id,
             Err(code) => return code,
         };
-        let mut conn = match Connection::connect(&socket_path).await {
-            Ok(conn) => conn,
-            Err(err) => {
-                return json_err::report_no_server(json, &err, &socket_path, "agent send-keys");
-            }
-        };
         let label = crate::selector::format_terminal_id(&pane);
-        // Contract 2: identity read and input write on ONE connection.
-        let record = match verify_occupant(&mut conn, &pane, expect_agent, expect_kind).await {
-            Ok(record) => record,
-            Err(VerifyFailure::Transport(err)) => {
-                return json_err::report_no_server(json, &err, &socket_path, "agent send-keys");
-            }
-            Err(VerifyFailure::NoRecord) => {
-                return json_err::emit(
-                    json,
-                    &json_err::CliError::new(
-                        codes::NO_AGENT_RECORD,
-                        format!(
-                            "{label} declares no phux.agent/v1 record, so there is no agent \
-                             identity to verify"
-                        ),
-                        "`phux send-keys` addresses the pane and checks no identity — use \
-                         it when that is what you mean. To make this pane addressable as \
-                         an agent, run `phux agent set` or `phux agent install-claude`",
-                    ),
-                    crate::exit_codes::EXIT_USAGE,
-                );
-            }
-            Err(VerifyFailure::Mismatch(mismatch)) => {
-                return json_err::emit(
-                    json,
-                    &json_err::CliError::new(
-                        codes::AGENT_MISMATCH,
-                        format!("{label} is hosting {mismatch}; nothing was sent"),
-                        format!(
-                            "the occupant is re-read immediately before the write \
-                             (staleness bound: {STALENESS}); re-resolve the target, or use \
-                             `phux send-keys` if you meant the pane rather than the agent"
-                        ),
-                    ),
-                    crate::exit_codes::EXIT_USAGE,
-                );
-            }
+        let verify = |record: &AgentRecord| {
+            identity_mismatch(record, expect_agent.as_deref(), expect_kind.as_deref())
         };
+        // Contracts 2 and 3: subscribe, identity read (id 1), and the whole
+        // batch as ONE acknowledged operation (id 2), on one connection.
+        // `deliver_acknowledged` owns that ordering and the ADR-0076 error
+        // contract, so this verb and `agent prompt` cannot drift apart on
+        // what an OK means or on when a retry is honest.
+        let outcome = deliver_acknowledged(
+            &socket_path,
+            &pane,
+            operation_id,
+            events,
+            &verify,
+            // No completion gate: `send-keys` delivers keystrokes, which may
+            // be a `C-c` or an arrow. Waiting for a lifecycle transition is
+            // `agent prompt --wait`'s question, not this one's.
+            None,
+        )
+        .await;
 
-        if let Err(err) = route_events(&mut conn, &pane, events).await {
-            return report_route_failure(json, &label, &socket_path, err);
+        match outcome {
+            Ok(outcome) => report_delivered(json, &label, &outcome, key_count),
+            Err(err) => report_failure(json, &label, &socket_path, &err),
         }
-
-        report_delivered(json, &label, &record, keys.len())
     })
 }
 
-/// Report a batch that stopped part-way.
+/// Report a delivered batch: silence without `--json` (the prose `send-keys`
+/// says nothing on success either), one document with it.
 ///
-/// The remedy is deliberately not "retry": the all-or-nothing contract covers
-/// *validation*, not delivery — once the first `ROUTE_INPUT` is acked those
-/// bytes are in the pane's tty input queue and no client can take them back.
-fn report_route_failure(
-    json: bool,
-    label: &str,
-    socket_path: &std::path::Path,
-    err: RouteFailure,
-) -> ExitCode {
-    match err {
-        RouteFailure::Transport(err) => {
-            json_err::report_no_server(json, &err, socket_path, "agent send-keys")
-        }
-        RouteFailure::Refused(message) => json_err::emit(
-            json,
-            &json_err::CliError::new(
-                json_err::codes::TRANSPORT,
-                format!("{label} refused input: {message}"),
-                "some keys may already have been delivered; re-read the pane with \
-                 `phux snapshot` before retrying",
-            ),
-            crate::exit_codes::EXIT_FAILURE,
-        ),
-    }
-}
-
-/// Report a fully delivered batch: silence without `--json` (the prose
-/// `send-keys` says nothing on success either), one document with it.
-fn report_delivered(json: bool, label: &str, record: &AgentRecord, keys: usize) -> ExitCode {
+/// The document gained `operation_id` and `delivery` when the verb moved onto
+/// `APPLY_INPUT`: a caller that wants to correlate this invocation with a
+/// server log line, or to record what its own success code attested, now can.
+fn report_delivered(json: bool, label: &str, outcome: &PromptOutcome, keys: usize) -> ExitCode {
     if !json {
         return ExitCode::SUCCESS;
     }
     let document = serde_json::json!({
         "schema_version": 1,
         "terminal": label,
-        "agent": { "name": record.name, "kind": record.kind },
+        "agent": { "name": outcome.agent.name, "kind": outcome.agent.kind },
         "keys": keys,
         "verified": true,
+        "delivery": outcome.delivery.as_str(),
+        "operation_id": outcome.operation_id,
+        "attempts": outcome.attempts,
     });
     match serde_json::to_string_pretty(&document) {
         Ok(rendered) => {
@@ -297,114 +304,165 @@ fn report_delivered(json: bool, label: &str, record: &AgentRecord, keys: usize) 
     }
 }
 
-/// Why the occupant check refused the write.
-#[derive(Debug)]
-enum VerifyFailure {
-    /// Connect/transport/protocol failure reading the record.
-    Transport(AttachError),
-    /// The pane declares no record, so there is no identity to check.
-    NoRecord,
-    /// The pane hosts a different agent than the caller named; the string
-    /// describes the occupant.
-    Mismatch(String),
-}
-
-/// Re-read the pane's occupant over `conn` and confirm it is the agent the
-/// caller named, immediately before the first byte is written.
+/// Map a delivery failure onto its published reading.
 ///
-/// This is the one thing `phux agent send-keys` does that `phux send-keys`
-/// does not. See [`STALENESS`] for exactly how fresh the answer is.
-async fn verify_occupant(
-    conn: &mut Connection,
-    pane: &TerminalId,
-    expect_agent: Option<&str>,
-    expect_kind: Option<&str>,
-) -> Result<AgentRecord, VerifyFailure> {
-    let record = read_record(conn, pane)
-        .await
-        .map_err(VerifyFailure::Transport)?
-        .ok_or(VerifyFailure::NoRecord)?;
-    identity_mismatch(&record, expect_agent, expect_kind).map_or(Ok(record), |mismatch| {
-        Err(VerifyFailure::Mismatch(mismatch))
-    })
-}
-
-/// Why the input batch stopped part-way.
-#[derive(Debug)]
-enum RouteFailure {
-    /// Connect/transport/protocol failure.
-    Transport(AttachError),
-    /// The server refused a `ROUTE_INPUT`.
-    Refused(String),
-}
-
-/// Deliver `events` to `pane` over the already-verified `conn`.
-///
-/// Each `ROUTE_INPUT` is acked before the next is sent, so the events land on
-/// the pane actor's input mailbox in send order. This mirrors
-/// `phux_client::send_keys::route_keys` rather than calling it, because that
-/// function opens its own connection — and the identity read has to share
-/// this one for the ordering guarantee in [`STALENESS`] to hold.
-async fn route_events(
-    conn: &mut Connection,
-    pane: &TerminalId,
-    events: Vec<phux_protocol::input::InputEvent>,
-) -> Result<(), RouteFailure> {
-    for (index, event) in events.into_iter().enumerate() {
-        // request_id 1 was the identity read; input acks start at 2 so this
-        // connection never reuses a correlation id.
-        let request_id = u32::try_from(index)
-            .unwrap_or(u32::MAX - 1)
-            .saturating_add(2);
-        let reply = conn
-            .request(
-                request_id,
-                Command::RouteInput {
-                    terminal_id: pane.clone(),
-                    event,
-                },
-            )
-            .await
-            .map_err(RouteFailure::Transport)?;
-        // This connection subscribed to nothing and `handle_route_input`
-        // emits no frame of its own before the ack, so there is nothing for
-        // the server to interleave here (same argument as
-        // `phux_client::send_keys::paste_to`).
-        match reply.into_result_ignoring_interleaved() {
-            CommandResult::Ok => {}
-            CommandResult::Error { message, .. } => return Err(RouteFailure::Refused(message)),
-            other => {
-                return Err(RouteFailure::Refused(format!(
-                    "unexpected reply to ROUTE_INPUT: {other:?}"
-                )));
-            }
+/// The readings are ADR-0076's, inherited rather than re-derived — see the
+/// module docs. The one that changed shape when this verb moved off
+/// `ROUTE_INPUT` is the old "some keys may already have been delivered;
+/// re-read the pane before retrying": with an operation id, most failures are
+/// now *provably* nothing-written and honestly retryable, and the residue
+/// that is not is named exactly.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exit-code and remedy table is the contract; splitting it \
+              hides which readings sit next to each other"
+)]
+fn report_failure(
+    json: bool,
+    label: &str,
+    socket_path: &std::path::Path,
+    err: &PromptError,
+) -> ExitCode {
+    match err {
+        PromptError::Refused(refusal @ Refusal::AgentMismatch(_)) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                refusal_code(refusal),
+                format!("{label}: {refusal}; nothing was sent"),
+                format!(
+                    "the occupant is re-read immediately before the write (staleness \
+                     bound: {STALENESS}); re-resolve the target, or use `phux send-keys` \
+                     if you meant the pane rather than the agent"
+                ),
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        ),
+        PromptError::Refused(refusal @ Refusal::NoAgentRecord) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                refusal_code(refusal),
+                format!(
+                    "{label} declares no phux.agent/v1 record, so there is no agent \
+                     identity to verify"
+                ),
+                "`phux send-keys` addresses the pane and checks no identity — use it when \
+                 that is what you mean. To make this pane addressable as an agent, run \
+                 `phux agent set` or `phux agent install-claude`",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        ),
+        PromptError::Refused(refusal @ Refusal::NoAcknowledgedInput) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                refusal_code(refusal),
+                format!("{label}: {refusal}; nothing was sent"),
+                "upgrade the server (`phux update`), then retry. This verb will not fall \
+                 back to fire-and-forget input, because its all-or-nothing promise now \
+                 covers delivery and `ROUTE_INPUT` cannot keep it — `phux send-keys` is \
+                 the fire-and-forget verb, and it says so",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        ),
+        PromptError::Refused(refusal @ Refusal::SatelliteTarget { .. }) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                refusal_code(refusal),
+                format!("{label}: {refusal}; nothing was sent"),
+                "the receipt is owned by the machine that owns the PTY, so dial that \
+                 server directly (`phux host add`) rather than routing through the hub. \
+                 Plain `phux send-keys` still crosses a hub — with no receipt",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        ),
+        PromptError::Refused(refusal) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                refusal_code(refusal),
+                format!("{label}: {refusal}; nothing was sent"),
+                "nothing was written, so the pane is unchanged",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        ),
+        PromptError::LaneBusy {
+            attempts,
+            operation_id,
+            ..
+        } => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::TRANSPORT,
+                format!(
+                    "{label}: the server-wide acknowledged input lane stayed busy across \
+                     {attempts} attempts (operation {operation_id}); nothing was written"
+                ),
+                "nothing was written on any attempt, so re-running this command is safe",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        ),
+        PromptError::NotFound(message) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::NO_SUCH_TARGET,
+                format!("{label} is gone: {message}"),
+                "re-resolve the target with `phux agent list`",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        ),
+        PromptError::DeliveryUnknown {
+            operation_id,
+            message,
+        } => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                codes::DELIVERY_UNKNOWN,
+                format!("{label}: delivery is unknown (operation {operation_id}): {message}"),
+                "DO NOT RESEND. Some, all, or none of the keys reached the pane, and a \
+                 batch reported unknown can still complete a moment later. Resending \
+                 under a new operation id types them twice; resending under the same one \
+                 replays this same answer. Read the pane instead: `phux snapshot`",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        ),
+        PromptError::OccupantChanged {
+            detail,
+            operation_id,
+            ..
+        } => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                codes::UNKNOWN_OCCUPANT,
+                format!(
+                    "{label}: {detail} while operation {operation_id} was in flight, so \
+                     the keys went to an unknown occupant"
+                ),
+                "read the pane before resending",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        ),
+        // `send-keys` opens no completion gate, so a departure cannot arise.
+        PromptError::Departed { .. } => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::INTERNAL_ERROR,
+                format!("{label}: unexpected lifecycle departure with no wait in progress"),
+                "report this: `agent send-keys` passes no wait spec",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        ),
+        PromptError::Transport(err @ AttachError::Io(_)) => {
+            json_err::report_no_server(json, err, socket_path, "agent send-keys")
         }
+        PromptError::Transport(err) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::TRANSPORT,
+                format!("agent send-keys failed: {err}"),
+                "the operation was not acknowledged, so delivery is unknown; read the \
+                 pane before resending. Run `phux doctor` for a health check",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        ),
     }
-    Ok(())
-}
-
-/// Read the pane's `phux.agent/v1` record over `conn` with correlation id 1.
-async fn read_record(
-    conn: &mut Connection,
-    pane: &TerminalId,
-) -> Result<Option<AgentRecord>, AttachError> {
-    let (answer, interleaved) = conn
-        .request_metadata(
-            1,
-            Scope::Terminal(pane.clone()),
-            TERMINAL_AGENT_KEY.to_owned(),
-        )
-        .await?
-        .into_parts();
-    // This connection holds no subscription and `handle_get_metadata` pushes
-    // nothing ahead of its answer, so an interleaved frame here would be a
-    // server bug rather than a transition worth keeping.
-    debug_assert!(
-        interleaved.is_empty(),
-        "unsubscribed connection received {interleaved:?} ahead of METADATA_VALUE",
-    );
-    let value = answer.map_err(|refusal| AttachError::Refused(refusal.to_string()))?;
-    Ok(value.as_deref().and_then(parse_agent_record))
 }
 
 /// Describe how `record` fails the caller's expectation, or `None` if it
@@ -506,6 +564,43 @@ mod tests {
             .expect("a different name must be refused");
         assert!(mismatch.contains("builder"), "{mismatch}");
         assert!(mismatch.contains("reviewer"), "{mismatch}");
+    }
+
+    /// The event cap this verb can actually reach. A literal run *not*
+    /// followed by `Enter` types one event per character, so a long enough
+    /// argument crosses the 256-event protocol cap — and when it does the
+    /// batch is refused whole, naming the count. It is never split across two
+    /// operations: a half-typed key sequence is the failure the all-or-nothing
+    /// contract exists to prevent, and splitting would also give up the
+    /// single-operation receipt.
+    #[test]
+    fn a_batch_past_the_event_cap_is_refused_whole_and_never_split() {
+        let long = "x".repeat(phux_protocol::wire::frame::MAX_APPLY_INPUT_EVENTS + 1);
+        let events = phux_client::send_keys::events_for(&[long]);
+        assert!(
+            events.len() > phux_protocol::wire::frame::MAX_APPLY_INPUT_EVENTS,
+            "a literal run types one event per character: got {}",
+            events.len()
+        );
+        match validate_batch(&events) {
+            Err(Refusal::TooLarge {
+                unit,
+                limit,
+                wire: true,
+                ..
+            }) => {
+                assert_eq!(unit, "events");
+                assert_eq!(limit, phux_protocol::wire::frame::MAX_APPLY_INPUT_EVENTS);
+            }
+            other => panic!("an over-cap batch must be refused: {other:?}"),
+        }
+
+        // The submission-safe shape stays comfortably inside the cap: a
+        // literal run immediately before `Enter` collapses to one paste plus
+        // one key, which is the same two-event batch `agent prompt` sends.
+        let submitted = phux_client::send_keys::events_for(&keys(&["yes please", "Enter"]));
+        assert_eq!(submitted.len(), 2);
+        assert_eq!(validate_batch(&submitted), Ok(()));
     }
 
     /// Names are compared trimmed and case-insensitively; kinds too. A shell

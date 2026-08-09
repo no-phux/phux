@@ -1,12 +1,76 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use phux_client::attach::AttachError;
-use phux_client::watch::{AgentStateUpdate, WatchEvent, WatchItem};
+use phux_client::watch::{AgentStateUpdate, WatchEvent, WatchItem, WatchOutcome};
 use phux_protocol::wire::frame::AgentEvent;
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+
+/// Stable error codes this verb reports.
+///
+/// These belong in [`crate::commands::json_err::codes`] alongside the rest of
+/// the closed vocabulary; they are declared here only because that module is
+/// owned by a concurrent change in this wave. Fold them in when the two land.
+mod codes {
+    /// `--until` named a word outside the stream's `event` vocabulary. A
+    /// usage error at argv-parse time rather than a wait for an event that
+    /// can never arrive.
+    pub(super) const UNKNOWN_EVENT_NAME: &str = "unknown_event_name";
+    /// The server closed the stream before any `--until` event arrived. Not
+    /// a timeout (no deadline fired) and not success (the gate was never
+    /// satisfied).
+    pub(super) const STREAM_ENDED: &str = "stream_ended";
+}
+
+/// The `event` name emitted for a `phux.agent/v1` record change.
+const AGENT_STATE_EVENT: &str = "agent_state";
+
+/// The `event` names this stream emits — and therefore exactly the words
+/// `--until` accepts.
+///
+/// This list *is* the compatibility unit of `phux watch --json`: the stream
+/// carries no `schema_version` (see [`run_watch`]), so the vocabulary is what
+/// a consumer branches on, and naming an event on the command line pins it in
+/// the frozen CLI surface (ADR-0071). Keep it sorted and in step with
+/// [`watch_event_kind`] and [`AGENT_STATE_EVENT`]; this module's vocabulary
+/// tests fail if it drifts from either.
+///
+/// `unknown` is in the list because it is a name this stream really prints:
+/// it is what [`watch_event_kind`] renders for an event tag this binary
+/// predates. Omitting it would leave a line a consumer can see but cannot
+/// name, which is precisely the asymmetry the vocabulary-as-contract rule
+/// exists to prevent.
+pub(crate) const WATCH_EVENT_NAMES: &[&str] = &[
+    AGENT_STATE_EVENT,
+    "asked",
+    "bell",
+    "command_finished",
+    "command_started",
+    "dirty",
+    "idle",
+    "pane_closed",
+    "pane_spawned",
+    "title_changed",
+    "unknown",
+];
+
+/// Arguments for [`run_watch`], mirroring the clap `Watch` variant.
+#[derive(Debug)]
+pub(crate) struct WatchArgs<'a> {
+    /// Target selector; `None` means the most-recently-focused session.
+    pub(crate) session: Option<&'a str>,
+    /// Event names that satisfy the watch. Empty streams until EOF/Ctrl-C.
+    pub(crate) until: &'a [String],
+    /// Seconds after which an unsatisfied watch gives up (exit 124).
+    pub(crate) timeout: Option<u64>,
+    /// Emit NDJSON rather than the compact human form.
+    pub(crate) json: bool,
+    /// Server socket override.
+    pub(crate) socket: Option<PathBuf>,
+}
 
 /// `phux watch [TARGET]` — stream a pane's live events (SPEC §7.5,
 /// ADR-0022 'events', `phux-y2t`).
@@ -37,11 +101,65 @@ use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 /// surface like any other and requires the major version bump ADR-0071
 /// already mandates. Written up in full at `docs/consumers/agents.md`
 /// (the `phux watch` entry, §3).
-pub(crate) fn run_watch(session: Option<&str>, json: bool, socket: Option<PathBuf>) -> ExitCode {
+///
+/// # Bounding the stream
+///
+/// `--until EVENT` (repeatable) turns the stream into a **gate**: the first
+/// item whose `event` name is in the set is printed and the watch exits 0.
+/// `--timeout SECS` puts a deadline on it and exits 124 on expiry, the same
+/// code `phux wait` and `phux agent wait` use. Together they replace the
+/// background-and-kill shell pipeline every agent recipe had to write
+/// (`phux watch --json @11 & sleep 30; kill $!`), which is four places to
+/// get a subprocess wrong for something the stream can bound itself.
+///
+/// Three deliberate choices in the exit mapping:
+///
+/// - **A deadline always means 124**, `--until` or not. The number then
+///   answers exactly one question — did the deadline fire — which is what
+///   124 means for `wait`, for `agent wait`, and for GNU `timeout`, the tool
+///   this flag exists to stop people from wrapping around `watch`.
+/// - **A server EOF with an unsatisfied `--until` is a failure (exit 1)**,
+///   not success. The stream that would have carried the event went away;
+///   reporting 0 would tell a caller its event happened. Without `--until`
+///   there is no gate to fail, so EOF stays the clean exit 0 that
+///   unbounded `watch` has always returned.
+/// - **Ctrl-C stays exit 0** in every combination: the user asked to stop.
+///
+/// The bounded run keeps the NDJSON contract intact — stdout is still one
+/// event object per line and nothing else, so no summary or result document
+/// is appended on timeout. The 124 diagnostic is prose on stderr, matching
+/// what `wait` and `agent wait` already print at 124.
+pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
+    let WatchArgs {
+        session,
+        until,
+        timeout,
+        json,
+        socket,
+    } = args;
+
+    // Validate the gate before touching the network. An event name outside
+    // the vocabulary can never arrive, so accepting it would buy the caller a
+    // silent wait to the deadline instead of an answer.
+    for name in until {
+        if !WATCH_EVENT_NAMES.contains(&name.as_str()) {
+            return json_err::emit(
+                json,
+                &json_err::CliError::new(
+                    codes::UNKNOWN_EVENT_NAME,
+                    format!("'{name}' is not an event this stream emits"),
+                    format!("use one of: {}", WATCH_EVENT_NAMES.join(", ")),
+                ),
+                crate::exit_codes::EXIT_USAGE,
+            );
+        }
+    }
+
     let selector = match parse_selector(session) {
         Ok(sel) => sel,
         Err(code) => return code,
     };
+    let deadline = timeout.map(Duration::from_secs);
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let rt = match cli_runtime() {
         Ok(rt) => rt,
@@ -54,17 +172,44 @@ pub(crate) fn run_watch(session: Option<&str>, json: bool, socket: Option<PathBu
             Err(code) => return code,
         };
 
-        // Stream until EOF or Ctrl-C. `tokio::select!` races the event
-        // stream against the interrupt so Ctrl-C exits cleanly (exit 0 —
-        // the user asked to stop, not a failure).
-        let stream = phux_client::watch::watch_events(&socket_path, Some(terminal_id), |item| {
-            print_watch_item(&item, json);
-            true
-        });
+        // Stream until the gate is satisfied, the deadline fires, EOF, or
+        // Ctrl-C. `tokio::select!` races the stream against the interrupt so
+        // Ctrl-C exits cleanly (exit 0 — the user asked to stop, not a
+        // failure); the deadline lives inside `watch_bounded` so it also
+        // covers the connect.
+        let stream =
+            phux_client::watch::watch_bounded(&socket_path, Some(terminal_id), deadline, |item| {
+                print_watch_item(&item, json);
+                // An empty `--until` set is the unbounded stream: nothing
+                // satisfies it, so it never stops early.
+                !until.iter().any(|name| name == watch_item_event(&item))
+            });
         tokio::pin!(stream);
         tokio::select! {
             result = &mut stream => match result {
-                Ok(()) => ExitCode::SUCCESS,
+                Ok(WatchOutcome::Stopped) => ExitCode::SUCCESS,
+                Ok(WatchOutcome::TimedOut) => {
+                    eprintln!(
+                        "phux: watch timed out after {}s{}",
+                        deadline.map_or(0, |d| d.as_secs()),
+                        describe_gate(until),
+                    );
+                    ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
+                }
+                Ok(WatchOutcome::Ended) if until.is_empty() => ExitCode::SUCCESS,
+                Ok(WatchOutcome::Ended) => json_err::emit(
+                    json,
+                    &json_err::CliError::new(
+                        codes::STREAM_ENDED,
+                        format!(
+                            "the server closed the event stream before {} arrived",
+                            gate_alternatives(until),
+                        ),
+                        "the pane's session ended or the server exited; \
+                         `phux ls` shows what is left",
+                    ),
+                    crate::exit_codes::EXIT_FAILURE,
+                ),
                 Err(err @ AttachError::Io(_)) => {
                     json_err::report_no_server(json, &err, &socket_path, "watch")
                 }
@@ -76,6 +221,38 @@ pub(crate) fn run_watch(session: Option<&str>, json: bool, socket: Option<PathBu
             _ = tokio::signal::ctrl_c() => ExitCode::SUCCESS,
         }
     })
+}
+
+/// The `--until` names as one prose alternation ("asked or idle"), for the
+/// diagnostics that have to say what the watch was waiting for.
+///
+/// Only ever called with a non-empty set on the EOF path; the timeout path
+/// guards on emptiness itself, because a bare `--timeout` really was waiting
+/// for nothing in particular.
+fn gate_alternatives(until: &[String]) -> String {
+    until.join(" or ")
+}
+
+/// The trailing clause naming what the watch was waiting for, or the empty
+/// string when it was an unbounded stream with no gate.
+fn describe_gate(until: &[String]) -> String {
+    if until.is_empty() {
+        String::new()
+    } else {
+        format!(" waiting for {}", gate_alternatives(until))
+    }
+}
+
+/// The `event` name this item renders under — the value `--until` matches
+/// and the value the `--json` line carries.
+///
+/// One function so the gate and the printer can never disagree about what a
+/// line is called.
+pub(crate) const fn watch_item_event(item: &WatchItem) -> &'static str {
+    match item {
+        WatchItem::Event(ev) => watch_event_kind(&ev.event),
+        WatchItem::AgentState(_) => AGENT_STATE_EVENT,
+    }
 }
 
 /// Render one streamed [`WatchItem`] to stdout — one line either way.
@@ -105,7 +282,7 @@ pub(crate) fn print_agent_state(update: &AgentStateUpdate, json: bool) {
         }
     } else {
         let scope = terminal.as_deref().unwrap_or("server");
-        outln!("{scope}\tagent_state{}", agent_state_detail(update));
+        outln!("{scope}\t{AGENT_STATE_EVENT}{}", agent_state_detail(update));
     }
 }
 
@@ -160,7 +337,10 @@ pub(crate) fn agent_state_json(
     terminal: Option<&str>,
 ) -> Result<String, serde_json::Error> {
     let mut obj = serde_json::Map::new();
-    obj.insert("event".to_owned(), serde_json::Value::from("agent_state"));
+    obj.insert(
+        "event".to_owned(),
+        serde_json::Value::from(AGENT_STATE_EVENT),
+    );
     if let Some(t) = terminal {
         obj.insert("terminal".to_owned(), serde_json::Value::from(t));
     }
@@ -324,10 +504,13 @@ pub(crate) fn watch_event_json(
 #[cfg(test)]
 mod tests {
     use phux_client::agent_meta::{AgentMetaState, AgentRecord};
-    use phux_client::watch::{AgentStateUpdate, WatchEvent};
+    use phux_client::watch::{AgentStateUpdate, WatchEvent, WatchItem};
     use phux_protocol::wire::frame::AgentEvent;
 
-    use super::{agent_state_detail, agent_state_json, watch_event_json, watch_event_kind};
+    use super::{
+        AGENT_STATE_EVENT, WATCH_EVENT_NAMES, agent_state_detail, agent_state_json, describe_gate,
+        watch_event_json, watch_event_kind, watch_item_event,
+    };
 
     /// Build the JSON line for an event and parse it back, asserting the
     /// shape the `phux watch --json` contract promises: one object with a
@@ -527,6 +710,133 @@ mod tests {
         assert_eq!(
             agent_state_detail(&cleared),
             " reviewer kind=claude cleared (was working)"
+        );
+    }
+
+    // -- the --until vocabulary -------------------------------------------
+
+    /// Every `AgentEvent` this binary can be handed, so the vocabulary guard
+    /// below covers the whole rendered surface rather than the three variants
+    /// someone remembered.
+    fn every_event() -> Vec<AgentEvent> {
+        vec![
+            AgentEvent::CommandStarted,
+            AgentEvent::CommandFinished { exit_code: Some(0) },
+            AgentEvent::TitleChanged {
+                title: "build".to_owned(),
+            },
+            AgentEvent::Bell,
+            AgentEvent::PaneSpawned,
+            AgentEvent::PaneClosed {
+                exit_status: Some(0),
+            },
+            AgentEvent::Dirty,
+            AgentEvent::Idle,
+            AgentEvent::Asked {
+                id: "q1".to_owned(),
+                question: "?".to_owned(),
+                suggestions: Vec::new(),
+                elapsed_seconds: None,
+            },
+            AgentEvent::CwdChanged {
+                cwd: "/tmp".to_owned(),
+            },
+            AgentEvent::Unknown {
+                tag: 0xFE,
+                body: Vec::new(),
+            },
+        ]
+    }
+
+    /// The gate can only be validated at argv-parse time if the vocabulary
+    /// really is every name the stream prints. A name the stream emits but
+    /// the list omits would be a line a consumer can see and cannot wait for.
+    #[test]
+    fn event_vocabulary_covers_every_rendered_name() {
+        for event in every_event() {
+            let kind = watch_event_kind(&event);
+            assert!(
+                WATCH_EVENT_NAMES.contains(&kind),
+                "`{kind}` is printed by watch but is not in the --until vocabulary"
+            );
+        }
+        assert!(
+            WATCH_EVENT_NAMES.contains(&AGENT_STATE_EVENT),
+            "the agent_state line must be waitable too"
+        );
+    }
+
+    /// The list is the frozen CLI surface (ADR-0071), printed verbatim in the
+    /// `--until` help and in the usage error. Sorted and duplicate-free so a
+    /// later addition lands in one obvious place.
+    #[test]
+    fn event_vocabulary_is_sorted_and_free_of_duplicates() {
+        let mut sorted = WATCH_EVENT_NAMES.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.as_slice(), WATCH_EVENT_NAMES);
+    }
+
+    /// The single most important invariant of the gate: the name `--until`
+    /// matches is byte-for-byte the `event` value on the `--json` line. If
+    /// these two ever diverge, a caller waits for an event they can watch
+    /// arriving on their own stdout.
+    #[test]
+    fn until_matches_exactly_the_name_the_json_line_carries() {
+        for event in every_event() {
+            let ev = WatchEvent {
+                terminal: None,
+                event,
+            };
+            let name = watch_item_event(&WatchItem::Event(ev.clone()));
+            let line = watch_event_json(&ev, watch_event_kind(&ev.event), None).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(parsed["event"], name, "gate name vs printed name: {line}");
+        }
+    }
+
+    #[test]
+    fn an_agent_state_item_is_named_agent_state() {
+        let item = WatchItem::AgentState(AgentStateUpdate {
+            terminal: None,
+            record: Some(record("reviewer", None, AgentMetaState::Blocked)),
+            previous: None,
+        });
+        assert_eq!(watch_item_event(&item), "agent_state");
+    }
+
+    /// `unknown` is a real, waitable name, and today it is also where two
+    /// decodable events land: `CwdChanged` and `TerminalControl` have no
+    /// name of their own in [`watch_event_kind`], so they print as `unknown`
+    /// alongside genuinely unrecognized tags. Pinned here so that widening
+    /// the vocabulary is a deliberate, reviewed change to the frozen surface
+    /// rather than something that drifts in.
+    #[test]
+    fn unrecognized_and_unnamed_events_alike_render_as_unknown() {
+        assert_eq!(
+            watch_event_kind(&AgentEvent::Unknown {
+                tag: 0xFE,
+                body: Vec::new()
+            }),
+            "unknown"
+        );
+        assert_eq!(
+            watch_event_kind(&AgentEvent::CwdChanged {
+                cwd: "/tmp".to_owned()
+            }),
+            "unknown"
+        );
+    }
+
+    /// The timeout and EOF diagnostics name what the caller was waiting for;
+    /// with no gate there is nothing to name and the clause disappears rather
+    /// than reading "waiting for ".
+    #[test]
+    fn the_gate_description_lists_the_alternatives_and_is_empty_without_one() {
+        assert_eq!(describe_gate(&[]), "");
+        assert_eq!(
+            describe_gate(&["asked".to_owned(), "idle".to_owned()]),
+            " waiting for asked or idle"
         );
     }
 }

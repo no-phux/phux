@@ -49,6 +49,14 @@ pub(crate) fn page() -> Page {
     );
     for (path, cmd) in &mut entries {
         let help = cmd.render_long_help().to_string();
+        // clap indents the blank spacer before a possible-values block.
+        // Preserve every visible byte of help while keeping generated
+        // Markdown free of trailing whitespace.
+        let help = help
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
         let _ = write!(body, "## `{path}`\n\n```text\n{}\n```\n\n", help.trim_end());
     }
 

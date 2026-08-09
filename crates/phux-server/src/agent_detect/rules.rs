@@ -10,9 +10,15 @@
 //!
 //! Predicates form a recursive combinator tree (`contains` / `regex` /
 //! `line-regex` / `all` / `any` / `not`), compiled **once at load** into
-//! [`Predicate`]. A manifest carrying an invalid regex or an unknown state
-//! word is logged at `warn` and **dropped whole** — a bad manifest must
-//! never wedge a pane, and a half-applied one is worse than none.
+//! [`Predicate`]. A manifest carrying an invalid regex, an unknown state
+//! word, an unparseable region, or more rules / matchers / nesting than the
+//! load-time bounds allow is logged at `warn` and **dropped whole** — a bad
+//! manifest must never wedge a pane, and a half-applied one is worse than
+//! none, because the `idle` fail-safe hides the seam.
+//!
+//! `region` accepts the two windowed regions with a line count —
+//! `bottom-lines(1)`, `top-non-empty-lines(3)` — and the bare spellings keep
+//! their historical defaults. See [`super::regions::Region`].
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -41,6 +47,68 @@ const ENV_DETECT: &str = "PHUX_AGENT_DETECT";
 /// Env knob: directory of `*.toml` manifests that override / extend the
 /// built-ins. Defaults to `$XDG_CONFIG_HOME/phux/agent-rules`.
 const ENV_RULES_DIR: &str = "PHUX_AGENT_RULES_DIR";
+
+// ---------------------------------------------------------------------------
+// Load-time bounds
+// ---------------------------------------------------------------------------
+//
+// Evaluation is O(rules x region bytes) and runs per agent pane every
+// 100-500 ms on a current-thread runtime that every terminal actor shares
+// (ADR-0003). Nothing in the schema bounded how much work a manifest could ask
+// for, and the manifests are loadable from a config directory, so an operator
+// authoring a large one — or a plugin bundle that installs one — could turn the
+// detector into a sustained single-core burn that presents only as "phux got
+// slow". These caps are the bound, applied at COMPILE time so the cost is paid
+// once and a manifest that exceeds them never reaches a hot path at all.
+//
+// What this is NOT: it is not a ReDoS mitigation. `regex` is a
+// finite-automaton engine with no backtracking, so match time is linear in the
+// input whatever the pattern, and `Regex::new` applies its own ~10 MB NFA size
+// limit — one pathological pattern fails to compile rather than exhausting
+// memory. The exposure being closed is aggregate work and aggregate resident
+// NFA, not a single evil pattern.
+//
+// The numbers are herdr's (`src/detect/manifest.rs`), adopted roughly as-is.
+// They are deliberately far above anything real: the largest shipped phux
+// manifest has three rules, and herdr's largest has fourteen.
+//
+// An over-cap manifest is dropped WHOLE with a `warn`, exactly like a bad regex
+// or an unknown state word (ADR-0046 point 4). A half-applied manifest is worse
+// than none: it silently detects some states and not others, and the fail-safe
+// (`idle`) hides the difference.
+
+/// Most rules one manifest may declare.
+const MAX_RULES_PER_MANIFEST: usize = 128;
+
+/// Deepest a predicate tree may nest (`all` / `any` / `not`), root at 1.
+///
+/// Belt to the TOML parser's braces: `toml` 1.1.2 already refuses to
+/// deserialize past ~128 levels of nested inline table, so `Predicate::compile`
+/// provably cannot recurse deep enough to overflow a stack through the only
+/// ingress it has. That is an accident of a dependency's internals, though,
+/// not a property of this schema. This counter states the bound where the
+/// schema lives, and a `toml` release that raises or removes its limit cannot
+/// quietly hand us an unbounded recursion.
+const MAX_PREDICATE_DEPTH: usize = 8;
+
+/// Most leaf matchers (`contains` / `regex` / `line-regex`) in one rule.
+const MAX_MATCHERS_PER_RULE: usize = 32;
+
+/// Most leaf matchers across a whole manifest. This is the one that bounds
+/// resident compiled-regex memory: a compiled `Regex` is retained for the
+/// process lifetime in the thread-local [`RULES`] cell.
+const MAX_MATCHERS_PER_MANIFEST: usize = 1024;
+
+/// Longest pattern or needle a leaf matcher may carry, in characters.
+const MAX_MATCHER_CHARS: usize = 512;
+
+/// Largest override manifest that will be read, in bytes. Well past any
+/// hand-written manifest; the shipped ones are ~4 KB.
+const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+
+/// Most `*.toml` files the override directory contributes. Sorted order, so
+/// which ones survive an over-count directory is deterministic.
+const MAX_OVERRIDE_MANIFESTS: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Deserialized manifest shape
@@ -96,13 +164,39 @@ pub(crate) struct RuleSpec {
     #[serde(rename = "match")]
     pub(crate) predicate: PredicateSpec,
     /// The screen POSITIVELY shows the agent is blocked.
+    ///
+    /// **Reported, not acted on.** Nothing in the detector's control flow
+    /// reads this; it reaches `trace!` and `phux agent explain` and stops
+    /// there. Every shipped manifest sets it on — and only on — a rule that
+    /// already declares `state = "blocked"`, so it currently restates `state`
+    /// and carries no information of its own. Pinned by
+    /// `no_shipped_manifest_uses_a_visible_flag_to_say_more_than_state_does`,
+    /// which is the tripwire for that stopping being true. See phux-w7z2.18:
+    /// the flag is slated for removal, and giving it teeth instead would mean
+    /// letting fresh screen evidence override a declared state, which
+    /// contradicts ADR-0046 point 8 and needs the ADR amended first.
     #[serde(default)]
     pub(crate) visible_blocker: bool,
-    /// The screen POSITIVELY shows the agent is idle. The only flag that
-    /// changes control flow in v1: it bypasses the working -> idle hold.
+    /// The screen POSITIVELY shows the agent is idle. The only one of the
+    /// three `visible-*` flags that changes control flow: it bypasses the
+    /// working -> idle hold (ADR-0046 point 6).
+    ///
+    /// It is the odd one out for a reason worth keeping straight. `idle` is
+    /// the detector's fail-safe (point 5), reached by *nothing matching*, so
+    /// a rule that positively asserts idleness is making a claim `state`
+    /// alone cannot express. `blocked` and `working` are only ever reached by
+    /// a rule asserting them, so for those two the flag has nothing left to
+    /// add.
+    ///
+    /// No shipped manifest sets it, which means the fast path it unlocks is
+    /// dead code for every built-in agent today: every idle transition pays
+    /// the full three-confirmation / ~700 ms hold.
     #[serde(default)]
     pub(crate) visible_idle: bool,
     /// The screen POSITIVELY shows the agent is working.
+    ///
+    /// **Reported, not acted on** — see [`Self::visible_blocker`], which this
+    /// shares a fate with.
     #[serde(default)]
     pub(crate) visible_working: bool,
     /// The screen is a transcript viewer / model picker / pager and
@@ -150,30 +244,91 @@ pub(crate) enum Predicate {
     Not(Box<Predicate>),
 }
 
+/// The load-time work budget one manifest is allowed to spend, carried down
+/// the predicate recursion so every leaf is counted exactly once.
+///
+/// Two counters rather than one: the per-rule cap keeps any single rule from
+/// dominating a tick, and the per-manifest cap bounds both aggregate tick cost
+/// and resident compiled-regex memory.
+#[derive(Debug, Default)]
+struct Budget {
+    /// Leaf matchers compiled for the rule currently being compiled.
+    rule_matchers: usize,
+    /// Leaf matchers compiled for the manifest so far.
+    manifest_matchers: usize,
+}
+
+impl Budget {
+    /// Charge one leaf matcher, or fail the manifest.
+    fn charge_matcher(&mut self) -> Result<(), String> {
+        self.rule_matchers += 1;
+        self.manifest_matchers += 1;
+        if self.rule_matchers > MAX_MATCHERS_PER_RULE {
+            return Err(format!(
+                "more than {MAX_MATCHERS_PER_RULE} matchers in one rule"
+            ));
+        }
+        if self.manifest_matchers > MAX_MATCHERS_PER_MANIFEST {
+            return Err(format!(
+                "more than {MAX_MATCHERS_PER_MANIFEST} matchers in the manifest"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Charge one leaf matcher against `budget`, rejecting an over-long pattern
+/// first. Length is counted in characters so a multi-byte pattern is not
+/// penalized for its encoding.
+fn charge_leaf(op: &str, pattern: &str, budget: &mut Budget) -> Result<(), String> {
+    let len = pattern.chars().count();
+    if len > MAX_MATCHER_CHARS {
+        return Err(format!(
+            "{op} pattern is {len} characters, over the {MAX_MATCHER_CHARS} limit"
+        ));
+    }
+    budget.charge_matcher()
+}
+
 impl Predicate {
     /// Compile a spec, surfacing the offending pattern on a bad regex.
-    fn compile(spec: &PredicateSpec) -> Result<Self, String> {
+    ///
+    /// `depth` is the node's own depth, root at 1, and is checked BEFORE any
+    /// work at this node — see [`MAX_PREDICATE_DEPTH`].
+    fn compile(spec: &PredicateSpec, depth: usize, budget: &mut Budget) -> Result<Self, String> {
+        if depth > MAX_PREDICATE_DEPTH {
+            return Err(format!(
+                "predicate nests deeper than {MAX_PREDICATE_DEPTH} levels"
+            ));
+        }
         Ok(match spec {
-            PredicateSpec::Contains(needle) => Self::Contains(needle.to_lowercase()),
+            PredicateSpec::Contains(needle) => {
+                charge_leaf("contains", needle, budget)?;
+                Self::Contains(needle.to_lowercase())
+            }
             PredicateSpec::Regex(pat) => {
+                charge_leaf("regex", pat, budget)?;
                 Self::Regex(Regex::new(pat).map_err(|e| format!("regex `{pat}`: {e}"))?)
             }
             PredicateSpec::LineRegex(pat) => {
+                charge_leaf("line-regex", pat, budget)?;
                 Self::LineRegex(Regex::new(pat).map_err(|e| format!("line-regex `{pat}`: {e}"))?)
             }
             PredicateSpec::All(children) => Self::All(
                 children
                     .iter()
-                    .map(Self::compile)
+                    .map(|child| Self::compile(child, depth + 1, budget))
                     .collect::<Result<_, _>>()?,
             ),
             PredicateSpec::Any(children) => Self::Any(
                 children
                     .iter()
-                    .map(Self::compile)
+                    .map(|child| Self::compile(child, depth + 1, budget))
                     .collect::<Result<_, _>>()?,
             ),
-            PredicateSpec::Not(child) => Self::Not(Box::new(Self::compile(child)?)),
+            PredicateSpec::Not(child) => {
+                Self::Not(Box::new(Self::compile(child, depth + 1, budget)?))
+            }
         })
     }
 
@@ -376,10 +531,13 @@ pub(crate) struct Evaluation {
     /// (the caller's fail-safe turns that into `idle`, never `blocked`).
     pub(crate) state: Option<DetectedState>,
     /// A matching rule asserts the screen positively shows a blocker.
+    /// Reported only; see [`RuleSpec::visible_blocker`].
     pub(crate) visible_blocker: bool,
-    /// A matching rule asserts the screen positively shows idleness.
+    /// A matching rule asserts the screen positively shows idleness. The one
+    /// flag the caller acts on: it bypasses the working -> idle hold.
     pub(crate) visible_idle: bool,
-    /// A matching rule asserts the screen positively shows work.
+    /// A matching rule asserts the screen positively shows work. Reported
+    /// only; see [`RuleSpec::visible_blocker`].
     pub(crate) visible_working: bool,
     /// A matching rule says this screen carries no state information at
     /// all. The caller MUST freeze rather than derive.
@@ -413,7 +571,20 @@ impl CompiledManifest {
         // Every region, not merely the referenced ones: an author picking a
         // region for a NEW rule needs to see which one holds their text, and
         // an author debugging an old one needs to see that theirs is empty.
-        let regions = Region::ALL
+        //
+        // `Region::ALL` cannot cover the windowed regions — there is no
+        // enumerating `bottom-lines(N)` for every N — so the manifest's own
+        // regions are unioned in after it, in declaration order. Without that,
+        // a rule scoped to `bottom-lines(14)` would be previewed against the
+        // 6-row default and an author would debug a window their rule never
+        // read.
+        let mut previewed: Vec<Region> = Region::ALL.to_vec();
+        for rule in &self.rules {
+            if !previewed.contains(&rule.region) {
+                previewed.push(rule.region);
+            }
+        }
+        let regions = previewed
             .into_iter()
             .map(|region| {
                 let text = RegionText::new(region, screen);
@@ -518,10 +689,22 @@ impl RuleSet {
     /// Compile `spec` and install it, replacing any manifest of the same
     /// `kind`. Returns `Err` with a human-readable reason when the manifest
     /// is unusable; the caller drops it whole.
+    ///
+    /// Every load-time bound is enforced here, before anything is inserted:
+    /// `self` is not touched until the whole manifest has compiled, so a
+    /// rejection leaves no partial state behind. See the bounds section at
+    /// the top of this module for why they exist and what they do not claim.
     pub(crate) fn install(&mut self, spec: ManifestSpec) -> Result<(), String> {
         if spec.kind.is_empty() {
             return Err("manifest has an empty `kind`".to_owned());
         }
+        if spec.rules.len() > MAX_RULES_PER_MANIFEST {
+            return Err(format!(
+                "{} rules, over the {MAX_RULES_PER_MANIFEST} limit",
+                spec.rules.len()
+            ));
+        }
+        let mut budget = Budget::default();
         let mut rules = Vec::with_capacity(spec.rules.len());
         for rule in &spec.rules {
             let state = match rule.state.as_deref() {
@@ -531,7 +714,8 @@ impl RuleSet {
                         .ok_or_else(|| format!("rule `{}`: unknown state `{word}`", rule.id))?,
                 ),
             };
-            let predicate = Predicate::compile(&rule.predicate)
+            budget.rule_matchers = 0;
+            let predicate = Predicate::compile(&rule.predicate, 1, &mut budget)
                 .map_err(|e| format!("rule `{}`: {e}", rule.id))?;
             rules.push(Rule {
                 id: rule.id.clone(),
@@ -605,14 +789,43 @@ fn build() -> RuleSet {
         return set;
     };
     // Sort for determinism: two overrides of the same kind must resolve the
-    // same way on every boot.
+    // same way on every boot, and — with the cap below — so must which
+    // overrides survive an oversized directory.
     let mut paths: Vec<std::path::PathBuf> = entries
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "toml"))
         .collect();
     paths.sort();
+    if paths.len() > MAX_OVERRIDE_MANIFESTS {
+        warn!(
+            dir = %dir.display(),
+            found = paths.len(),
+            limit = MAX_OVERRIDE_MANIFESTS,
+            "agent-detect: too many override manifests; loading the first {MAX_OVERRIDE_MANIFESTS} \
+             in sorted order and ignoring the rest",
+        );
+        paths.truncate(MAX_OVERRIDE_MANIFESTS);
+    }
     for path in paths {
+        // Size-check before reading: the point of the bound is not to pull an
+        // arbitrarily large file into memory in the first place.
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.len() > MAX_MANIFEST_BYTES => {
+                warn!(
+                    path = %path.display(),
+                    bytes = meta.len(),
+                    limit = MAX_MANIFEST_BYTES,
+                    "agent-detect: manifest is too large; dropped unread",
+                );
+                continue;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!(path = %path.display(), error = %err, "agent-detect: unreadable manifest");
+                continue;
+            }
+        }
         match std::fs::read_to_string(&path) {
             Ok(text) => load_manifest(&mut set, &path.to_string_lossy(), &text),
             Err(err) => {
@@ -880,6 +1093,452 @@ match = { contains = "x" }
 "#,
         );
         assert!(parsed.is_err(), "a mis-spelled flag must not pass silently");
+    }
+
+    /// THE EVIDENCE BEHIND phux-w7z2.18, kept executable so the decision can
+    /// be re-checked rather than re-argued.
+    ///
+    /// `visible-blocker` and `visible-working` are parsed and reported but
+    /// reach no control flow. The question the bead asks is whether to wire
+    /// them or delete them, and the answer turns on whether they say anything
+    /// `state` does not. Today they do not: across all five shipped manifests,
+    /// every `visible-working` sits on a rule that already declares
+    /// `state = "working"` and every `visible-blocker` on one that already
+    /// declares `state = "blocked"`. They are restatements, so deleting them
+    /// loses nothing — which is why deletion is the recommendation.
+    ///
+    /// `visible-idle` is deliberately exempt. It is not redundant with
+    /// `state`, because `idle` is the fail-safe reached by nothing matching
+    /// (ADR-0046 point 5), so asserting it positively is a real and distinct
+    /// claim — and it is the one flag the detector consumes. The test also
+    /// records that no shipped manifest sets it, which makes the working ->
+    /// idle fast path dead code for every built-in agent today.
+    ///
+    /// If this test ever fails, a manifest has started using a `visible-*`
+    /// flag to say something new and the delete recommendation must be
+    /// revisited before it is carried out.
+    #[test]
+    fn no_shipped_manifest_uses_a_visible_flag_to_say_more_than_state_does() {
+        let mut any_visible_idle = false;
+        for (kind, text) in super::BUILTIN_MANIFESTS {
+            let spec: ManifestSpec = toml::from_str(text).expect("builtin parses");
+            for rule in &spec.rules {
+                if rule.visible_blocker {
+                    assert_eq!(
+                        rule.state.as_deref(),
+                        Some("blocked"),
+                        "{kind}/{}: visible-blocker without state = \"blocked\" would carry \
+                         information `state` does not, and the flag is inert",
+                        rule.id,
+                    );
+                }
+                if rule.visible_working {
+                    assert_eq!(
+                        rule.state.as_deref(),
+                        Some("working"),
+                        "{kind}/{}: visible-working without state = \"working\" would carry \
+                         information `state` does not, and the flag is inert",
+                        rule.id,
+                    );
+                }
+                any_visible_idle |= rule.visible_idle;
+            }
+        }
+        assert!(
+            !any_visible_idle,
+            "a manifest now sets visible-idle: the working -> idle fast path is no longer \
+             dead code, and phux-w7z2.18's note about it is stale",
+        );
+    }
+
+    // --- Parameterized regions (phux-w7z2.17) -------------------------------
+
+    /// A windowed region is a distinct `HashMap` key, so two rules naming
+    /// different N read genuinely different text within one evaluation. That
+    /// is the whole point: `bottom-lines(1)` anchors on the status row,
+    /// `bottom-lines(6)` reaches the footer block, and a manifest may need
+    /// both.
+    #[test]
+    fn two_rules_with_different_windows_read_different_text() {
+        let set = compile(
+            r#"
+kind = "w"
+binaries = ["w"]
+
+[[rules]]
+id = "last-row-only"
+state = "working"
+priority = 10
+region = "bottom-lines(1)"
+match = { contains = "spinner" }
+
+[[rules]]
+id = "footer-block"
+state = "blocked"
+priority = 20
+region = "bottom-lines(6)"
+match = { contains = "spinner" }
+"#,
+        );
+        let manifest = set.manifest("w").expect("manifest");
+
+        // "spinner" is six rows up: inside the 6-row window, outside the 1-row
+        // one. Only the wide rule may fire.
+        let buf = lines(&["spinner", "a", "b", "c", "d", "e"]);
+        let got = manifest.evaluate(&Screen {
+            title: "",
+            lines: &buf,
+        });
+        assert_eq!(got.state, Some(DetectedState::Blocked));
+        assert_eq!(got.matched.as_deref(), Some("footer-block"));
+
+        // On the last row, both windows see it, and priority decides.
+        let buf = lines(&["a", "spinner"]);
+        let got = manifest.evaluate(&Screen {
+            title: "",
+            lines: &buf,
+        });
+        assert_eq!(got.matched.as_deref(), Some("footer-block"), "20 beats 10");
+    }
+
+    #[test]
+    fn a_top_anchored_window_reads_the_header_banner() {
+        let set = compile(
+            r#"
+kind = "t"
+binaries = ["t"]
+[[rules]]
+id = "banner"
+state = "working"
+region = "top-non-empty-lines"
+match = { contains = "thinking" }
+"#,
+        );
+        let manifest = set.manifest("t").expect("manifest");
+
+        let banner = lines(&["", "  thinking...", "transcript", "prompt"]);
+        assert_eq!(
+            manifest
+                .evaluate(&Screen {
+                    title: "",
+                    lines: &banner
+                })
+                .state,
+            Some(DetectedState::Working),
+        );
+
+        // The same word further down is NOT the banner. A bare
+        // `top-non-empty-lines` is one row, and that narrowness is the point.
+        let transcript = lines(&["  header", "  thinking...", "prompt"]);
+        assert_eq!(
+            manifest
+                .evaluate(&Screen {
+                    title: "",
+                    lines: &transcript
+                })
+                .state,
+            None,
+        );
+    }
+
+    /// The explainer must preview the window a rule actually reads. Previewing
+    /// only `Region::ALL` would show a `bottom-lines(14)` author the 6-row
+    /// default and send them to debug text their rule never saw — the exact
+    /// blindness the offline explainer exists to remove.
+    #[test]
+    fn the_explainer_previews_every_window_the_manifest_names() {
+        let set = compile(
+            r#"
+kind = "w"
+binaries = ["w"]
+[[rules]]
+id = "wide"
+state = "idle"
+region = "bottom-lines(14)"
+match = { contains = "zzz" }
+[[rules]]
+id = "banner"
+state = "idle"
+region = "top-non-empty-lines(2)"
+match = { contains = "zzz" }
+"#,
+        );
+        let manifest = set.manifest("w").expect("manifest");
+        let buf = lines(&["a", "b", "c"]);
+        let explained = manifest.explain(&Screen {
+            title: "",
+            lines: &buf,
+        });
+        let names: Vec<String> = explained
+            .regions
+            .iter()
+            .map(|(region, _)| region.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "title",
+                "prompt-box",
+                "after-last-rule",
+                "bottom-lines",
+                "viewport",
+                "bottom-lines(14)",
+                "top-non-empty-lines(2)",
+            ],
+            "the default set first, then the windows this manifest reads",
+        );
+        // And each rule reports the spelling an operator would type back.
+        let regions: Vec<String> = explained.rules.iter().map(|r| r.region.as_str()).collect();
+        assert_eq!(regions, vec!["bottom-lines(14)", "top-non-empty-lines(2)"]);
+    }
+
+    /// A bare `bottom-lines` must still mean six rows after the region grew a
+    /// parameter, or this change silently rewrote every shipped manifest.
+    #[test]
+    fn a_bare_windowed_region_is_previewed_once_not_twice() {
+        let set = compile(SAMPLE);
+        let manifest = set.manifest("sample").expect("manifest");
+        let buf = lines(&["a"]);
+        let explained = manifest.explain(&Screen {
+            title: "",
+            lines: &buf,
+        });
+        let names: Vec<String> = explained
+            .regions
+            .iter()
+            .map(|(region, _)| region.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "title",
+                "prompt-box",
+                "after-last-rule",
+                "bottom-lines",
+                "viewport"
+            ],
+            "the manifest's bare `bottom-lines` is the default window, already listed",
+        );
+    }
+
+    /// A region spec the schema does not accept drops the manifest whole,
+    /// like every other manifest error. Silently reinterpreting it would give
+    /// the rule a region its author did not ask for.
+    #[test]
+    fn a_malformed_region_drops_the_manifest_whole() {
+        for spec in ["bottom-lines(0)", "title(2)", "bottom_lines", "nonsense"] {
+            let parsed: Result<ManifestSpec, _> = toml::from_str(&format!(
+                "kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\nstate = \"idle\"\n\
+                 region = \"{spec}\"\nmatch = {{ contains = \"x\" }}\n"
+            ));
+            assert!(parsed.is_err(), "`{spec}` must not parse");
+        }
+    }
+
+    // --- Load-time bounds (phux-w7z2.14) -----------------------------------
+    //
+    // Every one of these asserts the SAME failure policy as a bad regex: the
+    // manifest is rejected whole and nothing is partially applied. A manifest
+    // that installed its first 128 rules and dropped the rest would detect some
+    // states and not others, and the `idle` fail-safe would hide the seam.
+
+    /// Build a manifest with `count` trivial rules.
+    fn manifest_with_rules(count: usize) -> String {
+        let body = (0..count)
+            .map(|idx| {
+                format!(
+                    "[[rules]]\nid = \"r{idx}\"\nstate = \"idle\"\nregion = \"title\"\n\
+                     match = {{ contains = \"x{idx}\" }}"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("kind = \"big\"\nbinaries = [\"big\"]\n{body}\n")
+    }
+
+    fn install(toml_text: &str) -> Result<RuleSet, String> {
+        let spec: ManifestSpec = toml::from_str(toml_text).expect("manifest parses as TOML");
+        let mut set = RuleSet::default();
+        set.install(spec)?;
+        Ok(set)
+    }
+
+    #[test]
+    fn a_manifest_at_the_rule_cap_loads_and_one_over_it_is_dropped_whole() {
+        let set = install(&manifest_with_rules(super::MAX_RULES_PER_MANIFEST))
+            .expect("the cap itself is loadable");
+        assert_eq!(
+            set.manifest("big").expect("manifest").rules.len(),
+            super::MAX_RULES_PER_MANIFEST,
+        );
+
+        let err = install(&manifest_with_rules(super::MAX_RULES_PER_MANIFEST + 1))
+            .expect_err("one rule over the cap must be rejected");
+        assert!(err.contains("over the"), "{err}");
+    }
+
+    /// Nothing is installed by a rejected manifest — not the rules that
+    /// compiled before the cap was hit, and not the binary index entries.
+    #[test]
+    fn an_over_cap_manifest_leaves_no_partial_state() {
+        let spec: ManifestSpec =
+            toml::from_str(&manifest_with_rules(super::MAX_RULES_PER_MANIFEST + 1))
+                .expect("parses");
+        let mut set = RuleSet::default();
+        assert!(set.install(spec).is_err());
+        assert!(set.is_empty(), "no manifest installed");
+        assert_eq!(set.kind_for_binary("big"), None, "no binary index entry");
+    }
+
+    /// THE UNVERIFIED QUESTION from the bead, answered by measurement rather
+    /// than assumption: does a deeply nested `not` overflow the stack in
+    /// `Predicate::compile`, or does the TOML parser refuse first?
+    ///
+    /// Measured against `toml` 1.1.2: the parser refuses. It rejects the
+    /// document at roughly 128 levels of nested inline table, so the recursion
+    /// in `compile` never runs deeper than that — nowhere near a stack
+    /// overflow — and the failure arrives as a `warn` and a dropped manifest.
+    ///
+    /// That is a dependency's internal limit, not a property of this schema,
+    /// which is why `MAX_PREDICATE_DEPTH` exists anyway. This test pins BOTH
+    /// halves: the schema's own bound rejects at 9, and the pathological
+    /// document is refused rather than crashing the process.
+    #[test]
+    fn deep_nesting_is_bounded_by_the_schema_and_never_overflows_the_stack() {
+        let nested = |depth: usize| {
+            format!(
+                "kind = \"deep\"\nbinaries = [\"deep\"]\n[[rules]]\nid = \"deep\"\n\
+                 state = \"idle\"\nregion = \"title\"\nmatch = {}{{ contains = \"x\" }}{}\n",
+                "{ not = ".repeat(depth),
+                " }".repeat(depth),
+            )
+        };
+
+        // Root plus seven `not`s is depth 8: the cap, and it loads.
+        let at_cap = nested(super::MAX_PREDICATE_DEPTH - 1);
+        assert!(
+            install(&at_cap).is_ok(),
+            "depth {} must load",
+            super::MAX_PREDICATE_DEPTH,
+        );
+
+        // One deeper is rejected by OUR counter, with our message.
+        let over = nested(super::MAX_PREDICATE_DEPTH);
+        let err = install(&over).expect_err("one level over the cap must be rejected");
+        assert!(err.contains("nests deeper than"), "{err}");
+
+        // And the pathological document does not reach us at all: the TOML
+        // parser refuses it. No panic, no overflow, just an error.
+        let parsed: Result<ManifestSpec, _> = toml::from_str(&nested(20_000));
+        assert!(
+            parsed.is_err(),
+            "a 20k-deep document must be refused, not parsed",
+        );
+    }
+
+    #[test]
+    fn an_over_long_pattern_drops_the_manifest_whole() {
+        let long = "a".repeat(super::MAX_MATCHER_CHARS + 1);
+        let err = install(&format!(
+            "kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\nstate = \"idle\"\n\
+             region = \"title\"\nmatch = {{ contains = \"{long}\" }}\n"
+        ))
+        .expect_err("an over-long needle must be rejected");
+        assert!(err.contains("over the"), "{err}");
+
+        // At the cap it loads: the bound is inclusive, and a manifest author
+        // who counted correctly is not punished for it.
+        let exact = "a".repeat(super::MAX_MATCHER_CHARS);
+        assert!(
+            install(&format!(
+                "kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\nstate = \"idle\"\n\
+                 region = \"title\"\nmatch = {{ contains = \"{exact}\" }}\n"
+            ))
+            .is_ok(),
+            "a pattern exactly at the cap must load",
+        );
+    }
+
+    /// Length is counted in CHARACTERS, so a manifest matching non-ASCII agent
+    /// chrome (every shipped one does — braille spinners, box glyphs) is not
+    /// silently held to a third of the budget.
+    #[test]
+    fn pattern_length_is_measured_in_characters_not_bytes() {
+        // Three bytes each, so this is 3x the cap in bytes and exactly the cap
+        // in characters.
+        let wide = "\u{2500}".repeat(super::MAX_MATCHER_CHARS);
+        assert!(wide.len() > super::MAX_MATCHER_CHARS, "premise: multi-byte");
+        assert!(
+            install(&format!(
+                "kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\nstate = \"idle\"\n\
+                 region = \"title\"\nmatch = {{ contains = \"{wide}\" }}\n"
+            ))
+            .is_ok(),
+            "a multi-byte pattern at the character cap must load",
+        );
+    }
+
+    #[test]
+    fn too_many_matchers_in_one_rule_drops_the_manifest_whole() {
+        let children: Vec<String> = (0..=super::MAX_MATCHERS_PER_RULE)
+            .map(|idx| format!("{{ contains = \"x{idx}\" }}"))
+            .collect();
+        let err = install(&format!(
+            "kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\nstate = \"idle\"\n\
+             region = \"title\"\nmatch = {{ any = [{}] }}\n",
+            children.join(", ")
+        ))
+        .expect_err("one matcher over the per-rule cap must be rejected");
+        assert!(err.contains("matchers in one rule"), "{err}");
+    }
+
+    /// The per-rule budget resets between rules; the per-manifest one does
+    /// not. Otherwise the manifest cap would be unreachable (any single rule
+    /// hits its own cap first) and the aggregate bound would not exist.
+    #[test]
+    fn the_matcher_budget_is_per_rule_and_also_cumulative() {
+        // Two rules of 32 matchers each: fine per rule, fine in aggregate.
+        let rule = |id: usize| {
+            let children: Vec<String> = (0..super::MAX_MATCHERS_PER_RULE)
+                .map(|idx| format!("{{ contains = \"x{idx}\" }}"))
+                .collect();
+            format!(
+                "[[rules]]\nid = \"r{id}\"\nstate = \"idle\"\nregion = \"title\"\n\
+                 match = {{ any = [{}] }}\n",
+                children.join(", ")
+            )
+        };
+        let mut ok = String::from("kind = \"k\"\nbinaries = [\"k\"]\n");
+        for id in 0..2 {
+            ok.push_str(&rule(id));
+        }
+        assert!(install(&ok).is_ok(), "32 matchers per rule, twice, is fine");
+
+        // Enough such rules to cross the manifest-wide cap.
+        let rules_needed = super::MAX_MATCHERS_PER_MANIFEST / super::MAX_MATCHERS_PER_RULE + 1;
+        let mut over = String::from("kind = \"k\"\nbinaries = [\"k\"]\n");
+        for id in 0..rules_needed {
+            over.push_str(&rule(id));
+        }
+        let err = install(&over).expect_err("the aggregate cap must bite");
+        assert!(err.contains("matchers in the manifest"), "{err}");
+    }
+
+    /// The bounds must not have quietly rejected anything we ship. If a
+    /// built-in ever approaches a cap, this is where it surfaces — as a test
+    /// failure at authoring time rather than a `warn` in a production log.
+    #[test]
+    fn every_builtin_manifest_is_far_inside_the_load_time_bounds() {
+        for (kind, text) in super::BUILTIN_MANIFESTS {
+            let spec: ManifestSpec = toml::from_str(text).expect("builtin parses");
+            assert!(
+                spec.rules.len() <= super::MAX_RULES_PER_MANIFEST / 4,
+                "{kind}: {} rules is close enough to the cap to be worth a look",
+                spec.rules.len(),
+            );
+            let mut set = RuleSet::default();
+            set.install(spec).unwrap_or_else(|e| panic!("{kind}: {e}"));
+        }
     }
 
     #[test]

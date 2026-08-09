@@ -64,6 +64,7 @@ SUPERVISE
 
 ORGANIZE
   tag        Read and write a pane's tags (address them with #tag)
+  skill      Print the agent skill this binary ships with
   completion Print a shell completion script for phux
   doctor     Diagnose the install: config, socket, server, plugins
   logs       Show where phux's logs live, or tail one of them
@@ -121,6 +122,7 @@ Commands:
   host         Register the machines phux talks to: remotes and satellites
   service      Keep a server running across logout and reboot
   completion   Print a shell completion script on stdout
+  skill        Print the agent skill this binary ships with, on stdout
   doctor       Diagnose a phux install: config, socket, server, plugins
   worktree     Manage git worktrees and the sessions bound to them
   logs         Show where phux's logs live, or tail one of them
@@ -129,10 +131,10 @@ Commands:
 Options:
       --rec <PATH>
           Record this session while it runs and write the result to PATH.
-          
+
           The format follows the extension (.cast, .gif, .png, .apng); pass
           --rec-format to override. A path with no extension gets `.gif`.
-          
+
           Examples:
             phux --rec demo.gif
             phux attach work --rec demo.cast
@@ -208,15 +210,58 @@ Commands:
   explain           Explain the evidence behind one pane's state
   set               Declare a pane's agent identity (writes the phux.agent/v1 L3 record)
   wait              Block until a pane's agent TRANSITIONS into a lifecycle state
+  prompt            Hand an agent a turn's worth of work, with a delivery receipt
   send-keys         Send keys to a pane, but only if it still hosts the expected agent
+  answer            Answer a pane's pending agent question by validated choice
+  start             Start an agent INSIDE an existing shell pane, and return when it is ready for input
   clear             Clear a pane's declared agent identity (deletes phux.agent/v1)
-  install-claude    Make plain `claude` launch inside phux and publish lifecycle state
+  install-claude    Make plain `claude` launch inside phux and declare its identity
   uninstall-claude  Remove the claude-in-phux shim and shell activation
   help              Print this message or the help of the given subcommand(s)
 
 Options:
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux agent answer`
+
+```text
+Answer a pane's pending agent question by validated choice.
+
+The `asked` event carries the question AND the suggestions the asking agent itself published, so an orchestrator can reply with a string the agent named instead of a blind keystroke. That is the contract: the bytes phux types are always one of the agent's own published answers, unless you pass `--allow-unlisted`.
+
+`--id` is required, and the pane must still be asking that exact question. Answering one the agent already moved past would type into whatever is on screen now, which is the failure this verb exists to prevent — so a stale id, an unidentified ask, and a pane that is not asking at all are all refusals with nothing written.
+
+The answer rides one acknowledged, idempotent input batch: a trusted paste followed by Enter, written and confirmed as a single operation.
+
+Usage: phux agent answer [OPTIONS] --id <ID> <TARGET>
+
+Arguments:
+  <TARGET>
+          Target selector (resolves to one pane)
+
+Options:
+      --id <ID>
+          The id of the ask being answered, as carried by the `asked` event. Required: answering "whatever is being asked right now" is a level read, and a level read cannot tell one question from the next
+
+      --choice <N>
+          Send the Nth published suggestion, 1-based, verbatim
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --text <TEXT>
+          Send exactly this text. Refused when the ask published a suggestion set and this is not in it (see `--allow-unlisted`)
+
+      --allow-unlisted
+          Permit a `--text` answer outside the ask's published suggestions
+
+      --json
+          Emit machine-readable JSON instead of the one-line confirmation
 
   -h, --help
           Print help (see a summary with '-h')
@@ -274,7 +319,7 @@ Options:
 
       --format <FORMAT>
           How to read `--file`. `auto` picks JSON when the first non-whitespace byte is `{`
-          
+
           [possible values: auto, json, text]
 
   -h, --help
@@ -284,14 +329,14 @@ Options:
 ## `phux agent install-claude`
 
 ```text
-Make plain `claude` launch inside phux and publish lifecycle state
+Make plain `claude` launch inside phux and declare its identity
 
 Usage: phux agent install-claude [OPTIONS]
 
 Options:
       --shell <SHELL>
           Shell rc file to activate (auto-detected from SHELL)
-          
+
           [possible values: zsh, bash, fish]
 
       --real <PATH>
@@ -322,6 +367,58 @@ Options:
           Print help
 ```
 
+## `phux agent prompt`
+
+```text
+Hand an agent a turn's worth of work, with a delivery receipt.
+
+The prompt text and Enter ride ONE acknowledged, idempotent operation, so a caller that does not get an answer can ask again under the same operation id without risking a duplicate turn — the failure fire-and-forget input cannot avoid, because its only recovery is a resend. Enter is last, so a partial write can only drop the submission and leave unsubmitted text, never submit a truncated prompt.
+
+The acknowledged path is required, not preferred: an older server or a satellite target is refused rather than downgraded, because a success code that means "the bytes are in the kernel queue" on one host and "accepted, maybe dropped" on another is not branchable.
+
+An OK is a kernel-queue receipt, not a consumption receipt. If delivery comes back UNKNOWN, do not resend: read the pane.
+
+With `--wait` the same process holds one connection across the submit, so every state change it sees is strictly post-write, and the gate is satisfied only by an observed TRANSITION — never by a level read of the current state, which a crashed agent also reads as.
+
+The server has ONE acknowledged input lane, so do not prompt a fleet in parallel: serialize it, or all but one caller collides.
+
+Usage: phux agent prompt [OPTIONS] <TARGET> <TEXT>
+
+Arguments:
+  <TARGET>
+          Target selector (resolves to one pane)
+
+  <TEXT>
+          The prompt text. Single-line: a raw newline is refused, because a pane that has not enabled bracketed paste turns each one into a separate submission and no client can observe that mode
+
+Options:
+      --expect-agent <NAME>
+          Require the pane's declared agent name to be this one
+
+      --expect-kind <KIND>
+          Require the pane's declared agent kind slug to be this one
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --wait
+          After delivering, block until the agent transitions into a lifecycle state
+
+      --until <STATE>
+          Lifecycle state to wait for; repeat to OR several. Defaults to `idle`, `blocked`, `done`. Requires `--wait`
+
+          [possible values: idle, working, blocked, done]
+
+      --timeout <SECS>
+          Give up waiting after this many seconds and exit 124. The prompt was still delivered. Requires `--wait`
+
+      --json
+          Emit the machine-readable result document instead of staying quiet on success
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
 ## `phux agent send-keys`
 
 ```text
@@ -329,7 +426,7 @@ Send keys to a pane, but only if it still hosts the expected agent.
 
 The agent-addressed sibling of top-level `phux send-keys`, and it differs from it in exactly one way: it re-reads the pane's phux.agent/v1 record immediately before writing and refuses if the occupant changed. `phux send-keys` addresses a pane and deliberately checks no identity; use that one when a pane is what you mean.
 
-Every key is validated before any byte is written, so a typo in the third key cannot leave the first two delivered.
+Every key is validated before any byte is written, so a typo in the third key cannot leave the first two delivered — and since the whole batch now rides ONE acknowledged operation, that all-or-nothing promise covers delivery as well as validation. A caller that loses the answer can ask again under the same operation id instead of guessing whether the keys landed. For prose you want an agent to act on, `phux agent prompt` is the verb.
 
 Usage: phux agent send-keys [OPTIONS] <TARGET> <KEYS>...
 
@@ -380,12 +477,12 @@ Options:
 
       --state <STATE>
           Declared lifecycle state
-          
+
           [possible values: unknown, idle, working, blocked, done]
 
       --attention <ATTENTION>
           Declared attention priority (defaults derive from state)
-          
+
           [possible values: none, low, normal, high]
 
       --session <SESSION>
@@ -415,6 +512,55 @@ Options:
 
   -h, --help
           Print help
+```
+
+## `phux agent start`
+
+```text
+Start an agent INSIDE an existing shell pane, and return when it is ready for input.
+
+The layout-free sibling of `phux launch`: it creates, splits, and moves nothing. `launch` returns a Terminal id ("a pane now exists"); this returns a readiness assertion about a pane that already existed, which is a different success statement and therefore a different verb. The launch resolver is shared — the same integration template, the same argv, the same provider-native session identity — only the delivery differs: the pane's child is a live shell, so the command is typed as one quoted line and submitted as one acknowledged `APPLY_INPUT` batch.
+
+Ready is the FIRST detector publication after submit, not `state == idle`. No shipped detection manifest asserts `idle` positively — it is the fail-safe fallthrough — so a gate built on it would report ready for a pane where nothing launched. `--json` therefore reports the provenance of the answer (which rule matched, or that none did) rather than an opaque word.
+
+A `--kind` with no detection manifest is refused up front: without one the readiness contract is unenforceable and the verb could only time out, after having typed into the pane. `phux launch` and `phux spawn` keep working for any agent whatsoever, because neither promises readiness.
+
+Usage: phux agent start [OPTIONS] --kind <KIND> --target <TARGET> <NAME> [-- <ARGS>...]
+
+Arguments:
+  <NAME>
+          Human-facing agent name to bind to the pane. Must match `^[a-z][a-z0-9_-]{0,31}$` so `%NAME` can address it afterwards
+
+  [ARGS]...
+          Extra arguments appended to the integration's launch command
+
+Options:
+      --kind <KIND>
+          Detection-manifest kind the started agent must identify as (`claude`, `codex`, ...). `phux agent explain --file` lists the loaded roster
+
+      --target <TARGET>
+          Existing pane to start into. Never created, split, or moved
+
+      --integration <ID>
+          Launch integration id, when it is not spelled like the kind slug (e.g. `--kind claude --integration claude-code`)
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --timeout <SECS>
+          Give up waiting for readiness after this many seconds and exit 124. The command was still typed
+
+      --no-wait
+          Submit and return without claiming readiness (exit 0, `ready: false`)
+
+      --force
+          Skip the available-shell precondition. Types the launch command into the pane whatever is running there
+
+      --json
+          Emit the machine-readable result document instead of a line
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ## `phux agent uninstall-claude`
@@ -452,7 +598,7 @@ Arguments:
 Options:
       --until <STATE>
           Lifecycle state to wait for; repeat to OR several. Defaults to `idle`, `blocked`, `done` — the three ways a turn ends. `unknown` is not spellable: it is departure, not a state
-          
+
           [possible values: idle, working, blocked, done]
 
       --timeout <SECS>
@@ -491,7 +637,7 @@ Arguments:
 Options:
       --id <ID>
           Stable question id for answer correlation
-          
+
           [default: ""]
 
       --suggest <TEXT>
@@ -524,7 +670,7 @@ Usage: phux attach [OPTIONS] [SESSION]
 Arguments:
   [SESSION]
           Session name (matches the name used at creation time).
-          
+
           Omit to attach to the most-recently-focused session.
 
 Options:
@@ -548,10 +694,10 @@ Options:
 
       --rec <PATH>
           Record this session while it runs and write the result to PATH.
-          
+
           The format follows the extension (.cast, .gif, .png, .apng); pass
           --rec-format to override. A path with no extension gets `.gif`.
-          
+
           Examples:
             phux --rec demo.gif
             phux attach work --rec demo.cast
@@ -587,7 +733,7 @@ Usage: phux completion [OPTIONS] <SHELL>
 Arguments:
   <SHELL>
           Shell dialect to generate for
-          
+
           [possible values: bash, elvish, fish, powershell, zsh]
 
 Options:
@@ -911,7 +1057,7 @@ Options:
           Possible values:
           - remote:    A server this machine attaches to — a `[[remote]]` entry
           - satellite: A peer this hub dials for its users — a `[[satellites]]` entry
-          
+
           [default: remote]
 
       --token-file <PATH>
@@ -958,7 +1104,7 @@ Options:
           Possible values:
           - remote:    A server this machine attaches to — a `[[remote]]` entry
           - satellite: A peer this hub dials for its users — a `[[satellites]]` entry
-          
+
           [default: remote]
 
       --name <NAME>
@@ -972,7 +1118,7 @@ Options:
 
       --quic-port <PORT>
           QUIC port to configure on the remote and register
-          
+
           [default: 8788]
 
       --no-service
@@ -1068,13 +1214,13 @@ Arguments:
 Options:
       --split <SPLIT>
           Split axis: `horizontal` stacks the panes, `vertical` places them side-by-side
-          
+
           [default: horizontal]
           [possible values: horizontal, vertical]
 
       --ratio <RATIO>
           Fraction assigned to TARGET; must be strictly between 0 and 1
-          
+
           [default: 0.5]
 
       --json
@@ -1132,7 +1278,7 @@ Options:
 
       --print
           Resolve and print the launch argv (and cwd) without spawning a pane — a server-free dry run
-          
+
           [aliases: --dry-run]
 
       --json
@@ -1146,13 +1292,13 @@ Options:
 
       --split <SPLIT>
           Split axis for explicit placement (requires `--target`)
-          
+
           [default: horizontal]
           [possible values: horizontal, vertical]
 
       --ratio <RATIO>
           Fraction of the split retained by TARGET (requires `--target`)
-          
+
           [default: 0.5]
 
   -c, --cwd <DIR>
@@ -1189,7 +1335,7 @@ Options:
 
   -n, --lines <LINES>
           How many trailing lines to show (needs --server or --client)
-          
+
           [default: 200]
 
       --json
@@ -1238,13 +1384,13 @@ Arguments:
 Options:
       --split <SPLIT>
           Destination split axis: `horizontal` stacks the panes, `vertical` places them side-by-side
-          
+
           [default: horizontal]
           [possible values: horizontal, vertical]
 
       --ratio <RATIO>
           Fraction assigned to TARGET; must be strictly between 0 and 1
-          
+
           [default: 0.5]
 
       --json
@@ -1395,7 +1541,7 @@ Arguments:
 Options:
       --speed <N>
           Playback rate. 1 is real time, 2 is twice as fast, 0.5 half speed. Between 0.01 and 100; no events are ever dropped
-          
+
           [default: 1]
 
       --idle-limit <SECS>
@@ -1409,13 +1555,13 @@ Options:
 
       --split <SPLIT>
           Split axis for the new pane
-          
+
           [default: horizontal]
           [possible values: horizontal, vertical]
 
       --ratio <RATIO>
           Fraction of the split retained by TARGET
-          
+
           [default: 0.5]
 
       --no-fit
@@ -1687,22 +1833,22 @@ Options:
 
       --fps <FPS>
           Animation sample rate for GIF/APNG output
-          
+
           [default: 10]
 
       --idle-limit <SECS>
           Collapse any pause longer than SECS down to SECS. 0 disables
-          
+
           [default: 2]
 
       --max-bytes <BYTES>
           Stop encoding and warn once the output reaches BYTES
-          
+
           [default: 8388608]
 
       --cast-version <N>
           asciicast format version to write (2 is the interoperable default)
-          
+
           [default: 2]
 
       --json
@@ -1769,7 +1915,7 @@ Options:
 
       --max-conns <N>
           Maximum concurrent connections, tunnels and consumers combined. An over-cap connection is refused after its handshake completes; existing connections are unaffected
-          
+
           [default: 64]
 
       --socket <PATH>
@@ -1914,7 +2060,7 @@ Usage: phux server [OPTIONS]
 Options:
       --session <SESSION>
           Name of the pre-seeded session. Matches what `phux attach <name>` will request
-          
+
           [default: default]
 
       --listen <HOST:PORT>
@@ -1937,7 +2083,7 @@ Options:
 
       --exit-after-idle <SECS>
           Exit once no client has been connected for SECS, even if panes are still running. For ephemeral servers: a test harness or CI job that bootstraps a private server per run and cannot guarantee its own cleanup step will execute. The clock starts at startup, so a server nobody ever connects to also exits.
-          
+
           Without this flag the server keeps the multiplexer contract and lives until its last pane is gone.
 
   -h, --help
@@ -2014,7 +2160,7 @@ Options:
 
   -n, --lines <LINES>
           How many trailing lines to show
-          
+
           [default: 200]
 
       --socket <PATH>
@@ -2107,6 +2253,30 @@ Options:
           Print help (see a summary with '-h')
 ```
 
+## `phux skill`
+
+```text
+Print the agent skill this binary ships with, on stdout.
+
+The text is compiled into the executable, so it describes the verbs and flags THIS build actually has — it cannot drift from the binary the way a copied file can. It contacts no server and reads no config.
+
+Give it to any agent that needs to drive phux: it teaches the read-act-wait loop, the selector grammar, the difference between a level read and an observed transition, the exit codes, and the safety rules for driving a terminal a human may also be using.
+
+Examples:
+  phux skill
+  phux skill > ~/.claude/skills/phux/SKILL.md
+  phux skill | pbcopy
+
+Usage: phux skill [OPTIONS]
+
+Options:
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
 ## `phux snapshot`
 
 ```text
@@ -2146,12 +2316,12 @@ Options:
 
       --cols <COLS>
           Composited viewport width for `--rendered` (no TTY to measure)
-          
+
           [default: 80]
 
       --rows <ROWS>
           Composited viewport height for `--rendered`
-          
+
           [default: 24]
 
   -h, --help
@@ -2183,13 +2353,13 @@ Options:
 
       --split <SPLIT>
           Split axis for explicit placement (requires `--target`)
-          
+
           [default: horizontal]
           [possible values: horizontal, vertical]
 
       --ratio <RATIO>
           Fraction of the split retained by TARGET (requires `--target`)
-          
+
           [default: 0.5]
 
   -c, --cwd <CWD>
@@ -2484,11 +2654,16 @@ Options:
 ```text
 Stream a pane's live events (the push half of the agent surface).
 
-Subscribes to the server's event stream and prints one event per line until EOF or Ctrl-C. The subscription neither attaches nor resizes the pane — safe to watch a pane a human or another agent is actively using. This is the latency-cutting accelerator of `phux wait`'s poll floor: events (bell, title change, output dirty/idle, pane spawn/close) arrive as they happen rather than on a poll tick.
+Subscribes to the server's event stream and prints one event per line. The subscription neither attaches nor resizes the pane — safe to watch a pane a human or another agent is actively using. TARGET is a selector (see the top-level help); omit it for the most-recently-focused session.
 
-TARGET is a selector (see the top-level help); omit it for the most-recently-focused session. With `--json`, each line is a JSON object (stdout stays pure JSON); otherwise each line is a compact human form.
+With no bounds the stream runs until EOF or Ctrl-C. `--until EVENT` makes it a gate: the first matching event is printed and `watch` exits 0. `--timeout SECS` gives up and exits 124, the same code `phux wait` uses. If the server closes the stream before an `--until` event arrives, that is exit 1 — the event did not happen and can no longer happen.
 
-phux watch build phux watch --json work:1.0
+With `--json` each line is one JSON object and nothing else is written to stdout: no per-line schema_version, and no summary line on timeout.
+
+Examples:
+  phux watch build
+  phux watch --json work:1.0
+  phux watch --until asked --timeout 120 reviewer
 
 Usage: phux watch [OPTIONS] [TARGET]
 
@@ -2497,6 +2672,12 @@ Arguments:
           Target selector. Omit for the most-recently-focused session
 
 Options:
+      --until <EVENT>
+          Exit 0 as soon as an event with this name arrives. Repeatable; any one of them satisfies the watch. The vocabulary is the one this stream prints: `agent_state`, `asked`, `bell`, `command_finished`, `command_started`, `dirty`, `idle`, `pane_closed`, `pane_spawned`, `title_changed`, `unknown`. An unrecognized name is a usage error (exit 2) reported before the watch starts, never a watch that quietly never matches
+
+      --timeout <SECS>
+          Give up after this many seconds (exit 124). Applies with or without `--until`. Default: stream until EOF or Ctrl-C
+
       --json
           Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
 
@@ -2540,7 +2721,7 @@ Usage: phux workspace inspect [OPTIONS] [PATH]
 Arguments:
   [PATH]
           Path inside the repository or worktree to inspect
-          
+
           [default: .]
 
 Options:
@@ -2627,7 +2808,7 @@ Usage: phux worktree list [OPTIONS] [PATH]
 Arguments:
   [PATH]
           Path inside the repository or worktree to list from
-          
+
           [default: .]
 
 Options:
@@ -2672,11 +2853,14 @@ Options:
 
       --repo <PATH>
           Path inside the repository the worktree belongs to
-          
+
           [default: .]
 
       --attach
           Attach to the new session instead of creating it headlessly
+
+      --json
+          Emit a stable JSON document — branch, path, session, and the seed pane's `terminal_id` — instead of human text. This is the first call in a fan-out script, and the id it returns is the pane the caller then sends its first prompt to. Cannot combine with `--attach`: an attached session owns stdout
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2698,11 +2882,14 @@ Arguments:
 Options:
       --repo <PATH>
           Path inside the repository the worktree belongs to
-          
+
           [default: .]
 
       --attach
           Attach to the session instead of only reporting its name
+
+      --json
+          Emit the same document `worktree new --json` emits, whether the session was created now or was already live — so a script that re-enters a fleet gets the seed pane without special-casing
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
@@ -2730,8 +2917,11 @@ Options:
 
       --repo <PATH>
           Path inside the repository the worktree belongs to
-          
+
           [default: .]
+
+      --json
+          Emit a stable JSON document instead of human text. A fan-out teardown script has the same parsing problem creation does
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)

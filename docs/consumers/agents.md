@@ -216,7 +216,8 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   shell's echo of the command you just typed** — on a pane with no shell
   integration, match on text that appears only in command output, never the
   command itself.
-- **`phux watch [--json] [--socket P] [TARGET]`** — stream a pane's live events
+- **`phux watch [--until EVENT]... [--timeout SECS] [--json] [--socket P]
+  [TARGET]`** — stream a pane's live events
   (the push half of the agent surface; see [`../spec/L1.md`](../spec/L1.md)).
   Subscribes to the server's event stream scoped to the resolved pane and
   prints one event per line until EOF (server gone) or Ctrl-C; the
@@ -228,6 +229,14 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   (carries `id`, `question`, `suggestions`, and nullable `elapsed_seconds`),
   `command_started` / `command_finished` (the latter carries a nullable
   `exit_code`), and `agent_state`.
+
+  Repeating `--until` turns the stream into a gate: it prints through the
+  first matching event and exits `0`. Accepted names are `agent_state`,
+  `asked`, `bell`, `command_finished`, `command_started`, `dirty`, `idle`,
+  `pane_closed`, `pane_spawned`, `title_changed`, and `unknown`; an unknown
+  name is refused before connecting. `--timeout` bounds either a gate or a
+  plain stream and exits `124` without appending a summary to the NDJSON.
+  Server EOF before an `--until` match exits `1`; Ctrl-C remains a clean `0`.
 
   `agent_state` is the derived-agent half of the stream, not an L1 event:
   `watch` also subscribes to the resolved pane's
@@ -454,12 +463,12 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   Every key spec is validated before any byte is written, so a typo in the
   third key cannot leave the first two delivered; unlike `phux send-keys`, a
   near-miss chord (`C-cc`, a bare `M-`) is refused rather than typed as
-  literal text. The staleness bound is exact and narrow: the identity read and
-  the first `ROUTE_INPUT` are consecutive frames on one connection, so no
-  frame from this client interleaves — but another client's `SET_METADATA`,
-  the detector's next tick, or the pane's own process exec'ing something else
-  still can. It closes the resolve-then-type window, not a concurrent-writer
-  race.
+  literal text. The identity read and acknowledged `APPLY_INPUT` are ordered
+  on one connection. Success means `write_all` plus `flush` completed on the
+  PTY master: the bytes reached the kernel tty queue, not necessarily the
+  agent. `INPUT_DELIVERY_UNKNOWN` is terminal; read the pane and do not resend
+  under a new operation id. The server currently has one acknowledged input
+  lane, so serialize concurrent acknowledged writes.
 
   What the check *can* now rely on is that a stale `kind` does not sit beside
   a live `state`. When the pane's occupant changes — a Claude killed and a
@@ -471,6 +480,32 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   `kind` you set explicitly: the server preserves an explicit writer's `kind`
   (§3.7 of the spec requires it), so if you declared one, keeping it accurate
   is yours to do. `--json` emits the shape in §4.7.
+
+- **`phux agent prompt [--expect-agent NAME] [--expect-kind KIND] [--wait]
+  [--until STATE]... [--timeout SECS] [--json] [--socket P] TARGET TEXT`** —
+  submit one single-line prompt plus Enter as one acknowledged, idempotent
+  operation. Raw newlines are refused. `--wait` holds the same process and
+  connection across delivery and waits only for a post-write transition, so
+  the fused form cannot miss a fast turn between two commands. `--until` and
+  `--timeout` require `--wait`; states default to `idle,blocked,done`. Timeout
+  exits `124` after reporting that delivery occurred. The acknowledged input
+  lane is per server, with one admission slot and one execution thread;
+  prompt fleets serially. An OK is a kernel-queue receipt, not proof of
+  consumption. If delivery is unknown, inspect the pane and do not resend.
+- **`phux agent answer --id ID (--choice N|--text TEXT)
+  [--allow-unlisted] [--json] [--socket P] TARGET`** — answer the exact ask
+  still live on the pane. `--choice` is one-based into the published
+  suggestions. Free text must equal a suggestion unless `--allow-unlisted`
+  is explicit. A stale id, anonymous ask, or pane no longer asking is refused
+  with nothing written; a valid answer is one acknowledged paste-plus-Enter
+  operation.
+- **`phux agent start --kind KIND --target TARGET [--integration ID]
+  [--timeout SECS] [--no-wait] [--force] [--json] NAME [-- ARGS...]`** —
+  start an agent inside an existing shell pane. It never creates, splits,
+  moves, or focuses layout. Without `--no-wait`, success requires the first
+  detector publication after submit; a kind with no manifest is refused
+  because readiness would be unenforceable. Timeout exits `124` after the
+  command was typed. `--force` skips only the available-shell precondition.
 
 - **`phux agent install-claude [--shell zsh|bash|fish] [--real PATH]`** —
   make plain interactive `claude` invocations enter phux automatically. The
@@ -497,12 +532,13 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
 
   The installed shim is **version-stamped** (`# phux-shim-schema: N` on the
   second line). `install-claude` reports `installed`, `reinstalled`, or
-  `upgraded ... (schema 1 -> 2)` so you can tell a no-op from a real
+  `upgraded ... (schema N -> 3)` so you can tell a no-op from a real
   migration. Upgrading the phux binary does **not** rewrite an already
-  installed shim: a schema-1 shim keeps declaring `--state` on every hook and
-  keeps the detector stood down, so re-run `phux agent install-claude` after
-  upgrading. A pane running the current shim self-heals on its first hook —
-  the identity write clears any stale declaration left by the old one.
+  installed shim. Schema 1 declares state and stands the detector down;
+  schema 2 rewrites the record on every hook and can publish a false
+  departure; schema 3 writes identity once at session start. `phux doctor`
+  reports a stale installed schema and names `phux agent install-claude` as
+  the repair.
 - **`phux agent uninstall-claude`** — remove only the phux-owned shim, hook
   settings, manifest, and marked shell-rc block. User shell configuration and
   the real Claude installation are otherwise untouched.
@@ -608,6 +644,18 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   from a saved archive. A saved native agent identity is resumed only after the
   current enabled integration resolves to the same owning plugin. Restore
   starts new processes; it does not claim to resurrect the original PTYs.
+- **`phux worktree new BRANCH [--repo PATH] [--session NAME] [--json]`** —
+  create the git worktree and its bound phux session. `--json` returns the
+  facts from that create without a follow-up lookup:
+  `{schema_version, branch, path, session, terminal_id}`. `terminal_id` is the
+  seed pane's numeric id. The sibling `open` and `remove` verbs also accept
+  `--json`; all three use the shared `workspace` error code for git failures.
+- **`phux skill`** — print the agent skill compiled into this exact binary.
+  Prefer it to a copied checkout example when teaching another agent: CI
+  checks that it names every visible top-level and `agent` verb.
+- **`phux doctor [--json]`** — inspect the installation, including the
+  on-disk Claude shim schema. A stale shim is a warning, not a failed doctor
+  run, and the remedy is to rerun `phux agent install-claude`.
 - **`phux host <add|ls|rm> [--role remote|satellite] [--json]`** — manage
   both machine registries through one namespace (`--role remote`, the
   default, edits `[[remote]]`; `--role satellite` edits `[[satellites]]`).
@@ -643,14 +691,10 @@ tracked against ADR-0030. `GroupId`'s retention as an opaque grouping key is
 settled, not a remnant awaiting removal (bead phux-0bmc closed as
 resolved-by-rename).
 
-**Three agent surfaces are decided but not built**, and nothing in this file
-describes them as existing: agent-name `%name` addressing
-([ADR-0075](../../ADR/0075-agent-name-addressing.md)), the acknowledged
-`phux agent prompt`
-([ADR-0076](../../ADR/0076-agent-prompt-and-lifecycle-wait.md)), and the
-alternate-screen transcript harvest
-([ADR-0078](../../ADR/0078-alternate-screen-history.md)). Read the ADRs for the
-target shape; do not write a script against it.
+The alternate-screen transcript harvest in
+[ADR-0078](../../ADR/0078-alternate-screen-history.md) remains proposed and is
+not a usable read surface. `snapshot --tail` continues to expose only retained
+main-screen history.
 
 **Socket precedence (once, for every verb).** The `--socket` argument wins,
 then the `PHUX_SOCKET` environment variable, then the daemon default:
@@ -660,14 +704,16 @@ then the `PHUX_SOCKET` environment variable, then the daemon default:
 
 One grammar, every targeted command — `kill`, `snapshot`, `wait`, `watch`,
 `send-keys`, `paste`, `run`, `ask`, `resize`, `agent wait`,
-`agent send-keys`, launch/spawn placement, and the
+`agent send-keys`, `agent prompt`, `agent answer`, launch/spawn placement, and the
 three spatial verbs all share `TARGET`.
 It is resolved client-side against a server snapshot ([ADR-0021](../../ADR/0021-control-plane-commands.md)); the server
 never parses a selector.
 
 The full grammar table and CLI examples live in [`tui.md`](./tui.md) §3. In one
 line, the forms are: `.` (current), `name` (session), `name:N` / `name:tag`
-(window), `name:N.M` (pane), and `@N` (opaque id). `=` is explicitly
+(window), `name:N.M` (pane), `@N` (opaque id), and `%name` (an explicitly
+declared agent name). `%name` never matches detector-default kind names and
+refuses ambiguity rather than choosing among duplicate declarations. `=` is explicitly
 unsupported for headless commands because they have no attached-client MRU.
 
 A selector that names several panes (a whole session or window) narrows to a
@@ -675,7 +721,8 @@ single pane: the focused pane when it is among the matches, else the first in
 snapshot order (the `pick_target_pane` tiebreak the MCP tools share).
 Optionality differs per verb: `snapshot`, `wait`, `watch`, and `agent wait`
 may omit a target (`agent wait` matching `agent show`/`explain`);
-`send-keys`, `paste`, `run`, `ask`, `resize`, `agent send-keys`, and every
+`send-keys`, `paste`, `run`, `ask`, `resize`, `agent send-keys`, `agent prompt`,
+`agent answer`, and every
 spatial verb require it. `launch`/`spawn`
 use an optional target only for explicit local placement. Spatial and placement
 targets are stricter than the selected-pane tiebreak: each must resolve to one
@@ -1049,7 +1096,10 @@ wait that was already satisfied. Without `--json` the prose line is
   "terminal": "@7",
   "agent": { "name": "reviewer", "kind": "claude" },
   "keys": 2,
-  "verified": true
+  "verified": true,
+  "delivery": "ok",
+  "operation_id": "...",
+  "attempts": 1
 }
 ```
 
@@ -1057,6 +1107,55 @@ Emitted only on a fully delivered batch; without `--json` the verb says
 nothing on success, exactly as `phux send-keys` does. `keys` is the number of
 key specs delivered, and `verified` records that the occupant check ran and
 passed. Refusals follow §5.3.
+
+#### `phux agent prompt --json`
+
+The result records both halves of the fused operation. On wait timeout it
+still goes to stdout and the process exits `124`; `delivery: "ok"` means the
+prompt reached the kernel tty queue even though no target transition was
+observed.
+
+```json
+{
+  "schema_version": 1,
+  "terminal": "@7",
+  "delivery": "ok",
+  "operation_id": "...",
+  "agent": { "name": "reviewer", "kind": "claude", "state": "working", "session": null },
+  "pre_submit_state": "idle",
+  "staleness_bound_ms": null,
+  "attempts": 1,
+  "submit_ms": 8,
+  "transition_observed": true,
+  "matched_by": "transition",
+  "edge": { "from": "working", "to": "idle", "via": "push" },
+  "waited_ms": 1200,
+  "degraded_to_polling": false
+}
+```
+
+#### `phux agent answer --json`
+
+```json
+{
+  "schema_version": 1,
+  "terminal": "@7",
+  "ask": { "id": "deploy", "question": "Deploy?", "suggestions": ["Yes", "No"] },
+  "answer": "Yes",
+  "source": "choice",
+  "operation_id": "...",
+  "delivered": true
+}
+```
+
+#### `phux agent start --json`
+
+The ready result includes `terminal`, `name`, `kind`, `integration`, `started`,
+`ready`, `state`, `shell_check`, and a `readiness` object containing identity,
+transition, detector provenance, latency, and observation counts. With
+`--no-wait`, `ready` is `false` and `readiness` is `null`. A readiness timeout
+is a §5.3 error document on stderr and exits `124`; the launch command was
+already delivered.
 
 #### `AgentExplainJson` — `phux agent explain --file ... --json`
 
@@ -1558,12 +1657,12 @@ child's code (§5.2), `phux run ... && next` composes like a shell
 running an agent has a lifecycle record, not a sentinel, so wait on the record:
 
 ```sh
-phux agent send-keys --expect-agent reviewer @7 "review the diff" Enter
-phux agent wait --until idle --until blocked --timeout 900 --json @7
+phux agent prompt --expect-agent reviewer --wait \
+  --until idle --until blocked --timeout 900 --json @7 "review the diff"
 phux snapshot --json --tail 200 --unwrap @7 > transcript.json
 ```
 
-Read `agent wait`'s answer, do not assume it. Exit `0` means a transition into
+Read `agent prompt`'s answer, do not assume it. Exit `0` means a transition into
 one of those states was **observed**; `124` means none was, which is *not* the
 same statement as "the agent is still working" — check `phux agent show` for
 the level and `edge`/`baseline` in the `--json` document for what the wait
@@ -1572,18 +1671,6 @@ actually saw. Exit `1` is a departure: the record went away mid-wait, or its
 changed. Neither must ever be read as completion. Why the verb refuses to
 answer from the current level at all is in §2 and, normatively, in
 [`../spec/L3.md`](../spec/L3.md) §3.7.
-
-> **Known divergence (`phux agent install-claude` panes).** Every lifecycle
-> hook the shim installs issues a `SET_METADATA` that carries no `--state`,
-> and `SET_METADATA` replaces the record whole, so each hook resets `state`
-> to `"unknown"` until the detector's next tick refills it. An `agent wait`
-> in flight sees that as a transition into `unknown` and exits `1`
-> (`agent_departed`) even though the agent is alive and mid-turn — the Stop
-> hook makes it fire at the end of every turn. Supervising a shim-instrumented
-> Claude pane with `agent wait` is therefore unreliable until this is fixed;
-> the shim should write its identity once at session start rather than on
-> every hook. Tracked as **phux-w7z2.37**. Panes not running the shim are
-> unaffected, and a genuine withdrawal is still a genuine departure.
 
 When the input itself is a block of text — a heredoc body, an indented code
 snippet for a REPL, a multiline SQL statement — use `paste`, then submit
@@ -1621,12 +1708,15 @@ Exit codes are not uniform across verbs:
 | `run` | the child's own code clamped to `0..=255` (negative or `>255` saturate to `255`); `125` when phux gave up waiting for the sentinel (`--timeout`); `1` for no server / refused target / other. |
 | `wait` | `0` condition met; `124` on `--timeout`; `2` usage — an invalid `--regex`, or `--until` combined with `--regex` (clap's own status, raised before any poll); `1` no server / parse / read error. |
 | `agent wait` | `0` a transition into a `--until` state was observed; `124` on `--timeout`, including a pane that held a target state for the whole wait; `2` the pane declares no record, or an unknown `--until` word; `1` the agent departed mid-wait (record deleted or state withdrawn to `unknown`), no server, or transport. |
-| `agent send-keys` | `0` the whole batch was delivered; `2` a refusal before any byte was written — an unusable key spec, no declared record, or an occupant that is not the agent you named; `1` no server / selector miss / transport. |
+| `agent send-keys` | `0` the acknowledged batch reached the kernel tty queue; `2` a refusal before any byte was written; `1` transport, selector, or indeterminate delivery. Do not resend `delivery_unknown`. |
+| `agent prompt` | `0` delivered (and, with `--wait`, a target transition observed); `124` delivered but no target transition observed before timeout; `2` usage, identity, capability, or pre-write refusal; `1` transport or indeterminate delivery. |
+| `agent answer` | `0` the exact live ask was validated and the answer delivered; `2` stale/unidentified ask, invalid choice/text, or pre-write refusal; `1` transport or indeterminate delivery. |
+| `agent start` | `0` submitted, and ready unless `--no-wait`; `124` command typed but readiness not observed; `2` invalid name/kind/argv, no manifest, or unsafe target; `1` launch, transport, or observation failure. |
 | `new` | `0` ok; `1` duplicate `-s` name / failure. |
 | `resize` | `0` the pane holds the requested geometry; `1` no server / selector miss / unknown pane, or the server holds a different size (an attached view's `window-size` policy owns it); `2` unusable `COLSxROWS` (clap usage error, raised before any connection). |
 | `rename` | `0` renamed; `1` no server or transport failure; `2` unknown source session or destination name already exists. |
 | `launch` / `spawn` | `0` spawned/resolved/listed; `1` invalid integration, placement, server, or spawn failure. |
-| `watch` | streams until Ctrl-C, EOF, or caller termination; use a subprocess bound rather than treating its eventual signal status as agent outcome. |
+| `watch` | `0` Ctrl-C, plain EOF, or an `--until` match; `124` `--timeout`; `2` unknown event name; `1` transport or EOF before a requested event. |
 | `rec` | `0` ok, including a capture ended by Ctrl-C; `1` no server, unresolvable target, unknown output extension, unreadable `--from` file, or write/encode failure. |
 | `plugin` | `0` ok; `1` invalid/missing manifest, invalid config, refused registry write, or unknown plugin id. |
 | `workspace` | `0` ok; `1` missing git repo, invalid git output, no server for save/restore, invalid archive, or JSON render failure. |
@@ -1649,14 +1739,12 @@ message naming the unreachable satellite and containing neither the words
 **Every** target-resolving verb prints the distinguished message, but not all
 of them can spend a status on it. `snapshot`, `send-keys`, `paste`, `run`,
 `wait`, `watch`, `resize`, `signal`, `rec`, `ask`, `agent wait`, and
-`agent send-keys` share one resolver, and
+`agent send-keys`, `agent prompt`, and `agent answer` share one resolver, and
 some of them have already spoken for the number: `run` mirrors the child's own
 exit code (a command may legitimately exit `3`), `wait` and `agent wait` own
 `124`, and `agent wait` / `agent send-keys` spend `2` on their own refusals.
 Those verbs keep `1` and say it in words. Branch on the status where the table below
 offers `3`; otherwise read stderr, which never claims absence it cannot
-verify.
-
 Verbs that resolve a **session name** never return `3`: a satellite's
 `sessions` and `windows` lists are discarded during the merge (their ids would
 collide with the hub's), so the session name space is complete even when the
@@ -1682,7 +1770,8 @@ Every core server-talking verb above
 `--json`-bearing registry and inspection verb (`tag`, `plugin`,
 `remote list`, `satellite`, `worktree list`, `workspace inspect`,
 `config check`, `logs`, `doctor`, `agent explain --file`, `agent wait`,
-`agent send-keys`), reports a `--json` failure the same way:
+`agent send-keys`, `agent prompt`, `agent answer`, `agent start`), reports a
+`--json` failure the same way:
 **stdout stays empty** (the document channel never carries half a result)
 and **stderr carries one line of JSON** (ADR-0065 §4):
 
@@ -1696,9 +1785,8 @@ and **stderr carries one line of JSON** (ADR-0065 §4):
 ```
 
 - `schema_version` is `1`; new fields are additive and do not bump it.
-- `error.code` is a **closed vocabulary** (`commands/json_err.rs`, except the
-  agent-lifecycle codes below, which are still declared beside the two verbs
-  that emit them); branch on it, never on `message` text. The
+- `error.code` is a **closed vocabulary** owned in one place by
+  `commands/json_err.rs`; branch on it, never on `message` text. The
   transport family: `no_server` (nothing listening at the socket),
   `server_disconnected` (the server went away mid-command), `transport`
   (any other transport/protocol failure). The resolution family:
@@ -1728,7 +1816,8 @@ and **stderr carries one line of JSON** (ADR-0065 §4):
   not a screen — JSON that is not a `ScreenState`, or a capture with no rows),
   both exit 1; and `unknown_agent_kind` (exit 2 — `--kind` was omitted or
   names no loaded detection manifest, with the roster in `remedy`). The
-  agent-lifecycle family (`agent wait`, `agent send-keys`):
+  agent-lifecycle family (`agent wait`, `agent send-keys`, `agent prompt`,
+  `agent answer`, `agent start`):
   `no_agent_record` (exit 2 — the pane declares no `phux.agent/v1` record, so
   there is no lifecycle to wait on and no identity to verify against),
   `agent_departed` (exit 1 — the record was deleted or its state withdrew to
@@ -1737,6 +1826,16 @@ and **stderr carries one line of JSON** (ADR-0065 §4):
   `--expect-kind` named, and nothing was written), and `invalid_key_spec`
   (exit 2 — a key argument would not translate to the key you clearly meant,
   refused before the connection is opened so the batch stays all-or-nothing).
+  Acknowledged input adds `input_busy` (nothing written; retry is safe),
+  `delivery_unknown` (indeterminate; never resend), `input_too_large`,
+  `input_lease_held`, `canonical_limit_exceeded`, `unsafe_paste`,
+  `invalid_input_batch`, and `permission_denied`. Ask validation adds
+  `no_active_ask`, `ask_unidentified`, `ask_stale`, `answer_choice_out_of_range`,
+  and `answer_not_suggested`. Start adds `invalid_agent_name`,
+  `unsupported_agent_kind`, `agent_detection_unavailable`,
+  `agent_name_conflict`, `target_not_shell`, `invalid_launch_argv`,
+  `agent_start_timeout`, and `agent_kind_mismatch`. Watch adds
+  `unknown_event_name`.
 - `remedy` is always present and non-empty: the next command to run, in
   prose.
 - `exit_code` mirrors the process's own exit status, so a consumer that
@@ -1763,7 +1862,7 @@ its short-flag surface reserved for high-frequency human-typed options.
 The CLI verbs here are the stable contract. The
 [OpenCode integration](./opencode.md) selects a host-specific six-tool subset;
 the [Pi integration](./pi.md) exposes nineteen bounded tools, including spatial
-placement and topology edits. The [MCP adapter](./mcp.md) exposes 22 strict
+placement and topology edits. The [MCP adapter](./mcp.md) exposes 31 strict
 tools, including paste, launch/spawn, bounded watch, ask, spatial edits, agent
 state, and workspace parity, over JSON-RPC stdio. Adapter guides link here instead of
 redefining CLI syntax.

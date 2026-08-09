@@ -39,7 +39,11 @@ const MANIFEST: &str = "claude-install.json";
 ///   fires per hook but reaches only `phux ask` (ADR-0035/0036), which writes
 ///   nothing to the record. Hooks that would now write nothing are not wired
 ///   at all.
-const SHIM_SCHEMA: u32 = 3;
+///
+/// `pub(crate)` because `phux doctor` compares it against what is actually on
+/// disk (phux-w7z2.46): upgrading the binary does not rewrite an installed
+/// shim, so the mismatch is real, silent, and behavioral.
+pub(crate) const SHIM_SCHEMA: u32 = 3;
 
 /// Prefix of the wrapper's schema stamp line. A `#` comment, so it is inert
 /// to `/bin/sh` and greppable without executing anything.
@@ -119,9 +123,26 @@ struct InstallReport {
     replaced: Option<u32>,
 }
 
+/// Where the wrapper installed as `claude` lives for this user.
+///
+/// One resolver, so install, uninstall, and `phux doctor`'s staleness check
+/// can never look at different files.
+fn shim_dir_for(home: &Path) -> PathBuf {
+    data_home(home).join("phux").join("shims")
+}
+
+/// The installed wrapper's path, or `None` when the environment cannot say
+/// where it would be (no `HOME`).
+///
+/// Exposed for `phux doctor` (phux-w7z2.46), which reports the schema of the
+/// shim on disk against [`SHIM_SCHEMA`].
+pub(crate) fn installed_shim_path() -> Option<PathBuf> {
+    Some(shim_dir_for(&home_dir().ok()?).join("claude"))
+}
+
 fn install_claude(shell: &str, explicit_real: Option<&Path>) -> Result<InstallReport, String> {
     let home = home_dir()?;
-    let shim_dir = data_home(&home).join("phux").join("shims");
+    let shim_dir = shim_dir_for(&home);
     let rc = shell_rc(shell, &home)?;
     let phux = std::env::current_exe()
         .map_err(|err| format!("could not resolve the running phux binary: {err}"))?;
@@ -195,8 +216,7 @@ fn install_claude_into(
 }
 
 fn uninstall_claude() -> Result<Option<PathBuf>, String> {
-    let home = home_dir()?;
-    let shim_dir = data_home(&home).join("phux").join("shims");
+    let shim_dir = shim_dir_for(&home_dir()?);
     uninstall_claude_from(&shim_dir)
 }
 
@@ -468,7 +488,7 @@ exec "$real" "$@"
 /// reported as schema **1**, which is exactly what it is — the declaring
 /// version. Any file we cannot read is treated as absent: install overwrites
 /// it either way, and the only thing riding on this is the message.
-fn installed_shim_schema(shim: &Path) -> Option<u32> {
+pub(crate) fn installed_shim_schema(shim: &Path) -> Option<u32> {
     let text = std::fs::read_to_string(shim).ok()?;
     Some(
         text.lines()
@@ -893,7 +913,6 @@ mod tests {
         use portable_pty::{CommandBuilder, PtySize, native_pty_system};
         use std::io::Read as _;
         use std::sync::{Arc, Mutex};
-        use std::time::{Duration, Instant};
 
         fn write_script(path: &Path, body: &str) {
             std::fs::write(path, body).expect("write fixture script");
@@ -932,7 +951,7 @@ mod tests {
             let output = Arc::new(Mutex::new(Vec::new()));
             let sink = Arc::clone(&output);
             let mut reader = pair.master.try_clone_reader().expect("clone pty reader");
-            std::thread::spawn(move || {
+            let drain = std::thread::spawn(move || {
                 let mut buf = [0_u8; 8192];
                 while let Ok(read) = reader.read(&mut buf) {
                     if read == 0 {
@@ -945,19 +964,28 @@ mod tests {
             });
             drop(pair.master);
 
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let status = loop {
-                if let Some(status) = child.try_wait().expect("wrapper try_wait") {
-                    break status;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "wrapper did not exit within the deadline"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            };
-            // Let the reader thread drain whatever is left in the pty buffer.
-            std::thread::sleep(Duration::from_millis(50));
+            // phux-w7z2.47: no wall-clock anywhere in this helper. Both waits
+            // below are real synchronization points, so the test measures the
+            // wrapper's behavior and never the load on the machine running it.
+            //
+            // `wait` is `waitpid`, so it returns exactly when the wrapper
+            // exits — the polling loop with a 10s deadline it replaces was
+            // failing at ~10.2s under concurrent compilation while passing in
+            // ~0.7s in isolation. Joining the drain thread is the other half:
+            // it ends when the pty master reads EOF, which happens once the
+            // last slave-side descriptor closes — i.e. once the wrapper and
+            // every process it spawned are gone. That is the guarantee the
+            // 50ms "let the reader catch up" sleep was only approximating,
+            // and it is what makes the output assertions below sound.
+            //
+            // The deliberate consequence: a wrapper that genuinely wedges
+            // hangs here instead of failing at a deadline. That is the right
+            // trade. A deadline short enough to catch a wedge is short enough
+            // to fire on a loaded box, which is the bug being fixed; bounding
+            // a hang is nextest's `slow-timeout` / the CI job timeout, not an
+            // assertion inside the test.
+            let status = child.wait().expect("wait for the wrapper to exit");
+            drain.join().expect("pty reader thread");
             let text = String::from_utf8_lossy(&output.lock().expect("output lock")).into_owned();
             (status.exit_code(), text)
         }
