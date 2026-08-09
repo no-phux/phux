@@ -8,10 +8,14 @@ function completed(stdout = "", exitCode = 0) {
 }
 
 function option(args, name) {
-  return args[args.indexOf(name) + 1];
+  const at = args.indexOf(name);
+  // `indexOf` returns -1 when the flag is absent, and -1 + 1 is 0, which would
+  // silently report argv[0] as the value. Optional flags are the normal case
+  // now that the record is identity-only (phux-w7z2.38).
+  return at === -1 ? undefined : args[at + 1];
 }
 
-test("documented session status events publish honest owner-labelled working and idle states", async () => {
+test("documented session status events declare owner-labelled identity, and never a state", async () => {
   const requests = [];
   let record;
   const cli = new PhuxCli({ runner: async (request) => {
@@ -37,20 +41,32 @@ test("documented session status events publish honest owner-labelled working and
     type: "session.status",
     properties: { sessionID: "session-public-1", status: { type: "busy" } },
   } });
+  // Identity only: a declared state outranks the server's derivation for the
+  // record's lifetime (L3.md 3.7, ADR-0046 point 8), which stood
+  // `rules/opencode.toml` down on every pane running this plugin
+  // (phux-w7z2.38).
   assert.deepEqual(record, {
     name: "opencode",
     kind: "opencode",
-    state: "working",
-    attention: "normal",
+    state: undefined,
+    attention: undefined,
     session: "opencode:session-public-1",
   });
 
+  const writesAfterBusy = requests.filter((request) => request.args[1] === "set").length;
   await hooks.event({ event: {
     type: "session.idle",
     properties: { sessionID: "session-public-1" },
   } });
-  assert.equal(record.state, "idle");
-  assert.equal(record.attention, "low");
+  // A turn boundary declares nothing new. Rewriting identity here would carry
+  // `state: "unknown"` and clobber the derivation, publishing a
+  // `working -> unknown` edge that `phux agent wait` reads as a departure
+  // (phux-w7z2.37).
+  assert.equal(
+    requests.filter((request) => request.args[1] === "set").length,
+    writesAfterBusy,
+    "a turn boundary must not rewrite the record",
+  );
   assert.equal(requests.every((request) => request.timeoutMs === 321), true);
   assert.equal(requests.every((request) => request.signal instanceof AbortSignal), true);
   await hooks.dispose();

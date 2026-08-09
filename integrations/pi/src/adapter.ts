@@ -321,12 +321,15 @@ export class PhuxCli {
     record: AgentRecord,
     options: ExecutionOptions = {},
   ): Promise<AgentRecord> {
+    // `--state` / `--attention` are omitted when the record does not declare
+    // them: passing a state marks the pane `declared` and stands the server's
+    // detector down for the record's lifetime (L3.md 3.7, ADR-0046 point 8).
     const args = [
       "agent", "set", target,
       "--name", record.name,
       "--kind", record.kind,
-      "--state", record.state,
-      "--attention", record.attention,
+      ...(record.state === undefined ? [] : ["--state", record.state]),
+      ...(record.attention === undefined ? [] : ["--attention", record.attention]),
       "--session", record.session,
     ];
     this.pushSocket(args);

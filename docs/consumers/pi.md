@@ -210,11 +210,20 @@ several panes are live.
 ## Lifecycle metadata
 
 When a target is ownership-validated as available, the extension reports a
-whole `phux.agent/v1` record with `name=pi`, `kind=pi`, and a Pi-session owner
-in the `session` field. Pi's `agent_start` event maps to `working` with normal
-attention; `agent_settled` maps to `idle` with low attention. Writes are
-serialized, debounced, locally bounded, and best-effort, so a missing server
-does not break Pi startup or shutdown.
+`phux.agent/v1` record with `name=pi`, `kind=pi`, and a Pi-session owner in the
+`session` field — **identity only, never a `state`**. A declared `state`
+outranks the server's own derivation for the record's whole lifetime
+([`../spec/L3.md`](../spec/L3.md) §3.7,
+[ADR-0046](../../ADR/0046-server-side-agent-state-detection.md) point 8), so
+reporting one would stand the shipped `rules/pi.toml` detector down on every
+pane running this extension. Pi's per-turn `agent_start` / `agent_settled`
+events are therefore not subscribed at all: the server derives `working` and
+`blocked` from the manifest, and a per-turn identity rewrite would itself
+clobber that derivation, since a whole-record write carries `state: "unknown"`.
+
+Only a change of owner or target writes. Writes are serialized, debounced,
+locally bounded, and best-effort, so a missing server does not break Pi startup
+or shutdown.
 
 A target switch clears the old declaration only after reading it back and
 confirming that Pi still owns it. Normal shutdown applies the same ownership

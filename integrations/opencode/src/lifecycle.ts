@@ -48,10 +48,18 @@ export class OpenCodeLifecycle {
     this.target = options.target;
   }
 
+  /**
+   * A session is alive and should carry this plugin's identity.
+   *
+   * `state` is recorded for {@link targetSelected}'s fallback but is NOT
+   * written to the record: the server derives state from `rules/opencode.toml`,
+   * and declaring one would stand that detector down (phux-w7z2.38). The event
+   * still matters as a liveness trigger, which is why the signature keeps it.
+   */
   observeState(sessionId: string, state: OpenCodeLifecycleState): Promise<void> {
     if (this.disposed) return this.tail;
     this.states.set(sessionId, state);
-    return this.enqueue(() => this.publish(sessionId, state));
+    return this.enqueue(() => this.publish(sessionId));
   }
 
   /** A tool invocation is an honest working signal if no status event was seen yet. */
@@ -96,7 +104,7 @@ export class OpenCodeLifecycle {
     return this.tail;
   }
 
-  private async publish(sessionId: string, state: OpenCodeLifecycleState): Promise<void> {
+  private async publish(sessionId: string): Promise<void> {
     if (this.disposed) return;
     const target = this.target();
     const previous = this.owned.get(sessionId);
@@ -106,11 +114,19 @@ export class OpenCodeLifecycle {
     }
     if (target === undefined) return;
 
+    // Identity is already declared on this exact pane, and the record no longer
+    // carries state, so there is nothing left to say. Rewriting it per turn
+    // would actively harm: SET_METADATA replaces the record wholesale, so each
+    // write carries `state: "unknown"` and clobbers the server's derivation,
+    // publishing a `working -> unknown` edge that `phux agent wait` reads as
+    // the agent departing (phux-w7z2.37).
+    if (previous !== undefined && previous.target === target) return;
+
     const binding = { target, owner: `opencode:${sessionId}` };
     // Retain attempted ownership so later teardown still performs an
     // ownership check if a confirmation was lost after phux applied the write.
     this.owned.set(sessionId, binding);
-    await this.cli.agentSet(target, lifecycleRecord(binding.owner, state), this.execution());
+    await this.cli.agentSet(target, lifecycleRecord(binding.owner), this.execution());
   }
 
   private async clearSession(sessionId: string): Promise<void> {
@@ -162,14 +178,15 @@ export function handleLifecycleEvent(lifecycle: OpenCodeLifecycle, event: Parame
   }
 }
 
-function lifecycleRecord(owner: string, state: OpenCodeLifecycleState): AgentRecord {
-  return {
-    name: "opencode",
-    kind: "opencode",
-    state,
-    attention: state === "working" ? "normal" : "low",
-    session: owner,
-  };
+/**
+ * Identity only. A declared `state` outranks the server's derivation for the
+ * record's whole lifetime (`docs/spec/L3.md` §3.7, ADR-0046 point 8), so
+ * reporting one here stood phux's own `rules/opencode.toml` down on every pane
+ * running this plugin — phux shipped the rules and the integration disarmed
+ * them (phux-w7z2.38).
+ */
+function lifecycleRecord(owner: string): AgentRecord {
+  return { name: "opencode", kind: "opencode", session: owner };
 }
 
 interface OwnerFields {

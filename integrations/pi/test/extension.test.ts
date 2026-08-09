@@ -147,9 +147,13 @@ test("registers Pi-native commands and tolerates custom UI being unavailable", a
     "phux_tag", "phux_ask", "phux_watch_events",
     "phux_rendered_snapshot", "phux_targets",
   ]);
+  // The lifecycle reporter subscribes to session boundaries only. It once also
+  // took `agent_start` / `agent_settled` to report a state, which stood the
+  // server's `rules/pi.toml` detector down on every pane running this
+  // extension (phux-w7z2.38).
   assert.deepEqual(events, [
     "session_start", "session_tree", "before_agent_start", "session_compact",
-    "session_start", "agent_start", "agent_settled", "session_shutdown",
+    "session_start", "session_shutdown",
   ]);
 
   let customCalls = 0;

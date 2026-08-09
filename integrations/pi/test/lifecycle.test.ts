@@ -133,26 +133,64 @@ test("overlapping generations are serialized and end at the newest state", async
   const lifecycle = new PhuxLifecycle({ cli: adapter, timers, debounceMs: 5 });
 
   lifecycle.start("session-1", target);
-  lifecycle.setState("working");
   timers.runAll();
   await flush();
-  assert.equal(calls[0]?.state, "working");
+  assert.equal(calls.length, 1);
 
-  lifecycle.setState("idle");
+  lifecycle.setTarget(targetB);
   timers.runAll();
   await flush();
   assert.equal(calls.length, 1, "the second write waits for the first");
   releaseFirst?.();
   await lifecycle.settled();
 
-  assert.deepEqual(calls.map((record) => record.state), ["working", "idle"]);
+  assert.equal(calls.length, 2);
   assert.deepEqual(calls[1], {
     name: "pi",
     kind: "pi",
-    state: "idle",
-    attention: "low",
     session: "pi:session-1",
   });
+});
+
+/**
+ * phux-w7z2.38. A declared `state` outranks the server's derivation for the
+ * record's whole lifetime (docs/spec/L3.md 3.7, ADR-0046 point 8), so reporting
+ * one here stood `rules/pi.toml` down on every pane running this extension.
+ *
+ * The write count is half the assertion. Writing identity on every turn would
+ * be equally wrong: SET_METADATA replaces the record wholesale, so each write
+ * carries `state: "unknown"` and clobbers the derived state, publishing a
+ * `working -> unknown` edge that `phux agent wait` reads as the agent departing
+ * (phux-w7z2.37).
+ */
+test("the record is identity only, and only owner or target changes write it", async () => {
+  const timers = new FakeTimers();
+  const adapter = new FakeAdapter();
+  const lifecycle = new PhuxLifecycle({ cli: adapter, timers });
+
+  lifecycle.start("session-1", target);
+  timers.runAll();
+  await lifecycle.settled();
+  assert.equal(adapter.sets.length, 1, "one write for the session");
+
+  for (const record of adapter.sets.map((entry) => entry.record)) {
+    assert.equal(record.state, undefined, "a declared state stands the detector down");
+    assert.equal(record.attention, undefined, "attention derives from state");
+  }
+
+  // Re-declaring the same identity must not produce a second write: the
+  // reconciler compares bindings, and identity is the whole binding now.
+  lifecycle.setTarget(target);
+  timers.runAll();
+  await lifecycle.settled();
+  assert.equal(adapter.sets.length, 1, "an unchanged target must not rewrite");
+
+  // A real target change is the one thing that does write again.
+  lifecycle.setTarget(targetB);
+  timers.runAll();
+  await lifecycle.settled();
+  assert.equal(adapter.sets.length, 2, "a moved pane needs the record on the new one");
+  assert.equal(adapter.sets[1]?.record.state, undefined);
 });
 
 test("phux failures stay best-effort and a later transition retries", async () => {
@@ -168,11 +206,11 @@ test("phux failures stay best-effort and a later transition retries", async () =
   assert.equal(errors.length, 1);
 
   adapter.failSet = false;
-  lifecycle.setState("working");
+  lifecycle.setTarget(targetB);
   timers.runAll();
   await lifecycle.settled();
   assert.equal(adapter.sets.length, 2);
-  assert.equal(adapter.record?.state, "working");
+  assert.equal(adapter.record?.session, "pi:session-1");
 });
 
 test("every lifecycle CLI command receives the configured local timeout and signal", async () => {
@@ -315,7 +353,13 @@ test("true target departure and quit clear only the owned declaration", async ()
   assert.deepEqual(adapter.clears, ["@3"]);
 });
 
-test("registration maps agent_start to working and agent_settled to idle, not agent_end", async () => {
+/**
+ * Previously "maps agent_start to working and agent_settled to idle". It no
+ * longer subscribes to either: the server derives state from `rules/pi.toml`,
+ * and a per-turn write would clobber that derivation (phux-w7z2.38, .37).
+ * `agent_end` was never subscribed and still is not.
+ */
+test("registration subscribes to no per-turn lifecycle event", async () => {
   const timers = new FakeTimers();
   const adapter = new FakeAdapter();
   const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
@@ -331,16 +375,23 @@ test("registration maps agent_start to working and agent_settled to idle, not ag
   } as unknown as ExtensionContext;
 
   handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
-  handlers.get("agent_start")?.({ type: "agent_start" }, ctx);
   timers.runAll();
   await flush();
-  assert.equal(adapter.sets.at(-1)?.record.state, "working");
-  assert.equal(handlers.has("agent_end"), false);
+  const afterStart = adapter.sets.length;
+  assert.equal(afterStart, 1, "session start declares identity once");
+  assert.equal(adapter.sets.at(-1)?.record.state, undefined);
 
-  handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
+  for (const event of ["agent_start", "agent_settled", "agent_end"]) {
+    assert.equal(
+      handlers.has(event),
+      false,
+      `${event} must not be subscribed: a per-turn write clobbers the derived state`,
+    );
+  }
+
   timers.runAll();
   await flush();
-  assert.equal(adapter.sets.at(-1)?.record.state, "idle");
+  assert.equal(adapter.sets.length, afterStart, "no turn produced another write");
 
   const shutdown = handlers.get("session_shutdown")?.(
     { type: "session_shutdown", reason: "reload" },

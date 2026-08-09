@@ -184,12 +184,19 @@ export interface AgentStateList {
   readonly agents: readonly AgentPane[];
 }
 
-/** The complete declared `phux.agent/v1` record written by `phux agent set`. */
+/**
+ * The declared `phux.agent/v1` record written by `phux agent set`.
+ *
+ * `state` and `attention` are OPTIONAL, per `docs/spec/L3.md` §3.7 where only
+ * `name` is required. Declaring a `state` outranks the server's derivation for
+ * the record's whole lifetime (ADR-0046 point 8), so an integration that can
+ * let the server derive should omit it and write identity alone.
+ */
 export interface AgentRecord {
   readonly name: string;
   readonly kind: string;
-  readonly state: AgentState;
-  readonly attention: AgentAttention;
+  readonly state?: AgentState;
+  readonly attention?: AgentAttention;
   readonly session: string;
 }
 
@@ -570,11 +577,18 @@ export function parseAgentRecord(value: unknown, path = "$ (phux.agent/v1 record
   if (kind.trim().length === 0) throw new SchemaValidationError(`${path}.kind`, "non-empty");
   const session = string(root.session, `${path}.session`);
   if (session.trim().length === 0) throw new SchemaValidationError(`${path}.session`, "non-empty");
+  // Absent `state` / `attention` are legal (L3.md 3.7: only `name` is
+  // required), so tolerate their absence rather than failing the parse. A
+  // present-but-unrecognized value is still an error, as before.
   return {
     name,
     kind,
-    state: oneOf(root.state, `${path}.state`, AGENT_STATES),
-    attention: oneOf(root.attention, `${path}.attention`, AGENT_ATTENTION),
+    ...(root.state === undefined
+      ? {}
+      : { state: oneOf(root.state, `${path}.state`, AGENT_STATES) }),
+    ...(root.attention === undefined
+      ? {}
+      : { attention: oneOf(root.attention, `${path}.attention`, AGENT_ATTENTION) }),
     session,
   };
 }

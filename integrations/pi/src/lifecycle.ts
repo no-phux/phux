@@ -6,14 +6,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { PhuxCli } from "./adapter.js";
-import {
-  type AgentRecord,
-  type AgentStateList,
-  type AgentAttention,
-} from "./schemas.js";
+import { type AgentRecord, type AgentStateList } from "./schemas.js";
 import type { PhuxTargetSelection, PhuxTargetStore } from "./target-store.js";
-
-export type PiLifecycleState = "idle" | "working";
 
 export interface LifecycleCommandOptions {
   readonly signal: AbortSignal;
@@ -48,11 +42,26 @@ export class PhuxLifecycleShutdownError extends Error {
   }
 }
 
+/**
+ * What this integration declares: WHO occupies the pane, never WHAT they are
+ * doing.
+ *
+ * A declared `state` outranks the server's derivation for the record's whole
+ * lifetime (`docs/spec/L3.md` §3.7, ADR-0046 point 8), so reporting one here
+ * stood phux's own `pi.toml` manifest down on every pane running this
+ * extension — phux shipped the rules and the integration disarmed them
+ * (phux-w7z2.38).
+ *
+ * State is deliberately absent from the binding, not merely from the record.
+ * `SET_METADATA` replaces the record wholesale, so an identity write carries
+ * `state: "unknown"`; if a lifecycle transition still produced a *write*, it
+ * would clobber the derived state and publish a `working -> unknown` edge that
+ * `phux agent wait` reads as the agent departing (phux-w7z2.37, the regression
+ * the Claude shim hit first). Only a change of owner or target writes.
+ */
 interface Binding {
   readonly target: PhuxTargetSelection;
   readonly owner: string;
-  readonly state: PiLifecycleState;
-  readonly attention: AgentAttention;
 }
 
 const systemTimers: LifecycleTimers = {
@@ -79,7 +88,6 @@ export class PhuxLifecycle {
   private abandoned = false;
   private owner: string | null = null;
   private target: PhuxTargetSelection | null = null;
-  private state: PiLifecycleState = "idle";
   private desired: Binding | null = null;
   private applied: Binding | null = null;
   /** A target on which a write was attempted; ownership is still checked before clearing. */
@@ -105,7 +113,6 @@ export class PhuxLifecycle {
     this.abandoned = false;
     this.owner = `pi:${sessionId}`;
     this.target = target;
-    this.state = "idle";
     this.desired = this.binding();
     this.generation += 1;
     if (reload) {
@@ -125,11 +132,6 @@ export class PhuxLifecycle {
     this.transition();
   }
 
-  setState(state: PiLifecycleState): void {
-    if (!this.active) return;
-    this.state = state;
-    this.transition();
-  }
 
   /** Stop timers and either preserve on reload or clear only our declaration. */
   async shutdown(reload = false): Promise<void> {
@@ -163,12 +165,7 @@ export class PhuxLifecycle {
 
   private binding(): Binding | null {
     if (this.owner === null || this.target === null) return null;
-    return {
-      target: this.target,
-      owner: this.owner,
-      state: this.state,
-      attention: this.state === "working" ? "normal" : "low",
-    };
+    return { target: this.target, owner: this.owner };
   }
 
   private schedule(): void {
@@ -298,8 +295,9 @@ export function registerPhuxLifecycle(
       event.reason === "reload",
     );
   });
-  pi.on("agent_start", () => lifecycle.setState("working"));
-  pi.on("agent_settled", () => lifecycle.setState("idle"));
+  // No `agent_start` / `agent_settled` subscription: this integration declares
+  // identity, and the server derives state from `rules/pi.toml` (phux-w7z2.38).
+  // Subscribing to write nothing would only cost a debounce timer per turn.
   pi.on("session_shutdown", async (event: SessionShutdownEvent) => {
     unsubscribe();
     unsubscribe = () => {};
@@ -331,13 +329,8 @@ function parseOwnership(observed: string): OwnershipFields | null {
 }
 
 function lifecycleRecord(binding: Binding): AgentRecord {
-  return {
-    name: "pi",
-    kind: "pi",
-    state: binding.state,
-    attention: binding.attention,
-    session: binding.owner,
-  };
+  // Identity only. `state` and `attention` are the server's to derive.
+  return { name: "pi", kind: "pi", session: binding.owner };
 }
 
 function sameOwnerTarget(left: Binding, right: Binding): boolean {
@@ -347,6 +340,12 @@ function sameOwnerTarget(left: Binding, right: Binding): boolean {
     left.target.window === right.target.window;
 }
 
+/**
+ * Identity is the whole binding, so this is `sameOwnerTarget`. Kept as a
+ * distinct name because the reconciler's two call sites mean different things:
+ * one asks "is the pane we own still the pane we want", the other "is a write
+ * needed at all".
+ */
 function sameBinding(left: Binding, right: Binding): boolean {
-  return sameOwnerTarget(left, right) && left.state === right.state && left.attention === right.attention;
+  return sameOwnerTarget(left, right);
 }

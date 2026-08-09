@@ -210,17 +210,30 @@ plugin surface.
 
 | Public signal | Behavior |
 |---|---|
-| `session.status` with `busy` | Publishes a `working` record for the current target. |
-| `session.status` with `idle` | Publishes an `idle` record for the current target. |
-| `session.idle` | Publishes `idle`. |
-| successful `phux_create` | Publishes `working` for that tool's public OpenCode session if no status was observed yet. |
+| `session.status` with `busy` | Declares identity for the current target, if not already declared there. |
+| `session.status` with `idle` | Same; a turn boundary declares nothing new and writes nothing. |
+| `session.idle` | Same. |
+| successful `phux_create` | Declares identity for that tool's public OpenCode session. |
 | `session.deleted` | Ownership-checks and clears that session's declaration. |
 | plugin `dispose` | Best-effort ownership-checks and clears declarations known to this instance. |
 
 Records use `name=opencode`, `kind=opencode`, and owner
-`opencode:<public OpenCode session id>`. Before clearing, the plugin reads the
-current declaration and requires its name, kind, and owner to still match. It
-therefore preserves metadata replaced by another owner.
+`opencode:<public OpenCode session id>` — **identity only, never a `state`**. A
+declared `state` outranks the server's own derivation for the record's whole
+lifetime ([`../spec/L3.md`](../spec/L3.md) §3.7,
+[ADR-0046](../../ADR/0046-server-side-agent-state-detection.md) point 8), so
+reporting one would stand the shipped `rules/opencode.toml` detector down on
+every pane running this plugin. The server derives `working` and `blocked` from
+that manifest instead.
+
+The record is written once per session and target, not once per event. A
+whole-record write carries `state: "unknown"`, so rewriting identity at a turn
+boundary would clobber the server's derivation and publish a
+`working -> unknown` edge that `phux agent wait` reads as the agent departing.
+
+Before clearing, the plugin reads the current declaration and requires its name,
+kind, and owner to still match. It therefore preserves metadata replaced by
+another owner.
 
 Retry status, `session.created`, `session.error`, and unrelated events do not
 invent transitions. OpenCode 1.18.1 has no documented event that distinguishes
