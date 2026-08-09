@@ -477,11 +477,18 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
 
     // Auto-spawn under the default session name, not the worktree's: the
     // seed session must not collide with the one we are about to create.
-    if !socket_path.exists()
-        && let Err(err) =
-            super::server::maybe_auto_spawn_server(&socket_path, super::DEFAULT_SESSION_NAME, None)
+    if let Err(err) =
+        super::server::ensure_server(&socket_path, super::DEFAULT_SESSION_NAME, None, json)
     {
-        eprintln!("phux: auto-spawn skipped ({err}). Start a server manually with `phux server`.");
+        // Under `--json` the failure stays off stderr, which carries only the
+        // error document; the verb reports it there when the dial fails.
+        if json {
+            tracing::debug!(error = %err, "auto-spawn failed on the --json worktree path");
+        } else {
+            eprintln!(
+                "phux: auto-spawn skipped ({err}). Start a server manually with `phux server`."
+            );
+        }
     }
 
     let command = if command.is_empty() {

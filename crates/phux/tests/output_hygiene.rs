@@ -484,11 +484,14 @@ fn assert_no_server_json_contract(
 /// `no_server`, `exit_code` 1, and a non-empty remedy.
 ///
 /// The "dead socket" is a real socket file whose listener has gone (bound,
-/// then dropped) rather than a missing path, for two reasons: connecting to
-/// it is a clean `ECONNREFUSED` on every platform (a plain file would be
-/// `ENOTSOCK`), and the existing path keeps `new --json` — which auto-spawns
-/// a server when the socket does not exist — on the same connect-refused
-/// path as every other verb.
+/// then dropped) rather than a missing path: connecting to it is a clean
+/// `ECONNREFUSED` on every platform, where a plain file would be `ENOTSOCK`.
+///
+/// Every verb here is one that only ever *dials* a server. An abandoned
+/// socket used to hold `new --json` on the connect-refused path too, because
+/// auto-spawn was gated on the socket file not existing — a bug ADR-0080
+/// fixed, so a stale entry is now reaped and a server started. Spawning verbs
+/// therefore have no "no server" case to pin here.
 #[test]
 fn json_error_contract_holds_across_core_verbs_with_no_server() {
     let tmp = TempDir::new().expect("tempdir");
@@ -554,11 +557,12 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
             vec!["rec", "--json", "-o", out, "--socket", sock],
             None,
         ),
-        (
-            "new",
-            vec!["new", "--json", "-s", "x", "--socket", sock],
-            None,
-        ),
+        // `new` is deliberately absent: it AUTO-SPAWNS, so against any
+        // reachable path it now creates a server rather than failing, and
+        // against an unreachable one it reports the bind error (`transport`)
+        // rather than `no_server`. Neither is this table's contract. Its
+        // corrected behaviour — reap the stale entry, start a server — is
+        // pinned in `tests/stale_socket_recovery.rs`.
         (
             "ask",
             vec!["ask", "work", "--json", "--socket", sock, "hello?"],

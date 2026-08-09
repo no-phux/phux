@@ -18,6 +18,7 @@ pub mod check; // phux-q9wj.3 (`phux config check`: schema-unknown keys)
 pub mod connector;
 pub mod distro;
 mod error;
+pub mod instance; // phux-zomb.2 (profile-scoped runtime/state: dev never touches production)
 pub mod integration; // phux-ark7 (ADR-0042): agent integration templates + launch
 mod layer;
 pub mod plugin;

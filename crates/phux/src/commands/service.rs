@@ -27,6 +27,16 @@ const LAUNCHD_LABEL: &str = "com.phux.server";
 /// `$XDG_CONFIG_HOME/systemd/user/`.
 const SYSTEMD_UNIT: &str = "phux.service";
 
+/// Minimum seconds between supervised restarts (phux-zomb.4).
+///
+/// launchd `ThrottleInterval` / systemd `RestartSec`. Chosen to make a
+/// crash-loop *legible* rather than to minimise downtime: at one start per
+/// 30s a human notices, `phux doctor` can count the restarts, and the log
+/// stays readable. The previous 500 ms floor (and launchd's unthrottled
+/// default) produced thousands of generations that buried the first failure —
+/// the one that explains all the others.
+const RESTART_THROTTLE_SECS: u32 = 30;
+
 /// Marker `phux service install` stamps into the unit's OWN
 /// `EnvironmentVariables` (launchd) / `Environment=` (systemd) block, and
 /// [`crate::commands::server::run_server`] reads back at startup to decide
@@ -223,7 +233,27 @@ pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
     out.push_str("  </array>\n");
 
     out.push_str("  <key>RunAtLoad</key>\n  <true/>\n");
-    out.push_str("  <key>KeepAlive</key>\n  <true/>\n");
+
+    // phux-zomb.4: restart on ABNORMAL exit only, and rate-limit it.
+    //
+    // `KeepAlive: true` — what this generator used to emit — restarts on
+    // *every* exit at full speed. Two consequences, both observed in the
+    // field: `phux kill --server` (a clean exit) came straight back, so a
+    // server could not be stopped; and a server crashing at startup produced
+    // a silent respawn storm (1487 generations against one log on one
+    // machine) that made a dead server look like a running one.
+    //
+    // `SuccessfulExit: false` restarts only when the server exits non-zero or
+    // on a signal, so a deliberate shutdown stays down. `ThrottleInterval`
+    // holds launchd to one start per 30s, which turns a crash-loop into
+    // something a human — and `phux doctor` — can see rather than a firehose.
+    out.push_str("  <key>KeepAlive</key>\n  <dict>\n");
+    out.push_str("    <key>SuccessfulExit</key>\n    <false/>\n");
+    out.push_str("  </dict>\n");
+    let _ = writeln!(
+        out,
+        "  <key>ThrottleInterval</key>\n  <integer>{RESTART_THROTTLE_SECS}</integer>"
+    );
     out.push_str("  <key>ProcessType</key>\n  <string>Background</string>\n");
 
     let env = plan.environment();
@@ -248,9 +278,10 @@ pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
 
 /// Render the systemd user unit.
 ///
-/// `Restart=always` is launchd's `KeepAlive`; `WantedBy=default.target` is
-/// its `RunAtLoad`. `RestartSec` matches the hub link's floor (ADR-0052's
-/// 500 ms) so a crash-looping server backs off the same way everywhere.
+/// `Restart=on-failure` is launchd's `KeepAlive{SuccessfulExit:false}`;
+/// `WantedBy=default.target` is its `RunAtLoad`; `RestartSec` is its
+/// `ThrottleInterval`. See the launchd renderer for why a clean exit must
+/// stay down and why the restart is rate-limited (phux-zomb.4).
 pub(crate) fn render_systemd_unit(plan: &ServicePlan) -> String {
     use std::fmt::Write as _;
 
@@ -274,8 +305,8 @@ pub(crate) fn render_systemd_unit(plan: &ServicePlan) -> String {
             .collect::<Vec<_>>()
             .join(" ")
     );
-    out.push_str("Restart=always\n");
-    out.push_str("RestartSec=500ms\n");
+    out.push_str("Restart=on-failure\n");
+    let _ = writeln!(out, "RestartSec={RESTART_THROTTLE_SECS}s");
     for (key, value) in plan.environment() {
         let _ = writeln!(out, "Environment=\"{key}={}\"", systemd_quote(&value));
     }
@@ -935,9 +966,9 @@ fn config_home_from(
 #[cfg(test)]
 mod tests {
     use super::{
-        Manager, SERVICE_MANAGED_ENV, ServicePlan, config_home_from, home_dir_from,
-        render_launchd_plist, render_systemd_unit, render_wrapper_script, resolve_plan, sh_quote,
-        systemd_escape, systemd_quote, xml_escape,
+        Manager, RESTART_THROTTLE_SECS, SERVICE_MANAGED_ENV, ServicePlan, config_home_from,
+        home_dir_from, render_launchd_plist, render_systemd_unit, render_wrapper_script,
+        resolve_plan, sh_quote, systemd_escape, systemd_quote, xml_escape,
     };
     use std::path::PathBuf;
 
@@ -969,9 +1000,11 @@ mod tests {
         assert!(plist.contains("<string>/home/u/.local/state/phux/remote-tokens</string>"));
         assert!(plist.contains("<key>PHUX_QUIC_ADDR</key>"));
         assert!(plist.contains("<string>0.0.0.0:8788</string>"));
-        // Always-on is the point.
+        // Always-on is the point: start at login, and come back from a
+        // crash. The *restart policy* — failure-only and throttled — is
+        // pinned separately in `both_units_restart_only_on_failure_and_throttle`.
         assert!(plist.contains("<key>RunAtLoad</key>\n  <true/>"));
-        assert!(plist.contains("<key>KeepAlive</key>\n  <true/>"));
+        assert!(plist.contains("<key>KeepAlive</key>"));
         assert!(plist.contains("<string>com.phux.server</string>"));
     }
 
@@ -1023,11 +1056,50 @@ mod tests {
         assert!(!plist.contains("<string>server</string>"));
     }
 
+    /// phux-zomb.4: both units must restart on *failure* only, and throttle.
+    ///
+    /// Pinned together because the two managers express one decision and a
+    /// change to either alone is a bug. The failure this guards is not
+    /// hypothetical: `KeepAlive: true` with no throttle produced 1487 server
+    /// generations against a single log on a developer machine, and made a
+    /// deliberately stopped server come straight back.
+    #[test]
+    fn both_units_restart_only_on_failure_and_throttle() {
+        let plist = render_launchd_plist(&plan());
+        assert!(
+            plist.contains("<key>SuccessfulExit</key>\n    <false/>"),
+            "launchd must not restart after a clean exit — `phux kill --server` \
+             has to stay dead.\n{plist}"
+        );
+        assert!(
+            !plist.contains("<key>KeepAlive</key>\n  <true/>"),
+            "the unconditional KeepAlive is the defect; it must not come back.\n{plist}"
+        );
+        assert!(
+            plist.contains("<key>ThrottleInterval</key>"),
+            "an unthrottled respawn hides a crash-loop.\n{plist}"
+        );
+
+        let unit = render_systemd_unit(&plan());
+        assert!(
+            unit.contains("Restart=on-failure"),
+            "systemd must match launchd's failure-only policy.\n{unit}"
+        );
+        assert!(
+            !unit.contains("Restart=always"),
+            "`Restart=always` is systemd's spelling of the same defect.\n{unit}"
+        );
+        assert!(
+            unit.contains(&format!("RestartSec={RESTART_THROTTLE_SECS}s")),
+            "systemd's throttle must match launchd's.\n{unit}"
+        );
+    }
+
     #[test]
     fn systemd_unit_carries_the_same_environment_and_restart_policy() {
         let unit = render_systemd_unit(&plan());
         assert!(unit.contains("ExecStart=/usr/local/bin/phux server"));
-        assert!(unit.contains("Restart=always"));
+        assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(
             unit.contains("Environment=\"PHUX_WS_TOKENS=/home/u/.local/state/phux/remote-tokens\"")

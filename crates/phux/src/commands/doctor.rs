@@ -104,8 +104,10 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let checks = vec![
         check_config(),
+        check_instance(),
         check_socket_path(&socket_path),
         check_server(&socket_path),
+        check_server_health(),
         check_plugins(),
         check_agent_shim(),
         check_logs(),
@@ -164,6 +166,139 @@ fn check_config() -> Check {
             "run `phux config check` for the parse position",
         ),
     }
+}
+
+/// Which instance is this binary talking to, and why (phux-zomb.2)?
+///
+/// Earns its place because the isolation is *automatic*: a developer running
+/// a `target/` build gets a different socket, state directory, and session
+/// list than their installed phux, and the only symptom of not realising it
+/// is "my sessions are gone". Naming the profile and the reason it was chosen
+/// turns that into a one-line answer.
+fn check_instance() -> Check {
+    let profile = phux_config::instance::profile();
+    let state = phux_config::instance::state_dir();
+    if phux_config::instance::is_default_profile() {
+        return Check::pass(
+            "instance",
+            format!("profile {profile}; state {}", state.display()),
+        );
+    }
+    let reason = if std::env::var_os("PHUX_PROFILE").is_some() {
+        "PHUX_PROFILE is set"
+    } else {
+        "this is a development build (not an installed release)"
+    };
+    // A warning, not a failure: an isolated instance is working as designed.
+    // It is surfaced at all because the isolation is silent by construction.
+    Check::warn(
+        "instance",
+        format!("profile {profile} ({reason}); state {}", state.display()),
+        "this instance is isolated from your installed phux — its sessions and \
+         logs are separate. Unset PHUX_PROFILE, or run the installed binary, to \
+         reach the default instance",
+    )
+}
+
+/// Is the server crash-looping, is it running a stale build, and is its
+/// supervisor the pre-phux-zomb.4 kind that hides both?
+///
+/// This is the check whose absence let a broken server pass for a working one
+/// for weeks. A supervised server that dies and restarts is externally
+/// indistinguishable from one that never fell over — the socket answers
+/// either way. Counting restarts is the only way the difference becomes
+/// visible without reading a log (ADR-0080).
+fn check_server_health() -> Check {
+    let unit = legacy_service_unit_path().filter(|path| path.exists());
+
+    if let Some(count) = phux_server::health::crash_loop() {
+        let window_mins = phux_server::health::CRASH_LOOP_WINDOW.as_secs() / 60;
+        return Check::fail(
+            "server-health",
+            format!(
+                "the server started {count} times in the last {window_mins} minutes — it is crash-looping"
+            ),
+            format!(
+                "something is killing the server on startup; the reason is in {}",
+                phux_server::telemetry::server_log_path().display()
+            ),
+        );
+    }
+
+    // A unit generated before phux-zomb.4 restarts on *every* exit with no
+    // throttle. Reinstalling replaces it with the throttled, failure-only
+    // policy, which is both the fix and the way a crash-loop stays visible.
+    if let Some(unit) = unit
+        && supervisor_unit_is_legacy(&unit)
+    {
+        return Check::warn(
+            "server-health",
+            format!(
+                "the supervisor unit at {} restarts on every exit, unthrottled",
+                unit.display()
+            ),
+            "it resurrects servers you stopped and hides crash-loops — \
+             re-run `phux service install` to replace it, or `phux service uninstall`",
+        );
+    }
+
+    // Version skew: a package manager replaced the binary but nothing
+    // restarted the server, so it is still serving the old build (phux-zomb.7).
+    let ours = env!("CARGO_PKG_VERSION");
+    if let Some(theirs) = phux_server::health::running_version()
+        && theirs != ours
+    {
+        return Check::warn(
+            "server-health",
+            format!("the running server is {theirs}; this binary is {ours}"),
+            "run `phux upgrade` to hand the server over in place (panes survive), \
+             or attach with `phux`, which now does it automatically",
+        );
+    }
+
+    let recent = phux_server::health::recent_starts(phux_server::health::CRASH_LOOP_WINDOW).len();
+    Check::pass(
+        "server-health",
+        format!("{recent} server start(s) in the last hour"),
+    )
+}
+
+/// Whether `unit` was generated before the restart policy was corrected.
+///
+/// Keys on the two markers the corrected generator always emits. A unit
+/// missing them predates phux-zomb.4 (or was hand-edited into the same
+/// unthrottled shape), and either way deserves the same warning.
+fn supervisor_unit_is_legacy(unit: &std::path::Path) -> bool {
+    let Ok(body) = std::fs::read_to_string(unit) else {
+        return false;
+    };
+    let throttled = body.contains("ThrottleInterval") || body.contains("RestartSec");
+    let failure_only = body.contains("SuccessfulExit") || body.contains("Restart=on-failure");
+    !(throttled && failure_only)
+}
+
+/// Where `service install` writes its unit.
+///
+/// Duplicated from the `service` module's private path logic rather than
+/// exposed from it, because doctor must keep reporting the location even for
+/// units this build would no longer generate.
+fn legacy_service_unit_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|v| !v.is_empty())?;
+    if cfg!(target_os = "macos") {
+        return Some(
+            PathBuf::from(home)
+                .join("Library")
+                .join("LaunchAgents")
+                .join("com.phux.server.plist"),
+        );
+    }
+    if cfg!(target_os = "linux") {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map_or_else(|| PathBuf::from(home).join(".config"), PathBuf::from);
+        return Some(config.join("systemd").join("user").join("phux.service"));
+    }
+    None
 }
 
 /// Will the socket path fit in a `sockaddr_un`?

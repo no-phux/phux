@@ -74,7 +74,7 @@ uuid.workspace = true
 # a bare LF into CR LF) or echo a stray keystroke into the middle of a frame.
 # Same crate and the same two features phux-client already uses; no new
 # third-party dependency enters the workspace.
-rustix = { version = "0.38", default-features = false, features = ["std", "process", "termios"] }
+rustix = { version = "0.38", default-features = false, features = ["std", "process", "termios", "fs"] }
 
 [dev-dependencies]
 # The one scripted server (`phux_client::testkit`), where the reference

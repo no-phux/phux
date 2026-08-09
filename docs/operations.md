@@ -241,6 +241,88 @@ cargo nextest run -p phux-server server_idle_exit
 cargo test -p phux --test idle_exit_e2e -- --ignored
 ```
 
+## Instance isolation (profiles)
+
+phux is developed on the same machines it is used on, so a development
+build must not be able to touch the installed build's sessions. Every
+phux process resolves a **profile** that scopes where it looks
+([ADR-0080](../ADR/0080-socket-lifecycle-and-instance-isolation.md)):
+
+| profile | when | socket | state |
+|---|---|---|---|
+| `default` | an installed release | `/tmp/phux-$USER/phux.sock` | `$XDG_STATE_HOME/phux` |
+| `dev` | a `target/` or debug build | `/tmp/phux-$USER-dev/phux.sock` | `$XDG_STATE_HOME/phux-dev` |
+| *name* | `PHUX_PROFILE=name` | `/tmp/phux-$USER-name/phux.sock` | `$XDG_STATE_HOME/phux-name` |
+
+`$XDG_RUNTIME_DIR/phux[-<profile>]` replaces the `/tmp` path when that
+variable is set, and `PHUX_SOCKET` (or `--socket`) still overrides
+everything.
+
+Detection is automatic — a binary under a Cargo `target/` directory, or
+one built with `debug_assertions`, is a development build — because a
+variable a developer has to remember is not isolation. Set
+`PHUX_PROFILE` explicitly to run more than two instances, e.g. one per
+agent worktree.
+
+The consequence to expect: **a `cargo run` build will not show your
+installed phux's sessions.** That is the point, and `phux doctor`
+reports a non-default profile as a warning so it is never a mystery:
+
+```
+warn instance  profile dev (this is a development build …); state …/phux-dev
+```
+
+## Restart policy and crash-loop visibility
+
+The generated unit restarts the server on **abnormal exit only**, throttled
+to one start per 30s
+([ADR-0080](../ADR/0080-socket-lifecycle-and-instance-isolation.md)):
+
+| | launchd | systemd |
+|---|---|---|
+| restart when | `KeepAlive{SuccessfulExit:false}` | `Restart=on-failure` |
+| throttle | `ThrottleInterval 30` | `RestartSec=30s` |
+
+Two consequences worth knowing:
+
+- **`phux kill --server` stays dead.** Earlier units used
+  `KeepAlive: true`, which restarts on *every* exit — a server could not
+  be stopped.
+- **A crash-loop is visible.** Every server start appends a record to
+  `$XDG_STATE_HOME/phux/server-starts.log`, and `phux doctor` *fails* the
+  `server-health` check when the server has started 5+ times in an hour:
+
+  ```
+  fail server-health  the server started 9 times in the last 60 minutes — it is crash-looping
+                      -> something is killing the server on startup; the reason is in …/server.log
+  ```
+
+  A supervised server that dies and restarts otherwise looks identical to
+  one that never fell over — the socket answers either way. Counting the
+  restarts is what makes the difference legible.
+
+`phux doctor` also warns when the installed unit predates this policy;
+re-running `phux service install` replaces it.
+
+### Upgrades and version skew
+
+`phux update` asks the running server to re-exec in place (ADR-0032 —
+the listening fd is passed to the new image, so panes and scrollback
+survive). Package managers bypass that: `brew upgrade phux` swaps the
+binary while the old server keeps running, indefinitely.
+
+phux now detects this. Each server records its version in the start
+history, so a client can see a mismatch the wire handshake cannot show it
+(that negotiates the *protocol* version, not the build). On attach, the
+handoff happens automatically:
+
+```
+phux: the running server is 0.13.0, this binary is 0.14.0 — upgrading it in place
+```
+
+`phux doctor` reports the same skew if you want to check without
+attaching.
+
 ## Service-managed pane environment
 
 `phux service install` (ADR-0055) runs the server under launchd or

@@ -14,7 +14,7 @@ use phux_server::runtime::default_socket_path;
 use crate::commands::{
     DEFAULT_SESSION_NAME, attach::client_cwd, attach::report_attach_end,
     attach::resolved_default_session_name, attach::run_attach_once, cli_runtime, json_err, partial,
-    print_attach_error, server::maybe_auto_spawn_server,
+    print_attach_error, server::ensure_server,
 };
 
 /// `phux new` — create a *new* session and attach to it.
@@ -116,12 +116,10 @@ pub(crate) fn run_new(
         None => unique_session_name(&existing, &resolved_default_session_name()),
     };
 
-    if !socket_path.exists()
-        // phux-07y: `phux new` never seeds with spawn-on-attach — an
-        // explicitly-created session gets a plain shell (or the `-- CMD`
-        // the user gave, applied per-session via CreateIfMissing).
-        && let Err(err) = maybe_auto_spawn_server(&socket_path, &name, None)
-    {
+    // phux-07y: `phux new` never seeds with spawn-on-attach — an
+    // explicitly-created session gets a plain shell (or the `-- CMD`
+    // the user gave, applied per-session via CreateIfMissing).
+    if let Err(err) = ensure_server(&socket_path, &name, None, json) {
         eprintln!("phux: auto-spawn skipped ({err}). Start a server manually with `phux server`.");
     }
 
@@ -183,10 +181,12 @@ pub(crate) fn run_new_json(
     // requested name so the create write below does not collide with the
     // seed) and keeps the server alive; the real session is then created
     // without attaching.
-    if !socket_path.exists()
-        && let Err(err) = maybe_auto_spawn_server(socket_path, DEFAULT_SESSION_NAME, None)
-    {
-        eprintln!("phux: auto-spawn skipped ({err}). Start a server manually with `phux server`.");
+    // Failure is deliberately silent here, unlike the prose paths: `--json`
+    // promises stderr carries the error document and nothing else, and the
+    // create below fails with that document anyway. A prose line would make
+    // stderr unparseable for the caller that asked for machine output.
+    if let Err(err) = ensure_server(socket_path, DEFAULT_SESSION_NAME, None, true) {
+        tracing::debug!(error = %err, "auto-spawn failed on the --json create path");
     }
 
     // phux-0db: like the attaching path, an omitted `--cwd` defaults to

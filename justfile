@@ -58,6 +58,24 @@ fmt-check:
 lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+# The iteration loop: everything in `ci` that is fast and catches most of what
+# `ci` rejects, in the order `ci` would hit it, with the same flags.
+#
+# The flags matter more than the list. `lint` resolves --all-features and
+# `test` resolves default features (see `test`'s comment), so those are two
+# distinct build graphs; running either with the *wrong* flags produces
+# artifacts `ci` cannot reuse and rebuilds the world. Iterating on `just ci`
+# itself is the expensive mistake this recipe exists to prevent: it fail-fasts,
+# so one clippy nit costs a full re-run of every leg before it.
+#
+# Run this until clean, then `just ci` ONCE as the final gate.
+#
+# NOTE: no backticks in the echo below — `just` runs backticks as a shell
+# command, so a friendly "run `just ci`" hint would actually RUN `just ci`
+# on every precommit, which is precisely the waste this recipe avoids.
+precommit: fmt lint docs-gen test
+    @echo "precommit clean - now run 'just ci' once to confirm the remaining gates"
+
 # Run tests via nextest (parallel, sane output).
 #
 # Deliberately NOT --all-features: ci.yml's unit lane runs default features,

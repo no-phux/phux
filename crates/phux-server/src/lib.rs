@@ -18,6 +18,7 @@ pub mod cwd_query;
 pub mod downsample;
 pub mod extract;
 pub mod grid;
+pub mod health; // phux-zomb.6 (server start history: crash-loop is reportable)
 // Pure viewport-alignment core for the ADR-0078 alternate-screen history
 // harvest. Deliberately not wired to the terminal actor: that ADR is still
 // Proposed and nothing may scroll a live pane before it is accepted.

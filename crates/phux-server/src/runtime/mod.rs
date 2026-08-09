@@ -713,6 +713,11 @@ impl ServerRuntime {
             listener
         };
 
+        // phux-zomb.3: remember which inode we bound, so the unlink on the way
+        // out can prove the entry at `socket_path` is still ours. See
+        // `socket_identity`.
+        let bound_socket = socket_identity(&socket_path);
+
         // Capture the upgrade context (ADR-0032): the listening socket's fd +
         // path + effective runtime flags, so `handle_upgrade` can build the
         // handoff blob and re-pass `--socket` / `--listen` / `--quic` /
@@ -1041,14 +1046,62 @@ impl ServerRuntime {
         drop(local);
         drop(input_lane);
 
-        // Always try to unlink the socket on the way out; ignore NotFound.
-        if let Err(err) = std::fs::remove_file(&socket_path)
-            && err.kind() != io::ErrorKind::NotFound
-        {
-            warn!(path = %socket_path.display(), error = %err, "failed to unlink socket");
-        }
+        // Unlink the socket on the way out — but only if the entry at that
+        // path is still the one we bound (phux-zomb.3).
+        //
+        // An unconditional `remove_file` here is how a single stolen socket
+        // becomes a permanent outage. If another server has since taken the
+        // path (a stale-probe false negative, a concurrent start), deleting it
+        // leaves that healthy server running but unreachable by path, and the
+        // next `phux` sees no socket and starts a third. Comparing the inode
+        // makes a losing server exit quietly instead of sabotaging the winner.
+        unlink_socket_if_ours(&socket_path, bound_socket);
 
         result
+    }
+}
+
+/// The `(device, inode)` of the entry at `path`, if it exists.
+///
+/// Identity rather than the path, because the path is a name that can be
+/// re-pointed at a different socket by any process that can write the
+/// directory. `None` when the entry cannot be stat'd — treated downstream as
+/// "cannot prove ownership", which errs toward leaving the entry alone.
+fn socket_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::symlink_metadata(path)
+        .ok()
+        .map(|meta| (meta.dev(), meta.ino()))
+}
+
+/// Unlink `path` only when it still resolves to the socket this server bound.
+///
+/// See the call site for why an unconditional unlink is unsafe. A path that
+/// now names a *different* inode belongs to another server; leaving it is the
+/// only correct action.
+fn unlink_socket_if_ours(path: &Path, bound: Option<(u64, u64)>) {
+    let Some(bound) = bound else {
+        // We never established an identity (stat failed at bind time), so we
+        // cannot prove the entry is ours. Leave it: a live server unreachable
+        // by path is a far worse outcome than one leftover socket file, which
+        // the next client's stale probe reaps anyway.
+        return;
+    };
+    match socket_identity(path) {
+        Some(current) if current == bound => {
+            if let Err(err) = std::fs::remove_file(path)
+                && err.kind() != io::ErrorKind::NotFound
+            {
+                warn!(path = %path.display(), error = %err, "failed to unlink socket");
+            }
+        }
+        Some(_) => {
+            warn!(
+                path = %path.display(),
+                "socket path now belongs to another server; leaving it in place",
+            );
+        }
+        None => {}
     }
 }
 
@@ -1339,6 +1392,75 @@ mod tests {
     use phux_protocol::caps::ClientCapabilities;
     use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
     use tokio::task::JoinSet;
+
+    /// phux-zomb.3: a server that still owns the path cleans up after itself.
+    #[test]
+    fn exiting_server_unlinks_the_socket_it_bound() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("phux.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        let bound = socket_identity(&path);
+        drop(listener);
+
+        unlink_socket_if_ours(&path, bound);
+        assert!(
+            !path.exists(),
+            "a server that owns the socket must remove it, or the next start \
+             has to reap a stale entry"
+        );
+    }
+
+    /// phux-zomb.3: the compounding failure — a server whose socket was taken
+    /// over by a newer server must NOT delete the newer server's socket.
+    ///
+    /// Unconditional cleanup here is what turned one lost race into a
+    /// permanent outage: the winner stayed alive but became unreachable by
+    /// path, so the next client saw "no socket", spawned a third server, and
+    /// the cycle repeated.
+    #[test]
+    fn exiting_server_leaves_a_socket_that_now_belongs_to_another_server() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("phux.sock");
+
+        // Generation A binds and records its identity.
+        let first = std::os::unix::net::UnixListener::bind(&path).expect("bind A");
+        let bound_by_a = socket_identity(&path);
+        drop(first);
+        std::fs::remove_file(&path).expect("unlink A");
+
+        // Generation B takes the path — a different inode.
+        let _second = std::os::unix::net::UnixListener::bind(&path).expect("bind B");
+        let bound_by_b = socket_identity(&path);
+        assert_ne!(bound_by_a, bound_by_b, "the test needs distinct inodes");
+
+        // A now exits and tries to clean up.
+        unlink_socket_if_ours(&path, bound_by_a);
+
+        assert!(
+            path.exists(),
+            "a losing server must not unlink the winner's socket — doing so \
+             leaves a live server unreachable by path (phux-zomb.3)"
+        );
+        assert_eq!(
+            socket_identity(&path),
+            bound_by_b,
+            "the surviving entry must still be generation B's",
+        );
+    }
+
+    /// With no recorded identity we cannot prove ownership, so we leave the
+    /// entry alone: a stray socket file is reaped by the next client's stale
+    /// probe, while a wrongly-deleted one strands a live server.
+    #[test]
+    fn a_server_that_never_established_identity_unlinks_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("phux.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+
+        unlink_socket_if_ours(&path, None);
+
+        assert!(path.exists(), "unprovable ownership must not delete");
+    }
 
     /// Ceiling for "this frame was already handed to the mailbox, so reading
     /// it back should be immediate" waits.

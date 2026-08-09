@@ -3,6 +3,7 @@ use std::process::{ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use phux_config::loader as config_loader;
+use phux_config::socket::{self, SocketState};
 use phux_server::runtime::default_socket_path;
 use phux_server::{ServerConfig, ServerRuntime};
 
@@ -18,6 +19,12 @@ const AUTO_SPAWN_SOCKET_TIMEOUT: Duration = Duration::from_secs(2);
 /// appear. 25ms is well under user-perceptible delay and small enough
 /// that the typical happy path resolves in a single poll.
 const AUTO_SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// How long a client waits for the spawn lock before giving up and spawning
+/// unserialised. Comfortably longer than [`AUTO_SPAWN_SOCKET_TIMEOUT`] so the
+/// holder's spawn attempt can finish and be observed; short enough that a
+/// stuck holder cannot hang the terminal.
+const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Compose the fatal message printed when the server refuses to start
 /// because the config file exists but failed to load: the config path,
@@ -44,12 +51,16 @@ fn broken_config_message(path: &Path, err: &impl std::fmt::Display) -> String {
 /// auto-spawn/service stderr redirect — verifiably lands in the log file
 /// (phux-i0e8.5.1).
 fn log_startup(socket_path: &Path) {
+    let pid = std::process::id();
     tracing::info!(
-        pid = std::process::id(),
+        pid,
         version = %env!("CARGO_PKG_VERSION"),
         socket = %socket_path.display(),
         "phux server started",
     );
+    // phux-zomb.6: the same fact in a machine-readable place, so `phux doctor`
+    // can report a crash-loop instead of leaving it buried in a rotated log.
+    phux_server::health::record_start(pid, env!("CARGO_PKG_VERSION"));
 }
 
 fn select_connectors(
@@ -389,17 +400,22 @@ pub(crate) fn maybe_auto_spawn_server(
     socket_path: &Path,
     session: &str,
     seed_command: Option<&str>,
+    quiet: bool,
 ) -> std::io::Result<()> {
     let current_exe = std::env::current_exe()?;
     let log_path = phux_server::telemetry::server_log_path();
 
     // The banner names the log so the one moment the user watches an
     // auto-spawn is also the moment they learn where the server writes.
-    eprintln!(
-        "phux: starting server at {} (auto-spawn, session={session}; log: {})",
-        socket_path.display(),
-        log_path.display()
-    );
+    // Suppressed under `--json`, whose contract is that stderr carries the
+    // error document and nothing else.
+    if !quiet {
+        eprintln!(
+            "phux: starting server at {} (auto-spawn, session={session}; log: {})",
+            socket_path.display(),
+            log_path.display()
+        );
+    }
 
     // Redirect the daemon's stderr to the canonical server log so a
     // crash-on-startup is debuggable (nulled stdio leaves no trace).
@@ -433,25 +449,197 @@ pub(crate) fn maybe_auto_spawn_server(
     // server is its own lifecycle now. The OS reaps it when it exits.
     let _child = cmd.spawn()?;
 
-    // Poll for the socket. The server's bind is fast (sub-ms on a
-    // healthy system); the timeout exists to avoid hanging if the
-    // child crashed at startup.
+    // Wait for the server to *accept*, not merely for the socket file to
+    // appear. The file exists for a window before the listener is ready, and
+    // a caller that returns on `exists()` hands the user a connection refused
+    // it cannot explain (phux-zomb.1).
     let deadline = Instant::now() + AUTO_SPAWN_SOCKET_TIMEOUT;
     loop {
-        if socket_path.exists() {
+        if socket::probe(socket_path) == SocketState::Live {
             return Ok(());
         }
         if Instant::now() >= deadline {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!(
-                    "auto-spawned server did not bind {} within {:?}",
+                    "auto-spawned server did not accept on {} within {:?} (see {})",
                     socket_path.display(),
-                    AUTO_SPAWN_SOCKET_TIMEOUT
+                    AUTO_SPAWN_SOCKET_TIMEOUT,
+                    log_path.display(),
                 ),
             ));
         }
         std::thread::sleep(AUTO_SPAWN_POLL_INTERVAL);
+    }
+}
+
+/// Ensure a server is accepting on `socket_path`, starting one if not.
+///
+/// This is the single entry point every client verb uses. It replaces the
+/// `if !socket_path.exists() { spawn() }` gate that each call site used to
+/// spell out, which had two defects that together produced the "phux is
+/// wedged and I have to `rm` a socket" experience (phux-zomb.1):
+///
+/// * **existence is not liveness.** A server killed uncleanly leaves its
+///   socket file behind. The gate then saw a file, declined to spawn, and the
+///   connection failed — permanently, for every later invocation, until a
+///   human removed the file. A stale entry is now detected and reaped.
+/// * **no serialisation.** N concurrent invocations on a cold socket all
+///   observed "no server" and all forked one. A profile-scoped advisory lock
+///   now elects a single spawner; the rest wait and re-probe, and find the
+///   winner's server rather than racing to bind over it.
+///
+/// A live server is the common case and costs one connect probe — no lock is
+/// taken, so the steady state stays as cheap as the `exists()` check it
+/// replaces.
+///
+/// # Errors
+/// Returns the spawn or timeout failure. Callers report it and continue to
+/// the connect attempt, which produces the user-facing remedy.
+pub(crate) fn ensure_server(
+    socket_path: &Path,
+    session: &str,
+    seed_command: Option<&str>,
+    quiet: bool,
+) -> std::io::Result<()> {
+    if socket::probe(socket_path) == SocketState::Live {
+        if !quiet {
+            reconcile_version_skew(socket_path);
+        }
+        return Ok(());
+    }
+
+    // Serialise the spawn decision across concurrent invocations. A failure
+    // to acquire the lock is never fatal: falling through to an unserialised
+    // spawn is exactly the old behaviour, and the server's own bind-time
+    // probe still rejects a duplicate.
+    let guard = SpawnLock::acquire(&socket::spawn_lock_path());
+
+    // Re-probe under the lock. Whoever held it before us most likely spawned
+    // the server we were about to duplicate.
+    if socket::probe(socket_path) == SocketState::Live {
+        return Ok(());
+    }
+
+    // Nothing is accepting. If a socket file is in the way it belonged to a
+    // dead server; remove it so `bind` can succeed. `reap_stale` re-probes
+    // and refuses to unlink anything live.
+    if let Err(err) = socket::reap_stale(socket_path) {
+        tracing::warn!(
+            path = %socket_path.display(),
+            error = %err,
+            "could not remove stale socket entry",
+        );
+    }
+
+    let result = maybe_auto_spawn_server(socket_path, session, seed_command, quiet);
+    drop(guard);
+    result
+}
+
+/// Hand a server running an older build over to this one, in place.
+///
+/// The gap this closes (phux-zomb.7): a package manager — Homebrew, Nix, a
+/// distro package — replaces the `phux` binary without telling the running
+/// server, which keeps serving the old build until something kills it. Nothing
+/// ever does, so the skew persists for days, and the symptoms (a client and
+/// server disagreeing about behaviour that changed between builds) look like
+/// random breakage. `phux update` already performs this handoff; every *other*
+/// way a binary gets upgraded had no hook at all.
+///
+/// The handoff itself is ADR-0032's re-exec: the server passes its listening
+/// fd to the new image, so panes and scrollback survive. That is what makes
+/// doing this automatically defensible rather than rude — the user loses
+/// nothing, and the alternative is silently talking to a stale server.
+///
+/// Best-effort throughout. A refused or failed upgrade leaves the old server
+/// running and says so once; the attach then proceeds against it, which is
+/// strictly better than refusing to work.
+fn reconcile_version_skew(socket_path: &Path) {
+    let ours = env!("CARGO_PKG_VERSION");
+    let Some(theirs) = phux_server::health::running_version() else {
+        // No history: a server from before this bookkeeping existed, or a
+        // state dir that was cleared. Nothing to compare, so nothing to do.
+        return;
+    };
+    if theirs == ours {
+        return;
+    }
+
+    eprintln!(
+        "phux: the running server is {theirs}, this binary is {ours} — upgrading it in place"
+    );
+    match super::upgrade::request_upgrade(socket_path) {
+        Ok(super::upgrade::UpgradeAck::Upgrading) => {
+            // The server re-execs and rebinds; wait for it to answer again so
+            // the caller's connect does not race the handoff.
+            let deadline = Instant::now() + AUTO_SPAWN_SOCKET_TIMEOUT;
+            while Instant::now() < deadline {
+                if socket::probe(socket_path) == SocketState::Live {
+                    return;
+                }
+                std::thread::sleep(AUTO_SPAWN_POLL_INTERVAL);
+            }
+        }
+        Ok(
+            super::upgrade::UpgradeAck::Refused(message)
+            | super::upgrade::UpgradeAck::Unexpected(message),
+        ) => {
+            eprintln!("phux: the server declined the upgrade ({message}); continuing on {theirs}");
+        }
+        Err(err) => {
+            eprintln!("phux: could not upgrade the running server ({err}); continuing on {theirs}");
+        }
+    }
+}
+
+/// An advisory `flock` held for the duration of a spawn decision.
+///
+/// Scoped to the profile's runtime directory, so a dev instance and the
+/// production instance never contend (phux-zomb.2). The lock file is created
+/// once and never unlinked: an unlinked lock file is a new inode, and holders
+/// of the old inode would no longer exclude each other.
+struct SpawnLock(Option<std::fs::File>);
+
+impl SpawnLock {
+    /// Take the lock, waiting up to [`SPAWN_LOCK_TIMEOUT`].
+    ///
+    /// Returns an unlocked guard on any failure — a machine that cannot lock
+    /// must still be able to start a terminal multiplexer.
+    fn acquire(path: &Path) -> Self {
+        let Some(parent) = path.parent() else {
+            return Self(None);
+        };
+        if std::fs::create_dir_all(parent).is_err() {
+            return Self(None);
+        }
+        let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+        else {
+            return Self(None);
+        };
+        let deadline = Instant::now() + SPAWN_LOCK_TIMEOUT;
+        loop {
+            match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Self(Some(file)),
+                Err(rustix::io::Errno::WOULDBLOCK) if Instant::now() < deadline => {
+                    std::thread::sleep(AUTO_SPAWN_POLL_INTERVAL);
+                }
+                Err(_) => return Self(None),
+            }
+        }
+    }
+}
+
+impl Drop for SpawnLock {
+    fn drop(&mut self) {
+        if let Some(file) = self.0.take() {
+            // Best-effort: closing the descriptor releases the lock anyway.
+            let _ = rustix::fs::flock(&file, rustix::fs::FlockOperation::Unlock);
+        }
     }
 }
 

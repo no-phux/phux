@@ -137,20 +137,56 @@ where
     }
 }
 
+/// Size at which the log is rolled aside on startup (phux-zomb.5).
+///
+/// Deliberately generous: the log has to be long enough to cover a real
+/// debugging session, and the failure this bounds is unbounded growth across
+/// *generations*, not a single verbose run.
+const LOG_ROTATE_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Roll `path` aside if it has grown past [`LOG_ROTATE_THRESHOLD_BYTES`].
+///
+/// One generation of history is kept, at `<path>.1`. Checked once per server
+/// start rather than continuously: the growth this bounds came from many
+/// short-lived servers appending to one file — a supervisor respawning after
+/// each crash produced 1487 generations and a 17 MB log on one machine, with
+/// the earliest entries (the ones explaining the first failure) buried.
+///
+/// Startup-only means a single very long-lived, very chatty server can still
+/// exceed the threshold within one run; bounding that needs a rolling
+/// appender and is left for when there is evidence it matters.
+///
+/// Every failure here is swallowed: logging must never be the reason a server
+/// refuses to start.
+fn rotate_if_oversized(path: &Path) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() < LOG_ROTATE_THRESHOLD_BYTES {
+        return;
+    }
+    let mut rotated = path.as_os_str().to_owned();
+    rotated.push(".1");
+    // `rename` replaces an existing `.1` atomically, so exactly one previous
+    // generation survives and the live path is free for a fresh sink.
+    let _ = std::fs::rename(path, PathBuf::from(rotated));
+}
+
 /// Open a non-blocking file appender at `path`, creating the parent
 /// directory if needed.
 ///
 /// Returns the [`WorkerGuard`] (which must outlive the process to keep the
 /// background writer alive) alongside a `MakeWriter` factory. We use a
 /// fixed file name rather than a daily-rolling one so a `PHUX_LOG` path the
-/// operator names points at exactly that file; rotation is the operator's
-/// (or a future config knob's) concern.
+/// operator names points at exactly that file; size-based rotation happens
+/// once here, at startup ([`rotate_if_oversized`]).
 fn file_writer(
     path: &Path,
 ) -> std::io::Result<(tracing_appender::non_blocking::NonBlocking, WorkerGuard)> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    rotate_if_oversized(path);
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
     let file_name = path.file_name().ok_or_else(|| {
         std::io::Error::other(format!(
@@ -238,26 +274,22 @@ pub fn server_log_path() -> PathBuf {
     state_dir().join("server.log")
 }
 
-/// phux's per-user state directory: `$XDG_STATE_HOME/phux` (or
-/// `$HOME/.local/state/phux` when `XDG_STATE_HOME` is unset/empty).
+/// phux's per-user, per-profile state directory.
+///
+/// `$XDG_STATE_HOME/phux` (or `$HOME/.local/state/phux` when `XDG_STATE_HOME`
+/// is unset/empty), suffixed with the active profile when it is not the
+/// default one.
 ///
 /// The home for state that should survive across runs but isn't config: the
 /// canonical server log ([`server_log_path`]), client logs (per-pid), and the
 /// auto-provisioned remote-consumer TLS cert + token store (ADR-0031).
+///
+/// Profile-scoped via [`phux_config::instance::state_dir`] so a development
+/// build's logs and provisioned credentials cannot be confused with — or
+/// written over — those of the installed build (phux-zomb.2).
 #[must_use]
 pub fn state_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .filter(|v| !v.is_empty())
-        .map_or_else(
-            || {
-                let mut home = std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from);
-                home.push(".local");
-                home.push("state");
-                home
-            },
-            PathBuf::from,
-        );
-    base.join("phux")
+    phux_config::instance::state_dir()
 }
 
 /// `$XDG_STATE_HOME/phux` (or `$HOME/.local/state/phux`).
@@ -468,11 +500,21 @@ mod tests {
     }
 
     /// `server_log_path` honors `XDG_STATE_HOME` and always names
-    /// `phux/server.log` under it — the single path both spawn paths write
-    /// and every reader tails (phux-i0e8.5.1).
+    /// `<profile-dir>/server.log` under it — the single path both spawn
+    /// paths write and every reader tails (phux-i0e8.5.1).
+    ///
+    /// The directory carries the active profile (ADR-0080), which this
+    /// debug-built test binary resolves to `dev`; it is read from
+    /// `instance::state_dir` rather than hardcoded so the assertion stays
+    /// true under any profile.
     #[test]
     fn server_log_path_honors_xdg_state_home() {
         let prev = std::env::var_os("XDG_STATE_HOME");
+        let leaf = phux_config::instance::state_dir()
+            .file_name()
+            .expect("the state dir always has a final component")
+            .to_string_lossy()
+            .into_owned();
         // SAFETY-NOTE: env mutation is process-global; nextest runs each
         // test in its own process, and we restore the var below anyway.
         // `set_var`/`remove_var` are unsafe in edition 2024; the harness
@@ -480,14 +522,14 @@ mod tests {
         unsafe { std::env::set_var("XDG_STATE_HOME", "/custom/state") };
         assert_eq!(
             server_log_path(),
-            PathBuf::from("/custom/state/phux/server.log")
+            PathBuf::from(format!("/custom/state/{leaf}/server.log"))
         );
         // Unset (and empty, which must behave as unset) falls back to
         // `$HOME/.local/state`.
         unsafe { std::env::set_var("XDG_STATE_HOME", "") };
         let fallback = server_log_path();
         assert!(
-            fallback.ends_with(".local/state/phux/server.log"),
+            fallback.ends_with(format!(".local/state/{leaf}/server.log")),
             "got {fallback:?}"
         );
         match prev {

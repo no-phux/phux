@@ -190,9 +190,16 @@ fn agent_wrap_writes_and_clears_the_identity_record() {
 fn launch_bench_reports_no_server_as_action_failure() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = tmp.path().join("bench.tsv");
-    let socket = tmp.path().join("stale.sock");
-    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("stale socket");
-    drop(listener);
+    // A socket path whose parent is a regular file: no server can ever bind
+    // there, so the action's inner `phux new --json` fails no matter what.
+    //
+    // This used to be an abandoned socket file, which worked only because
+    // auto-spawn was gated on the path not existing — the bug ADR-0080 fixed.
+    // A stale entry is now reaped and a server started, so an abandoned
+    // socket would make this action *succeed*.
+    let blocker = tmp.path().join("not-a-dir");
+    std::fs::write(&blocker, b"").expect("write the blocking file");
+    let socket = blocker.join("phux.sock");
     let state_text = state.to_str().expect("utf8 state path");
     let socket_text = socket.to_str().expect("utf8 socket path");
     let (code, stdout, stderr) = run_demo_with_env(
@@ -204,7 +211,7 @@ fn launch_bench_reports_no_server_as_action_failure() {
         ],
     );
 
-    assert_ne!(code, 0, "stale socket should fail the action");
+    assert_ne!(code, 0, "an unreachable socket should fail the action");
     let wrapper_stderr = without_dhat_footer(&stderr);
     assert!(
         wrapper_stderr.is_empty(),
@@ -222,15 +229,22 @@ fn launch_bench_reports_no_server_as_action_failure() {
     let error_doc: serde_json::Value = serde_json::from_str(json_line).unwrap_or_else(|_| {
         panic!("action stderr should start with the JSON error contract: {output}")
     });
-    assert_eq!(
-        error_doc["error"]["code"], "no_server",
-        "action stderr should explain failure: {output}"
+    // A closed code, not a specific one: a spawning verb pointed somewhere a
+    // server cannot bind reports the bind failure (`transport`), where a
+    // dialling verb would report `no_server`. Both are contract documents;
+    // pinning the exact code here would pin which of the two `new` is.
+    let code_str = error_doc["error"]["code"]
+        .as_str()
+        .expect("the error code is a string");
+    assert!(
+        matches!(code_str, "no_server" | "transport"),
+        "action stderr should carry a closed error code: {output}"
     );
     assert!(
-        error_doc["error"]["message"]
+        !error_doc["error"]["message"]
             .as_str()
             .expect("error message")
-            .contains("no server running at"),
+            .is_empty(),
         "action stderr should explain failure: {output}"
     );
 }

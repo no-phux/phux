@@ -16,7 +16,7 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::rec::RecordSpec;
 use crate::commands::remote::{self, Endpoint, RemoteEntry};
-use crate::commands::{DEFAULT_SESSION_NAME, print_attach_error, server::maybe_auto_spawn_server};
+use crate::commands::{DEFAULT_SESSION_NAME, print_attach_error, server::ensure_server};
 
 /// A live `--rec` recorder, shared between reconnect attempts.
 ///
@@ -63,7 +63,8 @@ fn finalize_recording(rec: Option<&RecordSpec>) {
 ///
 /// 1. If the socket is missing, fork-exec ourselves as `phux server`
 ///    (which pre-seeds the [`DEFAULT_SESSION_NAME`] session) and wait
-///    for the socket to bind. Reuses [`maybe_auto_spawn_server`].
+///    for the socket to accept. Reuses [`ensure_server`], which also
+///    reaps a socket left behind by a server that died uncleanly.
 /// 2. Attempt `ATTACH { target: Last }`. On a server with prior session
 ///    activity this resolves to the most-recently-focused session,
 ///    matching docs/consumers/tui.md §1's "attach to default session" intent.
@@ -99,13 +100,12 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
     // paths agree on which session to attach to.
     let default_name = resolved_default_session_name();
 
-    if !socket_path.exists()
-        && let Err(err) = maybe_auto_spawn_server(
-            &socket_path,
-            &default_name,
-            configured_spawn_on_attach().as_deref(),
-        )
-    {
+    if let Err(err) = ensure_server(
+        &socket_path,
+        &default_name,
+        configured_spawn_on_attach().as_deref(),
+        false,
+    ) {
         eprintln!("phux: auto-spawn skipped ({err}). Start a server manually with `phux server`.");
     }
 
@@ -594,7 +594,7 @@ async fn wait_until_connectable(dial: &Dial, deadline: Duration) -> ReconnectOut
 ///
 /// If the socket isn't there (or refuses connections), this also
 /// attempts a best-effort auto-spawn of `phux server` before
-/// connecting — see [`maybe_auto_spawn_server`].
+/// connecting — see [`ensure_server`].
 /// Attach through a registered `[[remote]]` entry (ADR-0055).
 ///
 /// The registry supplies the endpoint, the pin, and the token, so the
@@ -722,7 +722,7 @@ pub(crate) fn run_attach_rec(
     };
     let target = session.map_or(AttachTarget::Last, AttachTarget::ByName);
 
-    // Best-effort: if no socket exists, fork-exec ourselves into a
+    // Best-effort: if nothing is accepting, fork-exec ourselves into a
     // detached server. Failures here are non-fatal — the subsequent
     // attach driver call will surface the connect error.
     //
@@ -730,15 +730,13 @@ pub(crate) fn run_attach_rec(
     // session name the user is trying to attach to, so the subsequent
     // `ATTACH` doesn't refuse with "session not found" against a
     // surprise `default` session.
-    if !socket_path.exists() {
-        match maybe_auto_spawn_server(&socket_path, &session_for_spawn, seed_command.as_deref()) {
-            Ok(()) => {}
-            Err(err) => {
-                eprintln!(
-                    "phux: auto-spawn skipped ({err}). Start a server manually with `phux server`."
-                );
-            }
-        }
+    if let Err(err) = ensure_server(
+        &socket_path,
+        &session_for_spawn,
+        seed_command.as_deref(),
+        false,
+    ) {
+        eprintln!("phux: auto-spawn skipped ({err}). Start a server manually with `phux server`.");
     }
 
     let rt = match tokio::runtime::Builder::new_current_thread()

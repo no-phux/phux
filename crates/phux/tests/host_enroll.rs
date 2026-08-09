@@ -76,10 +76,17 @@ impl EnrollHome {
     /// Run `phux <args...>` against this home's private config and state,
     /// with `$PHUX_SSH` pointed at `ssh` (a missing path proves the run
     /// never sshed). Returns `(exit_code, stdout, stderr)`.
+    ///
+    /// `PHUX_PROFILE=default` pins the *released* on-disk layout
+    /// (`state/phux`, not `state/phux-dev`). The binary under test is a debug
+    /// build, so it would otherwise resolve the `dev` profile and this file's
+    /// path assertions would be describing a layout no user ever sees
+    /// (ADR-0080).
     fn run(&self, args: &[&str], ssh: &Path) -> (i32, String, String) {
         let out = Command::new(PHUX)
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .env("XDG_STATE_HOME", self.dir.path().join("state"))
+            .env("PHUX_PROFILE", "default")
             .env("PHUX_SSH", ssh)
             .args(args)
             .output()
