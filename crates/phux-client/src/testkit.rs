@@ -446,7 +446,26 @@ impl ScriptedServer {
                 }
             );
             seen.push(frame);
-            if detached || (subscribed && self.spec.end == EndOfScript::HangUp) {
+            if detached {
+                break;
+            }
+            if subscribed && self.spec.end == EndOfScript::HangUp {
+                // Half-close the server's write side before draining the
+                // client. Dropping a Unix socket with unread client frames
+                // can surface as ECONNRESET instead of the clean EOF this
+                // fixture promises (a terminal-scoped watch sends its
+                // metadata subscription immediately after SUBSCRIBE_EVENTS).
+                // The client observes EOF while this side gives the one
+                // immediately-following frame a bounded chance to land.
+                // Do not wait for the client's final close: some harness
+                // callers keep their Connection alive while joining us.
+                self.link.close_output().await;
+                if let Ok(Some(frame)) =
+                    tokio::time::timeout(std::time::Duration::from_millis(50), self.link.recv())
+                        .await
+                {
+                    seen.push(frame);
+                }
                 break;
             }
         }
@@ -694,5 +713,14 @@ impl FrameLink {
             return;
         }
         let _ = self.stream.flush().await;
+    }
+
+    /// Produce a clean EOF while keeping the read side alive long enough to
+    /// drain a client frame that raced with the scripted hang-up.
+    async fn close_output(&mut self) {
+        self.stream
+            .shutdown()
+            .await
+            .expect("scripted server failed shutting down its write side");
     }
 }
