@@ -18,6 +18,10 @@ use std::io;
 ///
 /// Most variants wrap a richer underlying cause; the driver is careful to
 /// fail fast rather than silently dropping protocol violations.
+///
+/// This is the client-facing attach-loop error vocabulary. It is distinct
+/// from `phux-server/src/state/client.rs::AttachError`, which describes
+/// failures in the server's internal registry attach operation.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AttachError {

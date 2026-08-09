@@ -81,6 +81,10 @@ pub struct AttachSnapshotPane {
 }
 
 /// Errors returned by [`super::ServerState::attach`].
+///
+/// This is the server-internal registry attach vocabulary. It is distinct
+/// from `phux-client/src/attach/outcome.rs::AttachError`, which covers the
+/// client attach loop and transport, terminal, and protocol failures.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum AttachError {
     /// No session with that name was found in the registry.

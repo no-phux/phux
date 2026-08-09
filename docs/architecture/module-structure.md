@@ -49,6 +49,13 @@ Native checkpoint, history, cursor, and raw PTY payloads are engine-owned
 bytes and are never scanned or rewritten by phux; synthesized VT remains an
 explicit compatibility profile.
 
+The mutual references among `wire/frame.rs`, `wire/decode.rs`, and
+`wire/info.rs` are deliberate. `frame` and `info` define one recursive wire
+vocabulary, while `decode` owns the bounds-checked parser that constructs that
+vocabulary. Splitting the parser helpers or recursive types into artificial
+leaf modules would move the same codec recursion without creating a clearer
+layer boundary, so this sibling cycle is accepted (phux-4fbs.5).
+
 ## `phux-core`
 
 ```
