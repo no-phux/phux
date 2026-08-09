@@ -1022,21 +1022,40 @@ mod tests {
     // tombstone semantics, and the `Unchanged` SET shortcut.
     // -------------------------------------------------------------------------
 
-    fn attach_l3_client(s: &mut ServerState) -> (ClientId, mpsc::Receiver<Outbound>) {
+    /// The mailbox is returned alongside the receiver because
+    /// `metadata_subscribe` now captures it (a subscriber need not be
+    /// attached for `METADATA_CHANGED` fanout to reach it).
+    fn attach_l3_client(
+        s: &mut ServerState,
+    ) -> (ClientId, mpsc::Sender<Outbound>, mpsc::Receiver<Outbound>) {
         let _ = s.seed_session("default");
         let cid = s.new_client_id();
         let (tx, rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
-        s.attach_default_caps(cid, "default", tx).unwrap();
+        s.attach_default_caps(cid, "default", tx.clone()).unwrap();
         s.set_client_layers(cid, LayerSet::all());
-        (cid, rx)
+        (cid, tx, rx)
     }
 
-    fn attach_l1_only_client(s: &mut ServerState) -> (ClientId, mpsc::Receiver<Outbound>) {
+    fn attach_l1_only_client(
+        s: &mut ServerState,
+    ) -> (ClientId, mpsc::Sender<Outbound>, mpsc::Receiver<Outbound>) {
         let cid = s.new_client_id();
         let (tx, rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
-        s.attach_default_caps(cid, "default", tx).unwrap();
+        s.attach_default_caps(cid, "default", tx.clone()).unwrap();
         s.set_client_layers(cid, LayerSet::new());
-        (cid, rx)
+        (cid, tx, rx)
+    }
+
+    /// The headless-consumer shape: a connection that subscribes and
+    /// streams without ever attaching (`phux watch`). No HELLO either —
+    /// `client_layers` defaults to `LayerSet::all` for a client the server
+    /// never saw one from, so this client speaks L3.
+    fn unattached_l3_client(
+        s: &mut ServerState,
+    ) -> (ClientId, mpsc::Sender<Outbound>, mpsc::Receiver<Outbound>) {
+        let cid = s.new_client_id();
+        let (tx, rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
+        (cid, tx, rx)
     }
 
     /// Pull every queued frame off `rx` and return the inner frames.
@@ -1054,10 +1073,10 @@ mod tests {
     #[test]
     fn metadata_subscribe_then_set_broadcasts_matching_key() {
         let mut s = ServerState::new();
-        let (cid, mut rx) = attach_l3_client(&mut s);
+        let (cid, tx, mut rx) = attach_l3_client(&mut s);
         let scope = Scope::Group(DEFAULT_GROUP_ID);
 
-        s.metadata_subscribe(cid, scope.clone(), "phux.tui.layout/v1".to_owned());
+        s.metadata_subscribe(cid, scope.clone(), "phux.tui.layout/v1".to_owned(), tx);
         let delivered = s.metadata_set(&scope, "phux.tui.layout/v1", b"value-1".to_vec());
 
         assert_eq!(delivered, vec![cid]);
@@ -1077,13 +1096,90 @@ mod tests {
         }
     }
 
+    /// The bug this fixes: `phux watch` subscribes without attaching, so
+    /// fanout resolved through `attached` alone reached nobody and every
+    /// `phux.agent/v1` record the ADR-0046 detector published was computed,
+    /// broadcast, and dropped on the floor.
+    #[test]
+    fn metadata_broadcast_reaches_a_subscriber_that_never_attached() {
+        let mut s = ServerState::new();
+        let (cid, tx, mut rx) = unattached_l3_client(&mut s);
+        let scope = Scope::Terminal(phux_protocol::ids::TerminalId::local(7));
+        let key = phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
+
+        s.metadata_subscribe(cid, scope.clone(), key.to_owned(), tx);
+        let record = br#"{"name":"claude","kind":"claude","state":"blocked"}"#.to_vec();
+        let delivered = s.metadata_set(&scope, key, record.clone());
+
+        assert_eq!(
+            delivered,
+            vec![cid],
+            "a subscriber with no `attached` entry must still be a fanout target",
+        );
+        let frames = drain_frames(&mut rx);
+        assert_eq!(frames.len(), 1);
+        match &frames[0] {
+            FrameKind::MetadataChanged {
+                scope: s2,
+                key: k,
+                value,
+            } => {
+                assert_eq!(s2, &scope);
+                assert_eq!(k, key);
+                assert_eq!(value.as_deref(), Some(record.as_slice()));
+            }
+            other => panic!("expected MetadataChanged, got {other:?}"),
+        }
+    }
+
+    /// The tombstone half: a DELETE must reach the same un-attached
+    /// subscriber, because a consumer waiting on an agent has to learn the
+    /// record went away.
+    #[test]
+    fn metadata_tombstone_reaches_a_subscriber_that_never_attached() {
+        let mut s = ServerState::new();
+        let (cid, tx, mut rx) = unattached_l3_client(&mut s);
+        let scope = Scope::Terminal(phux_protocol::ids::TerminalId::local(7));
+        let key = phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
+
+        s.metadata_subscribe(cid, scope.clone(), key.to_owned(), tx);
+        s.metadata_set(&scope, key, br#"{"name":"claude"}"#.to_vec());
+        drain_frames(&mut rx);
+
+        let delivered = s.metadata_delete(&scope, key);
+        assert_eq!(delivered, vec![cid]);
+        let frames = drain_frames(&mut rx);
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(
+            &frames[0],
+            FrameKind::MetadataChanged { value: None, .. }
+        ));
+    }
+
+    /// Detach forgets the captured mailbox too, so the map stays bounded
+    /// across connection churn (the twin of `detach_drops_metadata_subscriptions`
+    /// for a client that never attached).
+    #[test]
+    fn detach_forgets_the_captured_metadata_mailbox() {
+        let mut s = ServerState::new();
+        let (cid, tx, mut rx) = unattached_l3_client(&mut s);
+        let scope = Scope::Global;
+        s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned(), tx);
+
+        s.detach(cid);
+
+        let delivered = s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
+        assert!(delivered.is_empty());
+        assert!(drain_frames(&mut rx).is_empty());
+    }
+
     #[test]
     fn metadata_set_on_different_key_does_not_fan_to_subscriber() {
         let mut s = ServerState::new();
-        let (cid, mut rx) = attach_l3_client(&mut s);
+        let (cid, tx, mut rx) = attach_l3_client(&mut s);
         let scope = Scope::Group(DEFAULT_GROUP_ID);
 
-        s.metadata_subscribe(cid, scope.clone(), "phux.a/v1".to_owned());
+        s.metadata_subscribe(cid, scope.clone(), "phux.a/v1".to_owned(), tx);
         let delivered = s.metadata_set(&scope, "phux.b/v1", b"x".to_vec());
 
         assert!(delivered.is_empty(), "no subscriber for the b/v1 key");
@@ -1093,14 +1189,14 @@ mod tests {
     #[test]
     fn metadata_scope_isolation_terminal_vs_group_vs_global() {
         let mut s = ServerState::new();
-        let (cid, mut rx) = attach_l3_client(&mut s);
+        let (cid, tx, mut rx) = attach_l3_client(&mut s);
         let key = "phux.same/v1";
         let t_scope = Scope::Terminal(phux_protocol::ids::TerminalId::local(7));
         let c_scope = Scope::Group(DEFAULT_GROUP_ID);
         let g_scope = Scope::Global;
 
         // Only subscribe to Group.
-        s.metadata_subscribe(cid, c_scope.clone(), key.to_owned());
+        s.metadata_subscribe(cid, c_scope.clone(), key.to_owned(), tx);
 
         // Writes to Terminal and Global must NOT fire the subscriber.
         assert!(s.metadata_set(&t_scope, key, b"t".to_vec()).is_empty());
@@ -1125,10 +1221,10 @@ mod tests {
     #[test]
     fn metadata_delete_emits_tombstone_only_if_key_existed() {
         let mut s = ServerState::new();
-        let (cid, mut rx) = attach_l3_client(&mut s);
+        let (cid, tx, mut rx) = attach_l3_client(&mut s);
         let scope = Scope::Global;
 
-        s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned());
+        s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned(), tx);
 
         // Deleting a missing key is idempotent and silent.
         let delivered = s.metadata_delete(&scope, "phux.k/v1");
@@ -1159,9 +1255,9 @@ mod tests {
     #[test]
     fn metadata_set_unchanged_value_does_not_broadcast() {
         let mut s = ServerState::new();
-        let (cid, mut rx) = attach_l3_client(&mut s);
+        let (cid, tx, mut rx) = attach_l3_client(&mut s);
         let scope = Scope::Global;
-        s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned());
+        s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned(), tx);
 
         let first = s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
         assert_eq!(first, vec![cid]);
@@ -1177,15 +1273,15 @@ mod tests {
         // SPEC §16.4: a non-L3 client (agent / recorder) MUST NOT see any
         // L3 frames. The fanout layer filters by `client_speaks_l3`.
         let mut s = ServerState::new();
-        let (l3_cid, mut l3_rx) = attach_l3_client(&mut s);
-        let (l1_cid, mut l1_rx) = attach_l1_only_client(&mut s);
+        let (l3_cid, l3_tx, mut l3_rx) = attach_l3_client(&mut s);
+        let (l1_cid, l1_tx, mut l1_rx) = attach_l1_only_client(&mut s);
         let scope = Scope::Global;
 
-        s.metadata_subscribe(l3_cid, scope.clone(), "phux.k/v1".to_owned());
+        s.metadata_subscribe(l3_cid, scope.clone(), "phux.k/v1".to_owned(), l3_tx);
         // L1-only consumer might still TRY to subscribe via misbehaving
         // client; the dispatch in runtime.rs refuses it. Simulate that by
         // not subscribing through the gated path.
-        s.metadata_subscribe(l1_cid, scope.clone(), "phux.k/v1".to_owned());
+        s.metadata_subscribe(l1_cid, scope.clone(), "phux.k/v1".to_owned(), l1_tx);
 
         let delivered = s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
         // Only the L3 client makes it through.
@@ -1197,9 +1293,9 @@ mod tests {
     #[test]
     fn detach_drops_metadata_subscriptions() {
         let mut s = ServerState::new();
-        let (cid, mut rx) = attach_l3_client(&mut s);
+        let (cid, tx, mut rx) = attach_l3_client(&mut s);
         let scope = Scope::Global;
-        s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned());
+        s.metadata_subscribe(cid, scope.clone(), "phux.k/v1".to_owned(), tx);
 
         s.detach(cid);
 

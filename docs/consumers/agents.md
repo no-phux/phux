@@ -79,10 +79,14 @@ decision rationale lives in
 in [ADR-0021](../../ADR/0021-control-plane-commands.md).
 
 **Viewport-safe against a live pane.** `snapshot`, `run`, `send-keys`,
-`paste`, and `wait` neither attach nor resize the target pane: reads issue
-`GET_SCREEN`, and input rides `ROUTE_INPUT` to a pane id. `snapshot`/`wait`
-are side-effect-free; `run`/`send-keys`/`paste` deliberately mutate the live
-PTY. None changes an attached human's local focus or viewport. `resize` is
+`paste`, `wait`, `agent wait`, and `agent send-keys` neither attach nor resize
+the target pane: reads issue `GET_SCREEN` or `GET_METADATA`, and input rides
+`ROUTE_INPUT` to a pane id. `snapshot`/`wait`/`agent wait` are
+side-effect-free; `run`/`send-keys`/`paste`/`agent send-keys` deliberately
+mutate the live PTY. `snapshot --tail` and `--unwrap`, and `wait --tail` /
+`--regex` / `--output-only`, are client-side projections over that same read
+and change nothing about it. None changes an attached human's local focus or
+viewport. `resize` is
 the deliberate exception — changing the grid is its whole job — but it too
 never attaches, so it cannot drag a pane toward the 80x24 size a caller with
 no TTY would otherwise report.
@@ -96,10 +100,27 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
 - **`phux ls [--json] [--socket P]`** — list sessions. Does not auto-start a
   server (like `tmux ls`): with none running it reports as much and exits
   non-zero. `--json` emits `SessionListJson` (§4.1).
-- **`phux snapshot [--json] [--scrollback[=N]] [--cells] [--socket P]
-  [TARGET]`** — side-effect-free pane read via `GET_SCREEN`. `TARGET` is
-  optional (defaults to the focused session). `--json` emits `ScreenState`
-  (§4.2); without it, a boxed text view.
+- **`phux snapshot [--json] [--scrollback[=N]] [--cells] [--tail[=N]]
+  [--unwrap] [--socket P] [TARGET]`** — side-effect-free pane read via
+  `GET_SCREEN`. `TARGET` is optional (defaults to the focused session).
+  `--json` emits `ScreenState` (§4.2); without it, a boxed text view.
+
+  `--tail[=N]` returns the last N rendered rows — history above the viewport,
+  then the viewport, oldest first. Bare `--tail` is 80 rows; `--tail 0` is all
+  retained history, capped at 10 000. **The viewport is a floor and is never
+  returned in part**, because `rows`, `cursor`, and `cells` are grid
+  coordinates and a partial grid would lie about them; a window narrower than
+  the viewport therefore returns more rows than you asked for, never fewer.
+  Dropped rows set `truncated` (§4.2).
+
+  `--unwrap` joins soft-wrapped rows into logical lines — rows as *written*
+  rather than as *painted*. It cannot be combined with `--cells`, whose
+  coordinates do not survive the join, and after it `soft_wrap` reports no
+  wrapped rows because the returned projection has none.
+
+  Both are client-side projections of the same side-effect-free `GET_SCREEN`:
+  neither adds a wire field, neither moves a live pane, and §1's
+  viewport-safety claim for `snapshot` is unchanged.
 - **`phux send-keys [--socket P] TARGET KEYS...`** — route named keys or
   literal strings to one resolved pane by id (`ROUTE_INPUT`). `TARGET` is
   required. No JSON. `KEYS` are tmux-shaped: named keys (`Enter`, `Tab`,
@@ -142,14 +163,59 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   `--json` emits `RunResult` (§4.3). The exit code mirrors the child (§5.2).
   Flags must precede `TARGET`, or clap's `trailing_var_arg` swallows them into the
   command line.
-- **`phux wait [--until TEXT] [--idle MS] [--timeout SECS] [--json]
-  [--socket P] [TARGET]`** — poll the side-effect-free screen read until a condition
-  holds. `--until` takes precedence over `--idle`; with neither, it settles on
-  idle. `--json` emits the final `ScreenState`. Exit 0 when the condition is
-  met, 124 on timeout. Two gotchas: flags must precede `TARGET`; and `--until`
-  matches any visible row, including the shell's echo of the command you just
-  typed — match on text that appears only in command output, never the command
-  itself.
+- **`phux wait [--until TEXT] [--regex PATTERN] [--idle MS] [--tail[=N]]
+  [--output-only] [--timeout SECS] [--json] [--socket P] [TARGET]`** — poll the
+  side-effect-free screen read until a condition holds. A text condition
+  (`--until` or `--regex`, mutually exclusive) takes precedence over `--idle`;
+  with none of them it settles on idle. `--json` emits the final `ScreenState`
+  as read — the projections below scope the *match*, not the emitted document.
+  Exit 0 when the condition is met, 124 on timeout.
+
+  **Matching is against the lines as written, not as painted.** Rows the
+  terminal soft-wrapped at its right edge are joined into logical lines first,
+  so a needle that straddles a wrap is found. This is a behavior fix rather
+  than a flag: before it, `--until` on text that happened to fall across the
+  wrap silently never matched and the wait ran to its timeout, which looked
+  like a hang and appeared only for long lines. Against a server that does not
+  report wrap bits (`soft_wrap` absent, §4.2) rows are matched verbatim — the
+  old behavior, detectable rather than guessed at.
+
+  `--regex PATTERN` is a Rust regular expression matched one logical line at a
+  time, so `^` and `$` anchor to a line you can see and no pattern spans two of
+  them. An invalid pattern is a usage error (exit 2) raised while parsing the
+  command line, before any connection or poll, rather than a wait that quietly
+  never matches.
+
+  `--tail[=N]` scopes matching to the last N logical lines and reads that much
+  history to do it; without it only the viewport is read, as before. Bare
+  `--tail` is 80, `--tail 0` is all retained history capped at 10 000. Three
+  things to know about the count: it is over logical lines, after wrapped rows
+  are joined, so it can never bisect a wrapped run; it ignores the blank rows
+  under the cursor, because a grid is always full height and counting them
+  would make a small window match nothing on a pane whose prompt sits near the
+  top; and unlike `snapshot --tail` the viewport is **not** a floor — this
+  window scopes a search rather than describing a returned grid, so `--tail 3`
+  really does mean three lines. It counts the prompt block already back on
+  screen, so leave room for it. `--tail` also narrows `--idle`: only those
+  lines have to hold still, which is one way to settle a pane with a spinner
+  further up.
+
+  `--output-only` drops lines the shell marked as your own typed input
+  (OSC-133 `Input`, the same marks `snapshot --cells` exposes), so a wait
+  cannot be satisfied by the echo of the command that started the work. A
+  command too long for one row is dropped whole; prompt-marked text is kept;
+  history rows carry no marks and are always treated as output. It needs a
+  shell with OSC-133 integration — with no marks at all it filters nothing and
+  phux says so on stderr before the wait begins, because failing closed would
+  hang a wait that is otherwise fine.
+
+  The gotchas that remain: flags must precede `TARGET`; a bare `--tail` reads
+  the next word as N, so spell N out when you also pass a target (`--tail 80
+  build`, not `--tail build`, which is a usage error); and **without
+  `--output-only`, `--until`/`--regex` still match any line including the
+  shell's echo of the command you just typed** — on a pane with no shell
+  integration, match on text that appears only in command output, never the
+  command itself.
 - **`phux watch [--json] [--socket P] [TARGET]`** — stream a pane's live events
   (the push half of the agent surface; see [`../spec/L1.md`](../spec/L1.md)).
   Subscribes to the server's event stream scoped to the resolved pane and
@@ -160,8 +226,28 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   human line. Event names: `title_changed` (carries `title`), `bell`, `dirty`,
   `idle`, `pane_spawned`, `pane_closed` (carries `exit_status`), `asked`
   (carries `id`, `question`, `suggestions`, and nullable `elapsed_seconds`),
-  and `command_started` / `command_finished` (the latter carries a nullable
-  `exit_code`). `watch` cuts `wait`'s poll-floor latency: a `watch` consumer
+  `command_started` / `command_finished` (the latter carries a nullable
+  `exit_code`), and `agent_state`.
+
+  `agent_state` is the derived-agent half of the stream, not an L1 event:
+  `watch` also subscribes to the resolved pane's
+  `phux.agent/v1` L3 record ([`../spec/L3.md`](../spec/L3.md) §3.7), so every
+  transition the server-side detector publishes
+  ([ADR-0046](../../ADR/0046-server-side-agent-state-detection.md)) arrives as
+  a line. It carries `name`, optional `kind` and `session`, `state`,
+  `attention`, and `from` — the state the same pane was last seen in *within
+  this `watch` run*, absent on the first record for a pane. `attention` is the
+  effective level L3 §3.7 derives from `state`, because the detector never
+  writes the field itself. A deleted record (or a value that is not a readable
+  record, which L3 §3.7 reads as "no declared agent") emits a line with `state`
+  present and `null`, keeping `name` and `from` from the last record seen,
+  rather than being dropped: a consumer waiting on an agent has to learn that
+  it went away. The subscription is one `(scope, key)` pair against the
+  resolved pane, so `agent_state` lines are always scoped to that pane; there
+  is no fleet-wide agent-state stream, because L3 has no wildcard-Terminal
+  scope. Watch the panes you care about, one stream each.
+
+  `watch` cuts `wait`'s poll-floor latency: a `watch` consumer
   wakes the instant an event fires rather than on the next poll tick. It is
   additive — `wait` still works without it, and a dropped event (full
   mailbox) falls back to polling.
@@ -245,6 +331,26 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   view. `--json` emits `AgentStateJson` (§4.7). States are `unknown`, `idle`,
   `working`, `blocked`, or `done`; each state carries confidence and ordered
   provenance so consumers can show why phux believes it.
+- **`phux agent explain --file PATH --kind KIND [--title TEXT]
+  [--format auto|json|text] [--json]`** — the offline half of `explain`. It
+  evaluates the compiled detection manifests
+  ([ADR-0046](../../ADR/0046-server-side-agent-state-detection.md)) against a
+  captured screen and contacts no server at all; `--file -` reads stdin.
+  `PATH` is `phux snapshot --json` output or a plain text screen, one viewport
+  row per line, and `--format auto` (the default) picks JSON when the first
+  non-whitespace byte is `{`. `--kind` is required and takes a kind slug or
+  one of its binary aliases (`claude-code` resolves to `claude`): offline
+  there is no foreground process group to identify the agent from, so a miss
+  enumerates the loaded manifests rather than guessing. A capture carries no
+  OSC title, so `--title` supplies one for title-scoped rules; without it
+  every `title` rule reads an empty region, and the report says so. The output
+  is the evidence, not the answer: the text every region resolved to on that
+  screen, then every rule — matched and unmatched — with its predicate tree
+  annotated node by node. A rule scoped to a region that comes back empty
+  cannot match however well it is written, and because the detector fails safe
+  to `idle`, nothing else makes that visible. `--file` conflicts with
+  `TARGET`; `--kind`, `--title`, and `--format` require `--file`. `--json`
+  emits `AgentExplainJson` (§4.7).
 - **`phux agent set [TARGET] --name NAME [--kind K] [--state S]
   [--attention A] [--session L] [--socket P]`** — declare the target pane's
   agent identity by writing the whole `phux.agent/v1` L3 record
@@ -259,6 +365,54 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
 - **`phux agent clear [TARGET] [--socket P]`** — delete the declared record
   (`DELETE_METADATA`); consumers fall back to the OSC-title and screen
   heuristics. Prints `@N<TAB>-` on confirmation.
+- **`phux agent wait [--until STATE]... [--timeout SECS] [--json] [--socket P]
+  [TARGET]`** — block until the pane's agent **transitions into** a lifecycle
+  state. `--until` repeats and ORs over `idle`, `working`, `blocked`, `done`,
+  defaulting to `idle,blocked,done` — the three ways a turn ends. `unknown` is
+  not spellable: it is *departure*, not a state to wait for. `TARGET` is
+  optional (the focused pane). `--timeout` is in seconds and is unbounded when
+  omitted, matching `phux wait`; always pass one from a script. `--json` emits
+  `AgentWaitJson` (§4.7).
+
+  **It is satisfied only by an observed transition, never by a level read of
+  the current state**, for the reason [`../spec/L3.md`](../spec/L3.md) §3.7
+  states normatively: a level read of `state` asserts only that nothing
+  contrary is being asserted, and `idle` is the weakest value in the
+  vocabulary — the reference detector's fail-safe fallthrough
+  ([ADR-0046](../../ADR/0046-server-side-agent-state-detection.md)), asserted
+  positively by none of the five manifests phux ships. A completion gate that
+  fired on that level would report success on a pane whose agent crashed,
+  instantly, and on every pane with no manifest loaded at all. §5.1 has the
+  loop this changes.
+
+  The verb subscribes to the pane's `phux.agent/v1` key **before** reading the
+  pre-wait baseline, on one connection, so no transition falls in the gap; it
+  also re-reads `GET_METADATA` on the `phux wait` cadence, because the change
+  notification is droppable and the detector is edge-filtered. That re-read is
+  level-triggered *recovery of an edge* — it goes through the same
+  must-have-changed rule — never a level gate. **The deliberate consequence:**
+  a pane already resting in a target state when the wait begins times out
+  rather than succeeding, and the timeout diagnostic names the state it held
+  so one `phux agent show` recovers. That is a loud false negative in place of
+  a silent false positive.
+- **`phux agent send-keys [--expect-agent NAME] [--expect-kind KIND] [--json]
+  [--socket P] TARGET KEYS...`** — the agent-addressed sibling of
+  `phux send-keys`, differing from it in exactly one way: it re-reads the
+  pane's `phux.agent/v1` record immediately before writing and refuses if the
+  occupant is not the agent you named. `phux send-keys` addresses a *pane* and
+  deliberately checks no identity — use that one when a pane is what you mean.
+  A pane with no record is refused rather than written to.
+
+  Every key spec is validated before any byte is written, so a typo in the
+  third key cannot leave the first two delivered; unlike `phux send-keys`, a
+  near-miss chord (`C-cc`, a bare `M-`) is refused rather than typed as
+  literal text. The staleness bound is exact and narrow: the identity read and
+  the first `ROUTE_INPUT` are consecutive frames on one connection, so no
+  frame from this client interleaves — but another client's `SET_METADATA`,
+  the detector's next tick, or the pane's own process exec'ing something else
+  still can. It closes the resolve-then-type window, not a concurrent-writer
+  race. `--json` emits the shape in §4.7.
+
 - **`phux agent install-claude [--shell zsh|bash|fish] [--real PATH]`** —
   make plain interactive `claude` invocations enter phux automatically. The
   installer leaves the real Claude binary untouched, writes a phux-owned shim
@@ -409,6 +563,15 @@ tracked against ADR-0030. `GroupId`'s retention as an opaque grouping key is
 settled, not a remnant awaiting removal (bead phux-0bmc closed as
 resolved-by-rename).
 
+**Three agent surfaces are decided but not built**, and nothing in this file
+describes them as existing: agent-name `%name` addressing
+([ADR-0075](../../ADR/0075-agent-name-addressing.md)), the acknowledged
+`phux agent prompt`
+([ADR-0076](../../ADR/0076-agent-prompt-and-lifecycle-wait.md)), and the
+alternate-screen transcript harvest
+([ADR-0078](../../ADR/0078-alternate-screen-history.md)). Read the ADRs for the
+target shape; do not write a script against it.
+
 **Socket precedence (once, for every verb).** The `--socket` argument wins,
 then the `PHUX_SOCKET` environment variable, then the daemon default:
 `$XDG_RUNTIME_DIR/phux/phux.sock`, falling back to `/tmp/phux-$UID/phux.sock`.
@@ -416,7 +579,8 @@ then the `PHUX_SOCKET` environment variable, then the daemon default:
 ## 3. Targeting: the selector grammar
 
 One grammar, every targeted command — `kill`, `snapshot`, `wait`, `watch`,
-`send-keys`, `paste`, `run`, `ask`, `resize`, launch/spawn placement, and the
+`send-keys`, `paste`, `run`, `ask`, `resize`, `agent wait`,
+`agent send-keys`, launch/spawn placement, and the
 three spatial verbs all share `TARGET`.
 It is resolved client-side against a server snapshot ([ADR-0021](../../ADR/0021-control-plane-commands.md)); the server
 never parses a selector.
@@ -429,8 +593,10 @@ unsupported for headless commands because they have no attached-client MRU.
 A selector that names several panes (a whole session or window) narrows to a
 single pane: the focused pane when it is among the matches, else the first in
 snapshot order (the `pick_target_pane` tiebreak the MCP tools share).
-Optionality differs per verb: `snapshot`, `wait`, and `watch` may omit a target;
-`send-keys`, `paste`, `run`, `ask`, `resize`, and every spatial verb require it. `launch`/`spawn`
+Optionality differs per verb: `snapshot`, `wait`, `watch`, and `agent wait`
+may omit a target (`agent wait` matching `agent show`/`explain`);
+`send-keys`, `paste`, `run`, `ask`, `resize`, `agent send-keys`, and every
+spatial verb require it. `launch`/`spawn`
 use an optional target only for explicit local placement. Spatial and placement
 targets are stricter than the selected-pane tiebreak: each must resolve to one
 exact local pane.
@@ -504,6 +670,44 @@ Fields:
 | `lines` | `Vec<String>` | Viewport rows, top to bottom, right-trimmed. |
 | `scrollback` | `Vec<String>` | History rows above the viewport, oldest first; empty unless requested. |
 | `cells` | `Option<Vec<CellInfo>>` | Per-cell marks and styles; present only with `--cells`. |
+| `soft_wrap` | `Option<{lines: [u32], scrollback: [u32]}>` | Indices of returned rows that continue onto the row below, from libghostty's per-row wrap bit. |
+| `truncated` | `bool` | True when the requested window dropped older rows. Absent means `false`. |
+| `truncated_reason` | `Option<String>` | Why. The only value this server produces is `"row_window"`. |
+| `title` | `Option<String>` | The pane's OSC 0/2 title, when it set one. |
+
+**`soft_wrap` is a three-way answer, not a two-way one.** Present and
+non-empty is "these rows wrap"; **present and empty** is "wrapping was
+reported, and nothing wraps"; **absent** is "the producer says nothing about
+wrapping," which today identifies a server predating the field. A consumer
+that unwraps by default has to tell the last two apart, and no version number
+can express the difference — the older server would not have moved one either.
+Indices are per-array, and a wrapped final `scrollback` index continues into
+`lines[0]`: history and viewport are one stream for wrapping purposes, so
+joining them per-array is wrong. `phux wait` already unwraps (§2); a consumer
+doing its own substring matching should too, because a match against raw
+`lines` silently fails when the text straddles a wrap.
+
+**`truncated` is scoped to the requested window** — `--scrollback N` against
+more retained history than N, or a `--tail` window narrower than the rendered
+stream. It says nothing about rows the emulator itself evicted from its history
+ring long ago, which is unknowable. `truncated_reason` is a string rather than
+an enum precisely so a future reason is not a hard deserialize failure;
+tolerate a value you do not recognize.
+
+**`title` is the ADR-0046 detector's highest-ranked evidence** and no other
+read surface exposed it, so an offline `agent explain --file` capture lost it.
+`None` means the pane set no title *or* the producer predates the field; both
+are "no title to reason about," which is the same fail-safe answer.
+
+**`schema_version` did not move for any of these four, and that is the
+contract working, not an oversight.** §4.1's rule governs the whole family: a
+version moves when a key is **removed, renamed, or retyped**, never when one is
+added, because consumers ignore keys they do not know. All four are
+`#[serde(default)]` with `skip_serializing_if`, so an untruncated, title-less
+snapshot with no wrap data serializes byte-identically to the pre-ADR-0077
+shape. A consumer probing for wrap support therefore tests for the *presence*
+of `soft_wrap`, not for a version — the version is what the server can do, not
+what this payload contains.
 
 **`scrollback` is tri-state** (mirrors [`mcp.md`](./mcp.md) §3.2): flag absent →
 viewport only; `--scrollback` or `--scrollback=0` → all retained history;
@@ -527,7 +731,9 @@ the right half of double-width glyphs. Each `CellInfo` is
 **Back-compat.** `scrollback` and `cells` are `#[serde(default)]` (and `cells`
 is `skip_serializing_if` `None`), so a `cells = None` snapshot serializes to
 exactly the pre-cells shape, and an older consumer reading a newer payload
-ignores extra keys. `schema_version` is the bump signal.
+ignores extra keys. `schema_version` is the signal for a *breaking* change —
+a removal, rename, or retype — not for an added key; probe for the key itself
+when you need to know whether a producer supplies one.
 
 ### 4.3 `RunResult` — `phux run --json` (on completion)
 
@@ -718,6 +924,138 @@ This is a public clean-room projection. It does not copy external agent
 manifests or private tradecraft rules; built-in recognition comes from
 publicly observable process identity and captured pane chrome, plus optional
 local phux plugin declarations.
+
+#### `AgentWaitJson` — `phux agent wait --json`
+
+```json
+{
+  "schema_version": 1,
+  "terminal": "@7",
+  "satisfied": true,
+  "edge": { "from": "working", "to": "idle", "via": "push" },
+  "baseline": "working",
+  "state": "idle",
+  "agent": { "name": "reviewer", "kind": "claude", "session": null },
+  "observations": { "edges": 1, "pushes": 2, "polls": 3 },
+  "detection": null
+}
+```
+
+`edge` is `null` exactly when `satisfied` is `false` — the timeout case, exit
+124, where the document still goes to **stdout**, matching `phux wait --json`.
+Only the typed failures of §5.3 leave stdout empty. `via` is `"push"` (a server
+change notification) or `"poll"` (the re-read floor recovering an edge the push
+half never delivered); it is diagnostic, not contract-critical.
+
+`baseline` is the pre-wait level: **recorded and never evaluated**. It is in
+the document so a caller that timed out can see it was already resting in the
+state it asked for — the one outcome the edge rule makes surprising.
+
+`detection` is one entry of the `agents` array above — the same object, with
+`confidence` and the full `sources` evidence trail for this pane — so a caller
+can tell `done` written by a lifecycle hook (`agent_record` provenance) from
+`done` guessed by a screen rule. It is `null`, as shown, when the post-wait
+read fails; that degrades the document by one optional field and never fails a
+wait that was already satisfied. Without `--json` the prose line is
+`@N<TAB>name<TAB>from -> to<TAB>via push|poll<TAB>confidence`.
+
+#### `phux agent send-keys --json`
+
+```json
+{
+  "schema_version": 1,
+  "terminal": "@7",
+  "agent": { "name": "reviewer", "kind": "claude" },
+  "keys": 2,
+  "verified": true
+}
+```
+
+Emitted only on a fully delivered batch; without `--json` the verb says
+nothing on success, exactly as `phux send-keys` does. `keys` is the number of
+key specs delivered, and `verified` records that the occupant check ran and
+passed. Refusals follow §5.3.
+
+#### `AgentExplainJson` — `phux agent explain --file ... --json`
+
+The offline explainer emits a different document from `AgentStateJson`: it
+reports what the detection manifests did to one captured screen, not what phux
+believes about a live pane. The top-level key is `explain`, so the two are
+distinguishable without reading further.
+
+```json
+{
+  "schema_version": 1,
+  "capture": {
+    "path": "screen.json",
+    "format": "json",
+    "rows": 42,
+    "cols": 120,
+    "title": "phux"
+  },
+  "explain": {
+    "kind": "claude",
+    "name": "claude",
+    "state": "blocked",
+    "detector_state": "blocked",
+    "matched_rule": "prompt-permission-dialog",
+    "freeze": false,
+    "visible_blocker": true,
+    "visible_idle": false,
+    "visible_working": false,
+    "regions": [
+      { "region": "title", "empty": false, "lines": ["phux"] },
+      { "region": "prompt-box", "empty": true, "lines": [] }
+    ],
+    "evaluated_rules": [
+      {
+        "id": "prompt-permission-dialog",
+        "priority": 80,
+        "region": "after-last-rule",
+        "state": "blocked",
+        "matched": true,
+        "visible_blocker": true,
+        "visible_idle": false,
+        "visible_working": false,
+        "skip_state_update": false,
+        "evidence": {
+          "op": "all",
+          "matched": true,
+          "children": [
+            { "op": "contains", "pattern": "do you want to ", "matched": true },
+            { "op": "line-regex", "pattern": "^\\s*\\d+\\.\\s+\\S", "matched": true }
+          ]
+        }
+      }
+    ]
+  }
+}
+```
+
+`capture.format` is `json` or `text` — what the bytes were actually parsed as,
+after `--format auto` sniffed them. `capture.cols` is `null` for a text
+capture, which declares no grid width. `capture.title` is the `--title` value,
+or the empty string when none was supplied.
+
+`state` is the state a rule asserted and is absent when none did.
+`detector_state` is what the detector would publish: the asserted state, else
+`idle` when nothing matched, else `frozen` when a `skip-state-update` rule
+matched and the previous state is held. When the two differ, `fallback_reason`
+says which case applied. `detector_state` is the field to branch on.
+
+`regions` covers every region the manifest grammar offers — `title`,
+`prompt-box`, `after-last-rule`, `bottom-lines`, `viewport`, in that order —
+whether or not a rule names it, and `empty` is `true` when the region resolved
+to nothing a predicate can see. Region previews are never elided in JSON; the
+prose form caps each region and reports how many rows it dropped.
+`evaluated_rules` lists every rule in declaration order including the misses;
+`evidence` is the predicate tree with a per-node `matched`, and every child of
+a combinator is evaluated, so a failing `all` shows which conjunct failed
+rather than only that one did. `region` and `evidence[].op` use the manifest's
+own spellings, so a value read here can be typed straight back into a TOML
+rule.
+
+Failures follow §5.3, with the codes named there.
 
 ### 4.8 `PluginActionOutput` — `phux config run --json`
 
@@ -1134,6 +1472,24 @@ driving an interactive or long-lived program." Because `run` mirrors the
 child's code (§5.2), `phux run ... && next` composes like a shell
 ([ADR-0022](../../ADR/0022-tool-for-agents.md) §3).
 
+**Supervising another agent is the same loop with a different wait.** A pane
+running an agent has a lifecycle record, not a sentinel, so wait on the record:
+
+```sh
+phux agent send-keys --expect-agent reviewer @7 "review the diff" Enter
+phux agent wait --until idle --until blocked --timeout 900 --json @7
+phux snapshot --json --tail 200 --unwrap @7 > transcript.json
+```
+
+Read `agent wait`'s answer, do not assume it. Exit `0` means a transition into
+one of those states was **observed**; `124` means none was, which is *not* the
+same statement as "the agent is still working" — check `phux agent show` for
+the level and `edge`/`baseline` in the `--json` document for what the wait
+actually saw. Exit `1` is a departure: the record went away mid-wait, and that
+must never be read as completion. Why the verb refuses to answer from the
+current level at all is in §2 and, normatively, in
+[`../spec/L3.md`](../spec/L3.md) §3.7.
+
 When the input itself is a block of text — a heredoc body, an indented code
 snippet for a REPL, a multiline SQL statement — use `paste`, then submit
 explicitly:
@@ -1166,9 +1522,11 @@ Exit codes are not uniform across verbs:
 | `send-keys` | `0` ok; `1` failure (no server / refused / miss). |
 | `paste` | `0` ok (including a paste the pane's untrusted policy silently dropped); `1` failure (no server / refused / miss / unreadable stdin). |
 | `ask` | `0` accepted; `1` no server, unknown pane, or invalid ask payload. |
-| `agent` | `0` ok; `1` no server, unknown pane, or JSON render failure; `3` the miss is not trustworthy — see below (`show`/`explain`/`set`/`clear`; `list` enumerates and stays `0`). |
+| `agent` | `0` ok; `1` no server, unknown pane, or JSON render failure; `3` the miss is not trustworthy — see below (`show`/`explain`/`set`/`clear`; `list` enumerates and stays `0`; `wait` and `send-keys` have their own rows and keep `1`). |
 | `run` | the child's own code clamped to `0..=255` (negative or `>255` saturate to `255`); `125` when phux gave up waiting for the sentinel (`--timeout`); `1` for no server / refused target / other. |
-| `wait` | `0` condition met; `124` on `--timeout`; `1` no server / parse / read error. |
+| `wait` | `0` condition met; `124` on `--timeout`; `2` usage — an invalid `--regex`, or `--until` combined with `--regex` (clap's own status, raised before any poll); `1` no server / parse / read error. |
+| `agent wait` | `0` a transition into a `--until` state was observed; `124` on `--timeout`, including a pane that held a target state for the whole wait; `2` the pane declares no record, or an unknown `--until` word; `1` the agent departed mid-wait (record deleted or state withdrawn to `unknown`), no server, or transport. |
+| `agent send-keys` | `0` the whole batch was delivered; `2` a refusal before any byte was written — an unusable key spec, no declared record, or an occupant that is not the agent you named; `1` no server / selector miss / transport. |
 | `new` | `0` ok; `1` duplicate `-s` name / failure. |
 | `resize` | `0` the pane holds the requested geometry; `1` no server / selector miss / unknown pane, or the server holds a different size (an attached view's `window-size` policy owns it); `2` unusable `COLSxROWS` (clap usage error, raised before any connection). |
 | `rename` | `0` renamed; `1` no server or transport failure; `2` unknown source session or destination name already exists. |
@@ -1195,10 +1553,12 @@ message naming the unreachable satellite and containing neither the words
 
 **Every** target-resolving verb prints the distinguished message, but not all
 of them can spend a status on it. `snapshot`, `send-keys`, `paste`, `run`,
-`wait`, `watch`, `resize`, `signal`, `rec`, and `ask` share one resolver, and
-two of them have already spoken for the number: `run` mirrors the child's own
-exit code (a command may legitimately exit `3`) and `wait` owns `124`. Those
-verbs keep `1` and say it in words. Branch on the status where the table below
+`wait`, `watch`, `resize`, `signal`, `rec`, `ask`, `agent wait`, and
+`agent send-keys` share one resolver, and
+some of them have already spoken for the number: `run` mirrors the child's own
+exit code (a command may legitimately exit `3`), `wait` and `agent wait` own
+`124`, and `agent wait` / `agent send-keys` spend `2` on their own refusals.
+Those verbs keep `1` and say it in words. Branch on the status where the table below
 offers `3`; otherwise read stderr, which never claims absence it cannot
 verify.
 
@@ -1226,7 +1586,8 @@ Every core server-talking verb above
 `play` / `rec` / `new` / `ask`, plus the spatial edits of §4.12), and every
 `--json`-bearing registry and inspection verb (`tag`, `plugin`,
 `remote list`, `satellite`, `worktree list`, `workspace inspect`,
-`config check`, `logs`, `doctor`), reports a `--json` failure the same way:
+`config check`, `logs`, `doctor`, `agent explain --file`, `agent wait`,
+`agent send-keys`), reports a `--json` failure the same way:
 **stdout stays empty** (the document channel never carries half a result)
 and **stderr carries one line of JSON** (ADR-0065 §4):
 
@@ -1240,8 +1601,9 @@ and **stderr carries one line of JSON** (ADR-0065 §4):
 ```
 
 - `schema_version` is `1`; new fields are additive and do not bump it.
-- `error.code` is a **closed vocabulary** (defined in one place,
-  `commands/json_err.rs`); branch on it, never on `message` text. The
+- `error.code` is a **closed vocabulary** (`commands/json_err.rs`, except the
+  agent-lifecycle codes below, which are still declared beside the two verbs
+  that emit them); branch on it, never on `message` text. The
   transport family: `no_server` (nothing listening at the socket),
   `server_disconnected` (the server went away mid-command), `transport`
   (any other transport/protocol failure). The resolution family:
@@ -1265,6 +1627,21 @@ and **stderr carries one line of JSON** (ADR-0065 §4):
   `update_archive_rejected`, `update_install_failed`, and `update_no_backup`
   (exit 1). A `update_checksum_mismatch` means the published digest and the
   downloaded bytes disagreed: nothing was unpacked and nothing was installed.
+  The offline-explain family (`phux agent explain --file`, which talks to no
+  server and so reaches none of the transport codes): `capture_unreadable`
+  (the file or stdin could not be read) and `capture_invalid` (the bytes are
+  not a screen — JSON that is not a `ScreenState`, or a capture with no rows),
+  both exit 1; and `unknown_agent_kind` (exit 2 — `--kind` was omitted or
+  names no loaded detection manifest, with the roster in `remedy`). The
+  agent-lifecycle family (`agent wait`, `agent send-keys`):
+  `no_agent_record` (exit 2 — the pane declares no `phux.agent/v1` record, so
+  there is no lifecycle to wait on and no identity to verify against),
+  `agent_departed` (exit 1 — the record was deleted or its state withdrew to
+  `unknown` mid-wait; a departure, never a completion), `agent_mismatch`
+  (exit 2 — the pane hosts a different agent than `--expect-agent` /
+  `--expect-kind` named, and nothing was written), and `invalid_key_spec`
+  (exit 2 — a key argument would not translate to the key you clearly meant,
+  refused before the connection is opened so the batch stays all-or-nothing).
 - `remedy` is always present and non-empty: the next command to run, in
   prose.
 - `exit_code` mirrors the process's own exit status, so a consumer that

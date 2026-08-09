@@ -50,6 +50,37 @@ pub(crate) enum Region {
     Viewport,
 }
 
+impl Region {
+    /// Every region a manifest may name, in the order the offline explainer
+    /// previews them: cheapest and most structural first.
+    ///
+    /// Exhaustive by construction — [`Self::as_str`] matches on the same
+    /// variants, so adding one without extending this list fails to compile
+    /// there and is caught by `every_region_is_previewable`.
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Title,
+        Self::PromptBox,
+        Self::AfterLastRule,
+        Self::BottomLines,
+        Self::Viewport,
+    ];
+
+    /// The kebab-case word a manifest spells this region with.
+    ///
+    /// The `Deserialize` derive owns the parse direction; this is the render
+    /// direction, so `phux agent explain` can name a region in exactly the
+    /// spelling an operator has to type back into their TOML.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::BottomLines => "bottom-lines",
+            Self::AfterLastRule => "after-last-rule",
+            Self::PromptBox => "prompt-box",
+            Self::Viewport => "viewport",
+        }
+    }
+}
+
 /// How many trailing non-empty rows [`Region::BottomLines`] yields.
 const BOTTOM_LINES: usize = 6;
 
@@ -267,6 +298,28 @@ mod tests {
 
     fn screen<'a>(title: &'a str, buf: &'a [String]) -> Screen<'a> {
         Screen { title, lines: buf }
+    }
+
+    /// `Region::ALL` is what `phux agent explain` previews. A region missing
+    /// from it is a region an operator can name in a manifest but never see
+    /// the resolved text of — which is the exact blindness the offline
+    /// explainer exists to remove.
+    #[test]
+    fn every_region_is_previewable_and_round_trips_its_manifest_spelling() {
+        let buf = lines(&["x"]);
+        for region in Region::ALL {
+            let word = region.as_str();
+            let parsed: Region = serde_json::from_str(&format!("\"{word}\""))
+                .unwrap_or_else(|e| panic!("`{word}` must parse back as a region: {e}"));
+            assert_eq!(parsed, region);
+            // And it extracts without panicking on a degenerate screen.
+            let _ = extract(region, &screen("t", &buf));
+        }
+        // Every variant is listed exactly once.
+        let mut seen: Vec<&str> = Region::ALL.iter().map(|r| r.as_str()).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), Region::ALL.len());
     }
 
     #[test]

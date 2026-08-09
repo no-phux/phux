@@ -207,6 +207,8 @@ Commands:
   show              Show inferred state for one pane
   explain           Explain the evidence behind one pane's state
   set               Declare a pane's agent identity (writes the phux.agent/v1 L3 record)
+  wait              Block until a pane's agent TRANSITIONS into a lifecycle state
+  send-keys         Send keys to a pane, but only if it still hosts the expected agent
   clear             Clear a pane's declared agent identity (deletes phux.agent/v1)
   install-claude    Make plain `claude` launch inside phux and publish lifecycle state
   uninstall-claude  Remove the claude-in-phux shim and shell activation
@@ -242,23 +244,41 @@ Options:
 ## `phux agent explain`
 
 ```text
-Explain the evidence behind one pane's state
+Explain the evidence behind one pane's state.
+
+With `--file` this runs OFFLINE: it evaluates the compiled detection manifests against a captured screen and contacts no server at all. That is the mode for authoring and debugging a manifest, because it prints the text every region resolved to on that screen — a rule scoped to a region that comes back empty can never match, and nothing else makes that visible (the detector fails safe to `idle`, silently).
+
+The capture is `phux snapshot --json` output or a plain text screen, one viewport row per line; `-` reads stdin. A capture carries no OSC title, so pass `--title` to exercise title-scoped rules.
 
 Usage: phux agent explain [OPTIONS] [TARGET]
 
 Arguments:
   [TARGET]
-          Target selector (resolves to one pane). Omit for the focused pane
+          Target selector (resolves to one pane). Omit for the focused pane. Not used in offline (`--file`) mode
 
 Options:
       --json
           Emit machine-readable JSON instead of the table
 
+      --file <PATH>
+          Evaluate a captured screen offline instead of querying the server. `-` reads stdin
+
+      --kind <KIND>
+          Agent kind whose manifest to evaluate, or one of its binary aliases. Required with `--file`: offline there is no foreground process group to identify the agent from
+
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
+      --title <TEXT>
+          OSC 0/2 title to evaluate `title`-scoped rules against. Captures do not carry one, so it defaults to empty
+
+      --format <FORMAT>
+          How to read `--file`. `auto` picks JSON when the first non-whitespace byte is `{`
+          
+          [possible values: auto, json, text]
+
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 ## `phux agent install-claude`
@@ -300,6 +320,41 @@ Options:
 
   -h, --help
           Print help
+```
+
+## `phux agent send-keys`
+
+```text
+Send keys to a pane, but only if it still hosts the expected agent.
+
+The agent-addressed sibling of top-level `phux send-keys`, and it differs from it in exactly one way: it re-reads the pane's phux.agent/v1 record immediately before writing and refuses if the occupant changed. `phux send-keys` addresses a pane and deliberately checks no identity; use that one when a pane is what you mean.
+
+Every key is validated before any byte is written, so a typo in the third key cannot leave the first two delivered.
+
+Usage: phux agent send-keys [OPTIONS] <TARGET> <KEYS>...
+
+Arguments:
+  <TARGET>
+          Target selector (resolves to one pane)
+
+  <KEYS>...
+          Key specs: named keys (`Enter`, `C-c`, `M-x`, `Up`) or literal text. A literal run immediately before `Enter` is sent as one submission-safe paste
+
+Options:
+      --expect-agent <NAME>
+          Require the pane's declared agent name to be this one
+
+      --expect-kind <KIND>
+          Require the pane's declared agent kind slug to be this one
+
+      --json
+          Emit machine-readable JSON instead of staying quiet on success
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ## `phux agent set`
@@ -375,6 +430,42 @@ Options:
 
   -h, --help
           Print help
+```
+
+## `phux agent wait`
+
+```text
+Block until a pane's agent TRANSITIONS into a lifecycle state.
+
+Satisfied only by an observed transition, never by a level read of the current state. That distinction is the point of the verb: `idle` is the detector's fail-safe fallthrough — no shipped detection manifest asserts it positively — so it is equally true of a finished agent, a half-painted TUI, a crashed agent, and a pane running `less`. A gate that fired on that level would return success on a corpse, instantly, and on any pane with no manifest at all.
+
+The consequence is deliberate: a pane already resting in a target state when the wait begins times out (124) rather than succeeding. `phux agent show` is the level read; this verb reports transitions.
+
+Subscribes before reading the baseline, so no transition is lost in between, and re-reads on the `phux wait` cadence to recover an edge a dropped notification never delivered. A record that goes away mid-wait ends it as a departure (exit 1), which is not a completion.
+
+Usage: phux agent wait [OPTIONS] [TARGET]
+
+Arguments:
+  [TARGET]
+          Target selector (resolves to one pane). Omit for the focused pane
+
+Options:
+      --until <STATE>
+          Lifecycle state to wait for; repeat to OR several. Defaults to `idle`, `blocked`, `done` — the three ways a turn ends. `unknown` is not spellable: it is departure, not a state
+          
+          [possible values: idle, working, blocked, done]
+
+      --timeout <SECS>
+          Give up after this many seconds and exit 124. Unbounded when omitted, matching `phux wait` — always pass one in a script
+
+      --json
+          Emit the machine-readable result document instead of a line
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ## `phux ask`
@@ -2044,8 +2135,14 @@ Options:
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
+      --tail [<N>]
+          Return the last N rendered rows (history above the viewport, then the viewport). Bare `--tail` returns 80; `--tail 0` returns all, capped at 10000. The viewport is a floor — a grid is never returned in part — and `truncated` reports any dropped rows
+
+      --unwrap
+          Join soft-wrapped rows into logical lines (rows as written, not as painted). Cannot be combined with `--cells`: cell coordinates are grid coordinates and do not survive the join
+
       --rendered
-          Emit the CLIENT's composited multi-pane view — the assembled frame (layout tiling + dividers + status bar) as the human's glass shows it — as dense structured cells. Unlike the default side-effect-free read this ATTACHES (drives the headless client render path). Mutually exclusive with `--cells` / `--scrollback`; sizes the composite via `--cols` / `--rows`
+          Emit the CLIENT's composited multi-pane view — the assembled frame (layout tiling + dividers + status bar) as the human's glass shows it — as dense structured cells. Unlike the default side-effect-free read this ATTACHES (drives the headless client render path). Mutually exclusive with `--cells` / `--scrollback` / `--tail` / `--unwrap`; sizes the composite via `--cols` / `--rows`
 
       --cols <COLS>
           Composited viewport width for `--rendered` (no TTY to measure)
@@ -2338,10 +2435,13 @@ Block until a pane meets a condition.
 
 Polls the side-effect-free screen read — the poll floor of the event surface: always works, no shell integration. Exits 0 when the condition is met, and 124 when `--timeout` expires first. TARGET is a selector (see the top-level help); omit it for the most-recently-focused session.
 
-Flags (`--until`, `--idle`, `--timeout`, `--json`, `--socket`) MUST precede TARGET if you give one.
+Matching is against the lines as WRITTEN: rows the terminal soft-wrapped at its right edge are joined first, so text that straddles a wrap is found rather than silently never matching.
+
+Flags (`--until`, `--regex`, `--idle`, `--tail`, `--output-only`, `--timeout`, `--json`, `--socket`) MUST precede TARGET if you give one.
 
 Examples:
   phux wait --until "BUILD SUCCESSFUL" build
+  phux wait --regex "test result: (ok|FAILED)" --output-only build
   phux wait --idle 750 repl
 
 Usage: phux wait [OPTIONS] [TARGET]
@@ -2352,13 +2452,22 @@ Arguments:
 
 Options:
       --until <TEXT>
-          Succeed once any visible line contains this substring. NOTE: this matches ANY visible row, including the shell's echo of a command you just typed — match on text that appears only in OUTPUT
+          Succeed once any line contains this substring. NOTE: this matches ANY line, including the shell's echo of a command you just typed — match on text that appears only in OUTPUT, or pass `--output-only`
 
-      --idle <MS>
-          Succeed once the screen holds still for this many milliseconds (the pane has settled). Default when no `--until` is given
+      --regex <PATTERN>
+          Succeed once any line matches this Rust regular expression. One line at a time, so `^` and `$` anchor to a line you can see. An invalid pattern is a usage error (exit 2) reported before the wait starts, never a wait that quietly never matches
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --tail [<N>]
+          Match only within the last N lines, and read that much history to do it. Bare `--tail` uses 80; `--tail 0` uses all retained history, capped at 10000. Without it, only the viewport is read. N counts logical lines AFTER wrapped rows are joined and ignores the blank rows under the cursor, and unlike `snapshot --tail` the viewport is not a floor: `--tail 3` really does mean only the last three lines with content count — including the prompt block already back on screen, so leave room for it. A bare `--tail` reads the next word as N, so spell N out when you also pass TARGET (`--tail 80 build`, not `--tail build`)
+
+      --output-only
+          Ignore lines the shell marked as your own typed input, so a wait cannot be satisfied by the echo of the command that started the work. Needs a shell with OSC-133 integration; with none, nothing is filtered and phux says so on stderr rather than pretending
+
+      --idle <MS>
+          Succeed once the matched lines hold still for this many milliseconds (the pane has settled). Default when neither `--until` nor `--regex` is given. With `--tail N`, only those lines have to hold still — a spinner further up does not count
 
       --timeout <SECS>
           Give up after this many seconds (exit 124). Default: wait forever

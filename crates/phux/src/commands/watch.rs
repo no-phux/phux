@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
-use phux_client::watch::WatchEvent;
+use phux_client::watch::{AgentStateUpdate, WatchEvent, WatchItem};
 use phux_protocol::wire::frame::AgentEvent;
 use phux_server::runtime::default_socket_path;
 
@@ -12,9 +12,10 @@ use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 /// ADR-0022 'events', `phux-y2t`).
 ///
 /// Resolves `TARGET` (a selector; default: the focused session) to a pane
-/// client-side, subscribes to the server's `EVENT` stream scoped to that
-/// pane, and prints one event per line until EOF (server gone) or Ctrl-C.
-/// The subscription neither attaches nor resizes the pane.
+/// client-side, subscribes to the server's `EVENT` stream *and* to the
+/// pane's `phux.agent/v1` L3 record (ADR-0040 / ADR-0046), and prints one
+/// line per item until EOF (server gone) or Ctrl-C. The subscription
+/// neither attaches nor resizes the pane.
 ///
 /// `--json` emits one JSON object per line and keeps stdout pure (the
 /// resolved-target diagnostics and connect errors go to stderr); the
@@ -56,8 +57,8 @@ pub(crate) fn run_watch(session: Option<&str>, json: bool, socket: Option<PathBu
         // Stream until EOF or Ctrl-C. `tokio::select!` races the event
         // stream against the interrupt so Ctrl-C exits cleanly (exit 0 —
         // the user asked to stop, not a failure).
-        let stream = phux_client::watch::watch_events(&socket_path, Some(terminal_id), |ev| {
-            print_watch_event(&ev, json);
+        let stream = phux_client::watch::watch_events(&socket_path, Some(terminal_id), |item| {
+            print_watch_item(&item, json);
             true
         });
         tokio::pin!(stream);
@@ -75,6 +76,130 @@ pub(crate) fn run_watch(session: Option<&str>, json: bool, socket: Option<PathBu
             _ = tokio::signal::ctrl_c() => ExitCode::SUCCESS,
         }
     })
+}
+
+/// Render one streamed [`WatchItem`] to stdout — one line either way.
+pub(crate) fn print_watch_item(item: &WatchItem, json: bool) {
+    match item {
+        WatchItem::Event(ev) => print_watch_event(ev, json),
+        WatchItem::AgentState(update) => print_agent_state(update, json),
+    }
+}
+
+/// Render one [`AgentStateUpdate`] to stdout as the `agent_state` line.
+///
+/// The event name joins the same closed-but-growing vocabulary the rest of
+/// this stream uses (see the `run_watch` docs): a consumer that does not
+/// recognize `agent_state` ignores the line, and no `schema_version` rides
+/// along.
+pub(crate) fn print_agent_state(update: &AgentStateUpdate, json: bool) {
+    let terminal = update
+        .terminal
+        .as_ref()
+        .map(crate::selector::format_terminal_id);
+
+    if json {
+        match agent_state_json(update, terminal.as_deref()) {
+            Ok(s) => outln!("{s}"),
+            Err(err) => eprintln!("phux: failed to serialize event: {err}"),
+        }
+    } else {
+        let scope = terminal.as_deref().unwrap_or("server");
+        outln!("{scope}\tagent_state{}", agent_state_detail(update));
+    }
+}
+
+/// The compact human suffix for an `agent_state` line: the agent's name and
+/// kind, the transition, and the effective attention. A cleared record (the
+/// tombstone) renders the name it had and the state it was last in, because
+/// "the agent you were waiting on is gone" is the whole point of emitting
+/// the line at all.
+fn agent_state_detail(update: &AgentStateUpdate) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    // Identity survives a cleared record: fall back to the one last seen.
+    if let Some(rec) = update.record.as_ref().or(update.previous.as_ref()) {
+        let _ = write!(out, " {}", rec.name);
+        if let Some(kind) = &rec.kind {
+            let _ = write!(out, " kind={kind}");
+        }
+    }
+    let from = update.previous.as_ref().map(|prev| prev.state.as_str());
+    if let Some(rec) = &update.record {
+        out.push(' ');
+        if let Some(from) = from {
+            let _ = write!(out, "{from}->");
+        }
+        let _ = write!(
+            out,
+            "{} attention={}",
+            rec.state.as_str(),
+            rec.effective_attention().as_str()
+        );
+    } else {
+        out.push_str(" cleared");
+        if let Some(from) = from {
+            let _ = write!(out, " (was {from})");
+        }
+    }
+    out
+}
+
+/// Build the `--json` line for an agent-state change.
+///
+/// `state` is `null` on a cleared record rather than the key being absent,
+/// so a consumer keyed on `state` sees the record go away instead of
+/// silently reading the previous value forever. `attention` is the
+/// *effective* level — the ADR-0046 detector never writes the field and
+/// L3 §3.7 derives it from `state`, so the declared value would be absent
+/// on every server-derived line. `from` is present only when this watch
+/// session already saw a record for the same Terminal.
+pub(crate) fn agent_state_json(
+    update: &AgentStateUpdate,
+    terminal: Option<&str>,
+) -> Result<String, serde_json::Error> {
+    let mut obj = serde_json::Map::new();
+    obj.insert("event".to_owned(), serde_json::Value::from("agent_state"));
+    if let Some(t) = terminal {
+        obj.insert("terminal".to_owned(), serde_json::Value::from(t));
+    }
+    // Identity survives the tombstone: fall back to the record we last saw
+    // so a consumer filtering by agent name still recognizes the line.
+    if let Some(rec) = update.record.as_ref().or(update.previous.as_ref()) {
+        obj.insert("name".to_owned(), serde_json::Value::from(rec.name.clone()));
+        if let Some(kind) = &rec.kind {
+            obj.insert("kind".to_owned(), serde_json::Value::from(kind.clone()));
+        }
+    }
+    match &update.record {
+        Some(rec) => {
+            obj.insert(
+                "state".to_owned(),
+                serde_json::Value::from(rec.state.as_str()),
+            );
+            obj.insert(
+                "attention".to_owned(),
+                serde_json::Value::from(rec.effective_attention().as_str()),
+            );
+            if let Some(session) = &rec.session {
+                obj.insert(
+                    "session".to_owned(),
+                    serde_json::Value::from(session.clone()),
+                );
+            }
+        }
+        None => {
+            obj.insert("state".to_owned(), serde_json::Value::Null);
+        }
+    }
+    if let Some(prev) = &update.previous {
+        obj.insert(
+            "from".to_owned(),
+            serde_json::Value::from(prev.state.as_str()),
+        );
+    }
+    serde_json::to_string(&serde_json::Value::Object(obj))
 }
 
 /// Render one [`phux_client::watch::WatchEvent`] to stdout — one line, as
@@ -198,10 +323,11 @@ pub(crate) fn watch_event_json(
 
 #[cfg(test)]
 mod tests {
-    use phux_client::watch::WatchEvent;
+    use phux_client::agent_meta::{AgentMetaState, AgentRecord};
+    use phux_client::watch::{AgentStateUpdate, WatchEvent};
     use phux_protocol::wire::frame::AgentEvent;
 
-    use super::{watch_event_json, watch_event_kind};
+    use super::{agent_state_detail, agent_state_json, watch_event_json, watch_event_kind};
 
     /// Build the JSON line for an event and parse it back, asserting the
     /// shape the `phux watch --json` contract promises: one object with a
@@ -287,5 +413,120 @@ mod tests {
         assert_eq!(v["question"], "Deploy to prod?");
         assert_eq!(v["suggestions"], serde_json::json!(["Yes", "No", "Hold"]));
         assert!(v["elapsed_seconds"].is_null());
+    }
+
+    // -- agent_state ------------------------------------------------------
+
+    fn record(name: &str, kind: Option<&str>, state: AgentMetaState) -> AgentRecord {
+        AgentRecord {
+            name: name.to_owned(),
+            kind: kind.map(str::to_owned),
+            state,
+            ..AgentRecord::default()
+        }
+    }
+
+    fn agent_json(update: &AgentStateUpdate, terminal: Option<&str>) -> serde_json::Value {
+        let line = agent_state_json(update, terminal).unwrap();
+        assert!(
+            !line.contains('\n'),
+            "watch --json line must be single-line"
+        );
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[test]
+    fn agent_state_json_carries_identity_state_and_derived_attention() {
+        let update = AgentStateUpdate {
+            terminal: None,
+            record: Some(record("reviewer", Some("claude"), AgentMetaState::Blocked)),
+            previous: None,
+        };
+        let v = agent_json(&update, Some("@7"));
+        assert_eq!(v["event"], "agent_state");
+        assert_eq!(v["terminal"], "@7");
+        assert_eq!(v["name"], "reviewer");
+        assert_eq!(v["kind"], "claude");
+        assert_eq!(v["state"], "blocked");
+        // The detector never writes `attention`; L3 §3.7 derives it, and the
+        // stream carries the derived value so a consumer need not re-derive.
+        assert_eq!(v["attention"], "high");
+        // Nothing to transition from on the first record for a Terminal.
+        assert!(v.get("from").is_none());
+    }
+
+    #[test]
+    fn agent_state_json_carries_the_transition_when_one_is_known() {
+        let update = AgentStateUpdate {
+            terminal: None,
+            record: Some(record("reviewer", None, AgentMetaState::Blocked)),
+            previous: Some(record("reviewer", None, AgentMetaState::Working)),
+        };
+        let v = agent_json(&update, Some("@7"));
+        assert_eq!(v["from"], "working");
+        assert_eq!(v["state"], "blocked");
+        assert!(v.get("kind").is_none(), "absent kind stays absent");
+    }
+
+    #[test]
+    fn agent_state_json_tombstone_nulls_state_and_keeps_identity() {
+        let update = AgentStateUpdate {
+            terminal: None,
+            record: None,
+            previous: Some(record("reviewer", Some("claude"), AgentMetaState::Blocked)),
+        };
+        let v = agent_json(&update, Some("@7"));
+        assert_eq!(v["event"], "agent_state");
+        // Present-and-null, not absent: a consumer keyed on `state` must see
+        // the record go away rather than read the previous value forever.
+        assert!(v["state"].is_null());
+        assert_eq!(v["name"], "reviewer");
+        assert_eq!(v["from"], "blocked");
+        assert!(v.get("attention").is_none());
+    }
+
+    #[test]
+    fn agent_state_json_tombstone_with_no_prior_record_is_still_a_line() {
+        let update = AgentStateUpdate {
+            terminal: None,
+            record: None,
+            previous: None,
+        };
+        let v = agent_json(&update, Some("@7"));
+        assert_eq!(v["event"], "agent_state");
+        assert!(v["state"].is_null());
+        assert!(v.get("name").is_none());
+        assert!(v.get("from").is_none());
+    }
+
+    #[test]
+    fn agent_state_human_form_is_a_compact_transition() {
+        let update = AgentStateUpdate {
+            terminal: None,
+            record: Some(record("reviewer", Some("claude"), AgentMetaState::Blocked)),
+            previous: Some(record("reviewer", Some("claude"), AgentMetaState::Working)),
+        };
+        assert_eq!(
+            agent_state_detail(&update),
+            " reviewer kind=claude working->blocked attention=high"
+        );
+
+        let first = AgentStateUpdate {
+            previous: None,
+            ..update.clone()
+        };
+        assert_eq!(
+            agent_state_detail(&first),
+            " reviewer kind=claude blocked attention=high"
+        );
+
+        let cleared = AgentStateUpdate {
+            record: None,
+            ..update
+        };
+        assert_eq!(
+            agent_state_detail(&cleared),
+            " reviewer kind=claude cleared (was working)"
+        );
     }
 }

@@ -124,6 +124,15 @@ pub(crate) mod codes {
     /// The install is in no recognized location, so it is refused rather
     /// than overwritten on a guess.
     pub(crate) const UPDATE_SOURCE_UNSUPPORTED: &str = "update_source_unsupported";
+    /// `phux agent explain --file` could not read the capture at all
+    /// (missing path, unreadable file, stdin closed).
+    pub(crate) const CAPTURE_UNREADABLE: &str = "capture_unreadable";
+    /// The capture was read but is not a screen: JSON that is not a
+    /// `ScreenState`, or a file with no rows in it.
+    pub(crate) const CAPTURE_INVALID: &str = "capture_invalid";
+    /// `phux agent explain --file` was given a `--kind` no loaded detection
+    /// manifest claims (or `--kind` was omitted, which offline is required).
+    pub(crate) const UNKNOWN_AGENT_KIND: &str = "unknown_agent_kind";
     /// A result document could not be serialized as JSON.
     pub(crate) const JSON_SERIALIZE: &str = "json_serialize";
     /// A client-side invariant this binary should never break.

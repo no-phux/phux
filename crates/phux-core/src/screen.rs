@@ -24,7 +24,54 @@ use serde::{Deserialize, Serialize};
 /// fields carry `#[serde(default)]`, so an older-shaped JSON (missing the
 /// `scrollback` or `cells` key) still deserializes; the bump is the signal
 /// for consumers that want to *produce* or *require* the newer fields.
+///
+/// It stays at `3` across the ADR-0077 additions ([`ScreenState::soft_wrap`],
+/// [`ScreenState::truncated`], [`ScreenState::truncated_reason`],
+/// [`ScreenState::title`]). `docs/consumers/agents.md` §4.1 is the governing
+/// contract and it moves the version only when a key is **removed, renamed,
+/// or retyped**; every one of those four is a new optional key that an older
+/// consumer ignores and an older payload omits. Consumers that need to know
+/// whether a *server* reports wrap information read
+/// [`ScreenState::has_soft_wrap_info`] rather than the version — the
+/// `Option` is the capability signal, which is strictly more precise than a
+/// version number the old server would not have carried either.
 pub const SCHEMA_VERSION: u32 = 3;
+
+/// "Every row" sentinel for a row-count window, matching the `--scrollback`
+/// tri-state convention: `None` ⇒ off, `Some(0)` ⇒ all, `Some(n)` ⇒ the most
+/// recent `n` (`phux-o1v`, ADR-0077 §3).
+pub const ROW_WINDOW_ALL: u32 = 0;
+
+/// Row count for a bare `--tail` — one comfortable screenful of recent
+/// output.
+///
+/// Deliberately the same number herdr defaults its `recent` sources to (80):
+/// an agent asking for "what just happened" without a count wants a bounded
+/// answer, and a bound that matches the neighbouring tool's is one less
+/// surprise. `--tail 0` still means "all rendered rows" (subject to
+/// [`ROW_WINDOW_MAX`]), so nothing is unreachable.
+pub const ROW_WINDOW_DEFAULT: u32 = 80;
+
+/// Hard ceiling on any row window, applied even to [`ROW_WINDOW_ALL`].
+///
+/// herdr clamps to 1000 because its window rides an HTTP/JSON API. phux's
+/// snapshot rides a local UDS and is asked for by an agent a few times a
+/// second, so the tight bound buys nothing: 10 000 rows at a typical 200
+/// columns is ~2 MB worst case, comfortably inside the payload budget, and
+/// it keeps `--tail 0` from turning an unbounded history into an unbounded
+/// allocation. Crossing it sets [`ScreenState::truncated`], so the clamp is
+/// never silent.
+pub const ROW_WINDOW_MAX: u32 = 10_000;
+
+/// [`ScreenState::truncated_reason`] value for a row window that dropped
+/// older rows — the only reason this crate produces today.
+///
+/// The field is a plain string rather than an enum on purpose: the
+/// vocabulary grows server-side (ADR-0078's alternate-screen harvest mints
+/// its own key and its own reasons), and a closed enum would turn a newer
+/// server's reason into a hard deserialize failure on an older consumer.
+/// Consumers MUST tolerate an unknown value.
+pub const TRUNCATED_ROW_WINDOW: &str = "row_window";
 
 /// A color drawn from a libghostty style attribute, projected to plain data
 /// (`phux-8yl`).
@@ -145,6 +192,47 @@ pub struct CellInfo {
     pub style: CellStyle,
 }
 
+/// Which rows of a [`ScreenState`] continue onto the row below them
+/// (ADR-0077 §2).
+///
+/// libghostty tracks a soft wrap per row: a row whose text ran past the
+/// right margin is flagged, and the row under it holds the continuation.
+/// The server is the only side that can see that bit — by the time a row is
+/// a right-trimmed `String` the wrap is indistinguishable from a hard
+/// newline — so it travels, and *joining* stays consumer-side
+/// ([`ScreenState::unwrapped_rows`]).
+///
+/// This is load-bearing rather than cosmetic: a substring match against
+/// rows-as-painted silently fails whenever the match straddles a wrap, which
+/// is exactly the `phux wait --until TEXT` bug ADR-0077 §2 exists to close.
+///
+/// Both vectors hold **row indices into their own array**, ascending. A
+/// trailing wrapped [`Self::scrollback`] index (the last history row)
+/// continues into `lines[0]`: history and viewport are one stream for
+/// wrapping purposes, and the join walks them as one — see
+/// [`ScreenState::unwrapped_split`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SoftWrap {
+    /// Indices into [`ScreenState::lines`] whose row continues onto the
+    /// next viewport row.
+    #[serde(default)]
+    pub lines: Vec<u32>,
+    /// Indices into [`ScreenState::scrollback`] whose row continues onto
+    /// the next history row — or, for the last index, into `lines[0]`.
+    #[serde(default)]
+    pub scrollback: Vec<u32>,
+}
+
+/// `skip_serializing_if` helper for [`ScreenState::truncated`]: a `false`
+/// truncation flag is the pre-ADR-0077 shape, so it emits no key at all.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if hands the field by reference"
+)]
+const fn is_not_truncated(truncated: &bool) -> bool {
+    !*truncated
+}
+
 /// Cursor position + visibility, viewport-relative, zero-based.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CursorState {
@@ -199,6 +287,214 @@ pub struct ScreenState {
     /// pre-`phux-8yl` shape (no `cells` key at all).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cells: Option<Vec<CellInfo>>,
+    /// Which returned rows continue onto the row below them, from
+    /// libghostty's per-row soft-wrap bit (ADR-0077 §2).
+    ///
+    /// `Some` — including `Some` of two empty vectors — means the producer
+    /// **reported** wrap information and no row wraps. `None` means the
+    /// producer said nothing, which today identifies a server predating this
+    /// field. The distinction matters: a consumer that unwraps by default
+    /// (every match path does) must be able to tell "nothing to join" from
+    /// "cannot know", and a version number cannot express it because the
+    /// older server does not send one that moved. See
+    /// [`Self::has_soft_wrap_info`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soft_wrap: Option<SoftWrap>,
+    /// True when the **requested window dropped older rows** (ADR-0077 §3).
+    ///
+    /// Scoped precisely: it reports clipping of the window the caller asked
+    /// for — `--scrollback N` with more retained history than `N`, or a
+    /// `--tail` window narrower than the rendered stream. It says nothing
+    /// about rows the emulator itself evicted from its history ring long
+    /// ago (unknowable), and it is not the marker for a refused
+    /// alternate-screen harvest — ADR-0078 owns its own key for that, so
+    /// that a consumer can never confuse "your transcript is clipped" with
+    /// "you got no transcript".
+    ///
+    /// `#[serde(default)]` plus `skip_serializing_if` keeps an untruncated
+    /// read byte-identical to the pre-ADR-0077 shape: absent means `false`,
+    /// which is also the fail-safe reading for an older producer.
+    #[serde(default, skip_serializing_if = "is_not_truncated")]
+    pub truncated: bool,
+    /// Why [`Self::truncated`] is true; `None` when it is false.
+    ///
+    /// Today the only value this crate produces is
+    /// [`TRUNCATED_ROW_WINDOW`]. Consumers MUST tolerate an unknown value —
+    /// see that constant for why it is a string and not an enum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<String>,
+    /// The pane's OSC 0/2 title at capture time, when it has one
+    /// (ADR-0077 §3).
+    ///
+    /// It is the ADR-0046 detector's highest-ranked evidence and no other
+    /// read surface exposes it, so an offline `agent explain --file`
+    /// capture loses it today. `None` means the pane set no title *or* the
+    /// producer predates the field; both are "no title to reason about",
+    /// which is the same fail-safe answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+impl Default for ScreenState {
+    /// An empty 0x0 screen at the current [`SCHEMA_VERSION`].
+    ///
+    /// Exists so a caller that builds a `ScreenState` literal can spell the
+    /// additive ADR-0077 keys as `..ScreenState::default()` and stay
+    /// source-compatible across later additions.
+    fn default() -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            pane: 0,
+            cols: 0,
+            rows: 0,
+            cursor: None,
+            lines: Vec::new(),
+            scrollback: Vec::new(),
+            cells: None,
+            soft_wrap: None,
+            truncated: false,
+            truncated_reason: None,
+            title: None,
+        }
+    }
+}
+
+impl ScreenState {
+    /// Whether the producer reported soft-wrap information at all.
+    ///
+    /// `false` means an older server that cannot describe wraps, so an
+    /// unwrapping consumer is reading rows as painted and a match that
+    /// straddles a wrap can still be missed. That is the honest degradation
+    /// and it is detectable — which is the whole point of
+    /// [`Self::soft_wrap`] being an `Option`.
+    #[must_use]
+    pub const fn has_soft_wrap_info(&self) -> bool {
+        self.soft_wrap.is_some()
+    }
+
+    /// Every returned row as painted: history above the viewport first,
+    /// then the viewport, oldest first.
+    ///
+    /// This is the "rendered rows" stream a row window
+    /// ([`row_window`]) and the unwrapper both operate over.
+    #[must_use]
+    pub fn rendered_rows(&self) -> Vec<&str> {
+        self.scrollback
+            .iter()
+            .chain(self.lines.iter())
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// The rows as **written** rather than as painted: each run of
+    /// soft-wrapped rows joined into one logical line, history and viewport
+    /// walked as a single stream so a run straddling the seam joins too.
+    ///
+    /// This is the function every match path should call — `wait --until`,
+    /// `run`'s completion probe, any output-substring subscription. Matching
+    /// raw viewport rows silently fails whenever the wanted text falls
+    /// across a wrap, and a wrap is invisible in the joined-and-trimmed
+    /// text, so the failure is silent by construction.
+    ///
+    /// When [`Self::has_soft_wrap_info`] is `false` the rows come back
+    /// verbatim: with no wrap bits there is nothing to join, and inventing a
+    /// heuristic ("the row is exactly `cols` wide, so it probably wrapped")
+    /// would guess wrong on any full-width box-drawn line.
+    ///
+    /// Joining concatenates the **right-trimmed** rows the projection
+    /// carries, so a wrap that fell inside a run of spaces loses them. That
+    /// is inherited from the row projection, not introduced here.
+    #[must_use]
+    pub fn unwrapped_rows(&self) -> Vec<String> {
+        let (mut rows, viewport) = self.unwrapped_split();
+        rows.extend(viewport);
+        rows
+    }
+
+    /// [`Self::unwrapped_rows`], kept split as `(scrollback, lines)`.
+    ///
+    /// A logical line is attributed to the array in which it **ends**, so a
+    /// run that starts in history and finishes in the viewport lands in the
+    /// viewport half. That keeps the two halves a partition (no row is
+    /// duplicated or dropped) and puts a straddling run where a consumer
+    /// reading "the live screen" expects it.
+    ///
+    /// Note that after unwrapping, `lines` no longer indexes the grid:
+    /// `lines.len()` need not equal `rows`, and `cursor` / `cells`
+    /// coordinates are grid coordinates that do not survive the join.
+    #[must_use]
+    pub fn unwrapped_split(&self) -> (Vec<String>, Vec<String>) {
+        let split = self.scrollback.len();
+        let Some(wrap) = self.soft_wrap.as_ref() else {
+            return (self.scrollback.clone(), self.lines.clone());
+        };
+
+        // Flatten both index vectors into one stream-indexed predicate:
+        // "row i continues onto row i + 1". Out-of-range indices from a
+        // malformed payload are ignored rather than trusted.
+        let mut continues = vec![false; split.saturating_add(self.lines.len())];
+        for index in &wrap.scrollback {
+            if let Some(slot) = usize::try_from(*index)
+                .ok()
+                .and_then(|i| continues.get_mut(i))
+            {
+                *slot = true;
+            }
+        }
+        for index in &wrap.lines {
+            if let Some(slot) = usize::try_from(*index)
+                .ok()
+                .and_then(|i| i.checked_add(split))
+                .and_then(|i| continues.get_mut(i))
+            {
+                *slot = true;
+            }
+        }
+
+        let last = continues.len().saturating_sub(1);
+        let mut history: Vec<String> = Vec::new();
+        let mut viewport: Vec<String> = Vec::new();
+        let mut buf = String::new();
+        for (i, row) in self.scrollback.iter().chain(self.lines.iter()).enumerate() {
+            buf.push_str(row);
+            // A wrapped final row has nothing left to join to, so the run
+            // closes there rather than leaking past the end of the stream.
+            if i < last && continues.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            if i < split {
+                history.push(std::mem::take(&mut buf));
+            } else {
+                viewport.push(std::mem::take(&mut buf));
+            }
+        }
+        (history, viewport)
+    }
+}
+
+/// Clamp a row stream to its most recent `want` rows, reporting whether
+/// older rows were dropped (ADR-0077 §3).
+///
+/// `want` follows the `--scrollback` tri-state convention:
+/// [`ROW_WINDOW_ALL`] (`0`) means every row, any other value the most recent
+/// `want`. Either way the result is capped at [`ROW_WINDOW_MAX`].
+///
+/// The returned flag is what [`ScreenState::truncated`] carries: `true`
+/// exactly when at least one older row was removed to satisfy the window.
+#[must_use]
+pub fn row_window(mut rows: Vec<String>, want: u32) -> (Vec<String>, bool) {
+    let keep = if want == ROW_WINDOW_ALL {
+        ROW_WINDOW_MAX
+    } else {
+        want.min(ROW_WINDOW_MAX)
+    };
+    let keep = usize::try_from(keep).unwrap_or(usize::MAX);
+    if rows.len() <= keep {
+        return (rows, false);
+    }
+    let dropped = rows.len() - keep;
+    let tail = rows.split_off(dropped);
+    (tail, true)
 }
 
 /// Stable JSON contract version for [`RenderedFrame`] (`phux-l5xa`).
@@ -332,6 +628,226 @@ mod tests {
             "missing scrollback key defaults to empty",
         );
         assert!(screen.cells.is_none(), "missing cells key defaults to None",);
+        assert!(
+            !screen.has_soft_wrap_info(),
+            "an older payload reports no wrap information, and that is detectable",
+        );
+        assert!(!screen.truncated, "missing truncated key defaults to false");
+        assert!(screen.truncated_reason.is_none());
+        assert!(screen.title.is_none());
+    }
+
+    /// Build a screen with explicit wrap bits. `wrapped_lines` /
+    /// `wrapped_scrollback` are indices into their own array.
+    fn wrapped_screen(
+        scrollback: &[&str],
+        lines: &[&str],
+        wrapped_scrollback: &[u32],
+        wrapped_lines: &[u32],
+    ) -> ScreenState {
+        ScreenState {
+            schema_version: SCHEMA_VERSION,
+            pane: 1,
+            cols: 8,
+            rows: u16::try_from(lines.len()).unwrap_or(0),
+            lines: lines.iter().map(|s| (*s).to_owned()).collect(),
+            scrollback: scrollback.iter().map(|s| (*s).to_owned()).collect(),
+            soft_wrap: Some(SoftWrap {
+                lines: wrapped_lines.to_vec(),
+                scrollback: wrapped_scrollback.to_vec(),
+            }),
+            ..ScreenState::default()
+        }
+    }
+
+    /// The headline case: a logical line that soft-wrapped across two
+    /// viewport rows joins back into one, so a substring straddling the
+    /// wrap matches (`wait --until` today does not — ADR-0077 §2).
+    #[test]
+    fn unwraps_a_soft_wrapped_line_into_one_logical_row() {
+        let screen = wrapped_screen(&[], &["the quick", "brown fox", "next line"], &[], &[0]);
+        assert_eq!(
+            screen.unwrapped_rows(),
+            vec!["the quickbrown fox".to_owned(), "next line".to_owned()],
+        );
+        assert!(
+            screen
+                .unwrapped_rows()
+                .iter()
+                .any(|l| l.contains("quickbrown")),
+            "the straddling substring must be findable after unwrapping",
+        );
+        assert!(
+            !screen.lines.iter().any(|l| l.contains("quickbrown")),
+            "and must NOT be findable in the rows as painted — that is the bug",
+        );
+    }
+
+    /// Three rows in one run collapse to a single logical line, and the run
+    /// after it stays separate.
+    #[test]
+    fn unwraps_a_run_of_more_than_two_rows() {
+        let screen = wrapped_screen(&[], &["aaa", "bbb", "ccc", "ddd"], &[], &[0, 1]);
+        assert_eq!(
+            screen.unwrapped_rows(),
+            vec!["aaabbbccc".to_owned(), "ddd".to_owned()],
+        );
+    }
+
+    /// A run that starts in history and ends in the viewport joins across
+    /// the seam, and lands in the viewport half of
+    /// [`ScreenState::unwrapped_split`] — the array where it ends.
+    #[test]
+    fn unwraps_across_the_scrollback_viewport_seam() {
+        let screen = wrapped_screen(&["old", "hist"], &["ory", "live"], &[1], &[]);
+        let (history, viewport) = screen.unwrapped_split();
+        assert_eq!(history, vec!["old".to_owned()]);
+        assert_eq!(viewport, vec!["history".to_owned(), "live".to_owned()]);
+        assert_eq!(
+            screen.unwrapped_rows(),
+            vec!["old".to_owned(), "history".to_owned(), "live".to_owned()],
+            "the split is a partition: no row duplicated, none dropped",
+        );
+    }
+
+    /// A wrap flag on the last row has nothing to join to; the run closes at
+    /// the end of the stream rather than dropping the row.
+    #[test]
+    fn a_wrapped_final_row_still_emits() {
+        let screen = wrapped_screen(&[], &["only"], &[], &[0]);
+        assert_eq!(screen.unwrapped_rows(), vec!["only".to_owned()]);
+    }
+
+    /// With no wrap information at all (an older server), rows come back
+    /// verbatim rather than heuristically joined — and the caller can tell.
+    #[test]
+    fn absent_soft_wrap_info_returns_rows_verbatim() {
+        let screen = ScreenState {
+            lines: vec!["the quick".to_owned(), "brown fox".to_owned()],
+            ..ScreenState::default()
+        };
+        assert!(!screen.has_soft_wrap_info());
+        assert_eq!(
+            screen.unwrapped_rows(),
+            vec!["the quick".to_owned(), "brown fox".to_owned()],
+        );
+    }
+
+    /// `Some` of two empty vectors is "reported, nothing wraps" — a
+    /// different answer from `None`, and that difference is the whole reason
+    /// the field is an `Option` while `SCHEMA_VERSION` stays 3.
+    #[test]
+    fn empty_soft_wrap_is_reported_not_absent() {
+        let screen = wrapped_screen(&[], &["a", "b"], &[], &[]);
+        assert!(screen.has_soft_wrap_info());
+        assert_eq!(
+            screen.unwrapped_rows(),
+            vec!["a".to_owned(), "b".to_owned()]
+        );
+    }
+
+    /// Out-of-range wrap indices in a malformed payload are ignored, not
+    /// trusted into a panic.
+    #[test]
+    fn out_of_range_wrap_indices_are_ignored() {
+        let screen = wrapped_screen(&[], &["a", "b"], &[9], &[7, 0]);
+        assert_eq!(screen.unwrapped_rows(), vec!["ab".to_owned()]);
+    }
+
+    /// `rendered_rows` is history-then-viewport, oldest first.
+    #[test]
+    fn rendered_rows_concatenates_history_then_viewport() {
+        let screen = wrapped_screen(&["h1", "h2"], &["v1"], &[], &[]);
+        assert_eq!(screen.rendered_rows(), vec!["h1", "h2", "v1"]);
+    }
+
+    /// The row window keeps the most recent rows and reports the drop.
+    #[test]
+    fn row_window_keeps_the_tail_and_reports_truncation() {
+        let rows: Vec<String> = (0..10).map(|i| format!("row{i}")).collect();
+        let (window, truncated) = row_window(rows.clone(), 3);
+        assert_eq!(
+            window,
+            vec!["row7".to_owned(), "row8".to_owned(), "row9".to_owned()],
+        );
+        assert!(truncated, "older rows were dropped to satisfy the window");
+
+        let (window, truncated) = row_window(rows.clone(), 10);
+        assert_eq!(window.len(), 10);
+        assert!(
+            !truncated,
+            "a window at least as large as the stream drops nothing"
+        );
+
+        let (window, truncated) = row_window(rows, ROW_WINDOW_ALL);
+        assert_eq!(window.len(), 10);
+        assert!(!truncated, "ROW_WINDOW_ALL under the ceiling drops nothing");
+    }
+
+    /// Even `ROW_WINDOW_ALL` is capped at [`ROW_WINDOW_MAX`], and the cap
+    /// sets the flag rather than silently clipping.
+    #[test]
+    fn row_window_clamps_all_to_the_ceiling() {
+        let over = usize::try_from(ROW_WINDOW_MAX).unwrap_or(usize::MAX) + 5;
+        let rows: Vec<String> = (0..over).map(|i| format!("row{i}")).collect();
+        let (window, truncated) = row_window(rows, ROW_WINDOW_ALL);
+        assert_eq!(
+            u32::try_from(window.len()).unwrap_or(u32::MAX),
+            ROW_WINDOW_MAX,
+        );
+        assert!(truncated, "the ceiling is never silent");
+    }
+
+    /// A truncated screen serializes both keys; an untruncated one emits
+    /// neither, keeping the pre-ADR-0077 payload byte-identical.
+    #[test]
+    fn truncated_keys_appear_only_when_true() {
+        let clean = ScreenState {
+            lines: vec!["hi".to_owned()],
+            ..ScreenState::default()
+        };
+        let json = serde_json::to_string(&clean).expect("serialize");
+        assert!(
+            !json.contains("\"truncated\""),
+            "an untruncated read must not grow a key, got: {json}",
+        );
+        assert!(!json.contains("\"truncated_reason\""));
+
+        let clipped = ScreenState {
+            lines: vec!["hi".to_owned()],
+            truncated: true,
+            truncated_reason: Some(TRUNCATED_ROW_WINDOW.to_owned()),
+            ..ScreenState::default()
+        };
+        let json = serde_json::to_string(&clipped).expect("serialize");
+        assert!(json.contains("\"truncated\":true"), "got: {json}");
+        assert!(
+            json.contains("\"truncated_reason\":\"row_window\""),
+            "got: {json}"
+        );
+        let back: ScreenState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, clipped);
+    }
+
+    /// The ADR-0077 keys survive a JSON round trip.
+    #[test]
+    fn round_trips_soft_wrap_and_title() {
+        let original = ScreenState {
+            pane: 4,
+            cols: 8,
+            rows: 2,
+            lines: vec!["ab".to_owned(), "cd".to_owned()],
+            scrollback: vec!["old".to_owned()],
+            soft_wrap: Some(SoftWrap {
+                lines: vec![0],
+                scrollback: vec![0],
+            }),
+            title: Some("claude — phux".to_owned()),
+            ..ScreenState::default()
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: ScreenState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, original);
     }
 
     /// A round-trip carries scrollback through serialize/deserialize.
@@ -346,6 +862,7 @@ mod tests {
             lines: vec!["live".to_owned()],
             scrollback: vec!["old1".to_owned(), "old2".to_owned()],
             cells: None,
+            ..ScreenState::default()
         };
         let json = serde_json::to_string(&original).expect("serialize");
         let decoded: ScreenState = serde_json::from_str(&json).expect("deserialize");
@@ -366,6 +883,7 @@ mod tests {
             lines: vec!["hi".to_owned()],
             scrollback: Vec::new(),
             cells: None,
+            ..ScreenState::default()
         };
         let json = serde_json::to_string(&screen).expect("serialize");
         assert!(
@@ -424,6 +942,7 @@ mod tests {
                     },
                 },
             ]),
+            ..ScreenState::default()
         };
         let json = serde_json::to_string(&original).expect("serialize");
         let decoded: ScreenState = serde_json::from_str(&json).expect("deserialize");

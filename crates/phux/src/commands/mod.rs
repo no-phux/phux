@@ -852,13 +852,30 @@ pub(crate) enum Command {
         #[arg(long)]
         cells: bool,
 
+        /// Return the last N rendered rows (history above the viewport,
+        /// then the viewport). Bare `--tail` returns 80; `--tail 0` returns
+        /// all, capped at 10000. The viewport is a floor — a grid is never
+        /// returned in part — and `truncated` reports any dropped rows.
+        // The literals are `phux_core::screen::ROW_WINDOW_DEFAULT` and
+        // `ROW_WINDOW_MAX`; clap needs a `&'static str` here, so
+        // `commands::snapshot`'s tests pin the two spellings together.
+        #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "80")]
+        tail: Option<u32>,
+
+        /// Join soft-wrapped rows into logical lines (rows as written, not
+        /// as painted). Cannot be combined with `--cells`: cell coordinates
+        /// are grid coordinates and do not survive the join.
+        #[arg(long, conflicts_with = "cells")]
+        unwrap: bool,
+
         /// Emit the CLIENT's composited multi-pane view — the assembled
         /// frame (layout tiling + dividers + status bar) as the human's glass
         /// shows it — as dense structured cells. Unlike the
         /// default side-effect-free read this ATTACHES (drives the headless
         /// client render path). Mutually exclusive with `--cells` /
-        /// `--scrollback`; sizes the composite via `--cols` / `--rows`.
-        #[arg(long, conflicts_with_all = ["cells", "scrollback"])]
+        /// `--scrollback` / `--tail` / `--unwrap`; sizes the composite via
+        /// `--cols` / `--rows`.
+        #[arg(long, conflicts_with_all = ["cells", "scrollback", "tail", "unwrap"])]
         rendered: bool,
 
         /// Composited viewport width for `--rendered` (no TTY to measure).
@@ -949,10 +966,15 @@ pub(crate) enum Command {
             Exits 0 when the condition is met, and 124 when `--timeout` expires \
             first. TARGET is a selector (see the \
             top-level help); omit it for the most-recently-focused session.\n\n\
-            Flags (`--until`, `--idle`, `--timeout`, `--json`, `--socket`) MUST \
-            precede TARGET if you give one.\n\n\
+            Matching is against the lines as WRITTEN: rows the terminal \
+            soft-wrapped at its right edge are joined first, so text that \
+            straddles a wrap is found rather than silently never matching.\n\n\
+            Flags (`--until`, `--regex`, `--idle`, `--tail`, `--output-only`, \
+            `--timeout`, `--json`, `--socket`) MUST precede TARGET if you give \
+            one.\n\n\
             Examples:\n  \
             phux wait --until \"BUILD SUCCESSFUL\" build\n  \
+            phux wait --regex \"test result: (ok|FAILED)\" --output-only build\n  \
             phux wait --idle 750 repl"
     )]
     Wait {
@@ -960,14 +982,47 @@ pub(crate) enum Command {
         #[arg(value_name = "TARGET")]
         session: Option<String>,
 
-        /// Succeed once any visible line contains this substring. NOTE: this
-        /// matches ANY visible row, including the shell's echo of a command
-        /// you just typed — match on text that appears only in OUTPUT.
-        #[arg(long, value_name = "TEXT")]
+        /// Succeed once any line contains this substring. NOTE: this matches
+        /// ANY line, including the shell's echo of a command you just typed
+        /// — match on text that appears only in OUTPUT, or pass
+        /// `--output-only`.
+        #[arg(long, value_name = "TEXT", conflicts_with = "regex")]
         until: Option<String>,
 
-        /// Succeed once the screen holds still for this many milliseconds
-        /// (the pane has settled). Default when no `--until` is given.
+        /// Succeed once any line matches this Rust regular expression. One
+        /// line at a time, so `^` and `$` anchor to a line you can see. An
+        /// invalid pattern is a usage error (exit 2) reported before the
+        /// wait starts, never a wait that quietly never matches.
+        #[arg(long, value_name = "PATTERN")]
+        regex: Option<phux_client::wait::MatchRegex>,
+
+        /// Match only within the last N lines, and read that much history to
+        /// do it. Bare `--tail` uses 80; `--tail 0` uses all retained
+        /// history, capped at 10000. Without it, only the viewport is read.
+        /// N counts logical lines AFTER wrapped rows are joined and ignores
+        /// the blank rows under the cursor, and unlike `snapshot --tail` the
+        /// viewport is not a floor: `--tail 3` really does mean only the
+        /// last three lines with content count — including the prompt block
+        /// already back on screen, so leave room for it. A bare `--tail` reads
+        /// the next word as N, so spell N out when you also pass TARGET
+        /// (`--tail 80 build`, not `--tail build`).
+        // The literals are `phux_core::screen::ROW_WINDOW_DEFAULT` and
+        // `ROW_WINDOW_MAX`; clap needs a `&'static str` here, so
+        // `commands::wait`'s tests pin the two spellings together.
+        #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "80")]
+        tail: Option<u32>,
+
+        /// Ignore lines the shell marked as your own typed input, so a wait
+        /// cannot be satisfied by the echo of the command that started the
+        /// work. Needs a shell with OSC-133 integration; with none, nothing
+        /// is filtered and phux says so on stderr rather than pretending.
+        #[arg(long)]
+        output_only: bool,
+
+        /// Succeed once the matched lines hold still for this many
+        /// milliseconds (the pane has settled). Default when neither
+        /// `--until` nor `--regex` is given. With `--tail N`, only those
+        /// lines have to hold still — a spinner further up does not count.
         #[arg(long, value_name = "MS")]
         idle: Option<u64>,
 

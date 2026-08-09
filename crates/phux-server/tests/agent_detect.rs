@@ -409,6 +409,67 @@ fn deleting_the_record_hands_it_back_to_the_detector() {
     });
 }
 
+/// The headless half, end to end: a connection that **never attaches** must
+/// still receive the detector's record.
+///
+/// `phux watch` connects, subscribes, and streams — it deliberately does not
+/// attach, because watching a pane must not disturb the session someone is
+/// working in. Metadata fanout used to resolve each subscriber's mailbox
+/// through the attached-client table alone, so a watcher had no mailbox to
+/// resolve and every `phux.agent/v1` record ADR-0046 derived was computed,
+/// broadcast, and dropped. Every other test in this file attaches first, so
+/// none of them could see it.
+#[test]
+fn an_unattached_subscriber_receives_the_detectors_record() {
+    shorten_startup_grace();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let agent = write_fake_agent(tmp.path());
+
+        let cmd = CommandBuilder::new(&agent);
+        let (shutdown_tx, server_handle) =
+            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
+
+        // One attached connection, used only to learn the pane's wire id —
+        // the same thing `phux watch` gets from its client-side `GET_STATE`
+        // resolution before it opens the watch connection.
+        let mut attached = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut attached, &attach_by_name("demo")).await;
+        let (_type_byte, frame) = recv_typed(&mut attached).await;
+        let FrameKind::Attached { snapshot, .. } = frame else {
+            panic!("expected ATTACHED");
+        };
+        let terminal = snapshot.focused_pane.clone();
+
+        // The watcher: HELLO, SUBSCRIBE_METADATA, and nothing else. No
+        // ATTACH, no ATTACH_TERMINAL, no viewport.
+        let mut watcher = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(
+            &mut watcher,
+            &FrameKind::SubscribeMetadata {
+                scope: Scope::Terminal(terminal.clone()),
+                key: TERMINAL_AGENT_KEY.to_owned(),
+            },
+        )
+        .await;
+
+        let record = await_agent_state(&mut watcher, &terminal, "blocked", DETECT_DEADLINE).await;
+        let record = record.expect(
+            "a subscriber that never attached must still receive the detector's record; \
+             without it `phux watch` observes nothing an agent does",
+        );
+        assert_eq!(
+            record.get("name").and_then(serde_json::Value::as_str),
+            Some("claude"),
+            "and the whole record, not a stub: {record}",
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
+    });
+}
+
 /// The documented "useful half" of the feature (ADR-0046 §8): a human supplies
 /// the identity, the detector fills the lifecycle in around it. An
 /// identity-only `SET_METADATA` is deliberately NOT a declaration, so the

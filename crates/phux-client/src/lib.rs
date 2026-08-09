@@ -30,6 +30,12 @@
 #![deny(missing_docs)]
 
 pub mod agent_meta;
+// Edge-triggered lifecycle wait over `phux.agent/v1` (ADR-0076 point 5).
+// Sits above `watch` (the subscription) and beside `wait` (the poll floor),
+// and is deliberately its own module: its predicate is "an observed
+// transition", which is a different contract from `wait`'s screen-level
+// conditions and must not be confused with them.
+pub mod agent_wait;
 pub mod ask;
 pub mod attach;
 pub mod explain;

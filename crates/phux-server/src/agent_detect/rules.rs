@@ -177,6 +177,32 @@ impl Predicate {
         })
     }
 
+    /// The manifest keyword this node is written with.
+    const fn op(&self) -> &'static str {
+        match self {
+            Self::Contains(_) => "contains",
+            Self::Regex(_) => "regex",
+            Self::LineRegex(_) => "line-regex",
+            Self::All(_) => "all",
+            Self::Any(_) => "any",
+            Self::Not(_) => "not",
+        }
+    }
+
+    /// The pattern a leaf node carries, for evidence output. `None` on a
+    /// combinator, whose evidence is its children.
+    ///
+    /// `Contains` returns the pre-lowercased needle rather than the manifest's
+    /// original casing: that is the string the matcher actually compares, and
+    /// the point of the evidence is to show what ran, not what was typed.
+    fn pattern(&self) -> Option<String> {
+        match self {
+            Self::Contains(needle) => Some(needle.clone()),
+            Self::Regex(re) | Self::LineRegex(re) => Some(re.as_str().to_owned()),
+            Self::All(_) | Self::Any(_) | Self::Not(_) => None,
+        }
+    }
+
     /// Evaluate against a region's pre-computed text.
     fn eval(&self, text: &RegionText<'_>) -> bool {
         match self {
@@ -188,6 +214,94 @@ impl Predicate {
             Self::Not(child) => !child.eval(text),
         }
     }
+
+    /// Evaluate and record every node, for the offline explainer.
+    ///
+    /// Deliberately does NOT short-circuit: `eval` stops an `all` at the
+    /// first false child, but the author debugging a manifest needs to know
+    /// which of the three conjuncts failed, not merely that one did. The
+    /// combinator results are computed from the fully-evaluated children, so
+    /// the root's `matched` equals `eval`'s answer — pinned by
+    /// `the_trace_agrees_with_the_production_evaluator`.
+    fn trace(&self, text: &RegionText<'_>) -> PredicateTrace {
+        let children: Vec<PredicateTrace> = match self {
+            Self::Contains(_) | Self::Regex(_) | Self::LineRegex(_) => Vec::new(),
+            Self::All(kids) | Self::Any(kids) => kids.iter().map(|c| c.trace(text)).collect(),
+            Self::Not(child) => vec![child.trace(text)],
+        };
+        let matched = match self {
+            Self::Contains(_) | Self::Regex(_) | Self::LineRegex(_) => self.eval(text),
+            Self::All(_) => children.iter().all(|c| c.matched),
+            Self::Any(_) => children.iter().any(|c| c.matched),
+            Self::Not(_) => !children.first().is_some_and(|c| c.matched),
+        };
+        PredicateTrace {
+            op: self.op(),
+            pattern: self.pattern(),
+            matched,
+            children,
+        }
+    }
+}
+
+/// One node of a predicate tree, with the result it produced on one screen.
+///
+/// Built only by [`Predicate::trace`], which the detector never calls: the
+/// production path is [`Predicate::eval`], and this exists so `phux agent
+/// explain` can say *which* leaf fired rather than only whether the rule did.
+#[derive(Debug, Clone)]
+pub(crate) struct PredicateTrace {
+    /// The manifest keyword (`contains`, `all`, ...).
+    pub(crate) op: &'static str,
+    /// The leaf's pattern, as compiled. `None` on a combinator.
+    pub(crate) pattern: Option<String>,
+    /// Whether this node matched.
+    pub(crate) matched: bool,
+    /// Child nodes, for a combinator.
+    pub(crate) children: Vec<PredicateTrace>,
+}
+
+/// One rule's outcome on one screen, with its evidence.
+#[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "reports RuleSpec's independent flags verbatim; see that struct"
+)]
+pub(crate) struct RuleTrace {
+    /// The rule's manifest id.
+    pub(crate) id: String,
+    /// The state it asserts, if any.
+    pub(crate) state: Option<DetectedState>,
+    /// Its priority.
+    pub(crate) priority: i32,
+    /// The region it read.
+    pub(crate) region: Region,
+    /// Whether its predicate matched.
+    pub(crate) matched: bool,
+    /// See [`RuleSpec::visible_blocker`].
+    pub(crate) visible_blocker: bool,
+    /// See [`RuleSpec::visible_idle`].
+    pub(crate) visible_idle: bool,
+    /// See [`RuleSpec::visible_working`].
+    pub(crate) visible_working: bool,
+    /// See [`RuleSpec::skip_state_update`].
+    pub(crate) skip_state_update: bool,
+    /// The predicate tree, annotated with what each node saw.
+    pub(crate) predicate: PredicateTrace,
+}
+
+/// A whole-manifest evaluation with its working shown.
+#[derive(Debug)]
+pub(crate) struct Explanation {
+    /// Exactly what [`CompiledManifest::evaluate`] returns for this screen.
+    /// Produced by the same code path, not a reimplementation.
+    pub(crate) evaluation: Evaluation,
+    /// Every rule, in declaration order, matched or not.
+    pub(crate) rules: Vec<RuleTrace>,
+    /// The text every region resolved to on this screen, in
+    /// [`Region::ALL`] order — including the regions no rule names, because
+    /// "the region I scoped my rule to is empty" is the failure this is for.
+    pub(crate) regions: Vec<(Region, Vec<String>)>,
 }
 
 /// A region's text, materialized once per tick and shared by every rule
@@ -283,6 +397,41 @@ impl CompiledManifest {
     /// a screen rule is always an inference about pixels it happened to
     /// paint.
     pub(crate) fn evaluate(&self, screen: &Screen<'_>) -> Evaluation {
+        self.run(screen, None)
+    }
+
+    /// [`Self::evaluate`], with the working shown: every rule's outcome, the
+    /// evidence behind it, and the text every region resolved to.
+    ///
+    /// The verdict is produced by the SAME pass as `evaluate` — `run` takes
+    /// the trace sink as an out-parameter rather than being reimplemented —
+    /// so an explanation can never disagree with what the detector would do.
+    /// A second, parallel matcher is exactly how a debugger starts lying.
+    pub(crate) fn explain(&self, screen: &Screen<'_>) -> Explanation {
+        let mut rules = Vec::with_capacity(self.rules.len());
+        let evaluation = self.run(screen, Some(&mut rules));
+        // Every region, not merely the referenced ones: an author picking a
+        // region for a NEW rule needs to see which one holds their text, and
+        // an author debugging an old one needs to see that theirs is empty.
+        let regions = Region::ALL
+            .into_iter()
+            .map(|region| {
+                let text = RegionText::new(region, screen);
+                let lines = text.lines.iter().map(|l| (*l).to_owned()).collect();
+                (region, lines)
+            })
+            .collect();
+        Explanation {
+            evaluation,
+            rules,
+            regions,
+        }
+    }
+
+    /// The one evaluation pass. `trace`, when supplied, collects a
+    /// [`RuleTrace`] per rule — including the rules that did not match, which
+    /// the production path discards.
+    fn run(&self, screen: &Screen<'_>, mut trace: Option<&mut Vec<RuleTrace>>) -> Evaluation {
         let mut texts: HashMap<Region, RegionText<'_>> = HashMap::new();
         let mut out = Evaluation::default();
         // (is_title, priority, declaration index) of the current winner.
@@ -292,7 +441,22 @@ impl CompiledManifest {
             let text = texts
                 .entry(rule.region)
                 .or_insert_with(|| RegionText::new(rule.region, screen));
-            if !rule.predicate.eval(text) {
+            let matched = rule.predicate.eval(text);
+            if let Some(sink) = trace.as_deref_mut() {
+                sink.push(RuleTrace {
+                    id: rule.id.clone(),
+                    state: rule.state,
+                    priority: rule.priority,
+                    region: rule.region,
+                    matched,
+                    visible_blocker: rule.visible_blocker,
+                    visible_idle: rule.visible_idle,
+                    visible_working: rule.visible_working,
+                    skip_state_update: rule.skip_state_update,
+                    predicate: rule.predicate.trace(text),
+                });
+            }
+            if !matched {
                 continue;
             }
             out.visible_blocker |= rule.visible_blocker;
@@ -339,6 +503,16 @@ impl RuleSet {
     /// The compiled manifest for `kind`.
     pub(crate) fn manifest(&self, kind: &str) -> Option<&CompiledManifest> {
         self.manifests.get(kind)
+    }
+
+    /// Every loaded kind slug, sorted. The roster `phux agent explain` names
+    /// when it is handed a kind it does not have a manifest for — an operator
+    /// whose override failed to compile sees its absence here rather than
+    /// guessing at a silent `warn` in the server log.
+    pub(crate) fn kinds(&self) -> Vec<String> {
+        let mut kinds: Vec<String> = self.manifests.keys().cloned().collect();
+        kinds.sort_unstable();
+        kinds
     }
 
     /// Compile `spec` and install it, replacing any manifest of the same
@@ -1279,6 +1453,122 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         for name in ["opencode", "opencode2", "@opencode-ai"] {
             assert_eq!(set.kind_for_binary(name), Some("opencode"), "missed {name}");
         }
+    }
+
+    /// The non-short-circuiting trace walker must agree with the
+    /// short-circuiting production matcher on every rule of every built-in,
+    /// against every committed golden capture. Two evaluators is how a
+    /// debugger starts lying about the thing it is debugging; this is the
+    /// only reason a second one is tolerable at all.
+    #[test]
+    fn the_trace_agrees_with_the_production_evaluator() {
+        let goldens: &[(&str, &[&str])] = &[
+            (
+                "claude",
+                &[
+                    include_str!("fixtures/claude/idle_prompt.txt"),
+                    include_str!("fixtures/claude/working.txt"),
+                    include_str!("fixtures/claude/blocked_permission.txt"),
+                ],
+            ),
+            (
+                "codex",
+                &[
+                    include_str!("fixtures/codex/idle_prompt.txt"),
+                    include_str!("fixtures/codex/working.txt"),
+                    include_str!("fixtures/codex/blocked_approval.txt"),
+                ],
+            ),
+            (
+                "opencode",
+                &[
+                    include_str!("fixtures/opencode/idle_prompt.txt"),
+                    include_str!("fixtures/opencode/working.txt"),
+                    include_str!("fixtures/opencode/blocked_permission.txt"),
+                ],
+            ),
+            (
+                "pi",
+                &[
+                    include_str!("fixtures/pi/idle_prompt.txt"),
+                    include_str!("fixtures/pi/working.txt"),
+                    include_str!("fixtures/pi/blocked_trust.txt"),
+                ],
+            ),
+            (
+                "omp",
+                &[
+                    include_str!("fixtures/omp/idle_prompt.txt"),
+                    include_str!("fixtures/omp/working.txt"),
+                    include_str!("fixtures/omp/blocked_tool_approval.txt"),
+                ],
+            ),
+        ];
+
+        // Titles that exercise both the spinner and the quiet arms, plus the
+        // empty title a capture file supplies by default.
+        let titles = ["", CLAUDE_TITLE_BUSY_A, CLAUDE_TITLE_QUIET, "\u{280b} tmp"];
+
+        for (kind, screens) in goldens {
+            let set = compile(builtin(kind));
+            let manifest = set.manifest(kind).expect("manifest");
+            for body in *screens {
+                let buf = captured(body);
+                for title in titles {
+                    let screen = Screen { title, lines: &buf };
+                    let direct = manifest.evaluate(&screen);
+                    let explained = manifest.explain(&screen);
+                    assert_eq!(
+                        direct, explained.evaluation,
+                        "{kind}: the traced pass changed the verdict",
+                    );
+                    assert_eq!(
+                        explained.rules.len(),
+                        manifest.rules.len(),
+                        "{kind}: every rule must be reported, misses included",
+                    );
+                    for trace in &explained.rules {
+                        assert_eq!(
+                            trace.matched, trace.predicate.matched,
+                            "{kind}/{}: the evidence tree's root disagrees with the matcher",
+                            trace.id,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A combinator's children are ALL evaluated, so an author can see which
+    /// conjunct failed rather than only that the `all` did. The production
+    /// matcher short-circuits; the trace must not.
+    #[test]
+    fn the_trace_does_not_short_circuit_a_conjunction() {
+        let set = compile(SAMPLE);
+        let manifest = set.manifest("sample").expect("manifest");
+        // Neither conjunct of `screen-blocked` holds.
+        let buf = lines(&["nothing here at all"]);
+        let explained = manifest.explain(&Screen {
+            title: "",
+            lines: &buf,
+        });
+        let rule = explained
+            .rules
+            .iter()
+            .find(|r| r.id == "screen-blocked")
+            .expect("rule reported");
+        assert!(!rule.matched);
+        assert_eq!(rule.predicate.op, "all");
+        assert_eq!(
+            rule.predicate.children.len(),
+            2,
+            "both conjuncts must be evaluated and reported",
+        );
+        assert!(rule.predicate.children.iter().all(|c| !c.matched));
+        assert!(
+            rule.predicate.children.iter().all(|c| c.pattern.is_some()),
+            "every leaf names the pattern it ran",
+        );
     }
 
     #[test]

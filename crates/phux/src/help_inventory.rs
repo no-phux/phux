@@ -90,9 +90,11 @@ phux agent clear
 phux agent explain
 phux agent install-claude
 phux agent list
+phux agent send-keys
 phux agent set
 phux agent show
 phux agent uninstall-claude
+phux agent wait
 phux ask
 phux attach
 phux completion

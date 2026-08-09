@@ -96,6 +96,19 @@ pub(super) struct ClientTable {
     /// event fanout must not depend on an `attached` entry that a pure
     /// watcher never creates.
     pub(super) event_subscriptions: HashMap<ClientId, EventSubscription>,
+    /// Outbound mailbox of every client that holds an L3 metadata
+    /// subscription, for exactly the same reason
+    /// [`Self::event_subscriptions`] carries one: a headless consumer can
+    /// `SUBSCRIBE_METADATA` **without attaching**, so `METADATA_CHANGED`
+    /// fanout must not be resolved solely through [`Self::attached`].
+    ///
+    /// Only the mailbox lives here; the `(client, scope, key)` triples stay
+    /// in [`super::metadata::MetadataStore`], which owns subscription
+    /// matching. An attached subscriber has the same sender in both maps —
+    /// [`Self::broadcast_metadata_changed`] prefers `attached` and falls
+    /// back here, so there is exactly one delivery per client either way.
+    /// Cleared on detach alongside the subscription triples.
+    pub(super) metadata_mailboxes: HashMap<ClientId, mpsc::Sender<Outbound>>,
     /// Per-client peer identities, keyed by server-assigned client id.
     pub(super) peer_identities: HashMap<ClientId, phux_protocol::policy::PeerIdentity>,
     /// Nonce-bearing session-create result keys owned by each connection.
@@ -122,6 +135,7 @@ impl ClientTable {
             next_id: 1,
             layers: HashMap::new(),
             event_subscriptions: HashMap::new(),
+            metadata_mailboxes: HashMap::new(),
             peer_identities: HashMap::new(),
             session_create_results: HashMap::new(),
         }
@@ -316,10 +330,30 @@ impl ClientTable {
 
     // -- L3 metadata fanout --------------------------------------------
 
+    /// Remember `client`'s outbound mailbox for `METADATA_CHANGED` fanout.
+    ///
+    /// Called from the `SUBSCRIBE_METADATA` handler. Re-subscribing
+    /// overwrites with the same sender (a connection's tx is stable), so
+    /// this is idempotent in practice.
+    pub(super) fn remember_metadata_mailbox(
+        &mut self,
+        client: ClientId,
+        tx: mpsc::Sender<Outbound>,
+    ) {
+        self.metadata_mailboxes.insert(client, tx);
+    }
+
     /// Fan a `MetadataChanged` frame out to every subscriber in
-    /// `subscribers` that is (a) still attached, (b) L3-capable, and
-    /// (c) drainable (mailbox not closed). Returns the actually-targeted
-    /// client list.
+    /// `subscribers` that is (a) L3-capable and (b) drainable (mailbox not
+    /// closed). Returns the actually-targeted client list.
+    ///
+    /// The mailbox is resolved from [`Self::attached`] when the subscriber
+    /// attached, and otherwise from [`Self::metadata_mailboxes`], so a
+    /// headless consumer that only ever sent `SUBSCRIBE_METADATA` (the
+    /// `phux watch` shape — it never attaches, by design) is still reached.
+    /// Before that fallback existed, every `phux.agent/v1` record the
+    /// ADR-0046 detector published was computed, broadcast, and dropped for
+    /// want of an `attached` entry.
     ///
     /// The subscriber list itself comes from the L3 metadata store, which
     /// stays on [`super::ServerState`]; this half is pure client-keyed
@@ -336,7 +370,12 @@ impl ClientTable {
             if !self.speaks_l3(*client_id) {
                 continue;
             }
-            let Some(client) = self.attached.get(client_id) else {
+            let Some(tx) = self
+                .attached
+                .get(client_id)
+                .map(|client| &client.tx)
+                .or_else(|| self.metadata_mailboxes.get(client_id))
+            else {
                 continue;
             };
             let frame = FrameKind::MetadataChanged {
@@ -349,7 +388,7 @@ impl ClientTable {
             // full mailbox would deadlock the per-client read loop. A
             // dropped notification is acceptable per SPEC §7.4 — the
             // subscriber can re-`GET_METADATA` on next attach.
-            if client.tx.try_send(Outbound::Frame(frame)).is_ok() {
+            if tx.try_send(Outbound::Frame(frame)).is_ok() {
                 delivered.push(*client_id);
             }
         }

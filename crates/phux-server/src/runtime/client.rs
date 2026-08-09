@@ -1591,7 +1591,7 @@ where
                 handle_list_metadata(&state, client_id, request_id, &scope, &out_tx).await;
             }
             FrameKind::SubscribeMetadata { scope, key } => {
-                handle_subscribe_metadata(&state, client_id, scope, key);
+                handle_subscribe_metadata(&state, client_id, scope, key, &out_tx);
             }
             FrameKind::SubscribeEvents { terminal } => {
                 handle_subscribe_events(&state, client_id, terminal, &out_tx);
@@ -2160,11 +2160,18 @@ pub(crate) async fn handle_list_metadata(
     }
 }
 
+/// Record an L3 metadata subscription for `client_id` (SPEC §7.4).
+///
+/// `out_tx` is the connection's outbound mailbox, captured in the
+/// subscription so `METADATA_CHANGED` fanout reaches a consumer that never
+/// attached — `phux watch` subscribes and streams without an ATTACH, the
+/// same shape [`handle_subscribe_events`] already accounts for.
 pub(crate) fn handle_subscribe_metadata(
     state: &SharedState,
     client_id: ClientId,
     scope: phux_protocol::wire::frame::Scope,
     key: String,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
     if is_reserved_session_create_result(&scope, &key) {
         warn!(
@@ -2186,7 +2193,7 @@ pub(crate) fn handle_subscribe_metadata(
             return;
         }
         debug!(?client_id, ?scope, %key, "SUBSCRIBE_METADATA");
-        s.metadata_subscribe(client_id, scope, key);
+        s.metadata_subscribe(client_id, scope, key, out_tx.clone());
     });
 }
 

@@ -46,6 +46,12 @@
 //!   (`crates/phux-server/src/runtime/client.rs`) registers the subscription
 //!   and sends **no reply at all**. A fake that acked it would teach the
 //!   client to wait for a frame that never comes.
+//! - `SUBSCRIBE_METADATA` — `handle_subscribe_metadata`
+//!   (`crates/phux-server/src/runtime/client.rs`) likewise registers and
+//!   replies with nothing, and captures the connection's mailbox so fanout
+//!   reaches a consumer that never attached. A script carrying a
+//!   `METADATA_CHANGED` therefore waits for *this* frame rather than
+//!   `SUBSCRIBE_EVENTS` before it plays.
 //! - `HELLO` — answered with `HELLO_OK` echoing this build's
 //!   [`PROTOCOL_VERSION`].
 //! - `GET_METADATA` / `SET_METADATA` — correlated `METADATA_VALUE` /
@@ -344,6 +350,15 @@ impl ScriptSpec {
         self.end = end;
         self
     }
+
+    /// Whether the pushed script contains a frame the reference server only
+    /// fans out to a metadata subscriber, so [`ScriptedServer::run`] knows
+    /// which `SUBSCRIBE_*` unlocks it.
+    fn script_needs_metadata_subscription(&self) -> bool {
+        self.script
+            .iter()
+            .any(|frame| matches!(frame, FrameKind::MetadataChanged { .. }))
+    }
 }
 
 /// A framed server endpoint driving one [`ScriptSpec`] against one client.
@@ -405,7 +420,19 @@ impl ScriptedServer {
             // reaches a client once its subscription is registered. Playing
             // it earlier would emit EVENT frames to a client the server does
             // not yet know is listening.
-            let subscribed = matches!(frame, FrameKind::SubscribeEvents { .. });
+            //
+            // Which subscription unlocks it depends on what the script
+            // carries. `METADATA_CHANGED` is fanned out to metadata
+            // subscribers only (`broadcast_metadata_changed`), and a `watch`
+            // client sends `SUBSCRIBE_EVENTS` *then* `SUBSCRIBE_METADATA`,
+            // so a script with a metadata push must wait for the second one
+            // or it would model a server pushing L3 to a client that had not
+            // asked for it.
+            let subscribed = if self.spec.script_needs_metadata_subscription() {
+                matches!(frame, FrameKind::SubscribeMetadata { .. })
+            } else {
+                matches!(frame, FrameKind::SubscribeEvents { .. })
+            };
             if subscribed {
                 for pushed in std::mem::take(&mut self.spec.script) {
                     self.link.send(&pushed).await;
@@ -468,6 +495,15 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
             reason = "documents an ordering fact, not a fallthrough"
         )]
         FrameKind::SubscribeEvents { .. } => Vec::new(),
+        // `handle_subscribe_metadata` (`crates/phux-server/src/runtime/client.rs`)
+        // likewise registers the subscription and replies with nothing —
+        // and, since it captures the connection's mailbox, does so whether
+        // or not the client ever attached.
+        #[allow(
+            clippy::match_same_arms,
+            reason = "documents an ordering fact, not a fallthrough"
+        )]
+        FrameKind::SubscribeMetadata { .. } => Vec::new(),
         FrameKind::GetMetadata {
             request_id,
             scope,

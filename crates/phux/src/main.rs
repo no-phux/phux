@@ -607,14 +607,20 @@ fn main() -> ExitCode {
             json,
             scrollback,
             cells,
+            tail,
+            unwrap,
             rendered,
             cols,
             rows,
         }) => commands::snapshot::run_snapshot(
             session.as_deref(),
             json.json,
-            scrollback,
-            cells,
+            &commands::snapshot::ReadOpts {
+                scrollback,
+                cells,
+                tail,
+                unwrap,
+            },
             &commands::snapshot::RenderedOpts {
                 rendered,
                 cols,
@@ -633,10 +639,23 @@ fn main() -> ExitCode {
         Some(Command::Wait {
             session,
             until,
+            regex,
+            tail,
+            output_only,
             idle,
             timeout,
             json,
-        }) => commands::wait::run_wait(session.as_deref(), until, idle, timeout, json.json, socket),
+        }) => commands::wait::run_wait(commands::wait::WaitArgs {
+            session: session.as_deref(),
+            until,
+            regex,
+            idle,
+            tail,
+            output_only,
+            timeout,
+            json: json.json,
+            socket,
+        }),
         Some(Command::Watch { session, json }) => {
             commands::watch::run_watch(session.as_deref(), json.json, socket)
         }

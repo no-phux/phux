@@ -450,6 +450,7 @@ fn dense_as_screen_state(frame: &RenderedFrame, pane: u32) -> ScreenState {
         lines,
         scrollback: Vec::new(),
         cells: Some(cells),
+        ..ScreenState::default()
     }
 }
 

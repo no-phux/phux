@@ -107,6 +107,17 @@ phux-dial.workspace = true
 # frames over them; same stack the server's `QuicListener` uses.
 quinn = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# `phux wait --regex PATTERN` matches operator-supplied patterns against one
+# logical line at a time. The pattern is DATA, compiled once at argument-parse
+# time so an invalid one is a usage error rather than a wait that never
+# matches — the same shape (and the same reasoning) as the server-side
+# detection manifests, which already depend on this crate for exactly that.
+# `regex` also guarantees linear-time matching, so a caller cannot hand `wait`
+# a pattern that pegs a CPU on every poll. This compiles NO new crate: `regex`
+# is already in `Cargo.lock` (phux-server's direct dep, and transitively via
+# `tracing-subscriber`'s `env-filter`); naming it here only makes explicit
+# what the workspace already builds.
+regex = "1"
 
 [dev-dependencies]
 phux-server.workspace = true

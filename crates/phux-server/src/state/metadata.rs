@@ -2,9 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ids::{GroupId, TerminalId as WireTerminalId};
 use phux_protocol::wire::frame::Scope;
+use tokio::sync::mpsc;
 
 use super::ServerState;
 use super::client::ClientId;
+use super::input_log::Outbound;
 
 /// Per-scope K/V store for L3 metadata (SPEC §7.4 / §11.L3) plus the
 /// matching subscription registry.
@@ -273,7 +275,20 @@ impl ServerState {
     /// Register a subscription for `client_id`. The client MUST be
     /// L3-capable (call sites in the runtime gate on
     /// [`Self::client_speaks_l3`] before invoking this).
-    pub fn metadata_subscribe(&mut self, client_id: ClientId, scope: Scope, key: String) {
+    ///
+    /// `tx` is the client's outbound mailbox, captured here for the same
+    /// reason [`Self::subscribe_events`] captures one: a headless consumer
+    /// subscribes WITHOUT attaching, so `METADATA_CHANGED` fanout cannot be
+    /// resolved through `attached` alone. Both maps are cleared together on
+    /// detach.
+    pub fn metadata_subscribe(
+        &mut self,
+        client_id: ClientId,
+        scope: Scope,
+        key: String,
+        tx: mpsc::Sender<Outbound>,
+    ) {
+        self.clients.remember_metadata_mailbox(client_id, tx);
         self.metadata.subscribe(client_id, scope, key);
     }
 }

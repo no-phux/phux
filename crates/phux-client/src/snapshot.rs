@@ -11,6 +11,23 @@
 //! The read shape ([`ScreenState`]) lives in `phux-core` so the server
 //! (producer) and this client (consumer) share one definition; we
 //! re-export it here for callers that only depend on `phux-client`.
+//!
+//! # Reading rows as written (ADR-0077 §2)
+//!
+//! The server reports libghostty's per-row soft-wrap bit in
+//! [`ScreenState::soft_wrap`], and joining stays consumer-side.
+//! **Every match path in this crate must match against
+//! [`ScreenState::unwrapped_rows`], not against `ScreenState::lines`** — a
+//! substring that straddles a soft wrap is absent from the rows as painted,
+//! so matching raw rows fails silently and only for long lines, which is
+//! the worst shape a bug can have. [`ScreenState::has_soft_wrap_info`]
+//! reports whether the server said anything at all, so "nothing wraps" is
+//! distinguishable from "older server, cannot know".
+//!
+//! [`row_window`] is the matching row-count clamp: the most recent `n`
+//! rendered rows, `0` for all, capped at [`ROW_WINDOW_MAX`], returning
+//! whether older rows were dropped (which is what
+//! [`ScreenState::truncated`] carries).
 
 use std::path::Path;
 
@@ -18,7 +35,9 @@ use phux_protocol::ids::TerminalId;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
 
 pub use phux_core::screen::{
-    CursorState, RENDERED_SCHEMA_VERSION, RenderedCell, RenderedFrame, SCHEMA_VERSION, ScreenState,
+    CursorState, RENDERED_SCHEMA_VERSION, ROW_WINDOW_ALL, ROW_WINDOW_DEFAULT, ROW_WINDOW_MAX,
+    RenderedCell, RenderedFrame, SCHEMA_VERSION, ScreenState, SoftWrap, TRUNCATED_ROW_WINDOW,
+    row_window,
 };
 
 use crate::attach::AttachError;

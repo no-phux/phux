@@ -31,6 +31,7 @@ use std::io::Write as _;
 
 use phux_core::screen::{
     CellColor, CellInfo, CellStyle, CursorState, SCHEMA_VERSION, ScreenState, SemanticContent,
+    SoftWrap, TRUNCATED_ROW_WINDOW,
 };
 use phux_protocol::{
     kitty_replay,
@@ -55,6 +56,21 @@ use super::reference::{ConsumerReference, ReferenceCursorMode};
 /// count (`phux-o1v`). A request of literally zero rows is meaningless, so
 /// this reuse is unambiguous.
 pub const SCROLLBACK_ALL: u32 = 0;
+
+/// One history read: the rows of the requested window, their soft-wrap
+/// bits, and whether older retained rows fell outside it (ADR-0077 §§2-3).
+///
+/// Internal to the projection — the three pieces are one read and travel
+/// together, rather than as a tuple nobody can keep straight.
+#[derive(Debug, Default)]
+struct ScrollbackWindow {
+    /// History rows in the window, oldest first, right-trimmed.
+    lines: Vec<String>,
+    /// Indices into [`Self::lines`] whose row continues onto the next.
+    wrapped: Vec<u32>,
+    /// True when retained history existed above the returned window.
+    truncated: bool,
+}
 
 /// Inline grapheme-cluster buffer size for the scrollback walk.
 ///
@@ -492,10 +508,21 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         // viewport snapshot: `grid_ref` borrows `terminal` immutably and
         // its references are invalidated by the next terminal operation,
         // so we read each row's text eagerly into owned `String`s here.
-        let scrollback_lines = match scrollback {
-            None => Vec::new(),
-            Some(want) => Self::scrollback_lines(terminal, want)?,
+        let history = match scrollback {
+            None => ScrollbackWindow::default(),
+            Some(want) => Self::scrollback_window(terminal, want)?,
         };
+
+        // OSC 0/2 title (ADR-0077 §3). `title()` borrows from the terminal
+        // and is invalidated by the next `vt_write`, so copy it now. An
+        // empty title means the pane never set one — reported as absence
+        // rather than as an empty string, so a consumer never has to decide
+        // whether `""` is a title.
+        let title = terminal
+            .title()
+            .ok()
+            .filter(|t| !t.is_empty())
+            .map(ToOwned::to_owned);
 
         // Fresh render state + iterators per call, NOT the pooled
         // `self.render_state`/`self.rows`/`self.cells`. The pooled state
@@ -528,11 +555,19 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         let mut cell_infos: Option<Vec<CellInfo>> = cells.then(Vec::new);
 
         let mut lines: Vec<String> = Vec::with_capacity(usize::from(rows_n));
+        // Soft-wrap bits for the viewport (ADR-0077 §2). One extra FFI read
+        // per row, unconditional: there is no wire flag to gate it on, and
+        // an `Option` that is always `Some` from this server is precisely
+        // what lets a consumer tell "nothing wraps" from "older server".
+        let mut wrapped_lines: Vec<u32> = Vec::new();
         let mut row_iter = rows_pool.update(&snapshot)?;
         let mut row_index: u16 = 0;
         while let Some(row) = row_iter.next() {
             if row_index >= rows_n {
                 break;
+            }
+            if row.raw_row()?.is_wrapped()? {
+                wrapped_lines.push(u32::from(row_index));
             }
             let mut buf = String::with_capacity(usize::from(cols));
             let mut col_index: u16 = 0;
@@ -575,13 +610,21 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             rows: rows_n,
             cursor,
             lines,
-            scrollback: scrollback_lines,
+            scrollback: history.lines,
             cells: cell_infos,
+            soft_wrap: Some(SoftWrap {
+                lines: wrapped_lines,
+                scrollback: history.wrapped,
+            }),
+            truncated: history.truncated,
+            truncated_reason: history.truncated.then(|| TRUNCATED_ROW_WINDOW.to_owned()),
+            title,
         })
     }
 
     /// Read the history (scrollback) rows above the active viewport into
-    /// owned, right-trimmed strings, oldest first.
+    /// owned, right-trimmed strings, oldest first, with their soft-wrap
+    /// bits and whether the request clipped older rows.
     ///
     /// `want` follows the [`Self::screen_state_with_scrollback`] convention:
     /// [`SCROLLBACK_ALL`] (`0`) means every retained history row, any other
@@ -592,14 +635,21 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     /// wide-cell-tail handling (`SpacerTail` cells advance no column and
     /// are skipped). History coordinates are local to the history region:
     /// `y = 0` is the oldest retained row, `y = scrollback_rows - 1` is the
-    /// row just above the viewport.
-    fn scrollback_lines(
+    /// row just above the viewport. The read is side-effect-free: `grid_ref`
+    /// neither scrolls the live viewport nor mutates the Terminal.
+    ///
+    /// [`ScrollbackWindow::truncated`] is true exactly when `start > 0` —
+    /// retained history existed above the window the caller asked for. It
+    /// deliberately says nothing about rows libghostty already evicted from
+    /// its history ring; the server cannot see those, and claiming
+    /// otherwise would make the flag unfalsifiable.
+    fn scrollback_window(
         terminal: &GhosttyTerminal<'alloc, '_>,
         want: u32,
-    ) -> Result<Vec<String>, SynthesisError> {
+    ) -> Result<ScrollbackWindow, SynthesisError> {
         let total = terminal.scrollback_rows()?;
         if total == 0 {
-            return Ok(Vec::new());
+            return Ok(ScrollbackWindow::default());
         }
         let cols = terminal.cols()?;
 
@@ -614,11 +664,21 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         };
 
         let mut out: Vec<String> = Vec::with_capacity(total - start);
+        let mut wrapped: Vec<u32> = Vec::new();
         for y in start..total {
             // History `y` is a `u32` in libghostty's coordinate space.
             // `total` comes from `scrollback_rows()` (also originally a C
             // count); clamp defensively rather than truncate.
             let y = u32::try_from(y).unwrap_or(u32::MAX);
+            // Soft-wrap bit for this history row (ADR-0077 §2). The index is
+            // into the *returned window*, not into history:
+            // `soft_wrap.scrollback` indexes `ScreenState::scrollback`.
+            if cols > 0 {
+                let head = Point::History(PointCoordinate { x: 0, y });
+                if terminal.grid_ref(head)?.row()?.is_wrapped()? {
+                    wrapped.push(u32::try_from(out.len()).unwrap_or(u32::MAX));
+                }
+            }
             let mut buf = String::with_capacity(usize::from(cols));
             for x in 0..cols {
                 let point = Point::History(PointCoordinate { x, y });
@@ -644,7 +704,11 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             }
             out.push(buf.trim_end().to_owned());
         }
-        Ok(out)
+        Ok(ScrollbackWindow {
+            lines: out,
+            wrapped,
+            truncated: start > 0,
+        })
     }
 
     /// Mark this consumer's `RenderState` as fully in sync with the
@@ -2214,6 +2278,161 @@ mod tests {
             .expect("screen_state_with_scrollback");
         assert!(screen.scrollback.is_empty());
         assert_eq!(screen.lines[0], "only one line");
+    }
+
+    /// A line longer than the grid soft-wraps; the projection reports the
+    /// wrap on the row that continues, and unwrapping joins the two rows
+    /// back into the text that was written (ADR-0077 §2).
+    ///
+    /// This is the mechanism `phux wait --until TEXT` needs: the substring
+    /// "verylongword" straddles the wrap and is absent from every painted
+    /// row, so a match against `lines` fails and a match against
+    /// `unwrapped_rows()` succeeds.
+    #[test]
+    fn screen_state_reports_soft_wrap_and_unwraps_to_the_written_line() {
+        let mut t = fresh(10, 4);
+        t.vt_write(b"abcdefghijklmnop");
+
+        let synth = SnapshotSynthesizer::new().expect("synth");
+        let screen = synth.screen_state(&t, 1).expect("screen_state");
+
+        let wrap = screen.soft_wrap.as_ref().expect("wrap info is reported");
+        assert_eq!(
+            wrap.lines,
+            vec![0],
+            "row 0 continues onto row 1, got {screen:?}",
+        );
+        assert_eq!(screen.lines[0], "abcdefghij");
+        assert_eq!(screen.lines[1], "klmnop");
+        assert!(
+            !screen.lines.iter().any(|l| l.contains("ijkl")),
+            "the straddling substring is absent from the rows as painted",
+        );
+        assert_eq!(
+            screen.unwrapped_rows()[0],
+            "abcdefghijklmnop",
+            "unwrapping restores the line as written",
+        );
+    }
+
+    /// A wide glyph that will not fit in the final column leaves a
+    /// `SpacerHead` there and moves to the next row. The wrap bit must
+    /// still be reported, and the join must not smuggle the spacer's blank
+    /// into the logical line (`phux-ja1`'s cells case, now for text).
+    #[test]
+    fn screen_state_unwraps_across_a_wide_glyph_at_the_wrap_boundary() {
+        let mut t = fresh(4, 3);
+        t.vt_write("abc你d".as_bytes());
+
+        let synth = SnapshotSynthesizer::new().expect("synth");
+        let screen = synth.screen_state(&t, 1).expect("screen_state");
+
+        let wrap = screen.soft_wrap.as_ref().expect("wrap info is reported");
+        assert_eq!(wrap.lines, vec![0], "got {screen:?}");
+        assert_eq!(
+            screen.lines[0], "abc",
+            "the SpacerHead is a blank final column and trims away",
+        );
+        assert_eq!(screen.lines[1], "你d");
+        assert_eq!(
+            screen.unwrapped_rows()[0],
+            "abc你d",
+            "the wide glyph rejoins its line with no stray spacer column",
+        );
+    }
+
+    /// Wrap bits are reported for history rows too, indexed into the
+    /// returned window, and a run straddling the history/viewport seam
+    /// joins.
+    #[test]
+    fn screen_state_reports_soft_wrap_in_scrollback() {
+        // 3-row viewport; a long first line wraps into two rows and the
+        // later lines push both into history.
+        let mut t = fresh(10, 3);
+        t.vt_write(b"abcdefghijklmnop\r\nsecond\r\nthird\r\nfourth\r\nfifth");
+        assert!(t.scrollback_rows().expect("scrollback_rows") >= 2);
+
+        let synth = SnapshotSynthesizer::new().expect("synth");
+        let screen = synth
+            .screen_state_with_scrollback(&t, 1, Some(SCROLLBACK_ALL), false)
+            .expect("screen_state_with_scrollback");
+
+        let wrap = screen.soft_wrap.as_ref().expect("wrap info is reported");
+        assert_eq!(
+            wrap.scrollback,
+            vec![0],
+            "history row 0 continues onto history row 1, got {screen:?}",
+        );
+        assert_eq!(
+            screen.unwrapped_rows()[0],
+            "abcdefghijklmnop",
+            "the wrapped history line rejoins",
+        );
+    }
+
+    /// A bounded history request that leaves older retained rows behind
+    /// reports `truncated`; one that reaches all of them does not
+    /// (ADR-0077 §3).
+    #[test]
+    fn screen_state_reports_truncated_only_when_the_window_clipped() {
+        let mut t = fresh(20, 2);
+        // 5 lines, 2-row viewport -> 3 rows of history.
+        t.vt_write(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
+        assert_eq!(t.scrollback_rows().expect("scrollback_rows"), 3);
+        let synth = SnapshotSynthesizer::new().expect("synth");
+
+        let clipped = synth
+            .screen_state_with_scrollback(&t, 1, Some(2), false)
+            .expect("screen_state_with_scrollback");
+        assert!(
+            clipped.truncated,
+            "2 of 3 retained history rows: the window dropped an older row",
+        );
+        assert_eq!(
+            clipped.truncated_reason.as_deref(),
+            Some(TRUNCATED_ROW_WINDOW),
+        );
+
+        let whole = synth
+            .screen_state_with_scrollback(&t, 1, Some(SCROLLBACK_ALL), false)
+            .expect("screen_state_with_scrollback");
+        assert!(!whole.truncated, "all retained history: nothing dropped");
+        assert!(whole.truncated_reason.is_none());
+
+        let exact = synth
+            .screen_state_with_scrollback(&t, 1, Some(3), false)
+            .expect("screen_state_with_scrollback");
+        assert!(!exact.truncated, "a window that fits drops nothing");
+
+        let viewport_only = synth
+            .screen_state_with_scrollback(&t, 1, None, false)
+            .expect("screen_state_with_scrollback");
+        assert!(
+            !viewport_only.truncated,
+            "history that was never requested was not dropped from a window",
+        );
+    }
+
+    /// The OSC 0/2 title rides back when set, and is absent — not an empty
+    /// string — when the pane never set one (ADR-0077 §3).
+    #[test]
+    fn screen_state_reports_the_osc_title_when_set() {
+        let mut t = fresh(20, 2);
+        let synth = SnapshotSynthesizer::new().expect("synth");
+        assert!(
+            synth
+                .screen_state(&t, 0)
+                .expect("screen_state")
+                .title
+                .is_none(),
+            "an unset title is absence, not an empty string",
+        );
+
+        t.vt_write(b"\x1b]0;claude - phux\x07");
+        assert_eq!(
+            synth.screen_state(&t, 0).expect("screen_state").title,
+            Some("claude - phux".to_owned()),
+        );
     }
 
     #[test]

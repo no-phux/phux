@@ -4138,6 +4138,7 @@ impl TerminalActor {
                             // path: an empty cells vec, not a misleading
                             // `None`, when the caller asked for cells.
                             cells: want_cells.then(Vec::new),
+                            ..phux_core::screen::ScreenState::default()
                         }
                     });
                     let _ = req.reply.send(screen);

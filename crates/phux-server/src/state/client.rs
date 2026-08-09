@@ -291,6 +291,7 @@ impl ServerState {
         // says subscriptions are connection-scoped) plus its cached layer
         // negotiation. Keeps the maps bounded across attach churn.
         self.metadata.drop_client(client_id);
+        self.clients.metadata_mailboxes.remove(&client_id);
         if let Some(keys) = self.clients.session_create_results.remove(&client_id) {
             for key in keys {
                 let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, &key);
