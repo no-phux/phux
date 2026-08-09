@@ -83,14 +83,14 @@
 # PR "Ready for review" runs everything — that event is in the trigger
 # types. Rationale and safety analysis on the `changes` job comment.
 #
-# OBSERVABILITY (ADR-0047): each cargo phase runs under scripts/ci/timed.sh,
+# OBSERVABILITY (ADR-0080): each cargo phase runs under scripts/ci/timed.sh,
 # and a trailing `lane signal` step renders the phase timings, cache
-# effectiveness, and slowest tests into the job's step summary, then uploads
-# the same facts as a `ci-metrics-*` artifact. The ci-metrics workflow folds
-# those artifacts — plus the per-step wall times the Actions API already has
-# — into the `ci-metrics` branch (NDJSON + DASHBOARD.md). The instrumentation
-# adds no compilation and only seconds of wall; keep it `if: always()` so a
-# red lane still reports where the time went.
+# effectiveness, and slowest tests into the job's step summary. That is the
+# whole of it — the run page is the dashboard. The recorded store this used
+# to feed (the `ci-metrics` branch and its collector) is retired; see
+# ADR-0080. The instrumentation adds no compilation and only seconds of
+# wall; keep it `if: always()` so a red lane still reports where the time
+# went.
 
 name: ci
 
@@ -298,13 +298,6 @@ jobs:
           PHUX_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: bash scripts/ci/summarize-job.sh
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: ci-metrics-check
-          path: target/ci-metrics/
-          if-no-files-found: ignore
-          retention-days: 30
 
   # Test lane: the default unit pool, then the FAST `#[ignore]`d e2e set
   # (`run_wait_e2e` + `agent_record_e2e` + the perf gates). Both steps use the
@@ -408,10 +401,3 @@ jobs:
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: ci-metrics-test
-          path: target/ci-metrics/
-          if-no-files-found: ignore
-          retention-days: 30

@@ -330,7 +330,7 @@ ci: fmt-check lint docs-check formula-check font-check e2e-lane-check zig-pin-ch
 # judged on. Run it before pushing anything that touches the CLI surface, the
 # server lifecycle, or the example scripts.
 #
-# Not covered locally: the sccache/rust-cache/ci-metrics steps (runner
+# Not covered locally: the sccache/rust-cache/lane-signal steps (runner
 # infrastructure) and the deploy-key-gated release lanes. See CONTRIBUTING.md
 # §"Bar for any change" for the full gate-by-gate map.
 
@@ -418,8 +418,8 @@ profile *ARGS:
 #   just timings                 # debug, --all-targets (dev iteration cost)
 #   just timings --release       # the release/LTO timeline
 # CAVEAT: a WARM build's timeline is near-empty because cached crates don't
-# recompile. For a true cold picture, `cargo clean` first — or use the
-# `build-timings` GitHub workflow, which always builds cold.
+# recompile. For a true cold picture, `cargo clean` first. There is no CI
+# lane that builds cold for you any more (ADR-0080) — this is the tool.
 
 # HTML compile-time report (critical path, codegen vs frontend).
 timings *ARGS:
@@ -451,15 +451,6 @@ bloat *ARGS:
 
 # Dependency-graph stats without compiling: locked-package count, duplicate
 # versions (each compiles separately in cold CI), proc-macro and
-# build-script crate counts. The same script feeds the observatory workflow
-# (ADR-0047); locally it prints the markdown and appends the NDJSON record
-# to target/ci-metrics/records.ndjson.
+# build-script crate counts. Prints markdown to stdout.
 dep-stats:
     bash scripts/ci/dep-stats.sh
-
-# Show the recorded CI dashboard (the `ci-metrics` branch, written by the
-# ci-metrics workflow — see ADR-0047). Fetches, then prints DASHBOARD.md;
-# query the raw NDJSON via `git show origin/ci-metrics:runs/<YYYY-MM>.ndjson`.
-ci-report:
-    git fetch --quiet origin ci-metrics
-    git show origin/ci-metrics:DASHBOARD.md

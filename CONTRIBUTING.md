@@ -89,11 +89,9 @@ red build in one of them, the answer is on the runner, not on your machine.
 - **Caching and build acceleration** (Cachix, `Swatinem/rust-cache`,
   sccache, the runner disk-headroom step). Runner infrastructure. A cache
   miss is a slow CI run, never a wrong one.
-- **CI observability** (`scripts/ci/timed.sh`, the `lane signal` step, the
-  `ci-metrics` workflow, the `observatory` cold-build timings). These write
-  to a metrics branch and need the Actions API plus `contents:write`. Run
-  `just dep-stats` or `just timings` locally for the same lenses; use
-  `just ci-report` to read what CI recorded.
+- **CI observability** (`scripts/ci/timed.sh` and the `lane signal` step).
+  Pure step-summary rendering on the run page; nothing is stored (ADR-0080).
+  Run `just dep-stats` or `just timings` locally for the same lenses.
 - **Heavy stress storms** (`stress` workflow, post-merge and nightly). Not
   slow because they are thorough — slow because a 2-core hosted runner
   starves the server's current-thread runtime, turning a 0.3s test into 13
@@ -252,21 +250,18 @@ the protocol epic):
 
 ## Observability: CI itself
 
-CI is instrumented end to end (ADR-0047). Where to look, cheapest first:
+CI reports where its own minutes go, and keeps nothing (ADR-0080). Where to
+look, cheapest first:
 
 - **Any run's step summary** — every lane renders its cargo phase timings,
-  rust-cache hit/miss, and slowest tests right on the run page.
-- **`just ci-report`** — prints the recorded dashboard: per-workflow medians
-  and p95s, slowest steps, cache hit rates, cold-build and binary-size
-  trends. Rendered live at <https://phux.phall.io/ci> as well.
-- **The `ci-metrics` branch** — the raw NDJSON store (one shard per month),
-  written only by the `ci-metrics` workflow. Query it with `git show
-  origin/ci-metrics:runs/<YYYY-MM>.ndjson | jq ...`.
-- **The `observatory` workflow** — dispatch it when a build feels slow: cold
-  dev/release `--timings` timelines (HTML artifact + distilled tables),
-  binary size with bloat attribution, dependency stats. Runs weekly and on
-  lockfile/toolchain changes to main, never on the PR path.
-- Locally: `just timings`, `just llvm-lines`, `just bloat`, `just dep-stats`.
+  rust-cache hit/miss, target-dir size, and slowest tests right on the run
+  page. That is the dashboard; there is no store behind it.
+- **The Actions run list** — per-run and per-step wall times, for as long as
+  GitHub retains the run.
+- **Locally, when a build feels slow**: `just timings` (cold `cargo clean`
+  first for a real timeline), `just llvm-lines`, `just bloat`,
+  `just dep-stats`. These are the same lenses the retired `observatory`
+  workflow ran weekly, on your machine and on demand.
 
 ## Observability: tokio-console
 

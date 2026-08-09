@@ -1,18 +1,20 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-07-14
+last-reviewed: 2026-08-09
 ---
 
 # 0047 — CI metrics recorded to an orphan `ci-metrics` branch
 
 **TL;DR.** CI observability data (per-run job/step wall times, in-lane cargo
-phase timings, cold-build timelines, binary sizes, dependency stats) is
+phase timings, cold-build timelines, binary sizes, dependency stats) was
 recorded as NDJSON on an orphan `ci-metrics` branch by a single collector
-workflow, which also renders `DASHBOARD.md` and a compact `site/summary.json`
-that phux.phall.io/ci reads directly.
+workflow, which also rendered `DASHBOARD.md` and a compact `site/summary.json`
+that phux.phall.io/ci read directly. Retired by
+[ADR-0080](./0080-retire-the-ci-metrics-store.md); the branch, the collector,
+and the `observatory` lane are gone.
 
-Status: Accepted
+Status: Superseded by ADR-0080
 Date: 2026-07-14
 
 ## Context

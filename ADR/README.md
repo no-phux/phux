@@ -78,7 +78,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0044](./0044-dedicated-input-lane.md) | Dedicated input lane: route input off the single runtime thread | Accepted |
 | [0045](./0045-client-side-copy-mode.md) | Client-side copy-mode over the consumer's own engine | Accepted (builds on [0030](./0030-engine-delegated-wire-and-projection-consumers.md), supersedes the abi epic's server-side selection frames) |
 | [0046](./0046-server-side-agent-state-detection.md) | The server derives agent state; detection is level-triggered | Accepted (extends [0040](./0040-agent-identity-metadata.md); implements [0029](./0029-one-cursor-authority-and-repaint-scheduler.md)'s repaint accumulator) |
-| [0047](./0047-ci-metrics-branch.md) | CI metrics recorded to an orphan `ci-metrics` branch | Accepted |
+| [0047](./0047-ci-metrics-branch.md) | CI metrics recorded to an orphan `ci-metrics` branch | Superseded by [0080](./0080-retire-the-ci-metrics-store.md) |
 | [0048](./0048-drag-to-resize-and-default-mouse-capture.md) | Drag-to-resize panes and default outer-terminal mouse capture | Accepted |
 | [0049](./0049-client-local-focus-and-advisory-attention.md) | Client-local focus and advisory agent attention | Accepted (reaffirms [0019](./0019-tui-multi-pane-rendering.md)) |
 | [0050](./0050-explicit-spawn-ownership.md) | Explicit spawn ownership, client-owned placement | Accepted |
@@ -111,6 +111,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0077](./0077-agent-read-surface.md) | The agent read surface: sources, soft wrap, and truncation | Accepted (extends [0022](./0022-tool-for-agents.md)'s read surface with additive JSON keys under [0061](./0061-capabilities-add-versions-break.md), all four shipped at `SCHEMA_VERSION` 3; the alternate-screen harvest it originally carried is split out to [0078](./0078-alternate-screen-history.md)) |
 | [0078](./0078-alternate-screen-history.md) | Harvesting alternate-screen history | Proposed (split out of [0077](./0077-agent-read-surface.md) because it is the one read that writes: it narrows the side-effect-free guarantee `docs/spec/L1.md` §6.1 makes for `GET_SCREEN`, acquires [0033](./0033-input-authority-and-process-signals.md)'s input lease, and needs a capability bit under [0061](./0061-capabilities-add-versions-break.md)) |
 | [0079](./0079-fatal-signal-terminal-restore.md) | Fatal-signal terminal restore | Accepted (covers the teardown path `RawModeGuard::drop` and the panic hook cannot reach — a SIGSEGV/SIGBUS/SIGABRT out of [0004](./0004-libghostty-vt-as-grid.md)'s native engine, which does not unwind; vendors `phux-crash`, the workspace's only Apache-2.0-ONLY crate, keeping its `unsafe` behind a crate boundary as [0032](./0032-graceful-server-upgrade.md) does for `portable-pty-adopt`) |
+| [0080](./0080-retire-the-ci-metrics-store.md) | Retire the CI metrics store; the run page is the dashboard | Accepted (supersedes [0047](./0047-ci-metrics-branch.md) — deletes the `ci-metrics` branch, its collector, and the `observatory` lane, keeping only the zero-cost step-summary half; a hosted dashboard, if it returns, is the site's to own) |
 
 ## When to write an ADR
 

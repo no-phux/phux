@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
-# Render one CI job's observability signal: a step-summary table of phase
-# timings (from scripts/ci/timed.sh), cache effectiveness, target-dir size,
-# and the slowest tests (when a nextest junit report exists) — and write the
-# same facts as one machine-readable NDJSON record for the ci-metrics
-# collector (kind: "phases").
+# Render one CI job's observability signal into the run's step summary: a
+# table of phase timings (from scripts/ci/timed.sh), cache effectiveness,
+# target-dir size, and the slowest tests when a nextest junit report exists.
+#
+# The run page is the whole dashboard (ADR-0080). This used to also emit an
+# NDJSON record for a collector that swept it into a metrics branch; that
+# store is retired, so nothing here outlives the run.
 #
 # Runs OUTSIDE `nix develop` (needs only bash + jq + coreutils, all present
 # on the hosted runner). Deliberately `if: always()`-safe: every input is
-# optional, a failed or skipped lane still produces a record.
+# optional, a failed or skipped lane still renders.
 #
 # Inputs (environment):
-#   PHUX_METRICS_DIR   where phases.ndjson lives and records.ndjson goes
-#                      (default target/ci-metrics)
+#   PHUX_LANE_DIR      where timed.sh wrote phases.ndjson
+#                      (default target/lane-signal)
 #   PHUX_CACHE_HIT     rust-cache's cache-hit output ("true"/"false"/"")
 #   PHUX_DOCS_ONLY     "true" when the docs-only gate skipped the lane
 #   PHUX_JUNIT         path to a nextest junit.xml (optional)
 #   GITHUB_*           standard Actions metadata (optional; blank locally)
 set -euo pipefail
 
-metrics_dir="${PHUX_METRICS_DIR:-target/ci-metrics}"
-mkdir -p "$metrics_dir"
+lane_dir="${PHUX_LANE_DIR:-target/lane-signal}"
+mkdir -p "$lane_dir"
 
 # --- gather ------------------------------------------------------------------
 
 phases='[]'
-if [ -s "$metrics_dir/phases.ndjson" ]; then
-    phases=$(jq -cs '.' "$metrics_dir/phases.ndjson")
+if [ -s "$lane_dir/phases.ndjson" ]; then
+    phases=$(jq -cs '.' "$lane_dir/phases.ndjson")
 fi
 
 target_size=0
@@ -63,32 +65,6 @@ if [ -n "$junit_path" ] && [ -s "$junit_path" ]; then
         --argjson flaky "${flaky:-0}" \
         '{tests: $tests, failures: $failures, flaky: $flaky}')
 fi
-
-# --- record ------------------------------------------------------------------
-
-jq -cn \
-    --argjson phases "$phases" \
-    --argjson slow_tests "$slow_tests" \
-    --argjson junit "$junit_stats" \
-    --argjson target_size "${target_size:-0}" \
-    --arg workflow "${GITHUB_WORKFLOW:-local}" \
-    --arg job "${GITHUB_JOB:-local}" \
-    --arg run_id "${GITHUB_RUN_ID:-0}" \
-    --arg attempt "${GITHUB_RUN_ATTEMPT:-1}" \
-    --arg sha "${GITHUB_SHA:-}" \
-    --arg branch "${GITHUB_REF_NAME:-}" \
-    --arg event "${GITHUB_EVENT_NAME:-}" \
-    --arg cache_hit "${PHUX_CACHE_HIT:-}" \
-    --arg docs_only "${PHUX_DOCS_ONLY:-}" \
-    '{schema: 1, kind: "phases",
-      workflow: $workflow, job: $job,
-      run_id: ($run_id | tonumber), run_attempt: ($attempt | tonumber),
-      sha: $sha, branch: $branch, event: $event,
-      cache_hit: (if $cache_hit == "" then null else $cache_hit == "true" end),
-      docs_only: ($docs_only == "true"),
-      target_size_bytes: $target_size,
-      phases: $phases, slow_tests: $slow_tests, junit: $junit}' \
-    >>"$metrics_dir/records.ndjson"
 
 # --- step summary ------------------------------------------------------------
 

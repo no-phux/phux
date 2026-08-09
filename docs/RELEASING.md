@@ -60,7 +60,6 @@ generated changelog or expose a half-built release.
 | Release artifacts | called by release-please (or manual dispatch) | Requires all target builds, attaches tarballs + checksums, updates Homebrew, then publishes the complete release. |
 | Crate publish | manual `publish-crate` workflow | `phux-protocol` package dry-run, then publish when `dry_run=false`. |
 | Stress lane | nightly, manual, or PR label `stress` | Heavy resize/output/lifecycle storms that are useful but too slow for every PR. |
-| Build observatory | weekly or manual | Cold dev/release timings, binary-size attribution, and dependency stats off the PR and release paths. |
 
 Required secrets:
 

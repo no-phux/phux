@@ -71,7 +71,7 @@ jobs:
         with:
           key: ${{ env.CPU_KEY }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'flake.lock') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Timed + junit-instrumented like ci.yml's lanes (ADR-0047): the storms
+      # Timed + junit-instrumented like ci.yml's lanes (ADR-0080): the storms
       # are exactly where per-test wall times matter, since CPU starvation on
       # the 2-core runner is this suite's known failure mode.
       - name: stress suite
@@ -86,10 +86,3 @@ jobs:
           PHUX_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: ci-metrics-stress
-          path: target/ci-metrics/
-          if-no-files-found: ignore
-          retention-days: 30
