@@ -100,6 +100,41 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # Create the tag ourselves, because a DRAFT release does not have one.
+      #
+      # GitHub defers tag creation for draft releases: the ref appears only
+      # when the draft is published. `release-please-config.json` sets
+      # `"draft": true` so users never see a release without binaries, which
+      # means the tag this job is documented to own does not actually exist
+      # when `release-artifacts` runs — and that job's first step requires it.
+      # v0.14.0 stuck exactly there: draft release created, no tag, artifact
+      # build refusing to start, release wedged with no way forward but a
+      # hand-pushed tag.
+      #
+      # Creating the ref here restores the documented ownership boundary
+      # (this job owns the TAG; release.yml owns assets and the draft ->
+      # published transition) without giving up the draft. Publishing the
+      # draft later is then a no-op for the ref, since it already points at
+      # this commit.
+      #
+      # Idempotent: a re-run against an existing tag is success, not a
+      # conflict, so replaying a failed release never wedges on the ref.
+      - name: Create the release tag for the draft
+        if: steps.rp.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.rp.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "tag ${TAG} already exists; nothing to do."
+            exit 0
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/tags/${TAG}" \
+            -f "sha=${GITHUB_SHA}" >/dev/null
+          echo "created ${TAG} at ${GITHUB_SHA}"
+
   sync-lockfile:
     name: sync Cargo.lock on the release PR
     needs: release-please
