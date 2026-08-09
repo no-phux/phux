@@ -9,6 +9,23 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.14.0](https://github.com/phall1/phux/compare/v0.13.0...v0.14.0) (2026-08-09)
+
+
+### Features
+
+* **agent:** add acknowledged orchestration surface ([#410](https://github.com/phall1/phux/issues/410)) ([8d06829](https://github.com/phall1/phux/commit/8d06829cc2aeb159408e6df2c8aa367f0941515b))
+* **pair:** reach a phone in one command, without restarting anything ([253bb21](https://github.com/phall1/phux/commit/253bb21b0b0146f6a634982f9bc48a6ceaae3591))
+
+
+### Bug Fixes
+
+* **client:** scope the attach barrier to the session being attached ([2bd2ba3](https://github.com/phall1/phux/commit/2bd2ba3beaf602ac28224f944b6af7583bb67e0a))
+* **server:** scope acknowledged input admission to the Terminal ([36bcff8](https://github.com/phall1/phux/commit/36bcff8a1d0859b38fe502131c2e8b1afcc78b5c))
+* **server:** stop treating a socket file as a live server ([a9342b7](https://github.com/phall1/phux/commit/a9342b7ba416a6375dd2a69131e8ab3676bb5b99))
+* **test:** pin distinct inodes by parking, not unlinking ([544c929](https://github.com/phall1/phux/commit/544c929b4201d36cf17528f20e9be56c1a133e3e))
+* **test:** pin the released layout in the e2e isolation harness ([420cc00](https://github.com/phall1/phux/commit/420cc006b9b4929c878d2385be8a3f9e231b5874))
+
 ## [0.13.0](https://github.com/phall1/phux/compare/v0.12.1...v0.13.0) (2026-08-09)
 
 
