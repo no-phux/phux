@@ -499,6 +499,36 @@ pub(super) struct SidebarReservation {
     pub width: u16,
 }
 
+/// The narrowest pane area worth tiling into.
+///
+/// Half a classic 80-column terminal, and about where an editor, a diff,
+/// or an agent's output stops being readable rather than merely cramped.
+pub(super) const MIN_PANE_COLS: u16 = 40;
+
+/// Fold the sidebar's on/off state and geometry into the per-frame
+/// reservation, yielding the strip when the terminal cannot afford it.
+///
+/// The strip costs its `width` columns off every pane, permanently. On a
+/// 60-column terminal a 20-column strip is a third of the screen spent on
+/// a list of window names, and the panes it is meant to help you navigate
+/// between are the ones paying for it. Below `width + MIN_PANE_COLS` the
+/// reservation therefore folds to `None` and the panes get the whole
+/// viewport back.
+///
+/// This is the single place the decision is made, so every layout site —
+/// panes, dividers, reflow, mouse hit-testing, the strip painter itself —
+/// receives the same answer and cannot disagree about which columns
+/// belong to whom.
+pub(super) fn sidebar_reservation(
+    outer_cols: u16,
+    enabled: bool,
+    width: u16,
+    edge: SidebarEdge,
+) -> Option<SidebarReservation> {
+    (enabled && outer_cols >= width.saturating_add(MIN_PANE_COLS))
+        .then_some(SidebarReservation { edge, width })
+}
+
 /// The residual content `Rect` panes tile into after the status bar and the
 /// (optional) sidebar are folded off the outer viewport.
 ///
@@ -676,6 +706,56 @@ mod tests {
                 .expect("ready");
         }
         kernel
+    }
+
+    /// The strip yields rather than squeezing the panes it exists to help
+    /// you navigate between: on a 50-column terminal a 20-column sidebar
+    /// would leave 30 columns of actual work.
+    #[test]
+    fn the_sidebar_yields_when_it_would_starve_the_panes() {
+        let res = |cols| sidebar_reservation(cols, true, 20, SidebarEdge::Left);
+
+        // 20 + MIN_PANE_COLS(40) = 60 is the threshold.
+        assert_eq!(res(59), None, "50-col terminal cannot afford the strip");
+        assert_eq!(
+            res(60),
+            Some(SidebarReservation {
+                edge: SidebarEdge::Left,
+                width: 20
+            })
+        );
+        assert!(res(200).is_some());
+
+        // A narrower strip is affordable sooner — the rule is about what
+        // is left for the panes, not about a fixed terminal size.
+        assert!(sidebar_reservation(50, true, 10, SidebarEdge::Left).is_some());
+
+        // Disabled stays disabled at every width.
+        for cols in [0u16, 60, 200] {
+            assert_eq!(
+                sidebar_reservation(cols, false, 20, SidebarEdge::Left),
+                None
+            );
+        }
+    }
+
+    /// However narrow the terminal, the panes are never handed a
+    /// zero-width or negative content rect by a sidebar that overran it.
+    #[test]
+    fn a_reserved_sidebar_always_leaves_a_usable_content_rect() {
+        for cols in 0u16..=120 {
+            let sidebar = sidebar_reservation(cols, true, 20, SidebarEdge::Left);
+            let rect = content_rect((cols, 24), Some(Position::Bottom), sidebar);
+            if sidebar.is_some() {
+                assert!(
+                    rect.w >= MIN_PANE_COLS,
+                    "cols={cols} left only {} pane columns",
+                    rect.w
+                );
+            } else {
+                assert_eq!(rect.w, cols, "cols={cols}: panes get the whole width");
+            }
+        }
     }
 
     /// phux-4h5a: the disabled-path invariant. `content_rect(.., None)` must

@@ -1270,6 +1270,13 @@ What changes:
   secondary column (a branch, a cwd, a bound chord) yields before its
   label does, and text that does not fit is cut with a trailing `…`
   rather than left to run through the modal border.
+- **The sidebar yields.** Below `[sidebar] width` + 40 columns the strip
+  is not reserved at all: it costs its width off every pane permanently,
+  and a strip that leaves 30 columns of actual work is costing you the
+  panes it exists to help you move between. `prefix-b` rings the bell at
+  those widths rather than flipping a flag with no visible effect —
+  turning the strip *off* is always allowed, so shrinking a terminal
+  never traps you. The fleet switcher is the navigation surface there.
 
 ---
 

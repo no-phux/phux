@@ -63,7 +63,7 @@ use super::input_dispatch::{
 };
 use super::paint::{
     SidebarEdge, SidebarReservation, content_rect, paint_bar_after_pane, paint_chrome_in_place,
-    paint_full_frame,
+    paint_full_frame, sidebar_reservation,
 };
 use super::plugin_actions::{self, PluginActionEntry, PluginRunResult};
 use super::plugin_panes;
@@ -1233,16 +1233,17 @@ pub async fn run_headless_rendered(
     // `None`, keeping the rendered frame byte-identical to the pre-sidebar one.
     let headless_cfg = phux_config::loader::load().ok();
     let sidebar_cfg = headless_cfg.as_ref().map(|c| c.sidebar.clone());
-    let sidebar = sidebar_cfg
-        .as_ref()
-        .filter(|c| c.enabled)
-        .map(|c| SidebarReservation {
-            edge: match c.position {
+    let sidebar = sidebar_cfg.as_ref().and_then(|c| {
+        sidebar_reservation(
+            viewport_dims.0,
+            c.enabled,
+            c.width,
+            match c.position {
                 SidebarPosition::Right => SidebarEdge::Right,
                 SidebarPosition::Left => SidebarEdge::Left,
             },
-            width: c.width,
-        });
+        )
+    });
     let sidebar_theme = headless_cfg
         .as_ref()
         .map_or_else(crate::render::Theme::default, |c| {
@@ -2278,10 +2279,12 @@ async fn main_loop<W: super::RenderSink>(
     // `handle_server_frame` runs exactly once, in one place. The sidebar
     // reservation for this bootstrap frame (recomputed per-iteration in the
     // loop below to track `toggle-sidebar`).
-    let sidebar = sidebar_enabled.then_some(SidebarReservation {
-        edge: sidebar_edge,
-        width: sidebar_width,
-    });
+    let sidebar = sidebar_reservation(
+        viewport_dims.0,
+        sidebar_enabled,
+        sidebar_width,
+        sidebar_edge,
+    );
     let outcome = handle_server_frame(
         &mut engine_kernel,
         &mut kernel_effects,
@@ -2447,10 +2450,12 @@ async fn main_loop<W: super::RenderSink>(
         // the next iteration. `None` (the default) keeps `content_rect` the
         // full pane viewport, so the whole path is byte-identical when the
         // sidebar is off.
-        let sidebar = sidebar_enabled.then_some(SidebarReservation {
-            edge: sidebar_edge,
-            width: sidebar_width,
-        });
+        let sidebar = sidebar_reservation(
+            viewport_dims.0,
+            sidebar_enabled,
+            sidebar_width,
+            sidebar_edge,
+        );
         // phux-npb3: capture follows focus. Re-derive the outer-terminal
         // mouse-tracking DECSET from the focused pane's opt-out state every
         // iteration — one call site covers every way focus or the set can
@@ -2683,6 +2688,7 @@ async fn main_loop<W: super::RenderSink>(
                     zoomed: &mut zoomed,
                     sidebar,
                     sidebar_enabled: &mut sidebar_enabled,
+                    sidebar_width,
                     sidebar_agents: &sidebar_agent_rows,
                     bar: status_bar.as_ref().map(StatusBarPainter::position),
                     status_bar: status_bar.as_ref(),
@@ -2713,10 +2719,7 @@ async fn main_loop<W: super::RenderSink>(
                 // `sidebar_enabled`. Re-fold it into the reservation so the
                 // reflow + repaint below tile into the NEW content rect this
                 // iteration rather than waiting a frame.
-                let sidebar = sidebar_enabled.then_some(SidebarReservation {
-                    edge: sidebar_edge,
-                    width: sidebar_width,
-                });
+                let sidebar = sidebar_reservation(viewport_dims.0, sidebar_enabled, sidebar_width, sidebar_edge);
                 // phux-eb0: a committed `switch-session` ends this loop so
                 // the outer driver re-attaches. Return BEFORE any repaint
                 // — the new session's ATTACHED + snapshot will repaint.
@@ -3591,6 +3594,7 @@ async fn main_loop<W: super::RenderSink>(
                     zoomed: &mut zoomed,
                     sidebar,
                     sidebar_enabled: &mut sidebar_enabled,
+                    sidebar_width,
                     sidebar_agents: &sidebar_agent_rows,
                     bar: status_bar.as_ref().map(StatusBarPainter::position),
                     status_bar: status_bar.as_ref(),
@@ -3620,10 +3624,7 @@ async fn main_loop<W: super::RenderSink>(
                 // phux-4h5a: re-fold a `toggle-sidebar` flip into the
                 // reservation, same as the stdin arm, so the same-iteration
                 // repaint tiles into the new content rect.
-                let sidebar = sidebar_enabled.then_some(SidebarReservation {
-                    edge: sidebar_edge,
-                    width: sidebar_width,
-                });
+                let sidebar = sidebar_reservation(viewport_dims.0, sidebar_enabled, sidebar_width, sidebar_edge);
                 // phux-eb0: same switch-on-commit check as the stdin arm.
                 // A bare-ESC flush can carry the final chord of a
                 // `<leader> a` selection committed via Enter.

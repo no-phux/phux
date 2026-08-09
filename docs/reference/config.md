@@ -498,6 +498,14 @@ right = [
 # enabled it reserves `width` columns on the `position` edge ("left" or
 # "right") and the panes tile into the remaining area.
 #
+# The strip yields on a terminal too narrow to afford it: below
+# `width` + 40 columns it is not reserved at all and the panes get the
+# whole viewport back, because a strip that leaves 30 columns of actual
+# work is costing you the very panes it exists to help you move between.
+# At those widths `prefix-b` rings the bell instead of toggling nothing,
+# and the fleet switcher (`prefix A`, or the status bar's `switch` chip)
+# is the navigation surface — it opens full-screen there.
+#
 # [sidebar]
 # enabled = false
 # width = 20
