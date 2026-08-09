@@ -70,10 +70,16 @@ lint:
 #
 # Run this until clean, then `just ci` ONCE as the final gate.
 #
+# `e2e` is included deliberately, even though it is the slow leg. CI's `test`
+# job runs unit AND e2e; `just ci` runs only the unit pool, so a green `ci`
+# locally is NOT the same bar as a green PR. Two failures reached CI that way
+# before this line existed. If you want the fast inner loop, run `fmt`,
+# `lint`, and `test` directly — but do not call it clean without this.
+#
 # NOTE: no backticks in the echo below — `just` runs backticks as a shell
 # command, so a friendly "run `just ci`" hint would actually RUN `just ci`
 # on every precommit, which is precisely the waste this recipe avoids.
-precommit: fmt lint docs-gen test
+precommit: fmt lint docs-gen test e2e
     @echo "precommit clean - now run 'just ci' once to confirm the remaining gates"
 
 # Run tests via nextest (parallel, sane output).

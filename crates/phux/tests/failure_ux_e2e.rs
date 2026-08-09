@@ -118,9 +118,15 @@ impl Isolation {
     }
 
     /// Point `cmd` at this isolated environment.
+    ///
+    /// `PHUX_PROFILE=default` pins the *released* on-disk layout
+    /// (`<state>/phux`, not `<state>/phux-dev`). These tests drive a debug
+    /// build, which resolves the `dev` profile (ADR-0080), so without this
+    /// the paths asserted below would describe a layout no user ever sees.
     fn apply(&self, cmd: &mut Command) {
         cmd.env("XDG_CONFIG_HOME", self.config.path())
-            .env("XDG_STATE_HOME", self.state.path());
+            .env("XDG_STATE_HOME", self.state.path())
+            .env("PHUX_PROFILE", "default");
     }
 
     /// The canonical server-log path `phux_server::telemetry` resolves
