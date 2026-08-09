@@ -9,10 +9,11 @@ last-reviewed: 2026-07-14
 **TL;DR.** Releases are cut by **release-please**, not by hand. Land
 conventional commits on the default branch; release-please keeps an open
 "release PR" that bumps the workspace version and regenerates `CHANGELOG.md`.
-Merging that PR tags `vX.Y.Z`, creates the GitHub release, and triggers
-`release.yml` to build and **attach** the `phux and phux-mcp artifacts` and
-refresh the Homebrew tap. Publishing `phux-protocol` to crates.io stays a
-separate, deliberate human dispatch. `cargo install phux is unsupported`
+Merging that PR tags `vX.Y.Z`, creates a draft GitHub release, and triggers
+`release.yml` to build and **attach** the `phux and phux-mcp artifacts`,
+refresh the Homebrew tap, and publish the completed release. Publishing
+`phux-protocol` to crates.io stays a separate, deliberate human dispatch.
+`cargo install phux is unsupported`
 because the binary/internal crates are not publishable. Windows is not
 supported by this release lane.
 
@@ -26,14 +27,16 @@ same release.
 | Version bump in `Cargo.toml`, `CHANGELOG.md` | release-please (via the release PR) |
 | `Cargo.lock` refresh on the release PR | the `sync-lockfile` job in `release-please.yml` |
 | The `vX.Y.Z` **tag** | release-please, when the release PR merges |
-| The GitHub **release** and its body/notes | release-please |
+| The GitHub **release** and its body/notes | release-please creates them as a draft |
 | Release **assets** (tarballs + `.sha256`) | `release.yml`, via `gh release upload` |
 | Homebrew tap formula | `release.yml` |
+| Draft -> published transition | `release.yml`, after all assets and Homebrew succeed |
 | `phux-protocol` on crates.io | a human, via `publish-crate.yml` |
 
-`release.yml` never creates a tag and never creates or edits a release. It
-uploads assets onto the release release-please already made, so it cannot
-clobber the generated changelog.
+`release.yml` never creates a tag, release, or release body. It uploads assets
+onto the draft release-please made and only flips that draft to public after the
+complete target matrix and Homebrew step succeed, so it cannot clobber the
+generated changelog or expose a half-built release.
 
 ## Release cockpit
 
@@ -52,12 +55,12 @@ clobber the generated changelog.
 |---|---|---|
 | Pull request CI | `pull_request` | Docs-only detection, docs check, fmt, clippy, rustdoc, cargo-deny, unit tests, and fast real-PTY e2e unless the change is docs-only. Draft PRs skip all of it until marked ready — release PRs idle as drafts for free. |
 | Conventional-commit gate | `pull_request` | `commitlint` lints every PR commit and the PR title against `commitlint.config.mjs`; required by main's ruleset so nothing non-conventional reaches the release-please log. |
-| Main CI | push to `main` | Same gates as PR CI, always full, and refreshes the warm caches. |
-| release-please | push to `main` | Maintains the release PR; on merge, tags `vX.Y.Z`, creates the GitHub release, and calls `release.yml`. |
-| Release artifacts | called by release-please (or manual dispatch) | Builds portable tarballs + checksums, attaches them to the existing release, updates the Homebrew tap. |
+| Main CI | push to `main` | Same gates as PR CI and refreshes warm caches; a narrowly identified release-only merge skips the duplicate compile because its exact tree already passed required PR CI. |
+| release-please | push to `main` | Maintains the release PR; on merge, tags `vX.Y.Z`, creates a draft GitHub release, and calls `release.yml`. |
+| Release artifacts | called by release-please (or manual dispatch) | Requires all target builds, attaches tarballs + checksums, updates Homebrew, then publishes the complete release. |
 | Crate publish | manual `publish-crate` workflow | `phux-protocol` package dry-run, then publish when `dry_run=false`. |
 | Stress lane | nightly, manual, or PR label `stress` | Heavy resize/output/lifecycle storms that are useful but too slow for every PR. |
-| Build timings | manual | Cold `cargo --timings` report for compile-time diagnosis. |
+| Build observatory | weekly or manual | Cold dev/release timings, binary-size attribution, and dependency stats off the PR and release paths. |
 
 Required secrets:
 
@@ -156,13 +159,14 @@ version updater, so do not remove it.
    proposes.
 4. Merge the release PR.
 
-release-please then tags `vX.Y.Z`, creates the GitHub release with the generated
-changelog as its body, and calls `release.yml`, which validates the tag against
-Cargo's resolved versions, builds `phux` + `phux-mcp` for
+release-please then tags `vX.Y.Z`, creates a draft GitHub release with the
+generated changelog as its body, and calls `release.yml`, which validates the
+tag against Cargo's resolved versions and builds `phux` + `phux-mcp` for
 `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, and
 `aarch64-unknown-linux-gnu`, packages `phux-<tag>-<target>.tar.gz` + `.sha256`,
 uploads them onto that release, and — if the `HOMEBREW_TAP_DEPLOY_KEY` secret is
-set — regenerates and pushes `Formula/phux.rb` to the tap.
+set — regenerates and pushes `Formula/phux.rb` to the tap. Only after every
+target, asset, and tap step succeeds does it publish the draft.
 
 **Backfilling an old tag is safe; it will not move the tap backwards.**
 `release.yml` is dispatchable against any existing tag, which is how a release

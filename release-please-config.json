@@ -4,6 +4,7 @@
   "last-release-sha": "040fea1a67a54d67a6afbcb71c8bef62802fdc8b",
 
   "draft-pull-request": true,
+  "draft": true,
 
   "include-v-in-tag": true,
   "include-component-in-tag": false,

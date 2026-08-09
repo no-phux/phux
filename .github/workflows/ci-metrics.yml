@@ -29,7 +29,6 @@ on:
       - release
       - release-please
       - publish-crate
-      - conventional-commits
     types: [completed]
   schedule:
     - cron: "45 6 * * 1" # Mondays 06:45 UTC, after the observatory

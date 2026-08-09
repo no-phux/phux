@@ -8,14 +8,14 @@
 #   2. `sync-lockfile` re-resolves Cargo.lock on that PR branch. release-please
 #      CANNOT do this itself — see the comment on that job.
 #   3. When a human merges the release PR, release-please pushes the `vX.Y.Z`
-#      tag and creates the GitHub Release, with the changelog as its body.
-#   4. `release-artifacts` then calls release.yml (a reusable workflow) to build
-#      the binaries and ATTACH them to the release release-please just made.
+#      tag and creates a DRAFT GitHub Release, with the changelog as its body.
+#   4. `release-artifacts` calls release.yml (a reusable workflow) to build all
+#      binaries, attach them, refresh Homebrew, and only then publish the draft.
 #
 # Ownership boundary (do not blur this):
-#   * release-please owns the TAG and the RELEASE (and its body/notes).
-#   * release.yml owns only the ASSETS. It uses `gh release upload`, which never
-#     touches the release body, so the two can never fight over the notes.
+#   * release-please owns the TAG and creates the RELEASE + body/notes as draft.
+#   * release.yml owns ASSETS and the one-way draft -> published transition. It
+#     never rewrites the body, so the two cannot fight over the release notes.
 #
 # Why release-artifacts is a workflow_call and not a `push: tags` /
 # `release: published` trigger on release.yml: GitHub does not fire
@@ -181,9 +181,8 @@ jobs:
   # Report the release to the Linear `phux` pipeline, which resolves the issues
   # a release carried from the Linear identifiers and PR references in its
   # commit range. Syncing at tag time puts it in Building; the promote job below
-  # moves it to Released once the binaries are attached and the tap is
-  # refreshed, so a failed artifact build leaves the release visibly stuck
-  # rather than silently absent.
+  # moves it to Released only after the binaries, tap, and public GitHub release
+  # are complete. A failed artifact build leaves a private draft for repair.
   linear-release-sync:
     name: report release to Linear
     needs: release-please

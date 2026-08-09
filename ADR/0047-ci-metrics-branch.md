@@ -32,7 +32,7 @@ Three layers, one store:
   cargo phase, and a `lane signal` step renders phase timings, cache hits,
   and slowest tests into the step summary, uploading the same facts as a
   `ci-metrics-*` artifact.
-* The `observatory` workflow (weekly, dispatch, lockfile pushes on main)
+* The `observatory` workflow (weekly or manual dispatch)
   measures what PRs must not pay for: cold `--timings` builds for dev and
   release, binary size + bloat attribution, dependency-graph stats.
 * The `ci-metrics` workflow is the SINGLE WRITER of the orphan `ci-metrics`
@@ -43,6 +43,10 @@ Three layers, one store:
 
 The sweep is idempotent (keyed on run id + attempt), so cancelled or failed
 collector runs are simply caught up later; the weekly sweep is the backstop.
+Observatory originally also ran on main pushes touching lockfiles or the
+toolchain. That made a release-only `Cargo.lock` workspace-version refresh pay
+for two cold builds even though required PR CI had already validated the exact
+tree. Weekly samples preserve the trend; manual dispatch covers investigations.
 
 ## Why
 

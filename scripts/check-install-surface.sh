@@ -141,14 +141,15 @@ forbid_fixed .github/workflows/release.yml 'actions/upload-artifact@ea165f8d65b6
 forbid_fixed .github/workflows/release.yml 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
 forbid_fixed .github/workflows/release.yml 'softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65'
 
-# --- Release ownership boundary (release-please) ------------------------------
+# --- Atomic release boundary (release-please) ---------------------------------
 #
-# release-please owns the TAG, the RELEASE, and the release BODY. release.yml
-# owns only the ASSETS, which it adds with `gh release upload` — a command that
-# never rewrites the name or body, so the two cannot fight over the changelog.
-# Reintroducing a create-release action here would silently clobber the
-# generated notes, so forbid the ones that do that.
+# release-please owns the TAG and creates the RELEASE + BODY as a draft.
+# release.yml owns the ASSETS and the one-way draft -> published transition;
+# neither workflow may recreate the release or rewrite the changelog body.
 require_fixed .github/workflows/release.yml 'gh release upload'
+require_fixed .github/workflows/release.yml "needs.build.result == 'success'"
+require_fixed .github/workflows/release.yml 'gh release edit "$TAG" --draft=false'
+require_fixed release-please-config.json '"draft": true'
 forbid_fixed .github/workflows/release.yml 'softprops/action-gh-release'
 forbid_fixed .github/workflows/release.yml 'generate_release_notes'
 # release.yml is called by release-please and must stay dispatch/call-only. It

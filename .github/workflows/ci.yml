@@ -114,9 +114,9 @@ permissions:
   contents: read
 
 jobs:
-  # Cheap gate: decide whether this change is docs-only so the compile lanes
-  # can skip their expensive steps. Fail-safe — defaults to docs_only=false
-  # (run everything) on anything it can't positively prove is docs-only.
+  # Cheap gate: decide whether the expensive compile lanes are needed.
+  # Fail-safe — every output defaults to false (run everything) unless the
+  # diff positively matches one of the narrow skip cases below.
   #
   # DRAFT PRs skip this job — and, through `needs`, the whole check/test
   # chain — so a draft never pays the nix + zig + workspace build. This is
@@ -128,11 +128,12 @@ jobs:
   # ruleset's strict up-to-date rule forces a branch update — and therefore
   # a real CI run — before any merge once the base has moved.
   changes:
-    name: detect docs-only
+    name: classify changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     outputs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
+      release_only: ${{ steps.detect.outputs.release_only }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -140,22 +141,39 @@ jobs:
       - id: detect
         run: |
           set -euo pipefail
-          # Only pull-requests can be docs-only; a push to main always runs
-          # in full (it is the cache-refreshing run, and the safety net).
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"; exit 0
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          echo "release_only=false" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # A release-please squash merge has already passed required PR CI.
+            # Its merge commit has the exact PR tree and changes only generated
+            # release metadata, so compiling that tree again adds no coverage.
+            # Keep this match intentionally narrow and fail closed.
+            files=$(git diff-tree --no-commit-id --name-only -r HEAD)
+            subject=$(git log -1 --pretty=%s)
+            expected=$(printf '%s\n' \
+              .release-please-manifest.json \
+              CHANGELOG.md \
+              Cargo.lock \
+              Cargo.toml)
+            if [[ "$subject" =~ ^chore\(main\):\ release\ [0-9]+\.[0-9]+\.[0-9]+\ \(#[0-9]+\)$ ]] \
+               && [ "$(printf '%s\n' "$files" | sort)" = "$(printf '%s\n' "$expected" | sort)" ]; then
+              echo "release_only=true" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
           fi
+
           git fetch --quiet origin "${{ github.base_ref }}"
           base=$(git merge-base HEAD "origin/${{ github.base_ref }}")
           files=$(git diff --name-only "$base" HEAD)
           # Empty diff -> don't gamble, run in full.
           if [ -z "$files" ]; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"; exit 0
+            exit 0
           fi
           # docs_only iff NO changed file falls outside docs/ ADR/ *.md. The
           # grep -v exits 0 the moment it sees one non-docs path.
           if echo "$files" | grep -qvE '(^docs/|^ADR/|\.md$)'; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            :
           else
             echo "docs_only=true" >> "$GITHUB_OUTPUT"
           fi
@@ -183,6 +201,7 @@ jobs:
     name: check
     runs-on: ubuntu-24.04-arm
     needs: changes
+    if: needs.changes.outputs.release_only != 'true'
     env:
       # sccache experiment (see the caching header): wrap rustc so unchanged
       # workspace crates hit the GHA cache across commits. `nix develop` is
@@ -316,6 +335,7 @@ jobs:
     name: test
     runs-on: ubuntu-24.04-arm
     needs: changes
+    if: needs.changes.outputs.release_only != 'true'
     env:
       # sccache experiment — same rationale as the check job (see the
       # caching header). This is the lane where the 8m54s workspace

@@ -1,14 +1,14 @@
 # phux release artifacts — build distributable binaries, attach them to an
-# existing GitHub release, and refresh the Homebrew tap formula.
+# existing draft, refresh Homebrew, then publish the complete release.
 #
 # Trigger: called by release-please.yml once release-please has pushed the tag
 # and created the GitHub release. Also dispatchable by hand against an existing
 # tag to re-build or re-attach assets.
 #
-# This workflow does NOT create tags and does NOT create or edit releases.
-# release-please owns both, and owns the release body (the generated changelog).
-# Assets are attached with `gh release upload`, which only adds files and never
-# rewrites the notes — so the two workflows cannot fight over the release.
+# This workflow does NOT create tags or release notes. release-please owns the
+# tag and creates the release body as a draft. This workflow attaches assets
+# with `gh release upload`, refreshes Homebrew, and performs only the one-way
+# draft -> published transition after everything succeeds.
 #
 # It also does NOT publish to crates.io. Publishing is irreversible and nothing
 # here is gated on a human, so phux-protocol goes out only via the manual
@@ -236,14 +236,10 @@ jobs:
   release:
     name: attach release artifacts
     needs: [prepare, build]
-    # Attach whatever built: a single failed target shouldn't withhold the
-    # others (`build` is fail-fast: false), so this deliberately does not
-    # require `build` to have succeeded — download-artifact just collects what
-    # exists. But `prepare` is the tag/version gate: if it failed, the tag is
-    # missing or does not match Cargo's resolved versions, and there is nothing
-    # legitimate to attach. Require it, or a bad tag surfaces as a confusing
-    # "no build artifacts" error instead of the real cause.
-    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    # A public release is an all-target contract. If any matrix leg fails, keep
+    # the release as a private draft and attach nothing; a manual rerun against
+    # the same tag repairs it atomically.
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -351,6 +347,40 @@ jobs:
             git commit -m "phux ${TAG}"
             git push
           fi
+
+  publish:
+    name: publish complete release
+    needs: [prepare, release, homebrew]
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.homebrew.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Require every distributable asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          names=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu
+          do
+            base="phux-${TAG}-${target}.tar.gz"
+            grep -Fxq "$base" <<<"$names"
+            grep -Fxq "${base}.sha256" <<<"$names"
+          done
+
+      - name: Publish the complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false
 
 # The `protocol-crate` job that used to live here is gone on purpose.
 #

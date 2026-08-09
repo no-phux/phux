@@ -15,9 +15,10 @@
 # so week-over-week trends live in DASHBOARD.md there, not in artifact
 # archaeology. The raw --timings HTML is uploaded too for eyeballing.
 #
-# Triggers: weekly (the trend point), manual dispatch (when a build feels
-# slow), and pushes to main that touch the lockfiles or the toolchain pin —
-# the three files whose changes actually move cold-build cost.
+# Triggers: weekly (the trend point) and manual dispatch (when a build feels
+# slow). Dependency and toolchain changes already pass PR CI; automatically
+# paying for two additional cold builds on their merge — including every
+# release-only workspace-version bump — produced cost without a decision.
 
 name: observatory
 
@@ -25,12 +26,6 @@ on:
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - Cargo.lock
-      - flake.lock
-      - rust-toolchain.toml
 
 permissions:
   contents: read
