@@ -1536,12 +1536,29 @@ async fn attach_session<W: super::RenderSink>(
     let mouse_capture = phux_config::loader::load()
         .map(|c| c.defaults.mouse)
         .unwrap_or(true);
+    // Register the fatal-signal handler BEFORE raw mode is entered. The
+    // handler snapshots termios at install time, so installing it after
+    // `RawModeGuard` would capture the *raw* flags and "restore" the user
+    // into raw mode on crash — the exact wedge it exists to prevent.
+    //
+    // This arms the termios-only variant; the escape-code resets are added
+    // by `RawModeGuard` once the alt screen is actually up, so a crash
+    // before that point does not emit stray DECSETs to a normal screen.
+    phux_crash::install_terminal_restore_only();
+
     let _guard = RawModeGuard::install_with_stdout(out, mouse_capture)?;
 
     // Install a panic hook so an unexpected panic inside `main_loop`
     // (renderer bug, libghostty FFI surprise, etc.) still restores the
     // terminal before the default hook prints its backtrace. The hook
     // is global, so we only register it once per process.
+    //
+    // The hook covers panics only — those unwind, so `Drop` and the hook
+    // both run. A *fatal* signal (SIGSEGV/SIGBUS/SIGABRT) does neither,
+    // which is why `phux_crash` is armed separately above. Our own code is
+    // `#![forbid(unsafe_code)]`, so that path is reachable essentially only
+    // through the native libghostty-vt FFI boundary — the "FFI surprise"
+    // this comment already anticipated, in the one form the hook can't see.
     install_panic_hook_once();
 
     // phux-eb0: outer re-attach loop. `main_loop` is single-session by
@@ -4993,6 +5010,14 @@ impl RawModeGuard {
         // confuse cleanup.
         ALT_SCREEN_ACTIVE.store(true, Ordering::SeqCst);
 
+        // Upgrade the fatal-signal handler to also emit the DECSET resets.
+        // Paired with the matching downgrade in `Drop`, so the escape codes
+        // are only ever written while there is genuinely an alt screen and
+        // mouse tracking to undo. No-op if the handler was never installed
+        // (the writer-injecting test path never reaches here — it returns
+        // `NotATty` above — but a future caller might).
+        phux_crash::enable_terminal_escape_restore();
+
         // Park a clone of the original Termios in process-global storage
         // so the signal-handler arms and the panic hook (which can't
         // reach the instance field) can perform a true restore rather
@@ -5024,6 +5049,13 @@ impl Drop for RawModeGuard {
         let mut out = io::stdout().lock();
         let _ = write_terminal_reset(&mut out);
         ALT_SCREEN_ACTIVE.store(false, Ordering::SeqCst);
+
+        // Downgrade the fatal-signal handler back to termios-only. The alt
+        // screen is gone; a crash from here on must not spray DECSET resets
+        // across the user's restored normal screen. Deliberately last, so a
+        // fault *during* the reset above is still covered by the full
+        // sequence.
+        phux_crash::disable_terminal_escape_restore();
     }
 }
 

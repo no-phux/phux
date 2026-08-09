@@ -1,0 +1,100 @@
+# VENDORED — see NOTICE. This crate is a copy of `xai-crash-handler` from
+# xAI's `grok-build` repository, licensed Apache-2.0. It is the ONLY crate in
+# this workspace that is not `MIT OR Apache-2.0`; the `license` field below is
+# deliberately not `license.workspace = true`, so `cargo deny` and any
+# downstream license audit see the narrower grant on exactly the code it
+# covers. Every other phux crate keeps the dual license.
+#
+# Why vendor rather than depend: `xai-crash-handler` is not published to
+# crates.io, and grok-build is a monorepo we do not want as a git dependency.
+# The crate has no internal dependencies of its own (only `backtrace` +
+# platform `libc`/`windows-sys`), so the copy is self-contained.
+#
+# Local modifications from upstream (keep this list current — it is the
+# re-vendoring checklist):
+#   1. Renamed `xai-crash-handler` -> `phux-crash` (crate, paths, doc links).
+#   2. Blob magic `GCRX` -> `PHXC`. Private on-disk format; only this crate
+#      reads it, and a phux crash blob should not claim to be a grok one.
+#   3. Report banner "=== Grok Crash Report ===" -> "=== phux Crash Report ===".
+#   4. `install(dir, grok_version)` parameter renamed to `app_version`.
+#   5. Added `#[derive(Debug)]` to `CrashHandlerConfig` for the workspace's
+#      `missing_debug_implementations` lint.
+#   6. Doc comments retargeted from grok's pager to phux's client; `$GROK_HOME`
+#      reference replaced with phux's state directory.
+#   7. `[lints]` below is crate-local rather than `workspace = true` — see the
+#      comment there.
+#   8. ADDED two integration tests (and their two subprocess scenarios) that
+#      upstream lacks: that a fatal signal with escape restore armed really
+#      does write the DECSET resets to fd 2, and that one with it disarmed
+#      writes none. Upstream only asserted the crash *blob*; the escape
+#      sequence is the half phux actually depends on. Keep these on re-sync.
+# Otherwise byte-for-byte upstream. No logic changes.
+[package]
+name = "phux-crash"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license = "Apache-2.0"
+description = "Fatal-signal crash handler (SIGSEGV/SIGBUS/SIGABRT, Windows SEH) that restores the terminal from signal context and writes a crash blob for the next startup to symbolicate."
+publish = false
+
+[dependencies]
+# Symbolicates the raw instruction pointers captured in the signal handler.
+# Runs at *startup* against the previous session's blob, never in signal
+# context (`backtrace::Backtrace` allocates and is not async-signal-safe).
+backtrace = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+# `sigaction`/`sigaltstack` to register the handler, `tcgetattr`/`tcsetattr`
+# to snapshot and restore termios, and raw `write(2)`/`open(2)` because the
+# handler must not allocate. `rustix` (which the rest of phux uses) has no
+# async-signal-safe raw-fd write we can call from a handler, and its termios
+# types are not `static`-constructible for the pre-signal snapshot.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_Kernel",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+# The integration tests re-exec the test binary and really do raise
+# SIGSEGV/SIGBUS/SIGABRT in the child, then assert on the blob it left behind.
+# `tokio` proves the handler coexists with a running runtime and does not
+# clobber tokio's own signal handlers.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "io-util", "net"] }
+tempfile.workspace = true
+
+# NOT `workspace = true`. This is vendored third-party code: `clippy::pedantic`
+# and `clippy::nursery` fire heavily on it (raw pointer casts, `unsafe` blocks,
+# C-style loops), and rewriting it to satisfy them would destroy the property
+# that makes it trustworthy — that it is a byte-for-byte copy of code with a
+# real test suite behind it, cheap to re-sync from upstream.
+#
+# The lints that actually matter for *this* code are kept at `deny`:
+# `unsafe_op_in_unsafe_fn` (every `unsafe fn` here already opens an explicit
+# `unsafe` block) and `unused_must_use`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "allow"
+
+[lints.clippy]
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }
+# `format::writer::write_header` takes the 8 blob header fields positionally.
+# Grouping them into a struct would mean constructing that struct inside the
+# signal handler, which is exactly the kind of code the handler avoids.
+too_many_arguments = "allow"

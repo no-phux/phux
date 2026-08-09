@@ -59,6 +59,15 @@ phux-config.workspace = true
 # no new external surface. The attach driver spawns the run off the input
 # loop and toasts captured failure output.
 phux-plugin.workspace = true
+# Fatal-signal terminal restore. `RawModeGuard::drop` and the panic hook cover
+# every teardown that unwinds; a SIGSEGV/SIGBUS/SIGABRT does not unwind, so
+# neither runs and the user is left in raw mode inside the alt screen. This
+# crate registers an async-signal-safe handler that writes the DECSET resets
+# with a raw `write(2)` and restores termios before re-raising. It is the only
+# Apache-2.0-ONLY dependency in the workspace (vendored — see its NOTICE); the
+# `unsafe` it needs lives behind that crate boundary so this crate keeps
+# `#![forbid(unsafe_code)]`.
+phux-crash.workspace = true
 # phux-nz4.5: TOML values reach the status-bar painter's tests via
 # `WidgetSpec::opts`; dev-only use, declared here for `toml::Value`
 # constructor access.
