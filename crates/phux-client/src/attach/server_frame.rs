@@ -329,6 +329,50 @@ const fn history_rejection_reason(
     })
 }
 
+/// The panes an ATTACH will actually bootstrap: those of the focused session.
+///
+/// `SessionSnapshot` is a whole-workspace view — its own field docs say
+/// `panes` is "every pane across every visible window", because the sidebar
+/// and session switcher need the full tree. The **attach** is narrower: the
+/// server bootstraps only `attach_snapshot_panes(sid)`, the focused session's
+/// panes (`runtime::commands::prepare_attach`).
+///
+/// Treating every pane in the snapshot as an attach participant therefore
+/// registered panes that would never receive a `BOOTSTRAP_*` frame, so they
+/// stayed unresolved and `ATTACH_READY` was rejected with
+/// `AttachNotReady { remaining }` — where `remaining` was exactly the pane
+/// count of the *other* sessions. The practical effect: attaching worked on a
+/// server with one session and failed on every server with two or more, which
+/// is to say phux stopped working as a multiplexer the moment it was used as
+/// one (phux-atch).
+///
+/// Scoping here rather than narrowing the snapshot keeps the wire contract
+/// intact: the client still receives the whole workspace, and only the attach
+/// bookkeeping is session-scoped. It spans the session's *windows*: the
+/// aggregate barrier covers every pane the server will bootstrap, which is
+/// the whole session tree, not just the focused window.
+///
+/// A pane whose `window_id` has no matching `WindowInfo` is **excluded**. A
+/// real snapshot always carries one per window, so this is unreachable in
+/// practice; the choice matters only for the direction it fails. Excluding
+/// risks releasing the barrier before a pane has bootstrapped (it renders a
+/// beat late); including risks an attach that can never complete, which is
+/// the failure being fixed here.
+fn attach_participants(snapshot: &phux_protocol::wire::info::SessionSnapshot) -> Vec<TerminalId> {
+    let focused_windows: Vec<_> = snapshot
+        .windows
+        .iter()
+        .filter(|window| window.session_id == snapshot.focused_session)
+        .map(|window| window.id)
+        .collect();
+    snapshot
+        .panes
+        .iter()
+        .filter(|pane| focused_windows.contains(&pane.window_id))
+        .map(|pane| pane.id.clone())
+        .collect()
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "cohesive translation of ordered wire-frame variants into session-kernel inputs and effects"
@@ -345,11 +389,7 @@ fn route_engine_frame(
             snapshot,
             ..
         } => {
-            terminals = snapshot
-                .panes
-                .iter()
-                .map(|pane| pane.id.clone())
-                .collect::<Vec<_>>();
+            terminals = attach_participants(snapshot);
             Some(KernelInput::AttachStarted {
                 attach_id: *attach_id,
                 terminals: &terminals,
@@ -1785,15 +1825,17 @@ fn reconcile_loaded_layout(state: &mut LayoutState, local_focus: Option<&Termina
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::{
-        AgentMetaIndex, FrameOutcome, handle_server_frame as handle_server_frame_with_kernel,
-        route_engine_frame,
+        AgentMetaIndex, FrameOutcome, attach_participants,
+        handle_server_frame as handle_server_frame_with_kernel, route_engine_frame,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
 
     use phux_protocol::ids::{ClientId, SessionId, TerminalId, WindowId};
     use phux_protocol::wire::frame::FrameKind;
-    use phux_protocol::wire::info::{LayoutNode, SessionSnapshot, SplitDir, TerminalInfo};
+    use phux_protocol::wire::info::{
+        LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
+    };
 
     use crate::attach::outcome::{AttachEnd, AttachError};
     use crate::attach::pane_state::PaneSlot;
@@ -1801,6 +1843,75 @@ mod tests {
     use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 
     static TRACE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// phux-atch: the attach participant set is the FOCUSED session's panes,
+    /// not every pane in the snapshot.
+    ///
+    /// The snapshot is a whole-workspace view by contract, but the server
+    /// bootstraps only the focused session's panes. Counting the rest as
+    /// participants left them permanently unresolved, so `ATTACH_READY` was
+    /// rejected with `remaining` equal to the other sessions' pane count —
+    /// attaching worked with one session on the server and failed with two or
+    /// more. This asserts the count directly, because that arithmetic *is*
+    /// the bug.
+    #[test]
+    fn attach_participants_cover_only_the_focused_session() {
+        let focused = SessionId::new(1);
+        let other = SessionId::new(2);
+        let focused_window = WindowId::new(10);
+        let other_window = WindowId::new(20);
+
+        let snapshot = SessionSnapshot::new(focused, focused_window, TerminalId::new(100))
+            .with_sessions(vec![
+                SessionInfo::new(focused, "focused".to_owned()),
+                SessionInfo::new(other, "other".to_owned()),
+            ])
+            .with_windows(vec![
+                WindowInfo::new(focused_window, focused, "w0".to_owned()),
+                WindowInfo::new(other_window, other, "w0".to_owned()),
+            ])
+            .with_panes(vec![
+                TerminalInfo::new(TerminalId::new(100), focused_window, 80, 24),
+                TerminalInfo::new(TerminalId::new(101), focused_window, 80, 24),
+                // Belongs to a session this attach does not touch; the server
+                // will never bootstrap it.
+                TerminalInfo::new(TerminalId::new(200), other_window, 80, 24),
+            ]);
+
+        let participants = attach_participants(&snapshot);
+
+        assert_eq!(
+            participants,
+            vec![TerminalId::new(100), TerminalId::new(101)],
+            "only the focused session's panes are bootstrapped, so only they \
+             may be attach participants",
+        );
+        assert!(
+            !participants.contains(&TerminalId::new(200)),
+            "a pane from another session would never resolve, and ATTACH_READY \
+             would be rejected for as many panes as the other sessions hold",
+        );
+    }
+
+    /// The single-session case must be unchanged — it is the one shape that
+    /// worked before, and the fix must not narrow it.
+    #[test]
+    fn a_single_session_snapshot_keeps_every_pane() {
+        let session = SessionId::new(1);
+        let window = WindowId::new(10);
+        let snapshot = SessionSnapshot::new(session, window, TerminalId::new(100))
+            .with_sessions(vec![SessionInfo::new(session, "only".to_owned())])
+            .with_windows(vec![WindowInfo::new(window, session, "w0".to_owned())])
+            .with_panes(vec![
+                TerminalInfo::new(TerminalId::new(100), window, 80, 24),
+                TerminalInfo::new(TerminalId::new(101), window, 80, 24),
+            ]);
+
+        assert_eq!(
+            attach_participants(&snapshot),
+            vec![TerminalId::new(100), TerminalId::new(101)]
+        );
+    }
 
     /// Strip CSI escape sequences (`ESC [ ... final`) from a captured
     /// render stream, leaving only the printable glyphs, so a content
@@ -2052,7 +2163,18 @@ mod tests {
         let off_window = tid(95);
         let focused_window = WindowId::new(70);
         let other_window = WindowId::new(71);
-        let snapshot = SessionSnapshot::new(SessionId::new(72), focused_window, focused.clone())
+        let session = SessionId::new(72);
+        // Both windows belong to the ATTACHED session: the aggregate barrier
+        // spans a session's windows, and the server bootstraps every pane in
+        // it. The window entries are what make that resolvable — a real
+        // `build_session_snapshot` always emits one per window, and the
+        // attach participant set maps pane -> window -> session through them
+        // (phux-atch).
+        let snapshot = SessionSnapshot::new(session, focused_window, focused.clone())
+            .with_windows(vec![
+                WindowInfo::new(focused_window, session, "w0".to_owned()),
+                WindowInfo::new(other_window, session, "w1".to_owned()),
+            ])
             .with_panes(vec![
                 TerminalInfo::new(focused.clone(), focused_window, 80, 24),
                 TerminalInfo::new(off_window.clone(), other_window, 80, 24),
