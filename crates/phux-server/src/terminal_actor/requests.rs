@@ -247,15 +247,77 @@ pub(crate) enum WriteCompletion {
     CanonicalLimitExceeded { limit: usize },
 }
 
+/// One-shot report path for an acknowledged write's [`WriteCompletion`].
+///
+/// This used to be a plain `std::sync::mpsc::Sender<WriteCompletion>`, one
+/// channel per operation, because exactly one operation could be unresolved at
+/// a time and the input lane blocked on its receiver. Per-Terminal admission
+/// (phux-w7z2.58) makes many operations unresolved at once, multiplexed onto a
+/// single completion queue, so the sink carries the callback that tags this
+/// operation's outcome with its queue ticket instead of a bare sender.
+///
+/// Dropping an unfired sink reports [`WriteCompletion::Failed`], preserving the
+/// old "dropped sender means indeterminate delivery" contract for every path
+/// that discards a request without writing it (a full or closed pane mailbox, a
+/// pane with no PTY, an actor destroyed with the request still queued).
+pub(crate) struct WriteCompletionSink {
+    notify: Option<Box<dyn FnOnce(WriteCompletion) + Send>>,
+}
+
+impl WriteCompletionSink {
+    pub(crate) fn new(notify: impl FnOnce(WriteCompletion) + Send + 'static) -> Self {
+        Self {
+            notify: Some(Box::new(notify)),
+        }
+    }
+
+    /// Report `outcome` exactly once. Consumes the sink, so the `Drop` fallback
+    /// cannot also fire.
+    pub(crate) fn complete(mut self, outcome: WriteCompletion) {
+        if let Some(notify) = self.notify.take() {
+            notify(outcome);
+        }
+    }
+
+    /// A sink whose outcome lands on a plain channel, for tests that drive one
+    /// operation at a time and want to `recv` its completion directly.
+    #[cfg(test)]
+    pub(crate) fn channel() -> (Self, std::sync::mpsc::Receiver<WriteCompletion>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (
+            Self::new(move |outcome| {
+                let _ = tx.send(outcome);
+            }),
+            rx,
+        )
+    }
+}
+
+impl Drop for WriteCompletionSink {
+    fn drop(&mut self) {
+        if let Some(notify) = self.notify.take() {
+            notify(WriteCompletion::Failed);
+        }
+    }
+}
+
+impl std::fmt::Debug for WriteCompletionSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteCompletionSink")
+            .field("armed", &self.notify.is_some())
+            .finish()
+    }
+}
+
 /// Bytes destined for the PTY writer, optionally carrying final write/flush
 /// completion for acknowledged input.
 #[derive(Debug)]
 pub(crate) struct EncodedInputRequest {
     /// Fully encoded PTY bytes.
     pub(crate) bytes: Bytes,
-    /// See [`WriteCompletion`]. Dropping the sender reports indeterminate
-    /// delivery (the receiver observes a closed channel).
-    pub(crate) completion: Option<std::sync::mpsc::Sender<WriteCompletion>>,
+    /// See [`WriteCompletion`] and [`WriteCompletionSink`]. Dropping the sink
+    /// reports indeterminate delivery.
+    pub(crate) completion: Option<WriteCompletionSink>,
 }
 
 impl EncodedInputRequest {
@@ -273,10 +335,7 @@ impl EncodedInputRequest {
         }
     }
 
-    pub(crate) fn acknowledged(
-        bytes: Vec<u8>,
-        completion: std::sync::mpsc::Sender<WriteCompletion>,
-    ) -> Self {
+    pub(crate) fn acknowledged(bytes: Vec<u8>, completion: WriteCompletionSink) -> Self {
         Self {
             bytes: Bytes::from(bytes),
             completion: Some(completion),

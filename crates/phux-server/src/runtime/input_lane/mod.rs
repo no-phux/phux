@@ -41,6 +41,16 @@
 //!   free and dropped if another client has since grabbed it — either is a
 //!   legal fire-and-forget result. Cross-client exclusion never weakens.
 //!
+//! ## Acknowledged input
+//!
+//! `APPLY_INPUT` shares this FIFO so an acknowledged batch cannot be overtaken
+//! by the same client's other input, but it is the one surface that owes its
+//! caller a verdict from the PTY writer. The lane never waits for that verdict:
+//! it validates, binds the dedupe record, encodes, registers the operation, and
+//! hands off, all synchronously. Admission and the completion wait live in the
+//! `acknowledged` submodule — read its module docs before changing anything on
+//! this path, including why admission is keyed by Terminal (phux-w7z2.58).
+//!
 //! Only **local** pane ids are routed through the lane. Satellite-tagged ids
 //! (federation-hub relay, phux-v45.4) stay on the main thread: their delivery
 //! is a hub-link forward, not a mailbox `try_send`, and keeping it inline
@@ -49,16 +59,21 @@
 //! command result is emitted only after the lane applies the lease/mailbox
 //! operation.
 
-use bytes::BytesMut;
+mod acknowledged;
+
 use phux_protocol::ids::InputOperationId;
 use phux_protocol::input::InputEvent;
-use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
+use phux_protocol::wire::frame::{CommandResult, ErrorCode};
 use phux_protocol::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
+pub(crate) use self::acknowledged::AcknowledgedReservation;
+use self::acknowledged::{
+    ACKNOWLEDGED_COMPLETION_TIMEOUT, AcknowledgedAdmission, CacheBinding, CompletionTicket,
+    CompletionWaiter, CompletionWaiterHandle, PendingCompletion, SharedOperationCache,
+    TicketSource, deadline_from, operation_digest,
+};
 use super::{
     terminal_input_from_event, with_attached_input_destination, with_route_input_destination,
 };
@@ -67,44 +82,13 @@ use crate::input::{
     PerTerminalMouseEncoder, PerTerminalPasteEncoder,
 };
 use crate::state::{ClientId, SharedState, TerminalInput};
-use crate::terminal_actor::{EncodedInputRequest, TerminalHandle, WriteCompletion};
+use crate::terminal_actor::{EncodedInputRequest, TerminalHandle};
 
 /// Bound on the lane's inbound queue. Input events are tiny and low-rate, so a
 /// generous cap absorbs a paste-expanded burst without unbounded growth. On
 /// overflow the lane drops with a `warn!`, matching the fire-and-forget
 /// backpressure already applied at the pane mailbox (SPEC §9).
 const INPUT_LANE_CAPACITY: usize = 1024;
-const DEDUPE_MAX_ENTRIES: usize = 65_536;
-const DEDUPE_RETENTION: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-const ACKNOWLEDGED_COMPLETION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-#[derive(Debug)]
-pub(crate) struct AcknowledgedReservation {
-    admitted: Arc<AtomicBool>,
-    admitted_at: std::time::Instant,
-}
-
-impl AcknowledgedReservation {
-    fn try_acquire(admitted: &Arc<AtomicBool>) -> Option<Self> {
-        admitted
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()
-            .map(|_| Self {
-                admitted: Arc::clone(admitted),
-                admitted_at: std::time::Instant::now(),
-            })
-    }
-
-    const fn admitted_at(&self) -> std::time::Instant {
-        self.admitted_at
-    }
-}
-
-impl Drop for AcknowledgedReservation {
-    fn drop(&mut self) {
-        self.admitted.store(false, Ordering::Release);
-    }
-}
 
 /// One local input operation lifted off the main runtime. Both wire input
 /// surfaces share this queue so a client's mixed `INPUT_*` / `ROUTE_INPUT`
@@ -162,7 +146,7 @@ impl RoutedInput {
 #[derive(Clone, Debug)]
 pub(crate) struct InputLaneHandle {
     tx: mpsc::Sender<RoutedInput>,
-    acknowledged_admitted: Arc<AtomicBool>,
+    admission: Arc<AcknowledgedAdmission>,
 }
 
 impl InputLaneHandle {
@@ -232,9 +216,11 @@ impl InputLaneHandle {
         terminal_id: phux_protocol::ids::TerminalId,
         events: Vec<InputEvent>,
     ) -> CommandResult {
-        let Some(reservation) = AcknowledgedReservation::try_acquire(&self.acknowledged_admitted)
+        let Some(reservation) = AcknowledgedReservation::try_acquire(&self.admission, &terminal_id)
         else {
-            return acknowledged_resource_exhausted("another APPLY_INPUT operation is in flight");
+            return acknowledged_resource_exhausted(
+                "another APPLY_INPUT operation is in flight for this terminal",
+            );
         };
         let (reply, result) = oneshot::channel();
         let routed = RoutedInput {
@@ -289,7 +275,7 @@ impl InputLaneHandle {
         terminal_id: phux_protocol::ids::TerminalId,
         events: Vec<InputEvent>,
     ) -> Result<oneshot::Receiver<CommandResult>, CommandResult> {
-        let reservation = AcknowledgedReservation::try_acquire(&self.acknowledged_admitted)
+        let reservation = AcknowledgedReservation::try_acquire(&self.admission, &terminal_id)
             .ok_or_else(|| acknowledged_resource_exhausted("APPLY_INPUT already admitted"))?;
         let (reply, result) = oneshot::channel();
         let routed = RoutedInput {
@@ -340,17 +326,18 @@ impl RoutedInputKind {
 #[derive(Debug)]
 pub(crate) struct InputLane {
     handle: InputLaneHandle,
-    acknowledged_admitted: Arc<AtomicBool>,
+    admission: Arc<AcknowledgedAdmission>,
     join: Option<std::thread::JoinHandle<()>>,
+    /// Dropped after the lane thread is joined, so no registration can race
+    /// the waiter's shutdown.
+    #[allow(dead_code, reason = "held for its Drop: stops and joins the waiter")]
+    waiter: CompletionWaiter,
 }
 
 impl InputLane {
     /// A cloneable routing handle for client tasks.
     pub(crate) fn handle(&self) -> InputLaneHandle {
-        debug_assert!(Arc::ptr_eq(
-            &self.acknowledged_admitted,
-            &self.handle.acknowledged_admitted
-        ));
+        debug_assert!(Arc::ptr_eq(&self.admission, &self.handle.admission));
         self.handle.clone()
     }
 }
@@ -371,6 +358,8 @@ impl Drop for InputLane {
         {
             tracing::warn!(?err, "input lane thread panicked on shutdown");
         }
+        // `self.waiter` drops after this body returns, stopping the completion
+        // waiter once the lane thread can no longer register anything new.
     }
 }
 
@@ -444,108 +433,6 @@ impl LaneEncoderSet {
             },
         }
     }
-}
-
-#[derive(Debug)]
-struct CachedOperation {
-    digest: [u8; 32],
-    result: Option<CommandResult>,
-    inserted_at: std::time::Instant,
-}
-
-#[derive(Debug, PartialEq)]
-enum CacheBinding {
-    New,
-    Pending,
-    Final(CommandResult),
-    Conflict,
-    Full,
-}
-
-#[derive(Debug, Default)]
-struct OperationCache {
-    entries: std::collections::HashMap<InputOperationId, CachedOperation>,
-    expiry: std::collections::VecDeque<(std::time::Instant, InputOperationId)>,
-}
-
-impl OperationCache {
-    fn prune_expired(&mut self, now: std::time::Instant) {
-        while self.expiry.front().is_some_and(|(inserted_at, _)| {
-            now.saturating_duration_since(*inserted_at) >= DEDUPE_RETENTION
-        }) {
-            let Some((inserted_at, operation_id)) = self.expiry.pop_front() else {
-                break;
-            };
-            if self
-                .entries
-                .get(&operation_id)
-                .is_some_and(|entry| entry.inserted_at == inserted_at)
-            {
-                self.entries.remove(&operation_id);
-            }
-        }
-    }
-
-    fn is_full(&self) -> bool {
-        self.entries.len() >= DEDUPE_MAX_ENTRIES
-    }
-
-    fn bind_at(
-        &mut self,
-        operation_id: InputOperationId,
-        digest: [u8; 32],
-        admitted_at: std::time::Instant,
-    ) -> CacheBinding {
-        self.prune_expired(admitted_at);
-        if let Some(cached) = self.entries.get(&operation_id) {
-            if cached.digest != digest {
-                return CacheBinding::Conflict;
-            }
-            return cached
-                .result
-                .as_ref()
-                .map_or(CacheBinding::Pending, |result| {
-                    CacheBinding::Final(result.clone())
-                });
-        }
-        if self.is_full() {
-            return CacheBinding::Full;
-        }
-        self.entries.insert(
-            operation_id,
-            CachedOperation {
-                digest,
-                result: None,
-                inserted_at: admitted_at,
-            },
-        );
-        self.expiry.push_back((admitted_at, operation_id));
-        CacheBinding::New
-    }
-
-    fn set_final(&mut self, operation_id: InputOperationId, result: CommandResult) {
-        if let Some(cached) = self.entries.get_mut(&operation_id) {
-            cached.result = Some(result);
-        }
-    }
-}
-
-fn operation_digest(
-    operation_id: InputOperationId,
-    terminal_id: &phux_protocol::ids::TerminalId,
-    events: Vec<InputEvent>,
-) -> [u8; 32] {
-    let frame = FrameKind::Command {
-        request_id: 0,
-        command: Command::ApplyInput {
-            operation_id,
-            terminal_id: terminal_id.clone(),
-            events,
-        },
-    };
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
-    Sha256::digest(&encoded).into()
 }
 
 fn prune_closed_encoders(
@@ -708,64 +595,77 @@ fn acknowledged_resource_exhausted(message: &str) -> CommandResult {
     }
 }
 
+fn internal_error(message: &str) -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::InternalError,
+        message: message.to_owned(),
+    }
+}
+
+/// An acknowledged batch that passed every pre-handoff gate: authority, dedupe
+/// binding, paste safety, and encoding.
+struct PreparedBatch {
+    destination: super::InputDestination,
+    bytes: Vec<u8>,
+}
+
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "the atomic batch path keeps validation, handoff, completion, and caching in one ordered transaction"
+    reason = "one ordered validation transaction; splitting it would only move the arguments"
 )]
-fn process_apply_input(
+fn prepare_acknowledged_batch(
     state: &SharedState,
     encoders: &mut std::collections::HashMap<phux_core::ids::TerminalId, LaneEncoderSet>,
-    cache: &mut OperationCache,
+    cache: &SharedOperationCache,
     client_id: ClientId,
     operation_id: InputOperationId,
     terminal_id: &phux_protocol::ids::TerminalId,
     events: Vec<InputEvent>,
     admitted_at: std::time::Instant,
-    completion_timeout: std::time::Duration,
-) -> CommandResult {
+) -> Result<PreparedBatch, CommandResult> {
     if events.is_empty() || events.len() > MAX_APPLY_INPUT_EVENTS {
-        return invalid_command("APPLY_INPUT requires 1..=256 events");
+        return Err(invalid_command("APPLY_INPUT requires 1..=256 events"));
     }
 
     let digest = operation_digest(operation_id, terminal_id, events.clone());
     let mut inputs = Vec::with_capacity(events.len());
     for event in events {
-        match terminal_input_from_event(event) {
-            Ok(input) => inputs.push(input),
-            Err(result) => return result,
-        }
+        inputs.push(terminal_input_from_event(event)?);
     }
     match cache.bind_at(operation_id, digest, admitted_at) {
-        CacheBinding::Final(result) => return result,
+        CacheBinding::Final(result) => return Err(result),
         CacheBinding::Conflict => {
-            return invalid_command("APPLY_INPUT operation id reused with a different payload");
+            return Err(invalid_command(
+                "APPLY_INPUT operation id reused with a different payload",
+            ));
         }
         CacheBinding::Full => {
-            return acknowledged_resource_exhausted("acknowledged-input dedupe cache is full");
+            return Err(acknowledged_resource_exhausted(
+                "acknowledged-input dedupe cache is full",
+            ));
         }
+        // `Pending` is reachable only after a pre-handoff refusal released the
+        // reservation without a result: per-Terminal admission keeps a second
+        // operation off a Terminal whose write is still unresolved.
         CacheBinding::New | CacheBinding::Pending => {}
     }
 
     let destination =
-        match with_route_input_destination(state, client_id, terminal_id, std::convert::identity) {
-            Ok(destination) => destination,
-            Err(result) => return result,
-        };
+        with_route_input_destination(state, client_id, terminal_id, std::convert::identity)?;
     let encoder = match encoder_for(encoders, destination.pane, &destination.handle) {
         Ok(encoder) => encoder,
         Err(err) => {
             tracing::warn!(error = %err, pane = ?destination.pane, "APPLY_INPUT encoder unavailable");
-            return invalid_command("APPLY_INPUT encoder unavailable");
+            return Err(invalid_command("APPLY_INPUT encoder unavailable"));
         }
     };
     if inputs.iter().any(
         |input| matches!(input, TerminalInput::Paste(event) if encoder.paste.would_reject(event)),
     ) {
-        return CommandResult::Error {
+        return Err(CommandResult::Error {
             code: ErrorCode::UnsafePaste,
             message: "APPLY_INPUT batch contains an unsafe paste".to_owned(),
-        };
+        });
     }
 
     let snapshot = *encoder.snapshot.borrow();
@@ -774,69 +674,121 @@ fn process_apply_input(
         match encoder.encode_with_snapshot(input, snapshot) {
             Ok(Some(event_bytes)) => {
                 if bytes.len().saturating_add(event_bytes.len()) > MAX_APPLY_INPUT_COMMAND_BODY {
-                    return invalid_command("APPLY_INPUT encoded PTY bytes exceed 64 KiB");
+                    return Err(invalid_command(
+                        "APPLY_INPUT encoded PTY bytes exceed 64 KiB",
+                    ));
                 }
                 bytes.extend_from_slice(&event_bytes);
             }
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(error = %err, pane = ?destination.pane, "APPLY_INPUT encode failed");
-                return invalid_command("APPLY_INPUT event encoding failed");
+                return Err(invalid_command("APPLY_INPUT event encoding failed"));
             }
         }
     }
 
-    let (completion, completed) = std::sync::mpsc::channel();
-    let request = EncodedInputRequest::acknowledged(bytes, completion);
-    let handed_off = match with_route_input_destination(state, client_id, terminal_id, |current| {
-        if !destination
+    Ok(PreparedBatch { destination, bytes })
+}
+
+/// Validate, encode, and hand off one acknowledged batch, then leave.
+///
+/// Nothing here waits for the PTY. The operation is registered with the
+/// completion waiter *before* the handoff — the writer's report travels the
+/// same queue as the registration, so a fast write can never overtake it — and
+/// from that point the waiter owns both the caller's reply channel and the
+/// Terminal's admission reservation.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the atomic batch path keeps validation, handoff, and registration in one ordered transaction"
+)]
+fn process_apply_input(
+    state: &SharedState,
+    encoders: &mut std::collections::HashMap<phux_core::ids::TerminalId, LaneEncoderSet>,
+    cache: &SharedOperationCache,
+    waiter: &CompletionWaiterHandle,
+    ticket: CompletionTicket,
+    completion_timeout: std::time::Duration,
+    client_id: ClientId,
+    operation_id: InputOperationId,
+    terminal_id: &phux_protocol::ids::TerminalId,
+    events: Vec<InputEvent>,
+    reservation: AcknowledgedReservation,
+    reply: oneshot::Sender<CommandResult>,
+) {
+    let admitted_at = reservation.admitted_at();
+    let prepared = match prepare_acknowledged_batch(
+        state,
+        encoders,
+        cache,
+        client_id,
+        operation_id,
+        terminal_id,
+        events,
+        admitted_at,
+    ) {
+        Ok(prepared) => prepared,
+        Err(result) => {
+            // Refused before registration: answer directly and release the
+            // Terminal. A pre-handoff refusal deliberately leaves the dedupe
+            // record unresolved (SPEC L1 6.2.1).
+            drop(reservation);
+            let _ = reply.send(result);
+            return;
+        }
+    };
+
+    let deadline = deadline_from(std::time::Instant::now(), completion_timeout);
+    if let Err(pending) = waiter.register(PendingCompletion::new(
+        ticket,
+        operation_id,
+        deadline,
+        reservation,
+        reply,
+    )) {
+        pending.resolve_without_writer(internal_error(
+            "acknowledged completion waiter unavailable for APPLY_INPUT",
+        ));
+        return;
+    }
+
+    // Past this point the waiter owns the answer, so every failure has to be
+    // reported through it. The branches holding a live request abandon the
+    // ticket *before* dropping it, because dropping an unfired sink reports
+    // `Failed` and whichever message lands first decides the result. The outer
+    // `abandon` then finds no ticket and is a no-op.
+    let handoff = with_route_input_destination(state, client_id, terminal_id, |current| {
+        if !prepared
+            .destination
             .handle
             .input_snapshot
             .same_channel(&current.handle.input_snapshot)
         {
-            return Err(CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: "pane actor changed before APPLY_INPUT handoff".to_owned(),
-            });
+            return Err(internal_error(
+                "pane actor changed before APPLY_INPUT handoff",
+            ));
         }
+        let request = EncodedInputRequest::acknowledged(prepared.bytes, waiter.sink(ticket));
         match current.handle.encoded_input.try_send(request) {
             Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => Err(CommandResult::Error {
-                code: ErrorCode::ResourceExhausted,
-                message: "pane actor input mailbox is full".to_owned(),
-            }),
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: "pane actor unavailable for APPLY_INPUT".to_owned(),
-            }),
+            Err(mpsc::error::TrySendError::Full(request)) => {
+                let refusal = acknowledged_resource_exhausted("pane actor input mailbox is full");
+                waiter.abandon(ticket, refusal.clone());
+                drop(request);
+                Err(refusal)
+            }
+            Err(mpsc::error::TrySendError::Closed(request)) => {
+                let refusal = internal_error("pane actor unavailable for APPLY_INPUT");
+                waiter.abandon(ticket, refusal.clone());
+                drop(request);
+                Err(refusal)
+            }
         }
-    }) {
-        Ok(result) => result,
-        Err(result) => Err(result),
-    };
-    if let Err(result) = handed_off {
-        return result;
+    });
+    match handoff {
+        Ok(Ok(())) => {}
+        Ok(Err(result)) | Err(result) => waiter.abandon(ticket, result),
     }
-
-    let result = match completed.recv_timeout(completion_timeout) {
-        Ok(WriteCompletion::Delivered) => CommandResult::Ok,
-        Ok(WriteCompletion::CanonicalLimitExceeded { limit }) => CommandResult::Error {
-            code: ErrorCode::CanonicalLimitExceeded,
-            message: format!(
-                "the pane is in canonical (cooked) mode and this batch's encoded PTY \
-                 bytes contain a line longer than {limit} bytes with no line \
-                 terminator; split it into newline-terminated lines, or have the pane \
-                 enter raw mode (e.g. run a program that disables ICANON) before \
-                 sending it"
-            ),
-        },
-        Ok(WriteCompletion::Failed) | Err(_) => CommandResult::Error {
-            code: ErrorCode::InputDeliveryUnknown,
-            message: "PTY input delivery could not be confirmed".to_owned(),
-        },
-    };
-    cache.set_final(operation_id, result.clone());
-    result
 }
 
 pub(crate) fn spawn_input_lane(state: SharedState) -> std::io::Result<InputLane> {
@@ -848,15 +800,19 @@ fn spawn_input_lane_with_completion_timeout(
     completion_timeout: std::time::Duration,
 ) -> std::io::Result<InputLane> {
     let (tx, mut rx) = mpsc::channel::<RoutedInput>(INPUT_LANE_CAPACITY);
-    let acknowledged_admitted = Arc::new(AtomicBool::new(false));
+    let admission = Arc::new(AcknowledgedAdmission::default());
+    let cache = SharedOperationCache::default();
+    let waiter = CompletionWaiter::spawn(cache.clone())?;
+    let waiter_handle = waiter.handle();
     let join = std::thread::Builder::new()
         .name("phux-input-lane".to_owned())
         .spawn(move || {
             let mut encoders = std::collections::HashMap::new();
-            let mut cache = OperationCache::default();
+            let mut tickets = TicketSource::default();
             // `blocking_recv` parks the thread with no tokio runtime on it.
-            // Gating, snapshot reads, encoding, and the bounded actor handoff
-            // are all synchronous and non-blocking.
+            // Gating, snapshot reads, encoding, the bounded actor handoff, and
+            // the completion registration are all synchronous and
+            // non-blocking, so no pane can stall another pane's input here.
             while let Some(routed) = rx.blocking_recv() {
                 prune_closed_encoders(&mut encoders);
                 match routed.kind {
@@ -883,22 +839,20 @@ fn spawn_input_lane_with_completion_timeout(
                         events,
                         reservation,
                         reply,
-                    } => {
-                        let admitted_at = reservation.admitted_at();
-                        let result = process_apply_input(
-                            &state,
-                            &mut encoders,
-                            &mut cache,
-                            routed.client_id,
-                            operation_id,
-                            &routed.terminal_id,
-                            events,
-                            admitted_at,
-                            completion_timeout,
-                        );
-                        drop(reservation);
-                        let _ = reply.send(result);
-                    }
+                    } => process_apply_input(
+                        &state,
+                        &mut encoders,
+                        &cache,
+                        &waiter_handle,
+                        tickets.next_ticket(),
+                        completion_timeout,
+                        routed.client_id,
+                        operation_id,
+                        &routed.terminal_id,
+                        events,
+                        reservation,
+                        reply,
+                    ),
                 }
             }
             tracing::debug!("input lane thread exiting (channel closed)");
@@ -906,10 +860,11 @@ fn spawn_input_lane_with_completion_timeout(
     Ok(InputLane {
         handle: InputLaneHandle {
             tx,
-            acknowledged_admitted: Arc::clone(&acknowledged_admitted),
+            admission: Arc::clone(&admission),
         },
-        acknowledged_admitted,
+        admission,
         join: Some(join),
+        waiter,
     })
 }
 
@@ -921,7 +876,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::terminal_actor::TerminalActor;
+    use crate::terminal_actor::{TerminalActor, WriteCompletion};
 
     /// Ceiling for "the lane was handed this work, so it should already be on
     /// the other side" waits.
@@ -965,12 +920,6 @@ mod tests {
 
     fn operation_id(byte: u8) -> InputOperationId {
         InputOperationId::new([byte; 16]).expect("non-zero operation id")
-    }
-
-    fn operation_id_from_u64(value: u64) -> InputOperationId {
-        let mut bytes = [0; 16];
-        bytes[8..].copy_from_slice(&value.to_be_bytes());
-        InputOperationId::new(bytes).expect("non-zero operation id")
     }
 
     /// A registered pane actor plus two subscribed clients, wired into a fresh
@@ -1339,8 +1288,7 @@ mod tests {
                 request
                     .completion
                     .expect("acknowledged completion")
-                    .send(WriteCompletion::Delivered)
-                    .expect("lane waiting");
+                    .complete(WriteCompletion::Delivered);
                 assert_eq!(first.await.expect("apply task"), CommandResult::Ok);
 
                 assert_eq!(
@@ -1382,8 +1330,7 @@ mod tests {
                 request
                     .completion
                     .expect("completion")
-                    .send(WriteCompletion::Delivered)
-                    .unwrap();
+                    .complete(WriteCompletion::Delivered);
                 assert_eq!(first.await.unwrap(), CommandResult::Ok);
 
                 let conflict = handle
@@ -1578,8 +1525,7 @@ mod tests {
                 request
                     .completion
                     .expect("completion")
-                    .send(WriteCompletion::Failed)
-                    .unwrap();
+                    .complete(WriteCompletion::Failed);
                 let first_result = first.await.unwrap();
                 assert!(matches!(
                     first_result,
@@ -1667,8 +1613,7 @@ mod tests {
                 request
                     .completion
                     .expect("completion")
-                    .send(WriteCompletion::Delivered)
-                    .unwrap();
+                    .complete(WriteCompletion::Delivered);
                 assert_eq!(retry.await.unwrap(), CommandResult::Ok);
                 fx.token.cancel();
             })
@@ -1741,7 +1686,7 @@ mod tests {
                         ..
                     }
                 ));
-                assert!(late_completion.send(WriteCompletion::Delivered).is_err());
+                late_completion.complete(WriteCompletion::Delivered);
                 assert_eq!(
                     handle
                         .apply_input(fx.client_a, id, fx.wire.clone(), events)
@@ -1776,9 +1721,8 @@ mod tests {
                 request
                     .completion
                     .expect("completion")
-                    .send(WriteCompletion::Delivered)
-                    .unwrap();
-                while handle.acknowledged_admitted.load(Ordering::Acquire) {
+                    .complete(WriteCompletion::Delivered);
+                while handle.admission.is_in_flight(&fx.wire) {
                     tokio::task::yield_now().await;
                 }
 
@@ -1850,8 +1794,214 @@ mod tests {
             .await;
     }
 
+    /// A second pane actor registered in the same [`SharedState`], so a test
+    /// can hold one Terminal's acknowledged write unresolved while driving
+    /// another. Its own session, because nothing on the acknowledged path
+    /// consults session membership.
+    struct SecondPane {
+        wire: phux_protocol::ids::TerminalId,
+        writer_rx: mpsc::Receiver<EncodedInputRequest>,
+        token: CancellationToken,
+    }
+
+    fn add_second_pane(fx: &Fixture) -> SecondPane {
+        let bundle = TerminalActor::new(80, 24).expect("actor");
+        let handle = bundle.handle.clone();
+        let token = bundle.token.clone();
+        let mut actor = bundle.actor;
+        let (_pty_evt_tx, writer_rx) = actor.install_test_pty_channels();
+        let wire = fx.state.with_mut(|s| {
+            let (_sid, _wid, pane) = s.seed_session("t");
+            s.register_terminal_handle(pane, handle.clone(), token.clone())
+        });
+        tokio::task::spawn_local(actor.run());
+        SecondPane {
+            wire,
+            writer_rx,
+            token,
+        }
+    }
+
+    /// phux-w7z2.58: admission is keyed by Terminal. A write still unresolved
+    /// on one pane must not refuse a write to a different pane — the collision
+    /// that made `agent prompt` unusable for fleet fan-out.
     #[tokio::test(flavor = "current_thread")]
-    async fn acknowledged_admission_allows_only_one_operation_until_completion() {
+    async fn acknowledged_admission_is_scoped_to_the_target_terminal() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut fx = spawn_fixture();
+                let mut other = add_second_pane(&fx);
+                let lane = spawn_input_lane(fx.state.clone()).expect("spawn lane");
+                let handle = lane.handle();
+
+                let first_handle = handle.clone();
+                let first_wire = fx.wire.clone();
+                let first = tokio::task::spawn_local(async move {
+                    first_handle
+                        .apply_input(
+                            fx.client_a,
+                            operation_id(20),
+                            first_wire,
+                            vec![InputEvent::Paste(paste_event(b"held"))],
+                        )
+                        .await
+                });
+                let held = fx.writer_rx.recv().await.expect("first pane write");
+                assert_eq!(held.bytes.as_ref(), b"held");
+
+                let second_handle = handle.clone();
+                let second_wire = other.wire.clone();
+                let second = tokio::task::spawn_local(async move {
+                    second_handle
+                        .apply_input(
+                            fx.client_a,
+                            operation_id(21),
+                            second_wire,
+                            vec![InputEvent::Paste(paste_event(b"other"))],
+                        )
+                        .await
+                });
+                let concurrent =
+                    tokio::time::timeout(LANE_DELIVERY_DEADLINE, other.writer_rx.recv())
+                        .await
+                        .expect("a second Terminal must admit while the first is unresolved")
+                        .expect("second pane writer open");
+                assert_eq!(concurrent.bytes.as_ref(), b"other");
+
+                concurrent
+                    .completion
+                    .expect("completion")
+                    .complete(WriteCompletion::Delivered);
+                assert_eq!(second.await.unwrap(), CommandResult::Ok);
+                held.completion
+                    .expect("completion")
+                    .complete(WriteCompletion::Delivered);
+                assert_eq!(first.await.unwrap(), CommandResult::Ok);
+                fx.token.cancel();
+                other.token.cancel();
+            })
+            .await;
+    }
+
+    /// phux-w7z2.58: the completion wait left the lane thread. An acknowledged
+    /// write the writer has not answered must not hold up input to any other
+    /// pane — the old lane blocked `blocking_recv` for the whole completion
+    /// timeout, stalling every keystroke and every `ROUTE_INPUT` server-wide.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unresolved_acknowledged_write_does_not_stall_another_pane() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut fx = spawn_fixture();
+                let mut other = add_second_pane(&fx);
+                let lane = spawn_input_lane(fx.state.clone()).expect("spawn lane");
+                let handle = lane.handle();
+
+                let held_handle = handle.clone();
+                let held_wire = fx.wire.clone();
+                let held = tokio::task::spawn_local(async move {
+                    held_handle
+                        .apply_input(
+                            fx.client_a,
+                            operation_id(22),
+                            held_wire,
+                            vec![InputEvent::Paste(paste_event(b"unanswered"))],
+                        )
+                        .await
+                });
+                let unanswered = fx.writer_rx.recv().await.expect("first pane write");
+
+                // The deadline IS the assertion, so it is derived from the
+                // product constant rather than hand-picked: under the old
+                // per-server lane this `ROUTE_INPUT` could not be routed until
+                // the acknowledged write above resolved, which never happens
+                // here until the assertions below run.
+                let routed = tokio::time::timeout(
+                    ACKNOWLEDGED_COMPLETION_TIMEOUT / 2,
+                    handle.route_command(
+                        fx.client_a,
+                        other.wire.clone(),
+                        InputEvent::Paste(paste_event(b"unblocked")),
+                    ),
+                )
+                .await
+                .expect("ROUTE_INPUT must not wait on another pane's PTY completion");
+                assert_eq!(routed, CommandResult::Ok);
+                let delivered =
+                    tokio::time::timeout(LANE_DELIVERY_DEADLINE, other.writer_rx.recv())
+                        .await
+                        .expect("routed input reaches the other pane")
+                        .expect("second pane writer open");
+                assert_eq!(delivered.bytes.as_ref(), b"unblocked");
+
+                unanswered
+                    .completion
+                    .expect("completion")
+                    .complete(WriteCompletion::Delivered);
+                assert_eq!(held.await.unwrap(), CommandResult::Ok);
+                fx.token.cancel();
+                other.token.cancel();
+            })
+            .await;
+    }
+
+    /// Same-Terminal ordering no longer comes from the lane thread blocking on
+    /// the write; it comes from the pane's own FIFO mailbox. Pin it: input
+    /// routed after an unresolved acknowledged batch still reaches the writer
+    /// behind that batch, never ahead of it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn later_input_to_the_same_pane_stays_behind_an_unresolved_batch() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut fx = spawn_fixture();
+                let lane = spawn_input_lane(fx.state.clone()).expect("spawn lane");
+                let handle = lane.handle();
+
+                let batch_handle = handle.clone();
+                let batch_wire = fx.wire.clone();
+                let batch = tokio::task::spawn_local(async move {
+                    batch_handle
+                        .apply_input(
+                            fx.client_a,
+                            operation_id(23),
+                            batch_wire,
+                            vec![InputEvent::Paste(paste_event(b"batch"))],
+                        )
+                        .await
+                });
+                let first = fx.writer_rx.recv().await.expect("batch write");
+                assert_eq!(first.bytes.as_ref(), b"batch");
+
+                assert_eq!(
+                    handle
+                        .route_command(
+                            fx.client_a,
+                            fx.wire.clone(),
+                            InputEvent::Paste(paste_event(b"after")),
+                        )
+                        .await,
+                    CommandResult::Ok
+                );
+                let second = tokio::time::timeout(LANE_DELIVERY_DEADLINE, fx.writer_rx.recv())
+                    .await
+                    .expect("routed input follows the batch")
+                    .expect("writer open");
+                assert_eq!(second.bytes.as_ref(), b"after");
+
+                first
+                    .completion
+                    .expect("completion")
+                    .complete(WriteCompletion::Delivered);
+                assert_eq!(batch.await.unwrap(), CommandResult::Ok);
+                fx.token.cancel();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn acknowledged_admission_allows_only_one_operation_per_terminal_until_completion() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
@@ -1894,8 +2044,7 @@ mod tests {
                 first_request
                     .completion
                     .expect("completion")
-                    .send(WriteCompletion::Delivered)
-                    .unwrap();
+                    .complete(WriteCompletion::Delivered);
                 assert_eq!(first.await.unwrap(), CommandResult::Ok);
 
                 let third_handle = handle.clone();
@@ -1915,8 +2064,7 @@ mod tests {
                 third_request
                     .completion
                     .expect("completion")
-                    .send(WriteCompletion::Delivered)
-                    .unwrap();
+                    .complete(WriteCompletion::Delivered);
                 assert_eq!(third.await.unwrap(), CommandResult::Ok);
                 fx.token.cancel();
             })
@@ -1926,10 +2074,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn acknowledged_queue_full_rejects_without_leaking_reservation() {
         let (tx, _rx) = mpsc::channel(1);
-        let admitted = Arc::new(AtomicBool::new(false));
+        let admission = Arc::new(AcknowledgedAdmission::default());
         let handle = InputLaneHandle {
             tx,
-            acknowledged_admitted: Arc::clone(&admitted),
+            admission: Arc::clone(&admission),
         };
         handle.route(RoutedInput::attached(
             ClientId(1),
@@ -1952,72 +2100,6 @@ mod tests {
                 ..
             }
         ));
-        assert!(!admitted.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn operation_cache_prunes_only_expired_prefix_and_treats_over_capacity_as_full() {
-        let start = std::time::Instant::now();
-        let first = operation_id_from_u64(1);
-        let second = operation_id_from_u64(2);
-        let mut cache = OperationCache::default();
-        assert_eq!(cache.bind_at(first, [1; 32], start), CacheBinding::New);
-        cache.set_final(first, CommandResult::Ok);
-        assert_eq!(
-            cache.bind_at(second, [2; 32], start + Duration::from_secs(1)),
-            CacheBinding::New
-        );
-        cache.set_final(second, CommandResult::Ok);
-        cache.prune_expired(start + DEDUPE_RETENTION);
-        assert!(!cache.entries.contains_key(&first));
-        assert!(cache.entries.contains_key(&second));
-        assert_eq!(cache.expiry.len(), 1);
-
-        for value in 3..=u64::try_from(DEDUPE_MAX_ENTRIES + 1).unwrap() {
-            assert_eq!(
-                cache.bind_at(
-                    operation_id_from_u64(value),
-                    [0; 32],
-                    start + Duration::from_secs(1),
-                ),
-                CacheBinding::New
-            );
-        }
-        assert_eq!(cache.entries.len(), DEDUPE_MAX_ENTRIES);
-        assert!(cache.is_full(), "capacity check must use >=");
-        assert_eq!(
-            cache.bind_at(
-                operation_id_from_u64(u64::try_from(DEDUPE_MAX_ENTRIES + 2).unwrap()),
-                [0; 32],
-                start + Duration::from_secs(1),
-            ),
-            CacheBinding::Full
-        );
-        assert_eq!(cache.entries.len(), DEDUPE_MAX_ENTRIES);
-    }
-
-    #[test]
-    fn cache_uses_admission_time_for_retry_at_expiry_boundary() {
-        let start = std::time::Instant::now();
-        let id = operation_id(18);
-        let digest = [0x18; 32];
-        let mut cache = OperationCache::default();
-        assert_eq!(cache.bind_at(id, digest, start), CacheBinding::New);
-        cache.set_final(id, CommandResult::Ok);
-
-        let admitted_before_expiry = start
-            + DEDUPE_RETENTION
-                .checked_sub(Duration::from_nanos(1))
-                .expect("retention exceeds one nanosecond");
-        let processed_after_expiry = start + DEDUPE_RETENTION + Duration::from_secs(1);
-        assert!(processed_after_expiry > start + DEDUPE_RETENTION);
-        let binding = cache.bind_at(id, digest, admitted_before_expiry);
-        cache.prune_expired(processed_after_expiry);
-        assert_eq!(
-            binding,
-            CacheBinding::Final(CommandResult::Ok),
-            "a retry valid at admission must use the cached result without rebinding"
-        );
-        assert!(cache.expiry.is_empty());
+        assert!(!admission.is_in_flight(&phux_protocol::TerminalId::local(1)));
     }
 }

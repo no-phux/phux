@@ -327,7 +327,7 @@ fn service_write_request(
              mode first",
         );
         if let Some(completion) = request.completion {
-            let _ = completion.send(WriteCompletion::CanonicalLimitExceeded {
+            completion.complete(WriteCompletion::CanonicalLimitExceeded {
                 limit: overflow.limit,
             });
         }
@@ -339,7 +339,7 @@ fn service_write_request(
         Ok(()) => {
             debug!(len, "pty write flushed");
             if let Some(completion) = request.completion {
-                let _ = completion.send(WriteCompletion::Delivered);
+                completion.complete(WriteCompletion::Delivered);
             }
             WriterLoopControl::Continue
         }
@@ -356,7 +356,7 @@ fn service_write_request(
                 written, len, "pty writer: child gone; input path closing"
             );
             if let Some(completion) = request.completion {
-                let _ = completion.send(WriteCompletion::Failed);
+                completion.complete(WriteCompletion::Failed);
             }
             WriterLoopControl::Stop
         }
@@ -374,7 +374,7 @@ fn service_write_request(
                 written, len, "pty writer: write failed; pane input is now dead"
             );
             if let Some(completion) = request.completion {
-                let _ = completion.send(WriteCompletion::Failed);
+                completion.complete(WriteCompletion::Failed);
             }
             WriterLoopControl::Stop
         }
@@ -1205,6 +1205,7 @@ mod tests {
 #[allow(clippy::expect_used, reason = "tests")]
 mod canonical_guard_tests {
     use super::*;
+    use crate::terminal_actor::WriteCompletionSink;
     use portable_pty::CommandBuilder;
     use std::time::Duration;
 
@@ -1390,7 +1391,7 @@ mod canonical_guard_tests {
             spawn_pty(cmd, 80, 24).expect("spawn cat under a real pty");
 
         let payload = vec![b'a'; 4097];
-        let (completion_tx, completed) = std::sync::mpsc::channel();
+        let (completion_tx, completed) = WriteCompletionSink::channel();
         input_tx
             .try_send(EncodedInputRequest::acknowledged(payload, completion_tx))
             .expect("writer mailbox has room");
@@ -1439,7 +1440,7 @@ mod canonical_guard_tests {
 
         let mut payload = vec![b'a'; platform_canonical_limit() + 776];
         payload.push(b'\r');
-        let (completion_tx, completed) = std::sync::mpsc::channel();
+        let (completion_tx, completed) = WriteCompletionSink::channel();
         input_tx
             .try_send(EncodedInputRequest::acknowledged(payload, completion_tx))
             .expect("writer mailbox has room");
@@ -1473,7 +1474,7 @@ mod canonical_guard_tests {
             spawn_pty(cmd, 80, 24).expect("spawn cat under a real pty");
 
         let oversized = vec![b'a'; 5000];
-        let (tx1, rx1) = std::sync::mpsc::channel();
+        let (tx1, rx1) = WriteCompletionSink::channel();
         input_tx
             .try_send(EncodedInputRequest::acknowledged(oversized, tx1))
             .expect("writer mailbox has room");
@@ -1486,7 +1487,7 @@ mod canonical_guard_tests {
             WriteCompletion::CanonicalLimitExceeded { .. }
         ));
 
-        let (tx2, rx2) = std::sync::mpsc::channel();
+        let (tx2, rx2) = WriteCompletionSink::channel();
         input_tx
             .try_send(EncodedInputRequest::acknowledged(b"hello\n".to_vec(), tx2))
             .expect("writer mailbox has room");
@@ -1544,7 +1545,7 @@ mod canonical_guard_tests {
         }
 
         let payload = vec![b'x'; 8192];
-        let (completion_tx, completed) = std::sync::mpsc::channel();
+        let (completion_tx, completed) = WriteCompletionSink::channel();
         input_tx
             .try_send(EncodedInputRequest::acknowledged(
                 payload.clone(),

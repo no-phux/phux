@@ -164,12 +164,17 @@ a bill ADR-0046's Tradeoffs already paid once.
 
 ## Tradeoffs
 
-An acknowledged submit is slower and occupies the single server-wide
-acknowledged lane, so two orchestrators prompting different panes collide into
-`RESOURCE_EXHAUSTED` — and that lane's completion wait blocks the one thread
-every attached keystroke also flows through, a latent server-wide input hiccup
-this verb is the first to expose. Refusing satellite targets makes both verbs
-less uniform than `send-keys` until federation carries the guarantee.
+An acknowledged submit is slower than fire-and-forget input and holds its
+Terminal until the write resolves, so two prompts to the *same* pane still
+collide into `RESOURCE_EXHAUSTED`. That is the exclusion the idempotency
+guarantee rests on and it stays. Drafting this ADR exposed a lane that was
+worse: admission was one flag for the whole server and the completion wait ran
+on the thread every attached keystroke also flows through, so unrelated panes
+collided and one pane that stopped reading stdin stalled input everywhere.
+phux-w7z2.58 scoped admission to the Terminal and moved the wait off the lane;
+this verb is safe to fan out only because that landed first. Refusing satellite
+targets makes both verbs less uniform than `send-keys` until federation carries
+the guarantee.
 
 A slave that flushes its input queue — `TCSAFLUSH` on a raw-mode toggle, which
 every TUI does when it shells out and returns — discards an ACKed batch

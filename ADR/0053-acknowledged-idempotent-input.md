@@ -83,14 +83,19 @@ connection-local reply correlation and is remapped by federation.
 
 - The guarantee is bounded, not durable. A process crash may leave delivery
   unknown; the client must not replay against the new incarnation.
-- Waiting for PTY completion adds latency versus fire-and-forget input and can
-  hold the shared input lane briefly. The wait is bounded at five seconds; a
-  stalled writer becomes `INPUT_DELIVERY_UNKNOWN` rather than wedging shutdown.
+- Waiting for PTY completion adds latency versus fire-and-forget input. The wait
+  is bounded at five seconds; a stalled writer becomes
+  `INPUT_DELIVERY_UNKNOWN` rather than wedging shutdown. It is served off the
+  input lane, so a stalled write costs its own operation and nothing else
+  (phux-w7z2.58; the first implementation blocked the shared lane and stalled
+  input to every pane for the length of the wait).
 - The dedupe cache consumes bounded process memory and rejects unseen ids when
   full rather than evicting an unexpired safety record.
-- The dedicated lane admits one acknowledged operation at a time. A concurrent
-  submit is refused with `RESOURCE_EXHAUSTED`; the caller retries rather than
-  retaining another batch behind a stalled PTY write.
+- The lane admits one acknowledged operation per Terminal (phux-w7z2.58;
+  originally one per server). A concurrent submit to the same Terminal is
+  refused with `RESOURCE_EXHAUSTED`; the caller retries rather than retaining
+  another batch behind a stalled PTY write. Distinct Terminals do not exclude
+  each other.
 - The first version does not support satellite targets. Refusing them is less
   convenient than relay support, but safer than advertising a guarantee an
   older destination cannot negotiate.
