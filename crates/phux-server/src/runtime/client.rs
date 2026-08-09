@@ -112,7 +112,7 @@ pub(crate) fn spawn_agent_state_drain(
     mut rx: tokio::sync::mpsc::Receiver<crate::agent_detect::AgentDetectEvent>,
 ) {
     use crate::agent_detect::AgentDetectEvent;
-    use phux_protocol::wire::frame::{Scope, TERMINAL_AGENT_KEY};
+    use phux_protocol::wire::frame::Scope;
 
     tokio::task::spawn_local(async move {
         while let Some(event) = rx.recv().await {
@@ -130,75 +130,13 @@ pub(crate) fn spawn_agent_state_drain(
                 let hooks_live = s.hook_dispatcher().is_some();
                 match event {
                     AgentDetectEvent::Retract => {
-                        // Only ever delete a record we authored. A human's
-                        // declaration is not ours to retract.
-                        if !s.agent_records().detector_owns(&wire_terminal_id) {
-                            return None;
-                        }
-                        let from = hooks_live
-                            .then(|| {
-                                crate::agent_state::stored_state(
-                                    s.metadata().get(&scope, TERMINAL_AGENT_KEY).as_deref(),
-                                )
-                            })
-                            .flatten();
-                        // ... and "we authored it" is not the same as "all of
-                        // it is ours". After `phux agent set --name reviewer`
-                        // the detector keeps filling `state` in, and that write
-                        // re-acquires ownership — of a record whose NAME the
-                        // human chose. Deleting the key on retract would take
-                        // their name, session and attention with it. Withdraw
-                        // only the field we own.
-                        if s.agent_records().has_explicit_identity(&wire_terminal_id) {
-                            let existing = s.metadata().get(&scope, TERMINAL_AGENT_KEY);
-                            if let Some(bytes) =
-                                crate::agent_state::withdraw_state(existing.as_deref())
-                            {
-                                s.metadata_set(&scope, TERMINAL_AGENT_KEY, bytes);
-                                s.agent_records_mut()
-                                    .note_detector_retract(&wire_terminal_id);
-                                return hooks_live
-                                    .then(|| retract_hook(&wire_terminal_id, from.as_deref()))
-                                    .flatten();
-                            }
-                        }
-                        s.metadata_delete(&scope, TERMINAL_AGENT_KEY);
-                        s.agent_records_mut()
-                            .note_detector_retract(&wire_terminal_id);
-                        hooks_live
-                            .then(|| retract_hook(&wire_terminal_id, from.as_deref()))
-                            .flatten()
+                        drain_retract(s, &wire_terminal_id, &scope, hooks_live)
+                    }
+                    AgentDetectEvent::Reidentified { kind, name } => {
+                        drain_reidentified(s, &wire_terminal_id, &scope, hooks_live, &kind, &name)
                     }
                     AgentDetectEvent::State(report) => {
-                        // ADR-0046 §E: an explicit SET_METADATA that supplied
-                        // a `state` outranks the detector entirely.
-                        if s.agent_records().is_declared(&wire_terminal_id) {
-                            return None;
-                        }
-                        let existing = s.metadata().get(&scope, TERMINAL_AGENT_KEY);
-                        let from = hooks_live
-                            .then(|| crate::agent_state::stored_state(existing.as_deref()))
-                            .flatten();
-                        let to = report.state.as_str();
-                        let bytes = crate::agent_state::compose(
-                            existing.as_deref(),
-                            &report.kind,
-                            &report.name,
-                            to,
-                        );
-                        s.metadata_set(&scope, TERMINAL_AGENT_KEY, bytes);
-                        s.agent_records_mut().note_detector_write(&wire_terminal_id);
-                        hooks_live
-                            .then(|| {
-                                state_change_hook(
-                                    &wire_terminal_id,
-                                    &report.kind,
-                                    &report.name,
-                                    from.as_deref(),
-                                    to,
-                                )
-                            })
-                            .flatten()
+                        drain_state(s, &wire_terminal_id, &scope, hooks_live, &report)
                     }
                 }
             });
@@ -207,6 +145,180 @@ pub(crate) fn spawn_agent_state_drain(
             }
         }
     });
+}
+
+/// The drain's `Retract` arm: the pane's agent is confirmed gone.
+///
+/// Three buckets, in this order, and the order is the arbitration:
+///
+/// 1. **A declared record** — `docs/spec/L3.md` §3.7 forbids overwriting it
+///    with a DERIVED value and forbids `DELETE`ing a record the server did not
+///    author. A **withdrawal** is neither: `state` goes to `unknown` and the
+///    human's `name`, `kind` and `session` stay exactly as they wrote them. The
+///    server asserts nothing it derived and removes nothing. Without it a
+///    `kill -9` (no `EXIT` trap, no `phux agent clear`) pins the pane to
+///    `working` for the life of the session — the wedge the ADR exists to make
+///    impossible.
+/// 2. **A detector-authored record carrying a human's identity** — withdraw
+///    the one field the detector owns; `DELETE` would take their label with it.
+/// 3. **A record the detector wrote alone** — its to delete, or every pane that
+///    ever ran an agent keeps a tombstone forever.
+///
+/// Anything else: not ours, do nothing.
+fn drain_retract(
+    s: &mut crate::state::ServerState,
+    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    scope: &phux_protocol::wire::frame::Scope,
+    hooks_live: bool,
+) -> Option<crate::hooks::HookEvent> {
+    use phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
+
+    let existing = s.metadata().get(scope, TERMINAL_AGENT_KEY);
+    let from = hooks_live
+        .then(|| crate::agent_state::stored_state(existing.as_deref()))
+        .flatten();
+
+    if s.agent_records().is_declared(wire_terminal_id) {
+        let bytes = crate::agent_state::withdraw_state(existing.as_deref())?;
+        s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
+        s.agent_records_mut()
+            .note_declaration_withdrawn(wire_terminal_id);
+        return hooks_live
+            .then(|| retract_hook(wire_terminal_id, from.as_deref()))
+            .flatten();
+    }
+    if !s.agent_records().detector_owns(wire_terminal_id) {
+        return None;
+    }
+    // "We authored it" is not the same as "all of it is ours". After
+    // `phux agent set --name reviewer` the detector keeps filling `state` in,
+    // and that write re-acquires ownership — of a record whose NAME the human
+    // chose.
+    if s.agent_records().has_explicit_identity(wire_terminal_id)
+        && let Some(bytes) = crate::agent_state::withdraw_state(existing.as_deref())
+    {
+        s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
+        s.agent_records_mut()
+            .note_detector_retract(wire_terminal_id);
+        return hooks_live
+            .then(|| retract_hook(wire_terminal_id, from.as_deref()))
+            .flatten();
+    }
+    s.metadata_delete(scope, TERMINAL_AGENT_KEY);
+    s.agent_records_mut()
+        .note_detector_retract(wire_terminal_id);
+    hooks_live
+        .then(|| retract_hook(wire_terminal_id, from.as_deref()))
+        .flatten()
+}
+
+/// The drain's `Reidentified` arm: a DIFFERENT occupant now owns the pane.
+///
+/// One write, landing on `unknown` (invariant I2 in `crate::agent_state`). A
+/// live state beside the corrected kind would be this tick's screen read
+/// attributed to a process nothing has been derived from yet; a
+/// tombstone-then-rewrite would broadcast a hole that an in-flight
+/// `phux agent wait` exits on, mid-turn, for a pane that is still running an
+/// agent.
+///
+/// A DECLARED record is withdrawn rather than corrected: its `kind` may be the
+/// human's, and this write is not the place to find out. The detector's next
+/// `State` write corrects whatever the arbiter says it owns.
+///
+/// A latency optimization, not a correctness mechanism — see
+/// [`crate::agent_detect::AgentDetectEvent::Reidentified`]. A pane with no
+/// record has nothing to correct, and a correction must never CREATE one.
+fn drain_reidentified(
+    s: &mut crate::state::ServerState,
+    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    scope: &phux_protocol::wire::frame::Scope,
+    hooks_live: bool,
+    kind: &str,
+    name: &str,
+) -> Option<crate::hooks::HookEvent> {
+    use phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
+
+    let existing = s.metadata().get(scope, TERMINAL_AGENT_KEY)?;
+    let from = hooks_live
+        .then(|| crate::agent_state::stored_state(Some(&existing)))
+        .flatten();
+
+    if s.agent_records().is_declared(wire_terminal_id) {
+        let bytes = crate::agent_state::withdraw_state(Some(&existing))?;
+        s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
+        s.agent_records_mut()
+            .note_declaration_withdrawn(wire_terminal_id);
+        return hooks_live
+            .then(|| retract_hook(wire_terminal_id, from.as_deref()))
+            .flatten();
+    }
+
+    let owned = s.agent_records().identity_ownership(wire_terminal_id);
+    let bytes = crate::agent_state::compose(
+        Some(&existing),
+        kind,
+        name,
+        crate::hooks::AGENT_STATE_UNKNOWN,
+        owned,
+    );
+    s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
+    s.agent_records_mut().note_detector_write(wire_terminal_id);
+    hooks_live
+        .then(|| {
+            state_change_hook(
+                wire_terminal_id,
+                kind,
+                name,
+                from.as_deref(),
+                crate::hooks::AGENT_STATE_UNKNOWN,
+            )
+        })
+        .flatten()
+}
+
+/// The drain's `State` arm: the detector derived a state for this pane.
+///
+/// ADR-0046 §E: an explicit `SET_METADATA` that supplied a `state` outranks the
+/// detector entirely, for as long as the pane is occupied by the agent it
+/// describes. ([`drain_retract`] is what ends that "as long as"; this
+/// short-circuit is untouched by it.)
+///
+/// `kind`, `name` and `state` are composed against ONE read of the store under
+/// ONE lock, from ONE report — invariant I1. That is what makes a dropped
+/// `Reidentified` harmless.
+fn drain_state(
+    s: &mut crate::state::ServerState,
+    wire_terminal_id: &phux_protocol::ids::TerminalId,
+    scope: &phux_protocol::wire::frame::Scope,
+    hooks_live: bool,
+    report: &crate::agent_detect::AgentReport,
+) -> Option<crate::hooks::HookEvent> {
+    use phux_protocol::wire::frame::TERMINAL_AGENT_KEY;
+
+    if s.agent_records().is_declared(wire_terminal_id) {
+        return None;
+    }
+    let existing = s.metadata().get(scope, TERMINAL_AGENT_KEY);
+    let from = hooks_live
+        .then(|| crate::agent_state::stored_state(existing.as_deref()))
+        .flatten();
+    let to = report.state.as_str();
+    let owned = s.agent_records().identity_ownership(wire_terminal_id);
+    let bytes =
+        crate::agent_state::compose(existing.as_deref(), &report.kind, &report.name, to, owned);
+    s.metadata_set(scope, TERMINAL_AGENT_KEY, bytes);
+    s.agent_records_mut().note_detector_write(wire_terminal_id);
+    hooks_live
+        .then(|| {
+            state_change_hook(
+                wire_terminal_id,
+                &report.kind,
+                &report.name,
+                from.as_deref(),
+                to,
+            )
+        })
+        .flatten()
 }
 
 /// The `agent-state-changed` event for a detector write, unless the store
@@ -3055,10 +3167,24 @@ mod agent_drain_tests {
             .await;
     }
 
-    /// A human who DECLARED a state stands the detector down entirely: it makes
-    /// no writes at all, retract included.
+    /// A human who DECLARED a state stands the detector down — for as long as
+    /// the pane is occupied by the agent they described. The detector's
+    /// *derivations* never reach the record (`docs/spec/L3.md` §3.7: a
+    /// declaration outranks any derivation), but a confirmed departure
+    /// **withdraws** the declaration to `unknown`.
+    ///
+    /// This test previously asserted the opposite — that a retract touches
+    /// nothing — and it was phux-w7z2.13 passing. A `kill -9` runs no `EXIT`
+    /// trap and issues no `agent clear`, and `declared` is cleared by exactly
+    /// two things, neither of which fires: an explicit `DELETE_METADATA`, and
+    /// pane reap. So the pane sat at `working` for the life of the session
+    /// with no path back to truth — the exact wedge ADR-0046's level-triggering
+    /// exists to make impossible, encoded here as intended behavior. Renamed
+    /// and inverted against the amended §3.7 bullet, which permits a
+    /// withdrawal (never a derived value, never a `DELETE`) on positive
+    /// evidence that the declared occupant is gone.
     #[tokio::test(flavor = "current_thread")]
-    async fn a_retract_never_touches_a_declared_record() {
+    async fn a_retract_withdraws_a_declared_state_but_never_deletes_it() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
@@ -3066,7 +3192,117 @@ mod agent_drain_tests {
                 let terminal = WireTerminalId::new(1);
                 let scope = Scope::Terminal(terminal.clone());
 
-                let declared = br#"{"name":"me","kind":"claude","state":"done"}"#;
+                let declared =
+                    br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#;
+                state.with_mut(|s| {
+                    s.agent_records_mut().note_explicit_set(&terminal, declared);
+                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, declared.to_vec());
+                });
+
+                // The detector derives all it likes; none of it lands.
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Idle))],
+                )
+                .await;
+                assert_eq!(
+                    stored(&state, &terminal).expect("still declared").state,
+                    "working",
+                    "a derivation never overwrites a declaration",
+                );
+
+                // Then the process dies.
+                drain(&state, &terminal, vec![AgentDetectEvent::Retract]).await;
+
+                let record = stored(&state, &terminal).expect(
+                    "the record must SURVIVE: withdrawing is not deleting, and the key is not \
+                     the server's to remove",
+                );
+                assert_eq!(
+                    record.state, "unknown",
+                    "a dead process must not keep a live badge, whoever wrote it",
+                );
+                assert_eq!(record.name, "me", "the human's name is untouched");
+                assert_eq!(record.kind.as_deref(), Some("claude"), "and their kind");
+                assert_eq!(
+                    record.attention, None,
+                    "and an unknown pane does not keep demanding attention",
+                );
+
+                // The declaration no longer outranks the derivation, so the
+                // detector may write again — and its writes now land.
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Working))],
+                )
+                .await;
+                let after = stored(&state, &terminal).expect("still there");
+                assert_eq!(after.state, "working", "the detector resumed");
+                assert_eq!(after.name, "me", "still without eating the human's name");
+            })
+            .await;
+    }
+
+    /// The write-rate guard for the withdrawal. A retract that repeated — the
+    /// detector is level-triggered and a dead pane stays dead — must not
+    /// broadcast twice. The second withdrawal writes byte-identical bytes and
+    /// `metadata_set` suppresses it; in fact the arbiter no longer routes it
+    /// here at all, since the record is no longer declared and was never the
+    /// detector's to own.
+    #[tokio::test(flavor = "current_thread")]
+    async fn withdrawing_a_declaration_twice_broadcasts_once() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+                let scope = Scope::Terminal(terminal.clone());
+
+                let declared = br#"{"name":"me","kind":"claude","state":"working"}"#;
+                state.with_mut(|s| {
+                    s.agent_records_mut().note_explicit_set(&terminal, declared);
+                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, declared.to_vec());
+                });
+
+                drain(&state, &terminal, vec![AgentDetectEvent::Retract]).await;
+                let first = state
+                    .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+                    .expect("withdrawn");
+
+                drain(
+                    &state,
+                    &terminal,
+                    (0..9).map(|_| AgentDetectEvent::Retract).collect(),
+                )
+                .await;
+                let after = state
+                    .with(|s| s.metadata().get(&scope, TERMINAL_AGENT_KEY))
+                    .expect("still there");
+
+                assert_eq!(
+                    first, after,
+                    "byte-identical: a repeated withdrawal is not a broadcast",
+                );
+            })
+            .await;
+    }
+
+    /// A declaration is withdrawn on *evidence*, and an identity-only
+    /// declaration is not one at all. Both halves matter: the pane that
+    /// declared `--state working` heals, and the pane whose human only chose a
+    /// name keeps being tracked normally.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_withdrawal_does_not_disturb_an_identity_only_declaration() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+                let scope = Scope::Terminal(terminal.clone());
+
+                let declared = br#"{"name":"reviewer","kind":"my-agent","session":"fleet-7"}"#;
                 state.with_mut(|s| {
                     s.agent_records_mut().note_explicit_set(&terminal, declared);
                     s.metadata_set(&scope, TERMINAL_AGENT_KEY, declared.to_vec());
@@ -3075,16 +3311,302 @@ mod agent_drain_tests {
                 drain(
                     &state,
                     &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Working))],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("still there");
+                assert_eq!(record.state, "working", "the detector fills state in");
+                assert_eq!(record.name, "reviewer", "around the human's name");
+                assert_eq!(
+                    record.kind.as_deref(),
+                    Some("my-agent"),
+                    "and their kind, which L3 §3.7 also requires preserved",
+                );
+                assert_eq!(record.session.as_deref(), Some("fleet-7"));
+            })
+            .await;
+    }
+
+    // --- the occupant changed (phux-w7z2.27) --------------------------------
+
+    /// THE transient-consistency invariant (I2). A pane hosting claude is
+    /// killed and codex is started in it. No subscriber may ever observe one
+    /// record whose `kind` and `state` describe two different processes — not
+    /// even for one tick — so the correction lands on `unknown`, which
+    /// describes no process and therefore cannot describe the wrong one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_kind_change_corrects_the_record_in_one_write_landing_on_unknown() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Working))],
+                )
+                .await;
+                assert_eq!(
+                    stored(&state, &terminal).expect("written").kind.as_deref(),
+                    Some("claude"),
+                );
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::Reidentified {
+                        kind: "codex".to_owned(),
+                        name: "codex".to_owned(),
+                    }],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("the record is corrected, not gone");
+                assert_eq!(record.kind.as_deref(), Some("codex"), "the new occupant");
+                assert_eq!(record.name, "codex");
+                assert_eq!(
+                    record.state, "unknown",
+                    "nothing has been derived from the new occupant's screen yet, and \
+                     claude's last verdict is not codex's",
+                );
+            })
+            .await;
+    }
+
+    /// A correction is never a delete. A `Retract` here would broadcast a
+    /// tombstone for a pane that is very much still running an agent, and kill
+    /// an in-flight `phux agent wait` with exit 1 mid-turn.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_kind_change_never_removes_the_record() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+
+                drain(
+                    &state,
+                    &terminal,
                     vec![
                         AgentDetectEvent::State(report(DetectedState::Working)),
-                        AgentDetectEvent::Retract,
+                        AgentDetectEvent::Reidentified {
+                            kind: "codex".to_owned(),
+                            name: "codex".to_owned(),
+                        },
                     ],
                 )
                 .await;
 
-                let record = stored(&state, &terminal).expect("the declaration stands");
-                assert_eq!(record.state, "done", "the detector never wrote over it");
-                assert_eq!(record.name, "me");
+                assert!(
+                    stored(&state, &terminal).is_some(),
+                    "the pane is occupied; there is nothing to tombstone",
+                );
+            })
+            .await;
+    }
+
+    /// THE thing that makes the correction safe to lose. `emit_agent_state` is
+    /// `try_send` and drops on a full sink, so a `Reidentified` may simply
+    /// never arrive. The next `State` write must carry the corrected `kind`
+    /// anyway — level-triggered reassertion (I1), not an edge.
+    ///
+    /// If a future refactor makes `Reidentified` the only path that corrects
+    /// `kind`, this test is what fails.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dropped_correction_is_healed_by_the_next_state_write() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Working))],
+                )
+                .await;
+
+                // The `Reidentified` for the new occupant is DROPPED on the
+                // way here. All the drain ever sees is codex's state.
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(AgentReport {
+                        kind: "codex".to_owned(),
+                        name: "codex".to_owned(),
+                        state: DetectedState::Blocked,
+                    })],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("written");
+                assert_eq!(
+                    record.kind.as_deref(),
+                    Some("codex"),
+                    "a state derived from codex's screen must never be stored beside \
+                     `kind: claude`",
+                );
+                assert_eq!(record.name, "codex");
+                assert_eq!(record.state, "blocked");
+            })
+            .await;
+    }
+
+    /// The correction path is subject to the same arbitration as every other
+    /// write: a DECLARED record is withdrawn, never rewritten with a kind the
+    /// detector derived. The human's `kind` may be theirs, and this write is
+    /// not the place to find out.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_kind_change_withdraws_a_declaration_rather_than_correcting_it() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+                let scope = Scope::Terminal(terminal.clone());
+
+                let declared = br#"{"name":"me","kind":"claude","state":"working"}"#;
+                state.with_mut(|s| {
+                    s.agent_records_mut().note_explicit_set(&terminal, declared);
+                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, declared.to_vec());
+                });
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::Reidentified {
+                        kind: "codex".to_owned(),
+                        name: "codex".to_owned(),
+                    }],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("still there");
+                assert_eq!(record.state, "unknown", "the declaration is withdrawn");
+                assert_eq!(record.name, "me", "the human's fields are untouched");
+                assert_eq!(
+                    record.kind.as_deref(),
+                    Some("claude"),
+                    "including a kind that may be theirs: the next State write, which \
+                     the arbiter governs, is what corrects it",
+                );
+            })
+            .await;
+    }
+
+    /// A pane with no record at all has nothing to correct, and a correction
+    /// must never CREATE one: an `unknown` record for a pane nobody has
+    /// derived anything about is a row in every sidebar for no reason.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_kind_change_on_a_pane_with_no_record_writes_nothing() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::Reidentified {
+                        kind: "codex".to_owned(),
+                        name: "codex".to_owned(),
+                    }],
+                )
+                .await;
+
+                assert!(stored(&state, &terminal).is_none());
+            })
+            .await;
+    }
+
+    // --- per-pane naming (phux-w7z2.25, as ruled) ---------------------------
+
+    /// The detector NEVER synthesizes a per-pane name. `name` is the manifest
+    /// constant, so twelve claude panes all read `claude`, disambiguated by the
+    /// pane id — which is the record's key and is already in every consumer's
+    /// hand.
+    ///
+    /// Not an oversight, a decision. Any per-pane name (`claude-7`) breaks
+    /// every shipped `phux agent send-keys --expect-agent claude`, which is an
+    /// exact whole-string match on `record.name`; and it launders the pane id
+    /// into the label field of a record that is already keyed by pane. The
+    /// user-facing route to a per-pane name is
+    /// `phux agent set @7 --name reviewer` — an explicit writer, whose name the
+    /// ownership bits then protect from every subsequent detector write.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_detector_writes_the_manifest_name_and_never_invents_one() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (first, second) = (WireTerminalId::new(1), WireTerminalId::new(2));
+
+                for terminal in [&first, &second] {
+                    drain(
+                        &state,
+                        terminal,
+                        vec![AgentDetectEvent::State(report(DetectedState::Working))],
+                    )
+                    .await;
+                }
+
+                assert_eq!(stored(&state, &first).expect("written").name, "claude");
+                assert_eq!(
+                    stored(&state, &second).expect("written").name,
+                    "claude",
+                    "two panes of the same kind carry the same name; the pane id is what \
+                     tells them apart, and it is the record's key",
+                );
+            })
+            .await;
+    }
+
+    /// The other half of the naming ruling: a name a human DID choose survives
+    /// every detector write — including now that `kind` is reasserted on each
+    /// one. Reasserting the kind must not drag the name along with it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reasserting_kind_does_not_overwrite_a_humans_name() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireTerminalId::new(1);
+                let scope = Scope::Terminal(terminal.clone());
+
+                let named = br#"{"name":"reviewer","session":"fleet-7"}"#;
+                state.with_mut(|s| {
+                    s.agent_records_mut().note_explicit_set(&terminal, named);
+                    s.metadata_set(&scope, TERMINAL_AGENT_KEY, named.to_vec());
+                });
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![
+                        AgentDetectEvent::State(report(DetectedState::Working)),
+                        AgentDetectEvent::State(AgentReport {
+                            kind: "codex".to_owned(),
+                            name: "codex".to_owned(),
+                            state: DetectedState::Idle,
+                        }),
+                    ],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("written");
+                assert_eq!(record.name, "reviewer", "their label, through both writes");
+                assert_eq!(record.session.as_deref(), Some("fleet-7"));
+                assert_eq!(
+                    record.kind.as_deref(),
+                    Some("codex"),
+                    "while the kind — which they never supplied — tracks the pane",
+                );
+                assert_eq!(record.state, "idle");
             })
             .await;
     }

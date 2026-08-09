@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-07-25
+last-reviewed: 2026-08-08
 ---
 
 # 0046 — The server derives agent state; detection is level-triggered
@@ -10,8 +10,8 @@ last-reviewed: 2026-07-25
 `state` stayed `unknown` forever. The server now derives it: a per-terminal
 detector re-reads the OSC title and the live screen on a timer, matches
 region-scoped declarative rules, and writes the record. An explicit
-`SET_METADATA` supplying `state` outranks the detector. Unmatched means `idle`,
-never `blocked`.
+`SET_METADATA` supplying `state` outranks the detector for as long as the pane
+holds the agent it names. Unmatched means `idle`, never `blocked`.
 
 Status: Accepted
 Date: 2026-07-12
@@ -71,21 +71,40 @@ value, which every pane needs continuously and which no agent CLI reports.
    `(kind, name, state)` tuple changes. An agent that is `working` and spewing
    output for ten minutes produces zero metadata writes and zero
    `METADATA_CHANGED` frames.
-8. **Authority.** *An explicit `SET_METADATA` on `phux.agent/v1` that supplies a
-   `state` outranks the detector; the detector makes no further writes to that
-   Terminal until the record is `DELETE`d. An explicit write that supplies only
-   identity (`name` / `kind` / `session`) is preserved field-for-field and the
-   detector fills `state` around it. The detector deletes only records it itself
-   wrote.*
+8. **Authority, bounded by the occupant.** *An explicit `SET_METADATA` on
+   `phux.agent/v1` that supplies a `state` outranks the detector, which makes no
+   further derived write to that Terminal while the pane still holds the agent
+   the declaration describes. An explicit write that supplies only identity
+   (`name` / `kind` / `session`) is preserved field-for-field and the detector
+   fills `state` around it. The detector deletes only records it itself wrote.*
+   On **positive evidence** that the declared occupant is gone — an occupancy
+   read that succeeded and found no agent, or a different one, never a read that
+   failed — the detector **withdraws** the declaration instead: `state` becomes
+   `unknown`, `attention` is cleared, `name` / `kind` / `session` survive, the
+   record is never deleted, and the derivation resumes from there. Amended; see
+   Tradeoffs. The normative wording is [`docs/spec/L3.md`](../docs/spec/L3.md)
+   §3.7.
 9. **Built-ins are capture-backed.** The binary ships manifests for Claude
    Code, Codex, OpenCode, Pi, and OMP. Every screen predicate is pinned to an
    unedited `phux snapshot --json` viewport captured from the named CLI; idle,
    working, blocked, and historical-dialog false-positive behavior are tested
    before a manifest ships.
 10. **Staleness is answered by re-identification, not a TTL.** Identity is
-   re-derived every ~5 s from the PTY's foreground process group; when the agent
-   is gone and the detector owns the record, the record is deleted. A dead
-   process does not keep a live badge.
+   re-derived every ~5 s from the PTY's foreground process group, and a vacancy
+   is confirmed across consecutive reads before anything is given up. When the
+   agent is gone, a record the detector owns is deleted and a declared record is
+   withdrawn to `unknown` (point 8). A dead process does not keep a live badge,
+   whoever wrote it. Nothing in the record is timestamped: liveness lives in the
+   detector, which is what keeps point 7's idle fleet at zero writes.
+11. **An occupant change is a correction, not a retraction.** A pane whose
+   foreground agent changes kind, or restarts under a new process group, is
+   reported as a re-identification: one `SET` rewrites the `kind` and `name` the
+   detector authored and pairs them with `unknown` — the one state that cannot
+   describe the wrong process — while a `kind` or `name` an explicit writer set
+   is preserved. A retraction would broadcast a tombstone and open a hole a
+   waiting consumer reads as death. The correction is a latency improvement and
+   not the correctness mechanism: every derived write reasserts the detector's
+   current `kind`, so a dropped correction heals on the next publication.
 
 No wire change: no frame, tag, `AgentEvent` variant, or `PROTOCOL_VERSION` bump.
 The detector rides the shipped `SET_METADATA` / `METADATA_CHANGED` path.
@@ -124,6 +143,19 @@ a `match` arm in the server does not.
 
 ## Tradeoffs
 
+- **Points 8 and 10 contradicted each other as accepted.** Point 8 made a
+  declaration outrank the derivation "until the record is `DELETE`d" — an
+  edge-triggered handoff, the shape the Why section rejects — while point 10
+  claimed a dead process does not keep a live badge, which the code could honor
+  only for records the detector owned. The implementation resolved that toward
+  8, so a declared pane whose agent was `SIGKILL`ed stayed `working` until the
+  pane closed, and the shipped Claude hook shim declared a state on every hook,
+  which put every Claude pane in that bucket. Withdrawal is the narrowest
+  repair: no derived value is written over a declaration and no record the
+  server did not author is deleted, so this adds one permission rather than
+  reversing a rule. Its price is that a declaration is no longer unconditionally
+  durable — declare state about a pane you do not occupy and it can be withdrawn
+  from under you.
 - **Screen matching is brittle.** An agent restyles its prompt box and the
   manifest goes stale. The decay is bounded by the fail-safe — toward `idle`,
   not toward a permanent alarm — and `PHUX_AGENT_RULES_DIR` lets a user fix a

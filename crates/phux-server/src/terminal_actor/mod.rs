@@ -1997,6 +1997,9 @@ impl TerminalActor {
             DetectOutcome::Publish(report) => {
                 self.emit_agent_state(AgentDetectEvent::State(report));
             }
+            DetectOutcome::Reidentified { kind, name } => {
+                self.emit_agent_state(AgentDetectEvent::Reidentified { kind, name });
+            }
             DetectOutcome::Retract => self.emit_agent_state(AgentDetectEvent::Retract),
         }
         Some(next)

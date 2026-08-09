@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-08-02
+last-reviewed: 2026-08-09
 ---
 
 # The phux reference TUI
@@ -1721,7 +1721,12 @@ undeclared state renders in `dim`). Per pane, in preference order:
    integration on the agent's side: `working` while it runs, `blocked`
    when it is waiting on a human, `idle` otherwise. An explicit
    `phux agent set` outranks the derivation for whatever fields it
-   supplies, so a wrapper or hook that declares its own state still wins.
+   supplies, so a wrapper or hook that declares its own state still
+   wins — but only while that agent still occupies the pane. When the
+   server has positive evidence the declared occupant is gone or has
+   changed, it withdraws the declaration to `unknown` (keeping the
+   declared name and kind) and the derivation resumes, so a killed agent
+   no longer leaves the row painted `working` for the life of the pane.
 2. **The OSC-title identity heuristic** — the compatibility path for a
    pane the server did not recognize (an unknown agent, or a platform
    where process introspection is unavailable). The name comes from the
@@ -2349,7 +2354,10 @@ from "unset"), `from`, and `to` — exported as `PHUX_AGENT_KIND`,
 `from` is **absent** on a first sighting. "We have never seen this pane" is
 a different fact from "it was idle", and a notifier that conflates them
 announces every agent launch as a transition. A withdrawn record (the agent
-exited) arrives as `to = "unknown"`.
+exited) arrives as `to = "unknown"`, and so does an occupant *change* — a
+pane whose Claude was replaced by a Codex passes through `unknown` with its
+`agent-kind` already corrected, rather than reporting the new occupant's
+state under the old occupant's kind.
 
 This is deliberately the *only* notification surface. phux ships no sound
 player and no desktop-notification client:

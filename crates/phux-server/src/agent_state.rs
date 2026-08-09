@@ -11,6 +11,36 @@
 //! > and the detector fills `state` around it. The detector deletes only
 //! > records it itself wrote.
 //!
+//! One narrow exception, and it is the whole of ADR-0046's "why" (see
+//! `docs/spec/L3.md` §3.7, "Server as a producer"): a declaration outranks
+//! the derivation *for as long as the pane is occupied by the agent it
+//! describes*. On positive evidence that the declared occupant is gone the
+//! server may **withdraw** the declaration — set `state` to `"unknown"`,
+//! never substitute a derived value and never `DELETE` — preserving `name`,
+//! `kind` and `session`. A `kill -9` runs no `EXIT` trap and issues no
+//! `agent clear`, so without this a declared pane is wedged in a lie with no
+//! path back to truth, which is precisely the failure mode level-triggering
+//! exists to prevent. [`withdraw_state`] is that write, and it is the only
+//! one the server makes over a declaration.
+//!
+//! # Two invariants the drain must hold
+//!
+//! **I1.** Every `metadata_set` on `phux.agent/v1` writes `kind`, `name` and
+//! `state` in the SAME write, from the SAME source tuple, composed against
+//! the SAME `existing` bytes read under the SAME state-lock. There is no path
+//! that updates `state` without reasserting the `kind` the detector currently
+//! believes — except where an explicit writer owns `kind`. This is why
+//! [`compose`] no longer preserves a `kind` (or `name`) the detector itself
+//! authored: the correction event is best-effort (`try_send`, dropped on a
+//! full sink), so level-triggered reassertion on every write is the only
+//! thing that self-heals.
+//!
+//! **I2.** `state: "unknown"` is the ONLY value that may pair with a possibly
+//! stale `kind`, because `"unknown"` describes no process and therefore
+//! cannot describe a *different* one. Every correction and withdrawal path
+//! lands there. A subscriber must never observe one record whose `kind` and
+//! `state` come from two different processes, not even for a tick.
+//!
 //! The declaration cannot be inferred from the stored bytes. The client's
 //! `AgentMetaState` decodes an absent or unrecognized `state` to `Unknown`,
 //! so `unknown` and "absent" are indistinguishable on the way back out — and
@@ -51,6 +81,42 @@ pub(crate) struct AgentRecordArbiter {
     /// `DELETE` on retract destroys their label. The detector owns the `state`
     /// field; it never owns the identity.
     explicit_identity: HashSet<WireTerminalId>,
+    /// Terminals whose STORED record carries a `kind` an explicit writer set.
+    ///
+    /// Deliberately separate from [`Self::explicit_identity`], which excludes
+    /// `kind` on the grounds that "kind is not identity" — true of the
+    /// *retract* question that set was built for (a bare kind is not something
+    /// a human would miss), and false of the *correction* question:
+    /// `docs/spec/L3.md` §3.7 requires a server to preserve the `kind` of an
+    /// identity-only declaration, and now that the detector reasserts the
+    /// `kind` it authored on every write (I1), an explicitly-set one needs a
+    /// bucket of its own or it would be overwritten with the rest.
+    explicit_kind: HashSet<WireTerminalId>,
+}
+
+/// Which identity fields of a stored record belong to an explicit writer and
+/// must therefore survive a detector write.
+///
+/// Every field NOT owned here is reasserted from the detector's report on
+/// every single write — that is invariant I1, and it is what makes a dropped
+/// [`crate::agent_detect::AgentDetectEvent::Reidentified`] harmless rather
+/// than a permanent lie.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IdentityOwnership {
+    /// An explicit writer supplied `name`; keep theirs.
+    pub(crate) name: bool,
+    /// An explicit writer supplied `kind`; keep theirs.
+    pub(crate) kind: bool,
+}
+
+impl IdentityOwnership {
+    /// Nothing is owned: every field is the detector's to write. The shape of
+    /// a pane no human has ever labelled.
+    #[cfg(test)]
+    pub(crate) const DETECTOR: Self = Self {
+        name: false,
+        kind: false,
+    };
 }
 
 impl AgentRecordArbiter {
@@ -91,6 +157,18 @@ impl AgentRecordArbiter {
         } else {
             self.explicit_identity.remove(terminal);
         }
+        // ... but a kind an explicit writer DID supply is still theirs, and
+        // L3.md §3.7 says to preserve it. Tracked separately from
+        // `explicit_identity` precisely because it must not, on its own,
+        // protect a record from the retract `DELETE`.
+        let supplies_kind = record
+            .as_ref()
+            .is_some_and(|r| r.kind.as_ref().is_some_and(|k| !k.is_empty()));
+        if supplies_kind {
+            self.explicit_kind.insert(terminal.clone());
+        } else {
+            self.explicit_kind.remove(terminal);
+        }
     }
 
     /// Note an explicit `DELETE_METADATA`. The declaration is withdrawn, the
@@ -100,6 +178,23 @@ impl AgentRecordArbiter {
         self.declared.remove(terminal);
         self.detector_owned.remove(terminal);
         self.explicit_identity.remove(terminal);
+        self.explicit_kind.remove(terminal);
+    }
+
+    /// Withdraw a declaration whose subject is provably gone (`docs/spec/L3.md`
+    /// §3.7, "Server as a producer"; ADR-0046 point 8).
+    ///
+    /// Clears `declared` and NOTHING else. The human's `name`, `session` and
+    /// `kind` are still theirs — the withdrawal preserves them in the record
+    /// and this preserves the bookkeeping that protects them. `detector_owned`
+    /// is deliberately NOT set: the detector has not authored this record, and
+    /// must not gain the right to `DELETE` it by having withdrawn a state it
+    /// never wrote. Its next `State` write acquires ownership the normal way.
+    ///
+    /// Not a deletion, and not a substitution of a derived value — the two
+    /// things §3.7 forbids. Losing information only in the honest direction.
+    pub(crate) fn note_declaration_withdrawn(&mut self, terminal: &WireTerminalId) {
+        self.declared.remove(terminal);
     }
 
     /// Whether the stored record carries identity a human authored, in which
@@ -107,6 +202,22 @@ impl AgentRecordArbiter {
     /// key.
     pub(crate) fn has_explicit_identity(&self, terminal: &WireTerminalId) -> bool {
         self.explicit_identity.contains(terminal)
+    }
+
+    /// Whether the stored record's `kind` was supplied by an explicit writer,
+    /// in which case the detector must preserve it rather than reassert its
+    /// own (`docs/spec/L3.md` §3.7).
+    pub(crate) fn has_explicit_kind(&self, terminal: &WireTerminalId) -> bool {
+        self.explicit_kind.contains(terminal)
+    }
+
+    /// The ownership bits for one Terminal, read together so a caller cannot
+    /// take them from two different states of the world.
+    pub(crate) fn identity_ownership(&self, terminal: &WireTerminalId) -> IdentityOwnership {
+        IdentityOwnership {
+            name: self.has_explicit_identity(terminal),
+            kind: self.has_explicit_kind(terminal),
+        }
     }
 
     /// Whether a human has declared this Terminal's state, in which case the
@@ -136,6 +247,7 @@ impl AgentRecordArbiter {
         self.declared.remove(terminal);
         self.detector_owned.remove(terminal);
         self.explicit_identity.remove(terminal);
+        self.explicit_kind.remove(terminal);
     }
 }
 
@@ -143,22 +255,39 @@ impl AgentRecordArbiter {
 /// explicit (state-less) declaration supplied.
 ///
 /// `existing` is the currently-stored value, if any. `name` and `kind` come
-/// from the detector's manifest but yield to a human-declared `name`: if
-/// someone called their pane "reviewer", it stays "reviewer" while the
-/// detector tracks its state. `session` is carried through untouched.
+/// from the detector's manifest and yield ONLY to a field `owned` says an
+/// explicit writer supplied: if someone called their pane "reviewer", it stays
+/// "reviewer" while the detector tracks its state. `session` is carried
+/// through untouched.
+///
+/// Everything else is **reasserted on every write**. That is invariant I1, and
+/// it is not an optimization to skip: the previous rule ("keep whatever kind is
+/// already there") meant that when a pane's occupant changed, the record kept
+/// the OLD kind and gained a state derived from the NEW one — nothing looked
+/// stale, and the kind was a lie. The corrective event is best-effort
+/// (`try_send`), so only level-triggered reassertion actually self-heals.
+///
+/// An empty stored `name` or `kind` is not an owned one: `name` is REQUIRED and
+/// non-empty per `docs/spec/L3.md` §3.7, so a blank is filled whoever "owns" it.
 ///
 /// `attention` is deliberately NOT set by the detector — `docs/spec/L3.md`
 /// §3.7 already derives it from `state` when absent — but a declared one is
 /// preserved.
-pub(crate) fn compose(existing: Option<&[u8]>, kind: &str, name: &str, state: &str) -> Vec<u8> {
+pub(crate) fn compose(
+    existing: Option<&[u8]>,
+    kind: &str,
+    name: &str,
+    state: &str,
+    owned: IdentityOwnership,
+) -> Vec<u8> {
     let prior = existing.and_then(AgentRecordJson::decode);
     let record = match prior {
         Some(mut prior) => {
-            if prior.name.is_empty() {
+            if !owned.name || prior.name.is_empty() {
                 prior.name.clear();
                 prior.name.push_str(name);
             }
-            if prior.kind.is_none() {
+            if !owned.kind || prior.kind.as_ref().is_none_or(String::is_empty) {
                 prior.kind = Some(kind.to_owned());
             }
             prior.state.clear();
@@ -190,23 +319,41 @@ pub(crate) fn stored_state(existing: Option<&[u8]>) -> Option<String> {
     Some(record.state)
 }
 
-/// Withdraw the detector's `state` from a stored record, preserving every
-/// field a human authored.
+/// Withdraw the `state` from a stored record, preserving every field a human
+/// authored.
 ///
-/// The counterpart to [`compose`], for the retract path when the record also
-/// carries human-authored identity (see
-/// [`AgentRecordArbiter::has_explicit_identity`]). `DELETE`ing the key there
-/// would wipe the name, session and attention the human chose — and they are
-/// unrecoverable, because restarting the agent only re-creates the detector's
-/// own view of it. So the detector withdraws the one field it owns, and the
-/// state falls back to the vocabulary's `unknown`: the agent is gone, and a
-/// dead process must not lie about being `working`.
+/// The counterpart to [`compose`], for two paths:
+///
+/// 1. the retract of a record that also carries human-authored identity (see
+///    [`AgentRecordArbiter::has_explicit_identity`]) — `DELETE`ing the key
+///    there would wipe the name, session and attention the human chose, and
+///    they are unrecoverable, because restarting the agent only re-creates the
+///    detector's own view of it; and
+/// 2. the withdrawal of an explicit **declaration** whose subject is provably
+///    gone (see [`AgentRecordArbiter::note_declaration_withdrawn`]).
+///
+/// Either way the state falls back to the vocabulary's `unknown`: the agent is
+/// gone, and a dead process must not lie about being `working`. `unknown` is
+/// also the only value safe to pair with a `kind` this function does not
+/// touch (I2) — it describes no process, so it cannot describe the wrong one.
+///
+/// `attention` is cleared with the state, and that is not incidental: L3 §3.7
+/// derives `attention` from `state` when absent, so a record left reading
+/// `state: unknown, attention: high` heals into a pane that is nothing at all
+/// and still wearing a red badge — a notification for a process that no longer
+/// exists. §3.7's MUST-preserve list is `name`, `kind` and `session`;
+/// `attention` is deliberately not on it.
+///
+/// Byte-idempotent: withdrawing an already-withdrawn record yields identical
+/// bytes, so `metadata_set` suppresses the broadcast and a repeated withdrawal
+/// costs nothing.
 ///
 /// `None` when there is no stored record to rewrite.
 pub(crate) fn withdraw_state(existing: Option<&[u8]>) -> Option<Vec<u8>> {
     let mut record = AgentRecordJson::decode(existing?)?;
     record.state.clear();
     record.state.push_str("unknown");
+    record.attention = None;
     Some(record.encode())
 }
 
@@ -215,11 +362,25 @@ pub(crate) fn withdraw_state(existing: Option<&[u8]>) -> Option<Vec<u8>> {
 mod tests {
     use phux_protocol::ids::TerminalId as WireTerminalId;
 
-    use super::{AgentRecordArbiter, compose, withdraw_state};
+    use super::{AgentRecordArbiter, IdentityOwnership, compose, withdraw_state};
     use crate::agent_detect::record::AgentRecordJson;
 
     fn terminal(id: u32) -> WireTerminalId {
         WireTerminalId::new(id)
+    }
+
+    /// A pane no explicit writer has ever touched: every identity field is
+    /// the detector's to assert.
+    const DETECTOR: IdentityOwnership = IdentityOwnership::DETECTOR;
+
+    /// The ownership bits an arbiter would report after `value` was written
+    /// by an explicit `SET_METADATA` — so the `compose` cases below are wired
+    /// exactly as the drain wires them, rather than to hand-picked bools.
+    fn ownership_after(value: &[u8]) -> IdentityOwnership {
+        let mut arb = AgentRecordArbiter::default();
+        let t = terminal(1);
+        arb.note_explicit_set(&t, value);
+        arb.identity_ownership(&t)
     }
 
     #[test]
@@ -379,11 +540,103 @@ mod tests {
         assert!(!arb.is_declared(&b));
     }
 
+    // --- the explicit-kind bucket (L3 §3.7's preserve list) ----------------
+
+    /// `explicit_identity` deliberately excludes `kind` ("a bare kind is not
+    /// something a human would miss") — correct for the DELETE question it
+    /// governs, and not an answer to the preserve question. L3 §3.7 lists
+    /// `kind` alongside `name` and `session`, and now that the detector
+    /// reasserts its own `kind` on every write, an explicitly-set one needs a
+    /// bucket of its own or it is quietly overwritten.
+    #[test]
+    fn an_explicit_kind_is_tracked_even_though_it_is_not_identity() {
+        let mut arb = AgentRecordArbiter::default();
+        let t = terminal(1);
+        arb.note_explicit_set(&t, br#"{"name":"","kind":"my-agent"}"#);
+        assert!(
+            !arb.has_explicit_identity(&t),
+            "still not identity: this record is not protected from DELETE",
+        );
+        assert!(arb.has_explicit_kind(&t), "but the kind is theirs to keep");
+        let owned = arb.identity_ownership(&t);
+        assert!(!owned.name);
+        assert!(owned.kind);
+    }
+
+    #[test]
+    fn a_record_with_no_kind_leaves_the_kind_to_the_detector() {
+        let mut arb = AgentRecordArbiter::default();
+        let t = terminal(1);
+        arb.note_explicit_set(&t, br#"{"name":"reviewer"}"#);
+        assert!(!arb.has_explicit_kind(&t));
+        arb.note_explicit_set(&t, br#"{"name":"reviewer","kind":""}"#);
+        assert!(!arb.has_explicit_kind(&t), "an empty kind supplies nothing");
+    }
+
+    #[test]
+    fn a_delete_and_a_reap_drop_the_explicit_kind() {
+        let mut arb = AgentRecordArbiter::default();
+        let t = terminal(1);
+        arb.note_explicit_set(&t, br#"{"kind":"my-agent"}"#);
+        arb.note_explicit_delete(&t);
+        assert!(!arb.has_explicit_kind(&t));
+
+        arb.note_explicit_set(&t, br#"{"kind":"my-agent"}"#);
+        arb.forget(&t);
+        assert!(!arb.has_explicit_kind(&t), "a reaped pane keeps nothing");
+    }
+
+    // --- withdrawing a declaration (phux-w7z2.13) --------------------------
+
+    /// THE wedge, at the arbiter. A declared pane whose process is confirmed
+    /// gone has its declaration withdrawn — and only that. The human's label
+    /// is still theirs, and the detector does NOT inherit the right to delete
+    /// a record it never wrote.
+    #[test]
+    fn withdrawing_a_declaration_clears_only_the_declaration() {
+        let mut arb = AgentRecordArbiter::default();
+        let t = terminal(1);
+        arb.note_explicit_set(
+            &t,
+            br#"{"name":"me","kind":"claude","session":"fleet-7","state":"working"}"#,
+        );
+        assert!(arb.is_declared(&t));
+
+        arb.note_declaration_withdrawn(&t);
+
+        assert!(!arb.is_declared(&t), "the detector may derive again");
+        assert!(
+            arb.has_explicit_identity(&t),
+            "the human's name and session are still theirs",
+        );
+        assert!(arb.has_explicit_kind(&t), "as is their kind");
+        assert!(
+            !arb.detector_owns(&t),
+            "withdrawing a state it never wrote does not make the record deletable",
+        );
+    }
+
+    /// And the detector picks the record back up the ordinary way: its next
+    /// write is what makes the record its own.
+    #[test]
+    fn after_a_withdrawal_the_detector_reacquires_by_writing() {
+        let mut arb = AgentRecordArbiter::default();
+        let t = terminal(1);
+        arb.note_explicit_set(&t, br#"{"name":"me","state":"working"}"#);
+        arb.note_declaration_withdrawn(&t);
+        arb.note_detector_write(&t);
+        assert!(arb.detector_owns(&t));
+        assert!(
+            arb.has_explicit_identity(&t),
+            "which still does not make the human's name the detector's",
+        );
+    }
+
     // --- compose ----------------------------------------------------------
 
     #[test]
     fn compose_from_nothing_writes_the_detector_view() {
-        let bytes = compose(None, "claude", "claude", "working");
+        let bytes = compose(None, "claude", "claude", "working", DETECTOR);
         assert_eq!(
             String::from_utf8(bytes).expect("utf8"),
             r#"{"name":"claude","kind":"claude","state":"working"}"#
@@ -394,7 +647,13 @@ mod tests {
     #[test]
     fn compose_preserves_an_identity_only_declaration() {
         let existing = br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#;
-        let bytes = compose(Some(existing), "claude", "claude", "blocked");
+        let bytes = compose(
+            Some(existing),
+            "claude",
+            "claude",
+            "blocked",
+            ownership_after(existing),
+        );
         let got = AgentRecordJson::decode(&bytes).expect("decodes");
         assert_eq!(got.name, "reviewer", "the human's name survives");
         assert_eq!(got.session.as_deref(), Some("fleet-7"), "and their label");
@@ -404,7 +663,13 @@ mod tests {
     #[test]
     fn compose_preserves_a_declared_attention() {
         let existing = br#"{"name":"a","attention":"high"}"#;
-        let bytes = compose(Some(existing), "claude", "claude", "idle");
+        let bytes = compose(
+            Some(existing),
+            "claude",
+            "claude",
+            "idle",
+            ownership_after(existing),
+        );
         let got = AgentRecordJson::decode(&bytes).expect("decodes");
         assert_eq!(got.attention.as_deref(), Some("high"));
         assert_eq!(got.state, "idle");
@@ -413,18 +678,63 @@ mod tests {
     #[test]
     fn compose_fills_a_missing_name_and_kind() {
         let existing = br#"{"name":"","session":"s"}"#;
-        let bytes = compose(Some(existing), "claude", "claude", "idle");
+        let bytes = compose(
+            Some(existing),
+            "claude",
+            "claude",
+            "idle",
+            ownership_after(existing),
+        );
         let got = AgentRecordJson::decode(&bytes).expect("decodes");
-        assert_eq!(got.name, "claude");
+        assert_eq!(
+            got.name, "claude",
+            "an empty stored name is not an owned one: L3 §3.7 requires a non-empty `name`",
+        );
         assert_eq!(got.kind.as_deref(), Some("claude"));
         assert_eq!(got.session.as_deref(), Some("s"));
+    }
+
+    /// THE .27 half, at the composition seam. A `kind` the DETECTOR wrote is
+    /// reasserted from the current report on every single write.
+    ///
+    /// Previously any already-present `kind` was preserved, so when a pane's
+    /// occupant changed the record kept the old `kind` and gained a state
+    /// derived from the new occupant's screen: a fresh state, a present name,
+    /// and a kind that was simply a lie. Nothing about the record looked
+    /// stale, which is what made it undetectable from the outside.
+    #[test]
+    fn compose_reasserts_a_kind_the_detector_authored() {
+        let existing = br#"{"name":"claude","kind":"claude","state":"working"}"#;
+        let bytes = compose(Some(existing), "codex", "codex", "idle", DETECTOR);
+        let got = AgentRecordJson::decode(&bytes).expect("decodes");
+        assert_eq!(
+            got.kind.as_deref(),
+            Some("codex"),
+            "the pane runs codex now; the record must not keep saying claude",
+        );
+        assert_eq!(got.name, "codex", "and the name it came with");
+        assert_eq!(got.state, "idle");
+    }
+
+    /// The other side of the same rule: a `kind` an explicit writer supplied
+    /// is theirs, and `docs/spec/L3.md` §3.7 says to preserve it.
+    #[test]
+    fn compose_preserves_an_explicitly_set_kind() {
+        let existing = br#"{"name":"reviewer","kind":"my-agent"}"#;
+        let owned = ownership_after(existing);
+        assert!(owned.kind, "the writer supplied a kind");
+        let bytes = compose(Some(existing), "claude", "claude", "working", owned);
+        let got = AgentRecordJson::decode(&bytes).expect("decodes");
+        assert_eq!(got.kind.as_deref(), Some("my-agent"));
+        assert_eq!(got.name, "reviewer");
+        assert_eq!(got.state, "working");
     }
 
     /// Garbage in the store must not stop the detector from writing a clean
     /// record over it.
     #[test]
     fn compose_over_malformed_bytes_starts_fresh() {
-        let bytes = compose(Some(b"}{ nonsense"), "claude", "claude", "idle");
+        let bytes = compose(Some(b"}{ nonsense"), "claude", "claude", "idle", DETECTOR);
         let got = AgentRecordJson::decode(&bytes).expect("decodes");
         assert_eq!(got.name, "claude");
         assert_eq!(got.state, "idle");
@@ -432,18 +742,28 @@ mod tests {
 
     /// The dedup contract: recomposing an unchanged state yields byte-identical
     /// output, which is what makes `metadata_set` suppress the broadcast.
+    ///
+    /// Reasserting `kind` and `name` on every write must not disturb this —
+    /// they are reasserted to the SAME values, so the bytes do not move.
     #[test]
     fn compose_is_stable_across_repeats() {
-        let first = compose(None, "claude", "claude", "working");
-        let second = compose(Some(&first), "claude", "claude", "working");
+        let first = compose(None, "claude", "claude", "working", DETECTOR);
+        let second = compose(Some(&first), "claude", "claude", "working", DETECTOR);
         assert_eq!(first, second, "a steady state must produce identical bytes");
     }
 
     // --- withdraw_state ----------------------------------------------------
 
     /// The retract path for a record a human named. Their fields survive; the
-    /// one field the detector owns is withdrawn — and a dead agent must not
-    /// leave a `working` badge spinning behind it.
+    /// fields describing a process that no longer exists do not.
+    ///
+    /// The `attention` assertion INVERTED here, deliberately. It previously
+    /// pinned `attention: "high"` surviving into a withdrawn record — a pane
+    /// that is nothing at all, wearing a red "needs you" badge, for a process
+    /// that is gone. L3 §3.7's MUST-preserve list is `name`, `kind` and
+    /// `session`; `attention` is deliberately not on it, and §3.7 derives it
+    /// from `state` when absent. Clearing it is both spec-legal and the only
+    /// honest reading of `unknown`.
     #[test]
     fn withdraw_state_keeps_the_human_fields_and_drops_the_detectors() {
         let stored = br#"{"name":"reviewer","kind":"claude","state":"working","attention":"high","session":"fleet-7"}"#;
@@ -451,8 +771,27 @@ mod tests {
         let got = AgentRecordJson::decode(&bytes).expect("decodes");
         assert_eq!(got.name, "reviewer", "the human's name survives the agent");
         assert_eq!(got.session.as_deref(), Some("fleet-7"));
-        assert_eq!(got.attention.as_deref(), Some("high"));
+        assert_eq!(got.kind.as_deref(), Some("claude"), "and their kind");
         assert_eq!(got.state, "unknown", "and the detector's verdict is gone");
+        assert_eq!(
+            got.attention, None,
+            "an unknown pane must not keep a badge demanding attention for a dead process",
+        );
+    }
+
+    /// The write-rate guard for the withdrawal path: withdrawing twice yields
+    /// identical bytes, so `metadata_set` suppresses the second broadcast. A
+    /// withdrawal that varied — a timestamp, a counter, a `withdrawn_at` —
+    /// would be a write and a `METADATA_CHANGED` per subscriber per tick.
+    #[test]
+    fn withdraw_state_is_byte_idempotent() {
+        let stored = br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#;
+        let first = withdraw_state(Some(stored)).expect("a record to rewrite");
+        let second = withdraw_state(Some(&first)).expect("still a record");
+        assert_eq!(
+            first, second,
+            "withdrawing an unknown record changes nothing"
+        );
     }
 
     #[test]

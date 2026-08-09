@@ -66,16 +66,24 @@ now and expensive later.
    §3.7, so a display-style name is still valid, listed, and addressable by
    `@N` — just not by `%`, and `phux agent list` says which. No write-time
    check: L3 is last-writer-wins, so a scan two racing writers both pass is an
-   O(panes) round trip, not a guarantee. Detector names are manifest constants
-   (`name` defaults to `kind`), so twelve Claude panes all hold `claude` and
-   `%claude` refuses as ambiguous.
+   O(panes) round trip, not a guarantee. Detector-written names are manifest
+   constants (`name` defaults to `kind`), which is per-kind where a name must be
+   per-pane, so `%` addresses only a name someone chose: a candidate whose
+   `name` equals its own `kind` refuses *as a kind constant* — the record has no
+   provenance field, so this is a shape test, not a provenance read — naming
+   `phux agent set @N --name <name>` as the fix rather than reporting a bare
+   ambiguity nobody can act on. It refuses on one Claude pane as on twelve;
+   resolving the constant while exactly one is up is a target whose meaning
+   changes when the second spawns.
 
 5. **The write guard is a level read of the withdrawn shape.** `send-keys`,
    `paste`, `signal`, `run`, and any
    [ADR-0053](./0053-acknowledged-idempotent-input.md) acknowledged-batch verb
    refuse a `%name` target whose record carries a `kind` **and**
-   `state: "unknown"` — exactly what `agent_state::withdraw_state` leaves, so
-   it is positive evidence that the detector owned this pane and retracted. A
+   `state: "unknown"` — exactly what a withdrawal leaves, so it is positive
+   evidence that a producer which knew this pane gave the claim up: the detector
+   retracting, a declaration withdrawn because its occupant died, or an occupant
+   change corrected in place (ADR-0046 points 8 and 11). A
    record with no `kind` and `state: "unknown"` is the resting value of an
    identity-only declaration (§3.7: "An absent `state` means `unknown`") and
    resolves normally. This is a **safety gate and it reads the level**: a
@@ -84,21 +92,25 @@ now and expensive later.
    never that the occupant is who you named. Read-only verbs skip it.
 
 6. **What that leaves unprotected, stated exactly.** A name never outlives its
-   pane (§3.7 drops the per-Terminal store at close) and the agent-gone
-   retraction ships (`runtime/client.rs` → `withdraw_state`). Nothing fires on
-   a *kind change*: `apply_identity` returns `None` and `compose` preserves the
-   prior `kind`, so claude→codex in one pane yields
-   `{"name":"build","kind":"claude","state":"idle"}` and point 5's guard passes.
-   A same-kind restart is undetectable: `identify.rs` discards the pgid.
+   pane (§3.7 drops the per-Terminal store at close), the agent-gone retraction
+   ships, and a declared record is withdrawn rather than pinned when its
+   occupant dies ([ADR-0046](./0046-server-side-agent-state-detection.md) points
+   8 and 10). An occupant swap and a same-kind restart both land in point 5's
+   guard, because ADR-0046 point 11 pairs the correction with `unknown`. What is
+   left: the correction is only as prompt as the ~5 s identity cadence and its
+   vacancy confirmation, so a `%name` resolved inside that window can still
+   address the pane's new occupant.
 
 7. **Two dependencies, named rather than assumed.** (a) The shipped Claude shim
-   writes `--name claude --kind claude --state <x>` on every hook, making every
-   Claude pane identically named *and* declared; it must default to
-   `claude-${PHUX_TERMINAL_ID}` with a `PHUX_AGENT_NAME` override before
-   `%name` ships. (b) Closing point 6's hole is an ADR-0046 change this ADR
-   does not own: `Retract` on an identity change when the detector owns the
-   record, a `withdraw_state` that also overwrites `kind` otherwise, and a
-   `compose` amendment so a detector `kind` replaces a detector prior.
+   wrote `--state` on every hook, standing the detector down on every Claude
+   pane; it now declares `--name claude --kind claude` and nothing else. It
+   keeps the manifest-constant name deliberately — a per-pane name there makes
+   every shipped `--expect-agent claude` script refuse, and per-pane naming is
+   an explicit writer's job under point 4. (b) Closing point 6's hole is an
+   ADR-0046 change this ADR does not own: a `compose` that lets a detector
+   `kind` replace a detector prior, and a corrective single `SET` on an identity
+   change — not a `Retract`, whose tombstone opens a hole a concurrent wait
+   reads as death.
 
 ## Why
 
@@ -112,21 +124,23 @@ selector, where the user asked for a representative. A name's entire value is
 that it names one thing; narrowing silently means `phux send-keys %build
 'rm -rf .'` lands in an arbitrary pane that shares a label.
 
-Points 5 and 6 are weaker than the first draft, which claimed the detector
-writes `unknown` on a kind change and so "needs no new machinery". The code
-does the opposite, so that guard passed exactly when it needed to fire.
+Points 5 and 6 were weaker than the first draft, which claimed the detector
+writes `unknown` on a kind change and so "needs no new machinery". The code did
+the opposite, so that guard passed exactly when it needed to fire. Point 7(b)
+makes the claim true rather than assuming it.
 
 ## Tradeoffs
 
 - Resolving `%name` costs one `GET_METADATA` per pane where `@N` costs nothing.
 - Point 3's third outcome is a client refactor, not reuse: the index moves into
   `phux-client` and `resolve_targets` gains a `Result` at every CLI and MCP site.
-- Without point 7(b) an occupant swap silently retargets `%name`; with it, a
-  same-kind restart still does.
+- Point 7(b) closes the occupant-swap and same-kind-restart holes at the
+  identity cadence, not instantly; inside that window `%name` still retargets.
 - Two name grammars leave some records listed but unaddressable, a session
   named `%foo` unaddressable, and a hub and satellite `build` each look unique.
-- An explicitly declared record locks the detector out (ADR-0046 point 8), so
-  its staleness belongs to whoever declared it.
+- An explicitly declared record locks the detector out while its occupant lives
+  (ADR-0046 point 8), so its staleness up to the withdrawal belongs to whoever
+  declared it.
 
 ## Alternatives
 
@@ -148,4 +162,4 @@ those forever, and its escape — `--state idle` — locks the detector out.
 
 **Mint a `stale` state, or a `quiescent` one.** Both add vocabulary with no
 producer, and the withdrawn shape already separates never-derived from
-derived-then-lost with no spec change.
+derived-then-lost with no new state word.

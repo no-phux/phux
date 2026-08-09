@@ -8,7 +8,16 @@
 //! The wrinkle is that agent CLIs ship in two shapes: a native binary
 //! (`argv[0] = "claude"`) and a script under a runtime (`node
 //! .../@anthropic-ai/claude-code/cli.js`). So we unwrap runtime wrappers,
-//! and we match on two tiers — see [`foreground_agent`].
+//! and we match on two tiers — see [`foreground_occupancy`].
+//!
+//! # Occupancy is three-valued, deliberately
+//!
+//! "I asked the kernel and nothing matched" and "I could not ask the kernel"
+//! are different facts, and collapsing them into one `None` is what makes a
+//! transient `sysctl` failure indistinguishable from a dead agent. Only the
+//! first is *evidence*; the second is the absence of evidence. The detector
+//! retracts on the first and holds on the second, so [`Occupancy`] keeps them
+//! apart at the seam rather than in a comment.
 
 use super::rules::RuleSet;
 use crate::proc_query;
@@ -23,7 +32,35 @@ const RUNTIME_WRAPPERS: [&str; 14] = [
 /// Suffixes stripped from a script name before matching (`cli.js` -> `cli`).
 const SCRIPT_SUFFIXES: [&str; 5] = [".js", ".mjs", ".cjs", ".py", ".ts"];
 
-/// The agent kind running in the foreground of this PTY, if any.
+/// Who owns a pane's foreground process group, as far as the kernel would
+/// tell us.
+///
+/// The three values are not degrees of confidence, they are different
+/// *questions answered*: [`Self::Unresolved`] means the question was not
+/// answered at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Occupancy {
+    /// Could not be answered: no master fd, or the pgid / argv read failed.
+    /// NOT evidence of anything. Callers MUST hold whatever they believe.
+    Unresolved,
+    /// Resolved: the foreground pgid runs something matching no manifest.
+    /// This IS positive evidence that no known agent occupies the pane.
+    Vacant {
+        /// The process group we successfully looked at.
+        pgid: i32,
+    },
+    /// Resolved: an agent of `kind` owns the foreground pgid.
+    Agent {
+        /// Open-vocabulary kind slug, e.g. `"claude"`.
+        kind: String,
+        /// The process group running it. Retained so a *restart* of the same
+        /// kind in the same pane is distinguishable from the original — it
+        /// is otherwise invisible by construction.
+        pgid: i32,
+    },
+}
+
+/// Who occupies the foreground of this PTY.
 ///
 /// 1. Ask the kernel which process group owns the tty.
 /// 2. Read that process's argv.
@@ -47,15 +84,26 @@ const SCRIPT_SUFFIXES: [&str; 5] = [".js", ".mjs", ".cjs", ".py", ".ts"];
 /// user's *data* path contains the word — so a plain string argument is
 /// never split into path components. Only the program's own path is.
 ///
-/// First hit wins; `None` when nothing matches (the caller then publishes
-/// nothing, and retracts any record it previously wrote).
-pub(crate) fn foreground_agent(master_fd: Option<i32>, rules: &RuleSet) -> Option<String> {
-    let pgid = proc_query::foreground_pgid(master_fd?)?;
-    let argv = proc_query::process_argv(pgid)?;
-    kind_from_argv(&argv, rules)
+/// First hit wins. A pane whose foreground process matches nothing is
+/// [`Occupancy::Vacant`] — an answer, not a shrug; any step that fails to
+/// produce an answer is [`Occupancy::Unresolved`].
+pub(crate) fn foreground_occupancy(master_fd: Option<i32>, rules: &RuleSet) -> Occupancy {
+    let Some(fd) = master_fd else {
+        return Occupancy::Unresolved;
+    };
+    let Some(pgid) = proc_query::foreground_pgid(fd) else {
+        return Occupancy::Unresolved;
+    };
+    let Some(argv) = proc_query::process_argv(pgid) else {
+        return Occupancy::Unresolved;
+    };
+    kind_from_argv(&argv, rules).map_or(Occupancy::Vacant { pgid }, |kind| Occupancy::Agent {
+        kind,
+        pgid,
+    })
 }
 
-/// The rule-matching core of [`foreground_agent`], split out so it is a pure
+/// The rule-matching core of [`foreground_occupancy`], split out so it is a pure
 /// function of `(argv, rules)` and can be exhaustively table-tested without
 /// a live process.
 pub(crate) fn kind_from_argv(argv: &[String], rules: &RuleSet) -> Option<String> {
@@ -133,7 +181,7 @@ fn is_runtime_wrapper(arg: &str) -> bool {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use super::kind_from_argv;
+    use super::{Occupancy, foreground_occupancy, kind_from_argv};
     use crate::agent_detect::rules::{ManifestSpec, RuleSet};
 
     fn rules() -> RuleSet {
@@ -228,5 +276,167 @@ binaries = ["claude", "claude-code"]
     #[test]
     fn matching_is_case_insensitive() {
         assert_eq!(kind(&["CLAUDE"]).as_deref(), Some("claude"));
+    }
+
+    // --- occupancy: the un-answerable question is its own value ------------
+
+    /// A pane with no PTY answers nothing. Collapsing this into "no agent
+    /// here" is what turned every unreadable pane into evidence that the
+    /// agent died — and, once a retraction can withdraw a human's
+    /// declaration, into a badge that vanishes because a `sysctl` blipped.
+    #[test]
+    fn a_pane_with_no_master_fd_is_unresolved_never_vacant() {
+        assert_eq!(
+            foreground_occupancy(None, &rules()),
+            Occupancy::Unresolved,
+            "no fd is not an observation",
+        );
+    }
+
+    #[test]
+    fn a_dead_or_bogus_fd_is_unresolved() {
+        assert_eq!(
+            foreground_occupancy(Some(-1), &rules()),
+            Occupancy::Unresolved
+        );
+        assert_eq!(
+            foreground_occupancy(Some(i32::MAX), &rules()),
+            Occupancy::Unresolved,
+        );
+    }
+
+    /// A regular file is a live fd that is simply not a tty, so the pgid
+    /// query fails. Still unresolved: we learned nothing about occupancy.
+    #[test]
+    fn a_non_tty_fd_is_unresolved() {
+        use std::os::fd::AsRawFd;
+        let file = tempfile::tempfile().expect("temp file");
+        assert_eq!(
+            foreground_occupancy(Some(file.as_raw_fd()), &rules()),
+            Occupancy::Unresolved,
+        );
+    }
+
+    // --- against a real kernel ---------------------------------------------
+
+    /// Spawn `program` in a real PTY and resolve its occupancy once the child
+    /// is genuinely running it.
+    ///
+    /// Two synchronizations, and both are load-bearing. The child prints a
+    /// banner, so the measurement happens after `execve` — a `fork`ed child
+    /// that has taken the terminal but not yet replaced its image still
+    /// carries the TEST BINARY's argv, and sampling there measures the
+    /// harness. Then the foreground pgid must actually be the child's, because
+    /// until `tcsetpgrp` runs `tcgetpgrp` answers for whoever held it before.
+    #[cfg(unix)]
+    fn occupancy_of(program: &std::path::Path, rules: &RuleSet) -> Occupancy {
+        use std::io::Read as _;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let mut reader = pair.master.try_clone_reader().expect("clone reader");
+        let mut child = pair
+            .slave
+            .spawn_command(CommandBuilder::new(program))
+            .expect("spawn");
+        let child_pid =
+            i32::try_from(child.process_id().expect("a live child has a pid")).expect("pid fits");
+        let fd = pair.master.as_raw_fd().expect("a real pty has a raw fd");
+
+        // Wait for the banner: proof that the script's image is live.
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 128];
+            let mut seen = Vec::new();
+            while let Ok(read) = reader.read(&mut buf) {
+                if read == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buf[..read]);
+                if seen.windows(READY.len()).any(|w| w == READY.as_bytes()) {
+                    let _ = tx.send(());
+                    return;
+                }
+            }
+        });
+        let started = rx.recv_timeout(Duration::from_secs(10)).is_ok();
+
+        let mut seen = Occupancy::Unresolved;
+        for _ in 0..100 {
+            seen = foreground_occupancy(Some(fd), rules);
+            let pgid = match &seen {
+                Occupancy::Unresolved => None,
+                Occupancy::Vacant { pgid } | Occupancy::Agent { pgid, .. } => Some(*pgid),
+            };
+            if pgid == Some(child_pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(started, "the child never printed its banner");
+        assert!(
+            matches!(&seen, Occupancy::Vacant { pgid } | Occupancy::Agent { pgid, .. } if *pgid == child_pid),
+            "the child never took the terminal; nothing was measured: {seen:?}",
+        );
+        seen
+    }
+
+    /// The banner [`occupancy_of`] waits for.
+    #[cfg(unix)]
+    const READY: &str = "phux-ready";
+
+    /// Write an executable script named `name` into `dir` that announces
+    /// itself and then idles.
+    #[cfg(unix)]
+    fn write_script(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\necho {READY}\nsleep 30\n")).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        path
+    }
+
+    /// The pgid must be the KERNEL's, not a placeholder. It was previously
+    /// resolved and discarded, which is what made a same-kind restart in one
+    /// pane undetectable by construction — the detector had nothing to compare.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_agent_in_a_real_pty_carries_its_real_process_group() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = write_script(dir.path(), "claude");
+        match occupancy_of(&agent, &rules()) {
+            Occupancy::Agent { kind, pgid } => {
+                assert_eq!(kind, "claude", "identity comes from argv[0]");
+                assert!(pgid > 0, "a real process group id, not a placeholder");
+            }
+            other => panic!("a live agent in a real pty must resolve: {other:?}"),
+        }
+    }
+
+    /// And the positive-vacancy half against a real kernel: a pane running
+    /// something that is not an agent is an ANSWER — the evidence a withdrawal
+    /// is allowed to act on — and not the same value as an unreadable pane.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_non_agent_in_a_real_pty_is_vacant_not_unresolved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let other = write_script(dir.path(), "definitely-not-an-agent");
+        match occupancy_of(&other, &rules()) {
+            Occupancy::Vacant { pgid } => assert!(pgid > 0),
+            other => panic!("a live non-agent must be observed as vacant: {other:?}"),
+        }
     }
 }

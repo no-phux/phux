@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-08-02
+last-reviewed: 2026-08-09
 ---
 
 # The phux agent CLI
@@ -362,16 +362,50 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   from it. States: `unknown|idle|working|blocked|done`; attention:
   `none|low|normal|high` (defaults derive from state). Prints the confirmed
   record as `@N<TAB>json`.
+
+  **A declared `state` outranks the detector only while the pane is still
+  occupied by the agent it describes.** Omitting `--state` writes the literal
+  `"unknown"`, which is *not* a declaration: the record supplies identity and
+  the detector fills `state` in, preserving your `name`, `kind`, and
+  `session`. Supplying any other `--state` stands the detector's derivation
+  down on that pane — deliberately, because a lifecycle hook is better
+  evidence than a screen rule ([ADR-0046](../../ADR/0046-server-side-agent-state-detection.md)
+  point 8). The declaration then ends in one of three ways: `agent clear`
+  (or any `DELETE_METADATA`), the pane being reaped, or the server
+  **withdrawing** it. A withdrawal is what happens when the declaring process
+  dies without clearing — a `SIGKILL`, a force-closed pane, any exit that
+  skips the integration's cleanup path. On positive evidence that the pane's
+  occupant is gone or has changed, the server sets `state` to `"unknown"` and
+  clears `attention`, and stops there: it never substitutes a derived value
+  for your declaration and never deletes a record it did not author
+  ([`docs/spec/L3.md`](../spec/L3.md) §3.7, normative). Your `name`, `kind`,
+  and `session` survive untouched; only the claim about lifecycle is dropped,
+  and the derivation resumes from there. *Positive evidence* is an
+  observation the server successfully made and which found no such agent — a
+  server that cannot see the pane's foreground process holds the declaration
+  rather than guessing, so a declared record is never withdrawn by a failed
+  query. Consumers see this as an ordinary transition into `unknown` (§5.1),
+  which is a *departure*, never a completion.
 - **`phux agent clear [TARGET] [--socket P]`** — delete the declared record
   (`DELETE_METADATA`); consumers fall back to the OSC-title and screen
-  heuristics. Prints `@N<TAB>-` on confirmation.
+  heuristics. Prints `@N<TAB>-` on confirmation. This is the only verb that
+  removes the record; the withdrawal described above empties the state and
+  keeps the identity, so a withdrawn pane still resolves by name and kind.
 - **`phux agent wait [--until STATE]... [--timeout SECS] [--json] [--socket P]
   [TARGET]`** — block until the pane's agent **transitions into** a lifecycle
   state. `--until` repeats and ORs over `idle`, `working`, `blocked`, `done`,
-  defaulting to `idle,blocked,done` — the three ways a turn ends. `unknown` is
-  not spellable: it is *departure*, not a state to wait for. `TARGET` is
-  optional (the focused pane). `--timeout` is in seconds and is unbounded when
-  omitted, matching `phux wait`; always pass one from a script. `--json` emits
+  defaulting to `idle,blocked,done` — the three ways a turn ends. **`done` has
+  no producer in the shipped binary**: no detection manifest emits it (a
+  finished-while-nobody-looked turn is not a fact on the screen) and the
+  Claude hook shim no longer writes it either, because a hook that declares a
+  `state` stands the detector down on its own pane. It stays in the vocabulary
+  and in the default set for integrations that do write it, but on a pane
+  phux itself instrumented, `--until done` alone can only time out. Wait on
+  `idle` and `blocked` unless you know your integration declares `done`.
+  `unknown` is not spellable: it is *departure*, not a state to wait for.
+  `TARGET` is optional (the focused pane). `--timeout` is in seconds and is
+  unbounded when omitted, matching `phux wait`; always pass one from a
+  script. `--json` emits
   `AgentWaitJson` (§4.7).
 
   **It is satisfied only by an observed transition, never by a level read of
@@ -403,6 +437,20 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   deliberately checks no identity — use that one when a pane is what you mean.
   A pane with no record is refused rather than written to.
 
+  **`--expect-agent` matches `name`, and a detector-written `name` is a
+  per-kind constant, not a per-pane label.** A detection manifest is written
+  once per agent *kind*, so every pane the detector recognizes as Claude
+  carries `name = "claude"`, and so does every pane running the hook shim.
+  `--expect-agent claude` therefore asserts "a Claude is in this pane", which
+  is a real and useful check but not an identity — it passes on any of twelve
+  Claude panes. The detector will not invent `claude-7` to paper over this:
+  the pane id *is* the per-pane identity and it is already the selector you
+  used. If you want a name that distinguishes one pane from another, set it
+  yourself with `phux agent set @7 --name reviewer`; an explicitly set `name`
+  is never overwritten by the detector, and `--expect-agent reviewer` then
+  means what it looks like. Use `--expect-kind` when the kind is what you
+  actually care about.
+
   Every key spec is validated before any byte is written, so a typo in the
   third key cannot leave the first two delivered; unlike `phux send-keys`, a
   near-miss chord (`C-cc`, a bare `M-`) is refused rather than typed as
@@ -411,7 +459,18 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   frame from this client interleaves — but another client's `SET_METADATA`,
   the detector's next tick, or the pane's own process exec'ing something else
   still can. It closes the resolve-then-type window, not a concurrent-writer
-  race. `--json` emits the shape in §4.7.
+  race.
+
+  What the check *can* now rely on is that a stale `kind` does not sit beside
+  a live `state`. When the pane's occupant changes — a Claude killed and a
+  Codex started in the same pane, or the same kind restarted as a new process
+  — the server corrects `kind` and drops `state` to `"unknown"` in one write,
+  rather than letting the new occupant's derived state accumulate under the
+  old occupant's label. A record that reads `kind: claude, state: working` is
+  therefore evidence about a live Claude, not a leftover. The exception is a
+  `kind` you set explicitly: the server preserves an explicit writer's `kind`
+  (§3.7 of the spec requires it), so if you declared one, keeping it accurate
+  is yours to do. `--json` emits the shape in §4.7.
 
 - **`phux agent install-claude [--shell zsh|bash|fish] [--real PATH]`** —
   make plain interactive `claude` invocations enter phux automatically. The
@@ -419,10 +478,31 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
   under `$XDG_DATA_HOME/phux/shims`, and adds one marked PATH block to the
   detected shell rc. Outside phux, the shim creates and attaches a new session
   in the caller's working directory; inside a pane it runs Claude in place.
-  Claude lifecycle hooks publish `working`, `blocked`, and `done` records, and
-  blocked notifications also emit `phux ask`, so phone and TUI fleet views see
-  attention without screen inference. Noninteractive/admin invocations such as
-  `claude -p`, `claude mcp`, and `claude --version` bypass phux.
+  Noninteractive/admin invocations such as `claude -p`, `claude mcp`, and
+  `claude --version` bypass phux.
+
+  **The lifecycle hooks declare identity only — `--name claude --kind claude`,
+  never a `--state`.** They announce *who* occupies the pane and leave *what
+  it is doing* to the server's derivation, which is the whole point: a hook
+  that declared a `state` would stand the ADR-0046 detector down on that pane
+  for the record's lifetime, and `claude.toml` is the deepest manifest phux
+  ships. Blocked notifications still emit `phux ask`, so phone and TUI fleet
+  views see attention without screen inference; that path is unchanged and
+  keeps the hook's exact timing. What the shim no longer writes is `done` —
+  the Stop hook was phux's only `done` producer, and `agent wait --until done`
+  is unsatisfiable on a shim pane (see `agent wait` above). `working` and
+  `blocked` now come from `claude.toml` instead of the hook, so they carry up
+  to one detect tick of extra latency; they are no less correct, and unlike
+  the hook they keep working when Claude dies without running its cleanup.
+
+  The installed shim is **version-stamped** (`# phux-shim-schema: N` on the
+  second line). `install-claude` reports `installed`, `reinstalled`, or
+  `upgraded ... (schema 1 -> 2)` so you can tell a no-op from a real
+  migration. Upgrading the phux binary does **not** rewrite an already
+  installed shim: a schema-1 shim keeps declaring `--state` on every hook and
+  keeps the detector stood down, so re-run `phux agent install-claude` after
+  upgrading. A pane running the current shim self-heals on its first hook —
+  the identity write clears any stale declaration left by the old one.
 - **`phux agent uninstall-claude`** — remove only the phux-owned shim, hook
   settings, manifest, and marked shell-rc block. User shell configuration and
   the real Claude installation are otherwise untouched.
@@ -953,8 +1033,10 @@ state it asked for — the one outcome the edge rule makes surprising.
 
 `detection` is one entry of the `agents` array above — the same object, with
 `confidence` and the full `sources` evidence trail for this pane — so a caller
-can tell `done` written by a lifecycle hook (`agent_record` provenance) from
-`done` guessed by a screen rule. It is `null`, as shown, when the post-wait
+can tell a state an integration *declared* (`agent_record` provenance) from
+one a screen rule derived. On a pane phux itself instrumented that trail is
+always the derivation: the shipped hook shim declares identity only, so no
+state on such a pane comes from a hook. It is `null`, as shown, when the post-wait
 read fails; that degrades the document by one optional field and never fails a
 wait that was already satisfied. Without `--json` the prose line is
 `@N<TAB>name<TAB>from -> to<TAB>via push|poll<TAB>confidence`.
@@ -1485,10 +1567,23 @@ Read `agent wait`'s answer, do not assume it. Exit `0` means a transition into
 one of those states was **observed**; `124` means none was, which is *not* the
 same statement as "the agent is still working" — check `phux agent show` for
 the level and `edge`/`baseline` in the `--json` document for what the wait
-actually saw. Exit `1` is a departure: the record went away mid-wait, and that
-must never be read as completion. Why the verb refuses to answer from the
-current level at all is in §2 and, normatively, in
+actually saw. Exit `1` is a departure: the record went away mid-wait, or its
+`state` was withdrawn to `unknown` because the pane's occupant died or
+changed. Neither must ever be read as completion. Why the verb refuses to
+answer from the current level at all is in §2 and, normatively, in
 [`../spec/L3.md`](../spec/L3.md) §3.7.
+
+> **Known divergence (`phux agent install-claude` panes).** Every lifecycle
+> hook the shim installs issues a `SET_METADATA` that carries no `--state`,
+> and `SET_METADATA` replaces the record whole, so each hook resets `state`
+> to `"unknown"` until the detector's next tick refills it. An `agent wait`
+> in flight sees that as a transition into `unknown` and exits `1`
+> (`agent_departed`) even though the agent is alive and mid-turn — the Stop
+> hook makes it fire at the end of every turn. Supervising a shim-instrumented
+> Claude pane with `agent wait` is therefore unreliable until this is fixed;
+> the shim should write its identity once at session start rather than on
+> every hook. Tracked as **phux-w7z2.37**. Panes not running the shim are
+> unaffected, and a genuine withdrawal is still a genuine departure.
 
 When the input itself is a block of text — a heredoc body, an indented code
 snippet for a REPL, a multiline SQL statement — use `paste`, then submit

@@ -57,6 +57,33 @@ const TICK_UNIDENTIFIED: Duration = Duration::from_millis(500);
 /// elapses in full when the detector never publishes at all.
 const DETECT_DEADLINE: Duration = Duration::from_secs(8);
 
+/// The identity recheck interval these tests run under, via the detector's
+/// `PHUX_AGENT_IDENTIFY_RECHECK_MS` seam (production default: 5 s).
+///
+/// A departure is only acted on after `VACANT_CONFIRMATIONS` *confirmed*
+/// vacant observations, so a test that watches a real agent die otherwise
+/// waits out two full production rechecks. Nothing being proven depends on
+/// the interval's length — only on the confirmation COUNT, which the seam
+/// does not touch.
+const TEST_IDENTIFY_RECHECK: Duration = Duration::from_millis(200);
+
+/// How long an end-to-end case waits for a departure to be noticed: the
+/// confirmations, the drain, and the fanout, with generous slack for a
+/// loaded parallel test pool.
+const DEPARTURE_DEADLINE: Duration = Duration::from_secs(12);
+
+/// Shrink the detector's identity recheck for this test process. Same
+/// constraints as [`shorten_startup_grace`].
+fn shorten_identify_recheck() {
+    // SAFETY-adjacent: as `shorten_startup_grace`.
+    unsafe {
+        std::env::set_var(
+            "PHUX_AGENT_IDENTIFY_RECHECK_MS",
+            TEST_IDENTIFY_RECHECK.as_millis().to_string(),
+        );
+    }
+}
+
 /// Shrink the detector's startup grace for this test process. Must run
 /// before the server (and therefore any detector) is spawned; the override
 /// is read once per process.
@@ -87,6 +114,44 @@ fn shorten_startup_grace() {
 /// Then it sleeps, so the live screen keeps saying `blocked` while the test
 /// collects.
 fn write_fake_agent(dir: &std::path::Path) -> std::path::PathBuf {
+    write_fake_agent_ending_with(dir, "sleep 30")
+}
+
+/// As [`write_fake_agent`], but the agent LEAVES the pane — replacing itself
+/// with `successor` — the moment the test creates `depart_when`.
+///
+/// `exec` is the honest shape of the departure this file cares about: the
+/// agent's process is replaced with no `EXIT` trap, no `phux agent clear`, and
+/// no PTY EOF, which is exactly what a `kill -9` or a force-closed agent
+/// leaves behind. A script that simply exited would take the pane with it, and
+/// the pane's reap would then clear the record for reasons that have nothing
+/// to do with what is being tested.
+///
+/// The departure is gated on a file rather than on a timer because the ORDER
+/// matters: the declaration has to be in the store before the process goes
+/// away, or the test is proving something else. A timer makes that ordering a
+/// race against a loaded parallel pool.
+///
+/// The polling `sleep` is a CHILD of the script, so it shares the script's
+/// process group and the pane's foreground pgid still resolves to `claude` —
+/// identification is unaffected, which is precisely why the detector reads the
+/// process group leader rather than whatever happens to be running.
+fn write_fake_agent_departing_on(
+    dir: &std::path::Path,
+    depart_when: &std::path::Path,
+    successor: &str,
+) -> std::path::PathBuf {
+    write_fake_agent_ending_with(
+        dir,
+        &format!(
+            "while [ ! -f '{}' ]; do sleep 0.1; done\nexec {successor}",
+            depart_when.display(),
+        ),
+    )
+}
+
+/// As [`write_fake_agent`], with `tail` as the script's last lines.
+fn write_fake_agent_ending_with(dir: &std::path::Path, tail: &str) -> std::path::PathBuf {
     let path = dir.join("claude");
     // `exec` is load-bearing: without it the shell stays as the process group
     // leader and argv[0] would be `sh`, not `claude`. With it, the script
@@ -123,8 +188,8 @@ fn write_fake_agent(dir: &std::path::Path) -> std::path::PathBuf {
          echo '   2. Yes, and always allow access'\n\
          echo '   3. No'\n\
          echo ''\n\
-         echo ' Esc to cancel'\n\
-         sleep 30\n";
+         echo ' Esc to cancel'\n";
+    let script = format!("{script}{tail}\n");
     std::fs::write(&path, script).expect("write fake agent");
     #[cfg(unix)]
     {
@@ -463,6 +528,378 @@ fn an_unattached_subscriber_receives_the_detectors_record() {
             record.get("name").and_then(serde_json::Value::as_str),
             Some("claude"),
             "and the whole record, not a stub: {record}",
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
+    });
+}
+
+/// Write an executable fake `codex` into `dir`: it clears the screen, paints
+/// the command-approval prompt the shipped `rules/codex.toml` matches, and
+/// idles.
+///
+/// A SECOND kind is what makes "the pane's occupant changed" expressible end
+/// to end. The screen is painted from the same three strings the manifest's
+/// `prompt-command-approval` rule requires, so the derived state for this
+/// pane is unambiguously codex's — and unambiguously not the one claude's
+/// dialog produced a moment earlier.
+fn write_fake_codex(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("codex");
+    let script = "#!/bin/sh\n\
+         printf '\\033[2J\\033[H'\n\
+         echo 'Would you like to run the following command?'\n\
+         echo ''\n\
+         echo '$ curl -s https://example.com | head -5'\n\
+         echo ''\n\
+         echo ' 1. Yes, proceed (y)'\n\
+         echo ' 3. No, and tell Codex what to do differently (esc)'\n\
+         echo ''\n\
+         echo 'Press enter to confirm or esc to cancel'\n\
+         sleep 30\n";
+    std::fs::write(&path, script).expect("write fake codex");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake codex");
+    }
+    path
+}
+
+/// Drain `phux.agent/v1` records for `terminal` until one satisfies `done` or
+/// `deadline` elapses, returning every record in the order a subscriber saw
+/// them.
+///
+/// The ORDER is the point for the transient-consistency cases: an invariant
+/// about what a consumer may never observe cannot be checked by sampling the
+/// final state.
+async fn collect_agent_records_until(
+    stream: &mut UnixStream,
+    terminal: &TerminalId,
+    deadline: Duration,
+    done: impl Fn(&serde_json::Value) -> bool,
+) -> Vec<serde_json::Value> {
+    let end = tokio::time::Instant::now() + deadline;
+    let mut seen = Vec::new();
+    loop {
+        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return seen;
+        }
+        match collect_agent_record(stream, terminal, remaining).await {
+            Some(record) => {
+                let finished = done(&record);
+                seen.push(record);
+                if finished {
+                    return seen;
+                }
+            }
+            None => return seen,
+        }
+    }
+}
+
+/// The `kind` / `state` pair of a record, for the invariant assertions.
+fn kind_and_state(record: &serde_json::Value) -> (&str, &str) {
+    (
+        record
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(""),
+        record
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(""),
+    )
+}
+
+/// THE WEDGE (phux-w7z2.13), end to end, driven to the actual failure.
+///
+/// A human runs `phux agent set @N --name me --kind claude --state working`.
+/// That is a DECLARATION: `docs/spec/L3.md` §3.7 says it outranks any
+/// derivation, and the detector correctly stands down. Then the agent is
+/// killed — no `EXIT` trap runs, no `phux agent clear` is issued, and the pane
+/// survives, so the two things that clear a declaration (an explicit
+/// `DELETE_METADATA`, and pane reap) both never happen.
+///
+/// The pane then sat at `working` for the life of the session. Every
+/// `phux agent list`, every sidebar, every `agent wait` saw a live agent
+/// working away in a pane that had been empty for hours, and there was no path
+/// back to the truth from inside the system — precisely the failure the ADR
+/// says level-triggering exists to prevent.
+///
+/// The fix is a WITHDRAWAL, not an overwrite and not a delete: on positive,
+/// confirmed evidence that the declared occupant is gone, `state` goes to
+/// `unknown` and the human's `name`, `kind` and `session` stay exactly as they
+/// wrote them. The server asserts nothing it derived, and the record outlives
+/// the process only as an honest "I don't know".
+#[test]
+fn a_declared_state_does_not_survive_the_death_of_the_process_it_describes() {
+    shorten_startup_grace();
+    shorten_identify_recheck();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        // Paints the dialog, and leaves the pane the moment the test says so —
+        // after which something that is not an agent owns its foreground
+        // process group.
+        let depart = tmp.path().join("depart");
+        let agent = write_fake_agent_departing_on(tmp.path(), &depart, "sleep 300");
+
+        let cmd = CommandBuilder::new(&agent);
+        let (shutdown_tx, server_handle) =
+            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        send_frame(&mut stream, &attach_by_name("demo")).await;
+        let (_type_byte, attached) = recv_typed(&mut stream).await;
+        let FrameKind::Attached { snapshot, .. } = attached else {
+            panic!("expected ATTACHED");
+        };
+        let terminal = snapshot.focused_pane.clone();
+
+        send_frame(
+            &mut stream,
+            &FrameKind::SubscribeMetadata {
+                scope: Scope::Terminal(terminal.clone()),
+                key: TERMINAL_AGENT_KEY.to_owned(),
+            },
+        )
+        .await;
+
+        // Precondition: the detector has identified a live agent in this pane.
+        assert!(
+            await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE)
+                .await
+                .is_some(),
+            "precondition: the detector never saw the agent at all",
+        );
+
+        // `phux agent set @N --name me --kind claude --state working`.
+        send_frame(
+            &mut stream,
+            &FrameKind::SetMetadata {
+                request_id: 11,
+                scope: Scope::Terminal(terminal.clone()),
+                key: TERMINAL_AGENT_KEY.to_owned(),
+                value: br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#
+                    .to_vec(),
+            },
+        )
+        .await;
+        // The declaration is in flight ahead of the departure on the same
+        // ordered connection, so the record IS declared by the time the
+        // process goes away — which is the whole scenario.
+        assert!(
+            await_agent_state(&mut stream, &terminal, "working", DETECT_DEADLINE)
+                .await
+                .is_some(),
+            "precondition: the declaration never landed",
+        );
+
+        std::fs::write(&depart, b"go").expect("signal the departure");
+
+        // The agent dies. Nothing else happens: no trap, no clear, no EOF.
+        let healed = await_agent_state(&mut stream, &terminal, "unknown", DEPARTURE_DEADLINE).await;
+        let healed = healed.expect(
+            "a declared record must not outlive the process it describes: with no EXIT trap \
+             and no `agent clear`, a withdrawal to `unknown` is the ONLY path back to the \
+             truth, and without it the pane reports `working` forever",
+        );
+
+        assert_eq!(
+            healed.get("name").and_then(serde_json::Value::as_str),
+            Some("me"),
+            "the human's name is not the server's to take: {healed}",
+        );
+        assert_eq!(
+            healed.get("kind").and_then(serde_json::Value::as_str),
+            Some("claude"),
+            "nor their kind — L3 §3.7 requires both preserved: {healed}",
+        );
+        assert!(
+            healed.get("attention").is_none(),
+            "but an unknown pane must not keep a red badge for a dead process: {healed}",
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
+    });
+}
+
+/// The same departure, for a record the DETECTOR wrote alone. The pane keeps
+/// running (only the agent left), so the record must be removed rather than
+/// left describing a process that is gone.
+///
+/// The half that already worked, pinned end to end: the `VACANT_CONFIRMATIONS`
+/// gate is new, and a retraction that never fired would be a regression
+/// nothing else in this file would catch.
+#[test]
+fn a_detector_written_record_is_retracted_when_the_agent_leaves_the_pane() {
+    shorten_startup_grace();
+    shorten_identify_recheck();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let depart = tmp.path().join("depart");
+        let agent = write_fake_agent_departing_on(tmp.path(), &depart, "sleep 300");
+
+        let cmd = CommandBuilder::new(&agent);
+        let (shutdown_tx, server_handle) =
+            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        send_frame(&mut stream, &attach_by_name("demo")).await;
+        let (_type_byte, attached) = recv_typed(&mut stream).await;
+        let FrameKind::Attached { snapshot, .. } = attached else {
+            panic!("expected ATTACHED");
+        };
+        let terminal = snapshot.focused_pane.clone();
+
+        send_frame(
+            &mut stream,
+            &FrameKind::SubscribeMetadata {
+                scope: Scope::Terminal(terminal.clone()),
+                key: TERMINAL_AGENT_KEY.to_owned(),
+            },
+        )
+        .await;
+
+        assert!(
+            await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE)
+                .await
+                .is_some(),
+            "precondition: the detector never converged on `blocked`",
+        );
+
+        std::fs::write(&depart, b"go").expect("signal the departure");
+
+        // The agent leaves. The DELETE arrives as a `METADATA_CHANGED` with no
+        // value, which `collect_agent_record` skips — so wait for the frame
+        // itself rather than for a record.
+        let end = tokio::time::Instant::now() + DEPARTURE_DEADLINE;
+        let mut deleted = false;
+        while !deleted {
+            let remaining = end.saturating_duration_since(tokio::time::Instant::now());
+            assert!(!remaining.is_zero(), "the record was never retracted");
+            let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(&mut stream)).await else {
+                panic!("the record was never retracted");
+            };
+            if let FrameKind::MetadataChanged { scope, key, value } = frame
+                && key == TERMINAL_AGENT_KEY
+                && scope == Scope::Terminal(terminal.clone())
+            {
+                deleted = value.is_none();
+            }
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
+    });
+}
+
+/// THE mixed-process record (phux-w7z2.27), end to end. A pane hosting
+/// `claude` is replaced by `codex` in the same pane.
+///
+/// The detector used to reset its own memory on a kind change and emit
+/// NOTHING, and the arbiter's `compose` preserved any `kind` already in the
+/// record. So the record kept `kind: "claude"` and the next write gave it a
+/// state derived from CODEX's screen. Nothing looked stale — the state was
+/// fresh, the name was present, the record was live — and the kind was simply
+/// a lie. That is worse than a stale record, because there is no signal in it
+/// that anything is wrong.
+///
+/// The invariant (I2): a subscriber must NEVER observe one record whose `kind`
+/// and `state` describe two different processes, not even for a single tick.
+/// The correction is therefore one write that lands on `unknown` — the only
+/// value that describes no process and so cannot describe the wrong one.
+#[test]
+fn a_kind_change_never_leaves_a_stale_kind_beside_a_live_state() {
+    shorten_startup_grace();
+    shorten_identify_recheck();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let codex = write_fake_codex(tmp.path());
+        // Claude paints its dialog; when the test says so, codex takes the pane
+        // over. `exec` keeps the pane and its pgid alive, so this is an
+        // occupant change and not a pane teardown.
+        let depart = tmp.path().join("depart");
+        let agent =
+            write_fake_agent_departing_on(tmp.path(), &depart, &codex.display().to_string());
+
+        let cmd = CommandBuilder::new(&agent);
+        let (shutdown_tx, server_handle) =
+            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        send_frame(&mut stream, &attach_by_name("demo")).await;
+        let (_type_byte, attached) = recv_typed(&mut stream).await;
+        let FrameKind::Attached { snapshot, .. } = attached else {
+            panic!("expected ATTACHED");
+        };
+        let terminal = snapshot.focused_pane.clone();
+
+        send_frame(
+            &mut stream,
+            &FrameKind::SubscribeMetadata {
+                scope: Scope::Terminal(terminal.clone()),
+                key: TERMINAL_AGENT_KEY.to_owned(),
+            },
+        )
+        .await;
+
+        assert!(
+            await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE)
+                .await
+                .is_some(),
+            "precondition: claude was never detected in this pane",
+        );
+
+        std::fs::write(&depart, b"go").expect("signal the handover");
+
+        // Everything the subscriber sees from the moment claude is live, up to
+        // and including the pane converging on codex's own derived state.
+        let records =
+            collect_agent_records_until(&mut stream, &terminal, DEPARTURE_DEADLINE, |record| {
+                kind_and_state(record) == ("codex", "blocked")
+            })
+            .await;
+        let pairs: Vec<(String, String)> = records
+            .iter()
+            .map(|r| {
+                let (k, s) = kind_and_state(r);
+                (k.to_owned(), s.to_owned())
+            })
+            .collect();
+
+        let switch = pairs
+            .iter()
+            .position(|(kind, _)| kind == "codex")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the record never learned the pane's occupant had changed; it still says \
+                     claude: {pairs:?}"
+                )
+            });
+
+        assert_eq!(
+            pairs[switch].1, "unknown",
+            "the correcting write must land on `unknown`: a state derived from codex's \
+             screen written in the same breath as the new kind would be fine, but the \
+             record is only allowed ONE source per write and nothing has been derived \
+             for codex yet: {pairs:?}",
+        );
+        assert!(
+            pairs[switch..].iter().all(|(kind, _)| kind == "codex"),
+            "once the occupant changed, no record may say claude again: {pairs:?}",
+        );
+        assert!(
+            pairs[switch..]
+                .iter()
+                .any(|(kind, state)| kind == "codex" && state == "blocked"),
+            "and the pane converges on codex's OWN derived state: {pairs:?}",
         );
 
         let _ = shutdown_tx.send(());
