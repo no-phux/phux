@@ -41,6 +41,7 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::agent_meta::AgentMetaState;
 use crate::layout::Rect;
 use crate::render::Theme;
+use crate::render::clip_text;
 use crate::render::overlay::help::HardcodedBinding;
 
 /// Label of the "create" affordance row (phux-fce4).
@@ -635,19 +636,13 @@ impl SidebarPainter {
     }
 }
 
-/// Truncate `s` to `max` cells, appending `…` when it overflows. A `max` of
-/// 0 yields the empty string.
+/// Truncate `s` to `max` cells, marking the cut with `…`.
+///
+/// Delegates to the crate-wide [`clip_text`] so the sidebar, the pickers,
+/// and the status bar all shorten text by the same rule — a divergence
+/// here shows up as chrome that cuts three different ways on one screen.
 fn truncate(s: &str, max: usize) -> String {
-    if max == 0 {
-        return String::new();
-    }
-    if s.chars().count() <= max {
-        return s.to_owned();
-    }
-    s.chars()
-        .take(max.saturating_sub(1))
-        .chain(std::iter::once('…'))
-        .collect()
+    clip_text(s, max)
 }
 
 /// Emit `buf` to `out` at `rect`'s origin, row by row, with a per-cell SGR

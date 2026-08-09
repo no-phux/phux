@@ -92,13 +92,13 @@ fn config_show_layers_attributes_keys_to_layers() {
         "{stdout}"
     );
     assert!(row("defaults.term").contains("<- [1] defaults"), "{stdout}");
-    // status.right: two shipped elements plus the distro's clock.
+    // status.right: three shipped elements plus the distro's clock.
     assert!(
         row("status.right[0]").contains("<- [1] defaults"),
         "{stdout}"
     );
     assert!(
-        row("status.right[2]").contains("<- [2] distro.toml"),
+        row("status.right[3]").contains("<- [2] distro.toml"),
         "{stdout}"
     );
 }
@@ -150,7 +150,7 @@ fn config_show_layers_json_is_a_stable_document() {
     assert_eq!(entry("defaults.term")["layer"], 1);
     assert_eq!(
         entry("status.right")["element_layers"],
-        serde_json::json!([1, 1, 2])
+        serde_json::json!([1, 1, 1, 2])
     );
 }
 

@@ -1,10 +1,18 @@
-//! The bundled herdr starter distribution (phux-r82.9).
+//! The bundled herdr plugin-bundle layer (phux-r82.9).
 //!
-//! Pins the checked-in `distros/herdr/herdr.toml` package end-to-end:
-//! it resolves through `extends`, its curated values land in the typed
-//! config, its `[[plugins-append]]` manifests absolutize against the
-//! layer directory and point at real files, and a user config layered
-//! on top overrides it per key while still composing with its appends.
+//! Pins the checked-in `distros/herdr/herdr.toml` package end-to-end: it
+//! resolves through `extends`, its `[[plugins-append]]` manifests
+//! absolutize against the layer directory and point at real files, and a
+//! user config layered on top overrides it per key while still composing
+//! with its appends.
+//!
+//! The curated *opinions* this layer used to carry — which-key delay,
+//! the split/palette/tab chords, the status lineup, the theme — are now
+//! shipped defaults, so [`herdr_opinions_are_shipped_defaults_now`]
+//! asserts them through a config that does **not** extend the layer.
+//! That is the regression that matters: if someone moves them back into
+//! the distro, a naked `phux` silently gets worse and only that test
+//! notices.
 
 #![allow(clippy::expect_used, reason = "tests")]
 
@@ -30,15 +38,18 @@ fn parse_with_herdr(user_body: &str) -> Config {
         .expect("herdr stack parses")
 }
 
+/// The opinions phux now ships: a bare config, no distro in sight, must
+/// already carry every value the herdr layer used to add.
 #[test]
-fn herdr_curated_values_land_in_the_typed_config() {
-    let cfg = parse_with_herdr("");
+fn herdr_opinions_are_shipped_defaults_now() {
+    let cfg = parse_with_defaults("", Path::new("/nonexistent-config-dir/config.toml"))
+        .expect("shipped defaults parse on their own");
 
     // Which-key-first: snappier popup, still enabled.
     assert!(cfg.keybindings.which_key);
     assert_eq!(cfg.keybindings.which_key_delay_ms, 400);
 
-    // Curated prefix-table additions.
+    // The curated prefix-table chords.
     assert_eq!(
         cfg.keybindings.prefix_table.get("Space"),
         Some(&Action::Bare("command-palette".to_owned()))
@@ -49,29 +60,45 @@ fn herdr_curated_values_land_in_the_typed_config() {
         cfg.keybindings.prefix_table.get("Tab"),
         Some(&Action::Bare("next-window".to_owned()))
     );
-    // Shipped defaults survive underneath (tables merge per chord).
-    assert!(
-        cfg.keybindings.prefix_table.contains_key("c"),
-        "shipped new-window binding must survive the herdr layer"
-    );
+    // The tmux-shaped bindings they alias are still there too.
+    assert!(cfg.keybindings.prefix_table.contains_key("c"));
+    assert!(cfg.keybindings.prefix_table.contains_key("%"));
+    assert!(cfg.keybindings.prefix_table.contains_key(":"));
 
-    // Session naming opinion.
+    // Session naming: directories, not "default".
     assert_eq!(cfg.defaults.session_name_template, "${cwd-basename}");
 
-    // Theme slots.
-    assert_eq!(
-        cfg.theme.slots.get("accent").map(String::as_str),
-        Some("#7aa2f7")
-    );
-    assert_eq!(
-        cfg.theme.slots.get("attention").map(String::as_str),
-        Some("#ff9e64")
-    );
-
-    // Status lineup is owned by the distro (plain assignment).
+    // Status lineup: tabs left, hints center, and a right slot that
+    // changes shape with the terminal (session + clock when there is
+    // room, a `switch` chip when there is not).
     assert_eq!(cfg.status.left.len(), 1);
     assert_eq!(cfg.status.center.len(), 1);
-    assert_eq!(cfg.status.right.len(), 2);
+    assert_eq!(cfg.status.right.len(), 3);
+}
+
+/// The layer itself is now plugin wiring and nothing else. Extending it
+/// must not disturb any of the shipped opinions.
+#[test]
+fn herdr_layer_leaves_the_shipped_opinions_alone() {
+    let bare = parse_with_defaults("", Path::new("/nonexistent-config-dir/config.toml"))
+        .expect("shipped defaults parse on their own");
+    let cfg = parse_with_herdr("");
+
+    assert_eq!(
+        cfg.keybindings.which_key_delay_ms,
+        bare.keybindings.which_key_delay_ms
+    );
+    assert_eq!(cfg.keybindings.prefix_table, bare.keybindings.prefix_table);
+    assert_eq!(
+        cfg.defaults.session_name_template,
+        bare.defaults.session_name_template
+    );
+    assert_eq!(cfg.status.left, bare.status.left);
+    assert_eq!(cfg.status.center, bare.status.center);
+    assert_eq!(cfg.status.right, bare.status.right);
+    assert_eq!(cfg.theme.slots, bare.theme.slots);
+    // The one thing it does add.
+    assert_eq!(cfg.plugins.len(), 2, "{:?}", cfg.plugins);
 }
 
 #[test]
@@ -128,21 +155,18 @@ manifest = "/home/me/extra/phux-plugin.toml"
 "#,
     );
 
-    // User leaf beats the distro leaf.
+    // User leaf beats the shipped default underneath the layer.
     assert_eq!(cfg.keybindings.which_key_delay_ms, 800);
     assert_eq!(
         cfg.keybindings.prefix_table.get("Space"),
         Some(&Action::Bare("show-help".to_owned()))
     );
-    // Theme merges per slot: the user's accent wins, herdr's other
-    // slots survive.
+    // A theme slot the user sets is the only slot in the config map:
+    // the shipped palette lives in code (render::theme::Theme::default),
+    // and `[theme]` is purely an override surface on top of it.
     assert_eq!(
         cfg.theme.slots.get("accent").map(String::as_str),
         Some("magenta")
-    );
-    assert_eq!(
-        cfg.theme.slots.get("chord").map(String::as_str),
-        Some("#9ece6a")
     );
     // The user's append stacks on the distro's two plugins.
     assert_eq!(cfg.plugins.len(), 3);

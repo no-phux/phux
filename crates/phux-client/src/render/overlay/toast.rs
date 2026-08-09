@@ -15,7 +15,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
-use super::widgets::{Modal, centered};
+use super::widgets::{Modal, centered_panel};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::Theme;
 
@@ -52,7 +52,7 @@ impl RenderOverlay for ToastOverlay {
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
         // ~60% of the viewport, min 40x8, clamped to the outer rect.
-        Some(centered(area, 6, 40, 8))
+        Some(centered_panel(area, 6, 40, 8))
     }
 
     fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {

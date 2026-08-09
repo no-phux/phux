@@ -59,6 +59,48 @@ impl Slot {
         }
         out
     }
+
+    /// The width this slot wants if nothing constrains it.
+    fn natural_width(&self, ctx: &WidgetContext<'_>) -> usize {
+        self.widgets.iter().map(|w| w.render(ctx).len()).sum()
+    }
+
+    /// Render the slot into at most `budget` cells.
+    ///
+    /// Within a slot, **later widgets yield first**. Slots are written in
+    /// reading order and that order is a statement of priority: in the
+    /// shipped `right = ["session-name", { time }]`, losing the clock on
+    /// a narrow terminal costs you nothing, while losing the session name
+    /// costs you the answer to "which of my sessions am I looking at".
+    /// Each widget then decides *how* to spend what it is given via
+    /// [`StatusWidget::render_within`].
+    fn render_within(&self, ctx: &WidgetContext<'_>, budget: usize) -> Vec<Cell> {
+        if budget == 0 {
+            return Vec::new();
+        }
+        let mut budgets: Vec<usize> = self.widgets.iter().map(|w| w.render(ctx).len()).collect();
+        let natural: usize = budgets.iter().sum();
+        // Charge the whole shortfall to the trailing widgets, in reverse
+        // order, until it is paid off.
+        let mut deficit = natural.saturating_sub(budget);
+        for b in budgets.iter_mut().rev() {
+            if deficit == 0 {
+                break;
+            }
+            let cut = deficit.min(*b);
+            *b -= cut;
+            deficit -= cut;
+        }
+
+        let mut out: Vec<Cell> = Vec::new();
+        for (w, b) in self.widgets.iter().zip(budgets) {
+            out.extend(w.render_within(ctx, b).cells);
+        }
+        // A widget is free to under-spend but never to overrun; clamp
+        // anyway so a third-party widget cannot corrupt the row geometry.
+        out.truncate(budget);
+        out
+    }
 }
 
 /// The composed status bar.
@@ -149,58 +191,130 @@ impl StatusBar {
     /// Render the bar at the supplied display width. Returns exactly
     /// `width` cells, padded with blanks where slots don't reach.
     ///
-    /// Truncation policy on overflow: right wins first, then left,
-    /// center yields last.
+    /// ## How the row narrows
+    ///
+    /// When everything fits, the three slots render at their natural
+    /// width and nothing below applies. When they don't, the bar is
+    /// resolved in priority order:
+    ///
+    /// 1. **Right** takes what it needs, up to half the row. The cap is
+    ///    there so a long session name cannot push the window tabs off a
+    ///    narrow bar; half rather than something tighter because on a
+    ///    genuinely small terminal the right slot is where the shipped
+    ///    lineup puts the `switch` affordance, and an affordance that
+    ///    disappears at the width that made it necessary is worse than no
+    ///    affordance at all. Inside the cap the slot shrinks itself.
+    /// 2. **Left** gets everything the right slot did not take. It holds
+    ///    the tab bar — the chrome you navigate by — so it is the last
+    ///    thing to lose room.
+    /// 3. **Center** gets whatever gap survives, minus one blank column
+    ///    of breathing room on each side so it never abuts its
+    ///    neighbours. Below `CENTER_SLOT_MIN` (8) the gap is not worth
+    ///    filling and the center slot renders nothing.
+    ///
+    /// Slots shrink through [`StatusWidget::render_within`], so widgets
+    /// degrade on their own terms — the composer never cuts cells it does
+    /// not understand.
+    ///
+    /// [`StatusWidget::render_within`]: crate::widget::StatusWidget::render_within
     #[must_use]
     pub fn render(&self, ctx: &WidgetContext<'_>, width: u16) -> Vec<Cell> {
+        // Widgets answer "is this a cramped terminal?" from `ctx.cols`,
+        // so the composer stamps it here — the one place that knows the
+        // real row width — rather than trusting every caller to set it.
+        let ctx = &WidgetContext {
+            cols: width,
+            ..*ctx
+        };
         let width = usize::from(width);
         if width == 0 {
             return Vec::new();
         }
 
-        let left = self.left.render(ctx);
-        let mut center = self.center.render(ctx);
-        let mut right = self.right.render(ctx);
-
-        // Budget: right gets up to width; left gets whatever's left after
-        // right; center gets whatever's left after both.
-        let right_take = right.len().min(width);
-        right.truncate(right_take);
-
-        let mut left = left;
-        let left_budget = width.saturating_sub(right_take);
-        let left_take = left.len().min(left_budget);
-        left.truncate(left_take);
-
-        let center_budget = width.saturating_sub(left_take + right_take);
-        let center_take = center.len().min(center_budget);
-        center.truncate(center_take);
+        let (left, center, right) = self.resolve_slots(ctx, width);
 
         // Compose into a fixed-width row.
         let mut row: Vec<Cell> = vec![Cell::default(); width];
 
         // Left: flush at column 0.
+        let left_take = left.len();
         for (i, c) in left.into_iter().enumerate() {
             row[i] = c;
         }
 
         // Right: flush at the last column.
-        let right_start = width - right_take;
+        let right_start = width - right.len();
         for (i, c) in right.into_iter().enumerate() {
             row[right_start + i] = c;
         }
 
         // Center: centered within the gap between left and right.
-        let gap_start = left_take;
-        let gap_end = right_start;
-        let gap_width = gap_end.saturating_sub(gap_start);
-        let center_offset = gap_start + gap_width.saturating_sub(center_take) / 2;
+        let gap_width = right_start.saturating_sub(left_take);
+        let center_offset = left_take + gap_width.saturating_sub(center.len()) / 2;
         for (i, c) in center.into_iter().enumerate() {
             row[center_offset + i] = c;
         }
 
         row
     }
+
+    /// Resolve the three slots' cells for a row of `width`. Split out of
+    /// [`Self::render`] so the placement arithmetic above reads as pure
+    /// geometry and the priority policy is testable on its own.
+    fn resolve_slots(
+        &self,
+        ctx: &WidgetContext<'_>,
+        width: usize,
+    ) -> (Vec<Cell>, Vec<Cell>, Vec<Cell>) {
+        let (ln, cn, rn) = (
+            self.left.natural_width(ctx),
+            self.center.natural_width(ctx),
+            self.right.natural_width(ctx),
+        );
+
+        // Everything fits with a blank column either side of the center:
+        // no policy needed.
+        if ln + cn + rn + center_gutters(cn) <= width {
+            return (
+                self.left.render(ctx),
+                self.center.render(ctx),
+                self.right.render(ctx),
+            );
+        }
+
+        let right = self.right.render_within(ctx, rn.min(width / 2));
+        let left = self
+            .left
+            .render_within(ctx, width.saturating_sub(right.len()));
+
+        // Whatever is genuinely left over, less the breathing room.
+        let gap = width
+            .saturating_sub(left.len() + right.len())
+            .saturating_sub(CENTER_GUTTER * 2);
+        let center = if gap >= CENTER_SLOT_MIN {
+            self.center.render_within(ctx, gap)
+        } else {
+            Vec::new()
+        };
+
+        (left, center, right)
+    }
+}
+
+/// Blank columns held either side of the center slot so a centered widget
+/// never touches the slot beside it. Purely visual, and the reason a
+/// center widget can be dropped while a column or two still appears free.
+const CENTER_GUTTER: usize = 1;
+
+/// Narrowest gap worth handing to the center slot. Under this, a centered
+/// widget is a fragment wedged between two neighbours rather than a
+/// legible hint, so the slot yields the space to the row's blank fill.
+const CENTER_SLOT_MIN: usize = 8;
+
+/// The gutters a center slot of `n` cells actually costs (none when the
+/// center slot is empty).
+const fn center_gutters(n: usize) -> usize {
+    if n == 0 { 0 } else { CENTER_GUTTER * 2 }
 }
 
 /// Convenience: collect the printable text of a rendered row into a
@@ -306,8 +420,12 @@ mod tests {
         assert_eq!(s.len(), 20);
     }
 
+    /// The narrowing policy end to end: the center slot is dropped whole
+    /// rather than wedged in as a fragment, the right slot is held to its
+    /// share of the row, and whatever survives a cut says so with an
+    /// ellipsis instead of pretending to be complete.
     #[test]
-    fn truncation_preserves_right_then_left_then_center() {
+    fn overflow_caps_the_right_slot_and_drops_the_center_whole() {
         let cfg = StatusCfg {
             left: vec![spec(
                 "session-name",
@@ -325,15 +443,64 @@ mod tests {
         };
         let reg = WidgetRegistry::with_builtins();
         let bar = StatusBar::build(&cfg, &reg).unwrap();
-        // Total raw: LEFT(4) + CENTER(6) + RIGHT(5) = 15. Width 10 means
-        // right (5) wins, left gets 5 (LEFT + 'C' from CENTER session?
-        // No — left's render is "LEFT" + ""=session="" → "LEFT", 4 cells).
-        // Left fits in budget(5). Center budget = 10 - 4 - 5 = 1, so center
-        // truncates to its first cell 'C'.
-        let row = bar.render(&ctx_with(""), 10);
-        let s = row_to_string(&row);
-        assert_eq!(s, "LEFTCRIGHT");
-        assert_eq!(s.len(), 10);
+
+        // Natural: LEFT(4) + CENTER(6) + RIGHT(5) = 15, plus the two
+        // gutter columns. At 22 everything fits, center centered in the gap.
+        assert_eq!(
+            row_to_string(&bar.render(&ctx_with(""), 22)),
+            "LEFT   CENTER    RIGHT"
+        );
+
+        // At 10 the row is crowded. Right needs 5 and the cap is half of
+        // 10, so it survives whole; left keeps its 4. The 1 column left
+        // over is far under CENTER_SLOT_MIN, so the center yields
+        // entirely rather than rendering "C".
+        let s = row_to_string(&bar.render(&ctx_with(""), 10));
+        assert_eq!(s, "LEFT RIGHT");
+        assert_eq!(s.chars().count(), 10);
+
+        // At 8 the right slot hits the half-row ceiling and clips to 4,
+        // marking the cut: the bar admits it shortened something rather
+        // than showing a "RIGH" that reads as a complete word.
+        assert_eq!(row_to_string(&bar.render(&ctx_with(""), 8)), "LEFTRIG…");
+    }
+
+    /// A slot spends its budget front-to-back: the trailing widget is the
+    /// one that yields. The shipped `right = ["session-name", time]`
+    /// therefore loses its clock before it loses the session name.
+    #[test]
+    fn a_slot_shrinks_from_its_trailing_widget() {
+        let cfg = StatusCfg {
+            // A left slot wide enough to actually crowd the row — the
+            // policy only engages once the three slots overflow.
+            left: vec![spec(
+                "session-name",
+                &[("prefix", toml::Value::String("LEFTLEFTLEFT".into()))],
+            )],
+            right: vec![
+                Widget::Bare("session-name".into()),
+                spec("time", &[("format", toml::Value::String("CLOCK".into()))]),
+            ],
+            ..Default::default()
+        };
+        let reg = WidgetRegistry::with_builtins();
+        let bar = StatusBar::build(&cfg, &reg).unwrap();
+
+        // `session-name` renders prefix + name, so left is 16 cells and
+        // right 9. At width 30 everything survives whole.
+        assert_eq!(
+            row_to_string(&bar.render(&ctx_with("main"), 30)),
+            "LEFTLEFTLEFTmain     mainCLOCK"
+        );
+
+        // At width 15 the row overflows. The right slot is capped at half
+        // the row (7 cells): the whole session name plus two of the
+        // clock's, so the clock absorbs the entire cut and the identity
+        // survives intact. Left then clips into the 8 columns it is left
+        // with.
+        let s = row_to_string(&bar.render(&ctx_with("main"), 15));
+        assert_eq!(s, "LEFTLEF…mainCL…");
+        assert_eq!(s.chars().count(), 15);
     }
 
     /// phux-foz.12: window-tab hit targets survive slot placement — a
@@ -365,7 +532,12 @@ mod tests {
             let bar = StatusBar::build(cfg, &reg).unwrap();
             bar.render(&ctx, width)
                 .iter()
-                .map(|c| c.hit.map(|CellHit::Window(i)| i))
+                .map(|c| {
+                    c.hit.and_then(|h| match h {
+                        CellHit::Window(i) => Some(i),
+                        CellHit::Switch => None,
+                    })
+                })
                 .collect()
         };
         // Left slot: "0:a 1:b" flush at column 0 in a 10-wide row.
@@ -410,11 +582,16 @@ mod tests {
         );
     }
 
-    /// phux-foz.12: truncation drops trailing tabs' hits with their cells —
-    /// the surviving columns still map to the right windows, and no stale
-    /// target outlives its glyphs.
+    /// A narrowed tab bar drops whole tabs, never parts of one, and marks
+    /// what it hid.
+    ///
+    /// The old composer clipped the strip by raw cell count and produced
+    /// `0:alpha 1:` at width 10 — which reads as a second window named
+    /// `1:`, conceals that a third exists, and leaves the fragment
+    /// clickable. Every one of those is a lie about the session. The bar
+    /// now shows the whole tabs that fit plus a `›` for the rest.
     #[test]
-    fn window_tab_hits_track_truncation() {
+    fn a_narrow_tab_bar_drops_whole_tabs_and_marks_the_hidden_ones() {
         use crate::widget::{CellHit, WindowInfo};
         let mk = |name: &str, active: bool| WindowInfo {
             name: name.to_owned(),
@@ -431,12 +608,24 @@ mod tests {
             ..Default::default()
         };
         let bar = StatusBar::build(&cfg, &reg).unwrap();
-        // Full strip "0:alpha 1:beta 2:gamma" is 22 cells; width 10 keeps
-        // "0:alpha 1:" — window 0's tab plus the head of window 1's.
+
+        // Full strip "0:alpha 1:beta 2:gamma" is 22 cells and fits at 22.
+        assert_eq!(
+            row_to_string(&bar.render(&ctx, 22)),
+            "0:alpha 1:beta 2:gamma"
+        );
+
+        // At 10 only the active tab fits; the rest become one `›`.
         let row = bar.render(&ctx, 10);
+        assert_eq!(row_to_string(&row), "0:alpha\u{203a}  ");
         let hits: Vec<Option<usize>> = row
             .iter()
-            .map(|c| c.hit.map(|CellHit::Window(i)| i))
+            .map(|c| {
+                c.hit.and_then(|h| match h {
+                    CellHit::Window(i) => Some(i),
+                    CellHit::Switch => None,
+                })
+            })
             .collect();
         assert_eq!(
             hits,
@@ -448,12 +637,54 @@ mod tests {
                 Some(0),
                 Some(0),
                 Some(0),
+                // The overflow mark is chrome, not a window: inert.
                 None,
-                Some(1),
-                Some(1)
+                None,
+                None
             ]
         );
-        assert_eq!(row_to_string(&row), "0:alpha 1:");
+
+        // At 16 the neighbour comes back, and the mark moves to cover
+        // only what is still hidden.
+        assert_eq!(
+            row_to_string(&bar.render(&ctx, 16)),
+            "0:alpha 1:beta\u{203a} "
+        );
+    }
+
+    /// The visible run is anchored on the active tab, not on window 0, so
+    /// narrowing the terminal never hides where you actually are.
+    #[test]
+    fn a_narrow_tab_bar_keeps_the_active_tab_visible() {
+        use crate::widget::WindowInfo;
+        let mk = |name: &str, active: bool| WindowInfo {
+            name: name.to_owned(),
+            active,
+            zoomed: false,
+            attention: false,
+            branch: None,
+        };
+        let windows = [
+            mk("alpha", false),
+            mk("beta", false),
+            mk("gamma", true),
+            mk("delta", false),
+        ];
+        let ctx = WidgetContext::new(UNIX_EPOCH, "", "C-a", &windows);
+        let reg = WidgetRegistry::with_builtins();
+        let cfg = StatusCfg {
+            left: vec![Widget::Bare("windows".into())],
+            ..Default::default()
+        };
+        let bar = StatusBar::build(&cfg, &reg).unwrap();
+
+        // Marks on both sides: windows 0-1 are hidden left, 3 hidden right.
+        let s = row_to_string(&bar.render(&ctx, 11));
+        assert_eq!(s, "\u{2039}2:gamma\u{203a}  ");
+
+        // Even at an absurd width the active index survives longest,
+        // because that is the character you need to navigate by.
+        assert_eq!(row_to_string(&bar.render(&ctx, 3)), "2:\u{2026}");
     }
 
     #[test]

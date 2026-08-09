@@ -31,7 +31,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::select_list::WHEEL_SCROLL_ROWS;
-use super::widgets::{ChordRow, ChordSection, KeyChordTable, Modal, centered, paint_scrollbar};
+use super::widgets::{
+    ChordRow, ChordSection, KeyChordTable, Modal, centered_panel, paint_scrollbar,
+};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::Theme;
 
@@ -294,7 +296,7 @@ impl RenderOverlay for HelpOverlay {
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
         // ~70% of the viewport, min 40x10, clamped to the outer rect.
-        Some(centered(area, 7, 40, 10))
+        Some(centered_panel(area, 7, 40, 10))
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {

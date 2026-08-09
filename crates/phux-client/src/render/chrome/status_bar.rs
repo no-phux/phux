@@ -110,6 +110,9 @@ impl<'a> StatusBarContext<'a> {
             windows: self.windows,
             cwd: self.cwd,
             last_exit: self.last_exit,
+            // Placeholder: `StatusBar::render` stamps the real row width
+            // (the one place that knows it) before any widget sees this.
+            cols: 0,
         }
     }
 }
@@ -1135,10 +1138,24 @@ impl StatusBarPainter {
     /// cached row is empty).
     #[must_use]
     pub fn window_hit_at(&self, x: u16) -> Option<usize> {
+        match self.hit_at(x)? {
+            phux_config::widget::CellHit::Window(i) => Some(i),
+            phux_config::widget::CellHit::Switch => None,
+        }
+    }
+
+    /// The interactive target under screen column `x` on the bar row, or
+    /// `None` when the cell is inert.
+    ///
+    /// Resolved against the cached strip [`Self::paint`] last emitted, so
+    /// hit targets are exactly the cells on screen — slot placement,
+    /// separators, responsive tab dropping and widget visibility gating
+    /// all included. There is no second layout to keep in step.
+    #[must_use]
+    pub fn hit_at(&self, x: u16) -> Option<phux_config::widget::CellHit> {
         let (origin, _, row) = self.last_row.as_ref()?;
         let col = x.checked_sub(*origin)?;
-        let phux_config::widget::CellHit::Window(i) = row.get(usize::from(col))?.hit?;
-        Some(i)
+        row.get(usize::from(col))?.hit
     }
 }
 
@@ -2073,11 +2090,11 @@ mod tests {
         let visible = strip_csi(&String::from_utf8(buf).unwrap());
 
         assert!(
-            visible.contains("C-b ? help"),
+            visible.contains("C-b  Space palette"),
             "configured prefix should reach hints widget: {visible:?}"
         );
         assert!(
-            !visible.contains("C-a ? help"),
+            !visible.contains("C-a"),
             "default prefix must not leak after rebind: {visible:?}"
         );
     }

@@ -131,9 +131,10 @@ fn append_arrays_attribute_each_element_to_its_contributor() {
     assert_eq!(plugins.elements.as_deref(), Some(&[1, 3][..]));
     assert_eq!(plugins.layer, 3, "last contributor owns the key");
 
-    // `status.right`: the shipped defaults carry two widgets; the
-    // distro appends a clock after them.
-    let shipped_len = 2;
+    // `status.right`: the shipped defaults carry three widgets (session
+    // name, clock, and the narrow-terminal `switch` chip); the distro
+    // appends a clock after them.
+    let shipped_len = 3;
     let right = origin(&provenance, "status.right");
     assert_eq!(
         right.elements.as_deref(),

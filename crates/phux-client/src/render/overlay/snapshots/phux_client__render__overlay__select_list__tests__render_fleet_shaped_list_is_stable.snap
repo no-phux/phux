@@ -2,15 +2,17 @@
 source: crates/phux-client/src/render/overlay/select_list.rs
 expression: out
 ---
-
-
-          ┌──────── agent fleet ────────┐
-          │>                            │
-          │                             │
-          │work (current)               █
-          │  ! 0:main.0 reviewer [claude█
-          │  * 0:main.1 builder working █
-          │scratch                      │
-          │                             │
-          │Enter select  ·  Esc cancel  │
-          └─────────────────────────────┘
+┌────────────────── agent fleet ───────────────────┐
+│>                                                 │
+│                                                  │
+│work (current)                                    │
+│  ! 0:main.0 reviewer [claude]      blocked - main│
+│  * 0:main.1 builder                working - main│
+│scratch                                           │
+│  switch to this session                 2 windows│
+│                                                  │
+│Enter select  ·  Esc cancel  ·  type to filter    │
+│                                                  │
+│                                                  │
+│                                                  │
+└──────────────────────────────────────────────────┘

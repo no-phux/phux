@@ -118,49 +118,61 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self {
-            accent: Color::Rgb(190, 242, 100),
-            chord: Color::Rgb(134, 239, 172),
-            // `Reset` = terminal default foreground; the action column
-            // was unstyled (plain `Span::raw`) before this module.
+            // #7aa2f7 — a cool blue. Chrome that names things (modal
+            // titles, the query caret, the active window tab's fill)
+            // rides this one hue so "this is phux talking" is a single
+            // recognizable color rather than a per-overlay decision.
+            accent: Color::Rgb(0x7a, 0xa2, 0xf7),
+            // #9ece6a — green for the keys you press. Distinct enough
+            // from `accent` to scan a help table by column.
+            chord: Color::Rgb(0x9e, 0xce, 0x6a),
+            // `Reset` = terminal default foreground. Action labels
+            // deliberately inherit the user's own foreground so the
+            // readable body text of a modal is never our decision.
             action: Color::Reset,
-            // phux-foz.13: an explicit muted slate rather than the
-            // terminal-dependent ANSI `DarkGray`. Chrome (branch sub-lines,
-            // footer hints, affordances, empty-state placeholders) reads as
-            // one deliberate recessive register instead of "whatever the
-            // palette maps bright-black to". slate-500.
-            dim: Color::Rgb(100, 116, 139),
-            // phux-foz.13: the sidebar separator + modal borders drop to a
-            // cooler, quieter slate so the divider reads as a thin
-            // unobtrusive rule and the chrome recedes behind content.
-            // slate-700.
-            border: Color::Rgb(51, 65, 85),
-            title: Color::Rgb(190, 242, 100),
-            section_header: Color::Yellow,
-            error: Color::Red,
+            // #565f89 — the recessive register. Branch sub-lines, footer
+            // hints, affordances, empty-state placeholders, inactive
+            // window tabs and idle agents all share it, so "not what you
+            // are looking at" is one tone across the whole chrome.
+            dim: Color::Rgb(0x56, 0x5f, 0x89),
+            // #3b4261 — a step below `dim`: rules and modal borders read
+            // as structure, never as content.
+            border: Color::Rgb(0x3b, 0x42, 0x61),
+            title: Color::Rgb(0x7a, 0xa2, 0xf7),
+            // #e0af68 — warm sand for section headings, so a heading is
+            // legible as a heading without competing with `accent`.
+            section_header: Color::Rgb(0xe0, 0xaf, 0x68),
+            // #f7768e — an explicit red rather than ANSI `Red`, which
+            // maps to wildly different hues across terminal palettes.
+            error: Color::Rgb(0xf7, 0x76, 0x8e),
             // Reset = no fill (inherit terminal bg); opt-in via config.
+            // Keeping modals transparent means phux never fights a
+            // terminal background the user chose deliberately.
             surface: Color::Reset,
-            // A near-black slate that reads as a shadow on dark and light
-            // terminals alike.
-            shadow: Color::Rgb(28, 28, 38),
-            // Reproduces the copy-mode strip's prior look (bright white on
-            // dark gray) now that it routes through the theme.
-            selection_fg: Color::White,
-            selection_bg: Color::Indexed(240),
-            // Amber: reads as "needs you" without colliding with `error`
-            // red or the lime `accent`.
-            attention: Color::Rgb(251, 191, 36),
-            // phux-foz.9 / phux-foz.13: sidebar section headers sit in the
-            // same muted slate register as `dim` — a quiet lowercase label
-            // that recedes, not the terminal-dependent ANSI `DarkGray` it
-            // used to inherit. slate-500.
-            sidebar_section: Color::Rgb(100, 116, 139),
-            // phux-foz.9: agent lifecycle colors. Idle is a muted slate
-            // ("nothing needs you"), working the green of live progress,
-            // blocked the attention amber, done a settled blue.
-            agent_idle: Color::Rgb(148, 163, 184),
-            agent_working: Color::Rgb(134, 239, 172),
-            agent_blocked: Color::Rgb(251, 191, 36),
-            agent_done: Color::Rgb(96, 165, 250),
+            // #16161e — one shade under the tokyonight base, so the
+            // drop-shadow reads as depth on a dark terminal and as a
+            // thin dark edge on a light one.
+            shadow: Color::Rgb(0x16, 0x16, 0x1e),
+            // #c0caf5 on #33467c — the selection register, shared by the
+            // copy-mode strip and selected list rows.
+            selection_fg: Color::Rgb(0xc0, 0xca, 0xf5),
+            selection_bg: Color::Rgb(0x33, 0x46, 0x7c),
+            // #ff9e64 — warm orange, the single "needs you" tone. Shared
+            // with `agent_blocked` on purpose: a blocked agent and an
+            // attention marker are the same fact seen from two places.
+            attention: Color::Rgb(0xff, 0x9e, 0x64),
+            // Sidebar section headers sit in the same recessive register
+            // as `dim`: a quiet lowercase label that gives structure
+            // without claiming attention.
+            sidebar_section: Color::Rgb(0x56, 0x5f, 0x89),
+            // Agent lifecycle colors, deliberately on-palette. Idle
+            // recedes into the `dim` tone ("nothing needs you"), working
+            // rides the `chord` green of live progress, blocked shares
+            // the `attention` orange, done settles into a calm cyan.
+            agent_idle: Color::Rgb(0x56, 0x5f, 0x89),
+            agent_working: Color::Rgb(0x9e, 0xce, 0x6a),
+            agent_blocked: Color::Rgb(0xff, 0x9e, 0x64),
+            agent_done: Color::Rgb(0x7d, 0xcf, 0xff),
         }
     }
 }
@@ -247,29 +259,47 @@ mod tests {
     #[test]
     fn default_slots_match_shipped_colors() {
         let t = Theme::default();
-        assert_eq!(t.accent, Color::Rgb(190, 242, 100));
-        assert_eq!(t.chord, Color::Rgb(134, 239, 172));
+        assert_eq!(t.accent, Color::Rgb(0x7a, 0xa2, 0xf7));
+        assert_eq!(t.chord, Color::Rgb(0x9e, 0xce, 0x6a));
         assert_eq!(t.action, Color::Reset);
-        // phux-foz.13: chrome recedes into a cohesive muted slate scale.
-        assert_eq!(t.dim, Color::Rgb(100, 116, 139));
-        assert_eq!(t.border, Color::Rgb(51, 65, 85));
-        assert_eq!(t.title, Color::Rgb(190, 242, 100));
-        assert_eq!(t.section_header, Color::Yellow);
-        assert_eq!(t.error, Color::Red);
-        // Design tokens added for floating-modal depth + selection chrome.
+        assert_eq!(t.dim, Color::Rgb(0x56, 0x5f, 0x89));
+        assert_eq!(t.border, Color::Rgb(0x3b, 0x42, 0x61));
+        assert_eq!(t.title, Color::Rgb(0x7a, 0xa2, 0xf7));
+        assert_eq!(t.section_header, Color::Rgb(0xe0, 0xaf, 0x68));
+        assert_eq!(t.error, Color::Rgb(0xf7, 0x76, 0x8e));
+        // Design tokens for floating-modal depth + selection chrome.
         assert_eq!(t.surface, Color::Reset);
-        assert_eq!(t.shadow, Color::Rgb(28, 28, 38));
-        assert_eq!(t.selection_fg, Color::White);
-        assert_eq!(t.selection_bg, Color::Indexed(240));
-        // phux-foz.1: attention chrome for the agent-asked (ADR-0035) badge.
-        assert_eq!(t.attention, Color::Rgb(251, 191, 36));
-        // phux-foz.9 / phux-foz.13: sidebar section headers + agent
-        // lifecycle colors. Headers share the muted slate `dim` register.
-        assert_eq!(t.sidebar_section, Color::Rgb(100, 116, 139));
-        assert_eq!(t.agent_idle, Color::Rgb(148, 163, 184));
-        assert_eq!(t.agent_working, Color::Rgb(134, 239, 172));
-        assert_eq!(t.agent_blocked, Color::Rgb(251, 191, 36));
-        assert_eq!(t.agent_done, Color::Rgb(96, 165, 250));
+        assert_eq!(t.shadow, Color::Rgb(0x16, 0x16, 0x1e));
+        assert_eq!(t.selection_fg, Color::Rgb(0xc0, 0xca, 0xf5));
+        assert_eq!(t.selection_bg, Color::Rgb(0x33, 0x46, 0x7c));
+        assert_eq!(t.attention, Color::Rgb(0xff, 0x9e, 0x64));
+        assert_eq!(t.sidebar_section, Color::Rgb(0x56, 0x5f, 0x89));
+        assert_eq!(t.agent_idle, Color::Rgb(0x56, 0x5f, 0x89));
+        assert_eq!(t.agent_working, Color::Rgb(0x9e, 0xce, 0x6a));
+        assert_eq!(t.agent_blocked, Color::Rgb(0xff, 0x9e, 0x64));
+        assert_eq!(t.agent_done, Color::Rgb(0x7d, 0xcf, 0xff));
+    }
+
+    /// The shipped palette is a system, not a bag of colors: the slots
+    /// that are documented as sharing a tone must actually share it, so a
+    /// future retune of one cannot silently split the pair.
+    #[test]
+    fn shared_register_slots_stay_in_step() {
+        let t = Theme::default();
+        assert_eq!(t.title, t.accent, "titles ride the accent hue");
+        assert_eq!(t.sidebar_section, t.dim, "section headers are dim-register");
+        assert_eq!(
+            t.agent_idle, t.dim,
+            "an idle agent recedes like any dim chrome"
+        );
+        assert_eq!(
+            t.agent_blocked, t.attention,
+            "a blocked agent and an attention marker are one semantic"
+        );
+        assert_eq!(
+            t.agent_working, t.chord,
+            "working shares the live-progress green"
+        );
     }
 
     /// phux-foz.9: every sidebar/agent slot is config-overridable like the
@@ -311,7 +341,7 @@ mod tests {
         assert_eq!(t.selection_bg, Color::Blue);
         assert_eq!(t.selection_fg, Color::Indexed(15));
         // Untouched slots keep their defaults.
-        assert_eq!(t.accent, Color::Rgb(190, 242, 100));
+        assert_eq!(t.accent, Theme::default().accent);
     }
 
     #[test]
@@ -325,7 +355,7 @@ mod tests {
         let t = Theme::from_cfg(&cfg(&[("accent", "magenta")]));
         assert_eq!(t.accent, Color::Magenta);
         // Untouched slots keep their default.
-        assert_eq!(t.chord, Color::Rgb(134, 239, 172));
+        assert_eq!(t.chord, Theme::default().chord);
     }
 
     #[test]
@@ -362,6 +392,6 @@ mod tests {
         assert_eq!(t.accent, Color::Blue);
         assert_eq!(t.error, Color::Yellow);
         assert_eq!(t.dim, Color::White);
-        assert_eq!(t.section_header, Color::Yellow); // default kept
+        assert_eq!(t.section_header, Theme::default().section_header);
     }
 }

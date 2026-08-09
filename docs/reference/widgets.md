@@ -6,7 +6,7 @@ last-reviewed: 2026-08-02
 
 # phux status-bar widgets reference
 
-**TL;DR.** Every status-bar widget kind the binary registers, with the exact options and defaults each factory accepts, plus the universal `style` table. Rendered from the same spec consts the factories validate options against, so a kind or option is listed here exactly when the binary accepts it.
+**TL;DR.** Every status-bar widget kind the binary registers, with the exact options and defaults each factory accepts, plus the universal `style` table and the `min-cols` / `max-cols` responsive-visibility bounds. Rendered from the same spec consts the factories validate options against, so a kind or option is listed here exactly when the binary accepts it.
 
 <!--
 GENERATED FILE - do not edit. A unit test byte-compares this page
@@ -45,7 +45,7 @@ Options:
 
 ## `help-hints`
 
-Dim, prefix-aware affordance hints (`<prefix> ? help | <prefix> : palette | <prefix> [ copy`), rendered with the configured prefix chord.
+Dim, prefix-aware affordance hints (`<prefix>  Space palette · ? help · [ copy`), rendered with the configured prefix chord. Drops hints from the right as the bar narrows, and disappears entirely rather than showing a fragment.
 
 No kind-specific options.
 
@@ -58,6 +58,15 @@ Options:
 - `format` — string, default `"{name}"` — render template; every `{name}` occurrence is replaced with the (truncated) session name.
 - `prefix` — string, optional — literal text prepended verbatim to the formatted output.
 - `max-len` (also spelled `max_len`) — integer `> 0`, optional — truncate the session name itself to this many characters (prefix and format literals not counted); no ellipsis.
+
+## `switch`
+
+A clickable chip that opens the agent-fleet switcher (the same overlay `prefix A` opens). Every cell of the chip, padding included, is a click target. Pair it with `max-cols` to surface it only on terminals too narrow for the sidebar and the full tab strip.
+
+Options:
+
+- `label` — string, default `"switch"` — the chip's text. Rendered with one space of padding on each side.
+- `chip` — style table, default bold reverse-video — the chip's style. Reverse video by default so the affordance reads as a button on any palette.
 
 ## `text`
 
@@ -89,3 +98,19 @@ Options:
 ## The universal `style` option
 
 Every kind additionally accepts a `style` table with optional `fg`, `bg` (color strings: names, `#rrggbb`, or palette indices) and the boolean attributes `bold`, `dim`, `italic`, `underline`, `reverse`. The registry applies it uniformly before the factory runs, so no widget can opt out. Precedence: cells the widget styles itself keep their own style — `windows`' `active`/`inactive` segments, `exec`'s SGR-parsed output, `help-hints`' dim base all win — and only cells the widget left plain inherit the widget-level `style`. A `style` value that is not a table, or a table with an unknown field, fails the bar build and is flagged by `phux config check`.
+
+## The universal `min-cols` / `max-cols` options
+
+Every kind also accepts `min-cols` and `max-cols`: integer bounds on the width of the **whole status row** (not the widget's own share) outside which the widget renders nothing at all. A hidden widget costs no width, so the widgets that remain get the columns it would have taken.
+
+Use them to make one lineup change shape with the terminal rather than shrink inside it. The honest answer to a narrow window is often not "show this smaller" but "do not show this": a clock is worth four columns at 120 and worth none at 45. The shipped `[status]` block uses exactly this to trade the session name and clock for a `switch` chip below 65 columns.
+
+```toml
+right = [
+  { kind = "session-name", min-cols = 65 },
+  { kind = "time", format = " %a %H:%M", min-cols = 65 },
+  { kind = "switch", max-cols = 64 },
+]
+```
+
+Both bounds are inclusive and either may be given alone. A `min-cols` above `max-cols` describes a widget that could never render and fails the bar build, as does a non-integer value; `phux config check` flags both.

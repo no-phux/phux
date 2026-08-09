@@ -114,7 +114,7 @@ shell = "/bin/bash"
 /// Empty input is exactly `Config::default()`, AND the shipped default
 /// values themselves are pinned per field so a change to any schema
 /// default cannot slip through the two-way equality:
-/// - which-key on with a 600 ms hesitation delay (phux-foz.2);
+/// - which-key on with a 400 ms hesitation delay (phux-foz.2);
 /// - predictive-echo OFF (phux-pxaj, re-evaluated phux-51n6.1: readline
 ///   vi command-mode and no-echo prompts remain un-gatable client-side,
 ///   and mosh's RTT-adaptive gating is not yet ported — opt in with
@@ -131,7 +131,7 @@ fn empty_input_is_full_defaults() {
     assert_eq!(cfg, Config::default());
 
     assert!(cfg.keybindings.which_key);
-    assert_eq!(cfg.keybindings.which_key_delay_ms, 600);
+    assert_eq!(cfg.keybindings.which_key_delay_ms, 400);
     assert!(!cfg.experimental.predictive_echo);
     assert!(!cfg.sidebar.enabled, "sidebar is off by default");
     assert_eq!(cfg.sidebar.width, 20, "default width");
@@ -139,7 +139,7 @@ fn empty_input_is_full_defaults() {
     assert_eq!(cfg.status.position, StatusPosition::Bottom);
     assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::InheritFocused);
     assert_eq!(cfg.defaults.spawn_on_attach, None);
-    assert_eq!(cfg.defaults.session_name_template, "default");
+    assert_eq!(cfg.defaults.session_name_template, "${cwd-basename}");
     assert_eq!(cfg.defaults.term, "xterm-256color");
     assert_eq!(cfg.defaults.window_size, WindowSize::Smallest);
     assert_eq!(WindowSize::default(), WindowSize::Smallest);
@@ -402,7 +402,7 @@ fn embedded_default_toml_populates_new_knobs() {
     let cfg = phux_config::parse_with_defaults("", &path()).expect("embedded defaults parse");
     assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::InheritFocused);
     assert_eq!(cfg.defaults.spawn_on_attach, None);
-    assert_eq!(cfg.defaults.session_name_template, "default");
+    assert_eq!(cfg.defaults.session_name_template, "${cwd-basename}");
     assert_eq!(cfg.defaults.window_size, WindowSize::Smallest);
     // history-limit is the canonical scrollback knob (phux-4li.1 DEDUPE).
     assert_eq!(cfg.defaults.history_limit, 50_000);
@@ -423,7 +423,7 @@ cwd-inheritance = "session-root"
     let cfg = phux_config::parse_with_defaults(user, &path()).expect("partial override parses");
     assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::SessionRoot);
     assert_eq!(cfg.defaults.spawn_on_attach, None);
-    assert_eq!(cfg.defaults.session_name_template, "default");
+    assert_eq!(cfg.defaults.session_name_template, "${cwd-basename}");
     assert_eq!(cfg.defaults.window_size, WindowSize::Smallest);
 }
 

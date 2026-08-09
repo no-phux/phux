@@ -327,9 +327,32 @@ fn windows_widget_renders_tabs_and_markers() {
 #[test]
 fn help_hints_widget_uses_configured_prefix() {
     let widget = build_spec("help-hints", &[]).expect("help-hints builds");
-    let cells = widget.render(&WidgetContext::new(fixed_time(), "", "C-b", &[]));
+    let ctx = WidgetContext::new(fixed_time(), "", "C-b", &[]);
 
-    assert_eq!(text_of(&cells), "C-b ? help | C-b : palette | C-b [ copy");
+    // The prefix is stated once and the hints are its continuations.
+    assert_eq!(
+        text_of(&widget.render(&ctx)),
+        "C-b  Space palette · ? help · [ copy"
+    );
+}
+
+/// The hints exist to be read by someone who does not know the keys yet,
+/// so a narrowing bar drops whole hints rather than clipping one into
+/// nonsense — and renders nothing at all before it renders a fragment.
+#[test]
+fn help_hints_widget_drops_whole_hints_as_it_narrows() {
+    let widget = build_spec("help-hints", &[]).expect("help-hints builds");
+    let ctx = WidgetContext::new(fixed_time(), "", "C-b", &[]);
+    let at = |budget| text_of(&widget.render_within(&ctx, budget));
+
+    assert_eq!(at(36), "C-b  Space palette · ? help · [ copy");
+    assert_eq!(at(35), "C-b  Space palette · ? help");
+    assert_eq!(at(26), "C-b  Space palette");
+    assert_eq!(at(17), "");
+    // No ellipsis ever appears in this widget's output.
+    for budget in 0..40 {
+        assert!(!at(budget).contains('…'), "clipped at budget {budget}");
+    }
 }
 
 #[test]

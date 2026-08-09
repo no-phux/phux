@@ -7,20 +7,20 @@ spaces             │PANE-BASE
   foz10-br         │
                    │
 agents             │
-  no agents        │            ┌──────── command palette ─────────┐
-                   │            │>                                 │
-                   │            │                                  │
-                   │            │detach                            │
-                   │            │new-window                        │
-                   │            │                                  │
-                   │            │Enter select  ·  Esc cancel  ·  ty│
-                   │            │                                  │
-                   │            │                                  │
-                   │            │                                  │
-                   │            │                                  │
-                   │            │                                  │
-                   │            │                                  │
-                   │            └──────────────────────────────────┘
+  no agents        │┌──────────────────── command palette ─────────────────────┐
+                   ││>                                                         │
+                   ││                                                          │
+                   ││detach                                                    │
+                   ││new-window                                                │
+                   ││                                                          │
+                   ││Enter select  ·  Esc cancel  ·  type to filter            │
+                   ││                                                          │
+                   ││                                                          │
+                   ││                                                          │
+                   ││                                                          │
+                   ││                                                          │
+                   ││                                                          │
+                   │└──────────────────────────────────────────────────────────┘
                    │
                    │
                    │

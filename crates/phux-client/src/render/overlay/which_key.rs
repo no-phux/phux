@@ -26,7 +26,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::help::{action_label, is_indexed_select_window};
-use super::widgets::{ChordRow, ChordSection, KeyChordTable, Modal, centered};
+use super::widgets::{ChordRow, ChordSection, KeyChordTable, Modal, centered_panel};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::Theme;
 
@@ -114,7 +114,7 @@ impl RenderOverlay for WhichKeyOverlay {
     fn bounds(&self, area: Rect) -> Option<Rect> {
         // Same floating-modal shape as help, slightly smaller: ~60% of
         // the viewport, min 36x8, clamped to the outer rect.
-        Some(centered(area, 6, 36, 8))
+        Some(centered_panel(area, 6, 36, 8))
     }
 
     fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {

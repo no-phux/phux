@@ -150,7 +150,7 @@ keys:
 
 ### Starter distributions: `config init --distro`
 
-A *distro* is a config layer curated as a starting point — the lazyvim idea applied to phux: keybindings, a status lineup, a theme, and a plugin set, shipped as one referenced file rather than pasted into yours. The repo bundles one, [`herdr`](../distros/herdr/README.md).
+A *distro* is a config layer curated as a starting point — the lazyvim idea applied to phux: keybindings, a status lineup, a theme, and a plugin set, shipped as one referenced file rather than pasted into yours. The repo bundles one, [`herdr`](../distros/herdr/README.md), which today carries only the demo plugin set: the keybindings, status lineup, and theme it used to add are now the shipped defaults, because a setting everyone should have does not belong behind an opt-in. A distro is for offering a genuine choice.
 
 ```sh
 phux config init --distro herdr            # bundled name

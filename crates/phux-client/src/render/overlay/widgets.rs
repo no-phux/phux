@@ -41,10 +41,15 @@ pub struct Modal<'a> {
     theme: Theme,
     title: String,
     body: Vec<Line<'a>>,
-    footer: Option<String>,
+    footer: Vec<String>,
     wrap: bool,
     scroll: u16,
 }
+
+/// Separator between two footer hints. Wide on purpose: the footer is a
+/// row of unrelated affordances, and the extra air is what stops them
+/// reading as one sentence.
+const FOOTER_SEP: &str = "  ·  ";
 
 impl<'a> Modal<'a> {
     /// A modal titled `title` with `body` lines. No footer; body wrapping
@@ -56,17 +61,47 @@ impl<'a> Modal<'a> {
             theme: *theme,
             title: title.into(),
             body,
-            footer: None,
+            footer: Vec::new(),
             wrap: false,
             scroll: 0,
         }
     }
 
     /// Attach a dimmed, italic footer line painted as the last body row.
+    ///
+    /// One hint, taken whole. Prefer [`Self::footer_hints`] whenever the
+    /// footer is a *list* of affordances — a single pre-joined string
+    /// cannot be shortened without cutting a word in half.
     #[must_use]
     pub fn footer(mut self, footer: impl Into<String>) -> Self {
-        self.footer = Some(footer.into());
+        self.footer = vec![footer.into()];
         self
+    }
+
+    /// Attach a footer built from independent hints, most important
+    /// first.
+    ///
+    /// The hints are joined for display, but they are *kept* separate so
+    /// a narrow modal can drop whole ones. A footer that reads
+    /// `Enter select  ·  Esc cancel  ·  type to fi` has stopped being a
+    /// list of affordances and become a rendering artifact; dropping the
+    /// last hint costs strictly less.
+    #[must_use]
+    pub fn footer_hints<S: Into<String>, I: IntoIterator<Item = S>>(mut self, hints: I) -> Self {
+        self.footer = hints.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The footer text that fits in `width` interior columns, or `None`
+    /// when not even the first hint does.
+    fn footer_line(&self, width: usize) -> Option<String> {
+        for take in (1..=self.footer.len()).rev() {
+            let line = self.footer[..take].join(FOOTER_SEP);
+            if line.chars().count() <= width {
+                return Some(line);
+            }
+        }
+        None
     }
 
     /// Enable word wrapping of the body (preserving leading whitespace).
@@ -94,14 +129,17 @@ impl<'a> Modal<'a> {
     /// row when a footer is set. One source of truth for
     /// [`Self::render_into`] and [`Self::wrapped_row_count`], so the
     /// scroll math counts exactly what the paint path draws.
-    fn lines(&self) -> Vec<Line<'a>> {
+    /// `width` is the *interior* width (the modal rect less its two
+    /// border columns) — the footer needs it to decide how many hints it
+    /// can afford.
+    fn lines(&self, width: u16) -> Vec<Line<'a>> {
         let mut lines = self.body.clone();
-        if let Some(footer) = &self.footer {
+        if let Some(footer) = self.footer_line(width as usize) {
             // Blank spacer + dimmed italic footer, matching the help
             // overlay's prior layout.
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                footer.clone(),
+                footer,
                 Style::default()
                     .fg(self.theme.dim)
                     .add_modifier(Modifier::ITALIC),
@@ -122,7 +160,7 @@ impl<'a> Modal<'a> {
     /// width (the modal rect minus the two border columns).
     #[must_use]
     pub fn wrapped_row_count(&self, width: u16) -> usize {
-        let mut para = Paragraph::new(self.lines());
+        let mut para = Paragraph::new(self.lines(width));
         if self.wrap {
             para = para.wrap(Wrap { trim: false });
         }
@@ -151,7 +189,7 @@ impl<'a> Modal<'a> {
             ))
             .title_alignment(Alignment::Center);
 
-        let mut para = Paragraph::new(self.lines()).block(block);
+        let mut para = Paragraph::new(self.lines(area.width.saturating_sub(2))).block(block);
         if self.wrap {
             para = para.wrap(Wrap { trim: false });
         }
@@ -167,6 +205,9 @@ impl<'a> Modal<'a> {
 /// Sized to `frac_num`/10 of the outer dimensions, clamped to at least
 /// `min_w`×`min_h` (themselves clamped to the outer bounds so tiny
 /// terminals still show something) and never exceeding `outer`.
+///
+/// Prefer [`centered_panel`] for anything with content to lay out — it
+/// adds the small-viewport behaviour and degrades to this on a roomy one.
 #[must_use]
 pub fn centered(outer: Rect, frac_num: u16, min_w: u16, min_h: u16) -> Rect {
     let w = outer.width.saturating_mul(frac_num) / 10;
@@ -176,6 +217,60 @@ pub fn centered(outer: Rect, frac_num: u16, min_w: u16, min_h: u16) -> Rect {
     let x = outer.x + (outer.width.saturating_sub(w)) / 2;
     let y = outer.y + (outer.height.saturating_sub(h)) / 2;
     Rect::new(x, y, w, h)
+}
+
+/// Viewport width at or below which the chrome is *column-starved*: a
+/// floating box's margins stop reading as composition and start reading
+/// as columns you cannot use.
+///
+/// 64 is chosen from the content, not from a round number: a 60% box in
+/// 64 columns is 38 wide, and once its two border columns and the two-
+/// column indent of a nested picker row are taken out, 34 remain — under
+/// the width at which a `session/window` pair plus its branch stays
+/// legible. Wider than this and the margins are affordable.
+pub const COMPACT_COLS: u16 = 64;
+
+/// Viewport height at or below which the chrome is *row-starved*.
+///
+/// A 60% box in 18 rows is 10 tall; the shared modal chrome (border,
+/// query line and its blank, footer and its blank) spends 6 of them, so
+/// four rows of an actual list survive. Below that a picker shows less
+/// than a page and scrolling replaces reading.
+pub const COMPACT_ROWS: u16 = 18;
+
+/// Whether `outer` is starved on either axis — the one breakpoint the
+/// whole chrome shares, so "compact" means the same thing to the status
+/// bar, the sidebar, and every overlay.
+#[must_use]
+pub const fn is_compact(outer: Rect) -> bool {
+    outer.width <= COMPACT_COLS || outer.height <= COMPACT_ROWS
+}
+
+/// [`centered`], going full-bleed on whichever axis is starved.
+///
+/// This is the responsive modal geometry. On a roomy viewport it is
+/// exactly [`centered`]: a floating box with panes visible around it,
+/// which is what makes an overlay feel like it is *over* your work rather
+/// than instead of it. On a cramped one those margins are the difference
+/// between a readable picker and a two-word column, so the box takes the
+/// whole axis and the modal becomes a screen.
+///
+/// The axes are decided independently on purpose. A short, wide terminal
+/// (a bottom-docked split, say) is row-starved but not column-starved: it
+/// wants full height and a centered width, not a stretched-out list of
+/// two-word rows.
+#[must_use]
+pub fn centered_panel(outer: Rect, frac_num: u16, min_w: u16, min_h: u16) -> Rect {
+    let mut r = centered(outer, frac_num, min_w, min_h);
+    if outer.width <= COMPACT_COLS {
+        r.x = outer.x;
+        r.width = outer.width;
+    }
+    if outer.height <= COMPACT_ROWS {
+        r.y = outer.y;
+        r.height = outer.height;
+    }
+    r
 }
 
 /// Scroll `offset` by the minimum needed to bring row `cursor` inside a
@@ -684,6 +779,89 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
         paint_scrollbar(&mut buf, Rect::new(3, 0, 0, 4), &Theme::default(), 99, 0);
         paint_scrollbar(&mut buf, Rect::new(3, 0, 1, 0), &Theme::default(), 99, 0);
+    }
+
+    /// Above the breakpoint on both axes, `centered_panel` is exactly
+    /// `centered`: the box floats and the panes stay visible around it.
+    #[test]
+    fn a_roomy_viewport_keeps_the_modal_floating() {
+        let outer = Rect::new(0, 0, 120, 40);
+        assert!(!is_compact(outer));
+        assert_eq!(centered_panel(outer, 6, 30, 10), centered(outer, 6, 30, 10));
+        let r = centered_panel(outer, 6, 30, 10);
+        assert!(r.x > outer.x && r.y > outer.y);
+        assert!(r.width < outer.width && r.height < outer.height);
+    }
+
+    /// A viewport starved on both axes gives the modal the whole screen —
+    /// on a 50x14 terminal a 60% box is 30x8, and the six rows of shared
+    /// modal chrome leave two rows of actual content.
+    #[test]
+    fn a_starved_viewport_makes_the_modal_full_bleed() {
+        let outer = Rect::new(0, 0, 50, 14);
+        assert!(is_compact(outer));
+        assert_eq!(centered_panel(outer, 6, 30, 10), outer);
+    }
+
+    /// The axes are decided independently: a short, wide viewport wants
+    /// full height and a centered width, not a stretched row of two-word
+    /// entries.
+    #[test]
+    fn each_axis_goes_full_bleed_on_its_own() {
+        // Wide but short.
+        let short = Rect::new(0, 0, 160, 12);
+        let r = centered_panel(short, 6, 30, 10);
+        assert_eq!((r.y, r.height), (short.y, short.height), "full height");
+        assert!(r.width < short.width, "width still floats: {r:?}");
+
+        // Narrow but tall.
+        let narrow = Rect::new(0, 0, 40, 60);
+        let r = centered_panel(narrow, 6, 30, 10);
+        assert_eq!((r.x, r.width), (narrow.x, narrow.width), "full width");
+        assert!(r.height < narrow.height, "height still floats: {r:?}");
+    }
+
+    /// `centered_panel` respects an inset outer rect (the pane content
+    /// area beside a docked sidebar): full-bleed means "fills what it was
+    /// given", never "fills the terminal".
+    #[test]
+    fn full_bleed_stays_inside_an_inset_outer_rect() {
+        // 60-col viewport with a 20-col left sidebar ⇒ content x∈[20, 60).
+        let content = Rect::new(20, 0, 40, 14);
+        let r = centered_panel(content, 6, 30, 10);
+        assert_eq!(r, content);
+        assert_eq!(r.x, 20, "must not paint over the sidebar strip");
+    }
+
+    /// A footer is a list of affordances, so a narrow modal drops whole
+    /// ones rather than cutting the last in half.
+    #[test]
+    fn a_narrow_modal_drops_whole_footer_hints() {
+        let theme = Theme::default();
+        let modal = Modal::new(&theme, "t", vec![]).footer_hints([
+            "Enter select",
+            "Esc cancel",
+            "type to filter",
+        ]);
+        assert_eq!(
+            modal.footer_line(46).as_deref(),
+            Some("Enter select  ·  Esc cancel  ·  type to filter")
+        );
+        assert_eq!(
+            modal.footer_line(45).as_deref(),
+            Some("Enter select  ·  Esc cancel")
+        );
+        assert_eq!(modal.footer_line(26).as_deref(), Some("Enter select"));
+        // Below the first hint the footer yields entirely; it never
+        // renders a fragment.
+        assert_eq!(modal.footer_line(11), None);
+        for width in 0..50 {
+            let line = modal.footer_line(width).unwrap_or_default();
+            assert!(
+                line.chars().count() <= width,
+                "overran at {width}: {line:?}"
+            );
+        }
     }
 
     #[test]

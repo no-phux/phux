@@ -1188,43 +1188,88 @@ Recognized slots:
 
 | Slot             | Default     | Used for                                  |
 |------------------|-------------|-------------------------------------------|
-| `accent`         | `#bef264`   | Modal titles (help / prompt border title) |
-| `chord`          | `#86efac`   | Keybinding chords in the help table       |
+| `accent`         | `#7aa2f7`   | Modal titles, query caret, active tab fill |
+| `chord`          | `#9ece6a`   | Keybinding chords in the help table       |
 | `action`         | terminal fg | Action labels                             |
-| `dim`            | `#64748b`   | Footer hints, "no bindings" notice, sidebar branch/affordance/empty-state text |
-| `border`         | `#334155`   | Modal borders + the sidebar separator rule |
-| `title`          | `#bef264`   | Titles that diverge from `accent`         |
-| `section_header` | yellow      | Section headings inside the help modal    |
-| `error`          | red         | Error / alarm text                        |
+| `dim`            | `#565f89`   | Footer hints, "no bindings" notice, inactive window tabs, sidebar branch/affordance/empty-state text |
+| `border`         | `#3b4261`   | Modal borders + the sidebar separator rule |
+| `title`          | `#7aa2f7`   | Titles that diverge from `accent`         |
+| `section_header` | `#e0af68`   | Section headings inside help and pickers  |
+| `error`          | `#f7768e`   | Error / alarm text                        |
 | `surface`        | terminal bg | Modal interior background                 |
-| `shadow`         | `#1c1c26`   | Modal drop shadow                         |
-| `selection_fg`   | white       | Copy-mode status strip foreground         |
-| `selection_bg`   | ANSI 240    | Copy-mode status strip background         |
-| `attention`      | `#fbbf24`   | Agent-attention chrome (asked marker/hint, fleet-dashboard hot rows) |
-| `sidebar_section`| `#64748b`   | Sidebar `spaces` / `agents` section headers + affordance action glyphs |
-| `agent_idle`     | `#94a3b8`   | Sidebar agent row in the `idle` state      |
-| `agent_working`  | `#86efac`   | Sidebar agent row in the `working` state   |
-| `agent_blocked`  | `#fbbf24`   | Sidebar agent row in the `blocked` state   |
-| `agent_done`     | `#60a5fa`   | Sidebar agent row in the `done` state      |
+| `shadow`         | `#16161e`   | Modal drop shadow                         |
+| `selection_fg`   | `#c0caf5`   | Selected list row / copy-mode strip foreground |
+| `selection_bg`   | `#33467c`   | Selected list row / copy-mode strip background |
+| `attention`      | `#ff9e64`   | Agent-attention chrome (asked marker/hint, fleet-dashboard hot rows) |
+| `sidebar_section`| `#565f89`   | Sidebar `spaces` / `agents` section headers + affordance action glyphs |
+| `agent_idle`     | `#565f89`   | Sidebar agent row in the `idle` state      |
+| `agent_working`  | `#9ece6a`   | Sidebar agent row in the `working` state   |
+| `agent_blocked`  | `#ff9e64`   | Sidebar agent row in the `blocked` state   |
+| `agent_done`     | `#7dcfff`   | Sidebar agent row in the `done` state      |
 
-The default palette is deliberately **muted-chrome / bright-content**: the
+The shipped palette is deliberately **muted-chrome / bright-content**: the
 always-on chrome (sidebar headers, branch sub-lines, affordances, the
-separator rule, empty-state placeholders) sits in one cohesive recessive
-slate scale (`#334155` → `#64748b`), so pane content and the `accent`
-lime/active markers carry the eye. Every value is a slot, so a theme or
-distro retints the whole chrome by overriding a handful of keys — the
-bundled `herdr` distro maps this scale onto tokyonight (see
-`distros/herdr/herdr.toml`).
+separator rule, inactive tabs, empty-state placeholders) sits in one
+cohesive recessive register (`#3b4261` → `#565f89`), so pane content and
+the blue `accent` carry the eye.
+
+It is also a *system*, not a bag of colors — several slots share a tone on
+purpose, and a retint should keep them in step:
+
+- `title` tracks `accent`: chrome that names something is one hue.
+- `sidebar_section` and `agent_idle` track `dim`: "not what you are
+  looking at" reads the same everywhere.
+- `agent_blocked` tracks `attention`: a blocked agent and an attention
+  marker are one fact seen from two places.
+- `agent_working` tracks `chord`: the green of live progress.
+
+Every value is a slot, so a theme retints the whole chrome by overriding a
+handful of keys.
 
 ```toml
 [theme]
-accent = "#bef264"
-chord = "#86efac"
-border = "#334155"
-dim = "#64748b"
-sidebar_section = "#64748b"
-shadow = "#1c1c26"
+accent = "#7aa2f7"
+chord = "#9ece6a"
+border = "#3b4261"
+dim = "#565f89"
+sidebar_section = "#565f89"
+shadow = "#16161e"
 ```
+
+### 4.5 Small terminals
+
+phux is used in places that are not a full-screen terminal on a big
+display: a bottom-docked editor split, a phone over SSH, a tiling pane
+that got narrow. The chrome adapts rather than assuming room it does not
+have, around one shared breakpoint — a viewport is **compact** on an axis
+when it is at most **64 columns** or at most **18 rows**. The two axes are
+judged independently, because a short wide terminal and a narrow tall one
+want opposite things.
+
+Both numbers come from content, not from round figures. A floating modal
+takes 60% of the viewport, so in 64 columns it is 38 wide; less its two
+border columns and a nested row's two-column indent, 34 remain — under
+the width at which a `session/window` pair plus its branch stays legible.
+In 18 rows the same box is 10 tall, and the shared modal chrome (border,
+query line and its blank, footer and its blank) spends 6 of them, leaving
+four rows of actual list.
+
+What changes:
+
+- **Overlays go full-bleed on the starved axis.** Help, the command
+  palette, the window and session pickers, the fleet dashboard, which-key
+  and toasts float as centered boxes when there is room — that is what
+  makes an overlay feel like it is *over* your work rather than instead
+  of it — and take the whole axis when there is not. Full-bleed means
+  "fills the rect it was given": beside a docked sidebar, an overlay
+  still stops at the sidebar's edge.
+- **The status bar changes shape.** See §8.4.1: the tab strip collapses
+  around the active tab, hints drop whole, and the shipped lineup trades
+  the session name and clock for a clickable `switch` chip.
+- **List rows are laid out to the exact interior width.** A row's
+  secondary column (a branch, a cwd, a bound chord) yields before its
+  label does, and text that does not fit is cut with a trailing `…`
+  rather than left to run through the modal border.
 
 ---
 
@@ -1476,8 +1521,12 @@ Configured under `[keybindings]`:
 ```toml
 [keybindings]
 which-key = true          # default; false disables the popup
-which-key-delay-ms = 600  # hesitation before it appears
+which-key-delay-ms = 400  # default; hesitation before it appears
 ```
+
+400 ms is deliberately snappier than the tmux-ish 600: the popup is the
+primary discovery surface for the prefix table, so it should feel like a
+hint that arrives while you hesitate rather than a timeout you wait out.
 
 ### 5.8 Copy-mode
 
@@ -1988,6 +2037,55 @@ timed-out run keeps the last good output.
   re-renders to once per frame (max ~60 Hz).
 - Slot contents render left-to-right with no implicit separator. Use
   `text` widgets for separators.
+
+### 8.4.1 How the bar narrows
+
+The row is always exactly the terminal's width — never short (which
+would strand cells from the previous paint) and never long (which would
+wrap onto the pane above). When the three slots want more than that, the
+bar resolves them in priority order rather than cutting cells off the
+end:
+
+1. **Right** takes what it needs, up to half the row. The cap keeps a
+   long session name from pushing the window tabs off a narrow bar.
+2. **Left** gets everything the right slot did not take. It holds the
+   tab strip — the chrome you navigate by — so it is the last to lose
+   room.
+3. **Center** gets whatever gap survives, less one blank column on each
+   side. Under 8 columns the gap is not worth filling and the center
+   slot renders nothing.
+
+Within a slot, **later widgets yield first**: slot order is a statement
+of priority, so `right = ["session-name", { time }]` loses its clock
+before it loses the session name.
+
+Each widget then decides *how* to spend what it is given, and the rule
+throughout is **drop whole units, never fragments**:
+
+- `windows` drops whole tabs. It anchors on the active tab and grows
+  outward while neighbours fit, standing in for the hidden ones with a
+  `‹` / `›` mark. A strip clipped mid-label (`0:alpha 1:`) reads as a
+  window named `1:`, hides that others exist, and leaves a click target
+  pointing at a name you cannot see. Below the width of even the active
+  tab, its label clips — the leading `{index}` survives longest, because
+  that is what you need to type `prefix <n>`.
+- `help-hints` drops whole hints, then disappears. Hints exist to be
+  read by someone who does not know the keys yet, and `? he…` fails at
+  that in a way that showing one fewer hint does not.
+- `switch` renders whole or not at all: a clipped chip is a smaller
+  target claiming the same columns.
+- Everything else clips with a trailing `…`, so a shortened value never
+  passes for a complete one.
+
+Widgets can also be **hidden outright** by terminal width, via the
+universal `min-cols` / `max-cols` options (see the generated widget
+reference). A hidden widget costs no width at all, so the widgets that
+remain get the columns it would have taken. The shipped lineup uses this
+to change shape rather than merely shrink: above 64 columns the right
+slot carries the session name and clock; at or below it, those give way
+to a clickable `switch` chip that opens the fleet dashboard — the same
+overlay `prefix A` opens, which on a small terminal opens full-screen
+(§4.4.1).
 
 ### 8.5 What the status bar is not
 

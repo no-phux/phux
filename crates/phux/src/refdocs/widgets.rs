@@ -66,6 +66,32 @@ pub(crate) fn page() -> Page {
          build and is flagged by `phux config check`.\n",
     );
 
+    body.push_str(
+        "\n## The universal `min-cols` / `max-cols` options\n\n\
+         Every kind also accepts `min-cols` and `max-cols`: integer \
+         bounds on the width of the **whole status row** (not the \
+         widget's own share) outside which the widget renders nothing at \
+         all. A hidden widget costs no width, so the widgets that remain \
+         get the columns it would have taken.\n\n\
+         Use them to make one lineup change shape with the terminal \
+         rather than shrink inside it. The honest answer to a narrow \
+         window is often not \"show this smaller\" but \"do not show \
+         this\": a clock is worth four columns at 120 and worth none at \
+         45. The shipped `[status]` block uses exactly this to trade the \
+         session name and clock for a `switch` chip below 65 columns.\n\n\
+         ```toml\n\
+         right = [\n\
+         \x20 { kind = \"session-name\", min-cols = 65 },\n\
+         \x20 { kind = \"time\", format = \" %a %H:%M\", min-cols = 65 },\n\
+         \x20 { kind = \"switch\", max-cols = 64 },\n\
+         ]\n\
+         ```\n\n\
+         Both bounds are inclusive and either may be given alone. A \
+         `min-cols` above `max-cols` describes a widget that could never \
+         render and fails the bar build, as does a non-integer value; \
+         `phux config check` flags both.\n",
+    );
+
     Page {
         file: "widgets.md",
         title: "phux status-bar widgets reference",
@@ -73,9 +99,10 @@ pub(crate) fn page() -> Page {
                   and defaults.",
         tldr: "Every status-bar widget kind the binary registers, with the \
                exact options and defaults each factory accepts, plus the \
-               universal `style` table. Rendered from the same spec consts \
-               the factories validate options against, so a kind or option \
-               is listed here exactly when the binary accepts it.",
+               universal `style` table and the `min-cols` / `max-cols` \
+               responsive-visibility bounds. Rendered from the same spec \
+               consts the factories validate options against, so a kind or \
+               option is listed here exactly when the binary accepts it.",
         body,
     }
 }

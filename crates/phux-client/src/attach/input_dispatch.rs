@@ -1356,16 +1356,29 @@ fn bar_click_action(
     painter: Option<&crate::render::chrome::status_bar::StatusBarPainter>,
     x: u16,
 ) -> Option<phux_config::keybind::ResolvedAction> {
-    let index = painter?.window_hit_at(x)?;
-    let mut args = std::collections::BTreeMap::new();
-    args.insert(
-        "index".to_owned(),
-        toml::Value::Integer(i64::try_from(index).ok()?),
-    );
-    Some(phux_config::keybind::ResolvedAction {
-        action: "select-window".to_owned(),
-        args,
-    })
+    match painter?.hit_at(x)? {
+        phux_config::widget::CellHit::Window(index) => {
+            let mut args = std::collections::BTreeMap::new();
+            args.insert(
+                "index".to_owned(),
+                toml::Value::Integer(i64::try_from(index).ok()?),
+            );
+            Some(phux_config::keybind::ResolvedAction {
+                action: "select-window".to_owned(),
+                args,
+            })
+        }
+        // The `switch` chip opens the fleet dashboard — the same overlay
+        // `prefix A` opens, through the same dispatch path. It is the
+        // right target for a pointer because it is the *only* switcher
+        // that answers all three questions at once (which sessions, which
+        // windows, which agent needs me), and on the narrow terminal
+        // where the chip is shown that is the whole point.
+        phux_config::widget::CellHit::Switch => Some(phux_config::keybind::ResolvedAction {
+            action: "agent-fleet".to_owned(),
+            args: std::collections::BTreeMap::new(),
+        }),
+    }
 }
 
 /// phux-wrnm: push `spec` as a context menu anchored at the viewport cell

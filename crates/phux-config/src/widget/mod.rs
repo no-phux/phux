@@ -33,6 +33,7 @@ pub use widgets::exec::{ExecFeed, ExecWidget};
 pub use widgets::exit_status::ExitWidget;
 pub use widgets::help_hints::HelpHintsWidget;
 pub use widgets::session_name::SessionNameWidget;
+pub use widgets::switch::SwitchWidget;
 pub use widgets::text::TextWidget;
 pub use widgets::time::TimeWidget;
 pub use widgets::windows::WindowsWidget;
@@ -89,6 +90,11 @@ pub enum CellHit {
     /// Clicking this cell selects window `i` (the `select-window` index).
     /// Stamped by the `windows` widget on tab cells (separators excluded).
     Window(usize),
+    /// Clicking this cell opens the fleet switcher. Stamped by the
+    /// `switch` widget across its whole chip, so the affordance is a
+    /// target you can hit with a pointer rather than a glyph you must
+    /// land on exactly.
+    Switch,
 }
 
 /// A single status-bar cell.
@@ -165,6 +171,17 @@ pub struct WidgetContext<'a> {
     /// (or when the shell integration omits the code); consumed by the
     /// `exit` widget.
     pub last_exit: Option<i32>,
+    /// Width of the whole status row, in cells.
+    ///
+    /// This is the *bar's* width, not the widget's budget: it is how a
+    /// widget answers "is this a cramped terminal?" rather than "how much
+    /// room am I getting?". The universal `min-cols` / `max-cols`
+    /// visibility options read it, which is what lets one config express
+    /// a lineup that changes shape with the terminal instead of two.
+    ///
+    /// Always overwritten by [`StatusBar::render`] with the width it was
+    /// asked for, so a widget never sees a stale or unset value.
+    pub cols: u16,
 }
 
 impl<'a> WidgetContext<'a> {
@@ -186,6 +203,7 @@ impl<'a> WidgetContext<'a> {
             windows,
             cwd: "",
             last_exit: None,
+            cols: 0,
         }
     }
 }
@@ -239,7 +257,40 @@ impl WidgetCells {
     pub const fn len(&self) -> usize {
         self.cells.len()
     }
+
+    /// Cut the strip down to at most `budget` cells, marking the cut with
+    /// an ellipsis so a shortened strip never masquerades as a complete
+    /// one.
+    ///
+    /// The ellipsis replaces the *last surviving* cell rather than being
+    /// appended, so the result is exactly `min(len, budget)` cells wide —
+    /// the composer can rely on the arithmetic. Style and hit target are
+    /// inherited from the cell it replaces, which keeps a truncated
+    /// window tab clickable and correctly colored right up to its edge.
+    ///
+    /// A `budget` of 0 empties the strip. Strips that already fit are
+    /// untouched, ellipsis included: this is a no-op on the common path.
+    pub fn clip(&mut self, budget: usize) {
+        if self.cells.len() <= budget {
+            return;
+        }
+        self.cells.truncate(budget);
+        if let Some(last) = self.cells.last_mut() {
+            last.text = smallvec::smallvec![ELLIPSIS];
+        }
+    }
+
+    /// A copy of this strip cut to `budget` cells. See [`Self::clip`].
+    #[must_use]
+    pub fn clipped(mut self, budget: usize) -> Self {
+        self.clip(budget);
+        self
+    }
 }
+
+/// The single-cell mark that says "there is more here than fits". Shared
+/// by every shrink path so one glyph means one thing across the chrome.
+pub const ELLIPSIS: char = '…';
 
 /// A status-bar widget.
 ///
@@ -249,6 +300,25 @@ pub trait StatusWidget: Send + Sync + fmt::Debug + 'static {
     /// Render the widget for the current [`WidgetContext`]. Returns a
     /// horizontal cell strip.
     fn render(&self, ctx: &WidgetContext<'_>) -> WidgetCells;
+
+    /// Render into a hard budget of `budget` cells.
+    ///
+    /// This is the responsive entry point: the composer never hands a
+    /// widget more room than it has, so a widget that can degrade
+    /// gracefully gets to choose *how*. The default is a blunt
+    /// [`WidgetCells::clip`] — correct for widgets whose output is one
+    /// run of text (a clock, a session name, a path), where dropping
+    /// trailing characters and marking the cut is exactly right.
+    ///
+    /// Widgets whose output has internal structure should override this.
+    /// The `windows` tab bar is the motivating case: clipping it mid-tab
+    /// yields a half-drawn label that lies about how many windows exist,
+    /// so it instead drops whole tabs around the active one and marks the
+    /// hidden ones. The contract for an override is only that the result
+    /// is at most `budget` cells wide.
+    fn render_within(&self, ctx: &WidgetContext<'_>, budget: usize) -> WidgetCells {
+        self.render(ctx).clipped(budget)
+    }
 
     /// Optional poll interval. `None` ⇒ this widget needs no time-based
     /// repaint and is redrawn only when the status bar repaints for
@@ -280,6 +350,22 @@ pub type WidgetFactory =
 /// The universal widget option every kind accepts (phux-i0e8.4.2):
 /// a [`CellStyle`] table applied by the registry, not by factories.
 const STYLE_OPT: &str = "style";
+
+/// Universal responsive-visibility options, applied by the registry.
+///
+/// `min-cols` / `max-cols` bound the *bar* widths at which a widget
+/// renders at all. They exist because the honest answer to a narrow
+/// terminal is usually not "show this smaller" but "do not show this":
+/// a clock is worth four columns at 120 and worth none at 45, and no
+/// amount of shrinking makes it worth them. Expressing that as a range
+/// on the widget keeps one lineup in one config, instead of a lineup
+/// per terminal size.
+const MIN_COLS_OPT: &str = "min-cols";
+/// See [`MIN_COLS_OPT`].
+const MAX_COLS_OPT: &str = "max-cols";
+
+/// The universal options the registry handles before any factory runs.
+const UNIVERSAL_OPTS: [&str; 3] = [STYLE_OPT, MIN_COLS_OPT, MAX_COLS_OPT];
 
 /// Documentation spec for one built-in widget kind (phux-i0e8.11.3).
 ///
@@ -327,15 +413,15 @@ impl WidgetKindSpec {
             .any(|opt| opt.name == key || opt.aliases.contains(&key))
     }
 
-    /// Every accepted option spelling plus the universal `style` key —
-    /// the did-you-mean candidate set for an unknown-option diagnostic.
+    /// Every accepted option spelling plus the universal keys — the
+    /// did-you-mean candidate set for an unknown-option diagnostic.
     fn candidate_keys(&self) -> Vec<&'static str> {
         let mut keys: Vec<&'static str> = self
             .options
             .iter()
             .flat_map(|opt| std::iter::once(opt.name).chain(opt.aliases.iter().copied()))
             .collect();
-        keys.push(STYLE_OPT);
+        keys.extend_from_slice(&UNIVERSAL_OPTS);
         keys
     }
 }
@@ -349,6 +435,7 @@ pub const BUILTIN_WIDGET_SPECS: &[&WidgetKindSpec] = &[
     &widgets::exit_status::SPEC,
     &widgets::help_hints::SPEC,
     &widgets::session_name::SPEC,
+    &widgets::switch::SPEC,
     &widgets::text::SPEC,
     &widgets::time::SPEC,
     &widgets::windows::SPEC,
@@ -390,7 +477,7 @@ pub(crate) fn reject_unknown_opts(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<(), WidgetError> {
     for key in opts.keys() {
-        if key == STYLE_OPT || spec.accepts(key) {
+        if UNIVERSAL_OPTS.contains(&key.as_str()) || spec.accepts(key) {
             continue;
         }
         let suggestion = vocab::did_you_mean(key, &spec.candidate_keys())
@@ -428,12 +515,92 @@ impl StatusWidget for Styled {
         cells
     }
 
+    fn render_within(&self, ctx: &WidgetContext<'_>, budget: usize) -> WidgetCells {
+        let mut cells = self.inner.render_within(ctx, budget);
+        for cell in &mut cells.cells {
+            if cell.style.is_none() {
+                cell.style = Some(self.style.clone());
+            }
+        }
+        cells
+    }
+
     fn poll_interval(&self) -> Option<Duration> {
         self.inner.poll_interval()
     }
 
     fn exec_feed(&self) -> Option<ExecFeed> {
         self.inner.exec_feed()
+    }
+}
+
+/// Decorator gating a widget on the bar's width ([`MIN_COLS_OPT`] /
+/// [`MAX_COLS_OPT`]).
+///
+/// Outside the range the widget renders *nothing* — zero cells, not a
+/// shortened form. That matters to the composer as much as to the eye:
+/// a hidden widget costs no natural width, so the widgets that remain
+/// get the columns it would have taken rather than merely a smaller
+/// share of a crowded row.
+#[derive(Debug)]
+struct ColRange {
+    inner: Box<dyn StatusWidget>,
+    min: Option<u16>,
+    max: Option<u16>,
+}
+
+impl ColRange {
+    fn visible(&self, ctx: &WidgetContext<'_>) -> bool {
+        self.min.is_none_or(|m| ctx.cols >= m) && self.max.is_none_or(|m| ctx.cols <= m)
+    }
+}
+
+impl StatusWidget for ColRange {
+    fn render(&self, ctx: &WidgetContext<'_>) -> WidgetCells {
+        if self.visible(ctx) {
+            self.inner.render(ctx)
+        } else {
+            WidgetCells { cells: Vec::new() }
+        }
+    }
+
+    fn render_within(&self, ctx: &WidgetContext<'_>, budget: usize) -> WidgetCells {
+        if self.visible(ctx) {
+            self.inner.render_within(ctx, budget)
+        } else {
+            WidgetCells { cells: Vec::new() }
+        }
+    }
+
+    fn poll_interval(&self) -> Option<Duration> {
+        self.inner.poll_interval()
+    }
+
+    fn exec_feed(&self) -> Option<ExecFeed> {
+        self.inner.exec_feed()
+    }
+}
+
+/// Parse an optional `u16` column-count option.
+fn cols_opt(
+    kind: &str,
+    opts: &BTreeMap<String, toml::Value>,
+    key: &str,
+) -> Result<Option<u16>, WidgetError> {
+    match opts.get(key) {
+        None => Ok(None),
+        Some(toml::Value::Integer(n)) => {
+            u16::try_from(*n)
+                .map(Some)
+                .map_err(|_| WidgetError::InvalidOption {
+                    kind: kind.to_owned(),
+                    message: format!("`{key}` must be a column count in 0..=65535, got {n}"),
+                })
+        }
+        Some(other) => Err(WidgetError::InvalidOption {
+            kind: kind.to_owned(),
+            message: format!("`{key}` must be an integer, got {}", other.type_str()),
+        }),
     }
 }
 
@@ -474,6 +641,7 @@ impl WidgetRegistry {
         r.register("help-hints", widgets::help_hints::factory);
         r.register("time", widgets::time::factory);
         r.register("session-name", widgets::session_name::factory);
+        r.register("switch", widgets::switch::factory);
         r.register("text", widgets::text::factory);
         r.register("windows", widgets::windows::factory);
         r
@@ -505,19 +673,50 @@ impl WidgetRegistry {
             .get(spec.kind.as_str())
             .ok_or_else(|| WidgetError::UnknownKind(spec.kind.clone()))?;
         let style = style_opt(&spec.kind, &spec.opts, STYLE_OPT)?;
-        let widget = if spec.opts.contains_key(STYLE_OPT) {
+        let min = cols_opt(&spec.kind, &spec.opts, MIN_COLS_OPT)?;
+        let max = cols_opt(&spec.kind, &spec.opts, MAX_COLS_OPT)?;
+        if let (Some(min), Some(max)) = (min, max)
+            && min > max
+        {
+            return Err(WidgetError::InvalidOption {
+                kind: spec.kind.clone(),
+                message: format!(
+                    "`{MIN_COLS_OPT}` ({min}) is above `{MAX_COLS_OPT}` ({max}), so this widget \
+                     could never render"
+                ),
+            });
+        }
+
+        let widget = if spec
+            .opts
+            .keys()
+            .any(|k| UNIVERSAL_OPTS.contains(&k.as_str()))
+        {
             let mut opts = spec.opts.clone();
-            opts.remove(STYLE_OPT);
+            for key in UNIVERSAL_OPTS {
+                opts.remove(key);
+            }
             factory(&opts)?
         } else {
             factory(&spec.opts)?
         };
-        Ok(match style.filter(|s| !s.is_plain()) {
+
+        let widget = match style.filter(|s| !s.is_plain()) {
             Some(style) => Box::new(Styled {
                 inner: widget,
                 style,
             }),
             None => widget,
+        };
+        // Gate outermost so a hidden widget also costs no style pass.
+        Ok(if min.is_some() || max.is_some() {
+            Box::new(ColRange {
+                inner: widget,
+                min,
+                max,
+            })
+        } else {
+            widget
         })
     }
 

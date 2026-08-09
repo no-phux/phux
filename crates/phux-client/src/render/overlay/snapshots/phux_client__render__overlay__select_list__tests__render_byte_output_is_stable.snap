@@ -2,14 +2,15 @@
 source: crates/phux-client/src/render/overlay/select_list.rs
 expression: out
 ---
-
-       ┌───── command palette ──────┐
-       │>                           │
-       │                            │
-       │split-pane             C-a |│
-       │new-window             C-a c│
-       │detach                 C-a d│
-       │                            │
-       │Enter select  ·  Esc cancel │
-       │                            │
-       └────────────────────────────┘
+┌──────────── command palette ─────────────┐
+│>                                         │
+│                                          │
+│split-pane                           C-a |│
+│new-window                           C-a c│
+│detach                               C-a d│
+│                                          │
+│Enter select  ·  Esc cancel               │
+│                                          │
+│                                          │
+│                                          │
+└──────────────────────────────────────────┘

@@ -170,10 +170,13 @@ pub struct DefaultsCfg {
 
     /// Naming template for auto-created sessions.
     ///
-    /// Default: `"default"`. Supports `${cwd-basename}` substitution
-    /// (resolved at session-creation time using the client's working
-    /// directory). Other placeholders may be added later; unknown
-    /// placeholders are passed through verbatim.
+    /// Default: `"${cwd-basename}"` — the basename of the client's
+    /// working directory, resolved at session-creation time. A bench of
+    /// project checkouts then reads as its directories in the session
+    /// picker, which is the only thing that makes the picker useful with
+    /// more than one session open. Set `"default"` for a fixed name.
+    /// Other placeholders may be added later; unknown placeholders are
+    /// passed through verbatim.
     #[serde(
         default = "default_session_name_template",
         rename = "session-name-template"
@@ -234,7 +237,7 @@ const fn default_true() -> bool {
     true
 }
 fn default_session_name_template() -> String {
-    "default".to_owned()
+    "${cwd-basename}".to_owned()
 }
 
 /// How a newly-spawned pane chooses its working directory.
@@ -345,8 +348,12 @@ fn default_prefix() -> String {
 }
 
 /// Serde default for [`KeybindingsCfg::which_key_delay_ms`].
+///
+/// Deliberately snappier than tmux-ish 600: the popup is phux's primary
+/// discovery surface, so it should feel like a hint that arrives while
+/// you hesitate, not a timeout you wait out.
 const fn default_which_key_delay_ms() -> u64 {
-    600
+    400
 }
 
 /// An action attached to a binding, hook, or status slot.

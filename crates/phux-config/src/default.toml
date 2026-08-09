@@ -59,9 +59,12 @@ cwd-inheritance = "inherit-focused"
 # with no name). ${cwd-basename} expands to the basename of the client's
 # working directory at session-create time (`:` in it becomes `_` so the
 # name stays selector-safe); unknown placeholders pass through verbatim.
-# e.g. session-name-template = "${cwd-basename}" names the session after
-# the directory you launched from.
-session-name-template = "default"
+#
+# We ship ${cwd-basename} rather than a literal "default": a bench of
+# project checkouts then reads as its directories in the session picker,
+# which is the only way the picker is useful with more than one session
+# open. Set session-name-template = "default" for the old behavior.
+session-name-template = "${cwd-basename}"
 
 # Policy for picking one geometry when concurrent views of a single
 # Terminal disagree on size (ADR-0027). A Terminal is one PTY + one grid,
@@ -89,14 +92,22 @@ prefix = "C-a"
 # key dismisses it and executes its binding exactly as if the popup were
 # not there; Esc dismisses it and cancels the prefix. Set
 # which-key = false to disable.
+#
+# 400 ms is deliberately snappier than tmux-ish 600: the popup is phux's
+# primary discovery surface, so it should feel like a hint that arrives
+# while you hesitate, not a timeout you wait out.
 which-key = true
-which-key-delay-ms = 600
+which-key-delay-ms = 400
 
 [keybindings.prefix-table]
 # Pane splits, tmux-style: " stacks panes (horizontal divider), % places
 # them side-by-side (vertical divider).
 '"' = { action = "split-pane", direction = "horizontal" }
 "%" = { action = "split-pane", direction = "vertical" }
+# Ergonomic aliases for the same two actions: the chord draws the divider
+# it creates, so you never have to remember which of " and % is which.
+"|" = { action = "split-pane", direction = "vertical" }
+"-" = { action = "split-pane", direction = "horizontal" }
 
 # Kill: x kills the focused pane, X (Shift-x) kills the whole window
 # (all its panes). Soft-kill via shell exit; see phux-4li.12.
@@ -133,6 +144,8 @@ which-key-delay-ms = 600
 "c" = "new-window"
 "n" = "next-window"
 "p" = "previous-window"
+# Tab hops to the next window too, matching tabbed-UI muscle memory.
+"Tab" = "next-window"
 "0" = { action = "select-window", index = 0 }
 "1" = { action = "select-window", index = 1 }
 "2" = { action = "select-window", index = 2 }
@@ -161,7 +174,14 @@ which-key-delay-ms = 600
 
 # Command palette: a filterable list of every action, each annotated with
 # its bound chord. Choosing one runs it through the same path a keybind
-# takes (phux-ahv.8).
+# takes (phux-ahv.8). Actions contributed by enabled plugins appear here
+# automatically as `plugin:` rows.
+#
+# Space is the primary spelling — prefix-Space is one relaxed two-key
+# motion and needs no Shift, which is what you want from the chord you
+# reach for when you have forgotten every other chord. `:` stays bound as
+# the vim-flavored alias.
+"Space" = "command-palette"
 ":" = "command-palette"
 
 # Navigation, mnemonic s/w (sessions / windows):
@@ -350,11 +370,67 @@ which-key-delay-ms = 600
 #   { kind = "windows", active = { fg = "black", bg = "green", bold = true }, inactive = { fg = "gray" }, separator = " | " }
 # Right: session name + clock (the leading space in the time format keeps
 # them apart).
-left   = [{ kind = "windows" }]
+#
+# The shipped lineup: padded window tabs left, contextual help hints
+# center, session name + clock right. The tab `format` carries a leading
+# and trailing space and `separator` is empty, so the active tab's fill
+# reads as a padded chip rather than a highlight hugging the glyphs — and
+# because every cell of a segment (padding included) is a click target,
+# the padding also widens the mouse target by two columns per tab.
+#
+# The two colors below are the theme's `accent` (#7aa2f7) over the
+# tokyonight base, and the same muted blue the `dim` / `sidebar_section`
+# theme slots use for recessive chrome. They are spelled out rather than
+# named because widget styles are plain data — see `[theme]` in
+# docs/consumers/tui.md section 4.4 for the slot list.
+left = [
+  { kind = "windows", format = " {index}:{name} ", separator = "", active = { fg = "#1a1b26", bg = "#7aa2f7", bold = true }, inactive = { fg = "#565f89" } },
+]
 center = [{ kind = "help-hints" }]
-right  = ["session-name", { kind = "time", format = " %H:%M" }]
+# The right slot changes shape with the terminal, via the universal
+# `min-cols` / `max-cols` options every widget accepts (they gate on the
+# width of the whole bar, not on the widget's own share).
+#
+# Wide enough for ambient context (>64 columns): session name and clock.
+# Narrower than that, those columns are worth more as an affordance: the
+# sidebar is hidden, the tab strip has collapsed to the active tab, and
+# nothing on screen says other work exists. So the clock and the session
+# name step aside for a `switch` chip — click it (or press prefix-A) for
+# the fleet, which on a small terminal opens full-screen.
+right = [
+  { kind = "session-name", min-cols = 65 },
+  { kind = "time", format = " %a %H:%M", min-cols = 65 },
+  { kind = "switch", max-cols = 64 },
+]
 # Which outer-terminal row the bar reserves: "bottom" (default) or "top".
 # position = "bottom"
+
+# Chrome + overlay palette. Every slot below is set to its shipped value
+# in code (crates/phux-client/src/render/theme.rs); the block is commented
+# here so you can see the whole system at once and override one slot
+# without hunting for the name. Values accept named colors ("cyan"), hex
+# ("#7aa2f7") and ANSI indices ("12"). See docs/consumers/tui.md section
+# 4.4 for what each slot paints.
+#
+# [theme]
+# accent          = "#7aa2f7"  # modal titles, query caret, active tab fill
+# title           = "#7aa2f7"  # section/window titles (tracks accent)
+# chord           = "#9ece6a"  # keybinding chords in help + which-key
+# action          = "reset"    # action labels — inherit your terminal fg
+# dim             = "#565f89"  # the recessive register: hints, sub-lines
+# border          = "#3b4261"  # rules and modal borders
+# section_header  = "#e0af68"  # headings inside help / pickers
+# error           = "#f7768e"  # error and alarm text
+# surface         = "reset"    # modal interior fill; reset = transparent
+# shadow          = "#16161e"  # floating-modal drop shadow
+# selection_fg    = "#c0caf5"  # selected list row / copy-mode strip fg
+# selection_bg    = "#33467c"  # selected list row / copy-mode strip bg
+# attention       = "#ff9e64"  # "needs you": asked-marker, blocked agents
+# sidebar_section = "#565f89"  # the sidebar's `spaces` / `agents` headers
+# agent_idle      = "#565f89"  # agent lifecycle: nothing needs you
+# agent_working   = "#9ece6a"  # agent lifecycle: live progress
+# agent_blocked   = "#ff9e64"  # agent lifecycle: waiting on a human
+# agent_done      = "#7dcfff"  # agent lifecycle: finished
 
 # The window sidebar (prefix-b toggles it): a vertical strip listing the
 # session's windows as tabs, each labelled by its OSC title (falling back

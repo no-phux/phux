@@ -60,9 +60,15 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::widgets::{Modal, centered, paint_scrollbar, scroll_into_view};
+use super::widgets::{Modal, centered_panel, paint_scrollbar, scroll_into_view};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::Theme;
+use crate::render::clip_text;
+
+/// Blank columns held between a row's label and its secondary. One is
+/// enough to read them as separate facts; more just costs the secondary
+/// room it does not have on a narrow list.
+const GAP: usize = 1;
 
 /// Rows of the modal box that are *not* list rows: the two borders, the
 /// query line, the blank beneath it, and the footer's blank + text. The list
@@ -417,7 +423,7 @@ impl SelectList {
     /// The modal rect: 60% of the viewport, min 30x10, clamped to the
     /// outer rect (like the help overlay, but a touch narrower).
     fn modal_area(outer: Rect) -> Rect {
-        centered(outer, 6, 30, 10)
+        centered_panel(outer, 6, 30, 10)
     }
 
     /// Rows available to the list inside `modal_area`, once the borders, the
@@ -490,17 +496,42 @@ impl SelectList {
     /// One list row: label on the left, optional dimmed secondary
     /// right-aligned within `inner_width`. The selected row is rendered
     /// reverse-video across its visible width.
+    ///
+    /// The row is laid out to *exactly* `inner_width` cells. It used to
+    /// be laid out to at least `label + 1 + secondary` and left "truncated
+    /// implicitly by the terminal if the row is too narrow" — which on a
+    /// narrow viewport means the text runs straight through the modal's
+    /// right border and onto the pane behind it, and a reverse-video
+    /// selection bar that stops short of the edge it is supposed to fill.
+    ///
+    /// Under pressure the **secondary yields first, entirely if need be**.
+    /// The label is the row's identity — the thing you are choosing — and
+    /// the secondary is context: a branch, a cwd, a bound chord. Losing
+    /// the context leaves a usable list; losing the identity does not.
     fn item_line(&self, item: &SelectItem, selected: bool, inner_width: u16) -> Line<'static> {
         let width = inner_width as usize;
+        if width == 0 {
+            return Line::from(String::new());
+        }
         let indent = if item.indented { "  " } else { "" };
-        let label = format!("{indent}{}", item.label);
-        let secondary = item.secondary.clone().unwrap_or_default();
-        // Lay out `label .... secondary` within `width`. The gap is at
-        // least one space; secondary is truncated implicitly by the
-        // terminal if the row is too narrow.
-        let used = label.chars().count() + secondary.chars().count();
-        let gap = width.saturating_sub(used).max(1);
-        let padding = " ".repeat(gap);
+        let label_full = format!("{indent}{}", item.label);
+        let secondary_full = item.secondary.clone().unwrap_or_default();
+
+        // The secondary gets whatever the full label does not need, less
+        // one mandatory blank column: `label` and `secondary` are two
+        // different facts and must never run together into one word.
+        let secondary = clip_text(
+            &secondary_full,
+            width.saturating_sub(label_full.chars().count() + GAP),
+        );
+        let sec_w = secondary.chars().count();
+        // The label then takes the rest, reserving the gap only if a
+        // secondary actually survived.
+        let label = clip_text(
+            &label_full,
+            width.saturating_sub(sec_w + if sec_w > 0 { GAP } else { 0 }),
+        );
+        let padding = " ".repeat(width.saturating_sub(label.chars().count() + sec_w));
 
         if selected {
             // Reverse-video the whole row so the selection reads clearly
@@ -552,7 +583,7 @@ impl RenderOverlay for SelectList {
 
         let body = self.body_lines(window, offset, inner_width);
         Modal::new(&self.theme, self.title.clone(), body)
-            .footer("Enter select  ·  Esc cancel  ·  type to filter")
+            .footer_hints(["Enter select", "Esc cancel", "type to filter"])
             .render_into(modal_area, buf);
         // Over the border the modal just drew, so an overflowing list shows
         // its extent and position instead of silently clipping.
@@ -1198,10 +1229,12 @@ mod tests {
         // then steps one row rather than guessing.
         sl.handle_key(&press(PhysicalKey::PageDown, None));
         assert_eq!(sl.selected, 1, "no measured viewport ⇒ a single-row step");
-        // After a paint (4 visible rows), a page is a real screenful.
+        // After a paint, a page is a real screenful. A 40x16 viewport is
+        // compact on both axes, so the picker is full-bleed: 16 rows less
+        // the 6 of shared chrome leaves 10 visible.
         render_to_string(&sl, 40, 16);
         sl.handle_key(&press(PhysicalKey::PageDown, None));
-        assert_eq!(sl.selected, 5);
+        assert_eq!(sl.selected, 11);
         sl.handle_key(&press(PhysicalKey::PageUp, None));
         assert_eq!(sl.selected, 1);
         // And both saturate rather than wrapping.
@@ -1277,9 +1310,11 @@ mod tests {
     fn scrolled_list_render_is_stable() {
         // Pin the painted mid-scroll box: a windowed row set, the selected row
         // reverse-video inside it, and the scrollbar thumb sitting away from
-        // both ends of the border.
+        // both ends of the border. A 44x16 viewport is compact on both
+        // axes, so the picker is full-bleed and shows 10 of the 24 rows —
+        // the deeper scroll keeps the thumb off both ends.
         let mut sl = long_list(24);
-        for _ in 0..10 {
+        for _ in 0..15 {
             sl.handle_key(&press(PhysicalKey::ArrowDown, None));
         }
         let area = Rect::new(0, 0, 44, 16);
@@ -1443,6 +1478,91 @@ mod tests {
             out.push('\n');
         }
         insta::assert_snapshot!(out);
+    }
+
+    /// The other side of the breakpoint. Above [`COMPACT_COLS`] /
+    /// [`COMPACT_ROWS`] the picker must still *float*: a centered box with
+    /// live panes visible around it, not a screen. Pinned alongside the
+    /// compact snapshots so a change to the responsive rule has to face
+    /// both shapes at once.
+    ///
+    /// [`COMPACT_COLS`]: crate::render::overlay::widgets::COMPACT_COLS
+    /// [`COMPACT_ROWS`]: crate::render::overlay::widgets::COMPACT_ROWS
+    #[test]
+    fn roomy_viewport_render_still_floats() {
+        let sl = sample();
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        sl.render(area, &mut buf);
+        let mut out = String::new();
+        for y in 0..area.height {
+            let mut row = String::new();
+            for x in 0..area.width {
+                row.push_str(buf[(x, y)].symbol());
+            }
+            out.push_str(row.trim_end());
+            out.push('\n');
+        }
+        // The box occupies neither the full width nor the full height.
+        let bounds = sl.bounds(area).expect("a floating picker is bounded");
+        assert!(bounds.width < area.width, "{bounds:?}");
+        assert!(bounds.height < area.height, "{bounds:?}");
+        assert!(bounds.x > 0 && bounds.y > 0, "{bounds:?}");
+        insta::assert_snapshot!(out);
+    }
+
+    /// A row must never be wider than the box that contains it.
+    ///
+    /// The old layout gave the gap a `.max(1)` floor and left the overflow
+    /// to "the terminal", so a long label plus a long secondary painted
+    /// straight through the modal's right border and onto the pane behind
+    /// it — worst exactly where it hurts most, on the narrow viewport that
+    /// made the row too long in the first place. Every row, at every
+    /// width, now measures exactly the interior width.
+    #[test]
+    fn a_row_never_overruns_the_modal_interior() {
+        let long = SelectItem::new(
+            "a-very-long-window-name-that-will-not-fit-anywhere",
+            action("x"),
+        )
+        .secondary("~/some/deeply/nested/working/directory  feature/branch");
+        let sl = SelectList::new("t", vec![long], &Theme::default());
+
+        for width in 1u16..=80 {
+            let line = sl.item_line(&sl.items[0], false, width);
+            let painted: String = line
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>();
+            assert_eq!(
+                painted.chars().count(),
+                usize::from(width),
+                "row at interior width {width}: {painted:?}"
+            );
+        }
+    }
+
+    /// Under pressure the secondary yields before the label does: the
+    /// label is what you are choosing, the secondary is context about it.
+    #[test]
+    fn a_narrow_row_sacrifices_the_secondary_before_the_label() {
+        let item = SelectItem::new("builder", action("x")).secondary("working - main");
+        let sl = SelectList::new("t", vec![item], &Theme::default());
+        let painted = |w| -> String {
+            sl.item_line(&sl.items[0], false, w)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        // Roomy: both, right-aligned against the far edge.
+        assert_eq!(painted(30), "builder         working - main");
+        // Tight: the secondary shortens while the label stays whole.
+        assert!(painted(16).starts_with("builder"), "{:?}", painted(16));
+        // Tighter still: the secondary is gone entirely before the label
+        // gives up a single column.
+        assert_eq!(painted(7), "builder");
     }
 
     #[test]

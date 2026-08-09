@@ -1,88 +1,32 @@
-# herdr — the phux starter distribution.
+# herdr — the phux plugin-bundle layer.
 #
-# A curated config layer in the spirit of a lazyvim starter: opinionated
-# keybindings, a status-bar lineup, a theme, and the demo plugin set
-# wired in. Your config extends this file (ADR-0039), so every key here
-# is a plain override: your own config.toml still wins per key, and a
-# herdr update reaches you without re-scaffolding.
+# This file used to carry phux's opinions: the which-key delay, the
+# split/palette/tab chords, the status lineup, the theme. All of that is
+# now the SHIPPED DEFAULT — `crates/phux-config/src/default.toml` plus
+# `crates/phux-client/src/render/theme.rs` — so naked `phux` already
+# looks and behaves the way this distro used to make it behave. Nothing
+# was dropped; it moved one layer down, where everyone gets it.
+#
+# What is left here is the one thing an embedded default genuinely
+# cannot express: plugin wiring. `default.toml` ships inside the binary
+# via `include_str!`, so it has no directory of its own for a relative
+# `manifest` path to resolve against. A layer file on disk does, which is
+# why the demo plugin set stays a distro concern.
 #
 # Get it:
 #   phux config init --distro herdr
 # or point an existing config at it:
 #   extends = ["/path/to/distros/herdr/herdr.toml"]
-
-[defaults]
-# Name auto-created sessions after the directory you launched from, so a
-# bench of project checkouts reads as its directories, not "default".
-session-name-template = "${cwd-basename}"
-
-[keybindings]
-# herdr leans on the which-key popup as its discovery surface: press the
-# prefix and hesitate and every continuation pops up, including the
-# additions below. Snappier than the stock 600 ms.
-which-key-delay-ms = 400
-
-[keybindings.prefix-table]
-# Additions merge into the shipped prefix table chord-by-chord (tables
-# merge per key across layers); everything in the phux defaults still
-# applies. `phux config show` prints the effective table.
 #
-# Space: the command palette, herdr's main verb. The actions contributed
-# by the plugins wired below — continuum's autosave/restore, the
-# agent-tools bench helpers — appear there automatically as `plugin:` rows.
-"Space" = "command-palette"
+# Your config extends this file (ADR-0039), so every key here is a plain
+# override: your own config.toml still wins per key, and an update to
+# this layer reaches you without re-scaffolding.
 
-# Ergonomic split aliases: the chord mirrors the divider it creates.
-# The shipped tmux-style " and % bindings keep working.
-"|" = { action = "split-pane", direction = "vertical" }
-"-" = { action = "split-pane", direction = "horizontal" }
-
-# Tab: hop to the next window, matching tabbed-UI muscle memory
-# (n / p remain the shipped cycle bindings).
-"Tab" = "next-window"
-
-[status]
-# Status lineup: window tabs left (herdr-styled active tab), contextual
-# help hints center, session name + clock right. A distro owns the slot
-# lists outright (plain assignment); use `-append` in your own config to
-# add widgets beside these instead of replacing them.
-left = [
-  { kind = "windows", active = { fg = "#1a1b26", bg = "#7aa2f7", bold = true }, inactive = { fg = "#565f89" }, separator = " " },
-]
-center = [{ kind = "help-hints" }]
-right = ["session-name", { kind = "time", format = " %a %H:%M" }]
-
-[theme]
-# Chrome + overlay palette (docs/consumers/tui.md section 4.4), tuned so
-# the chrome recedes into a calm tokyonight muted register and pane
-# content carries the brightness: a cool blue accent matching the tab
-# colors above, warm amber for attention.
-accent = "#7aa2f7"
-title = "#7aa2f7"
-chord = "#9ece6a"
-# A thin, unobtrusive divider + quiet modal borders.
-border = "#3b4261"
-section_header = "#e0af68"
-attention = "#ff9e64"
-
-# Sidebar chrome (phux-foz.13): the muted `spaces` / `agents` headers,
-# branch sub-lines, affordances, and empty-state placeholders all sit on
-# tokyonight's comment blue — the same tone as the inactive window tabs
-# above, so the whole chrome reads as one deliberate surface.
-sidebar_section = "#565f89"
-dim = "#565f89"
-
-# Agent lifecycle colors, on-palette: idle recedes into the comment tone
-# ("nothing needs you"), working rides the green accent, blocked the amber
-# attention tone, done a calm tokyonight cyan.
-agent_idle = "#565f89"
-agent_working = "#9ece6a"
-agent_blocked = "#ff9e64"
-agent_done = "#7dcfff"
-
-# The herdr plugin set: workspace autosave/restore (continuum) and the
+# The demo plugin set: workspace autosave/restore (continuum) and the
 # agent bench helpers (agent-tools). `-append` contributes entries to
-# [[plugins]] without erasing what your config or another layer declares.
+# [[plugins]] without erasing what your config or another layer declares;
+# assign a plain `plugins = [...]` in your own config to opt out entirely.
+#
 # Relative manifest paths in a layer resolve against the layer file's own
 # directory, so this wiring works no matter where your config.toml lives —
 # provided the distro stays inside a phux checkout (the manifests live
