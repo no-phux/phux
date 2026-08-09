@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-07-27
+last-reviewed: 2026-08-09
 ---
 
 # Contributing to phux
@@ -136,6 +136,21 @@ red build in one of them, the answer is on the runner, not on your machine.
   fix; you do for "should this be in `core` or `server`?"
 - **Public APIs are documented.** Workspace lints warn on missing docs
   for library crates. The binary crate is exempt.
+- **Alias a wire type at the import when its bare name is taken.** Several
+  domain concepts are modelled twice on purpose — `phux-core` holds the
+  in-memory shape, `phux-protocol` holds the wire shape, and
+  [`ADR/0011`](./ADR/0011-protocol-core-independence.md) keeps the two crates
+  independent of each other. Where both are in scope, or where the importing
+  crate defines its own, import the protocol one under a `Wire` prefix:
+  `use phux_protocol::ids::TerminalId as WireTerminalId;`. That puts the seam
+  at the use site instead of leaving a reader to infer it from context.
+  Twenty files already do this — it is the rule, not a local habit. It
+  currently matters for `ClientId`, `TerminalId`, `SessionId`, `WindowId`,
+  `LayoutNode`, `SplitDir`, `WindowInfo`, and `HistoryRejectionReason`. The
+  pair that motivates the rule: `phux_protocol::ids::ClientId` is a `u32`
+  wire identity, `phux_server::state::client::ClientId` is a `u64` routing
+  identity the server allocates. Same name, different width, different
+  authority.
 - **`unsafe` requires justification.** Every `unsafe` block carries a
   `// SAFETY: …` comment naming the invariant it relies on. We prefer
   zero `unsafe` and lint for it (`#![forbid(unsafe_code)]` is the default
