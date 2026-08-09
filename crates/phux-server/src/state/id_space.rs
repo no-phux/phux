@@ -5,28 +5,44 @@
 //! Three independent id spaces live here — sessions, terminals, and windows
 //! — because `phux-core` and `phux-protocol` must not depend on each other,
 //! so `phux-server` is the one place that holds both halves of every
-//! mapping. See [`crate::id_bridge`] for the allocation contract; the
-//! terminal and window spaces follow the same shape.
+//! mapping. See [`crate::id_bridge`] for the allocation contract.
 //!
-//! # Why sessions go through `IdBridge` and the others do not
+//! # One bridge, one exhaustion semantic
 //!
-//! The session space is the reusable [`IdBridge`]; the terminal and window
-//! spaces are the same data structure open-coded on this type. That
-//! asymmetry is deliberate and predates this module: the two are not
-//! behaviourally interchangeable.
+//! All three spaces are the same type — [`IdBridge`] at three
+//! instantiations. They did not used to be: the session space was the
+//! reusable bridge, the terminal space was that bridge open-coded, and the
+//! window space was *half* of it (forward map only, no reverse). The three
+//! also disagreed on `u32` exhaustion: sessions panicked, terminals and
+//! windows saturated. Collapsing them had to pick one semantic, and it
+//! picked **fail fast**, because saturating hands out `u32::MAX` and then
+//! keeps handing out that same id, aliasing distinct terminals onto one wire
+//! id and misrouting input and output — see [`crate::id_bridge`]'s
+//! "Exhaustion" section for the full argument. Every space now hands out
+//! `1..=u32::MAX - 1`.
 //!
-//! * [`IdBridge::intern`] panics on `u32` exhaustion;
-//!   [`IdSpace::intern_terminal`] / [`IdSpace::intern_window`] saturate.
-//! * `phux_protocol::ids::TerminalId` is an enum, not a newtype. Only
-//!   `TerminalId::Local` is ever minted here — a satellite terminal
-//!   (`TerminalId::Satellite { .. }`) is addressed directly off the wire id
-//!   by federation routing and never enters these tables, so
-//!   [`IdSpace::terminal_from_wire`] returns `None` for one by design.
+//! Two consequences worth naming rather than discovering:
 //!
-//! Collapsing them into one generic bridge would change one of those
-//! behaviours; it stays out of scope here.
-
-use std::collections::HashMap;
+//! * The window space **gained** a reverse map it never had. That is a real
+//!   addition, not accidental bloat: it is what makes windows the same
+//!   structure as the other two. Nothing reads it yet
+//!   (there is no `window_from_wire`), so
+//!   [`Self::bind_window`] must keep binding distinct wire ids per window or
+//!   the reverse entry silently collapses.
+//! * The terminal and window spaces panic where they used to saturate, and
+//!   their last mintable id moved from `u32::MAX` to `u32::MAX - 1`.
+//!
+//! # Still asymmetric: `TerminalId` is an enum
+//!
+//! `phux_protocol::ids::TerminalId` is a tagged union, not a `u32` newtype.
+//! Only `TerminalId::Local` is ever minted here — a satellite terminal
+//! (`TerminalId::Satellite { .. }`) is addressed directly off the wire id by
+//! federation routing and never enters these tables, so
+//! [`Self::terminal_from_wire`] returns `None` for one by design. Unifying
+//! the three spaces did not lose that property; it gave it a name. Minting
+//! shape is the [`WireId`](crate::id_bridge::WireId) trait, and
+//! `impl WireId for phux_protocol::ids::TerminalId` is now the single place
+//! the Local-only invariant is enforced.
 
 use phux_core::ids::{SessionId, TerminalId, WindowId};
 use phux_protocol::ids::{
@@ -49,23 +65,17 @@ use crate::id_bridge::IdBridge;
 pub struct IdSpace {
     /// Bridge between core slotmap [`SessionId`]s and wire-level
     /// `phux_protocol::ids::SessionId` (u32).
-    session_id_bridge: IdBridge,
-    /// Wire-side identifier for each core pane id. Allocated monotonically
-    /// from `1`. Mirrors the [`IdBridge`] shape used for session ids — see
-    /// the module doc for why it is open-coded rather than shared.
-    terminal_forward: HashMap<TerminalId, WireTerminalId>,
-    /// Reverse of [`Self::terminal_forward`]. Load-bearing: it is the
-    /// existence oracle every Terminal-scoped command validates against.
-    terminal_reverse: HashMap<WireTerminalId, TerminalId>,
-    /// Next terminal wire id to hand out.
-    next_terminal_wire_id: u32,
-    /// Wire-side identifier for each core window id. Same shape as the pane
-    /// space above; used to populate
+    sessions: IdBridge<SessionId, WireSessionId>,
+    /// Bridge between core [`TerminalId`]s and wire-level
+    /// `phux_protocol::ids::TerminalId`. Its reverse direction is
+    /// load-bearing: it is the existence oracle every Terminal-scoped
+    /// command validates against.
+    terminals: IdBridge<TerminalId, WireTerminalId>,
+    /// Bridge between core [`WindowId`]s and wire-level
+    /// `phux_protocol::ids::WindowId`; used to populate
     /// [`phux_protocol::wire::info::WindowInfo::id`] in the `ATTACHED`
     /// snapshot.
-    window_forward: HashMap<WindowId, WireWindowId>,
-    /// Next window wire id to hand out.
-    next_window_wire_id: u32,
+    windows: IdBridge<WindowId, WireWindowId>,
 }
 
 impl Default for IdSpace {
@@ -75,16 +85,13 @@ impl Default for IdSpace {
 }
 
 impl IdSpace {
-    /// Build an empty id space with both open-coded allocators at `1`.
+    /// Build an empty id space with all three allocators at `1`.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            session_id_bridge: IdBridge::new(),
-            terminal_forward: HashMap::new(),
-            terminal_reverse: HashMap::new(),
-            next_terminal_wire_id: 1,
-            window_forward: HashMap::new(),
-            next_window_wire_id: 1,
+            sessions: IdBridge::new(),
+            terminals: IdBridge::new(),
+            windows: IdBridge::new(),
         }
     }
 
@@ -97,44 +104,44 @@ impl IdSpace {
     /// Panics if the session wire-id space is exhausted — see
     /// [`IdBridge::intern`].
     pub fn intern_session(&mut self, core: SessionId) -> WireSessionId {
-        self.session_id_bridge.intern(core)
+        self.sessions.intern(core)
     }
 
     /// Forward lookup without allocating. `None` if `core` was never
     /// interned.
     #[must_use]
     pub fn session_wire(&self, core: SessionId) -> Option<WireSessionId> {
-        self.session_id_bridge.wire(core)
+        self.sessions.wire(core).copied()
     }
 
     /// Reverse lookup: which core session (if any) does `wire` name?
     #[must_use]
     pub fn resolve_session(&self, wire: WireSessionId) -> Option<SessionId> {
-        self.session_id_bridge.resolve(wire)
+        self.sessions.resolve(&wire)
     }
 
     /// Bind a specific `core → wire` session mapping recorded in a
     /// graceful-upgrade state blob (ADR-0032) rather than allocating a
     /// fresh id. Pair with [`Self::set_next_session_wire`].
     pub fn bind_session(&mut self, core: SessionId, wire: WireSessionId) {
-        self.session_id_bridge.bind(core, wire);
+        self.sessions.bind(core, wire);
     }
 
     /// Drop both directions of `core`'s session mapping. Idempotent; the
     /// retired wire id is not reused.
     pub fn forget_session(&mut self, core: SessionId) {
-        self.session_id_bridge.forget(core);
+        let _ = self.sessions.forget(core);
     }
 
     /// The next session wire id this space would allocate.
     #[must_use]
     pub const fn next_session_wire(&self) -> u32 {
-        self.session_id_bridge.next_wire()
+        self.sessions.next_wire()
     }
 
     /// Restore the session allocator after a graceful upgrade.
     pub const fn set_next_session_wire(&mut self, next: u32) {
-        self.session_id_bridge.set_next(next);
+        self.sessions.set_next(next);
     }
 
     // -- terminals ----------------------------------------------------
@@ -144,29 +151,28 @@ impl IdSpace {
     /// Idempotent: a second call for the same `terminal` returns the same
     /// wire id. Several runtime call sites rely on that (they re-intern
     /// rather than thread the id through), so it must stay so.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the terminal wire-id space is exhausted — see
+    /// [`IdBridge::intern`].
     pub(super) fn intern_terminal(&mut self, terminal: TerminalId) -> WireTerminalId {
-        if let Some(w) = self.terminal_forward.get(&terminal) {
-            return w.clone();
-        }
-        let raw = self.next_terminal_wire_id;
-        self.next_terminal_wire_id = self.next_terminal_wire_id.saturating_add(1);
-        let wire = WireTerminalId::local(raw);
-        self.terminal_forward.insert(terminal, wire.clone());
-        self.terminal_reverse.insert(wire.clone(), terminal);
-        wire
+        self.terminals.intern(terminal)
     }
 
     /// Reverse lookup: which core pane id (if any) does `wire` resolve to?
+    ///
+    /// `None` for a `TerminalId::Satellite` by design — see the module doc.
     #[must_use]
     pub(super) fn terminal_from_wire(&self, wire: &WireTerminalId) -> Option<TerminalId> {
-        self.terminal_reverse.get(wire).copied()
+        self.terminals.resolve(wire)
     }
 
     /// Forward lookup without allocating. `None` if `terminal` was never
     /// interned.
     #[must_use]
     pub(super) fn terminal_wire(&self, terminal: TerminalId) -> Option<&WireTerminalId> {
-        self.terminal_forward.get(&terminal)
+        self.terminals.wire(terminal)
     }
 
     /// Bind a specific `core → wire` pane mapping from a graceful-upgrade
@@ -174,8 +180,7 @@ impl IdSpace {
     /// [`Self::intern_terminal`] a no-op instead of minting a fresh id that
     /// would diverge from the blob.
     pub(super) fn bind_terminal(&mut self, terminal: TerminalId, wire: WireTerminalId) {
-        self.terminal_forward.insert(terminal, wire.clone());
-        self.terminal_reverse.insert(wire, terminal);
+        self.terminals.bind(terminal, wire);
     }
 
     /// Drop both directions of `terminal`'s mapping and hand the retired
@@ -186,64 +191,214 @@ impl IdSpace {
     /// reachable while this mapping still exists. Returns `None` if
     /// `terminal` was never interned. The wire id is not reused.
     pub(super) fn retire_terminal(&mut self, terminal: TerminalId) -> Option<WireTerminalId> {
-        let wire = self.terminal_forward.remove(&terminal)?;
-        self.terminal_reverse.remove(&wire);
-        Some(wire)
+        self.terminals.forget(terminal)
     }
 
     /// The next pane wire id this space would allocate.
     #[must_use]
     pub(super) const fn next_terminal_wire(&self) -> u32 {
-        self.next_terminal_wire_id
+        self.terminals.next_wire()
     }
 
     /// Restore the pane allocator after a graceful upgrade.
     pub(super) const fn set_next_terminal_wire(&mut self, next: u32) {
-        self.next_terminal_wire_id = next;
+        self.terminals.set_next(next);
     }
 
     // -- windows ------------------------------------------------------
 
     /// Wire window id for `window`, allocating one if needed. Idempotent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the window wire-id space is exhausted — see
+    /// [`IdBridge::intern`].
     pub(super) fn intern_window(&mut self, window: WindowId) -> WireWindowId {
-        if let Some(w) = self.window_forward.get(&window) {
-            return *w;
-        }
-        let raw = self.next_window_wire_id;
-        self.next_window_wire_id = self.next_window_wire_id.saturating_add(1);
-        let wire = WireWindowId(raw);
-        self.window_forward.insert(window, wire);
-        wire
+        self.windows.intern(window)
     }
 
     /// Forward lookup without allocating. `None` if `window` was never
     /// interned.
     #[must_use]
     pub(super) fn window_wire(&self, window: WindowId) -> Option<WireWindowId> {
-        self.window_forward.get(&window).copied()
+        self.windows.wire(window).copied()
     }
 
     /// Bind a specific `core → wire` window mapping from a
     /// graceful-upgrade state blob (ADR-0032). Pair with
     /// [`Self::set_next_window_wire`].
     pub(super) fn bind_window(&mut self, window: WindowId, wire: WireWindowId) {
-        self.window_forward.insert(window, wire);
+        self.windows.bind(window, wire);
     }
 
     /// Drop `window`'s mapping. Idempotent; the retired wire id is not
     /// reused.
     pub(super) fn retire_window(&mut self, window: WindowId) {
-        self.window_forward.remove(&window);
+        let _ = self.windows.forget(window);
     }
 
     /// The next window wire id this space would allocate.
     #[must_use]
     pub(super) const fn next_window_wire(&self) -> u32 {
-        self.next_window_wire_id
+        self.windows.next_wire()
     }
 
     /// Restore the window allocator after a graceful upgrade.
     pub(super) const fn set_next_window_wire(&mut self, next: u32) {
-        self.next_window_wire_id = next;
+        self.windows.set_next(next);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phux_core::registry::Registry;
+
+    /// Two distinct core ids in each space, from one registry.
+    fn two_of_each() -> (Registry, [SessionId; 2], [WindowId; 2], [TerminalId; 2]) {
+        let mut reg = Registry::new();
+        let s0 = reg.new_session("s0".to_owned());
+        let s1 = reg.new_session("s1".to_owned());
+        let w0 = reg.new_window(s0).expect("window 0");
+        let w1 = reg.new_window(s1).expect("window 1");
+        let t0 = reg.new_terminal(w0).expect("terminal 0");
+        let t1 = reg.new_terminal(w1).expect("terminal 1");
+        (reg, [s0, s1], [w0, w1], [t0, t1])
+    }
+
+    // -- the u32 boundary, pinned per space ---------------------------
+    //
+    // One semantic for all three: the call that would mint `u32::MAX`
+    // panics, so `u32::MAX - 1` is the last id any space hands out. The
+    // paired non-panicking tests exist because a `#[should_panic]` test
+    // cannot assert anything after the panic.
+
+    #[test]
+    fn session_space_mints_up_to_u32_max_minus_one() {
+        let (_reg, sessions, _, _) = two_of_each();
+        let mut space = IdSpace::new();
+        space.set_next_session_wire(u32::MAX - 1);
+        assert_eq!(
+            space.intern_session(sessions[0]),
+            WireSessionId(u32::MAX - 1)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "session wire-id space exhausted")]
+    fn session_space_panics_instead_of_minting_u32_max() {
+        let (_reg, sessions, _, _) = two_of_each();
+        let mut space = IdSpace::new();
+        space.set_next_session_wire(u32::MAX - 1);
+        let _ = space.intern_session(sessions[0]);
+        let _ = space.intern_session(sessions[1]);
+    }
+
+    #[test]
+    fn terminal_space_mints_up_to_u32_max_minus_one() {
+        let (_reg, _, _, terminals) = two_of_each();
+        let mut space = IdSpace::new();
+        space.set_next_terminal_wire(u32::MAX - 1);
+        assert_eq!(
+            space.intern_terminal(terminals[0]),
+            WireTerminalId::local(u32::MAX - 1)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "terminal wire-id space exhausted")]
+    fn terminal_space_panics_instead_of_saturating() {
+        let (_reg, _, _, terminals) = two_of_each();
+        let mut space = IdSpace::new();
+        space.set_next_terminal_wire(u32::MAX - 1);
+        let _ = space.intern_terminal(terminals[0]);
+        let _ = space.intern_terminal(terminals[1]);
+    }
+
+    #[test]
+    fn window_space_mints_up_to_u32_max_minus_one() {
+        let (_reg, _, windows, _) = two_of_each();
+        let mut space = IdSpace::new();
+        space.set_next_window_wire(u32::MAX - 1);
+        assert_eq!(space.intern_window(windows[0]), WireWindowId(u32::MAX - 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "window wire-id space exhausted")]
+    fn window_space_panics_instead_of_saturating() {
+        let (_reg, _, windows, _) = two_of_each();
+        let mut space = IdSpace::new();
+        space.set_next_window_wire(u32::MAX - 1);
+        let _ = space.intern_window(windows[0]);
+        let _ = space.intern_window(windows[1]);
+    }
+
+    // -- the TerminalId-is-an-enum invariant --------------------------
+
+    #[test]
+    fn intern_terminal_mints_a_local_id() {
+        let (_reg, _, _, terminals) = two_of_each();
+        let mut space = IdSpace::new();
+        let wire = space.intern_terminal(terminals[0]);
+        assert_eq!(wire, WireTerminalId::local(1));
+        assert!(wire.is_local(), "only Local ids are minted here");
+    }
+
+    #[test]
+    fn terminal_from_wire_is_none_for_a_satellite_id() {
+        let (_reg, _, _, terminals) = two_of_each();
+        let mut space = IdSpace::new();
+        let wire = space.intern_terminal(terminals[0]);
+        let raw = wire.local_id().expect("minted id is Local");
+        let satellite = WireTerminalId::satellite("peer", raw);
+        assert!(
+            space.terminal_from_wire(&satellite).is_none(),
+            "satellite terminals are routed by federation and never interned"
+        );
+        assert_eq!(space.terminal_from_wire(&wire), Some(terminals[0]));
+    }
+
+    // -- shape parity across the three spaces -------------------------
+
+    #[test]
+    fn every_space_allocates_monotonically_from_one() {
+        let (_reg, sessions, windows, terminals) = two_of_each();
+        let mut space = IdSpace::new();
+        assert_eq!(space.intern_session(sessions[0]), WireSessionId(1));
+        assert_eq!(space.intern_session(sessions[1]), WireSessionId(2));
+        assert_eq!(space.intern_window(windows[0]), WireWindowId(1));
+        assert_eq!(space.intern_window(windows[1]), WireWindowId(2));
+        assert_eq!(
+            space.intern_terminal(terminals[0]),
+            WireTerminalId::local(1)
+        );
+        assert_eq!(
+            space.intern_terminal(terminals[1]),
+            WireTerminalId::local(2)
+        );
+    }
+
+    #[test]
+    fn retiring_does_not_recycle_wire_ids() {
+        let (_reg, sessions, windows, terminals) = two_of_each();
+        let mut space = IdSpace::new();
+
+        let s0 = space.intern_session(sessions[0]);
+        space.forget_session(sessions[0]);
+        assert!(space.resolve_session(s0).is_none());
+        assert_eq!(space.intern_session(sessions[1]), WireSessionId(2));
+
+        let t0 = space.intern_terminal(terminals[0]);
+        assert_eq!(space.retire_terminal(terminals[0]), Some(t0.clone()));
+        assert!(space.terminal_from_wire(&t0).is_none());
+        assert_eq!(
+            space.intern_terminal(terminals[1]),
+            WireTerminalId::local(2)
+        );
+
+        let _ = space.intern_window(windows[0]);
+        space.retire_window(windows[0]);
+        assert!(space.window_wire(windows[0]).is_none());
+        assert_eq!(space.intern_window(windows[1]), WireWindowId(2));
     }
 }

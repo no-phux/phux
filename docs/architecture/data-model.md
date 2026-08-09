@@ -80,7 +80,7 @@ pub struct ServerState {
     // Per-pane input log; merge point for multi-client keystrokes.
     pane_inputs:         HashMap<PaneId, Vec<PaneInput>>,
     // Core ids (slotmap keys, generational) <-> wire ids (u32), for
-    // sessions, terminals, and windows. Sessions go through `IdBridge`.
+    // sessions, terminals, and windows. All three go through `IdBridge`.
     pub idspace:         IdSpace,
     next_client_id:      u64,
 }
