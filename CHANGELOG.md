@@ -9,6 +9,45 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.13.0](https://github.com/phall1/phux/compare/v0.12.1...v0.13.0) (2026-08-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tui:** auto-created sessions are now named after the launch directory rather than `default` (set `session-name-template = "default"` to restore), the which-key delay drops from 600 ms to 400 ms, and the shipped theme palette changes. Configs that set these keys are unaffected.
+* **cli:** the following deprecated spellings no longer parse. Each now fails with clap's ordinary unknown-subcommand/unknown-flag error (exit 2), not a panic:
+
+### Features
+
+* **agent:** agent-to-agent orchestration foundation ([#381](https://github.com/phall1/phux/issues/381)) ([191b16a](https://github.com/phall1/phux/commit/191b16ada1d79e1d0e0384ca762f633b18325791))
+* **client:** restore the terminal on a fatal signal (SIGSEGV/SIGBUS/SIGABRT) ([a8fcd94](https://github.com/phall1/phux/commit/a8fcd94b4bcffc687de9aced52735644e8ca4573))
+* **cli:** release-candidate pass: remove deprecated spellings and add phux update ([#379](https://github.com/phall1/phux/issues/379)) ([d8fe06c](https://github.com/phall1/phux/commit/d8fe06c6fe9312f0cbf094155f3e93dac0446382))
+* **release:** report releases to the Linear phux pipeline ([4d8757a](https://github.com/phall1/phux/commit/4d8757a9982321befb8f164ede8cdd8209781254))
+* **tui:** ship the distro as the default and make the chrome responsive ([#380](https://github.com/phall1/phux/issues/380)) ([932e928](https://github.com/phall1/phux/commit/932e928306f7132c353ba11de3df49216f8e8e26))
+
+
+### Bug Fixes
+
+* **agent:** heal a dead agent's record, correct it on occupant change, and stop the shim clobbering it ([#382](https://github.com/phall1/phux/issues/382)) ([eb93020](https://github.com/phall1/phux/commit/eb93020b56487e9c40f24c0170f04649253b3d76))
+* **docs:** correct ADR-0032 links ([9eede40](https://github.com/phall1/phux/commit/9eede404204a3a86aba88a9c45e47c37d1274a4e))
+* **integrations:** declare identity only in the pi and opencode lifecycle reporters ([#383](https://github.com/phall1/phux/issues/383)) ([00d0149](https://github.com/phall1/phux/commit/00d01495ff21a9d13ab05cf91088d2e62ae8d837))
+* **server:** stop a deep window making the whole upgrade blob unreadable ([7ed9e2e](https://github.com/phall1/phux/commit/7ed9e2e664d32d8cbbca95821c669adefbbae66c))
+
+
+### Refactors
+
+* **client:** break attach/driver out of its mutual-dependency cycles ([6c3a1f8](https://github.com/phall1/phux/commit/6c3a1f8d8047da9c18f8ef937cea272b3801edff))
+* **server:** one id bridge, one exhaustion semantic (phux-4fbs.2) ([9735fb7](https://github.com/phall1/phux/commit/9735fb7bdc04fc6a20659321796c0d051e283425))
+* **workspace:** break the genuine cross-subsystem module cycles ([00526fd](https://github.com/phall1/phux/commit/00526fda5956d687affe28ed3f3e0d0873deec92))
+
+
+### Documentation
+
+* **architecture:** close the remaining knot decisions ([4d4310e](https://github.com/phall1/phux/commit/4d4310e742bbaced0122170fa7c78c8b9153d3c1))
+* **consumers:** own the connect-link shape here, and write the iOS contract ([a20b5a1](https://github.com/phall1/phux/commit/a20b5a1df59125e8b807b3306bf57f2aed37df64))
+* **contributing:** make the Wire-prefix import alias a written rule ([2278235](https://github.com/phall1/phux/commit/2278235994916b6d910bf6f9f2ae05eea11fa755))
+* **release:** document dsr local fallback path ([f60fee8](https://github.com/phall1/phux/commit/f60fee87267e6cf4ff14b1dba8d6c7fd986d41b8))
+
 ## [0.12.1](https://github.com/phall1/phux/compare/v0.12.0...v0.12.1) (2026-08-04)
 
 
