@@ -1,8 +1,9 @@
 //! Binary-level end-to-end test for the ADR-0040 agent-identity record
 //! (`phux-3ert`): `phux agent set` writes `phux.agent/v1` through the real
 //! L3 `SET_METADATA` path, `phux agent show` reports from the record with
-//! `agent_record` provenance (no heuristics), and `phux agent clear`
-//! deletes it so the report falls back to the heuristic sources.
+//! `agent_record` authority plus detector provenance (no competing
+//! heuristics), and `phux agent clear` deletes it so the report falls back to
+//! the non-record sources.
 //!
 //! Same harness discipline as `run_wait_e2e.rs`: a real `phux server`
 //! child on a private UDS, each verb its own subprocess, guard-killed on
@@ -159,8 +160,9 @@ fn agent_record_set_show_clear_roundtrip() {
         "set must echo the confirmed record: {confirmed}"
     );
 
-    // The report comes straight from the record — structured provenance,
-    // no substring heuristics.
+    // The report comes straight from the record. Detector provenance may
+    // explain the record, but no identity or state heuristic may compete with
+    // it.
     let shown = server.agent(&["show", SESSION, "--json"]);
     let json: serde_json::Value = serde_json::from_str(&shown).expect("agent show JSON");
     let agent = &json["agents"][0];
@@ -171,10 +173,14 @@ fn agent_record_set_show_clear_roundtrip() {
         agent["sources"][0]["kind"], "agent_record",
         "provenance must be the structured record: {shown}"
     );
-    assert_eq!(
-        agent["sources"].as_array().map(Vec::len),
-        Some(1),
-        "no heuristic source may run while a record is declared"
+    let sources = agent["sources"].as_array().expect("sources array");
+    assert!(
+        sources.iter().skip(1).all(|source| {
+            source["kind"]
+                .as_str()
+                .is_some_and(|kind| kind.starts_with("detector_"))
+        }),
+        "only detector provenance may accompany the authoritative record: {shown}"
     );
 
     // Clear: the record is deleted and the report falls back to the
