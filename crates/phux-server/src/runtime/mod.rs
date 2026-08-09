@@ -1543,9 +1543,17 @@ mod tests {
         let first = std::os::unix::net::UnixListener::bind(&path).expect("bind A");
         let bound_by_a = socket_identity(&path);
         drop(first);
-        std::fs::remove_file(&path).expect("unlink A");
 
-        // Generation B takes the path — a different inode.
+        // Free the path for B while keeping A's inode allocated, by renaming
+        // rather than unlinking. Unlinking would let the filesystem hand the
+        // same inode number straight back to B: ext4 and tmpfs reuse eagerly
+        // (APFS does not), which made this test pass on macOS and fail on
+        // Linux CI. Renaming guarantees the two generations are genuinely
+        // distinct, which is the precondition the assertion below needs.
+        let parked = dir.path().join("phux.sock.parked");
+        std::fs::rename(&path, &parked).expect("park A's inode");
+
+        // Generation B takes the path — necessarily a different inode.
         let _second = std::os::unix::net::UnixListener::bind(&path).expect("bind B");
         let bound_by_b = socket_identity(&path);
         assert_ne!(bound_by_a, bound_by_b, "the test needs distinct inodes");
