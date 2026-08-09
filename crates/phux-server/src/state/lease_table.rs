@@ -39,7 +39,7 @@ use phux_core::ids::TerminalId;
 use tokio::sync::mpsc;
 
 use super::client::ClientId;
-use super::input_log::Outbound;
+use crate::mailbox::Outbound;
 
 /// One hub-side satellite input lease (phux-v45.7, phux-v45.13).
 ///

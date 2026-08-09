@@ -18,6 +18,17 @@
 //! Token and route are bound one-to-one: [`mint_route_token`] on an
 //! existing route REPLACES that route's line (rotation), preserving the
 //! bijection ADR-0052 establishes at enrollment.
+//!
+//! # On the `lib` <-> `tokens` import cycle
+//!
+//! This module imports [`crate::RelayError`] and the crate root re-exports
+//! this module's surface, so a module-level graph reports a cycle. It is a
+//! parent-child pair, not a cross-subsystem knot: the crate root owns the
+//! one shared error type every submodule fails with, and re-exports the
+//! crate's public vocabulary. Breaking it would mean either a private
+//! per-module error type that the root has to translate, or an `error`
+//! module whose only job is to hold one enum. Both are worse than the
+//! cycle. Kept deliberately (phux-4fbs.5).
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};

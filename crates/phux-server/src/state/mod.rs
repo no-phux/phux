@@ -52,7 +52,6 @@ mod hook_dispatch;
 mod hub;
 mod hub_state;
 mod id_space;
-mod input_log;
 mod lease_table;
 mod leases;
 mod lifecycle;
@@ -76,7 +75,11 @@ use config::ServerConfig;
 pub use events::{EventScope, EventSubscription};
 use hub_state::HubState;
 pub use id_space::IdSpace;
-pub use input_log::{DEFAULT_CLIENT_MAILBOX, Outbound, TerminalInput};
+// Facade: the mailbox payloads live at the crate root (`crate::mailbox`) so
+// `state` and `terminal_actor` can both depend on them without depending on
+// each other. Re-exported here because `crate::state::Outbound` is the spelling
+// the rest of the crate — and its consumers — already use.
+pub use crate::mailbox::{DEFAULT_CLIENT_MAILBOX, Outbound, TerminalInput};
 use lease_table::LeaseTable;
 pub(crate) use lease_table::SatelliteLease;
 use lifecycle_state::Lifecycle;

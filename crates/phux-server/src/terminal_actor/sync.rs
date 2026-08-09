@@ -2,7 +2,7 @@
 
 use super::tick::RttEstimator;
 use crate::grid::ConsumerReference;
-use crate::state::Outbound;
+use crate::mailbox::Outbound;
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
     render::{CursorVisualStyle, Snapshot},

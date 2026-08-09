@@ -2557,6 +2557,26 @@ pub enum FrameKind {
     },
 }
 
+impl InputEvent {
+    /// Wrap this event in the matching per-atom input [`FrameKind`]
+    /// addressed to `terminal_id` (`INPUT_KEY` / `INPUT_MOUSE` /
+    /// `INPUT_FOCUS` / `INPUT_PASTE`). Used by the attach loop to ship a
+    /// parsed event to its focused pane.
+    ///
+    /// Lives here rather than next to [`InputEvent`] itself so that
+    /// `crate::input` stays a leaf of the wire layer: frames know about
+    /// input atoms, input atoms know nothing about frames.
+    #[must_use]
+    pub fn into_frame(self, terminal_id: TerminalId) -> FrameKind {
+        match self {
+            Self::Key(event) => FrameKind::InputKey { terminal_id, event },
+            Self::Mouse(event) => FrameKind::InputMouse { terminal_id, event },
+            Self::Focus(event) => FrameKind::InputFocus { terminal_id, event },
+            Self::Paste(event) => FrameKind::InputPaste { terminal_id, event },
+        }
+    }
+}
+
 impl FrameKind {
     /// Type discriminant from `docs/spec/proto.md` §7.
     #[must_use]

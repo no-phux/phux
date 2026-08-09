@@ -54,7 +54,7 @@ use crate::input::{
     InputEncoderSnapshot, PerTerminalFocusEncoder, PerTerminalKeyEncoder, PerTerminalMouseEncoder,
     PerTerminalPasteEncoder,
 };
-use crate::state::{Outbound, TerminalInput};
+use crate::mailbox::{Outbound, TerminalInput};
 
 mod osc133;
 pub mod requests;

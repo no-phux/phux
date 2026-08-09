@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use super::ServerState;
 use super::client::ClientId;
-use super::input_log::Outbound;
+use crate::mailbox::Outbound;
 
 /// Scope of an agent-event subscription (SPEC §7.5, phux-y2t).
 ///

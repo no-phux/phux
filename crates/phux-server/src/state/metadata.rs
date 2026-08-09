@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use super::ServerState;
 use super::client::ClientId;
-use super::input_log::Outbound;
+use crate::mailbox::Outbound;
 
 /// Per-scope K/V store for L3 metadata (SPEC §7.4 / §11.L3) plus the
 /// matching subscription registry.

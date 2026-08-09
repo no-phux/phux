@@ -80,7 +80,7 @@ pub(super) fn reload_from(path: &Path) -> Result<ReloadedConfig, String> {
 /// (`driver::build_status_bar_painter`) and the reload path ([`build`]),
 /// extracted so the two cannot drift again (phux-i0e8.6.1: reload used
 /// to hardcode the default position and skip
-/// [`phux_config::plugin::merge_widget_contributions`], silently
+/// [`phux_config::widget::merge_widget_contributions`], silently
 /// resetting `[status] position = "top"` and dropping plugin-contributed
 /// widgets). The order mirrors startup exactly: plugin `[[widgets]]`
 /// contributions merge in **after** the user's own `[status]` widgets
@@ -109,7 +109,7 @@ pub(super) fn compose_status_bar(
     // keybinding policy), so a broken plugin cannot fail the build; a
     // genuinely broken USER config still can.
     let mut status = cfg.status.clone();
-    phux_config::plugin::merge_widget_contributions(&mut status, manifests, &registry);
+    phux_config::widget::merge_widget_contributions(&mut status, manifests, &registry);
     let bar = phux_config::widget::StatusBar::build(&status, &registry)?;
     if bar.is_empty() {
         return Ok(None);

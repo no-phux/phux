@@ -1,3 +1,16 @@
+//! Per-client and per-pane mailbox payloads.
+//!
+//! [`Outbound`] is what the writer task drains toward a client;
+//! [`TerminalInput`] is what a pane's actor drains toward its PTY. Both are
+//! pure message shapes over `phux-protocol` atoms — no server state, no actor
+//! machinery.
+//!
+//! They live at the crate root rather than inside `state` on purpose: `state`
+//! and `terminal_actor` both need them, and hanging them off either one makes
+//! the two subsystems import each other. As a crate-root leaf the dependency
+//! is one-way from both sides. `state` re-exports them so existing
+//! `crate::state::Outbound` paths keep working.
+
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::input::mouse::MouseEvent;

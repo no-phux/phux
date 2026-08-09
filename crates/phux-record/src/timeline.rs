@@ -12,7 +12,7 @@
 //! marker or timestamp a user reads off one artifact would mislead them about
 //! the other.
 
-use crate::cast::CastEvent;
+use crate::cast::{CastEvent, secs_to_ms};
 
 /// Collapse every idle gap longer than `limit_secs` down to `limit_secs`.
 ///
@@ -47,30 +47,6 @@ pub fn clamp_idle(events: &mut [CastEvent], limit_secs: Option<f64>) {
         previous = original;
         event.time_ms = original.saturating_sub(shift);
     }
-}
-
-/// Convert fractional seconds to whole milliseconds, saturating.
-///
-/// NaN, negatives, and overflow are all handled *before* the cast, so the
-/// lossy-cast lints are satisfied by construction rather than by an `allow`
-/// that would also hide a real bug.
-pub(crate) fn secs_to_ms(secs: f64) -> u64 {
-    if !secs.is_finite() || secs <= 0.0 {
-        return 0;
-    }
-    let ms = (secs * 1000.0).round();
-    // 2^63 as an exact f64 literal: far above any real recording, and safely
-    // below `u64::MAX` so the cast below cannot saturate or wrap.
-    if ms >= 9_223_372_036_854_775_808.0 {
-        return u64::MAX;
-    }
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the two guards above prove the value is finite, positive, and below 2^63"
-    )]
-    let whole = ms as u64;
-    whole
 }
 
 #[cfg(test)]
@@ -150,15 +126,5 @@ mod tests {
         let mut list: Vec<CastEvent> = Vec::new();
         clamp_idle(&mut list, Some(2.0));
         assert!(list.is_empty());
-    }
-
-    #[test]
-    fn secs_to_ms_rejects_nonsense_without_panicking() {
-        assert_eq!(secs_to_ms(f64::NAN), 0);
-        assert_eq!(secs_to_ms(f64::NEG_INFINITY), 0);
-        assert_eq!(secs_to_ms(-3.0), 0);
-        assert_eq!(secs_to_ms(f64::INFINITY), 0);
-        assert_eq!(secs_to_ms(2.0), 2000);
-        assert_eq!(secs_to_ms(0.117), 117);
     }
 }

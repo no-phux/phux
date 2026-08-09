@@ -25,6 +25,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::plugin::{PluginManifest, PluginWidgetSlot};
 use crate::schema::{StatusCfg, Widget, WidgetSpec};
 use crate::widget::{
     Cell, ExecFeed, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetRegistry,
@@ -330,6 +331,52 @@ pub fn row_to_string(row: &[Cell]) -> String {
         }
     }
     s
+}
+
+/// Fold enabled plugins' `[[widgets]]` contributions into a `[status]`
+/// config (phux-r82.6), appending each contributed spec after the user's
+/// own widgets in its declared slot.
+///
+/// Contributions are validated against `registry` first; a spec that does
+/// not build (unknown kind, bad option) is dropped with a `tracing::warn!`
+/// so one broken plugin cannot degrade the whole bar into the error strip.
+///
+/// Lives with the status-bar composer rather than in [`crate::plugin`]
+/// because it is the one place that speaks all three vocabularies —
+/// manifest contributions, `[status]` schema, and the widget registry that
+/// validates them. Hanging it off `plugin` made `plugin` and `schema`
+/// import each other for no other reason (phux-4fbs.5).
+pub fn merge_widget_contributions(
+    status: &mut StatusCfg,
+    manifests: &[PluginManifest],
+    registry: &WidgetRegistry,
+) {
+    for manifest in manifests {
+        for widget in &manifest.widgets {
+            let spec = WidgetSpec {
+                kind: widget.kind.clone(),
+                opts: widget.opts.clone(),
+            };
+            match registry.build(&spec) {
+                Ok(_) => {
+                    let slot = match widget.slot {
+                        PluginWidgetSlot::Left => &mut status.left,
+                        PluginWidgetSlot::Center => &mut status.center,
+                        PluginWidgetSlot::Right => &mut status.right,
+                    };
+                    slot.push(Widget::Spec(spec));
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        plugin = %manifest.id,
+                        widget = %widget.id,
+                        error = %err,
+                        "dropping plugin status-widget contribution that failed validation",
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

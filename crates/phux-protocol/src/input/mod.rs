@@ -17,9 +17,6 @@ use key::KeyEvent;
 use mouse::MouseEvent;
 use paste::PasteEvent;
 
-use crate::ids::TerminalId;
-use crate::wire::frame::FrameKind;
-
 /// The tagged union of client-to-server input events.
 ///
 /// These atoms are carried by the `INPUT_KEY` / `INPUT_MOUSE` / `INPUT_FOCUS`
@@ -44,20 +41,6 @@ pub enum InputEvent {
 }
 
 impl InputEvent {
-    /// Wrap this event in the matching per-atom input [`FrameKind`]
-    /// addressed to `terminal_id` (`INPUT_KEY` / `INPUT_MOUSE` /
-    /// `INPUT_FOCUS` / `INPUT_PASTE`). Used by the attach loop to ship a
-    /// parsed event to its focused pane.
-    #[must_use]
-    pub fn into_frame(self, terminal_id: TerminalId) -> FrameKind {
-        match self {
-            Self::Key(event) => FrameKind::InputKey { terminal_id, event },
-            Self::Mouse(event) => FrameKind::InputMouse { terminal_id, event },
-            Self::Focus(event) => FrameKind::InputFocus { terminal_id, event },
-            Self::Paste(event) => FrameKind::InputPaste { terminal_id, event },
-        }
-    }
-
     /// A short, redaction-safe one-line narration of this event for logs and
     /// observability (ADR-0028).
     ///

@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 use super::ServerState;
-use super::input_log::Outbound;
+use crate::mailbox::Outbound;
 use crate::terminal_actor::TerminalHandle;
 
 /// Server-assigned identifier for an attached client.

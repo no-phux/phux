@@ -44,7 +44,6 @@ use std::io::{BufRead, Write};
 use std::time::Duration;
 
 use crate::error::RecordError;
-use crate::timeline::secs_to_ms;
 
 /// Which asciicast revision to serialize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -668,6 +667,34 @@ fn serialize_header(header: &CastHeader, version: CastVersion) -> String {
     obj.finish()
 }
 
+/// Convert fractional seconds to whole milliseconds, saturating.
+///
+/// NaN, negatives, and overflow are all handled *before* the cast, so the
+/// lossy-cast lints are satisfied by construction rather than by an `allow`
+/// that would also hide a real bug.
+///
+/// Lives here, next to the `.cast` timestamps it parses, so that the
+/// `timeline` module can depend on `cast` one-way instead of the two
+/// modules importing each other.
+pub(crate) fn secs_to_ms(secs: f64) -> u64 {
+    if !secs.is_finite() || secs <= 0.0 {
+        return 0;
+    }
+    let ms = (secs * 1000.0).round();
+    // 2^63 as an exact f64 literal: far above any real recording, and safely
+    // below `u64::MAX` so the cast below cannot saturate or wrap.
+    if ms >= 9_223_372_036_854_775_808.0 {
+        return u64::MAX;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the two guards above prove the value is finite, positive, and below 2^63"
+    )]
+    let whole = ms as u64;
+    whole
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -677,6 +704,16 @@ fn serialize_header(header: &CastHeader, version: CastVersion) -> String {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secs_to_ms_rejects_nonsense_without_panicking() {
+        assert_eq!(secs_to_ms(f64::NAN), 0);
+        assert_eq!(secs_to_ms(f64::NEG_INFINITY), 0);
+        assert_eq!(secs_to_ms(-3.0), 0);
+        assert_eq!(secs_to_ms(f64::INFINITY), 0);
+        assert_eq!(secs_to_ms(2.0), 2000);
+        assert_eq!(secs_to_ms(0.117), 117);
+    }
 
     /// Drive a writer over an in-memory sink and hand back the lines.
     fn write_lines(

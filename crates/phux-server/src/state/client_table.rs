@@ -54,7 +54,7 @@ use tokio::sync::mpsc;
 
 use super::client::{AttachedClient, ClientId};
 use super::events::{EventScope, EventSubscription};
-use super::input_log::Outbound;
+use crate::mailbox::Outbound;
 
 /// Every client-keyed table the server owns, plus the allocator that mints
 /// fresh [`ClientId`]s.

@@ -3,7 +3,7 @@
 use std::os::fd::RawFd;
 
 use crate::grid::SnapshotBytes;
-use crate::state::{Outbound, TerminalInput};
+use crate::mailbox::{Outbound, TerminalInput};
 use bytes::Bytes;
 use phux_protocol::ClientId;
 use phux_protocol::ids::{BootstrapId, StreamId};

@@ -28,6 +28,22 @@
 //! guarantee). The dispatcher task drains the queue and runs each matched
 //! command on its own `spawn_local` task, gated by a semaphore so at most
 //! [`MAX_CONCURRENT_HOOKS`] children run at once.
+//!
+//! # On the `hooks` <-> `state` import cycle
+//!
+//! This module names [`crate::state::ClientId`] in the constructors of
+//! client-scoped events and takes [`crate::state::SharedState`] in
+//! `fire_hook`; [`crate::state`] in turn stores a [`HookDispatcher`].
+//! That is a genuine cycle and it stays deliberately (phux-4fbs.5).
+//!
+//! Breaking it would mean these constructors accept a bare `u64` instead of
+//! a `ClientId`, which downgrades a typed id to an untyped integer at a
+//! public boundary — exactly the confusion the newtype exists to prevent,
+//! and the one phux-4fbs.2 spent a commit consolidating. The alternative,
+//! hoisting `ClientId` out of `state`, moves the identity of a client away
+//! from the table that mints and owns it. A dispatcher that knows the state
+//! type and a state that holds a dispatcher is the honest shape of "hooks
+//! observe server state"; the cycle is the cost of typing it correctly.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

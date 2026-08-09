@@ -500,7 +500,7 @@ interval = "30s"
         left: vec![Widget::Bare("session-name".to_owned())],
         ..StatusCfg::default()
     };
-    plugin::merge_widget_contributions(
+    phux_config::widget::merge_widget_contributions(
         &mut status,
         std::slice::from_ref(&loaded),
         &WidgetRegistry::with_builtins(),

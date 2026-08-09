@@ -27,7 +27,7 @@ use crate::vocab;
 mod status_bar;
 mod widgets;
 
-pub use status_bar::{StatusBar, row_to_string};
+pub use status_bar::{StatusBar, merge_widget_contributions, row_to_string};
 pub use widgets::cwd::CwdWidget;
 pub use widgets::exec::{ExecFeed, ExecWidget};
 pub use widgets::exit_status::ExitWidget;
