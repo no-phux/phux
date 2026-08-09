@@ -177,3 +177,63 @@ jobs:
     secrets: inherit
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
+
+  # Report the release to the Linear `phux` pipeline, which resolves the issues
+  # a release carried from the Linear identifiers and PR references in its
+  # commit range. Syncing at tag time puts it in Building; the promote job below
+  # moves it to Released once the binaries are attached and the tap is
+  # refreshed, so a failed artifact build leaves the release visibly stuck
+  # rather than silently absent.
+  linear-release-sync:
+    name: report release to Linear
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The CLI scans the whole commit range, so shallow will not do.
+          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Capture the GitHub release body as the Linear release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
+            > release-notes.md || : > release-notes.md
+
+      - uses: linear/linear-release-action@v0.15.1
+        with:
+          access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
+          command: sync
+          version: ${{ needs.release-please.outputs.tag_name }}
+          release_notes: release-notes.md
+          links: |
+            GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release-please.outputs.tag_name }}
+
+  linear-release-promote:
+    name: mark the Linear release released
+    needs: [release-please, release-artifacts]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - uses: linear/linear-release-action@v0.15.1
+        with:
+          access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
+          command: update
+          stage: Released
+          version: ${{ needs.release-please.outputs.tag_name }}
