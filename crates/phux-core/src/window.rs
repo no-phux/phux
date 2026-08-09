@@ -61,7 +61,16 @@ pub enum LayoutNode {
     Split {
         /// The axis the split is taken along.
         dir: SplitDir,
-        /// Fraction of the parent dim given to `left` (range `0.0..=1.0`).
+        /// Fraction of the parent dim given to `left`, in the **open**
+        /// interval `(0.0, 1.0)` per ADR-0012 — a ratio of exactly `0.0` or
+        /// `1.0` would give a pane no space at all.
+        ///
+        /// The bound is enforced by [`Window::split`], not by the type: this
+        /// field is `pub`, so a directly-built node can hold a value `split`
+        /// would refuse. Callers that assemble a tree by hand own that check
+        /// themselves. The transports
+        /// deliberately admit a wider domain than this — see the map in
+        /// `crates/phux/tests/layout_conformance.rs`.
         ratio: f32,
         /// Left (for [`SplitDir::Horizontal`]) or top (for [`SplitDir::Vertical`]) child.
         left: Box<Self>,

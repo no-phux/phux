@@ -69,10 +69,17 @@ pub enum LayoutNode {
     Split {
         /// The axis the split is taken along.
         dir: SplitDir,
-        /// Fraction of the parent dim given to `left` (range `0.0..=1.0`).
+        /// Fraction of the parent dim given to `left`, in the **closed**
+        /// interval `0.0..=1.0`.
         ///
         /// Decoders reject NaN, infinite, or out-of-range values as
-        /// [`DecodeError::MalformedLayoutRatio`].
+        /// [`DecodeError::MalformedLayoutRatio`], but admit the endpoints on
+        /// purpose — wider than `phux_core`'s constructor-side open interval,
+        /// because the reference TUI banks `resize-pane` ratios it has not
+        /// applied yet (`phux_client_core::multi_pane::layout`, ADR-0048) and
+        /// a transport that rejected `0.0`/`1.0` would drop legitimate client
+        /// state. That divergence is deliberate and mapped in
+        /// `crates/phux/tests/layout_conformance.rs`.
         ratio: f32,
         /// Left (for [`SplitDir::Horizontal`]) or top (for [`SplitDir::Vertical`]) child.
         left: Box<Self>,

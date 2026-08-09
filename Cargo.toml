@@ -137,7 +137,12 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 # timestamp/PID identifier.
 uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `unbounded_depth` is a feature on a dependency we already have, not a new
+# crate: it adds no row to `Cargo.lock`. `phux-server`'s graceful-upgrade blob
+# needs `Deserializer::disable_recursion_limit` — see the `# Depth` note in
+# `crates/phux-server/src/upgrade/blob.rs` for why the default 128-level cap is
+# wrong for that one parse.
+serde_json = { version = "1", features = ["unbounded_depth"] }
 toml = "1"
 # Comment-preserving edits for user-owned config.toml. The plugin lifecycle
 # commands need to toggle/add/remove `[[plugins]]` entries without flattening a

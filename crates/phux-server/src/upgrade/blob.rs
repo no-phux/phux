@@ -28,6 +28,23 @@
 //! writer's extra fields. The JSON carrier is self-describing and zero new
 //! deps; binary fields ride as number arrays for now (TODO: a compact carrier
 //! such as `postcard` if snapshot size becomes a concern).
+//!
+//! # Depth
+//!
+//! [`LayoutBlob`] is an externally-tagged enum, so every split costs **two**
+//! JSON object levels (`{"Split":{...}}`), and
+//! [`Registry::new_terminal`](phux_core::registry::Registry::new_terminal)
+//! nests one split per pane down a single spine. Against `serde_json`'s
+//! default 128-level recursion limit that put the ceiling at **62 panes in one
+//! window**: 62 round-tripped, 63 serialized fine and then failed to parse,
+//! surfacing as `ServerError::Resume` and losing the entire server state —
+//! every session, not just the offending window. [`StateBlob::from_bytes`]
+//! therefore parses with the recursion limit disabled; the justification for
+//! that trade is on `parse_unbounded`. Raising the ceiling does not remove
+//! it: `phux_core` still imposes no depth bound of its own, while
+//! `phux_protocol`'s wire codec caps at `MAX_LAYOUT_DEPTH` (64), so a window
+//! deeper than that is un-sendable regardless. The cross-encoding map lives in
+//! `crates/phux/tests/layout_conformance.rs`.
 
 use std::os::fd::RawFd;
 use std::path::PathBuf;
@@ -94,16 +111,39 @@ impl StateBlob {
     /// when the blob's version is not [`BLOB_VERSION`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, BlobError> {
         // Read just the version first so a shape mismatch reports as a clean
-        // version error rather than a deep serde decode failure.
-        let probe: VersionProbe = serde_json::from_slice(bytes).map_err(BlobError::Deserialize)?;
+        // version error rather than a deep serde decode failure. Note this
+        // still walks the whole document, so it needs the same depth
+        // treatment as the full parse below.
+        let probe: VersionProbe = parse_unbounded(bytes)?;
         if probe.version != BLOB_VERSION {
             return Err(BlobError::Version {
                 found: probe.version,
                 expected: BLOB_VERSION,
             });
         }
-        serde_json::from_slice(bytes).map_err(BlobError::Deserialize)
+        parse_unbounded(bytes)
     }
+}
+
+/// Parse `bytes` as JSON with `serde_json`'s recursion limit switched off.
+///
+/// `serde_json::from_slice` caps nesting at 128 levels, which is the right
+/// default for JSON off a network but the wrong one here — see the `# Depth`
+/// section of this module's docs. The blob is written by *this binary's own
+/// predecessor image* into an anonymous temp file and handed over on an
+/// inherited descriptor across `execve`
+/// (`crates/phux-server/src/runtime/upgrade.rs`); it never comes from a peer,
+/// a client, or the filesystem at large. The limit therefore guards nothing
+/// reachable, while costing the loss of every session on the server the first
+/// time a user splits one window past 62 panes. Depth here is bounded in
+/// practice by the pane count of a single window, which the human has to
+/// create one pane at a time.
+fn parse_unbounded<'de, T: Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, BlobError> {
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    de.disable_recursion_limit();
+    let value = T::deserialize(&mut de).map_err(BlobError::Deserialize)?;
+    de.end().map_err(BlobError::Deserialize)?;
+    Ok(value)
 }
 
 #[derive(Deserialize)]
@@ -220,6 +260,15 @@ pub enum LayoutBlob {
         /// Split axis.
         dir: SplitDirBlob,
         /// Fraction of the parent given to `left`/`top`.
+        ///
+        /// The blob is a core→core carrier and validates nothing: it inherits
+        /// whatever domain `phux_core` enforced on the way in, which per
+        /// ADR-0012 is the *open* interval `(0.0, 1.0)`. A non-finite value
+        /// would serialize as JSON `null` and then fail to parse, taking the
+        /// whole blob with it — nothing can produce one today because
+        /// `Window::split` rejects NaN at the constructor. The three
+        /// encodings' ratio domains are mapped in
+        /// `crates/phux/tests/layout_conformance.rs`.
         ratio: f32,
         /// Left (horizontal) / top (vertical) child.
         left: Box<LayoutBlob>,
