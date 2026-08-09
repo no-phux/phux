@@ -1,0 +1,14 @@
+---
+source: crates/phux-client/src/attach/driver.rs
+expression: "rows.join(\"\\n\")"
+---
+PANE-BASE
+
+
+
+
+
+
+
+
+ 0:zsh  1:nvim  2:server ›   switch
