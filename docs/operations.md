@@ -511,9 +511,10 @@ TCP/WebSocket, set it either with `phux server --listen HOST:PORT` or the
   in the WebSocket upgrade; a missing or unrecognized token is refused with HTTP
   401 before any phux frame is read. Plaintext never reaches a routable address.
   Tokens are minted with `phux pair`, which prints the token once alongside the
-  certificate's SHA-256 fingerprint to pin out-of-band. Pair before starting a
-  network listener: the server loads the token store at startup. Adding or
-  deleting a token takes effect after the server restarts.
+  certificate's SHA-256 fingerprint to pin out-of-band. Pairing and revocation
+  both take effect at the next connection attempt, with no restart: the server
+  re-reads the token store whenever the file changes. An already-established
+  session is not re-authorized and survives revocation until it drops.
 
 Native clients can use the same TCP fallback with:
 

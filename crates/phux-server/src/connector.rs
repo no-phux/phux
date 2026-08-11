@@ -195,7 +195,7 @@ async fn resolve(spec: &ConnectorSpec) -> Result<SocketAddr, String> {
 /// One established relay connection exposed as an `Incoming` source.
 struct ConnectorIncoming {
     connection: quinn::Connection,
-    consumer_tokens: Arc<crate::auth::TokenStore>,
+    consumer_tokens: Arc<crate::auth::ReloadingTokenStore>,
 }
 
 impl Incoming for ConnectorIncoming {
@@ -243,7 +243,7 @@ impl Incoming for ConnectorIncoming {
 /// Spawn one independently supervised task per connector plan.
 pub(crate) fn spawn_connectors(
     specs: Vec<ConnectorSpec>,
-    consumer_tokens: &Arc<crate::auth::TokenStore>,
+    consumer_tokens: &Arc<crate::auth::ReloadingTokenStore>,
     state: &SharedState,
     input_lane: &InputLaneHandle,
     root_token: &CancellationToken,
@@ -263,7 +263,7 @@ pub(crate) fn spawn_connectors(
 )]
 async fn supervise(
     spec: ConnectorSpec,
-    consumer_tokens: Arc<crate::auth::TokenStore>,
+    consumer_tokens: Arc<crate::auth::ReloadingTokenStore>,
     state: SharedState,
     input_lane: InputLaneHandle,
     cancel: CancellationToken,

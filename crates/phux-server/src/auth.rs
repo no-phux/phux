@@ -49,9 +49,9 @@ pub enum AuthError {
 /// A set of valid bearer tokens loaded from an operator-managed file.
 ///
 /// The file is line-oriented: one lowercase-hex token per line, `#` comments
-/// and blank lines ignored. Revoking a device is deleting its line. The store
-/// is loaded once at listener construction; a future hot-reload would re-read
-/// the file on a signal, but v0.1 reads it at bind time.
+/// and blank lines ignored. Revoking a device is deleting its line. This type
+/// is a pure snapshot value; [`ReloadingTokenStore`] owns the path and keeps
+/// the snapshot current so `phux pair` needs no restart.
 #[derive(Clone)]
 pub struct TokenStore {
     tokens: Vec<[u8; TOKEN_LEN]>,
@@ -117,6 +117,174 @@ impl TokenStore {
             matched |= token.ct_eq(&candidate);
         }
         bool::from(matched)
+    }
+}
+
+/// The cheap identity of one token-file generation.
+///
+/// `len` catches a same-second append, which is exactly what [`mint_token`]
+/// does and what a coarse `mtime` alone would miss; `dev`/`ino` catch an
+/// atomic-rename replacement that lands in the same second at the same size.
+/// The residual gap -- a same-second, same-length, same-inode rewrite -- is not
+/// reachable through any path phux ships.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+struct Stamp {
+    mtime: Option<std::time::SystemTime>,
+    len: u64,
+    dev: u64,
+    ino: u64,
+}
+
+impl Stamp {
+    /// Stat `path`. `None` means the file could not be stat'd at all, which is
+    /// never equal to a real generation, so the next verify re-reads.
+    fn probe(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(path).ok()?;
+        Some(Self {
+            mtime: meta.modified().ok(),
+            len: meta.len(),
+            dev: meta.dev(),
+            ino: meta.ino(),
+        })
+    }
+}
+
+/// The live token set: a [`TokenStore`] snapshot plus the stamp it was read at.
+struct Cached {
+    stamp: Option<Stamp>,
+    store: TokenStore,
+    reloads: u64,
+}
+
+/// A token store that stays current with its file.
+///
+/// ADR-0081 binds the overlay listener at startup so that `phux pair` is a pure
+/// credential operation needing no restart. That is only true if the credential
+/// *set* also tracks the file, which is what this type provides: every
+/// connection attempt stats the store and re-reads it only when the generation
+/// changed (phux-0d92). One `stat(2)` behind a TLS handshake is not a cost worth
+/// optimizing, so there is no debounce -- a device works the moment it is paired.
+///
+/// Revocation rides the same path: deleting a line, or the whole file, takes
+/// effect at the next connection attempt. An already-established session is not
+/// re-authorized and survives until it drops.
+///
+/// # Failure policy
+///
+/// A store that cannot be read keeps the last known-good set rather than
+/// locking every paired device out, and does *not* commit the failed stamp, so
+/// the next attempt retries. This matters concretely: [`TokenStore::load`]
+/// fails the whole file on one malformed line, so a verify that races
+/// `mint_token`'s `writeln!` can observe a torn final line. Retaining the
+/// previous set makes that a transient no-op instead of an outage.
+///
+/// A *missing* file is not a failure -- it loads as the empty store and
+/// correctly revokes everyone (`missing_file_is_empty_store_that_rejects_all`).
+pub struct ReloadingTokenStore {
+    path: PathBuf,
+    cached: std::sync::Mutex<Cached>,
+}
+
+/// Redacted for the same reason as [`TokenStore`]'s: count only, never bytes.
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "the omitted field is the guarded token set itself; printing it is the exact thing this impl exists to prevent"
+)]
+impl std::fmt::Debug for ReloadingTokenStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReloadingTokenStore")
+            .field("path", &self.path)
+            .field("tokens", &self.len())
+            .finish()
+    }
+}
+
+impl ReloadingTokenStore {
+    /// Wrap an already-loaded snapshot of `path`, stamped as of now.
+    #[must_use]
+    pub fn new(path: PathBuf, initial: TokenStore) -> Self {
+        let stamp = Stamp::probe(&path);
+        Self {
+            path,
+            cached: std::sync::Mutex::new(Cached {
+                stamp,
+                store: initial,
+                reloads: 0,
+            }),
+        }
+    }
+
+    /// Load `path` and wrap it. Propagates a load failure, so a caller that
+    /// wants to fail fast at bind time still can.
+    pub fn load(path: PathBuf) -> Result<Self, AuthError> {
+        let store = TokenStore::load(&path)?;
+        Ok(Self::new(path, store))
+    }
+
+    /// The store file this tracks.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Run `f` against the current token set, re-reading the file first if its
+    /// generation changed. Poisoning is recovered rather than propagated: the
+    /// guarded state is a plain cache, and panicking every future connection
+    /// because one earlier one unwound is strictly worse than serving it.
+    fn with_current<T>(&self, f: impl FnOnce(&TokenStore) -> T) -> T {
+        let mut cached = self
+            .cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stamp = Stamp::probe(&self.path);
+        if stamp.is_none() || stamp != cached.stamp {
+            match TokenStore::load(&self.path) {
+                Ok(store) => {
+                    // Commit the stamp only alongside a store that actually
+                    // parsed, so a torn read is retried rather than pinned.
+                    cached.stamp = stamp;
+                    cached.store = store;
+                    cached.reloads = cached.reloads.saturating_add(1);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        path = %self.path.display(),
+                        %error,
+                        "token store unreadable; keeping the last known-good token set"
+                    );
+                }
+            }
+        }
+        f(&cached.store)
+    }
+
+    /// Verify a presented token against the current set, reloading if needed.
+    #[must_use]
+    pub fn verify(&self, presented: &[u8]) -> bool {
+        self.with_current(|store| store.verify(presented))
+    }
+
+    /// Number of valid tokens in the current set.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.with_current(TokenStore::len)
+    }
+
+    /// Whether the current set holds no tokens (every connection is rejected).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.with_current(TokenStore::is_empty)
+    }
+
+    /// How many times the file has been re-read since construction. Lets a test
+    /// prove an unchanged file costs a `stat` and nothing more.
+    #[cfg(test)]
+    fn reloads(&self) -> u64 {
+        self.cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reloads
     }
 }
 
@@ -211,5 +379,149 @@ mod tests {
         );
         assert!(store.verify(&hex::decode(&first).unwrap()));
         assert!(store.verify(&hex::decode(&second).unwrap()));
+    }
+
+    // phux-0d92: the reloading wrapper is what makes ADR-0081's "pairing needs
+    // no restart" true. Each test below pins one leg of that claim.
+
+    #[test]
+    fn a_token_minted_after_construction_verifies_without_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens");
+        let first = mint_token(&path).unwrap();
+        let store = ReloadingTokenStore::load(path.clone()).unwrap();
+        assert_eq!(store.len(), 1);
+
+        // This is `phux pair` against a server that is already running.
+        let second = mint_token(&path).unwrap();
+        assert!(
+            store.verify(&hex::decode(&second).unwrap()),
+            "a freshly paired device is live immediately"
+        );
+        assert!(
+            store.verify(&hex::decode(&first).unwrap()),
+            "pairing does not disturb the devices already paired"
+        );
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn deleting_a_line_revokes_that_device_at_the_next_verify() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens");
+        let doomed = mint_token(&path).unwrap();
+        let kept = mint_token(&path).unwrap();
+        let store = ReloadingTokenStore::load(path.clone()).unwrap();
+        assert!(store.verify(&hex::decode(&doomed).unwrap()));
+
+        fs::write(&path, format!("{kept}\n")).unwrap();
+        assert!(
+            !store.verify(&hex::decode(&doomed).unwrap()),
+            "a deleted line revokes without a restart"
+        );
+        assert!(store.verify(&hex::decode(&kept).unwrap()));
+    }
+
+    #[test]
+    fn deleting_the_whole_store_revokes_everyone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens");
+        let token = mint_token(&path).unwrap();
+        let store = ReloadingTokenStore::load(path.clone()).unwrap();
+        assert!(store.verify(&hex::decode(&token).unwrap()));
+
+        fs::remove_file(&path).unwrap();
+        assert!(
+            !store.verify(&hex::decode(&token).unwrap()),
+            "an absent store is the empty store, not a retained one"
+        );
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn a_torn_write_keeps_the_last_good_set_and_recovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens");
+        let good = mint_token(&path).unwrap();
+        let store = ReloadingTokenStore::load(path.clone()).unwrap();
+        assert!(store.verify(&hex::decode(&good).unwrap()));
+
+        // A verify racing `mint_token`'s writeln! sees a partial hex line, and
+        // one malformed line fails the entire load.
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        write!(f, "abcd").unwrap();
+        drop(f);
+        assert!(
+            store.verify(&hex::decode(&good).unwrap()),
+            "an unparseable store must not lock out already-paired devices"
+        );
+
+        // The failed stamp was not committed, so the completed write is picked
+        // up rather than pinned behind the torn generation.
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "{}", "a".repeat(TOKEN_LEN * 2 - 4)).unwrap();
+        drop(f);
+        let mut completed = [0xaa_u8; TOKEN_LEN];
+        completed[0] = 0xab;
+        completed[1] = 0xcd;
+        assert!(
+            store.verify(&completed),
+            "the completed line is honoured once it parses"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_store_keeps_the_last_good_set() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens");
+        let token = mint_token(&path).unwrap();
+        let store = ReloadingTokenStore::load(path.clone()).unwrap();
+        assert!(store.verify(&hex::decode(&token).unwrap()));
+
+        // Touch the file so the stamp changes, then make the read fail.
+        fs::write(&path, format!("{token}\n{token}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = fs::read_to_string(&path).is_ok();
+        if readable {
+            // Running as root: the permission bits do not deny us, so there is
+            // no unreadable state to assert against.
+            return;
+        }
+        assert!(
+            store.verify(&hex::decode(&token).unwrap()),
+            "an EACCES store must not lock out already-paired devices"
+        );
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(store.len(), 2, "the retry lands once the file is readable");
+    }
+
+    #[test]
+    fn an_unchanged_store_is_stated_but_not_re_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens");
+        let token = mint_token(&path).unwrap();
+        let store = ReloadingTokenStore::load(path.clone()).unwrap();
+
+        let presented = hex::decode(&token).unwrap();
+        for _ in 0..8 {
+            assert!(store.verify(&presented));
+        }
+        assert_eq!(
+            store.reloads(),
+            0,
+            "an untouched store costs one stat per connection and no read"
+        );
+
+        mint_token(&path).unwrap();
+        assert!(store.verify(&presented));
+        assert_eq!(
+            store.reloads(),
+            1,
+            "a changed store is re-read exactly once"
+        );
+        assert!(store.verify(&presented));
+        assert_eq!(store.reloads(), 1, "and not again while it stays put");
     }
 }

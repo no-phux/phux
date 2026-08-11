@@ -283,7 +283,7 @@ type Ws = WebSocketStream<ServerStream>;
 pub(crate) struct WsListener {
     tcp: TcpListener,
     tls: Option<tokio_rustls::TlsAcceptor>,
-    tokens: Option<std::sync::Arc<crate::auth::TokenStore>>,
+    tokens: Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>,
 }
 
 impl WsListener {
@@ -305,7 +305,7 @@ impl WsListener {
     pub(crate) async fn bind_secure(
         addr: SocketAddr,
         tls: tokio_rustls::TlsAcceptor,
-        tokens: std::sync::Arc<crate::auth::TokenStore>,
+        tokens: std::sync::Arc<crate::auth::ReloadingTokenStore>,
     ) -> io::Result<Self> {
         Ok(Self {
             tcp: TcpListener::bind(addr).await?,
@@ -438,7 +438,7 @@ impl Incoming for WsListener {
 /// WebSocket upgrade request. Returns a non-reversible device id (a short
 /// SHA-256 prefix of the *presented* token) on success, `None` on a missing,
 /// malformed, or unrecognized token.
-fn authorize_request(req: &Request, store: &crate::auth::TokenStore) -> Option<String> {
+fn authorize_request(req: &Request, store: &crate::auth::ReloadingTokenStore) -> Option<String> {
     let header = req.headers().get("authorization")?.to_str().ok()?;
     let token_hex = header
         .strip_prefix("Bearer ")
@@ -479,11 +479,14 @@ mod tests {
     /// A token-gated listener bound to an ephemeral loopback port, with one
     /// known token. TLS is off so the test exercises the token handshake and
     /// frame path without the TLS machinery (covered in `tls`'s own tests).
-    async fn token_listener() -> (WsListener, SocketAddr, String) {
+    ///
+    /// The `NamedTempFile` is returned, not dropped: the store re-reads it on
+    /// every connection (phux-0d92), so deleting it would revoke every token.
+    async fn token_listener() -> (WsListener, SocketAddr, String, tempfile::NamedTempFile) {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         let token_hex = hex::encode(TEST_TOKEN);
         writeln!(file, "{token_hex}").unwrap();
-        let store = crate::auth::TokenStore::load(file.path()).unwrap();
+        let store = crate::auth::ReloadingTokenStore::load(file.path().to_path_buf()).unwrap();
 
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp.local_addr().unwrap();
@@ -492,7 +495,7 @@ mod tests {
             tls: None,
             tokens: Some(Arc::new(store)),
         };
-        (listener, addr, token_hex)
+        (listener, addr, token_hex, file)
     }
 
     /// A `ws://` client upgrade request carrying `Authorization: Bearer <hex>`.
@@ -507,7 +510,7 @@ mod tests {
 
     #[tokio::test]
     async fn valid_token_upgrades_and_round_trips_a_frame() {
-        let (listener, addr, token_hex) = token_listener().await;
+        let (listener, addr, token_hex, _tokens) = token_listener().await;
 
         // One complete framed message: 4-byte length prefix (body = 3) + body.
         let frame: Vec<u8> = vec![0, 0, 0, 3, 0xde, 0xad, 0xbe];
@@ -539,7 +542,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_token_is_refused_at_the_handshake() {
-        let (listener, addr, _token_hex) = token_listener().await;
+        let (listener, addr, _token_hex, _tokens) = token_listener().await;
         let wrong = hex::encode([0x22u8; crate::auth::TOKEN_LEN]);
 
         let server = async { listener.accept().await };
@@ -553,9 +556,63 @@ mod tests {
         assert!(client_res.is_err(), "client upgrade fails with HTTP 401");
     }
 
+    /// phux-0d92: ADR-0081 promises `phux pair` is a pure credential operation
+    /// needing no restart. The listener is bound before the token exists, so
+    /// this is the promise as a test.
+    #[tokio::test]
+    async fn a_token_minted_after_bind_upgrades_without_a_restart() {
+        let (listener, addr, _token_hex, mut tokens) = token_listener().await;
+        let paired = hex::encode([0x33u8; crate::auth::TOKEN_LEN]);
+
+        // Before pairing, the device is a stranger.
+        let refused = async {
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            tokio_tungstenite::client_async(bearer_request(addr, &paired), tcp).await
+        };
+        let (server_res, client_res) = tokio::join!(listener.accept(), refused);
+        assert!(server_res.is_err(), "unpaired device is refused");
+        assert!(client_res.is_err());
+
+        // `phux pair` appends the token to the store the server is already
+        // serving from. Nothing restarts.
+        writeln!(tokens, "{paired}").unwrap();
+        tokens.flush().unwrap();
+
+        let accepted = async {
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            let (ws, _resp) = tokio_tungstenite::client_async(bearer_request(addr, &paired), tcp)
+                .await
+                .expect("a freshly paired device upgrades against the running listener");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(ws);
+        };
+        let (server_res, ()) = tokio::join!(listener.accept(), accepted);
+        assert!(
+            server_res.is_ok(),
+            "the newly minted token is live without a restart"
+        );
+    }
+
+    /// The other half of phux-0d92: deleting a line revokes the device at the
+    /// next connection attempt, which today also needs a restart.
+    #[tokio::test]
+    async fn a_revoked_token_is_refused_without_a_restart() {
+        let (listener, addr, token_hex, tokens) = token_listener().await;
+
+        std::fs::write(tokens.path(), "# every device revoked\n").unwrap();
+
+        let refused = async {
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            tokio_tungstenite::client_async(bearer_request(addr, &token_hex), tcp).await
+        };
+        let (server_res, client_res) = tokio::join!(listener.accept(), refused);
+        assert!(server_res.is_err(), "a revoked token no longer upgrades");
+        assert!(client_res.is_err());
+    }
+
     #[tokio::test]
     async fn missing_authorization_header_is_refused() {
-        let (listener, addr, _token_hex) = token_listener().await;
+        let (listener, addr, _token_hex, _tokens) = token_listener().await;
 
         let server = async { listener.accept().await };
         let client = async {

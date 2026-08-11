@@ -67,6 +67,17 @@ you pair.** Three properties, all pre-existing, combine to make it so:
   connection (`auth::TokenStore::load`, pinned by
   `missing_file_is_empty_store_that_rejects_all`).
 
+**The credential set tracks the file, or none of the above is true.** An
+always-bound listener whose token set is frozen at startup is a door with a
+lock nobody can turn: the listener exists, but `phux pair` still needs a
+restart to be believed, which is the cost this ADR set out to remove. The store
+is therefore re-read on demand -- every connection attempt stats the file and
+reloads it only when its generation changed (`auth::ReloadingTokenStore`,
+phux-0d92). Revocation rides the same path; an established session is not
+re-authorized and survives until it drops. A store that cannot be *read* keeps
+the last known-good set rather than locking out every paired device, while a
+store that is *absent* correctly revokes everyone.
+
 Before `phux pair` is ever run, this is a TLS port on an already-authenticated
 network that turns everyone away. `PHUX_NO_AUTO_LISTEN=1` suppresses it for
 operators who want no unsolicited bind at all.

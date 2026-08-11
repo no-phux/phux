@@ -674,7 +674,7 @@ impl ServerRuntime {
         } else {
             let path = std::env::var_os("PHUX_WS_TOKENS")
                 .map_or_else(crate::auth::default_token_store_path, PathBuf::from);
-            let store = crate::auth::TokenStore::load(&path).map_err(|source| {
+            let store = crate::auth::ReloadingTokenStore::load(path.clone()).map_err(|source| {
                 ServerError::ConnectorTokenStore {
                     path: path.clone(),
                     source,
@@ -1245,7 +1245,7 @@ async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListe
 
     let tokens_path = std::env::var_os("PHUX_WS_TOKENS")
         .map_or_else(crate::auth::default_token_store_path, PathBuf::from);
-    let store = match crate::auth::TokenStore::load(&tokens_path) {
+    let store = match crate::auth::ReloadingTokenStore::load(tokens_path.clone()) {
         Ok(store) => store,
         Err(err) => {
             error!(error = %err, path = %tokens_path.display(), "failed to load token store; WebSocket disabled");
@@ -1255,7 +1255,7 @@ async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListe
     if store.is_empty() {
         warn!(
             path = %tokens_path.display(),
-            "no pairing tokens; every remote consumer is rejected until `phux pair`"
+            "no pairing tokens; run `phux pair` -- it takes effect immediately, with no restart"
         );
     }
     let token_count = store.len();
@@ -1323,7 +1323,7 @@ fn build_quic_listener(addr: SocketAddr) -> Option<crate::transport::quic::QuicL
     let tokens = if secure {
         let tokens_path = std::env::var_os("PHUX_WS_TOKENS")
             .map_or_else(crate::auth::default_token_store_path, PathBuf::from);
-        let store = match crate::auth::TokenStore::load(&tokens_path) {
+        let store = match crate::auth::ReloadingTokenStore::load(tokens_path.clone()) {
             Ok(store) => store,
             Err(err) => {
                 error!(error = %err, path = %tokens_path.display(), "failed to load token store; QUIC disabled");
@@ -1333,7 +1333,7 @@ fn build_quic_listener(addr: SocketAddr) -> Option<crate::transport::quic::QuicL
         if store.is_empty() {
             warn!(
                 path = %tokens_path.display(),
-                "no pairing tokens; every remote QUIC consumer is rejected until `phux pair`"
+                "no pairing tokens; run `phux pair` -- it takes effect immediately, with no restart"
             );
         }
         Some(std::sync::Arc::new(store))
@@ -1397,7 +1397,7 @@ fn build_wt_listener(addr: SocketAddr) -> Option<crate::transport::webtransport:
     let tokens = if secure {
         let tokens_path = std::env::var_os("PHUX_WS_TOKENS")
             .map_or_else(crate::auth::default_token_store_path, PathBuf::from);
-        let store = match crate::auth::TokenStore::load(&tokens_path) {
+        let store = match crate::auth::ReloadingTokenStore::load(tokens_path.clone()) {
             Ok(store) => store,
             Err(err) => {
                 error!(error = %err, path = %tokens_path.display(), "failed to load token store; WebTransport disabled");
@@ -1407,7 +1407,7 @@ fn build_wt_listener(addr: SocketAddr) -> Option<crate::transport::webtransport:
         if store.is_empty() {
             warn!(
                 path = %tokens_path.display(),
-                "no pairing tokens; every remote WebTransport consumer is rejected until `phux pair`"
+                "no pairing tokens; run `phux pair` -- it takes effect immediately, with no restart"
             );
         }
         Some(std::sync::Arc::new(store))

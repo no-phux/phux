@@ -74,11 +74,13 @@ to do when it cannot reach the host.
 
 ## Common steps: pair, then listen
 
-Every path below shares the same server-side setup, done once. Pair before
-starting the listener: the server loads the token store at startup, so adding
-or deleting a token takes effect after a restart. `phux pair` never contacts a
-running server, and it provisions the self-signed certificate if none exists
-yet, so the fingerprint it prints is the one the server will present.
+Every path below shares the same server-side setup, done once. Pairing order
+does not matter: the server re-reads the token store when it changes, so a
+token minted against an already-running listener works at the next connection
+attempt, and deleting a line revokes that device just as promptly. `phux pair`
+never contacts a running server, and it provisions the self-signed certificate
+if none exists yet, so the fingerprint it prints is the one the server will
+present.
 
 ```sh
 # On the server host, before starting the listener:
@@ -291,9 +293,9 @@ Failures fall into three classes, and the symptom tells you which one you have.
   times out but wss:// works, UDP is blocked; stay on `--ws`.
 - **Auth failure** (HTTP 401 / unauthorized on the WebSocket upgrade; QUIC
   token rejection). The link is fine; the bearer token is missing, mistyped,
-  or not yet loaded. Mint one with `phux pair` and remember the server reads
-  the token store only at startup — restart the listener after pairing. The
-  401 is returned before any phux frame is read, so a 401 proves reachability.
+  or was revoked. Mint one with `phux pair`; it is live at the next connection
+  attempt, with no restart. The 401 is returned before any phux frame is read,
+  so a 401 proves reachability.
 - **Fingerprint mismatch.** The certificate the server presented does not
   match `--cert-fingerprint`. Either the pinned value is stale (the server
   state dir was recreated, regenerating `remote-cert.pem`), an operator

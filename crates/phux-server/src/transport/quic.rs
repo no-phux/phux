@@ -62,7 +62,7 @@ const AUTH_FAILED_CODE: u32 = 0x01;
 /// socket, optionally token-authenticated for routable consumers.
 pub(crate) struct QuicListener {
     endpoint: quinn::Endpoint,
-    tokens: Option<Arc<crate::auth::TokenStore>>,
+    tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
 }
 
 impl QuicListener {
@@ -76,7 +76,7 @@ impl QuicListener {
         addr: SocketAddr,
         cert_path: &std::path::Path,
         key_path: &std::path::Path,
-        tokens: Option<Arc<crate::auth::TokenStore>>,
+        tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
     ) -> Result<Self, QuicBindError> {
         let tls = quic_server_config(cert_path, key_path)?;
         Ok(Self {
@@ -267,7 +267,7 @@ impl Incoming for QuicListener {
 /// keeps it off the constant-time comparison and never logs the secret.
 pub(crate) async fn authorize_preamble(
     recv: &mut quinn::RecvStream,
-    store: &crate::auth::TokenStore,
+    store: &crate::auth::ReloadingTokenStore,
 ) -> Option<String> {
     let mut len_buf = [0u8; LENGTH_PREFIX];
     if !read_exact_quic(recv, &mut len_buf).await.ok()? {
@@ -324,10 +324,13 @@ mod tests {
     }
 
     /// A token store file holding the one known [`TEST_TOKEN`].
-    fn token_store() -> (tempfile::NamedTempFile, Arc<crate::auth::TokenStore>) {
+    fn token_store() -> (
+        tempfile::NamedTempFile,
+        Arc<crate::auth::ReloadingTokenStore>,
+    ) {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(file, "{}", hex::encode(TEST_TOKEN)).unwrap();
-        let store = crate::auth::TokenStore::load(file.path()).unwrap();
+        let store = crate::auth::ReloadingTokenStore::load(file.path().to_path_buf()).unwrap();
         (file, Arc::new(store))
     }
 

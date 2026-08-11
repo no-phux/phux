@@ -55,7 +55,7 @@ const KEEP_ALIVE: Duration = Duration::from_secs(10);
 /// socket, optionally token-authenticated for routable consumers.
 pub(crate) struct WtListener {
     endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
-    tokens: Option<Arc<crate::auth::TokenStore>>,
+    tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
 }
 
 /// Errors from constructing a [`WtListener`].
@@ -84,7 +84,7 @@ impl WtListener {
         addr: SocketAddr,
         cert_path: &std::path::Path,
         key_path: &std::path::Path,
-        tokens: Option<Arc<crate::auth::TokenStore>>,
+        tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
     ) -> Result<Self, WtBindError> {
         let tls = super::tls::webtransport_server_config(cert_path, key_path)?;
         let config = wtransport::ServerConfig::builder()
@@ -276,7 +276,10 @@ impl Incoming for WtListener {
 /// missing, malformed, or unrecognized token. Deriving the id from the
 /// presented token (not the matched stored one) keeps it off the
 /// constant-time comparison and never logs the secret.
-fn authorize_request(request: &SessionRequest, store: &crate::auth::TokenStore) -> Option<String> {
+fn authorize_request(
+    request: &SessionRequest,
+    store: &crate::auth::ReloadingTokenStore,
+) -> Option<String> {
     let token_hex =
         bearer_from_headers(request.headers()).or_else(|| token_from_path(request.path()))?;
     let token = hex::decode(token_hex.trim()).ok()?;
@@ -347,10 +350,13 @@ mod tests {
     }
 
     /// A token store file holding the one known [`TEST_TOKEN`].
-    fn token_store() -> (tempfile::NamedTempFile, Arc<crate::auth::TokenStore>) {
+    fn token_store() -> (
+        tempfile::NamedTempFile,
+        Arc<crate::auth::ReloadingTokenStore>,
+    ) {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(file, "{}", hex::encode(TEST_TOKEN)).unwrap();
-        let store = crate::auth::TokenStore::load(file.path()).unwrap();
+        let store = crate::auth::ReloadingTokenStore::load(file.path().to_path_buf()).unwrap();
         (file, Arc::new(store))
     }
 
@@ -368,7 +374,9 @@ mod tests {
     }
 
     /// Bind a listener on an ephemeral loopback port and return its URL base.
-    fn listener(tokens: Option<Arc<crate::auth::TokenStore>>) -> (tempfile::TempDir, WtListener) {
+    fn listener(
+        tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+    ) -> (tempfile::TempDir, WtListener) {
         let (dir, cert, key) = cert_pair();
         let listener =
             WtListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, tokens).unwrap();
