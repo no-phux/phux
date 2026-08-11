@@ -56,13 +56,35 @@ impl Drop for Cleanup {
         // the socket, and leaving a stale entry behind in a temp dir that is
         // about to be removed would be a strange way to end a test about
         // stale entries.
+        //
+        // That invariant is load-bearing and was, until phux-1wka, FALSE --
+        // the server registered no SIGTERM handler, so it died on the default
+        // disposition and unlinked nothing. `sigterm_unlinks_the_socket`
+        // below is what keeps this comment honest.
         let _ = Command::new("kill")
             .args(["-TERM", &pid.to_string()])
             .output();
+        // Wait for the exit before this guard returns: `Drop::drop` runs
+        // before the struct's fields drop, so without this the `TempDir` is
+        // unlinked racing the dying server.
+        let deadline = Instant::now() + DEADLINE;
+        while Instant::now() < deadline {
+            if std::os::unix::net::UnixStream::connect(&self.socket).is_err() {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
     }
 }
 
 /// A socket file with no listener — exactly what a `SIGKILL`ed server leaves.
+///
+/// The refusal is *polled*, not asserted once. Closing a listening Unix socket
+/// is not instantaneous from a connecting peer's point of view, so on a loaded
+/// machine a connect issued immediately after `drop` can still be accepted off
+/// the backlog. Asserting once made this helper flaky under test parallelism —
+/// and the whole point of the helper is to hand the test a socket that is
+/// genuinely dead, so "eventually refuses" is the property that matters.
 fn leave_stale_socket(path: &Path) {
     let listener = UnixListener::bind(path).expect("bind the doomed listener");
     drop(listener);
@@ -70,9 +92,16 @@ fn leave_stale_socket(path: &Path) {
         path.exists(),
         "a Unix socket file outlives its listener; without that this test proves nothing"
     );
-    assert!(
-        std::os::unix::net::UnixStream::connect(path).is_err(),
-        "nothing may be accepting on the stale socket"
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
+        if std::os::unix::net::UnixStream::connect(path).is_err() {
+            return;
+        }
+        std::thread::sleep(POLL);
+    }
+    panic!(
+        "{} still accepts connections; it is not the stale socket this test needs",
+        path.display()
     );
 }
 
@@ -172,5 +201,77 @@ fn a_second_invocation_reuses_the_live_server() {
     assert!(
         sessions.contains("first") && sessions.contains("second"),
         "both sessions must be on the same server; got:\n{sessions}"
+    );
+}
+
+/// phux-1wka: SIGTERM must route through the graceful shutdown, so the socket
+/// is unlinked on the way out.
+///
+/// Until this landed the server registered no SIGTERM handler at all -- the
+/// whole shutdown future was `tokio::signal::ctrl_c()`, which is SIGINT only.
+/// A supervisor stopping the server, `phux service install --restore`'s
+/// wrapper trap, and every test guard in this repo all send SIGTERM, so all of
+/// them killed the process on the default disposition: `unlink_socket_if_ours`
+/// never ran, panes never got `shutdown_pty`'s SIGHUP-grace-reap, and the next
+/// client tripped over exactly the stale entry this module is about.
+///
+/// Deliberately the mirror image of `leave_stale_socket`: that helper
+/// manufactures the wreckage a SIGKILL leaves; this asserts SIGTERM does not.
+#[test]
+fn sigterm_unlinks_the_socket_instead_of_leaving_a_stale_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("phux.sock");
+
+    // The guard matters even though the body ends by stopping the server: an
+    // assertion that fails before the SIGTERM would otherwise leak a daemon
+    // holding a PTY (phux-whhd). It is idempotent against an already-stopped
+    // server -- `status` then reports no pid and the guard returns.
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        _dir: dir,
+    };
+
+    let out = Command::new(PHUX)
+        .args(["new", "--session", "graceful", "--json", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("run phux new");
+    assert!(
+        out.status.success(),
+        "phux new must start a server.\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(wait_until_accepting(&socket), "server must be up");
+
+    let status = Command::new(PHUX)
+        .args(["status", "--json", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("run phux status");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&status.stdout).expect("status --json is a document");
+    let pid = doc["pid"].as_i64().expect("a live server reports its pid");
+
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()
+            .expect("send SIGTERM")
+            .success(),
+        "SIGTERM must be deliverable to the server"
+    );
+
+    // The socket FILE must go, not merely stop accepting: a file that outlives
+    // its listener is precisely the stale entry.
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
+        if !socket.exists() {
+            return;
+        }
+        std::thread::sleep(POLL);
+    }
+    panic!(
+        "SIGTERM left {} behind; the graceful shutdown path did not run",
+        socket.display()
     );
 }

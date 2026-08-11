@@ -333,16 +333,7 @@ pub(crate) fn run_server(
     if let Some(fd) = resume {
         server = server.resume(fd);
     }
-    let result = rt.block_on(async move {
-        server
-            .run_async(async {
-                // tokio::signal::ctrl_c() resolves on SIGINT *or*
-                // closure of the process's stdin equivalent on some
-                // platforms; either way, treat it as "user wants out".
-                let _ = tokio::signal::ctrl_c().await;
-            })
-            .await
-    });
+    let result = rt.block_on(async move { server.run_async(shutdown_signal()).await });
 
     match result {
         Ok(()) => {
@@ -353,6 +344,53 @@ pub(crate) fn run_server(
             eprintln!("phux server failed: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Resolve when the process is asked to stop, by any route a supervisor or a
+/// human actually uses.
+///
+/// Both signals cancel the runtime's root token, which is the *same* signal
+/// idle-exit (ADR-0063) and the last-pane self-exit already deliver. That is
+/// what routes the stop through the one graceful path: every pane gets
+/// `TerminalActor::shutdown_pty`'s SIGHUP-then-grace-then-reap, and the socket
+/// is unlinked on the way out by `unlink_socket_if_ours`.
+///
+/// SIGTERM is not optional politeness. Without it the process died on the
+/// default disposition, so none of the above ran: pane children were left to
+/// notice the kernel closing their PTY master rather than being reaped, and
+/// the socket was left behind as a stale entry for the next client to trip
+/// over. It also decided the exit *status*, and therefore whether a supervised
+/// server stays stopped -- launchd's `KeepAlive{SuccessfulExit: false}` reads
+/// death-by-signal as failure and restarts after `ThrottleInterval`, which is
+/// exactly the "a deliberately stopped server stays stopped" property ADR-0080
+/// claims (phux-1wka).
+///
+/// `phux service install --restore`'s wrapper already sends SIGTERM, so this
+/// is what makes that path's `save`-then-stop actually graceful for the panes.
+async fn shutdown_signal() {
+    // `ctrl_c()` resolves on SIGINT *or* closure of the process's stdin
+    // equivalent on some platforms; either way, treat it as "user wants out".
+    let interrupt = tokio::signal::ctrl_c();
+
+    let Ok(mut terminate) =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    else {
+        // Registering the handler failed (no libc slot, or a sandbox that
+        // refuses). Falling back to SIGINT alone restores the previous
+        // behaviour rather than refusing to serve. `eprintln!` to match this
+        // command's other operator-facing lines -- for a daemonised server
+        // stderr *is* the server log.
+        eprintln!(
+            "phux server: could not install a SIGTERM handler; only Ctrl-C will stop this server cleanly"
+        );
+        let _ = interrupt.await;
+        return;
+    };
+
+    tokio::select! {
+        _ = interrupt => {}
+        _ = terminate.recv() => {}
     }
 }
 
