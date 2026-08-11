@@ -330,8 +330,8 @@ VALID_COMPLETE_CAST="$RUN_DIR/first-complete.cast"
 cp "$COMPLETE_CAST" "$VALID_COMPLETE_CAST"
 "${TMUX[@]}" kill-session -t "$SESSION"
 "${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
-# The status painter deliberately rejects notices wider than its row. Narrow
-# QA proves preserved content; the common viewport proves the return copy.
+# Narrow QA proves preserved content now and retries the unconsumed notice at
+# a renderable width below. The common viewport proves immediate delivery.
 if (( COLS >= 64 )); then
   assert_screen_contains "$SESSION" 'Welcome back - this is the session you left running'
 fi
@@ -340,6 +340,15 @@ capture first-return
 "${TMUX[@]}" send-keys -t "$SESSION" C-a
 "${TMUX[@]}" send-keys -t "$SESSION" d
 assert_screen_contains "$SESSION" HOST-TERMINAL-RESTORED
+if (( COLS < 64 )); then
+  "${TMUX[@]}" kill-session -t "$SESSION"
+  "${TMUX[@]}" new-session -d -s "$SESSION" -x 80 -y "$ROWS" "$ATTACH_COMMAND"
+  assert_screen_contains "$SESSION" 'Welcome back - this is the session you left running'
+  capture narrow-return-retry
+  "${TMUX[@]}" send-keys -t "$SESSION" C-a
+  "${TMUX[@]}" send-keys -t "$SESSION" d
+  assert_screen_contains "$SESSION" HOST-TERMINAL-RESTORED
+fi
 
 STEP=interrupted-recording
 note "interrupt a second live recording after a visible marker"
