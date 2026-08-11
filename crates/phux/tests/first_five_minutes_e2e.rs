@@ -17,7 +17,8 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -26,6 +27,7 @@ const BUILT_PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const PROFILE: &str = "first-five-e2e";
 const MARKER: &str = "FIRST_FIVE_COMMAND_RAN";
 const DEADLINE: Duration = Duration::from_secs(30);
+const GRACEFUL_SHUTDOWN: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(50);
 
 struct Harness {
@@ -180,7 +182,9 @@ impl Harness {
     }
 
     fn cleanup(&mut self) -> Result<(), String> {
-        if self.server_pid.is_none() && self.socket.exists() {
+        let deadline = Instant::now() + DEADLINE;
+        let socket_was_observed = self.socket.exists();
+        while self.server_pid.is_none() && self.socket.exists() && Instant::now() < deadline {
             let output = self.capture("cleanup-status", &["status", "--json"]);
             if output.status.success()
                 && let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
@@ -188,37 +192,59 @@ impl Harness {
                 self.server_pid = doc["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok());
                 self.server_session = doc["sessions"][0]["name"].as_str().map(ToOwned::to_owned);
             }
-        }
-
-        if self.socket.exists() {
-            let session = self.server_session.as_deref().unwrap_or("default");
-            let output = self.capture("cleanup-kill", &["kill", session]);
-            if !output.status.success()
-                && let Some(pid) = self.server_pid
-            {
-                let _ = Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .output();
+            if self.server_pid.is_none() {
+                std::thread::sleep(POLL);
             }
         }
 
+        let Some(pid) = self.server_pid else {
+            if socket_was_observed {
+                return Err(format!(
+                    "cleanup could not discover the server PID; socket_exists={}, path={}",
+                    self.socket.exists(),
+                    self.socket.display(),
+                ));
+            }
+            return Ok(());
+        };
+
         let deadline = Instant::now() + DEADLINE;
+        let graceful = self.server_session.as_deref().is_some_and(|session| {
+            self.capture("cleanup-kill", &["kill", session])
+                .status
+                .success()
+        });
+        let graceful_deadline = Instant::now() + GRACEFUL_SHUTDOWN;
+        let mut term_sent = if graceful {
+            false
+        } else {
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .output();
+            true
+        };
+
         loop {
-            let process_gone = self.server_pid.is_none_or(|pid| !process_exists(pid));
+            let process_gone = !process_exists(pid);
             if !self.socket.exists() && process_gone {
                 return Ok(());
             }
             if process_gone && self.socket.exists() {
                 std::fs::remove_file(&self.socket)
                     .map_err(|err| format!("remove stale cleanup socket: {err}"))?;
-                return Ok(());
+                continue;
+            }
+            if !process_gone && !term_sent && Instant::now() >= graceful_deadline {
+                let _ = Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .output();
+                term_sent = true;
             }
             if Instant::now() >= deadline {
                 return Err(format!(
-                    "cleanup timed out: socket_exists={}, server_pid={:?}, process_exists={}",
+                    "cleanup timed out: socket_exists={}, server_pid={pid}, process_exists={}",
                     self.socket.exists(),
-                    self.server_pid,
-                    self.server_pid.is_some_and(process_exists),
+                    process_exists(pid),
                 ));
             }
             std::thread::sleep(POLL);
@@ -247,12 +273,25 @@ struct PtyClient {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     transcript: Arc<Mutex<Vec<u8>>>,
+    reader: Option<JoinHandle<()>>,
+    reader_done: mpsc::Receiver<()>,
+    child_exited: bool,
 }
 
 impl Drop for PtyClient {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if !self.child_exited {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        match self.reader_done.recv_timeout(DEADLINE) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some(reader) = self.reader.take() {
+                    let _ = reader.join();
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
     }
 }
 
@@ -284,7 +323,8 @@ impl PtyClient {
             .join(format!("{label}.pty"));
         let mut artifact = std::fs::File::create(transcript_path).expect("create PTY artifact");
         let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
-        std::thread::spawn(move || {
+        let (reader_done_tx, reader_done) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
             let mut bytes = [0u8; 8192];
             while let Ok(count) = reader.read(&mut bytes) {
                 if count == 0 {
@@ -296,12 +336,16 @@ impl PtyClient {
                 let _ = artifact.write_all(&bytes[..count]);
                 let _ = artifact.flush();
             }
+            let _ = reader_done_tx.send(());
         });
 
         Self {
             child,
             writer: pair.master.take_writer().expect("take PTY writer"),
             transcript,
+            reader: Some(reader),
+            reader_done,
+            child_exited: false,
         }
     }
 
@@ -345,6 +389,8 @@ impl PtyClient {
         let deadline = Instant::now() + DEADLINE;
         loop {
             if let Some(status) = self.child.try_wait().expect("poll attached client") {
+                self.child_exited = true;
+                self.drain_reader(Instant::now() + DEADLINE);
                 assert!(
                     status.success(),
                     "attached client exited {:?}; transcript:\n{}",
@@ -360,6 +406,18 @@ impl PtyClient {
             );
             std::thread::sleep(POLL);
         }
+    }
+
+    fn drain_reader(&mut self, deadline: Instant) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        self.reader_done
+            .recv_timeout(remaining)
+            .expect("PTY reader did not reach EOF after client exit");
+        self.reader
+            .take()
+            .expect("PTY reader thread")
+            .join()
+            .expect("PTY reader thread panicked");
     }
 }
 
