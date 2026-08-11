@@ -9,6 +9,21 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.15.0](https://github.com/phall1/phux/compare/v0.14.1...v0.15.0) (2026-08-11)
+
+
+### Features
+
+* **server:** add SHUTDOWN and phux kill --server, the verb three docs promised ([#424](https://github.com/phall1/phux/issues/424)) ([83e640f](https://github.com/phall1/phux/commit/83e640fa08d24c7cb54fb009ec2e154c650f7a73))
+* **ux:** make the first five minutes safe and obvious ([#425](https://github.com/phall1/phux/issues/425)) ([93e1413](https://github.com/phall1/phux/commit/93e141332d7b92e97489cefc82ea8b66ca37cd46))
+
+
+### Bug Fixes
+
+* **release:** drop last-release-sha so release PRs stop re-listing shipped work ([#420](https://github.com/phall1/phux/issues/420)) ([cc669f8](https://github.com/phall1/phux/commit/cc669f8667b82e8d03a7b00c068c9221a90b9265))
+* **server:** handle SIGTERM, so a stop routes through the graceful path ([#421](https://github.com/phall1/phux/issues/421)) ([39e23e7](https://github.com/phall1/phux/commit/39e23e7c0c9809b183755e75857f6666ebfcf8a6))
+* **service:** refuse to install over a live server instead of looping forever ([#422](https://github.com/phall1/phux/issues/422)) ([6f0327e](https://github.com/phall1/phux/commit/6f0327e3907a42d0bd4c86d9e6a6b21634d43d96))
+
 ## [0.14.1](https://github.com/phall1/phux/compare/v0.14.0...v0.14.1) (2026-08-11)
 
 
