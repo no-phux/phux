@@ -173,8 +173,6 @@ publish_dir=""
 lock_dir=""
 publish_started=0
 publish_complete=0
-backed_phux=0
-backed_phux_mcp=0
 published_phux=0
 published_phux_mcp=0
 
@@ -188,10 +186,10 @@ rollback_publish() {
   if [ "$published_phux_mcp" -eq 1 ]; then
     rm -f "${install_dir}/phux-mcp"
   fi
-  if [ "$backed_phux" -eq 1 ]; then
+  if [ -e "${publish_dir}/backup/phux" ] || [ -L "${publish_dir}/backup/phux" ]; then
     mv -f "${publish_dir}/backup/phux" "${install_dir}/phux"
   fi
-  if [ "$backed_phux_mcp" -eq 1 ]; then
+  if [ -e "${publish_dir}/backup/phux-mcp" ] || [ -L "${publish_dir}/backup/phux-mcp" ]; then
     mv -f "${publish_dir}/backup/phux-mcp" "${install_dir}/phux-mcp"
   fi
 }
@@ -332,16 +330,16 @@ done
 publish_started=1
 if [ -e "${install_dir}/phux" ] || [ -L "${install_dir}/phux" ]; then
   mv "${install_dir}/phux" "${publish_dir}/backup/phux"
-  backed_phux=1
 fi
 if [ -e "${install_dir}/phux-mcp" ] || [ -L "${install_dir}/phux-mcp" ]; then
   mv "${install_dir}/phux-mcp" "${publish_dir}/backup/phux-mcp"
-  backed_phux_mcp=1
 fi
-mv "${publish_dir}/phux" "${install_dir}/phux"
+# Mark each destination before its rename so an INT/TERM delivered between
+# the rename and the next shell statement still rolls the partial pair back.
 published_phux=1
-mv "${publish_dir}/phux-mcp" "${install_dir}/phux-mcp"
+mv "${publish_dir}/phux" "${install_dir}/phux"
 published_phux_mcp=1
+mv "${publish_dir}/phux-mcp" "${install_dir}/phux-mcp"
 publish_complete=1
 
 echo "installed phux ${version} for ${target} to ${install_dir}"
@@ -360,5 +358,7 @@ if [ "$found_canonical" = "$installed_command" ]; then
   echo "next: phux"
 else
   printf 'next: %q\n' "$installed_command"
+  # The printed remedy must defer expansion until the user runs it.
+  # shellcheck disable=SC2016
   printf 'PATH remedy: export PATH=%q:"$PATH"\n' "$installed_dir"
 fi

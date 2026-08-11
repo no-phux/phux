@@ -367,7 +367,7 @@ fn print_spawned(terminal_id: &TerminalId, json: bool) -> ExitCode {
     } else {
         match host {
             Some(host) => {
-                outln!("Created pane {host}/@{id}. Next: `phux snapshot {host}/@{id}`.")
+                outln!("Created pane {host}/@{id}. Next: `phux snapshot {host}/@{id}`.");
             }
             None => outln!("Created pane @{id}. Next: `phux snapshot @{id}`."),
         }

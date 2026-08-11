@@ -19,6 +19,10 @@
 use super::Page;
 
 /// Render `docs/reference/files.md`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the file reference is one generated page; splitting it would obscure its source order"
+)]
 pub(crate) fn page() -> Page {
     let body = String::from(
         "phux splits its files across the three XDG base directories: \
