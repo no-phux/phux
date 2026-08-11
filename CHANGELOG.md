@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.14.1](https://github.com/phall1/phux/compare/v0.14.0...v0.14.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* crush the three attach-path P0/P1s (rv52, 0d92, ijuj) ([#418](https://github.com/phall1/phux/issues/418)) ([c830a6e](https://github.com/phall1/phux/commit/c830a6eb280f48eb2a745eea4998c8957077d3ad))
+
 ## [0.14.0](https://github.com/phall1/phux/compare/v0.13.0...v0.14.0) (2026-08-09)
 
 
