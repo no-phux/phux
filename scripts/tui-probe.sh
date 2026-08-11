@@ -30,7 +30,6 @@ SERVER_LOG="$RUN_DIR/server.log"
 SERVER_PID=""
 WATCHDOG_PID=""
 STEP=setup
-SAW_ONBOARDING=0
 
 mkdir -p "$RUN_DIR" "$RUN_DIR/home" "$RUN_DIR/config" "$RUN_DIR/state" \
   "$RUN_DIR/cache" "$RUN_DIR/data" "$RUN_DIR/runtime"
@@ -245,28 +244,15 @@ printf -v ATTACH_COMMAND \
   "$HOST_WRAPPER"
 record_command "${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
 "${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
-deadline=$((SECONDS + 15))
-while (( SECONDS < deadline )); do
-  screen "$SESSION" >"$RUN_DIR/.screen"
-  if grep -Fq -- 'Your session is live' "$RUN_DIR/.screen"; then
-    SAW_ONBOARDING=1
-    capture first-use
-    "${TMUX[@]}" send-keys -t "$SESSION" \
-      "printf '%s%s\\r\\n' ONBOARDING- PASSTHROUGH" Enter
-    assert_screen_contains "$SESSION" ONBOARDING-PASSTHROUGH
-    break
-  fi
-  if grep -Fq -- READY-VISIBLE-MARKER "$RUN_DIR/.screen"; then
-    break
-  fi
-  sleep 0.05
-done
+assert_screen_contains "$SESSION" 'Your session is live'
+capture first-use
+"${TMUX[@]}" send-keys -t "$SESSION" \
+  "printf '%s%s\\r\\n' ONBOARDING- PASSTHROUGH" Enter
+assert_screen_contains "$SESSION" ONBOARDING-PASSTHROUGH
 assert_screen_contains "$SESSION" READY-VISIBLE-MARKER
 capture attach-visible
 assert_marker_once "$RUN_DIR/attach-visible.txt" READY-VISIBLE-MARKER
-if (( SAW_ONBOARDING == 1 )); then
-  assert_marker_once "$RUN_DIR/attach-visible.txt" ONBOARDING-PASSTHROUGH
-fi
+assert_marker_once "$RUN_DIR/attach-visible.txt" ONBOARDING-PASSTHROUGH
 
 ATTACH_READY_LINE="$(grep -n 'kind="attach_ready"' "$CLIENT_TRACE" | head -n 1 | cut -d: -f1)"
 FIRST_HISTORY_LINE="$(grep -n 'kind="history_page"' "$CLIENT_TRACE" | head -n 1 | cut -d: -f1)"
@@ -337,25 +323,23 @@ cmp -s "$RUN_DIR/mode.before" "$RUN_DIR/mode.after" \
   || fail "stty mode differs after detach"
 [[ "$(cat "$RUN_DIR/attach.status")" == "0" ]] || fail "attach returned non-zero"
 
-if (( SAW_ONBOARDING == 1 )); then
-  note "first detach reassures, then the same session returns"
-  assert_file_contains "$CLIENT_LOG" 'phux: session still running; run `phux` when you want to come back'
-  cp "$CLIENT_LOG" "$RUN_DIR/first-detach.log"
-  VALID_COMPLETE_CAST="$RUN_DIR/first-complete.cast"
-  cp "$COMPLETE_CAST" "$VALID_COMPLETE_CAST"
-  "${TMUX[@]}" kill-session -t "$SESSION"
-  "${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
-  # The status painter deliberately rejects notices wider than its row. Narrow
-  # QA proves preserved content; the common viewport proves the return copy.
-  if (( COLS >= 64 )); then
-    assert_screen_contains "$SESSION" 'Welcome back - this is the session you left running'
-  fi
-  assert_screen_contains "$SESSION" READY-VISIBLE-MARKER
-  capture first-return
-  "${TMUX[@]}" send-keys -t "$SESSION" C-a
-  "${TMUX[@]}" send-keys -t "$SESSION" d
-  assert_screen_contains "$SESSION" HOST-TERMINAL-RESTORED
+note "first detach reassures, then the same session returns"
+assert_file_contains "$CLIENT_LOG" 'phux: session still running; run `phux` when you want to come back'
+cp "$CLIENT_LOG" "$RUN_DIR/first-detach.log"
+VALID_COMPLETE_CAST="$RUN_DIR/first-complete.cast"
+cp "$COMPLETE_CAST" "$VALID_COMPLETE_CAST"
+"${TMUX[@]}" kill-session -t "$SESSION"
+"${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
+# The status painter deliberately rejects notices wider than its row. Narrow
+# QA proves preserved content; the common viewport proves the return copy.
+if (( COLS >= 64 )); then
+  assert_screen_contains "$SESSION" 'Welcome back - this is the session you left running'
 fi
+assert_screen_contains "$SESSION" READY-VISIBLE-MARKER
+capture first-return
+"${TMUX[@]}" send-keys -t "$SESSION" C-a
+"${TMUX[@]}" send-keys -t "$SESSION" d
+assert_screen_contains "$SESSION" HOST-TERMINAL-RESTORED
 
 STEP=interrupted-recording
 note "interrupt a second live recording after a visible marker"
