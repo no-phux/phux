@@ -161,11 +161,11 @@ impl<W: Write> Write for SlackPad<W> {
 /// The sink type is generic only so tests can substitute an in-memory buffer
 /// and a deliberately-failing writer; production is always the defaulted
 /// `BufWriter<File>` that [`SessionRecorder::create`] builds. `Seek` is part
-/// of the bound because [`SessionRecorder::finish`] rewrites the header line
-/// in place.
+/// of the bound because [`SessionRecorder::finish_in_place`] rewrites the
+/// header line in place.
 pub struct SessionRecorder<W: Write + Seek = BufWriter<File>> {
     /// `None` once the recording has been abandoned (a latched write failure)
-    /// or consumed by [`SessionRecorder::finish`].
+    /// or consumed by [`SessionRecorder::finish_in_place`].
     writer: Option<CastWriter<SlackPad<W>>>,
     /// Wall clock the event timestamps are measured from.
     start: Instant,
@@ -328,11 +328,12 @@ impl<W: Write + Seek> SessionRecorder<W> {
     }
 
     /// Flush the residual UTF-8 tail, backfill the header's `duration`, and
-    /// close the file.
+    /// close the file in place.
     ///
-    /// Call this only after the TUI has exited — raw mode restored, alt
-    /// screen down — because the caller reports the result on stdout.
-    pub fn finish(mut self) -> Result<(), AttachError> {
+    /// Idempotent so the production pre-`process::exit` path and the CLI's
+    /// returning fallback can safely share an `Rc<RefCell<_>>`. Once called,
+    /// later recording writes and repeated finalization calls are no-ops.
+    pub fn finish_in_place(&mut self) -> Result<(), AttachError> {
         let Some(writer) = self.writer.take() else {
             // Already abandoned. The prefix on disk is a valid, playable
             // asciicast; it simply has no `duration`, which is exactly what a
@@ -349,6 +350,11 @@ impl<W: Write + Seek> SessionRecorder<W> {
         }
         sink.flush()?;
         Ok(())
+    }
+
+    /// Consuming convenience wrapper around [`Self::finish_in_place`].
+    pub fn finish(mut self) -> Result<(), AttachError> {
+        self.finish_in_place()
     }
 
     /// Build the replacement header line carrying `duration`, padded back out
@@ -692,6 +698,33 @@ mod tests {
         let (_, events) = read_cast(text.as_bytes()).expect("cast still parses");
         assert_eq!(events.len(), 1, "the event stream survives the rewrite");
         assert_eq!(events[0].data, "x");
+    }
+
+    #[test]
+    fn finish_in_place_is_idempotent_and_stops_future_writes() {
+        let sink = MemSink::default();
+        let mut rec = recorder(sink.clone());
+        rec.record(b"complete");
+
+        rec.finish_in_place().expect("first finish");
+        let finished = sink.contents();
+        let text = String::from_utf8(finished.clone()).expect("utf-8");
+        assert_eq!(
+            text.matches("\"duration\":").count(),
+            1,
+            "duration is backfilled exactly once"
+        );
+
+        rec.record(b"must not be appended");
+        rec.finish_in_place().expect("repeated finish");
+        assert_eq!(
+            sink.contents(),
+            finished,
+            "writes and finalization after finish must leave the cast unchanged"
+        );
+        let (_, events) = read_cast(finished.as_slice()).expect("cast still parses");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "complete");
     }
 
     #[test]

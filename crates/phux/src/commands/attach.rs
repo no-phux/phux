@@ -533,25 +533,16 @@ async fn wait_with_countdown(dial: &Dial, deadline: Duration) -> ReconnectOutcom
 
 /// Flush the residual UTF-8 tail, backfill `duration`, and close the cast.
 ///
-/// Every clone handed to an attach attempt has been dropped by the time this
-/// runs, so `try_unwrap` reclaims the recorder. A clone that somehow outlived
-/// the loop is logged and the file left as-is: the prefix on disk is a valid,
-/// playable asciicast, and abandoning it would be strictly worse than a
-/// missing `duration` key. Diagnostics go through `tracing` (file-only on the
-/// client) and never to stderr, which the TUI has only just released.
+/// Idempotent because the production clean-detach path finalizes immediately
+/// before `process::exit`; this remains the fallback for returning error paths.
+/// Diagnostics go through `tracing` (file-only on the client) and never to
+/// stderr, which the TUI has only just released.
 fn close_recorder(recorder: Option<RecorderHandle>) {
     let Some(handle) = recorder else {
         return;
     };
-    match Rc::try_unwrap(handle) {
-        Ok(cell) => {
-            if let Err(err) = cell.into_inner().finish() {
-                tracing::warn!(error = %err, "closing the session recording failed");
-            }
-        }
-        Err(_) => {
-            tracing::warn!("session recorder still referenced at shutdown; cast left unfinalized");
-        }
+    if let Err(err) = handle.borrow_mut().finish_in_place() {
+        tracing::warn!(error = %err, "closing the session recording failed");
     }
 }
 

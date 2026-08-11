@@ -448,7 +448,7 @@ async fn run_buffered(
     if let Some(rec) = rec {
         let mut tee = TeeSink {
             inner: &mut sink,
-            rec,
+            rec: Rc::clone(&rec),
         };
         attach_session(
             dial,
@@ -459,6 +459,7 @@ async fn run_buffered(
             Some(writer),
             true,
             initial_notice,
+            Some(rec),
         )
         .await
     } else {
@@ -471,6 +472,7 @@ async fn run_buffered(
             Some(writer),
             true,
             initial_notice,
+            None,
         )
         .await
     }
@@ -596,6 +598,7 @@ pub async fn run_with_stdout_predict<W: super::RenderSink>(
         None,
         None,
         false,
+        None,
         None,
     )
     .await
@@ -998,6 +1001,7 @@ async fn attach_session<W: super::RenderSink>(
     // entry only (an in-invocation session switch must not re-show it) —
     // the reconnect loop's "re-attached after server restart".
     initial_notice: Option<Notice>,
+    recorder: Option<Rc<RefCell<SessionRecorder>>>,
 ) -> Result<AttachEnd, AttachError> {
     // STAGE 1 — pre-handshake, on the cooked outer terminal.
     //
@@ -1158,7 +1162,7 @@ async fn attach_session<W: super::RenderSink>(
                 if let Some(writer) = writer.take() {
                     writer.shutdown_and_join();
                 }
-                exit_after_detach(end, locally_requested, &onboarding_path);
+                exit_after_detach(end, locally_requested, &onboarding_path, recorder.as_ref());
             }
             LoopExit::SwitchTo(target) => {
                 // Lifecycle transition (info): switching sessions on the
@@ -4785,11 +4789,10 @@ pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     Ok(())
 }
 
-/// Best-effort terminal reset from inside a signal handler arm. This
-/// is the SIGINT/SIGTERM/SIGHUP path: termios goes back to the saved
-/// state (recovered from [`SAVED_TERMIOS`] when populated; otherwise a
-/// re-cook fall-back), and the alt-screen sequence is left if we
-/// entered one. Errors are swallowed — the process is on its way out.
+/// Best-effort termios restore shared by signal and clean-detach exits.
+/// Termios goes back to the saved state (recovered from [`SAVED_TERMIOS`]
+/// when populated; otherwise a re-cook fall-back). Errors are swallowed: the
+/// process is on its way out.
 ///
 /// Behaviour change for phux-2r7 (was best-effort re-cook only,
 /// committed in 63dc6ff): when [`RawModeGuard`] has parked a snapshot,
@@ -4798,7 +4801,7 @@ pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
 /// would clobber. The manual SIGINT-during-attach repro that motivated
 /// the original fix still passes; verifying the precise-restore
 /// behaviour requires a live PTY and is not unit-testable from here.
-fn terminal_reset_on_signal() {
+fn restore_terminal_termios() {
     let stdin = io::stdin();
     let fd = stdin.as_fd();
     if let Some(saved) = take_termios_snapshot() {
@@ -4830,8 +4833,33 @@ fn terminal_reset_on_signal() {
             .insert(rustix::termios::OutputModes::OPOST);
         let _ = rustix::termios::tcsetattr(fd, OptionalActions::Now, &termios);
     }
+}
+
+/// Restore termios and leave the alt screen from a signal handler arm.
+fn terminal_reset_on_signal() {
+    restore_terminal_termios();
     let mut out = io::stdout().lock();
     let _ = write_terminal_reset(&mut out);
+}
+
+fn write_terminal_reset_and_finalize<W: Write>(
+    out: &mut W,
+    recorder: Option<&Rc<RefCell<SessionRecorder>>>,
+) {
+    if let Some(recorder) = recorder {
+        {
+            let mut tee = TeeSink {
+                inner: out,
+                rec: Rc::clone(recorder),
+            };
+            let _ = write_terminal_reset(&mut tee);
+        }
+        if let Err(err) = recorder.borrow_mut().finish_in_place() {
+            tracing::warn!(error = %err, "closing the session recording failed");
+        }
+    } else {
+        let _ = write_terminal_reset(out);
+    }
 }
 
 /// Clean client exit after a server-acknowledged DETACH (or a
@@ -4867,8 +4895,12 @@ fn exit_after_detach(
     end: AttachEnd,
     locally_requested: bool,
     onboarding_path: &std::path::Path,
+    recorder: Option<&Rc<RefCell<SessionRecorder>>>,
 ) -> ! {
-    terminal_reset_on_signal();
+    restore_terminal_termios();
+    let mut stdout = io::stdout().lock();
+    write_terminal_reset_and_finalize(&mut stdout, recorder);
+    drop(stdout);
     if let Some(line) = end.explanation() {
         eprintln!("{line}");
     } else if locally_requested && let Some(line) = super::onboarding::after_detach(onboarding_path)
@@ -6417,6 +6449,45 @@ mod tests {
         assert!(
             pos_1006l < pos_1049l && pos_1002l < pos_1049l,
             "mouse-disable must precede the alt-screen leave: {reset:?}"
+        );
+    }
+
+    #[test]
+    fn clean_detach_records_the_complete_reset_before_finalizing() {
+        let _guard = TERMINAL_RESET_TEST_LOCK
+            .lock()
+            .expect("terminal reset test lock");
+        HOVER_TRACKING_ACTIVE.store(true, Ordering::SeqCst);
+        MOUSE_CAPTURE_ACTIVE.store(true, Ordering::SeqCst);
+        ALT_SCREEN_ACTIVE.store(true, Ordering::SeqCst);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("detach.cast");
+        let recorder = Rc::new(RefCell::new(
+            SessionRecorder::create(&path, None, phux_record::cast::CastVersion::V2)
+                .expect("recorder"),
+        ));
+        let mut reset = Vec::new();
+        write_terminal_reset_and_finalize(&mut reset, Some(&recorder));
+
+        let cast = std::fs::read(&path).expect("read cast");
+        let text = String::from_utf8(cast.clone()).expect("cast utf-8");
+        assert!(
+            text.lines()
+                .next()
+                .is_some_and(|line| line.contains("\"duration\":")),
+            "clean detach must backfill duration"
+        );
+        let (_, events) = phux_record::cast::read_cast(cast.as_slice()).expect("parse cast");
+        let recorded_reset: String = events
+            .iter()
+            .filter(|event| event.code == phux_record::cast::EventCode::Output)
+            .map(|event| event.data.as_str())
+            .collect();
+        assert_eq!(
+            recorded_reset.as_bytes(),
+            reset,
+            "the recorder must capture every reset byte before it is finalized"
         );
     }
 
