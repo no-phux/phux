@@ -878,15 +878,28 @@ impl StatusBarPainter {
         rows: u16,
         ctx: &StatusBarContext<'_>,
     ) -> io::Result<()> {
+        self.paint_outcome(out, inset, cols, rows, ctx).map(drop)
+    }
+
+    /// Paint the bar and report whether this call emitted the row rather than
+    /// taking the unchanged-content cache fast path.
+    pub(crate) fn paint_outcome<W: Write>(
+        &mut self,
+        out: &mut W,
+        inset: BarInset,
+        cols: u16,
+        rows: u16,
+        ctx: &StatusBarContext<'_>,
+    ) -> io::Result<bool> {
         if cols == 0 || rows == 0 {
-            return Ok(());
+            return Ok(false);
         }
         // phux-qtw8: the bar yields the sidebar's columns. Everything below
         // composes and hit-tests against this span, not the viewport — an
         // inset wider than the terminal leaves nothing to paint.
         let (x, cols) = inset.span(cols);
         if cols == 0 {
-            return Ok(());
+            return Ok(false);
         }
         // phux-9vf: an error-line painter bypasses the widget pipeline and
         // paints the fixed diagnostic. It takes priority over the normal
@@ -912,7 +925,7 @@ impl StatusBarPainter {
         // windows stays a no-op (the badge is suppressed rather than ghosting
         // over un-erased pane content on a row the bar never blanks).
         if self.bar.is_empty() && self.windows.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         // The window list is owned by the painter (the driver sets it
         // from the Workspace); inject it into the render context so
@@ -936,7 +949,7 @@ impl StatusBarPainter {
             None => true,
         };
         if !viewport_changed && !row_changed {
-            return Ok(());
+            return Ok(false);
         }
         let row_index: u16 = match self.position {
             Position::Bottom => rows.saturating_sub(1),
@@ -969,7 +982,7 @@ impl StatusBarPainter {
         }
         self.last_row = Some((x, cols, new_row));
         self.last_viewport = Some((cols, rows));
-        Ok(())
+        Ok(true)
     }
 
     /// Compose the status row into a fresh ratatui [`Buffer`] the width of the
@@ -1067,7 +1080,7 @@ impl StatusBarPainter {
         x: u16,
         cols: u16,
         rows: u16,
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
         // Callers gate on `self.error.is_some()`; an empty string is a
         // valid (if unusual) diagnostic, so default to "" rather than
         // returning early.
@@ -1092,14 +1105,14 @@ impl StatusBarPainter {
         x: u16,
         cols: u16,
         rows: u16,
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
         let viewport_changed = self.last_viewport != Some((cols, rows));
         let moved = self
             .last_row
             .as_ref()
             .is_some_and(|(px, pw, _)| *px != x || *pw != cols);
         if !viewport_changed && !moved && self.last_row.is_some() {
-            return Ok(());
+            return Ok(false);
         }
         let row_index: u16 = match self.position {
             Position::Bottom => rows.saturating_sub(1),
@@ -1111,7 +1124,7 @@ impl StatusBarPainter {
         // next repaint; the stored row is empty (we don't compose widgets).
         self.last_row = Some((x, cols, Vec::new()));
         self.last_viewport = Some((cols, rows));
-        Ok(())
+        Ok(true)
     }
 
     /// phux-r82.6: the async data feeds behind the bar's `exec` widgets.

@@ -22,7 +22,9 @@ use phux_protocol::{BootstrapId, StreamId};
 
 use super::actions::{self, PendingSplit, PendingWindow, apply_spawned_ok, apply_terminal_closed};
 use super::outcome::{AttachEnd, AttachError, describe_exit};
-use super::paint::{SidebarReservation, content_rect, paint_bar_after_pane, paint_focused_pane};
+use super::paint::{
+    SidebarReservation, StatusBarPaint, content_rect, paint_bar_after_pane, paint_focused_pane,
+};
 use super::pane_state::{PaneSlot, published_terminal, reanchor_predict_to_pane};
 use crate::agent_meta::{AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
 use crate::layout::{self, LayoutState, Workspace};
@@ -233,7 +235,7 @@ pub(super) struct FrameOutcome {
     pub(super) notices: Vec<Notice>,
     /// A status-bar paint completed while handling this frame. Used to commit
     /// attach onboarding only after its notice reaches the render sink.
-    pub(super) status_bar_painted: bool,
+    pub(super) status_bar_painted: StatusBarPaint,
 }
 
 /// Payload-free label for the inbound `FrameKind` — the `kind` field on
@@ -905,7 +907,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             // carries the resulting notice; the branches are exclusive, so
             // only one of them moves it.
             let notices = kernel_route.notices;
-            let mut status_bar_painted = false;
+            let mut status_bar_painted = StatusBarPaint::NotPublished;
             // Correlate this apply: which pane, which seq, how many bytes.
             // The span's CLOSE duration is the per-frame client paint cost
             // (vt_write + render_at for the focused pane) — the headline
@@ -1050,7 +1052,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                         .get(fid)
                         .map(|r| (r.x, r.y))
                         .or(Some((0, 0)));
-                status_bar_painted |= paint_bar_after_pane(
+                status_bar_painted = status_bar_painted.or(paint_bar_after_pane(
                     status_bar,
                     out,
                     viewport_dims,
@@ -1062,7 +1064,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                     // painter's cache makes an unchanged bar a zero-byte
                     // no-op (incremental-paint win).
                     false,
-                );
+                ));
             } else if !overlay_active && !defer_paint && !sync_output_active {
                 // phux-2x9: repaint a NON-focused pane on its own output
                 // so it isn't visually frozen — output (and the
@@ -1106,7 +1108,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                             .as_ref()
                             .and_then(|fid| rects.get(fid))
                             .map(|r| (r.x, r.y));
-                        status_bar_painted |= paint_bar_after_pane(
+                        status_bar_painted = status_bar_painted.or(paint_bar_after_pane(
                             status_bar,
                             out,
                             viewport_dims,
@@ -1117,7 +1119,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                             // Non-focused pane render stays above the bar
                             // row; cache decides whether to re-emit.
                             false,
-                        );
+                        ));
                     } else if let Some((row, col)) = focused_cursor {
                         let _ = write!(
                             out,

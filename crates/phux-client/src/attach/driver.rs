@@ -59,8 +59,8 @@ use super::input_dispatch::{
 };
 use super::outcome::{AttachEnd, AttachError};
 use super::paint::{
-    SidebarEdge, SidebarReservation, content_rect, paint_bar_after_pane, paint_chrome_in_place,
-    paint_full_frame, sidebar_reservation,
+    SidebarEdge, SidebarReservation, StatusBarPaint, content_rect, paint_bar_after_pane,
+    paint_chrome_in_place, paint_full_frame, sidebar_reservation,
 };
 use super::pane_state::{
     AttachKernel, AttentionNavigation, PaneSlot, VcsIndex, reanchor_predict_to_pane,
@@ -299,21 +299,21 @@ fn paint_active_overlay<W: super::RenderSink>(
     sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
     session_name: &str,
     theme: &crate::render::Theme,
-) {
+) -> StatusBarPaint {
     // phux-foz.14: floating modals center inside the pane content rect (the
     // viewport minus the sidebar strip and status-bar row), NOT the raw
     // viewport, so a centered box never lands on the sidebar columns and
     // occludes the chrome the base-frame repaint (phux-foz.10) preserves. The
     // borrow of `status_bar` ends here (position is `Copy`), so it stays
     // available to move into `paint_full_frame` below.
+    let bar_pos = status_bar.as_deref().map(StatusBarPainter::position);
     let overlay_content = {
-        let bar_pos = status_bar.as_deref().map(StatusBarPainter::position);
         let cr = content_rect(viewport_dims, bar_pos, sidebar);
         ratatui::layout::Rect::new(cr.x, cr.y, cr.w, cr.h)
     };
     if let Some(sel) = overlays.copy_selection() {
         let (Some(ls), Some(fid)) = (workspace.active_window(), focused) else {
-            return;
+            return StatusBarPaint::NotPublished;
         };
         // Set the selection on the focused renderer for this one paint, repaint
         // the (zoom-honoring) base frame — the renderer inverts the selected
@@ -325,24 +325,34 @@ fn paint_active_overlay<W: super::RenderSink>(
         if let Some(slot) = panes.get_mut(fid) {
             slot.renderer.set_selection(Some(sel));
         }
-        if let Some(base) = base.as_deref() {
-            paint_full_frame(
-                out,
-                base,
-                panes,
-                engine_kernel,
-                focused,
-                viewport_dims,
-                status_bar,
-                sidebar,
-                sidebar_painter,
-                session_name,
-            );
-        }
+        let painted = base
+            .as_deref()
+            .map_or(StatusBarPaint::NotPublished, |base| {
+                paint_full_frame(
+                    out,
+                    base,
+                    panes,
+                    engine_kernel,
+                    focused,
+                    viewport_dims,
+                    status_bar,
+                    sidebar,
+                    sidebar_painter,
+                    session_name,
+                )
+            });
         if let Some(slot) = panes.get_mut(fid) {
             slot.renderer.set_selection(None);
         }
         let _ = paint_copy_mode_status(out, sel, viewport_dims, theme);
+        if matches!(
+            bar_pos,
+            Some(crate::render::chrome::status_bar::Position::Bottom)
+        ) {
+            StatusBarPaint::NotPublished
+        } else {
+            painted
+        }
     } else if let Some(clip) = overlays.active_bounds(overlay_content) {
         // Floating modal (help / prompt / command palette / pickers): keep
         // the live panes visible by repainting the base frame, then emit
@@ -351,25 +361,31 @@ fn paint_active_overlay<W: super::RenderSink>(
         // The base frame includes the sidebar strip (phux-foz.10): the
         // repaint's own ED2 cleared it, and chrome must persist under a
         // floating overlay.
-        if let Some(ls) = workspace.render_window(zoomed).as_deref() {
-            paint_full_frame(
-                out,
-                ls,
-                panes,
-                engine_kernel,
-                focused,
-                viewport_dims,
-                status_bar,
-                sidebar,
-                sidebar_painter,
-                session_name,
-            );
-        }
+        let painted =
+            workspace
+                .render_window(zoomed)
+                .as_deref()
+                .map_or(StatusBarPaint::NotPublished, |ls| {
+                    paint_full_frame(
+                        out,
+                        ls,
+                        panes,
+                        engine_kernel,
+                        focused,
+                        viewport_dims,
+                        status_bar,
+                        sidebar,
+                        sidebar_painter,
+                        session_name,
+                    )
+                });
         let _ = overlays.paint_clipped(out, viewport_dims, overlay_content, clip, theme.shadow);
+        painted
     } else {
         // Full-screen overlay (no bounded region): clear + paint.
         let _ = out.write_all(b"\x1b[2J\x1b[H");
         let _ = overlays.paint(out, viewport_dims);
+        StatusBarPaint::NotPublished
     }
 }
 
@@ -1458,9 +1474,14 @@ fn finish_onboarding_claim(claim: Option<super::onboarding::AttachClaim>, delive
     }
 }
 
-fn return_notice_painted(status_bar: Option<&StatusBarPainter>, paint_succeeded: bool) -> bool {
-    paint_succeeded
-        && status_bar.is_some_and(|painter| painter.notice_is(super::onboarding::RETURN_NOTICE))
+fn finish_return_onboarding_after_paint(
+    claim: &mut Option<super::onboarding::AttachClaim>,
+    status_bar: Option<&StatusBarPainter>,
+    paint: StatusBarPaint,
+) {
+    if paint.delivered(status_bar, super::onboarding::RETURN_NOTICE) {
+        finish_onboarding_claim(claim.take(), true);
+    }
 }
 
 /// Drive the `tokio::select!` loop until detach or a session switch.
@@ -2081,7 +2102,7 @@ async fn main_loop<W: super::RenderSink>(
                 && !overlays.is_active()
                 && let Some(ls) = workspace.render_window(zoomed.as_ref()).as_deref()
             {
-                paint_chrome_in_place(
+                let painted = paint_chrome_in_place(
                     out,
                     ls,
                     &panes,
@@ -2091,6 +2112,11 @@ async fn main_loop<W: super::RenderSink>(
                     sidebar,
                     Some(&mut sidebar_painter),
                     &session_name,
+                );
+                finish_return_onboarding_after_paint(
+                    &mut onboarding_claim,
+                    status_bar.as_ref(),
+                    painted,
                 );
             }
         }
@@ -2110,7 +2136,7 @@ async fn main_loop<W: super::RenderSink>(
         // serviced promptly.
         if needs_resync.is_some_and(|flag| flag.swap(false, Ordering::AcqRel)) {
             if overlays.is_active() {
-                paint_active_overlay(
+                let painted = paint_active_overlay(
                     out,
                     &overlays,
                     &workspace,
@@ -2125,8 +2151,13 @@ async fn main_loop<W: super::RenderSink>(
                     &session_name,
                     &theme,
                 );
+                finish_return_onboarding_after_paint(
+                    &mut onboarding_claim,
+                    status_bar.as_ref(),
+                    painted,
+                );
             } else if let Some(ls) = workspace.render_window(zoomed.as_ref()).as_deref() {
-                paint_full_frame(
+                let painted = paint_full_frame(
                     out,
                     ls,
                     &mut panes,
@@ -2137,6 +2168,11 @@ async fn main_loop<W: super::RenderSink>(
                     sidebar,
                     Some(&mut sidebar_painter),
                     &session_name,
+                );
+                finish_return_onboarding_after_paint(
+                    &mut onboarding_claim,
+                    status_bar.as_ref(),
+                    painted,
                 );
             }
         }
@@ -2350,7 +2386,7 @@ async fn main_loop<W: super::RenderSink>(
                     if !overlays.is_active()
                         && let Some(ls) = workspace.render_window(zoomed.as_ref()).as_deref()
                     {
-                        paint_full_frame(
+                        let painted = paint_full_frame(
                             out,
                             ls,
                             &mut panes,
@@ -2362,10 +2398,15 @@ async fn main_loop<W: super::RenderSink>(
                             Some(&mut sidebar_painter),
                             &session_name,
                         );
+                        finish_return_onboarding_after_paint(
+                            &mut onboarding_claim,
+                            status_bar.as_ref(),
+                            painted,
+                        );
                     }
                 }
                 if overlays.is_active() {
-                    paint_active_overlay(
+                    let painted = paint_active_overlay(
                         out,
                         &overlays,
                         &workspace,
@@ -2380,13 +2421,18 @@ async fn main_loop<W: super::RenderSink>(
                         &session_name,
                         &theme,
                     );
+                    finish_return_onboarding_after_paint(
+                        &mut onboarding_claim,
+                        status_bar.as_ref(),
+                        painted,
+                    );
                 }
                 // phux-foz.5: a `reload-config` committed in this batch
                 // (palette row or bound chord). Runs LAST in the arm so
                 // its repaint reflects the new theme/bar.
                 if reload_request {
                     reload_request = false;
-                    handle_config_reload(
+                    let painted = handle_config_reload(
                         out,
                         &mut keybindings_snapshot,
                         &mut resolver,
@@ -2409,6 +2455,11 @@ async fn main_loop<W: super::RenderSink>(
                         viewport_dims,
                         sidebar,
                         &session_name,
+                    );
+                    finish_return_onboarding_after_paint(
+                        &mut onboarding_claim,
+                        status_bar.as_ref(),
+                        painted,
                     );
                 }
             }
@@ -2647,9 +2698,11 @@ async fn main_loop<W: super::RenderSink>(
                             || outcome.layout_replaced
                             || outcome.reflow_panes
                             || outcome.sessions.is_some();
-                        if return_notice_painted(status_bar.as_ref(), outcome.status_bar_painted) {
-                            finish_onboarding_claim(onboarding_claim.take(), true);
-                        }
+                        finish_return_onboarding_after_paint(
+                            &mut onboarding_claim,
+                            status_bar.as_ref(),
+                            outcome.status_bar_painted,
+                        );
                         // ADR-0040: the frame may have added panes
                         // (TerminalSpawned, a peer's layout broadcast) or
                         // removed them (TerminalClosed). Re-sweep so every
@@ -2970,7 +3023,7 @@ async fn main_loop<W: super::RenderSink>(
                         // as the `reload-config` action; failures keep the
                         // previous config and toast.
                         if outcome.config_reload {
-                            handle_config_reload(
+                            let painted = handle_config_reload(
                                 out,
                                 &mut keybindings_snapshot,
                                 &mut resolver,
@@ -2993,6 +3046,11 @@ async fn main_loop<W: super::RenderSink>(
                                 viewport_dims,
                                 sidebar,
                                 &session_name,
+                            );
+                            finish_return_onboarding_after_paint(
+                                &mut onboarding_claim,
+                                status_bar.as_ref(),
+                                painted,
                             );
                         }
                         // phux-foz.7: the agent-fleet dashboard is a live
@@ -3027,7 +3085,7 @@ async fn main_loop<W: super::RenderSink>(
                         // live fleet list is actually in the overlay stack, so
                         // the raise costs nothing when the dashboard is closed.
                         if drained.fleet_dirty {
-                            refresh_fleet_if_open(
+                            let painted = refresh_fleet_if_open(
                                 out,
                                 &mut overlays,
                                 &workspace,
@@ -3048,12 +3106,17 @@ async fn main_loop<W: super::RenderSink>(
                                 &foreign_layouts,
                                 &foreign_agents,
                             );
+                            finish_return_onboarding_after_paint(
+                                &mut onboarding_claim,
+                                status_bar.as_ref(),
+                                painted,
+                            );
                         }
                         if !overlays.is_active()
                             && let Some(ls) = workspace.render_window(zoomed.as_ref()).as_deref()
                         {
                             let status_bar_painted = match drained.level {
-                                RepaintLevel::None => false,
+                                RepaintLevel::None => StatusBarPaint::NotPublished,
                                 RepaintLevel::Chrome => paint_chrome_in_place(
                                     out,
                                     ls,
@@ -3078,9 +3141,11 @@ async fn main_loop<W: super::RenderSink>(
                                     &session_name,
                                 ),
                             };
-                            if return_notice_painted(status_bar.as_ref(), status_bar_painted) {
-                                finish_onboarding_claim(onboarding_claim.take(), true);
-                            }
+                            finish_return_onboarding_after_paint(
+                                &mut onboarding_claim,
+                                status_bar.as_ref(),
+                                status_bar_painted,
+                            );
                         }
                     }
                     Err(AttachError::Disconnected) if detach_pending => {
@@ -3115,7 +3180,7 @@ async fn main_loop<W: super::RenderSink>(
                     && !overlays.is_active()
                     && let Some(ls) = workspace.render_window(zoomed.as_ref()).as_deref()
                 {
-                    paint_full_frame(
+                    let painted = paint_full_frame(
                         out,
                         ls,
                         &mut panes,
@@ -3126,6 +3191,11 @@ async fn main_loop<W: super::RenderSink>(
                         sidebar,
                         Some(&mut sidebar_painter),
                         &session_name,
+                    );
+                    finish_return_onboarding_after_paint(
+                        &mut onboarding_claim,
+                        status_bar.as_ref(),
+                        painted,
                     );
                 }
             }
@@ -3253,7 +3323,7 @@ async fn main_loop<W: super::RenderSink>(
                     && !overlays.is_active()
                     && let Some(ls) = workspace.render_window(zoomed.as_ref()).as_deref()
                 {
-                    paint_full_frame(
+                    let painted = paint_full_frame(
                         out,
                         ls,
                         &mut panes,
@@ -3265,9 +3335,14 @@ async fn main_loop<W: super::RenderSink>(
                         Some(&mut sidebar_painter),
                         &session_name,
                     );
+                    finish_return_onboarding_after_paint(
+                        &mut onboarding_claim,
+                        status_bar.as_ref(),
+                        painted,
+                    );
                 }
                 if overlays.is_active() {
-                    paint_active_overlay(
+                    let painted = paint_active_overlay(
                         out,
                         &overlays,
                         &workspace,
@@ -3282,13 +3357,18 @@ async fn main_loop<W: super::RenderSink>(
                         &session_name,
                         &theme,
                     );
+                    finish_return_onboarding_after_paint(
+                        &mut onboarding_claim,
+                        status_bar.as_ref(),
+                        painted,
+                    );
                 }
                 // phux-foz.5: same reload-on-commit check as the stdin
                 // arm — a bare-ESC flush can carry the final chord of a
                 // palette selection committing `reload-config`.
                 if reload_request {
                     reload_request = false;
-                    handle_config_reload(
+                    let painted = handle_config_reload(
                         out,
                         &mut keybindings_snapshot,
                         &mut resolver,
@@ -3312,6 +3392,11 @@ async fn main_loop<W: super::RenderSink>(
                         sidebar,
                         &session_name,
                     );
+                    finish_return_onboarding_after_paint(
+                        &mut onboarding_claim,
+                        status_bar.as_ref(),
+                        painted,
+                    );
                 }
             }
 
@@ -3330,7 +3415,7 @@ async fn main_loop<W: super::RenderSink>(
                     keybindings_snapshot.as_ref(),
                     &theme,
                 ) {
-                    paint_active_overlay(
+                    let painted = paint_active_overlay(
                         out,
                         &overlays,
                         &workspace,
@@ -3344,6 +3429,11 @@ async fn main_loop<W: super::RenderSink>(
                         Some(&mut sidebar_painter),
                         &session_name,
                         &theme,
+                    );
+                    finish_return_onboarding_after_paint(
+                        &mut onboarding_claim,
+                        status_bar.as_ref(),
+                        painted,
                     );
                 }
             }
@@ -3449,7 +3539,7 @@ async fn main_loop<W: super::RenderSink>(
                         status_bar.as_ref().map(StatusBarPainter::position),
                         sidebar,
                     );
-                    paint_active_overlay(
+                    let painted = paint_active_overlay(
                         out,
                         &overlays,
                         &workspace,
@@ -3463,6 +3553,11 @@ async fn main_loop<W: super::RenderSink>(
                         Some(&mut sidebar_painter),
                         &session_name,
                         &theme,
+                    );
+                    finish_return_onboarding_after_paint(
+                        &mut onboarding_claim,
+                        status_bar.as_ref(),
+                        painted,
                     );
                 } else {
                     let _ = out.flush();
@@ -3520,7 +3615,7 @@ async fn main_loop<W: super::RenderSink>(
                         has_cursor = focused_cursor.is_some(),
                         "status_tick: repaint bar"
                     );
-                    paint_bar_after_pane(
+                    let painted = paint_bar_after_pane(
                         status_bar.as_mut(),
                         out,
                         viewport_dims,
@@ -3532,6 +3627,11 @@ async fn main_loop<W: super::RenderSink>(
                         // painter's content cache repaints only when a
                         // widget (e.g. the clock) actually changed.
                         false,
+                    );
+                    finish_return_onboarding_after_paint(
+                        &mut onboarding_claim,
+                        status_bar.as_ref(),
+                        painted,
                     );
                 }
             }
@@ -3553,7 +3653,7 @@ async fn main_loop<W: super::RenderSink>(
                     overlays.push(Box::new(crate::render::overlay::ToastOverlay::new(
                         title, lines, &theme,
                     )));
-                    paint_active_overlay(
+                    let painted = paint_active_overlay(
                         out,
                         &overlays,
                         &workspace,
@@ -3567,6 +3667,11 @@ async fn main_loop<W: super::RenderSink>(
                         Some(&mut sidebar_painter),
                         &session_name,
                         &theme,
+                    );
+                    finish_return_onboarding_after_paint(
+                        &mut onboarding_claim,
+                        status_bar.as_ref(),
+                        painted,
                     );
                 }
             }
@@ -3773,9 +3878,9 @@ fn refresh_fleet_if_open<W: super::RenderSink>(
     vcs: &mut VcsIndex,
     foreign_layouts: &HashMap<phux_protocol::ids::SessionId, Workspace>,
     foreign_agents: &HashMap<TerminalId, AgentRecord>,
-) {
+) -> StatusBarPaint {
     if !overlays.is_active() {
-        return;
+        return StatusBarPaint::NotPublished;
     }
     let meta = super::fleet::collect_pane_meta(panes, vcs);
     let items = super::fleet::fleet_items(
@@ -3802,7 +3907,9 @@ fn refresh_fleet_if_open<W: super::RenderSink>(
             Some(sidebar_painter),
             session_name,
             theme,
-        );
+        )
+    } else {
+        StatusBarPaint::NotPublished
     }
 }
 
@@ -4240,7 +4347,8 @@ fn handle_config_reload<W: super::RenderSink>(
     viewport_dims: (u16, u16),
     sidebar: Option<SidebarReservation>,
     session_name: &str,
-) {
+) -> StatusBarPaint {
+    let mut painted = StatusBarPaint::NotPublished;
     match super::reload::reload_in_place(
         &phux_config::loader::config_path(),
         keybindings_snapshot,
@@ -4275,7 +4383,7 @@ fn handle_config_reload<W: super::RenderSink>(
             if !overlays.is_active()
                 && let Some(ls) = workspace.render_window(zoomed).as_deref()
             {
-                paint_full_frame(
+                painted = paint_full_frame(
                     out,
                     ls,
                     panes,
@@ -4307,7 +4415,7 @@ fn handle_config_reload<W: super::RenderSink>(
         }
     }
     if overlays.is_active() {
-        paint_active_overlay(
+        painted = paint_active_overlay(
             out,
             overlays,
             workspace,
@@ -4323,6 +4431,7 @@ fn handle_config_reload<W: super::RenderSink>(
             theme,
         );
     }
+    painted
 }
 
 /// phux-i0e8.2.3: set a caller-supplied attach-time notice (the reconnect
@@ -5143,7 +5252,7 @@ mod tests {
             None,
             false,
         );
-        assert!(delivered);
+        assert!(matches!(delivered, StatusBarPaint::Published { .. }));
         let mut escaped = false;
         let plain: String = String::from_utf8_lossy(&out)
             .chars()
@@ -5165,11 +5274,60 @@ mod tests {
             plain.contains(super::super::onboarding::RETURN_NOTICE),
             "painted text: {plain:?}"
         );
-        finish_onboarding_claim(
-            Some(claim),
-            return_notice_painted(Some(&painter), delivered),
-        );
+        let mut claim = Some(claim);
+        finish_return_onboarding_after_paint(&mut claim, Some(&painter), delivered);
 
+        assert!(super::super::onboarding::begin_attach(&path).is_none());
+    }
+
+    #[test]
+    fn truncated_return_notice_retries_until_the_full_notice_is_published() {
+        use phux_config::widget::WidgetRegistry;
+        use phux_config::{StatusCfg, Widget};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("onboarding.json");
+        let mut claim = Some(returning_onboarding_claim(&path));
+        let cfg = StatusCfg {
+            left: vec![Widget::Bare("session-name".into())],
+            ..StatusCfg::default()
+        };
+        let bar = phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins())
+            .expect("bar");
+        let mut painter =
+            StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom);
+        assert!(apply_initial_notice(
+            Some(&mut painter),
+            Some(Notice::info(super::super::onboarding::RETURN_NOTICE)),
+        ));
+
+        let mut out = Vec::new();
+        let truncated = paint_bar_after_pane(
+            Some(&mut painter),
+            &mut out,
+            (20, 24),
+            None,
+            "demo",
+            None,
+            None,
+            false,
+        );
+        finish_return_onboarding_after_paint(&mut claim, Some(&painter), truncated);
+        assert!(claim.is_some(), "a truncated notice must remain retryable");
+
+        let delivered = paint_bar_after_pane(
+            Some(&mut painter),
+            &mut out,
+            (80, 24),
+            None,
+            "demo",
+            None,
+            None,
+            false,
+        );
+        finish_return_onboarding_after_paint(&mut claim, Some(&painter), delivered);
+
+        assert!(claim.is_none());
         assert!(super::super::onboarding::begin_attach(&path).is_none());
     }
 

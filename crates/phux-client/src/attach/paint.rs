@@ -24,6 +24,29 @@ use crate::render::chrome::status_bar::{BarInset, Position, StatusBarPainter, ma
 const SYNC_OUTPUT_BEGIN: &[u8] = b"\x1b[?2026h";
 const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum StatusBarPaint {
+    #[default]
+    NotPublished,
+    Published {
+        cols: u16,
+    },
+}
+
+impl StatusBarPaint {
+    pub(super) const fn or(self, other: Self) -> Self {
+        match other {
+            Self::NotPublished => self,
+            Self::Published { .. } => other,
+        }
+    }
+
+    pub(super) fn delivered(self, painter: Option<&StatusBarPainter>, expected: &str) -> bool {
+        matches!(self, Self::Published { cols } if usize::from(cols) >= expected.chars().count())
+            && painter.is_some_and(|painter| painter.notice_is(expected))
+    }
+}
+
 /// The server-authoritative mirror grid `(cols, rows)` used to letterbox a
 /// pane within its render rect (phux-7ubw).
 ///
@@ -154,11 +177,11 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     kernel: &AttachKernel,
     focused_pane: Option<&TerminalId>,
     viewport_dims: (u16, u16),
-    status_bar: Option<&mut StatusBarPainter>,
+    mut status_bar: Option<&mut StatusBarPainter>,
     sidebar: Option<SidebarReservation>,
     sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
     session_name: &str,
-) -> bool {
+) -> StatusBarPaint {
     // The full screen paint (ratatui chrome + per-pane libghostty render).
     // Its close-duration is the client-side render-lag signal the flywheel
     // reads; debug-level so it is free at the default filter, and kept here
@@ -214,7 +237,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     // The ED2 above cleared the bar row, so force a re-emit even if the
     // bar's content is byte-identical to the previous frame.
     let status_bar_painted = paint_bar_after_pane(
-        status_bar,
+        status_bar.as_deref_mut(),
         out,
         viewport_dims,
         sidebar,
@@ -250,10 +273,19 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     let fallback_origin = focused_pane
         .and_then(|fid| multi.rects.get(fid).copied())
         .map(|r| (r.x, r.y));
-    let _ = end_of_frame_cursor(out, final_cursor, fallback_origin);
-    let _ = out.write_all(SYNC_OUTPUT_END);
-    let _ = out.flush();
-    status_bar_painted
+    let cursor_published = end_of_frame_cursor(out, final_cursor, fallback_origin).is_ok();
+    let sync_ended = out.write_all(SYNC_OUTPUT_END).is_ok();
+    let frame_flushed = out.flush().is_ok();
+    if cursor_published && sync_ended && frame_flushed {
+        status_bar_painted
+    } else {
+        if !matches!(status_bar_painted, StatusBarPaint::NotPublished)
+            && let Some(painter) = status_bar
+        {
+            painter.invalidate();
+        }
+        StatusBarPaint::NotPublished
+    }
 }
 
 /// Repaint ONLY the chrome — the sidebar strip and the status bar — in place.
@@ -301,11 +333,11 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     panes: &HashMap<TerminalId, PaneSlot>,
     focused_pane: Option<&TerminalId>,
     viewport_dims: (u16, u16),
-    status_bar: Option<&mut StatusBarPainter>,
+    mut status_bar: Option<&mut StatusBarPainter>,
     sidebar: Option<SidebarReservation>,
     sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
     session_name: &str,
-) -> bool {
+) -> StatusBarPaint {
     let _paint = tracing::debug_span!(
         "paint_chrome_in_place",
         cols = viewport_dims.0,
@@ -332,9 +364,11 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     }
     // `bar_row_clobbered = false`: nothing cleared the bar row, so the
     // painter's cache decides. Skipped entirely when the config has no bar.
-    let status_bar_painted = status_bar.is_some_and(|painter| {
-        paint_bar_row(painter, out, viewport_dims, sidebar, session_name, false)
-    });
+    let status_bar_painted = status_bar
+        .as_deref_mut()
+        .map_or(StatusBarPaint::NotPublished, |painter| {
+            paint_bar_row(painter, out, viewport_dims, sidebar, session_name, false)
+        });
     // The sole CUP + DECTCEM + flush authority for this paint, reached on EVERY
     // path — bar or no bar. The sidebar's own emit parks the host cursor at the
     // end of the last strip row, so an early return here leaves the user's
@@ -343,7 +377,16 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     let cursor_flushed = end_of_frame_cursor(out, restore, fallback).is_ok();
     let sync_ended = out.write_all(SYNC_OUTPUT_END).is_ok();
     let frame_flushed = out.flush().is_ok();
-    status_bar_painted && cursor_flushed && sync_ended && frame_flushed
+    if cursor_flushed && sync_ended && frame_flushed {
+        status_bar_painted
+    } else {
+        if !matches!(status_bar_painted, StatusBarPaint::NotPublished)
+            && let Some(painter) = status_bar
+        {
+            painter.invalidate();
+        }
+        StatusBarPaint::NotPublished
+    }
 }
 
 /// phux-nz4.5: shared helper invoked after every pane render so the
@@ -390,9 +433,9 @@ pub(super) fn paint_bar_after_pane<W: Write>(
     restore_cursor: Option<(u16, u16)>,
     fallback_origin: Option<(u16, u16)>,
     bar_row_clobbered: bool,
-) -> bool {
+) -> StatusBarPaint {
     let Some(painter) = status_bar else {
-        return false;
+        return StatusBarPaint::NotPublished;
     };
     let status_bar_painted = paint_bar_row(
         painter,
@@ -410,7 +453,14 @@ pub(super) fn paint_bar_after_pane<W: Write>(
     // All cursor placement (restore / fallback / safety-net) and the
     // load-bearing flush are owned by the one composite authority (ADR-0029).
     let cursor_flushed = end_of_frame_cursor(out, restore_cursor, fallback_origin).is_ok();
-    status_bar_painted && cursor_flushed
+    if cursor_flushed {
+        status_bar_painted
+    } else {
+        if !matches!(status_bar_painted, StatusBarPaint::NotPublished) {
+            painter.invalidate();
+        }
+        StatusBarPaint::NotPublished
+    }
 }
 
 /// Emit the status-bar row and NOTHING else — no cursor placement, no flush.
@@ -427,10 +477,10 @@ fn paint_bar_row<W: Write>(
     sidebar: Option<SidebarReservation>,
     session_name: &str,
     bar_row_clobbered: bool,
-) -> bool {
+) -> StatusBarPaint {
     let inset = bar_inset(viewport_dims, sidebar);
     if viewport_dims.1 == 0 || inset.span(viewport_dims.0).1 == 0 {
-        return false;
+        return StatusBarPaint::NotPublished;
     }
     // Force a re-emit only when the bar row was physically overwritten
     // (e.g. the full-frame `ED2`). On the incremental path the pane
@@ -439,19 +489,22 @@ fn paint_bar_row<W: Write>(
     if bar_row_clobbered {
         painter.invalidate();
     }
-    painter
-        .paint(
-            out,
-            // phux-qtw8: yield the sidebar's columns so the window tabs start
-            // beside the strip, not underneath it.
-            inset,
-            viewport_dims.0,
-            viewport_dims.1,
-            // The window list is owned by the painter and injected inside
-            // `paint`; this context carries none.
-            &make_context(session_name, SystemTime::now()),
-        )
-        .is_ok()
+    match painter.paint_outcome(
+        out,
+        // phux-qtw8: yield the sidebar's columns so the window tabs start
+        // beside the strip, not underneath it.
+        inset,
+        viewport_dims.0,
+        viewport_dims.1,
+        // The window list is owned by the painter and injected inside
+        // `paint`; this context carries none.
+        &make_context(session_name, SystemTime::now()),
+    ) {
+        Ok(true) => StatusBarPaint::Published {
+            cols: inset.span(viewport_dims.0).1,
+        },
+        Ok(false) | Err(_) => StatusBarPaint::NotPublished,
+    }
 }
 
 /// Effective viewport available to pane rendering: outer dims with the
@@ -1052,6 +1105,79 @@ mod tests {
         assert!(
             s.contains("\x1b[?25h") || s.contains("\x1b[?25l"),
             "frame must end with an explicit cursor visibility; out = {s:?}"
+        );
+    }
+
+    struct TailFailSink {
+        fail_sync_end: bool,
+        fail_final_flush: bool,
+        sync_end_seen: bool,
+    }
+
+    impl Write for TailFailSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if buf == SYNC_OUTPUT_END {
+                self.sync_end_seen = true;
+                if self.fail_sync_end {
+                    return Err(std::io::Error::other("sync end failed"));
+                }
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.fail_final_flush && self.sync_end_seen {
+                return Err(std::io::Error::other("final flush failed"));
+            }
+            Ok(())
+        }
+    }
+
+    fn paint_full_frame_with_tail_failure(
+        fail_sync_end: bool,
+        fail_final_flush: bool,
+    ) -> StatusBarPaint {
+        let id = TerminalId::local(1);
+        let layout = LayoutState {
+            tree: Some(LayoutNode::Leaf(id.clone())),
+            focus: Some(id.clone()),
+        };
+        let mut panes = HashMap::from([(id.clone(), PaneSlot::new().expect("pane"))]);
+        let kernel = published_kernel(std::slice::from_ref(&id), 80, 24, b"");
+        let mut painter = build_painter();
+        let mut out = TailFailSink {
+            fail_sync_end,
+            fail_final_flush,
+            sync_end_seen: false,
+        };
+
+        paint_full_frame(
+            &mut out,
+            &layout,
+            &mut panes,
+            &kernel,
+            Some(&id),
+            (80, 24),
+            Some(&mut painter),
+            None,
+            None,
+            "demo",
+        )
+    }
+
+    #[test]
+    fn paint_full_frame_does_not_publish_bar_when_sync_end_fails() {
+        assert_eq!(
+            paint_full_frame_with_tail_failure(true, false),
+            StatusBarPaint::NotPublished
+        );
+    }
+
+    #[test]
+    fn paint_full_frame_does_not_publish_bar_when_final_flush_fails() {
+        assert_eq!(
+            paint_full_frame_with_tail_failure(false, true),
+            StatusBarPaint::NotPublished
         );
     }
 
