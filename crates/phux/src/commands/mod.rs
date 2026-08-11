@@ -593,15 +593,27 @@ pub(crate) enum Command {
         extra: Vec<String>,
     },
 
-    /// Kill a session, window, or pane.
+    /// Kill a session, window, pane, or the server itself.
     ///
     /// `TARGET` uses the selector grammar (see the top-level help):
     /// `name`, `name:N`, `name:N.M`, `name:tag`, `@N`, `.`. The selector
     /// is resolved client-side against a server-state snapshot to a set of
     /// Terminals; the server is then asked to kill each.
+    ///
+    /// `--server` stops the server process instead, ending every session on
+    /// it. Local socket only.
+    #[command(group = clap::ArgGroup::new("kill_what").required(true).args(["target", "server"]))]
     Kill {
         /// What to kill (selector).
-        target: String,
+        target: Option<String>,
+        /// Stop the running server, ending every session it holds.
+        ///
+        /// The server exits cleanly, so a supervised one stays stopped rather
+        /// than being restarted. Note that the next `phux attach`/`new` will
+        /// auto-spawn a fresh server: this stops the current one, it does not
+        /// disable phux.
+        #[arg(long)]
+        server: bool,
     },
 
     /// Insert an already-created pane into a session layout.

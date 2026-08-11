@@ -49,6 +49,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::FileUpload,
         ServerFeature::MoveTerminal,
         ServerFeature::TerminalReply,
+        ServerFeature::Shutdown,
     ])
 }
 
@@ -1842,6 +1843,7 @@ where
                     selection.limits,
                     input_lane.as_ref(),
                     &token,
+                    &root_token,
                 )
                 .await;
             }

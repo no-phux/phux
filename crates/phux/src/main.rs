@@ -592,7 +592,12 @@ fn main() -> ExitCode {
             socket,
             &extra,
         ),
-        Some(Command::Kill { target }) => commands::kill::run_kill(&target, socket),
+        Some(Command::Kill { target, server }) => match (target, server) {
+            (_, true) => commands::kill::run_kill_server(socket),
+            (Some(target), false) => commands::kill::run_kill(&target, socket),
+            // Unreachable: clap's `kill_what` group is `required(true)`.
+            (None, false) => ExitCode::FAILURE,
+        },
         Some(Command::Detach { session }) => commands::detach::run_detach(session, socket),
         Some(Command::InsertPane {
             target,

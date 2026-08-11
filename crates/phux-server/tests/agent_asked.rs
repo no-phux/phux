@@ -76,17 +76,30 @@ async fn negotiate(stream: &mut UnixStream) {
 /// `phux-ask` prefix, the `[q1]` id, the `Deploy to prod?` question, and the
 /// `Yes`/`No`/`Hold` suggestions. (The doubled `??` is literal: one `?`
 /// closes the question text, the second begins the `?s=` suffix.)
-fn seed_with_ask_title() -> CommandBuilder {
+fn seed_with_ask_title(release: &std::path::Path) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.arg("-c");
-    // `printf` is POSIX. `\033]2;...\007` is OSC 2 set-title. The leading
-    // sleep lets the client subscribe first; the trailing sleep keeps the
-    // ask marker set across the collection window.
-    cmd.arg(
-        "sleep 0.25; \
+    // `printf` is POSIX. `\033]2;...\007` is OSC 2 set-title. The title must
+    // not fire until the client has subscribed, or the event it is waiting
+    // for happens before it is listening.
+    //
+    // This was `sleep 0.25`, which is the same shape as the flakes fixed in
+    // phux-w266: it bets that a subscribe completes inside a fixed window,
+    // and loses that bet under parallel test load. The barrier removes the
+    // bet.
+    //
+    // The trailing sleep was `2`, which was a second, subtler race: it bounds
+    // how long the ask marker stays set, and the collector waits up to
+    // `WIRE_RECV_TIMEOUT` (15s). Under load the pane could exit first, which
+    // reaps the session, self-exits the server, and fails the test with
+    // "early eof" rather than with anything about asks. The pane only has to
+    // outlive the collection window, so it now comfortably does.
+    cmd.arg(format!(
+        "until [ -f '{}' ]; do sleep 0.01; done; \
          printf '\\033]2;phux-ask[q1]:Deploy to prod??s=Yes|No|Hold\\007'; \
-         sleep 2",
-    );
+         sleep 60",
+        release.display()
+    ));
     cmd
 }
 
@@ -164,7 +177,8 @@ fn subscribed_client_receives_asked_event_from_ask_title() {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
 
-        let cmd = seed_with_ask_title();
+        let release = tmp.path().join("release");
+        let cmd = seed_with_ask_title(&release);
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
 
@@ -180,9 +194,13 @@ fn subscribed_client_receives_asked_event_from_ask_title() {
             "first server-to-client frame must be ATTACHED",
         );
 
-        // ---- SUBSCRIBE_EVENTS (server-wide) ---- before the seed's
-        // ~250ms deferred ask-title fires.
+        // ---- SUBSCRIBE_EVENTS (server-wide) ----
         send_frame(&mut stream, &FrameKind::SubscribeEvents { terminal: None }).await;
+
+        // Only now let the seed emit the ask title. Subscribing first is the
+        // precondition the whole test rests on, so it is enforced rather than
+        // raced.
+        std::fs::write(&release, b"go").expect("release the ask title");
 
         // ---- collect until the Asked event arrives ----
         let asked = collect_until_asked(&mut stream, WIRE_RECV_TIMEOUT).await;

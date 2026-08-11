@@ -628,6 +628,10 @@ pub const MAX_APPLY_INPUT_EVENTS: usize = 256;
 pub const MAX_APPLY_INPUT_COMMAND_BODY: usize = 64 * 1024;
 /// Wire tag for [`Command::PutFile`].
 pub(crate) const COMMAND_TAG_PUT_FILE: u8 = 0x15;
+/// Wire tag for [`Command::Shutdown`]. Appended after `PUT_FILE`'s `0x15`;
+/// `0x0a` and `0x0b` are freed-and-reserved and MUST NOT be reallocated
+/// without a `minor` bump (`appendix-reserved.md`).
+pub(crate) const COMMAND_TAG_SHUTDOWN: u8 = 0x16;
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
 // mirror the four `INPUT_*` frame atoms (`docs/spec/input.md`).
@@ -1606,6 +1610,30 @@ pub enum Command {
     /// `COMMAND_RESULT { Ok }` (best-effort, before the re-exec). Backs
     /// `phux upgrade`.
     Upgrade,
+    /// Ask the server to stop itself (phux-pimp). A bare trigger, like
+    /// [`Self::Upgrade`], and the same shape for the same reason: the work
+    /// is entirely server-side and nothing about it belongs on the wire.
+    ///
+    /// The server acks and then cancels its root token, which is the *same*
+    /// signal idle-exit (ADR-0063), the last-pane self-exit, and SIGINT/SIGTERM
+    /// already deliver — so every pane gets its SIGHUP-then-grace-then-reap and
+    /// the socket is unlinked on the way out. That path also yields exit
+    /// status 0, which is what keeps a supervised server *stopped*: launchd's
+    /// `KeepAlive{SuccessfulExit: false}` restarts a server killed by a signal
+    /// but not one that exited cleanly. A signal-based stop therefore could
+    /// not have satisfied ADR-0080's "a deliberately stopped server stays
+    /// stopped" on macOS; this can.
+    ///
+    /// **Local only.** Stopping a server on behalf of a remote peer is a
+    /// policy decision phux has not made, so this is refused on any transport
+    /// but the UDS. Gated by [`ServerFeature::Shutdown`](crate::caps::ServerFeature::Shutdown):
+    /// a client MUST NOT send it unless the bit is advertised, because an
+    /// older server drops the unknown tag silently and "nothing happened" is
+    /// indistinguishable from "the server ignored me".
+    ///
+    /// Reply: `COMMAND_RESULT { Ok }`, sent before the teardown begins, then
+    /// the connection closes. Backs `phux kill --server`.
+    Shutdown,
     /// Assert an exclusive input lease over `terminal_id` (ADR-0033, "take
     /// the wheel"). While a lease is held, only the holder's `INPUT_*`
     /// frames reach the PTY; others are dropped (still acked, preserving the
@@ -4219,6 +4247,9 @@ pub(super) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
         Command::Upgrade => {
             enc.write_u8(COMMAND_TAG_UPGRADE);
         }
+        Command::Shutdown => {
+            enc.write_u8(COMMAND_TAG_SHUTDOWN);
+        }
         Command::AcquireInput {
             terminal_id,
             mode,
@@ -4428,6 +4459,7 @@ pub(super) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeErr
             })
         }
         COMMAND_TAG_UPGRADE => Ok(Command::Upgrade),
+        COMMAND_TAG_SHUTDOWN => Ok(Command::Shutdown),
         COMMAND_TAG_ACQUIRE_INPUT => {
             let terminal_id = decode_terminal_id(dec)?;
             let mode = InputMode::from_u8(dec.read_u8()?).ok_or(DecodeError::UnknownEnumValue {

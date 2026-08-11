@@ -618,12 +618,22 @@ pub(crate) async fn handle_command(
     bootstrap_limits: BootstrapLimits,
     input_lane: Option<&InputLaneHandle>,
     connection_token: &CancellationToken,
+    root_token: &CancellationToken,
 ) {
     // UPGRADE is handled out-of-band: `handle_upgrade` acks the client itself
     // and then re-execs the process, so it never returns a `CommandResult` for
     // the shared send below (ADR-0032).
     if matches!(command, Command::Upgrade) {
         handle_upgrade(state, request_id, out_tx).await;
+        return;
+    }
+
+    // SHUTDOWN is the other command whose subject is the server rather than a
+    // Terminal, and it is out-of-band for the same reason as its sibling: it
+    // acks and then ends the process, so there is no `CommandResult` left for
+    // the shared send below (phux-pimp).
+    if matches!(command, Command::Shutdown) {
+        handle_shutdown(state, client_id, request_id, out_tx, root_token).await;
         return;
     }
 
@@ -1572,6 +1582,68 @@ fn handle_detach_terminal(
     }
     debug!(?client_id, ?terminal_id, "DETACH_TERMINAL unsubscribed");
     CommandResult::Ok
+}
+
+/// Handle `SHUTDOWN` (phux-pimp): stop the server, on request, over the local
+/// socket only.
+///
+/// Cancelling the root token is the *same* signal idle-exit (ADR-0063), the
+/// last-pane self-exit, and SIGINT/SIGTERM already deliver, so this is not a
+/// second shutdown path -- it is a fourth door onto the one that exists. That
+/// is what makes it correct rather than merely effective: every pane gets
+/// `TerminalActor::shutdown_pty`'s SIGHUP-then-grace-then-reap and the socket
+/// is unlinked by `unlink_socket_if_ours`, because both hang off the token
+/// rather than off the caller.
+///
+/// Acks itself, like [`handle_upgrade`], because the process is gone before a
+/// returned `CommandResult` could be sent. The ack goes out BEFORE the cancel
+/// and its result is ignored: the client is about to see its connection close
+/// either way, and a client that already hung up is not a reason to refuse a
+/// stop.
+///
+/// **Local only.** Who may stop a server -- whether a paired phone should be
+/// able to end every pane on the host -- is a policy question phux has not
+/// answered, so rather than answer it by accident this refuses any transport
+/// but the Unix socket (`L1.md` §5.1 permits the restriction).
+async fn handle_shutdown(
+    state: &SharedState,
+    client_id: ClientId,
+    request_id: u32,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    root_token: &CancellationToken,
+) {
+    let transport = state.with(|s| s.peer_identity(client_id).map(|peer| peer.transport));
+    if !matches!(
+        transport,
+        Some(phux_protocol::policy::TransportType::UnixSocket)
+    ) {
+        warn!(
+            ?client_id,
+            ?transport,
+            "SHUTDOWN refused: local socket only"
+        );
+        let _ = out_tx
+            .send(Outbound::Frame(FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::Error {
+                    code: ErrorCode::PermissionDenied,
+                    message: "SHUTDOWN is accepted on the local socket only".to_owned(),
+                },
+            }))
+            .await;
+        return;
+    }
+
+    info!(?client_id, "SHUTDOWN requested; stopping the server");
+    let _ = out_tx
+        .send(Outbound::Frame(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::Ok,
+        }))
+        .await;
+    // Let the ack reach the writer before the teardown races it.
+    tokio::task::yield_now().await;
+    root_token.cancel();
 }
 
 /// Handle `UPGRADE` (ADR-0032): prepare the graceful re-exec, ack the client,

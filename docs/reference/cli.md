@@ -91,7 +91,7 @@ Commands:
   new          Create a new session and attach to it
   spawn        Spawn a Terminal without attaching (`SPAWN_TERMINAL`)
   launch       Launch an agent integration in a new pane
-  kill         Kill a session, window, or pane
+  kill         Kill a session, window, pane, or the server itself
   insert-pane  Insert an already-created pane into a session layout
   move-pane    Move one existing pane beside another, even across sessions
   swap-pane    Swap two existing pane leaves in the same session layout
@@ -1236,17 +1236,24 @@ Options:
 ## `phux kill`
 
 ```text
-Kill a session, window, or pane.
+Kill a session, window, pane, or the server itself.
 
 `TARGET` uses the selector grammar (see the top-level help): `name`, `name:N`, `name:N.M`, `name:tag`, `@N`, `.`. The selector is resolved client-side against a server-state snapshot to a set of Terminals; the server is then asked to kill each.
 
-Usage: phux kill [OPTIONS] <TARGET>
+`--server` stops the server process instead, ending every session on it. Local socket only.
+
+Usage: phux kill [OPTIONS] <TARGET|--server>
 
 Arguments:
-  <TARGET>
+  [TARGET]
           What to kill (selector)
 
 Options:
+      --server
+          Stop the running server, ending every session it holds.
+
+          The server exits cleanly, so a supervised one stays stopped rather than being restarted. Note that the next `phux attach`/`new` will auto-spawn a fresh server: this stops the current one, it does not disable phux.
+
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 

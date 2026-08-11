@@ -1440,8 +1440,8 @@ proptest! {
 }
 
 /// The fixed-payload command verbs share one wire shape (tag + positional
-/// body); one looped table covers `GET_STATE`, UPGRADE, `RELEASE_INPUT`
-/// (ADR-0033), and `REPORT_ASKED`.
+/// body); one looped table covers `GET_STATE`, UPGRADE, SHUTDOWN,
+/// `RELEASE_INPUT` (ADR-0033), and `REPORT_ASKED`.
 #[test]
 fn command_simple_variants_round_trip() {
     for command in [
@@ -1449,6 +1449,7 @@ fn command_simple_variants_round_trip() {
             scope: StateScope::Server,
         },
         Command::Upgrade,
+        Command::Shutdown,
         Command::ReleaseInput {
             terminal_id: TerminalId::local(7),
         },

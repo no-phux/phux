@@ -328,6 +328,7 @@ ServerFeature = bitset (u32) {
     FILE_UPLOAD        = 0x00000020, // PUT_FILE (L1.md §6.2.2; ADR-0059)
     MOVE_TERMINAL      = 0x00000040, // MOVE_TERMINAL (L1.md §3.1; ADR-0056)
     TERMINAL_REPLY     = 0x00000080, // INPUT_TERMINAL_REPLY (L1.md §3.4; ADR-0070)
+    SHUTDOWN           = 0x00000100, // SHUTDOWN (L1.md §5.1)
 }
 
 EngineFeatureSet = bitset (u32) {

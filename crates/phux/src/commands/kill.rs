@@ -19,6 +19,102 @@ use crate::selector;
 /// success, 1 on a selector miss / no server, 2 on a server-side refusal, 3
 /// when a miss cannot be trusted because the hub could not see the whole
 /// fleet (see [`partial`]).
+/// `phux kill --server` — stop the running server, ending every session.
+///
+/// The stop is a wire command, not a signal, and that is the whole point.
+/// A signal-killed server exits non-zero-equivalent, and launchd's
+/// `KeepAlive{SuccessfulExit: false}` restarts it after `ThrottleInterval` --
+/// so a signal-based stop would contradict the very promise ADR-0080 makes
+/// ("a deliberately stopped server stays stopped") on the platform phux
+/// mostly runs on. `SHUTDOWN` cancels the server's root token and it exits 0,
+/// which is what makes the promise true (phux-pimp).
+///
+/// Exit codes: 0 when the server stopped (or was already gone -- this is
+/// idempotent, because "make it not be running" is the caller's actual
+/// intent), 1 when it could not be reached, 2 when it refused.
+pub(crate) fn run_kill_server(socket: Option<PathBuf>) -> ExitCode {
+    let socket_path = socket.unwrap_or_else(default_socket_path);
+    let rt = match cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+
+    // Nothing listening is success, not an error: the caller asked for the
+    // server to be stopped, and it is. Reap a stale entry on the way past so
+    // the next auto-spawn does not have to.
+    match phux_config::socket::probe(&socket_path) {
+        phux_config::socket::SocketState::Absent => {
+            eprintln!("phux: no server running at {}", socket_path.display());
+            return ExitCode::SUCCESS;
+        }
+        phux_config::socket::SocketState::Stale => {
+            let _ = phux_config::socket::reap_stale(&socket_path);
+            eprintln!(
+                "phux: no server running at {} (reaped a stale socket)",
+                socket_path.display()
+            );
+            return ExitCode::SUCCESS;
+        }
+        phux_config::socket::SocketState::Live => {}
+    }
+
+    rt.block_on(async move {
+        let mut conn = match Connection::connect(&socket_path).await {
+            Ok(conn) => conn,
+            Err(err) => return report_no_server(&err, &socket_path, "kill --server"),
+        };
+
+        let result = command_on(&mut conn, 1, WireCommand::Shutdown).await;
+        match result {
+            // The server acks then tears down, so losing the connection at
+            // any point after the request is the expected shape, not a fault.
+            Ok(CommandResult::Ok) | Err(AttachError::Disconnected) => {}
+            Ok(CommandResult::Error { code, message }) => {
+                eprintln!("phux: server refused to stop ({code:?}): {message}");
+                return ExitCode::from(2);
+            }
+            Ok(other) => {
+                eprintln!("phux: unexpected reply to SHUTDOWN: {other:?}");
+                return ExitCode::from(2);
+            }
+            Err(err) => {
+                eprintln!("phux: kill --server failed: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+
+        // Wait for the socket to stop answering, not merely for the ack: the
+        // caller's next act is often to start a replacement, and returning
+        // while the old server still holds the socket makes that fail.
+        let deadline = std::time::Instant::now() + SHUTDOWN_DEADLINE;
+        while std::time::Instant::now() < deadline {
+            if phux_config::socket::probe(&socket_path) != phux_config::socket::SocketState::Live {
+                let _ = phux_config::socket::reap_stale(&socket_path);
+                eprintln!("phux: server stopped");
+                return ExitCode::SUCCESS;
+            }
+            tokio::time::sleep(SHUTDOWN_POLL).await;
+        }
+        eprintln!(
+            "phux: server acknowledged the stop but is still listening on {} after {}s",
+            socket_path.display(),
+            SHUTDOWN_DEADLINE.as_secs()
+        );
+        ExitCode::FAILURE
+    })
+}
+
+/// How long `--server` waits for the socket to stop answering after the ack.
+///
+/// Generous: teardown SIGHUPs every pane's process group and reaps each
+/// child, so a server holding many panes legitimately takes longer than one
+/// holding none. A caller that wants to start a replacement needs the socket
+/// actually free, so exiting early would just move the failure.
+const SHUTDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Poll cadence while waiting for the socket to go quiet.
+const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
 pub(crate) fn run_kill(target: &str, socket: Option<PathBuf>) -> ExitCode {
     let selector = match selector::parse(target) {
         Ok(sel) => sel,

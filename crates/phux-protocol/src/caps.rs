@@ -802,6 +802,8 @@ pub const FILE_UPLOAD: u32 = 0x0000_0020;
 pub const MOVE_TERMINAL: u32 = 0x0000_0040;
 /// Wire bit advertising opaque client terminal-emulator PTY replies.
 pub const TERMINAL_REPLY: u32 = 0x0000_0080;
+/// Wire bit advertising the `SHUTDOWN` command (phux-pimp).
+pub const SHUTDOWN: u32 = 0x0000_0100;
 
 /// An additive server-owned protocol feature.
 #[repr(u32)]
@@ -818,6 +820,11 @@ pub enum ServerFeature {
     MoveTerminal = MOVE_TERMINAL,
     /// The server accepts opaque terminal-emulator replies for attached PTYs.
     TerminalReply = TERMINAL_REPLY,
+    /// The server accepts `SHUTDOWN`, a local-only request to stop the
+    /// server process itself (phux-pimp). A client MUST see this bit before
+    /// sending the command; an older server would silently drop the unknown
+    /// tag, which is indistinguishable from a stop that did not happen.
+    Shutdown = SHUTDOWN,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -828,7 +835,8 @@ impl ServerFeatureSet {
     const KNOWN: u32 = (ServerFeature::AcknowledgedInput as u32)
         | (ServerFeature::FileUpload as u32)
         | (ServerFeature::MoveTerminal as u32)
-        | (ServerFeature::TerminalReply as u32);
+        | (ServerFeature::TerminalReply as u32)
+        | (ServerFeature::Shutdown as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]

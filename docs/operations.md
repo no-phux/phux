@@ -294,9 +294,14 @@ on the supervisor to notice a start that can never succeed.
 
 Two consequences worth knowing:
 
-- **A deliberately stopped server stays stopped.** Earlier units used
-  `KeepAlive: true`, which restarts on *every* exit — a server could not
-  be stopped.
+- **A deliberately stopped server stays stopped.** `phux kill --server`
+  asks the server to stop over the wire, so it exits *cleanly* and the
+  supervisor leaves it alone. Earlier units used `KeepAlive: true`, which
+  restarts on *every* exit — a server could not be stopped at all. A server
+  killed by a signal still counts as an abnormal exit under launchd and
+  comes back, which is why the stop is a command rather than a `kill(1)`.
+  Note the next `phux attach`/`phux new` auto-spawns a fresh server: this
+  stops the current one, it does not disable phux.
 - **A crash-loop is visible.** Every server start appends a record to
   `$XDG_STATE_HOME/phux/server-starts.log`, and `phux doctor` *fails* the
   `server-health` check when the server has started 5+ times in an hour:
