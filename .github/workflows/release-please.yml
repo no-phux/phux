@@ -41,6 +41,24 @@
 #   2. Repo secret  RELEASE_APP_PRIVATE_KEY = the App's generated .pem
 #      Repo variable RELEASE_APP_ID          = the App's numeric App ID
 #
+# DO NOT REINTRODUCE `last-release-sha` (this is the bug that produced #419):
+#   It is a BOOTSTRAP-ONLY setting. Upstream is explicit that it "is never
+#   ignored — you must remove/change it once a good release PR is merged", so a
+#   pinned value does not decay into a floor: release-please keeps starting its
+#   commit search there forever, in preference to the tags. Ours was pinned to
+#   040fea1a (v0.1.0) and stayed there for 242 commits, so the release PR
+#   eventually proposed a 0.15.0 whose changelog re-listed the entire project
+#   history — every feature already shipped in 0.9.0 through 0.14.1, plus
+#   BREAKING CHANGES that shipped months earlier. Merging that would have
+#   duplicated most of CHANGELOG.md and bumped the minor on the strength of
+#   long-released commits.
+#
+#   The manifest (.release-please-manifest.json) plus the vX.Y.Z tags are the
+#   real source of truth for "where the last release was", and both are now
+#   reliable — tag creation for draft releases was fixed in #417. If a release
+#   PR ever again proposes commits that are already in CHANGELOG.md, look here
+#   first.
+#
 # crates.io is deliberately NOT wired in here. Publishing is irreversible and
 # there is no human in a tag-triggered path, so phux-protocol is published only
 # via the manual publish-crate.yml dispatch. See CONTRIBUTING.md.
