@@ -48,7 +48,8 @@ invocation facts belong in [Quickstart](./docs/QUICKSTART.md) and the generated
 - Never use urgency, celebration, streaks, or completion theater to drive
   engagement.
 - Let every transient surface be dismissed immediately. Dismissal must not
-  trigger the action underneath or block ordinary terminal input.
+  activate a covered UI control; when ordinary terminal input closes a lesson,
+  that input continues to the terminal instead of being swallowed.
 
 ## 2. The First Five Minutes
 
