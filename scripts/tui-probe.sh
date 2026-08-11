@@ -423,16 +423,23 @@ replay_cast() {
   reply="$("$PHUX_BIN" play --socket "$PHUX_SOCK" --json --speed 100 --idle-limit 0.05 "$cast" "$SESSION" 2>>"$TRANSCRIPT")"
   printf '%s\n' "$reply" >"$RUN_DIR/$name-play.json"
   pane="$(python3 -c 'import json,sys; print("@" + str(json.load(sys.stdin)["terminal_id"]))' <<<"$reply")"
-  run_phux wait --socket "$PHUX_SOCK" --until "$marker" --timeout 15 "$pane"
+  if [[ -n $marker ]]; then
+    run_phux wait --socket "$PHUX_SOCK" --until "$marker" --timeout 15 "$pane"
+  fi
   record_command "$PHUX_BIN" snapshot --socket "$PHUX_SOCK" --json "$pane"
   snapshot="$("$PHUX_BIN" snapshot --socket "$PHUX_SOCK" --json "$pane" 2>>"$TRANSCRIPT")"
   printf '%s\n' "$snapshot" >"$RUN_DIR/$name-replay-snapshot.json"
-  assert_file_contains "$RUN_DIR/$name-replay-snapshot.json" "$marker"
+  python3 -c 'import json,sys; json.load(sys.stdin)' <<<"$snapshot"
+  if [[ -n $marker ]]; then
+    assert_file_contains "$RUN_DIR/$name-replay-snapshot.json" "$marker"
+  fi
 }
 
 STEP=complete-replay
 note "replay complete recording through a real server pane"
-replay_cast "$VALID_COMPLETE_CAST" TYPED-AFTER-HISTORY complete
+# A complete cast includes alternate-screen exit, so its final replayed glass
+# is intentionally the restored host screen rather than an in-TUI marker.
+replay_cast "$VALID_COMPLETE_CAST" '' complete
 
 STEP=interrupted-replay
 note "replay interrupted recording prefix through a real server pane"
