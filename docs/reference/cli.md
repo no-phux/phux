@@ -46,7 +46,7 @@ DRIVE
   new        Create a session
   spawn      Create a pane without attaching
   launch     Start a configured agent integration in a new pane
-  kill       Kill a session, window, or pane
+  kill       Kill a session, window, pane, or the server itself
   detach     Detach clients from a session
   insert-pane Insert an already-created pane into a layout
   move-pane  Move an existing pane beside another, across sessions too
