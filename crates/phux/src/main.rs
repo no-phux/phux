@@ -206,8 +206,31 @@ Start here:\n  \
 Run `phux --help` for every command or `phux <command> --help` for details.\n";
 
 fn short_help_requested() -> bool {
-    let mut args = std::env::args_os().skip(1);
-    args.next().is_some_and(|arg| arg == "-h") && args.next().is_none()
+    short_help_requested_in(std::env::args_os().skip(1))
+}
+
+fn short_help_requested_in<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut args = args.into_iter();
+    let mut requested = false;
+    while let Some(arg) = args.next() {
+        let arg = arg.as_ref();
+        if arg == "-h" {
+            requested = true;
+        } else if arg == "--socket" || arg == "--rec" {
+            if args.next().is_none() {
+                return false;
+            }
+        } else if !arg.to_string_lossy().starts_with("--socket=")
+            && !arg.to_string_lossy().starts_with("--rec=")
+        {
+            return false;
+        }
+    }
+    requested
 }
 
 /// The teaching error for a root `--rec` in front of a verb.
@@ -409,15 +432,26 @@ fn run_skill() -> ExitCode {
 /// alt screen) and therefore MUST keep logs off stderr.
 ///
 /// The alt-screen-entering paths are: `phux attach`, naked `phux` (attach
-/// fallback), and `phux new` *without* `--json` (which attaches after
-/// creating). `phux new --json` creates without attaching, so it stays on
-/// the stderr path like every other one-shot verb.
+/// fallback), `phux new` *without* `--json`, and worktree new/open with
+/// `--attach`. Headless creation stays on the stderr path like every other
+/// one-shot verb.
 const fn is_interactive_client(cli: &Cli) -> bool {
     match &cli.command {
-        Some(Command::Attach { .. }) | None => true,
+        Some(
+            Command::Attach { .. }
+            | Command::Worktree(
+                commands::WorktreeAction::New { attach: true, .. }
+                | commands::WorktreeAction::Open { attach: true, .. },
+            ),
+        )
+        | None => true,
         Some(Command::New { json, .. }) => !json.json,
         _ => false,
     }
+}
+
+fn json_output_requested() -> bool {
+    std::env::args_os().any(|arg| arg == "--json")
 }
 
 #[allow(
@@ -458,6 +492,16 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // Refuse every alt-screen path before telemetry, dialing, server spawn,
+    // filesystem mutation, or terminal-control output can happen.
+    if is_interactive_client(&cli)
+        && let Err(code) = commands::attach::interactive_tty_preflight()
+    {
+        return code;
+    }
+
+    let json_output = json_output_requested();
+
     // Install the process-global tracing subscriber once, before any
     // runtime spins up. Without this, every `tracing::{info,debug,...}`
     // call site is a no-op.
@@ -488,7 +532,9 @@ fn main() -> ExitCode {
         match phux_server::telemetry::init() {
             Ok(guard) => guard,
             Err(err) => {
-                eprintln!("phux: tracing init failed (continuing): {err}");
+                if !json_output {
+                    eprintln!("phux: tracing init failed (continuing): {err}");
+                }
                 None
             }
         }
@@ -932,6 +978,43 @@ mod tests {
         };
         assert_eq!(name, None);
         assert_eq!(session.as_deref(), Some("flagged"));
+    }
+
+    #[test]
+    fn every_attach_capable_root_path_is_classified_before_dispatch() {
+        for argv in [
+            ["phux", "attach"].as_slice(),
+            ["phux", "new", "work"].as_slice(),
+            ["phux", "worktree", "new", "branch", "--attach"].as_slice(),
+            ["phux", "worktree", "open", "branch", "--attach"].as_slice(),
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("interactive invocation parses");
+            assert!(super::is_interactive_client(&cli), "missed {argv:?}");
+        }
+
+        for argv in [
+            ["phux", "new", "-s", "work", "--json"].as_slice(),
+            ["phux", "worktree", "open", "branch"].as_slice(),
+            ["phux", "ls"].as_slice(),
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("headless invocation parses");
+            assert!(
+                !super::is_interactive_client(&cli),
+                "misclassified {argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn root_short_help_survives_global_option_placement() {
+        for argv in [
+            ["-h"].as_slice(),
+            ["--socket", "/tmp/phux.sock", "-h"].as_slice(),
+            ["-h", "--socket=/tmp/phux.sock"].as_slice(),
+        ] {
+            assert!(super::short_help_requested_in(argv), "missed {argv:?}");
+        }
+        assert!(!super::short_help_requested_in(["attach", "-h"]));
     }
 
     #[test]

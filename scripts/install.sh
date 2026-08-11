@@ -171,6 +171,7 @@ fi
 tmp_dir="$(mktemp -d)"
 publish_dir=""
 lock_dir=""
+lock_acquired=0
 publish_started=0
 publish_complete=0
 published_phux=0
@@ -199,7 +200,7 @@ cleanup() {
   if [ -n "$publish_dir" ]; then
     rm -rf "$publish_dir"
   fi
-  if [ -n "$lock_dir" ]; then
+  if [ "$lock_acquired" -eq 1 ]; then
     rmdir "$lock_dir" 2>/dev/null || true
   fi
   rm -rf "$tmp_dir"
@@ -310,6 +311,7 @@ lock_dir="${install_dir}/.phux-install.lock"
 if ! mkdir "$lock_dir" 2>/dev/null; then
   die "another phux install is already publishing to ${install_dir}"
 fi
+lock_acquired=1
 
 # Stage and back up on the destination filesystem so every publish/restore is
 # a rename. The trap restores the complete previous pair after any partial

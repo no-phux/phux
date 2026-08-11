@@ -131,4 +131,16 @@ if find "$INTERRUPTED" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q
   exit 1
 fi
 
+# Refusing a concurrent install must never remove the active installer's lock.
+LOCKED="$TMP/locked"
+mkdir -p "$LOCKED/.phux-install.lock"
+if run_install "$LOCKED" "/usr/bin:/bin" >"$TMP/locked.out" 2>"$TMP/locked.err"; then
+  echo "installer unexpectedly ignored an active publish lock" >&2
+  exit 1
+fi
+[[ -d $LOCKED/.phux-install.lock ]] || {
+  echo "refused installer removed another installer's lock" >&2
+  exit 1
+}
+
 echo "installer transaction tests passed"

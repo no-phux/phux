@@ -28,6 +28,7 @@ SERVER_LOG="$RUN_DIR/server.log"
 SERVER_PID=""
 WATCHDOG_PID=""
 STEP=setup
+SAW_ONBOARDING=0
 
 mkdir -p "$RUN_DIR"
 : >"$TRANSCRIPT"
@@ -232,9 +233,40 @@ printf -v ATTACH_COMMAND \
   "$HOST_WRAPPER"
 record_command "${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
 "${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
+deadline=$((SECONDS + 15))
+while (( SECONDS < deadline )); do
+  screen "$SESSION" >"$RUN_DIR/.screen"
+  if grep -Fq -- 'Your session is live' "$RUN_DIR/.screen"; then
+    SAW_ONBOARDING=1
+    capture first-use
+    "${TMUX[@]}" send-keys -t "$SESSION" \
+      "clear; printf 'ONBOARDING-PASSTHROUGH\\r\\nREADY-VISIBLE-MARKER\\r\\n'" Enter
+    assert_screen_contains "$SESSION" ONBOARDING-PASSTHROUGH
+    break
+  fi
+  if grep -Fq -- READY-VISIBLE-MARKER "$RUN_DIR/.screen"; then
+    break
+  fi
+  sleep 0.05
+done
 assert_screen_contains "$SESSION" READY-VISIBLE-MARKER
 capture attach-visible
 assert_marker_once "$RUN_DIR/attach-visible.txt" READY-VISIBLE-MARKER
+if (( SAW_ONBOARDING == 1 )); then
+  assert_marker_once "$RUN_DIR/attach-visible.txt" ONBOARDING-PASSTHROUGH
+  STEP=first-use-return
+  note "first detach reassures, then the same session returns"
+  "${TMUX[@]}" send-keys -t "$SESSION" C-a
+  "${TMUX[@]}" send-keys -t "$SESSION" d
+  assert_screen_contains "$SESSION" HOST-TERMINAL-RESTORED
+  assert_file_contains "$CLIENT_LOG" 'phux: session still running; run `phux` when you want to come back'
+  cp "$CLIENT_LOG" "$RUN_DIR/first-detach.log"
+  "${TMUX[@]}" kill-session -t "$SESSION"
+  "${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
+  assert_screen_contains "$SESSION" 'Welcome back - this is the session you left running'
+  assert_screen_contains "$SESSION" READY-VISIBLE-MARKER
+  capture first-return
+fi
 
 HISTORY_PAGES_AT_MARKER="$(grep -c 'history_page' "$CLIENT_LOG" 2>/dev/null || true)"
 STEP=typing-during-history
