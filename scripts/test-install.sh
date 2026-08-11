@@ -77,6 +77,12 @@ cat > "$FAKE_BIN/mv" <<'EOF'
 set -euo pipefail
 src=${@: -2:1}
 dst=${@: -1}
+if [[ ${SIGNAL_AFTER_FIRST_PUBLISH:-0} == 1 && $src == */.phux-install.*/phux && $dst == "$SIGNAL_INSTALL_DIR/phux" && ! -e $SIGNAL_MARKER ]]; then
+  /bin/mv "$@"
+  : > "$SIGNAL_MARKER"
+  kill -TERM "$PPID"
+  exit 0
+fi
 if [[ $src == */.phux-install.*/phux-mcp && $dst == "$FAIL_INSTALL_DIR/phux-mcp" && ! -e $FAIL_MARKER ]]; then
   : > "$FAIL_MARKER"
   exit 1
@@ -100,6 +106,28 @@ grep -Fxq 'old phux' "$ROLLBACK/phux"
 grep -Fxq 'old phux-mcp' "$ROLLBACK/phux-mcp"
 if find "$ROLLBACK" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then
   echo "installer left transaction artifacts after rollback" >&2
+  exit 1
+fi
+
+# Interrupt a fresh install immediately after the first publish rename. The
+# destination must contain the complete pair or neither binary, never half.
+INTERRUPTED="$TMP/interrupted"
+mkdir "$INTERRUPTED"
+if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
+  SIGNAL_AFTER_FIRST_PUBLISH=1 SIGNAL_INSTALL_DIR="$INTERRUPTED" \
+  SIGNAL_MARKER="$TMP/signaled-once" FAIL_INSTALL_DIR=/nonexistent \
+  FAIL_MARKER="$TMP/not-failed" \
+  bash "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
+    --install-dir "$INTERRUPTED" >"$TMP/interrupted.out" 2>"$TMP/interrupted.err"; then
+  echo "installer unexpectedly succeeded after a publish interruption" >&2
+  exit 1
+fi
+if [[ -e $INTERRUPTED/phux || -e $INTERRUPTED/phux-mcp ]]; then
+  echo "installer left a partial binary pair after interruption" >&2
+  exit 1
+fi
+if find "$INTERRUPTED" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then
+  echo "installer left transaction artifacts after interruption" >&2
   exit 1
 fi
 
