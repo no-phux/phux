@@ -158,7 +158,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     sidebar: Option<SidebarReservation>,
     sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
     session_name: &str,
-) {
+) -> bool {
     // The full screen paint (ratatui chrome + per-pane libghostty render).
     // Its close-duration is the client-side render-lag signal the flywheel
     // reads; debug-level so it is free at the default filter, and kept here
@@ -213,7 +213,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     }
     // The ED2 above cleared the bar row, so force a re-emit even if the
     // bar's content is byte-identical to the previous frame.
-    paint_bar_after_pane(
+    let status_bar_painted = paint_bar_after_pane(
         status_bar,
         out,
         viewport_dims,
@@ -253,6 +253,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
     let _ = end_of_frame_cursor(out, final_cursor, fallback_origin);
     let _ = out.write_all(SYNC_OUTPUT_END);
     let _ = out.flush();
+    status_bar_painted
 }
 
 /// Repaint ONLY the chrome — the sidebar strip and the status bar — in place.
@@ -304,7 +305,7 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     sidebar: Option<SidebarReservation>,
     sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
     session_name: &str,
-) {
+) -> bool {
     let _paint = tracing::debug_span!(
         "paint_chrome_in_place",
         cols = viewport_dims.0,
@@ -331,9 +332,9 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     }
     // `bar_row_clobbered = false`: nothing cleared the bar row, so the
     // painter's cache decides. Skipped entirely when the config has no bar.
-    if let Some(painter) = status_bar {
-        paint_bar_row(painter, out, viewport_dims, sidebar, session_name, false);
-    }
+    let status_bar_painted = status_bar.is_some_and(|painter| {
+        paint_bar_row(painter, out, viewport_dims, sidebar, session_name, false)
+    });
     // The sole CUP + DECTCEM + flush authority for this paint, reached on EVERY
     // path — bar or no bar. The sidebar's own emit parks the host cursor at the
     // end of the last strip row, so an early return here leaves the user's
@@ -342,6 +343,7 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     let _ = end_of_frame_cursor(out, restore, fallback);
     let _ = out.write_all(SYNC_OUTPUT_END);
     let _ = out.flush();
+    status_bar_painted
 }
 
 /// phux-nz4.5: shared helper invoked after every pane render so the
@@ -388,11 +390,11 @@ pub(super) fn paint_bar_after_pane<W: Write>(
     restore_cursor: Option<(u16, u16)>,
     fallback_origin: Option<(u16, u16)>,
     bar_row_clobbered: bool,
-) {
+) -> bool {
     let Some(painter) = status_bar else {
-        return;
+        return false;
     };
-    paint_bar_row(
+    let status_bar_painted = paint_bar_row(
         painter,
         out,
         viewport_dims,
@@ -408,6 +410,7 @@ pub(super) fn paint_bar_after_pane<W: Write>(
     // All cursor placement (restore / fallback / safety-net) and the
     // load-bearing flush are owned by the one composite authority (ADR-0029).
     let _ = end_of_frame_cursor(out, restore_cursor, fallback_origin);
+    status_bar_painted
 }
 
 /// Emit the status-bar row and NOTHING else — no cursor placement, no flush.
@@ -424,7 +427,11 @@ fn paint_bar_row<W: Write>(
     sidebar: Option<SidebarReservation>,
     session_name: &str,
     bar_row_clobbered: bool,
-) {
+) -> bool {
+    let inset = bar_inset(viewport_dims, sidebar);
+    if viewport_dims.1 == 0 || inset.span(viewport_dims.0).1 == 0 {
+        return false;
+    }
     // Force a re-emit only when the bar row was physically overwritten
     // (e.g. the full-frame `ED2`). On the incremental path the pane
     // render stays above the bar row, so the painter's content/dims
@@ -432,17 +439,19 @@ fn paint_bar_row<W: Write>(
     if bar_row_clobbered {
         painter.invalidate();
     }
-    let _ = painter.paint(
-        out,
-        // phux-qtw8: yield the sidebar's columns so the window tabs start
-        // beside the strip, not underneath it.
-        bar_inset(viewport_dims, sidebar),
-        viewport_dims.0,
-        viewport_dims.1,
-        // The window list is owned by the painter and injected inside
-        // `paint`; this context carries none.
-        &make_context(session_name, SystemTime::now()),
-    );
+    painter
+        .paint(
+            out,
+            // phux-qtw8: yield the sidebar's columns so the window tabs start
+            // beside the strip, not underneath it.
+            inset,
+            viewport_dims.0,
+            viewport_dims.1,
+            // The window list is owned by the painter and injected inside
+            // `paint`; this context carries none.
+            &make_context(session_name, SystemTime::now()),
+        )
+        .is_ok()
 }
 
 /// Effective viewport available to pane rendering: outer dims with the

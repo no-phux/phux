@@ -1458,6 +1458,11 @@ fn finish_onboarding_claim(claim: Option<super::onboarding::AttachClaim>, delive
     }
 }
 
+fn return_notice_painted(status_bar: Option<&StatusBarPainter>, paint_succeeded: bool) -> bool {
+    paint_succeeded
+        && status_bar.is_some_and(|painter| painter.notice_is(super::onboarding::RETURN_NOTICE))
+}
+
 /// Drive the `tokio::select!` loop until detach or a session switch.
 ///
 /// `initial_attached` is the `FrameKind::Attached` frame that
@@ -1981,11 +1986,10 @@ async fn main_loop<W: super::RenderSink>(
         return_notice_available.then(|| Notice::info(super::onboarding::RETURN_NOTICE))
     });
     let notice_accepted = apply_initial_notice(status_bar.as_mut(), initial_notice);
-    if onboarding_moment == super::onboarding::AttachMoment::Return {
-        finish_onboarding_claim(
-            onboarding_claim.take(),
-            return_notice_available && notice_accepted,
-        );
+    if onboarding_moment == super::onboarding::AttachMoment::Return
+        && (!return_notice_available || !notice_accepted)
+    {
+        onboarding_claim.take();
     }
 
     // The introduction floats over the live pane after bootstrap. It is a
@@ -2643,6 +2647,9 @@ async fn main_loop<W: super::RenderSink>(
                             || outcome.layout_replaced
                             || outcome.reflow_panes
                             || outcome.sessions.is_some();
+                        if return_notice_painted(status_bar.as_ref(), outcome.status_bar_painted) {
+                            finish_onboarding_claim(onboarding_claim.take(), true);
+                        }
                         // ADR-0040: the frame may have added panes
                         // (TerminalSpawned, a peer's layout broadcast) or
                         // removed them (TerminalClosed). Re-sweep so every
@@ -3045,8 +3052,8 @@ async fn main_loop<W: super::RenderSink>(
                         if !overlays.is_active()
                             && let Some(ls) = workspace.render_window(zoomed.as_ref()).as_deref()
                         {
-                            match drained.level {
-                                RepaintLevel::None => {}
+                            let status_bar_painted = match drained.level {
+                                RepaintLevel::None => false,
                                 RepaintLevel::Chrome => paint_chrome_in_place(
                                     out,
                                     ls,
@@ -3070,6 +3077,9 @@ async fn main_loop<W: super::RenderSink>(
                                     Some(&mut sidebar_painter),
                                     &session_name,
                                 ),
+                            };
+                            if return_notice_painted(status_bar.as_ref(), status_bar_painted) {
+                                finish_onboarding_claim(onboarding_claim.take(), true);
                             }
                         }
                     }
@@ -5058,6 +5068,109 @@ mod tests {
         ));
         // No notice: a first attach is a no-op even with a painter.
         assert!(!apply_initial_notice(Some(&mut painter), None));
+    }
+
+    fn returning_onboarding_claim(path: &std::path::Path) -> super::super::onboarding::AttachClaim {
+        let intro = super::super::onboarding::begin_attach(path).expect("intro claim");
+        assert!(intro.commit());
+        assert_eq!(
+            super::super::onboarding::after_detach(path),
+            Some(super::super::onboarding::DETACH_NOTICE)
+        );
+        super::super::onboarding::begin_attach(path).expect("return claim")
+    }
+
+    #[test]
+    fn accepted_return_notice_is_retryable_when_attach_exits_before_paint() {
+        use phux_config::widget::WidgetRegistry;
+        use phux_config::{StatusCfg, Widget};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("onboarding.json");
+        let claim = returning_onboarding_claim(&path);
+        let cfg = StatusCfg {
+            left: vec![Widget::Bare("session-name".into())],
+            ..StatusCfg::default()
+        };
+        let bar = phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins())
+            .expect("bar");
+        let mut painter =
+            StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom);
+
+        assert!(apply_initial_notice(
+            Some(&mut painter),
+            Some(Notice::info(super::super::onboarding::RETURN_NOTICE)),
+        ));
+        drop(claim);
+
+        assert_eq!(
+            super::super::onboarding::begin_attach(&path)
+                .expect("return remains retryable")
+                .moment(),
+            super::super::onboarding::AttachMoment::Return
+        );
+    }
+
+    #[test]
+    fn delivered_return_notice_commits_onboarding_claim() {
+        use phux_config::widget::WidgetRegistry;
+        use phux_config::{StatusCfg, Widget};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("onboarding.json");
+        let claim = returning_onboarding_claim(&path);
+        let cfg = StatusCfg {
+            left: vec![Widget::Bare("session-name".into())],
+            ..StatusCfg::default()
+        };
+        let bar = phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins())
+            .expect("bar");
+        let mut painter =
+            StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom);
+        assert!(apply_initial_notice(
+            Some(&mut painter),
+            Some(Notice::info(super::super::onboarding::RETURN_NOTICE)),
+        ));
+
+        let mut out = Vec::new();
+        let delivered = paint_bar_after_pane(
+            Some(&mut painter),
+            &mut out,
+            (80, 24),
+            None,
+            "demo",
+            None,
+            None,
+            false,
+        );
+        assert!(delivered);
+        let mut escaped = false;
+        let plain: String = String::from_utf8_lossy(&out)
+            .chars()
+            .filter(|ch| {
+                if escaped {
+                    if ch.is_ascii_alphabetic() {
+                        escaped = false;
+                    }
+                    false
+                } else if *ch == '\x1b' {
+                    escaped = true;
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+        assert!(
+            plain.contains(super::super::onboarding::RETURN_NOTICE),
+            "painted text: {plain:?}"
+        );
+        finish_onboarding_claim(
+            Some(claim),
+            return_notice_painted(Some(&painter), delivered),
+        );
+
+        assert!(super::super::onboarding::begin_attach(&path).is_none());
     }
 
     #[test]

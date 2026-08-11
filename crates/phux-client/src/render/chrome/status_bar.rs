@@ -773,6 +773,13 @@ impl StatusBarPainter {
         }
     }
 
+    /// Whether `expected` currently owns the transient notice slot.
+    pub(crate) fn notice_is(&self, expected: &str) -> bool {
+        self.notice
+            .as_ref()
+            .is_some_and(|(notice, _)| notice.text == expected)
+    }
+
     /// ADR-0033: set (or clear, with `None`) the supervisory badge overlaid on
     /// the bar for the focused pane. Returns `true` if the badge actually
     /// changed (so the caller can gate a repaint on it). A change invalidates

@@ -231,6 +231,9 @@ pub(super) struct FrameOutcome {
     /// holder transition, and a degraded-federation push (an uncorrelated
     /// `ERROR { SATELLITE_UNREACHABLE }`). Empty on every other frame.
     pub(super) notices: Vec<Notice>,
+    /// A status-bar paint completed while handling this frame. Used to commit
+    /// attach onboarding only after its notice reaches the render sink.
+    pub(super) status_bar_painted: bool,
 }
 
 /// Payload-free label for the inbound `FrameKind` — the `kind` field on
@@ -902,6 +905,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             // carries the resulting notice; the branches are exclusive, so
             // only one of them moves it.
             let notices = kernel_route.notices;
+            let mut status_bar_painted = false;
             // Correlate this apply: which pane, which seq, how many bytes.
             // The span's CLOSE duration is the per-frame client paint cost
             // (vt_write + render_at for the focused pane) — the headline
@@ -1046,7 +1050,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                         .get(fid)
                         .map(|r| (r.x, r.y))
                         .or(Some((0, 0)));
-                paint_bar_after_pane(
+                status_bar_painted |= paint_bar_after_pane(
                     status_bar,
                     out,
                     viewport_dims,
@@ -1102,7 +1106,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                             .as_ref()
                             .and_then(|fid| rects.get(fid))
                             .map(|r| (r.x, r.y));
-                        paint_bar_after_pane(
+                        status_bar_painted |= paint_bar_after_pane(
                             status_bar,
                             out,
                             viewport_dims,
@@ -1132,6 +1136,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 chrome_dirty: title_changed,
                 pty_writes,
                 notices,
+                status_bar_painted,
                 ..FrameOutcome::default()
             })
         }
