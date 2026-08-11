@@ -3507,19 +3507,42 @@ impl TerminalActor {
             limits,
             reply,
         } = req;
+        // A cursor the actor cannot honour is a routine race, not a fault: a
+        // resize drains every binding (`invalidate_all_native_cursors`) while
+        // the client's HISTORY_REQUEST for the generation it was just handed
+        // is still in flight. That is guaranteed to happen for a pane created
+        // mid-attach, which the layout resizes immediately after its bootstrap
+        // (phux-rv52). HISTORY_TOMBSTONE is the frame the protocol defines for
+        // exactly this -- it degrades the one replica's scrollback and leaves
+        // the attach intact -- so an unusable cursor is answered, never
+        // escalated to a connection-scoped Error.
+        let stale = |wire_cursor: Bytes| FrameKind::HistoryTombstone {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            cursor: wire_cursor,
+            reason: phux_protocol::wire::frame::HistoryTombstoneReason::Stale,
+        };
         let Ok(cursor): Result<crate::native_state::OpaqueHistoryCursor, _> =
             wire_cursor.as_ref().try_into()
         else {
+            // Unlike the races below this one is a client protocol violation,
+            // so it is worth a log line -- but not worth ending the attach.
+            warn!(
+                len = wire_cursor.len(),
+                ?terminal_id,
+                "HISTORY_REQUEST carried a malformed cursor"
+            );
             let _ = reply.send(NativeHistoryReply {
                 permit,
-                result: Err(crate::native_state::NativeStateError::InvalidHandle),
+                result: Ok(stale(wire_cursor)),
             });
             return;
         };
         let Some(binding) = self.native_cursor_owners.get(&owner) else {
             let _ = reply.send(NativeHistoryReply {
                 permit,
-                result: Err(crate::native_state::NativeStateError::InvalidHandle),
+                result: Ok(stale(wire_cursor)),
             });
             return;
         };
@@ -3530,7 +3553,7 @@ impl TerminalActor {
         {
             let _ = reply.send(NativeHistoryReply {
                 permit,
-                result: Err(crate::native_state::NativeStateError::InvalidHandle),
+                result: Ok(stale(wire_cursor)),
             });
             return;
         }
@@ -5661,6 +5684,101 @@ mod tests {
                 && actual_bootstrap == bootstrap_id
         ));
     }
+
+    /// phux-rv52: a pane created while a client is attached is resized by the
+    /// layout the instant it exists, and `invalidate_all_native_cursors`
+    /// drains every binding. The `HISTORY_REQUEST` the client already sent for
+    /// the generation it was just handed then arrives against no binding at
+    /// all. That race is routine, so it must be answered with a per-replica
+    /// `HISTORY_TOMBSTONE` -- never a `NativeStateError`, which the connection
+    /// pump escalates to a connection-scoped Error frame and which used to
+    /// take the whole attach down.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
+        let bundle = TerminalActor::new(20, 5).expect("new actor");
+        let mut actor = bundle.actor;
+        let terminal_id = phux_protocol::ids::TerminalId::local(1);
+        let stream_id = phux_protocol::ids::StreamId::new(1).expect("stream id");
+        let bootstrap_id = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id");
+        let cursor: crate::native_state::OpaqueHistoryCursor =
+            [1; libghostty_vt::snapshot::incremental::TOKEN_LEN];
+        let wire_cursor = Bytes::copy_from_slice(&cursor);
+        let binding = || NativeCursorOwner {
+            cursor,
+            record_index: 0,
+            touched: tokio::time::Instant::now(),
+            next_page_seq: 1,
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+        };
+        let (outbound, _outbound_rx) = dummy_outbound();
+
+        let request = async |actor: &mut TerminalActor, bootstrap_id| {
+            let permit = outbound
+                .clone()
+                .reserve_owned()
+                .await
+                .expect("history request permit");
+            let (reply, answered) = oneshot::channel();
+            actor.handle_native_history(NativeHistoryRequest {
+                permit,
+                owner: 7,
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                cursor: wire_cursor.clone(),
+                max_bytes: phux_protocol::caps::BootstrapLimits::default().max_history_page_bytes(),
+                max_rows: 128,
+                limits: phux_protocol::caps::BootstrapLimits::default(),
+                reply,
+            });
+            answered
+                .await
+                .expect("history reply")
+                .result
+                .expect("an unusable cursor is answered, never faulted")
+        };
+
+        // The binding is gone entirely: the mid-attach resize drained it.
+        actor.native_cursor_owners.insert(7, binding());
+        actor.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
+        assert!(actor.native_cursor_owners.is_empty());
+        let frame = request(&mut actor, bootstrap_id).await;
+        assert!(
+            matches!(
+                &frame,
+                FrameKind::HistoryTombstone {
+                    reason: phux_protocol::wire::frame::HistoryTombstoneReason::Stale,
+                    cursor: echoed,
+                    ..
+                } if *echoed == wire_cursor
+            ),
+            "a drained binding tombstones the cursor: {frame:?}"
+        );
+
+        // The binding exists but names an older generation: the client paged
+        // against the bootstrap it held before the resize replaced it.
+        actor.native_cursor_owners.insert(7, binding());
+        let superseded = phux_protocol::ids::BootstrapId::new(2).expect("bootstrap id");
+        let frame = request(&mut actor, superseded).await;
+        assert!(
+            matches!(
+                &frame,
+                FrameKind::HistoryTombstone {
+                    reason: phux_protocol::wire::frame::HistoryTombstoneReason::Stale,
+                    ..
+                }
+            ),
+            "a superseded generation tombstones the cursor: {frame:?}"
+        );
+        assert!(
+            actor.native_cursor_owners.contains_key(&7),
+            "answering a stale request must not release the live binding"
+        );
+    }
+
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     #[tokio::test(flavor = "current_thread")]
     #[allow(
