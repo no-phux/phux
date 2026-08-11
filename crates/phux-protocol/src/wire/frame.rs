@@ -759,11 +759,77 @@ pub enum ErrorCode {
     InternalError = 65535,
 }
 
+/// How much of a consumer's world an [`ErrorCode`] invalidates.
+///
+/// A consumer never learns fatality from a code — the same code is emitted
+/// both fatally and non-fatally by the same server, and SPEC §9 makes
+/// termination the job of `DETACHED` plus transport close, never of an
+/// `ERROR`. What the scope answers is the narrower question the consumer
+/// actually has to answer on receipt: how far to degrade.
+///
+/// This is a Rust-side classification, not a wire field. `FrameKind::Error`
+/// carries no terminal id, so an uncorrelated `Terminal`-scoped error cannot
+/// be attributed to one pane; the scope is what the consumer knows about the
+/// blast radius, not about the subject.
+///
+/// Marked `#[non_exhaustive]` for the same reason [`ErrorCode`] is: a later
+/// protocol version may need a scope this one does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ErrorScope {
+    /// One Terminal's work failed. Everything else the consumer holds —
+    /// the other panes, the layout, the attach — remains valid.
+    Terminal,
+    /// One request failed. The consumer's request table owns the outcome;
+    /// no projected state changes.
+    Request,
+    /// The connection itself is unusable, so the consumer should **expect
+    /// the server to close it** — a `DETACHED { PROTOCOL_ERROR }` and a
+    /// transport close, per SPEC §9's sender obligation. It does **not**
+    /// mean "close now": the consumer keeps reading until the close
+    /// arrives, so any frames still in flight (including the `DETACHED`
+    /// itself) are observed rather than discarded.
+    Connection,
+}
+
 impl ErrorCode {
     /// Wire encoding of this code: the `#[repr(u16)]` discriminant.
     #[must_use]
     pub const fn as_wire(self) -> u16 {
         self as u16
+    }
+
+    /// How far a consumer should degrade on receipt of this code; see
+    /// [`ErrorScope`].
+    ///
+    /// The match is deliberately exhaustive with no wildcard arm, so adding
+    /// an [`ErrorCode`] variant is a compile error here rather than a silent
+    /// default that misclassifies the new code's blast radius.
+    #[must_use]
+    pub const fn scope(self) -> ErrorScope {
+        match self {
+            Self::VersionIncompatible
+            | Self::FrameTooLarge
+            | Self::InvalidCommand
+            | Self::PermissionDenied => ErrorScope::Connection,
+            Self::NotAttached
+            | Self::AlreadyAttached
+            | Self::SessionNotFound
+            | Self::WindowNotFound
+            | Self::ClientNotFound
+            | Self::UnsafePaste
+            | Self::InputLeaseHeld
+            | Self::InputDeliveryUnknown
+            | Self::CanonicalLimitExceeded => ErrorScope::Request,
+            Self::TerminalNotFound
+            | Self::UnsupportedSatelliteRoute
+            | Self::SatelliteUnreachable
+            | Self::ResourceExhausted
+            | Self::CodecUnavailable
+            | Self::MalformedMessage
+            | Self::UnknownMessageType
+            | Self::InternalError => ErrorScope::Terminal,
+        }
     }
 
     /// Inverse of [`Self::as_wire`]; returns `None` for values that do not
@@ -4881,4 +4947,85 @@ fn decode_asked_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> 
         suggestions,
         elapsed_seconds,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ErrorCode, ErrorScope};
+
+    /// Every code this protocol version defines, in wire order.
+    ///
+    /// Hand-maintained on purpose. [`ErrorCode::scope`] already fails to
+    /// compile when a variant is added; this list makes the same omission
+    /// fail for [`ErrorCode::from_wire`], whose table is equally
+    /// hand-written and has no compiler check of its own.
+    const ALL_CODES: &[ErrorCode] = &[
+        ErrorCode::VersionIncompatible,
+        ErrorCode::UnknownMessageType,
+        ErrorCode::MalformedMessage,
+        ErrorCode::FrameTooLarge,
+        ErrorCode::CodecUnavailable,
+        ErrorCode::NotAttached,
+        ErrorCode::AlreadyAttached,
+        ErrorCode::SessionNotFound,
+        ErrorCode::WindowNotFound,
+        ErrorCode::TerminalNotFound,
+        ErrorCode::ClientNotFound,
+        ErrorCode::UnsupportedSatelliteRoute,
+        ErrorCode::SatelliteUnreachable,
+        ErrorCode::InvalidCommand,
+        ErrorCode::PermissionDenied,
+        ErrorCode::ResourceExhausted,
+        ErrorCode::UnsafePaste,
+        ErrorCode::InputLeaseHeld,
+        ErrorCode::InputDeliveryUnknown,
+        ErrorCode::CanonicalLimitExceeded,
+        ErrorCode::InternalError,
+    ];
+
+    #[test]
+    fn every_error_code_round_trips_and_carries_a_scope() {
+        for &code in ALL_CODES {
+            assert_eq!(
+                ErrorCode::from_wire(code.as_wire()),
+                Some(code),
+                "{code:?} does not round-trip through the wire tables"
+            );
+            assert!(
+                matches!(
+                    code.scope(),
+                    ErrorScope::Terminal | ErrorScope::Request | ErrorScope::Connection
+                ),
+                "{code:?} has no scope"
+            );
+        }
+    }
+
+    #[test]
+    fn the_decodable_wire_space_is_exactly_the_known_codes() {
+        let decoded: Vec<ErrorCode> = (0..=u16::MAX).filter_map(ErrorCode::from_wire).collect();
+        assert_eq!(
+            decoded, ALL_CODES,
+            "a code was added to the enum without a `from_wire` row (or vice versa)"
+        );
+    }
+
+    #[test]
+    fn scopes_partition_the_codes_as_documented() {
+        assert_eq!(
+            ErrorCode::VersionIncompatible.scope(),
+            ErrorScope::Connection
+        );
+        assert_eq!(ErrorCode::PermissionDenied.scope(), ErrorScope::Connection);
+        assert_eq!(ErrorCode::NotAttached.scope(), ErrorScope::Request);
+        assert_eq!(
+            ErrorCode::CanonicalLimitExceeded.scope(),
+            ErrorScope::Request
+        );
+        assert_eq!(
+            ErrorCode::SatelliteUnreachable.scope(),
+            ErrorScope::Terminal
+        );
+        assert_eq!(ErrorCode::InternalError.scope(), ErrorScope::Terminal);
+    }
 }

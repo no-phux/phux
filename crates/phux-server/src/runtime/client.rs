@@ -1627,6 +1627,19 @@ where
                 let Some(selection) = negotiated.as_ref() else {
                     continue;
                 };
+                // SPEC L1 s4.5: a history failure names one replica, so it is
+                // answered with a cursor-scoped status frame. An `ERROR` here
+                // is uncorrelated and carries no terminal identity, so a
+                // consumer cannot attribute it to a pane and today takes the
+                // whole attach down (phux-ijuj). Every exit below tombstones
+                // the cursor instead.
+                let tombstone = |reason| FrameKind::HistoryTombstone {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    cursor: cursor.clone(),
+                    reason,
+                };
                 if !matches!(
                     selection.profile,
                     BootstrapProfile::NativeState {
@@ -1634,13 +1647,14 @@ where
                         ..
                     }
                 ) {
+                    warn!(
+                        ?terminal_id,
+                        "HISTORY_REQUEST requires negotiated native checkpoint v2"
+                    );
                     let _ = out_tx
-                        .send(Outbound::Frame(FrameKind::Error {
-                            request_id: None,
-                            code: ErrorCode::CodecUnavailable,
-                            message: "HISTORY_REQUEST requires negotiated native checkpoint v2"
-                                .to_owned(),
-                        }))
+                        .send(Outbound::Frame(tombstone(
+                            phux_protocol::wire::frame::HistoryTombstoneReason::CodecFailure,
+                        )))
                         .await;
                     continue;
                 }
@@ -1650,12 +1664,12 @@ where
                         .and_then(|pane| server.terminal_handle(pane).cloned())
                 });
                 let Some(handle) = handle else {
+                    // The terminal is gone, so the cursor's lease died with it.
+                    warn!(?terminal_id, "HISTORY_REQUEST for an unknown terminal");
                     let _ = out_tx
-                        .send(Outbound::Frame(FrameKind::Error {
-                            request_id: None,
-                            code: ErrorCode::TerminalNotFound,
-                            message: format!("no such terminal: {terminal_id:?}"),
-                        }))
+                        .send(Outbound::Frame(tombstone(
+                            phux_protocol::wire::frame::HistoryTombstoneReason::Released,
+                        )))
                         .await;
                     continue;
                 };
@@ -1668,10 +1682,12 @@ where
                     .send(crate::terminal_actor::NativeHistoryRequest {
                         permit,
                         owner: client_id.0,
-                        terminal_id,
+                        // Cloned, not moved: the tombstone fallback below still
+                        // needs the identity if the actor answers with an error.
+                        terminal_id: terminal_id.clone(),
                         stream_id,
                         bootstrap_id,
-                        cursor,
+                        cursor: cursor.clone(),
                         max_bytes,
                         max_rows,
                         limits: selection.limits,
@@ -1690,19 +1706,23 @@ where
                         reply.permit.send(Outbound::Frame(frame));
                     }
                     Err(error) => {
-                        let code = match error {
+                        // Mirrors the actor's own mapping for the errors it
+                        // already answers in-band (`handle_native_history`);
+                        // these are the residual ones that escaped it.
+                        let reason = match error {
                             crate::native_state::NativeStateError::OutOfMemory
                             | crate::native_state::NativeStateError::OutOfSpace { .. }
                             | crate::native_state::NativeStateError::LimitExceeded => {
-                                ErrorCode::ResourceExhausted
+                                phux_protocol::wire::frame::HistoryTombstoneReason::Limit
                             }
-                            _ => ErrorCode::InternalError,
+                            _ => phux_protocol::wire::frame::HistoryTombstoneReason::CodecFailure,
                         };
-                        reply.permit.send(Outbound::Frame(FrameKind::Error {
-                            request_id: None,
-                            code,
-                            message: format!("native history request failed: {error}"),
-                        }));
+                        warn!(
+                            %error,
+                            ?terminal_id,
+                            "native history request failed; tombstoning the cursor"
+                        );
+                        reply.permit.send(Outbound::Frame(tombstone(reason)));
                     }
                 }
             }

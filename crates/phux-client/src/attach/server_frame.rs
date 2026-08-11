@@ -295,6 +295,10 @@ struct KernelRoute {
     resync_required: bool,
     ignored: bool,
     failed: Option<String>,
+    /// phux-ijuj: transient status-bar notices raised by the kernel's own
+    /// effects rather than by the frame arm. Folded into the dispatched
+    /// [`FrameOutcome`] by the arms whose frames can produce them.
+    notices: Vec<Notice>,
 }
 impl KernelRoute {
     fn damaged(&self, terminal_id: &TerminalId) -> bool {
@@ -608,6 +612,24 @@ fn route_engine_frame(
             KernelEffect::Damage(damage) => {
                 route.damaged.insert(damage.terminal_id.clone());
             }
+            // phux-ijuj: history degradation is per-pane and recoverable —
+            // the live stream stays valid, only that pane's scrollback
+            // boundary is gone. The kernel already told us WHICH pane, so
+            // unlike an uncorrelated ERROR this one can name it.
+            KernelEffect::Status(phux_client_core::session::KernelStatus::HistoryUnavailable {
+                key,
+                reason,
+            }) => {
+                tracing::warn!(
+                    terminal_id = ?key.terminal_id,
+                    ?reason,
+                    "history unavailable for pane"
+                );
+                route.notices.push(Notice::warn(format!(
+                    "{}: scrollback unavailable ({reason:?})",
+                    pane_label(&key.terminal_id),
+                )));
+            }
             KernelEffect::Status(status) => {
                 tracing::warn!(?status, "session kernel status");
             }
@@ -858,6 +880,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
         | FrameKind::HistoryRejected { .. } => Ok(FrameOutcome {
             history_request: kernel_route.history_request,
             pty_writes: kernel_route.pty_writes,
+            notices: kernel_route.notices,
             ..FrameOutcome::default()
         }),
         FrameKind::AttachReady { .. } => Ok(FrameOutcome {
@@ -874,6 +897,11 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             let damaged = kernel_route.damaged(&terminal_id);
             let ack = kernel_route.ack;
             let pty_writes = kernel_route.pty_writes;
+            // phux-ijuj: live output can retire this pane's scrollback
+            // (a pruned or codec-failed anchor). Every exit from this arm
+            // carries the resulting notice; the branches are exclusive, so
+            // only one of them moves it.
+            let notices = kernel_route.notices;
             // Correlate this apply: which pane, which seq, how many bytes.
             // The span's CLOSE duration is the per-frame client paint cost
             // (vt_write + render_at for the focused pane) — the headline
@@ -917,6 +945,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 return Ok(FrameOutcome {
                     ack,
                     pty_writes,
+                    notices,
                     ..FrameOutcome::default()
                 });
             }
@@ -932,6 +961,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                     ack,
                     pty_writes,
                     chrome_dirty: title_changed,
+                    notices,
                     ..FrameOutcome::default()
                 });
             };
@@ -1101,6 +1131,7 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 ack,
                 chrome_dirty: title_changed,
                 pty_writes,
+                notices,
                 ..FrameOutcome::default()
             })
         }
@@ -1608,33 +1639,51 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
         // remain valid server traffic: ignoring them must not tear down an
         // otherwise healthy attach.
         FrameKind::Event { .. } => Ok(FrameOutcome::default()),
-        // phux-i0e8.2.1 (second consumer, closing phux-i0e8.2's otherwise
-        // orphaned lifecycle event): a spontaneous, uncorrelated
-        // `ERROR { SATELLITE_UNREACHABLE }` is the hub announcing a
-        // degraded-federation transition — part of the fleet just became
-        // invisible. Surface it as a Warn notice through the same slot
-        // instead of dropping it in the catch-all below. Correlated
-        // satellite errors (`request_id: Some`) stay on their
-        // request/reply paths; `phux status`'s degradation line remains
-        // the CLI view of the same state, not the TUI representation.
+        // phux-ijuj: ERROR never terminates the attach. SPEC §9 puts
+        // termination on `DETACHED` plus transport close, and the same
+        // `ErrorCode` is emitted both fatally and non-fatally by the same
+        // server, so no client-side "which codes are fatal" table can be
+        // sound. This arm is therefore total over `Error` and total in its
+        // result: it degrades, it never tears down. `FrameKind::Error`
+        // carries no terminal id, so an uncorrelated per-pane failure cannot
+        // be attributed to a pane — the notice names the code instead.
         FrameKind::Error {
-            request_id: None,
-            code: ErrorCode::SatelliteUnreachable,
+            request_id,
+            code,
             message,
         } => {
-            tracing::warn!(message = %message, "federation degraded (satellite unreachable)");
+            // Request-correlated errors are normally consumed by
+            // `Connection`'s request table. A raced reply that reaches the
+            // attached dispatcher is still direction-valid and must not
+            // mutate or retire terminal state.
+            if request_id.is_some() {
+                return Ok(FrameOutcome::default());
+            }
+            // phux-i0e8.2.1 (second consumer, closing phux-i0e8.2's otherwise
+            // orphaned lifecycle event): a spontaneous, uncorrelated
+            // `ERROR { SATELLITE_UNREACHABLE }` is the hub announcing a
+            // degraded-federation transition — part of the fleet just became
+            // invisible. It keeps its own wording; `phux status`'s
+            // degradation line remains the CLI view of the same state, not
+            // the TUI representation.
+            if code == ErrorCode::SatelliteUnreachable {
+                tracing::warn!(message = %message, "federation degraded (satellite unreachable)");
+                return Ok(FrameOutcome {
+                    notices: vec![Notice::warn(format!("federation degraded: {message}"))],
+                    ..FrameOutcome::default()
+                });
+            }
+            tracing::warn!(
+                ?code,
+                scope = ?code.scope(),
+                message = %message,
+                "server error frame in the attached phase"
+            );
             Ok(FrameOutcome {
-                notices: vec![Notice::warn(format!("federation degraded: {message}"))],
+                notices: vec![Notice::warn(format!("server error ({code:?}): {message}"))],
                 ..FrameOutcome::default()
             })
         }
-        // Request-correlated errors are normally consumed by `Connection`'s
-        // request table. A raced reply that reaches the attached dispatcher is
-        // still direction-valid and must not mutate or retire terminal state.
-        FrameKind::Error {
-            request_id: Some(_),
-            ..
-        } => Ok(FrameOutcome::default()),
         other => Err(AttachError::Protocol(format!(
             "frame is not valid from a server in the attached phase: {other:?}",
         ))),
@@ -4637,6 +4686,150 @@ mod tests {
         assert!(
             correlated.notices.is_empty(),
             "a correlated satellite error belongs to its request, not the notice slot"
+        );
+    }
+
+    /// phux-ijuj: no `ErrorCode`, in either correlation shape, ends the
+    /// attach.
+    ///
+    /// SPEC §9 puts termination on `DETACHED` plus transport close, and this
+    /// server emits the same code both fatally and non-fatally, so a
+    /// client-side fatality table cannot be sound. The dispatcher therefore
+    /// degrades on every `ERROR`: uncorrelated codes raise a Warn notice
+    /// naming the code, correlated ones stay on their request/reply path.
+    ///
+    /// The code list is swept out of the wire tables rather than written by
+    /// hand, so a code added to the protocol is covered without editing this
+    /// test.
+    #[test]
+    fn no_error_code_is_fatal_in_the_attached_phase() {
+        use crate::render::chrome::status_bar::NoticeSeverity;
+        use phux_protocol::wire::frame::ErrorCode;
+
+        let codes: Vec<ErrorCode> = (0..=u16::MAX).filter_map(ErrorCode::from_wire).collect();
+        assert!(
+            !codes.is_empty(),
+            "the wire tables must define at least one error code"
+        );
+
+        let pane = tid(1);
+        for code in codes {
+            for request_id in [None, Some(11_u32)] {
+                let mut workspace = Workspace::single(pane.clone());
+                let mut focused = Some(pane.clone());
+                let mut panes = panes_for(&[&pane]);
+                let outcome = try_drive_layout_frame(
+                    FrameKind::Error {
+                        request_id,
+                        code,
+                        message: "the pane fell over".to_owned(),
+                    },
+                    None,
+                    &mut workspace,
+                    &mut focused,
+                    &mut panes,
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "ERROR {code:?} (request_id={request_id:?}) must not end the attach: {error:?}"
+                    )
+                });
+                assert!(
+                    !outcome.exit,
+                    "ERROR {code:?} (request_id={request_id:?}) must not ask the driver to exit"
+                );
+
+                match (request_id, code) {
+                    (Some(_), _) => assert!(
+                        outcome.notices.is_empty(),
+                        "a correlated {code:?} belongs to its request, not the notice slot"
+                    ),
+                    (None, ErrorCode::SatelliteUnreachable) => assert_eq!(
+                        outcome.notices[0].text, "federation degraded: the pane fell over",
+                        "the degraded-federation wording is its own"
+                    ),
+                    (None, _) => {
+                        assert_eq!(
+                            outcome.notices.len(),
+                            1,
+                            "an uncorrelated {code:?} must surface exactly one notice"
+                        );
+                        assert_eq!(outcome.notices[0].severity, NoticeSeverity::Warn);
+                        assert!(
+                            outcome.notices[0].text.contains("the pane fell over"),
+                            "the notice must carry the server's message: {}",
+                            outcome.notices[0].text
+                        );
+                        assert!(
+                            outcome.notices[0].text.contains(&format!("{code:?}")),
+                            "the notice must name the code: {}",
+                            outcome.notices[0].text
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// phux-ijuj: per-pane scrollback loss reaches the status bar.
+    ///
+    /// `KernelStatus::HistoryUnavailable` used to be swallowed by the
+    /// catch-all `tracing::warn!` over kernel statuses, so a pane whose
+    /// history boundary was retired went quiet while its live output kept
+    /// flowing. The kernel names the Terminal, so this notice can too.
+    #[test]
+    fn history_unavailable_status_names_the_pane_in_a_warn_notice() {
+        use crate::render::chrome::status_bar::NoticeSeverity;
+
+        let terminal_id = tid(3);
+        let mut kernel = phux_client_core::session::SessionKernel::new(
+            phux_client_core::engine::ghostty::GhosttyAdapter::new(
+                phux_protocol::BootstrapLimits::default(),
+            ),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let mut effects = phux_client_core::session::EffectBuffer::new();
+        let mut panes = HashMap::new();
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            begin_frame(&terminal_id),
+        );
+        dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            ready_frame(&terminal_id),
+        );
+
+        // A history page the codec cannot decode retires this pane's
+        // scrollback boundary; live output keeps flowing.
+        let outcome = dispatch_engine_frame(
+            &mut kernel,
+            &mut effects,
+            &mut panes,
+            FrameKind::HistoryPage {
+                terminal_id,
+                stream_id: stream(),
+                bootstrap_id: bootstrap(),
+                rows: 1,
+                page_seq: 1,
+                cursor: bytes::Bytes::from_static(b"cursor"),
+                next_cursor: None,
+                payload: bytes::Bytes::from_static(b"malformed-history"),
+            },
+        );
+
+        assert_eq!(
+            outcome.notices.len(),
+            1,
+            "a retired history boundary must surface exactly one notice"
+        );
+        assert_eq!(outcome.notices[0].severity, NoticeSeverity::Warn);
+        assert_eq!(
+            outcome.notices[0].text,
+            "pane 3: scrollback unavailable (CodecFailure)"
         );
     }
 

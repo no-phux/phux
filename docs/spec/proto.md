@@ -743,6 +743,37 @@ never mapped to a placeholder.
 A fatal error MUST be followed by `DETACHED { reason: PROTOCOL_ERROR }`
 and transport close.
 
+Receipt of an `ERROR` is not itself an ending. A consumer MUST NOT treat the
+receipt of an `ERROR` as terminating its attach or its connection. A
+connection ends by `DETACHED` followed by transport close, and by nothing
+else; until one of those arrives the consumer SHOULD surface the message and
+continue processing frames. This is the receiver half of the sender
+obligation above: the sender decides fatality and announces that decision
+with `DETACHED`, never with the code alone. A server legitimately emits the
+same code both fatally and non-fatally — `MALFORMED_MESSAGE` for a frame it
+cannot decode closes the connection, while `MALFORMED_MESSAGE` for a value
+inside a COMMAND does not — so no receiver-side table of "fatal codes" is
+sound.
+
+What a code does tell a receiver is its scope: how far to degrade.
+
+| Scope | Codes | What the receiver keeps |
+|---|---|---|
+| Terminal | `UNKNOWN_MESSAGE_TYPE`, `MALFORMED_MESSAGE`, `CODEC_UNAVAILABLE`, `TERMINAL_NOT_FOUND`, `UNSUPPORTED_SATELLITE_ROUTE`, `SATELLITE_UNREACHABLE`, `RESOURCE_EXHAUSTED`, `INTERNAL_ERROR` | every other Terminal, the layout, and the attach |
+| Request | `NOT_ATTACHED`, `ALREADY_ATTACHED`, `SESSION_NOT_FOUND`, `WINDOW_NOT_FOUND`, `CLIENT_NOT_FOUND`, `UNSAFE_PASTE`, `INPUT_LEASE_HELD`, `INPUT_DELIVERY_UNKNOWN`, `CANONICAL_LIMIT_EXCEEDED` | all projected state; the correlated request owns the outcome |
+| Connection | `VERSION_INCOMPATIBLE`, `FRAME_TOO_LARGE`, `INVALID_COMMAND`, `PERMISSION_DENIED` | nothing beyond the frames still in flight |
+
+`Connection` scope means the consumer SHOULD expect the server to close the
+connection, not that the consumer closes it: the consumer keeps reading so
+that the frames already in flight — including the `DETACHED` itself — are
+observed rather than discarded.
+
+An `ERROR` carries no Terminal id, so a `Terminal`-scoped code with no
+`request_id` names a failure the consumer cannot attribute to one Terminal.
+It MUST still be surfaced rather than dropped. A consumer MUST treat a code
+it does not recognise as `Terminal`-scoped: that is the reading that degrades
+least and preserves the attach.
+
 ---
 
 ## 10. Security
