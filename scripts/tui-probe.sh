@@ -20,6 +20,7 @@ TMUX_SOCKET="phux-probe-$$"
 TMUX=(tmux -L "$TMUX_SOCKET")
 PHUX_SOCK="/tmp/phux-tui-probe-$$.sock"
 SESSION="probe"
+RETURN_NOTICE='Welcome back - this is the session you left running'
 COMPLETE_CAST="$RUN_DIR/complete.cast"
 VALID_COMPLETE_CAST="$COMPLETE_CAST"
 INTERRUPTED_CAST="$RUN_DIR/interrupted.cast"
@@ -332,18 +333,18 @@ cp "$COMPLETE_CAST" "$VALID_COMPLETE_CAST"
 "${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
 # Narrow QA proves preserved content now and retries the unconsumed notice at
 # a renderable width below. The common viewport proves immediate delivery.
-if (( COLS >= 64 )); then
-  assert_screen_contains "$SESSION" 'Welcome back - this is the session you left running'
+if (( COLS >= ${#RETURN_NOTICE} )); then
+  assert_screen_contains "$SESSION" "$RETURN_NOTICE"
 fi
 assert_screen_contains "$SESSION" READY-VISIBLE-MARKER
 capture first-return
 "${TMUX[@]}" send-keys -t "$SESSION" C-a
 "${TMUX[@]}" send-keys -t "$SESSION" d
 assert_screen_contains "$SESSION" HOST-TERMINAL-RESTORED
-if (( COLS < 64 )); then
+if (( COLS < ${#RETURN_NOTICE} )); then
   "${TMUX[@]}" kill-session -t "$SESSION"
   "${TMUX[@]}" new-session -d -s "$SESSION" -x 80 -y "$ROWS" "$ATTACH_COMMAND"
-  assert_screen_contains "$SESSION" 'Welcome back - this is the session you left running'
+  assert_screen_contains "$SESSION" "$RETURN_NOTICE"
   capture narrow-return-retry
   "${TMUX[@]}" send-keys -t "$SESSION" C-a
   "${TMUX[@]}" send-keys -t "$SESSION" d
