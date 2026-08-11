@@ -282,10 +282,19 @@ to one start per 30s
 |---|---|---|
 | restart when | `KeepAlive{SuccessfulExit:false}` | `Restart=on-failure` |
 | throttle | `ThrottleInterval 30` | `RestartSec=30s` |
+| give up after | *(no such knob)* | `StartLimitBurst 5` / `StartLimitIntervalSec 180s` |
+
+Throttling is not giving up: `ThrottleInterval` and `RestartSec` set a
+*minimum spacing* between starts, not a limit on how many. systemd's start
+limit supplies the missing bound, sized so five throttled starts fit inside
+the window — below that the limit is unreachable and the unit retries
+forever. launchd has no equivalent, which is why `phux service install`
+refuses up front when a server already holds the socket rather than relying
+on the supervisor to notice a start that can never succeed.
 
 Two consequences worth knowing:
 
-- **`phux kill --server` stays dead.** Earlier units used
+- **A deliberately stopped server stays stopped.** Earlier units used
   `KeepAlive: true`, which restarts on *every* exit — a server could not
   be stopped.
 - **A crash-loop is visible.** Every server start appends a record to

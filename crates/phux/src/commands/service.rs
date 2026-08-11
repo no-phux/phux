@@ -20,6 +20,8 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use phux_config::socket::{self, SocketState};
+
 /// launchd's reverse-DNS job label, and the basename of the plist it loads.
 const LAUNCHD_LABEL: &str = "com.phux.server";
 
@@ -36,6 +38,17 @@ const SYSTEMD_UNIT: &str = "phux.service";
 /// default) produced thousands of generations that buried the first failure —
 /// the one that explains all the others.
 const RESTART_THROTTLE_SECS: u32 = 30;
+
+/// How many consecutive failed starts systemd tolerates before it stops
+/// retrying and leaves the unit failed.
+///
+/// Matches the threshold `phux doctor`'s `server-health` check already calls a
+/// crash-loop, so the two agree on what "this is not coming back" means: by
+/// the time systemd gives up, doctor is already reporting it. launchd has no
+/// equivalent knob -- it retries forever regardless -- which is why
+/// `run_install` refuses up front rather than relying on the supervisor to
+/// notice (phux-67wg).
+const START_LIMIT_BURST: u32 = 5;
 
 /// Marker `phux service install` stamps into the unit's OWN
 /// `EnvironmentVariables` (launchd) / `Environment=` (systemd) block, and
@@ -307,6 +320,18 @@ pub(crate) fn render_systemd_unit(plan: &ServicePlan) -> String {
     );
     out.push_str("Restart=on-failure\n");
     let _ = writeln!(out, "RestartSec={RESTART_THROTTLE_SECS}s");
+    // Give up eventually. systemd's default rate limit is 5 starts in 10s,
+    // which at a `RestartSec` of 30s can never trip -- so without these a
+    // server that fails every start retries forever (phux-67wg). The window
+    // is sized to admit the throttle: `START_LIMIT_BURST` starts spaced
+    // `RESTART_THROTTLE_SECS` apart fit inside it, so a genuine crash-loop is
+    // caught while an occasional restart is not.
+    let _ = writeln!(
+        out,
+        "StartLimitIntervalSec={}s",
+        RESTART_THROTTLE_SECS * (START_LIMIT_BURST + 1)
+    );
+    let _ = writeln!(out, "StartLimitBurst={START_LIMIT_BURST}");
     for (key, value) in plan.environment() {
         let _ = writeln!(out, "Environment=\"{key}={}\"", systemd_quote(&value));
     }
@@ -491,6 +516,40 @@ pub(crate) fn run_install(
             out!("{}", render_wrapper_script(&plan));
         }
         return ExitCode::SUCCESS;
+    }
+
+    // Refuse rather than install a unit that provably cannot work.
+    //
+    // The supervised server binds the same socket. If a live server already
+    // holds it, `handle_existing_socket` refuses with `SocketBusy` before
+    // `bind(2)` is ever reached, so the supervised process exits non-zero --
+    // every time, deterministically. Under the ADR-0080 policy that is not a
+    // one-off failure but a permanent loop: launchd's `ThrottleInterval` is a
+    // minimum spacing, not a give-up count, and the systemd unit sets no
+    // `StartLimitBurst`, so neither platform ever stops retrying. The user
+    // gets a failed start every 30s forever, and `phux doctor` eventually
+    // reports it as a crash-loop -- accurate, but the wrong story, since
+    // nothing is killing the server; it is refusing to start (phux-67wg).
+    //
+    // Stopping the incumbent here would be worse: it owns live panes and
+    // their in-flight shells and agents. Moving a running server under
+    // supervision without losing them is phux-m3ot, and needs mechanism phux
+    // does not have yet. So this refuses and says what to do.
+    if socket::probe(&plan.socket_path) == SocketState::Live {
+        eprintln!(
+            "phux service: a server is already running on {}\n\
+             \n\
+             Installing now would supervise a server that cannot bind that socket, and the\n\
+             unit would retry a failing start every {RESTART_THROTTLE_SECS}s indefinitely.\n\
+             \n\
+             Stop the running server first, then re-run this command. Note that stopping it\n\
+             ends its panes and their processes:\n\
+             \n\
+             \x20   phux ls --socket {}    # see what would be lost\n",
+            plan.socket_path.display(),
+            plan.socket_path.display(),
+        );
+        return ExitCode::FAILURE;
     }
 
     let unit_path = match manager.unit_path() {
@@ -966,9 +1025,9 @@ fn config_home_from(
 #[cfg(test)]
 mod tests {
     use super::{
-        Manager, RESTART_THROTTLE_SECS, SERVICE_MANAGED_ENV, ServicePlan, config_home_from,
-        home_dir_from, render_launchd_plist, render_systemd_unit, render_wrapper_script,
-        resolve_plan, sh_quote, systemd_escape, systemd_quote, xml_escape,
+        Manager, RESTART_THROTTLE_SECS, SERVICE_MANAGED_ENV, START_LIMIT_BURST, ServicePlan,
+        config_home_from, home_dir_from, render_launchd_plist, render_systemd_unit,
+        render_wrapper_script, resolve_plan, sh_quote, systemd_escape, systemd_quote, xml_escape,
     };
     use std::path::PathBuf;
 
@@ -1092,6 +1151,23 @@ mod tests {
         assert!(
             unit.contains(&format!("RestartSec={RESTART_THROTTLE_SECS}s")),
             "systemd's throttle must match launchd's.\n{unit}"
+        );
+        // phux-67wg: throttling alone is not a give-up. systemd's default
+        // rate limit is 5 starts in 10s, which at a 30s RestartSec can never
+        // trip, so a server that fails every start retries forever.
+        assert!(
+            unit.contains(&format!("StartLimitBurst={START_LIMIT_BURST}")),
+            "without a start limit, a permanently-failing start retries forever.\n{unit}"
+        );
+        let window: u32 = RESTART_THROTTLE_SECS * (START_LIMIT_BURST + 1);
+        assert!(
+            unit.contains(&format!("StartLimitIntervalSec={window}s")),
+            "the limit window must admit the throttle, or the burst can never be reached.\n{unit}"
+        );
+        assert!(
+            window > RESTART_THROTTLE_SECS * START_LIMIT_BURST,
+            "a window that does not fit {START_LIMIT_BURST} throttled starts makes the \
+             limit unreachable, which is the bug it exists to fix"
         );
     }
 

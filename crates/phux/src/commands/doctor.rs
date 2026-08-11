@@ -237,8 +237,16 @@ fn check_server_health() -> Check {
                 "the supervisor unit at {} restarts on every exit, unthrottled",
                 unit.display()
             ),
-            "it resurrects servers you stopped and hides crash-loops — \
-             re-run `phux service install` to replace it, or `phux service uninstall`",
+            // Say what the remedy costs. Replacing the unit reloads it, and
+            // the reload boots out the running job -- so following this hint
+            // ends every pane and its in-flight shells, agents, and
+            // subagents. A Warn exits 0 and reads as routine housekeeping,
+            // which is exactly when an unannounced destructive step does the
+            // most damage (phux-nvi2).
+            "it resurrects servers you stopped and hides crash-loops — re-run \
+             `phux service install` to replace it, but note that this restarts \
+             the server and ends every pane, so do it when you can afford to \
+             lose them (`phux ls` shows what is running)",
         );
     }
 
