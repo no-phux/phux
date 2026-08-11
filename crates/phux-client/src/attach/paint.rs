@@ -340,10 +340,10 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     // end of the last strip row, so an early return here leaves the user's
     // cursor sitting in the strip until the next pane render (never, for an
     // idle pane).
-    let _ = end_of_frame_cursor(out, restore, fallback);
-    let _ = out.write_all(SYNC_OUTPUT_END);
-    let _ = out.flush();
-    status_bar_painted
+    let cursor_flushed = end_of_frame_cursor(out, restore, fallback).is_ok();
+    let sync_ended = out.write_all(SYNC_OUTPUT_END).is_ok();
+    let frame_flushed = out.flush().is_ok();
+    status_bar_painted && cursor_flushed && sync_ended && frame_flushed
 }
 
 /// phux-nz4.5: shared helper invoked after every pane render so the
@@ -409,8 +409,8 @@ pub(super) fn paint_bar_after_pane<W: Write>(
     // bottom-right of the host terminal. See phux-9xn.
     // All cursor placement (restore / fallback / safety-net) and the
     // load-bearing flush are owned by the one composite authority (ADR-0029).
-    let _ = end_of_frame_cursor(out, restore_cursor, fallback_origin);
-    status_bar_painted
+    let cursor_flushed = end_of_frame_cursor(out, restore_cursor, fallback_origin).is_ok();
+    status_bar_painted && cursor_flushed
 }
 
 /// Emit the status-bar row and NOTHING else — no cursor placement, no flush.
