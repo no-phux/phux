@@ -208,6 +208,14 @@ impl Harness {
             return Ok(());
         };
 
+        if !process_exists(pid) {
+            if self.socket.exists() {
+                std::fs::remove_file(&self.socket)
+                    .map_err(|err| format!("remove stale cleanup socket: {err}"))?;
+            }
+            return Ok(());
+        }
+
         let deadline = Instant::now() + DEADLINE;
         let graceful = self.server_session.as_deref().is_some_and(|session| {
             self.capture("cleanup-kill", &["kill", session])

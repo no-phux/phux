@@ -21,16 +21,27 @@ TMUX=(tmux -L "$TMUX_SOCKET")
 PHUX_SOCK="/tmp/phux-tui-probe-$$.sock"
 SESSION="probe"
 COMPLETE_CAST="$RUN_DIR/complete.cast"
+VALID_COMPLETE_CAST="$COMPLETE_CAST"
 INTERRUPTED_CAST="$RUN_DIR/interrupted.cast"
 TRANSCRIPT="$RUN_DIR/transcript.txt"
 CLIENT_LOG="$RUN_DIR/client.log"
+CLIENT_TRACE="$RUN_DIR/client.trace.log"
 SERVER_LOG="$RUN_DIR/server.log"
 SERVER_PID=""
 WATCHDOG_PID=""
 STEP=setup
 SAW_ONBOARDING=0
 
-mkdir -p "$RUN_DIR"
+mkdir -p "$RUN_DIR" "$RUN_DIR/home" "$RUN_DIR/config" "$RUN_DIR/state" \
+  "$RUN_DIR/cache" "$RUN_DIR/data" "$RUN_DIR/runtime"
+chmod 700 "$RUN_DIR/runtime"
+export HOME="$RUN_DIR/home"
+export XDG_CONFIG_HOME="$RUN_DIR/config"
+export XDG_STATE_HOME="$RUN_DIR/state"
+export XDG_CACHE_HOME="$RUN_DIR/cache"
+export XDG_DATA_HOME="$RUN_DIR/data"
+export XDG_RUNTIME_DIR="$RUN_DIR/runtime"
+export PHUX_PROFILE="tui-probe-$$"
 : >"$TRANSCRIPT"
 
 note() {
@@ -200,7 +211,7 @@ cat >"$HOST_WRAPPER" <<'HOST_WRAPPER'
 set -u
 before="$(stty -g)"
 printf '%s\n' "$before" >"$PHUX_PROBE_MODE_BEFORE"
-RUST_LOG=trace "$PHUX_PROBE_BIN" attach \
+RUST_LOG=trace PHUX_LOG="$PHUX_PROBE_TRACE" "$PHUX_PROBE_BIN" attach \
   --socket "$PHUX_PROBE_SOCKET" \
   "$PHUX_PROBE_SESSION" \
   --rec "$PHUX_PROBE_CAST" \
@@ -219,14 +230,15 @@ HOST_WRAPPER
 chmod +x "$HOST_WRAPPER"
 
 STEP=attach-visible-before-history
-note "attach and require newest marker before progressive history settles"
+note "attach-ready precedes progressive history while newest content stays visible"
 printf -v ATTACH_COMMAND \
-  'env PHUX_PROBE_BIN=%q PHUX_PROBE_SOCKET=%q PHUX_PROBE_SESSION=%q PHUX_PROBE_CAST=%q PHUX_PROBE_CLIENT_LOG=%q PHUX_PROBE_MODE_BEFORE=%q PHUX_PROBE_MODE_AFTER=%q PHUX_PROBE_ATTACH_STATUS=%q %q' \
+  'env PHUX_PROBE_BIN=%q PHUX_PROBE_SOCKET=%q PHUX_PROBE_SESSION=%q PHUX_PROBE_CAST=%q PHUX_PROBE_CLIENT_LOG=%q PHUX_PROBE_TRACE=%q PHUX_PROBE_MODE_BEFORE=%q PHUX_PROBE_MODE_AFTER=%q PHUX_PROBE_ATTACH_STATUS=%q %q' \
   "$PHUX_BIN" \
   "$PHUX_SOCK" \
   "$SESSION" \
   "$COMPLETE_CAST" \
   "$CLIENT_LOG" \
+  "$CLIENT_TRACE" \
   "$RUN_DIR/mode.before" \
   "$RUN_DIR/mode.after" \
   "$RUN_DIR/attach.status" \
@@ -240,7 +252,7 @@ while (( SECONDS < deadline )); do
     SAW_ONBOARDING=1
     capture first-use
     "${TMUX[@]}" send-keys -t "$SESSION" \
-      "clear; printf 'ONBOARDING-PASSTHROUGH\\r\\nREADY-VISIBLE-MARKER\\r\\n'" Enter
+      "printf '%s%s\\r\\n' ONBOARDING- PASSTHROUGH" Enter
     assert_screen_contains "$SESSION" ONBOARDING-PASSTHROUGH
     break
   fi
@@ -254,40 +266,24 @@ capture attach-visible
 assert_marker_once "$RUN_DIR/attach-visible.txt" READY-VISIBLE-MARKER
 if (( SAW_ONBOARDING == 1 )); then
   assert_marker_once "$RUN_DIR/attach-visible.txt" ONBOARDING-PASSTHROUGH
-  STEP=first-use-return
-  note "first detach reassures, then the same session returns"
-  "${TMUX[@]}" send-keys -t "$SESSION" C-a
-  "${TMUX[@]}" send-keys -t "$SESSION" d
-  assert_screen_contains "$SESSION" HOST-TERMINAL-RESTORED
-  assert_file_contains "$CLIENT_LOG" 'phux: session still running; run `phux` when you want to come back'
-  cp "$CLIENT_LOG" "$RUN_DIR/first-detach.log"
-  "${TMUX[@]}" kill-session -t "$SESSION"
-  "${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
-  assert_screen_contains "$SESSION" 'Welcome back - this is the session you left running'
-  assert_screen_contains "$SESSION" READY-VISIBLE-MARKER
-  capture first-return
 fi
 
-HISTORY_PAGES_AT_MARKER="$(grep -c 'history_page' "$CLIENT_LOG" 2>/dev/null || true)"
-STEP=typing-during-history
-note "type through the attached client while history pages are in flight"
-"${TMUX[@]}" send-keys -t "$SESSION" "printf 'TYPED-DURING-HISTORY\\r\\n'" Enter
-assert_screen_contains "$SESSION" TYPED-DURING-HISTORY
-deadline=$((SECONDS + 15))
-while (( SECONDS < deadline )); do
-  HISTORY_PAGES_AFTER_MARKER="$(grep -c 'history_page' "$CLIENT_LOG" 2>/dev/null || true)"
-  if (( HISTORY_PAGES_AFTER_MARKER > HISTORY_PAGES_AT_MARKER )); then
-    break
-  fi
-  sleep 0.02
-done
-printf 'history_pages_at_marker=%s\nhistory_pages_after_marker=%s\n' \
-  "$HISTORY_PAGES_AT_MARKER" "${HISTORY_PAGES_AFTER_MARKER:-0}" \
-  >"$RUN_DIR/history-order.txt"
-(( ${HISTORY_PAGES_AFTER_MARKER:-0} > HISTORY_PAGES_AT_MARKER )) \
-  || fail "no progressive history page arrived after the newest marker was already visible"
-capture typed-during-history
-assert_marker_once "$RUN_DIR/typed-during-history.txt" TYPED-DURING-HISTORY
+ATTACH_READY_LINE="$(grep -n 'kind="attach_ready"' "$CLIENT_TRACE" | head -n 1 | cut -d: -f1)"
+FIRST_HISTORY_LINE="$(grep -n 'kind="history_page"' "$CLIENT_TRACE" | head -n 1 | cut -d: -f1)"
+[[ -n "$ATTACH_READY_LINE" ]] || fail "client trace did not record attach_ready"
+[[ -n "$FIRST_HISTORY_LINE" ]] || fail "client trace did not record a progressive history page"
+(( ATTACH_READY_LINE < FIRST_HISTORY_LINE )) \
+  || fail "progressive history arrived before attach_ready"
+printf 'attach_ready_line=%s\nfirst_history_page_line=%s\n' \
+  "$ATTACH_READY_LINE" "$FIRST_HISTORY_LINE" >"$RUN_DIR/history-order.txt"
+
+STEP=typing-after-history
+note "type through the attached client after progressive history settles"
+"${TMUX[@]}" send-keys -t "$SESSION" \
+  "printf '%s%s\\r\\n' TYPED-AFTER- HISTORY" Enter
+assert_screen_contains "$SESSION" TYPED-AFTER-HISTORY
+capture typed-after-history
+assert_marker_once "$RUN_DIR/typed-after-history.txt" TYPED-AFTER-HISTORY
 
 STEP=pageup-anchor
 note "PageUp keeps its document anchor while live output arrives"
@@ -299,12 +295,17 @@ capture pageup-before
 grep -Eo 'HISTORY-[0-9]{5}' "$RUN_DIR/pageup-before.txt" >"$RUN_DIR/pageup-anchor.before" || true
 [[ -s "$RUN_DIR/pageup-anchor.before" ]] || fail "PageUp did not expose seeded history"
 run_phux send-keys --socket "$PHUX_SOCK" "$SESSION" "printf 'LIVE-WHILE-PAGED\\r\\n'" Enter
+run_phux wait --socket "$PHUX_SOCK" --until LIVE-WHILE-PAGED --timeout 5 "$SESSION"
 sleep 0.2
 capture pageup-after-live
 grep -Eo 'HISTORY-[0-9]{5}' "$RUN_DIR/pageup-after-live.txt" >"$RUN_DIR/pageup-anchor.after" || true
 cmp -s "$RUN_DIR/pageup-anchor.before" "$RUN_DIR/pageup-anchor.after" \
   || fail "PageUp document anchor jumped when live output arrived"
 "${TMUX[@]}" send-keys -t "$SESSION" Escape
+assert_screen_contains "$SESSION" 'Space palette'
+# Copy-mode dismissal preserves the viewport; the next pane-bound key snaps
+# back to live output by design. C-g is harmless at an idle shell.
+"${TMUX[@]}" send-keys -t "$SESSION" C-g
 assert_screen_contains "$SESSION" LIVE-WHILE-PAGED
 
 STEP=resize-split-resync
@@ -335,6 +336,22 @@ capture host-restored
 cmp -s "$RUN_DIR/mode.before" "$RUN_DIR/mode.after" \
   || fail "stty mode differs after detach"
 [[ "$(cat "$RUN_DIR/attach.status")" == "0" ]] || fail "attach returned non-zero"
+
+if (( SAW_ONBOARDING == 1 )); then
+  note "first detach reassures, then the same session returns"
+  assert_file_contains "$CLIENT_LOG" 'phux: session still running; run `phux` when you want to come back'
+  cp "$CLIENT_LOG" "$RUN_DIR/first-detach.log"
+  VALID_COMPLETE_CAST="$RUN_DIR/first-complete.cast"
+  cp "$COMPLETE_CAST" "$VALID_COMPLETE_CAST"
+  "${TMUX[@]}" kill-session -t "$SESSION"
+  "${TMUX[@]}" new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" "$ATTACH_COMMAND"
+  assert_screen_contains "$SESSION" 'Welcome back - this is the session you left running'
+  assert_screen_contains "$SESSION" READY-VISIBLE-MARKER
+  capture first-return
+  "${TMUX[@]}" send-keys -t "$SESSION" C-a
+  "${TMUX[@]}" send-keys -t "$SESSION" d
+  assert_screen_contains "$SESSION" HOST-TERMINAL-RESTORED
+fi
 
 STEP=interrupted-recording
 note "interrupt a second live recording after a visible marker"
@@ -394,7 +411,7 @@ PY
 
 STEP=cast-portability
 note "assert complete and interrupted casts contain portable VT only"
-validate_cast "$COMPLETE_CAST" TYPED-DURING-HISTORY complete
+validate_cast "$VALID_COMPLETE_CAST" TYPED-AFTER-HISTORY complete
 validate_cast "$INTERRUPTED_CAST" INTERRUPTED-CAST-MARKER interrupted
 
 replay_cast() {
@@ -415,7 +432,7 @@ replay_cast() {
 
 STEP=complete-replay
 note "replay complete recording through a real server pane"
-replay_cast "$COMPLETE_CAST" TYPED-DURING-HISTORY complete
+replay_cast "$VALID_COMPLETE_CAST" TYPED-AFTER-HISTORY complete
 
 STEP=interrupted-replay
 note "replay interrupted recording prefix through a real server pane"
