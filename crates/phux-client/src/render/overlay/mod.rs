@@ -140,6 +140,13 @@ pub trait RenderOverlay {
         false
     }
 
+    /// Whether Escape has special prefix-cancellation meaning for this
+    /// passthrough overlay. Only which-key needs this; ordinary notices pass
+    /// Escape through like every other intended input.
+    fn passthrough_escape_cancels_prefix(&self) -> bool {
+        false
+    }
+
     /// phux-wrnm: `true` for an overlay that hover-tracks the pointer with
     /// no button held (the context menu). The driver upgrades the outer
     /// terminal's mouse reporting from button-event (`?1002h`) to
@@ -294,6 +301,15 @@ impl OverlayState {
     #[must_use]
     pub fn top_is_passthrough(&self) -> bool {
         self.stack.last().is_some_and(|o| o.is_input_passthrough())
+    }
+
+    #[must_use]
+    /// Whether the active passthrough overlay gives Escape the which-key
+    /// prefix-cancellation behavior.
+    pub fn passthrough_escape_cancels_prefix(&self) -> bool {
+        self.stack
+            .last()
+            .is_some_and(|o| o.passthrough_escape_cancels_prefix())
     }
 
     /// phux-wrnm: `true` when any stacked overlay hover-tracks the pointer

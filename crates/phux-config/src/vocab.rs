@@ -46,6 +46,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "focus-direction",
     "resize-pane",
     "show-help",
+    "getting-started",
     "copy-mode",
     "detach",
     "next-pane",

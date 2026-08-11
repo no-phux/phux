@@ -316,9 +316,10 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
             use phux_protocol::input::key::{KeyAction, PhysicalKey};
             match &ev {
                 InputEvent::Key(key_event) if matches!(key_event.action, KeyAction::Press) => {
+                    let escape_cancels_prefix = ctx.overlays.passthrough_escape_cancels_prefix();
                     ctx.overlays.dismiss();
                     layout_changed = true;
-                    if key_event.key == PhysicalKey::Escape {
+                    if key_event.key == PhysicalKey::Escape && escape_cancels_prefix {
                         if let Some(resolver) = ctx.resolver.as_deref_mut() {
                             resolver.reset();
                         }
@@ -2215,6 +2216,14 @@ fn run_action(
                 |kb| HelpOverlay::from_config(kb, ctx.theme),
             );
             ctx.overlays.push(Box::new(overlay));
+        }
+        "getting-started" => {
+            ctx.overlays
+                .push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
+                    super::onboarding::ONBOARDING_TITLE,
+                    super::onboarding::hint_lines(ctx.keybindings),
+                    ctx.theme,
+                )));
         }
         "copy-mode" => {
             // phux-wave-a-copy-mode: enter selection/copy mode. Arrow keys move
@@ -4352,6 +4361,19 @@ mod tests {
     }
 
     #[test]
+    fn getting_started_action_reopens_passthrough_guidance() {
+        let mut workspace = Workspace::single(tid(1));
+        let (effects, overlays) = run_capturing(&bare_action("getting-started"), &mut workspace);
+        assert!(overlays.is_active(), "getting-started should push guidance");
+        assert!(
+            overlays.top_is_passthrough(),
+            "revisited guidance must not consume the dismissing key"
+        );
+        assert!(!effects.layout_mutated);
+        assert!(!effects.bell);
+    }
+
+    #[test]
     fn window_picker_action_pushes_overlay_with_windows() {
         let mut workspace = Workspace::single(tid(1));
         workspace.add_window("2".to_owned(), tid(2));
@@ -5439,14 +5461,18 @@ mod tests {
     // -- which-key popup passthrough (phux-foz.2) --------------------------
 
     /// Drive `dispatch_input_events` with the given events against a
-    /// resolver already pending at the prefix and the which-key popup on
-    /// the overlay stack. Returns `(overlays_active_after, detach_pending,
-    /// resolver_pending_after)`.
+    /// resolver already pending at the prefix and either which-key or
+    /// onboarding on the overlay stack. Returns `(overlays_active_after,
+    /// detach_pending, resolver_pending_after)`.
     #[allow(
         clippy::future_not_send,
+        clippy::too_many_lines,
         reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
     )]
-    async fn dispatch_with_which_key_popup(events: Vec<InputEvent>) -> (bool, bool, bool) {
+    async fn dispatch_with_passthrough_popup(
+        events: Vec<InputEvent>,
+        onboarding: bool,
+    ) -> (bool, bool, bool) {
         let cfg = phux_config::parse_str(
             phux_config::DEFAULT_CONFIG_TOML,
             std::path::Path::new("default.toml"),
@@ -5462,9 +5488,17 @@ mod tests {
 
         let theme = Theme::default();
         let mut overlays = OverlayState::new();
-        overlays.push(Box::new(
-            crate::render::overlay::WhichKeyOverlay::from_config(&cfg.keybindings, &theme),
-        ));
+        if onboarding {
+            overlays.push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
+                super::super::onboarding::ONBOARDING_TITLE,
+                super::super::onboarding::hint_lines(Some(&cfg.keybindings)),
+                &theme,
+            )));
+        } else {
+            overlays.push(Box::new(
+                crate::render::overlay::WhichKeyOverlay::from_config(&cfg.keybindings, &theme),
+            ));
+        }
         assert!(overlays.top_is_passthrough());
 
         let (a, _b) = tokio::net::UnixStream::pair().expect("uds pair");
@@ -5566,7 +5600,7 @@ mod tests {
         use phux_protocol::input::key::PhysicalKey;
         // Default prefix table binds `d` = detach.
         let (overlay_active, detach_pending, resolver_pending) =
-            dispatch_with_which_key_popup(vec![press(PhysicalKey::D, Some("d"))]).await;
+            dispatch_with_passthrough_popup(vec![press(PhysicalKey::D, Some("d"))], false).await;
         assert!(!overlay_active, "the chord must dismiss the popup");
         assert!(
             detach_pending,
@@ -5581,19 +5615,37 @@ mod tests {
     #[tokio::test]
     async fn which_key_popup_esc_cancels_the_prefix() {
         use phux_protocol::input::key::PhysicalKey;
-        let (overlay_active, detach_pending, resolver_pending) =
-            dispatch_with_which_key_popup(vec![
+        let (overlay_active, detach_pending, resolver_pending) = dispatch_with_passthrough_popup(
+            vec![
                 press(PhysicalKey::Escape, None),
                 // With the prefix cancelled, `d` must NOT resolve to detach.
                 press(PhysicalKey::D, Some("d")),
-            ])
-            .await;
+            ],
+            false,
+        )
+        .await;
         assert!(!overlay_active, "Esc must dismiss the popup");
         assert!(!resolver_pending, "Esc must cancel the pending prefix");
         assert!(
             !detach_pending,
             "after Esc, `d` is a plain pane keystroke, not `C-a d`"
         );
+    }
+
+    /// First-use guidance disappears without taxing the intended key: this
+    /// drives the real dispatcher and proves the same `d` both dismisses the
+    /// notice and completes the pending detach binding.
+    #[tokio::test]
+    async fn onboarding_dismissal_passes_the_intended_key_through() {
+        use phux_protocol::input::key::PhysicalKey;
+        let (overlay_active, detach_pending, resolver_pending) =
+            dispatch_with_passthrough_popup(vec![press(PhysicalKey::D, Some("d"))], true).await;
+        assert!(!overlay_active, "the input must dismiss the guidance");
+        assert!(
+            detach_pending,
+            "the dismissing key must still run its action"
+        );
+        assert!(!resolver_pending, "the binding must resolve normally");
     }
 
     #[allow(

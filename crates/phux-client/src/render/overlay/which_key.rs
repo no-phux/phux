@@ -129,6 +129,10 @@ impl RenderOverlay for WhichKeyOverlay {
     fn is_input_passthrough(&self) -> bool {
         true
     }
+
+    fn passthrough_escape_cancels_prefix(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

@@ -26,6 +26,7 @@ pub struct ToastOverlay {
     lines: Vec<String>,
     /// Snapshotted (copied) at construction so the overlay stays `'static`.
     theme: Theme,
+    passthrough: bool,
 }
 
 impl ToastOverlay {
@@ -36,6 +37,18 @@ impl ToastOverlay {
             title: title.into(),
             lines,
             theme: *theme,
+            passthrough: false,
+        }
+    }
+
+    /// Build a notice that disappears on the next key without consuming it.
+    #[must_use]
+    pub fn passthrough(title: impl Into<String>, lines: Vec<String>, theme: &Theme) -> Self {
+        Self {
+            title: title.into(),
+            lines,
+            theme: *theme,
+            passthrough: true,
         }
     }
 }
@@ -44,8 +57,13 @@ impl RenderOverlay for ToastOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = self.bounds(area).unwrap_or(area);
         let body: Vec<Line<'_>> = self.lines.iter().map(|l| Line::from(l.as_str())).collect();
+        let footer = if self.passthrough {
+            "Start typing - this note will close"
+        } else {
+            "Press any key to close"
+        };
         Modal::new(&self.theme, self.title.clone(), body)
-            .footer("Press any key to close")
+            .footer(footer)
             .wrap(true)
             .render_into(modal_area, buf);
     }
@@ -58,6 +76,10 @@ impl RenderOverlay for ToastOverlay {
     fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {
         // Any key dismisses — a toast has no inner interaction.
         OverlayCommand::Dismiss
+    }
+
+    fn is_input_passthrough(&self) -> bool {
+        self.passthrough
     }
 }
 
@@ -121,6 +143,14 @@ mod tests {
         assert!(text.contains("exit code 2"), "body line 1:\n{text}");
         assert!(text.contains("boom"), "body line 2:\n{text}");
         assert!(text.contains("Press any key to close"), "footer:\n{text}");
+    }
+
+    #[test]
+    fn passthrough_notice_advertises_and_reports_transparency() {
+        let toast = ToastOverlay::passthrough("t", vec!["body".to_owned()], &Theme::default());
+        assert!(toast.is_input_passthrough());
+        let text = render_to_string(&toast, 80, 24);
+        assert!(text.contains("Start typing - this note will close"));
     }
 
     #[test]

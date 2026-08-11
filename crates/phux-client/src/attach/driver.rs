@@ -1095,13 +1095,11 @@ async fn attach_session<W: super::RenderSink>(
     // never left in a bad state. On `Detached` the loop exits via
     // `exit_after_detach` (which never returns — see its doc comment).
     let mut attached = attached;
-    // phux-foz.6: first-run onboarding hint, decided ONCE per attach
-    // invocation by a single existence check at the canonical config path
-    // (see `super::onboarding` for the trigger rule). `mem::take` hands the
-    // flag to the first `main_loop` entry only, so an in-invocation session
-    // switch (which re-enters `main_loop` with fresh session state) does
-    // not re-show a hint the user already dismissed.
-    let mut show_onboarding = super::onboarding::should_show(&phux_config::loader::config_path());
+    // First-use guidance is profile-scoped, versioned, and best-effort. The
+    // moment is decided once per process attach and consumed by the first loop
+    // entry, so in-process session switches never repeat it.
+    let onboarding_path = super::onboarding::state_path();
+    let mut onboarding_moment = super::onboarding::begin_attach(&onboarding_path);
     // phux-foz.8: window index to select after a one-step cross-session
     // window pick (`switch-session { name, window }`) re-attaches. `None`
     // on the first attach and after plain switches; set per-iteration by
@@ -1115,7 +1113,10 @@ async fn attach_session<W: super::RenderSink>(
     // session switch re-enters `main_loop` but is not a reconnect.
     let mut initial_notice = initial_notice;
     loop {
-        let show_onboarding_hint = std::mem::take(&mut show_onboarding);
+        let moment = std::mem::replace(
+            &mut onboarding_moment,
+            super::onboarding::AttachMoment::None,
+        );
         let exit = match main_loop(
             &mut conn,
             attached,
@@ -1123,7 +1124,7 @@ async fn attach_session<W: super::RenderSink>(
             out,
             resync,
             wants_state_sync,
-            show_onboarding_hint,
+            moment,
             initial_notice.take(),
             pending_window.take(),
             pending_pane.take(),
@@ -1157,7 +1158,7 @@ async fn attach_session<W: super::RenderSink>(
                 if let Some(writer) = writer.take() {
                     writer.shutdown_and_join();
                 }
-                exit_after_detach(end);
+                exit_after_detach(end, &onboarding_path);
             }
             LoopExit::SwitchTo(target) => {
                 // Lifecycle transition (info): switching sessions on the
@@ -1473,12 +1474,9 @@ async fn main_loop<W: super::RenderSink>(
     // per-frame `FRAME_ACK`: only a state-sync consumer's acks are tracked
     // server-side, so a raw consumer skips them (see `should_emit_frame_ack`).
     wants_state_sync: bool,
-    // phux-foz.6: show the first-run onboarding hint after the bootstrap
-    // paint. The caller decides this once per attach invocation (config-path
-    // existence check in `attach_session`'s outer loop) and passes `true`
-    // only on the first `main_loop` entry, so a session switch never
-    // re-shows a hint the user already dismissed.
-    show_onboarding: bool,
+    // First-use moment consumed by this loop entry. Session switches receive
+    // `None`, so they never repeat attach guidance.
+    onboarding_moment: super::onboarding::AttachMoment,
     // phux-i0e8.2.3: transient status-bar notice to seed at attach time —
     // the reconnect loop's "re-attached after server restart". Applied to
     // the painter right after the bootstrap chrome refresh, so the first
@@ -1946,21 +1944,19 @@ async fn main_loop<W: super::RenderSink>(
     // up, and the ordinary 1 s status_tick expires it, so "re-attached
     // after server restart" is visible inside the live TUI instead of on
     // the cooked terminal the alt screen replaced.
+    let initial_notice = initial_notice.or_else(|| {
+        (onboarding_moment == super::onboarding::AttachMoment::Return)
+            .then(|| Notice::info(super::onboarding::RETURN_NOTICE))
+    });
     apply_initial_notice(status_bar.as_mut(), initial_notice);
 
-    // phux-foz.6: first-run onboarding hint. The caller already applied the
-    // trigger rule (nothing exists at the canonical config path; once per
-    // attach invocation — see `super::onboarding`); here we push the notice
-    // onto the ordinary overlay stack AFTER the bootstrap frame painted, so
-    // it floats over the live pane like any other modal. It reuses
-    // `ToastOverlay`, so any key dismisses it and triggers the standard
-    // dismiss-repaint; while it is up, frames keep applying to the pane
-    // mirrors with the outbound flush paused (ADR-0020 invariant 5), exactly
-    // as for every other overlay.
-    if show_onboarding {
-        overlays.push(Box::new(crate::render::overlay::ToastOverlay::new(
+    // The introduction floats over the live pane after bootstrap. It is a
+    // passthrough notice: the first key dismisses it and continues through the
+    // normal resolver/pane route, so guidance never taxes the user's intent.
+    if onboarding_moment == super::onboarding::AttachMoment::Intro {
+        overlays.push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
             super::onboarding::ONBOARDING_TITLE,
-            super::onboarding::hint_lines(&phux_config::loader::config_path()),
+            super::onboarding::hint_lines(keybindings_snapshot.as_ref()),
             &theme,
         )));
         paint_active_overlay(
@@ -4832,9 +4828,11 @@ fn terminal_reset_on_signal() {
     clippy::print_stderr,
     reason = "phux-i0e8.2.2: the terminal is cooked again and the process exits before the CLI could print; this is the only window for the last-pane explanation"
 )]
-fn exit_after_detach(end: AttachEnd) -> ! {
+fn exit_after_detach(end: AttachEnd, onboarding_path: &std::path::Path) -> ! {
     terminal_reset_on_signal();
     if let Some(line) = end.explanation() {
+        eprintln!("{line}");
+    } else if let Some(line) = super::onboarding::after_detach(onboarding_path) {
         eprintln!("{line}");
     }
     std::process::exit(0);

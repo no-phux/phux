@@ -541,38 +541,29 @@ For testing config changes inside a checkout without touching your real
 worktree-local `./.phux-xdg` (gitignored); point `XDG_CONFIG_HOME` at it
 to exercise the result.
 
-### 4.0.1 First-run onboarding hint
+### 4.0.1 First-use moments
 
-On attach, when **nothing exists at the resolved config path** (the path
-`phux config path` prints), the TUI shows a small dismissible overlay
-teaching the two most load-bearing multiplexer facts — `C-a d` detaches
-(the session keeps running) and a naked `phux` re-attaches — plus the two
-discovery affordances that answer "now what?" on a fresh install:
-`phux config init` and the `C-a ?` help binding. The exact rules:
+First use is a short journey through normal work, not a setup wizard. On the
+first attach for an active profile, a compact overlay explains that the session
+outlives the view, how to detach, how naked `phux` returns, and how to open the
+command palette. It renders the effective `detach` and `command-palette`
+bindings instead of assuming the defaults. The first key dismisses the overlay
+and still follows its normal binding or pane-input path; the guidance does not
+cost a keystroke.
 
-* **Decided once per `phux attach` invocation**, by a single existence
-  check at attach time. Switching sessions inside the same invocation
-  does not re-show it; creating a config mid-attach does not retract an
-  already-shown hint (the next attach simply won't show one).
-* **Any key dismisses it** for the rest of that invocation. The
-  keystroke is consumed by the overlay (like every modal), so the hint
-  costs exactly one keystroke.
-* **It never appears when anything exists at the config path** — a
-  config file (even one that fails to parse) or a stray directory.
-  Presence, not validity, is the test: an unparsable config means you
-  have already found the config system, and `phux config init` refuses
-  to overwrite, so the hint's advice would be wrong there. When the
-  check itself is undetermined (e.g. a permission error on the config
-  directory), the hint stays suppressed.
-* **Nothing is persisted.** There is no "seen" flag or state file: while
-  no config exists, every attach shows the hint once; running
-  `phux config init` (or writing any config file) silences it
-  permanently.
+After the first intentional detach, once the outer terminal is reset to cooked
+mode, phux prints one reassurance: the session is still running and `phux`
+returns to it. The next attach shows a brief status-bar confirmation that this
+is the session left running, without replaying the introduction. Later attaches
+are quiet. Session switches inside one attach invocation do not advance or
+repeat these moments.
 
-The hint hardcodes `C-a ?` and `C-a d` deliberately — it only ever shows
-when no config file exists, which is exactly when the embedded defaults
-(prefix `C-a`, `?` = `show-help`, `d` = `detach`, section 5.3) are
-guaranteed to be active.
+Progress is a versioned `onboarding.json` file in the active profile's state
+directory (section 4.1). Missing state starts the journey. Unreadable, corrupt,
+or newer-version state fails quiet, and any read or write failure is ignored;
+onboarding state never turns a successful attach into an error. Profiles do not
+share progress. The command palette's **Getting started** action always reopens
+the current-binding-aware introduction without changing progress.
 
 ### 4.1 File location
 

@@ -312,6 +312,13 @@ pub const REGISTRY: &[ActionSpec] = &[
         args: &[],
     },
     ActionSpec {
+        name: "getting-started",
+        category: Category::View,
+        description: "Getting started: detach, return, and command discovery",
+        params: "",
+        args: &[],
+    },
+    ActionSpec {
         name: "detach",
         category: Category::View,
         description: "Detach this client from the session",

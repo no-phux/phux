@@ -71,6 +71,7 @@ pub(crate) fn page() -> Page {
          ├── server.log.1        # the previous generation, after rotation\n\
          ├── server-starts.log   # one line per server start (crash-loop check)\n\
          ├── client-<pid>.log    # per-pid interactive-client log\n\
+         ├── onboarding.json     # versioned first-use journey progress\n\
          ├── remote-cert.pem     # auto-provisioned remote-consumer certificate\n\
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
          └── remote-tokens       # pairing-token store (owner-only, 0600)\n\
@@ -92,6 +93,10 @@ pub(crate) fn page() -> Page {
            trace — the TUI owns the alt screen, so the client never \
            logs to stderr. `PHUX_LOG` redirects it. Log files are \
            created mode `0600`.\n\
+         - `onboarding.json` records only the versioned first-use journey \
+           stage. It is best-effort and profile-scoped: missing state starts \
+           the guidance, while unreadable or unknown state stays quiet and \
+           never prevents attach.\n\
          - `remote-cert.pem` / `remote-key.pem` are the self-signed \
            TLS pair auto-provisioned for remote consumers (ADR-0031); \
            `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` substitute an \
@@ -202,6 +207,7 @@ mod tests {
         for entry in [
             "server.log",
             "client-<pid>.log",
+            "onboarding.json",
             "remote-cert.pem",
             "remote-key.pem",
             "remote-tokens",
