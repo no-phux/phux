@@ -96,9 +96,9 @@ bytes.workspace = true
 # access. `rustix` is a pure-Rust wrapper that keeps phux-client's
 # `#![forbid(unsafe_code)]` intact — preferred over a direct `libc` dep
 # (which would require relaxing the unsafe lint) and over `crossterm` (which
-# pulls its own event loop we don't use). Only the `termios` feature group
-# is enabled; rustix's default crate-feature set is opt-in beyond that.
-rustix = { version = "0.38", default-features = false, features = ["std", "termios"] }
+# pulls its own event loop we don't use). `fs` supplies the profile-scoped
+# onboarding `flock`; rustix's default crate-feature set is opt-in beyond that.
+rustix = { version = "0.38", default-features = false, features = ["std", "termios", "fs"] }
 # `phux run` / `phux snapshot` deserialize the server's JSON contracts
 # (run result, `GET_SCREEN` screen state) via serde derives. The layout
 # CBOR envelope and the predict layer (which also needed serde, ciborium,

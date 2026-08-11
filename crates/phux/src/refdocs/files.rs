@@ -76,6 +76,7 @@ pub(crate) fn page() -> Page {
          ├── server-starts.log   # one line per server start (crash-loop check)\n\
          ├── client-<pid>.log    # per-pid interactive-client log\n\
          ├── onboarding.json     # versioned first-use journey progress\n\
+         ├── onboarding.lock     # serializes first-use moment delivery\n\
          ├── remote-cert.pem     # auto-provisioned remote-consumer certificate\n\
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
          └── remote-tokens       # pairing-token store (owner-only, 0600)\n\
@@ -98,9 +99,10 @@ pub(crate) fn page() -> Page {
            logs to stderr. `PHUX_LOG` redirects it. Log files are \
            created mode `0600`.\n\
          - `onboarding.json` records only the versioned first-use journey \
-           stage. It is best-effort and profile-scoped: missing state starts \
-           the guidance, while unreadable or unknown state stays quiet and \
-           never prevents attach.\n\
+           stage. `onboarding.lock` serializes delivery within that profile. \
+           State is best-effort: missing state starts the guidance, while \
+           unreadable, unknown, or unwritable state stays quiet and never \
+           prevents attach.\n\
          - `remote-cert.pem` / `remote-key.pem` are the self-signed \
            TLS pair auto-provisioned for remote consumers (ADR-0031); \
            `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` substitute an \
@@ -212,6 +214,7 @@ mod tests {
             "server.log",
             "client-<pid>.log",
             "onboarding.json",
+            "onboarding.lock",
             "remote-cert.pem",
             "remote-key.pem",
             "remote-tokens",

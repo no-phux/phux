@@ -49,6 +49,7 @@ $XDG_STATE_HOME/<profile-dir>/
 ├── server-starts.log   # one line per server start (crash-loop check)
 ├── client-<pid>.log    # per-pid interactive-client log
 ├── onboarding.json     # versioned first-use journey progress
+├── onboarding.lock     # serializes first-use moment delivery
 ├── remote-cert.pem     # auto-provisioned remote-consumer certificate
 ├── remote-key.pem      # its private key (owner-only, 0600)
 └── remote-tokens       # pairing-token store (owner-only, 0600)
@@ -57,7 +58,7 @@ $XDG_STATE_HOME/<profile-dir>/
 - `server.log` is the canonical server log regardless of how the server was started: the auto-spawn path redirects the daemon's stderr here, and the service unit points its log capture at the same file. `phux logs` and `phux service logs` read it; `PHUX_LOG` tees the server's structured log to an additional file without moving this one. It is rolled aside to `server.log.1` when it exceeds 8 MiB at server start; one previous generation is kept.
 - `server-starts.log` records `<epoch> <pid> <version>` per server start. `phux doctor` counts recent entries to report a crash-loop, and compares the newest version against the running binary's to detect an upgrade the server has not picked up.
 - `client-<pid>.log` is where an interactive client writes its trace — the TUI owns the alt screen, so the client never logs to stderr. `PHUX_LOG` redirects it. Log files are created mode `0600`.
-- `onboarding.json` records only the versioned first-use journey stage. It is best-effort and profile-scoped: missing state starts the guidance, while unreadable or unknown state stays quiet and never prevents attach.
+- `onboarding.json` records only the versioned first-use journey stage. `onboarding.lock` serializes delivery within that profile. State is best-effort: missing state starts the guidance, while unreadable, unknown, or unwritable state stays quiet and never prevents attach.
 - `remote-cert.pem` / `remote-key.pem` are the self-signed TLS pair auto-provisioned for remote consumers (ADR-0031); `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` substitute an operator-supplied pair. A complete pair is never regenerated, so the pinned fingerprint stays stable.
 - `remote-tokens` is the pairing-token store the server reads and `phux pair` appends to; `PHUX_WS_TOKENS` moves it.
 

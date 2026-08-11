@@ -559,8 +559,10 @@ are quiet. Session switches inside one attach invocation do not advance or
 repeat these moments.
 
 Progress is a versioned `onboarding.json` file in the active profile's state
-directory (section 4.1). Missing state starts the journey. Unreadable, corrupt,
-or newer-version state fails quiet, and any read or write failure is ignored;
+directory (section 4.1). Missing state starts the journey. Delivery is claimed
+under a profile-scoped lock and committed only after the overlay or status
+notice is accepted; interrupted attaches leave a retryable pending stage.
+Unreadable, corrupt, newer-version, or unwritable state fails quiet, and
 onboarding state never turns a successful attach into an error. Profiles do not
 share progress. The command palette's **Getting started** action always reopens
 the current-binding-aware introduction without changing progress.

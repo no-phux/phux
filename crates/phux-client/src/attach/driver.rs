@@ -1099,7 +1099,7 @@ async fn attach_session<W: super::RenderSink>(
     // moment is decided once per process attach and consumed by the first loop
     // entry, so in-process session switches never repeat it.
     let onboarding_path = super::onboarding::state_path();
-    let mut onboarding_moment = super::onboarding::begin_attach(&onboarding_path);
+    let mut onboarding_claim = super::onboarding::begin_attach(&onboarding_path);
     // phux-foz.8: window index to select after a one-step cross-session
     // window pick (`switch-session { name, window }`) re-attaches. `None`
     // on the first attach and after plain switches; set per-iteration by
@@ -1113,10 +1113,7 @@ async fn attach_session<W: super::RenderSink>(
     // session switch re-enters `main_loop` but is not a reconnect.
     let mut initial_notice = initial_notice;
     loop {
-        let moment = std::mem::replace(
-            &mut onboarding_moment,
-            super::onboarding::AttachMoment::None,
-        );
+        let claim = onboarding_claim.take();
         let exit = match main_loop(
             &mut conn,
             attached,
@@ -1124,7 +1121,7 @@ async fn attach_session<W: super::RenderSink>(
             out,
             resync,
             wants_state_sync,
-            moment,
+            claim,
             initial_notice.take(),
             pending_window.take(),
             pending_pane.take(),
@@ -1142,7 +1139,10 @@ async fn attach_session<W: super::RenderSink>(
             }
         };
         match exit {
-            LoopExit::Detached(end) => {
+            LoopExit::Detached {
+                end,
+                locally_requested,
+            } => {
                 // Lifecycle transition (info): the attach loop is exiting.
                 tracing::info!(?end, "attach loop: DETACHED; exiting");
                 // The session ended (user detach, server `DETACHED`, or a
@@ -1158,7 +1158,7 @@ async fn attach_session<W: super::RenderSink>(
                 if let Some(writer) = writer.take() {
                     writer.shutdown_and_join();
                 }
-                exit_after_detach(end, &onboarding_path);
+                exit_after_detach(end, locally_requested, &onboarding_path);
             }
             LoopExit::SwitchTo(target) => {
                 // Lifecycle transition (info): switching sessions on the
@@ -1425,10 +1425,33 @@ enum LoopExit {
     /// The session ended (detach / server DETACHED / last pane closed).
     /// Carries WHY (phux-i0e8.2.2) so the teardown path can explain a
     /// last-pane death on the cooked terminal. The process exits.
-    Detached(AttachEnd),
+    Detached {
+        end: AttachEnd,
+        locally_requested: bool,
+    },
     /// Re-attach on the same connection — to an existing session or a
     /// newly-created one.
     SwitchTo(ReattachTarget),
+}
+
+/// Classify a detach independently from the wire frame that completed it.
+/// A server `DETACHED` is local only when this client had already requested
+/// detach; pane death remains its own ending even if the events race.
+const fn is_local_detach(end: AttachEnd, local_intent: bool) -> bool {
+    local_intent && matches!(end, AttachEnd::Detached)
+}
+
+const fn detached_loop_exit(end: AttachEnd, local_intent: bool) -> LoopExit {
+    LoopExit::Detached {
+        end,
+        locally_requested: is_local_detach(end, local_intent),
+    }
+}
+
+fn finish_onboarding_claim(claim: Option<super::onboarding::AttachClaim>, delivery_accepted: bool) {
+    if delivery_accepted && let Some(claim) = claim {
+        let _ = claim.commit();
+    }
 }
 
 /// Drive the `tokio::select!` loop until detach or a session switch.
@@ -1476,7 +1499,7 @@ async fn main_loop<W: super::RenderSink>(
     wants_state_sync: bool,
     // First-use moment consumed by this loop entry. Session switches receive
     // `None`, so they never repeat attach guidance.
-    onboarding_moment: super::onboarding::AttachMoment,
+    mut onboarding_claim: Option<super::onboarding::AttachClaim>,
     // phux-i0e8.2.3: transient status-bar notice to seed at attach time —
     // the reconnect loop's "re-attached after server restart". Applied to
     // the painter right after the bootstrap chrome refresh, so the first
@@ -1499,6 +1522,11 @@ async fn main_loop<W: super::RenderSink>(
     // degrades to a logged no-op if out of range.
     initial_pane: Option<usize>,
 ) -> Result<LoopExit, AttachError> {
+    let onboarding_moment = onboarding_claim
+        .as_ref()
+        .map_or(super::onboarding::AttachMoment::None, |claim| {
+            claim.moment()
+        });
     // phux-4li.4: hold N client-side Terminals keyed by `TerminalId`,
     // not the single Terminal of the wave-A driver. Each pane's metadata slot
     // is allocated lazily from authoritative bootstrap geometry.
@@ -1845,9 +1873,8 @@ async fn main_loop<W: super::RenderSink>(
         false,
     )?;
     if outcome.exit {
-        return Ok(LoopExit::Detached(
-            outcome.exit_reason.unwrap_or(AttachEnd::Detached),
-        ));
+        let end = outcome.exit_reason.unwrap_or(AttachEnd::Detached);
+        return Ok(detached_loop_exit(end, false));
     }
     vcs.apply_snapshot(outcome.pane_cwds);
     if let Some((list, focused)) = outcome.sessions {
@@ -1944,11 +1971,18 @@ async fn main_loop<W: super::RenderSink>(
     // up, and the ordinary 1 s status_tick expires it, so "re-attached
     // after server restart" is visible inside the live TUI instead of on
     // the cooked terminal the alt screen replaced.
+    let return_notice_available =
+        initial_notice.is_none() && onboarding_moment == super::onboarding::AttachMoment::Return;
     let initial_notice = initial_notice.or_else(|| {
-        (onboarding_moment == super::onboarding::AttachMoment::Return)
-            .then(|| Notice::info(super::onboarding::RETURN_NOTICE))
+        return_notice_available.then(|| Notice::info(super::onboarding::RETURN_NOTICE))
     });
-    apply_initial_notice(status_bar.as_mut(), initial_notice);
+    let notice_accepted = apply_initial_notice(status_bar.as_mut(), initial_notice);
+    if onboarding_moment == super::onboarding::AttachMoment::Return {
+        finish_onboarding_claim(
+            onboarding_claim.take(),
+            return_notice_available && notice_accepted,
+        );
+    }
 
     // The introduction floats over the live pane after bootstrap. It is a
     // passthrough notice: the first key dismisses it and continues through the
@@ -1974,6 +2008,8 @@ async fn main_loop<W: super::RenderSink>(
             &session_name,
             &theme,
         );
+        let paint_accepted = out.flush().is_ok();
+        finish_onboarding_claim(onboarding_claim.take(), paint_accepted);
     }
 
     loop {
@@ -2558,9 +2594,8 @@ async fn main_loop<W: super::RenderSink>(
                         focus_history.observe(focused_before_frame, focused_pane.as_ref());
                         focus_history.repair(focused_pane.as_ref(), &workspace);
                         if outcome.exit {
-                            return Ok(LoopExit::Detached(
-                                outcome.exit_reason.unwrap_or(AttachEnd::Detached),
-                            ));
+                            let end = outcome.exit_reason.unwrap_or(AttachEnd::Detached);
+                            return Ok(detached_loop_exit(end, detach_pending));
                         }
                         if outcome.resync_required {
                             if session_name.is_empty() {
@@ -3039,7 +3074,7 @@ async fn main_loop<W: super::RenderSink>(
                         // frame — treat it as a clean shutdown because
                         // the user requested detach. Otherwise the loop
                         // bubbles the disconnect up unchanged.
-                        return Ok(LoopExit::Detached(AttachEnd::Detached));
+                        return Ok(detached_loop_exit(AttachEnd::Detached, true));
                     }
                     Err(err) => return Err(err),
                 }
@@ -4828,11 +4863,16 @@ fn terminal_reset_on_signal() {
     clippy::print_stderr,
     reason = "phux-i0e8.2.2: the terminal is cooked again and the process exits before the CLI could print; this is the only window for the last-pane explanation"
 )]
-fn exit_after_detach(end: AttachEnd, onboarding_path: &std::path::Path) -> ! {
+fn exit_after_detach(
+    end: AttachEnd,
+    locally_requested: bool,
+    onboarding_path: &std::path::Path,
+) -> ! {
     terminal_reset_on_signal();
     if let Some(line) = end.explanation() {
         eprintln!("{line}");
-    } else if let Some(line) = super::onboarding::after_detach(onboarding_path) {
+    } else if locally_requested && let Some(line) = super::onboarding::after_detach(onboarding_path)
+    {
         eprintln!("{line}");
     }
     std::process::exit(0);
@@ -4908,6 +4948,18 @@ mod tests {
     use tokio::net::UnixStream;
 
     static TERMINAL_RESET_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn detach_classification_requires_local_intent_and_plain_detach() {
+        assert!(is_local_detach(AttachEnd::Detached, true));
+        assert!(!is_local_detach(AttachEnd::Detached, false));
+        assert!(!is_local_detach(
+            AttachEnd::LastPaneClosed {
+                exit_status: Some(0),
+            },
+            true,
+        ));
+    }
 
     /// phux-0db: a session created from inside the TUI (picker "new
     /// session") seeds its pane in the client's cwd, not `None` (= the
