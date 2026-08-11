@@ -59,6 +59,9 @@ shows every key. Prebuilt binaries cover macOS arm64, Linux x86_64, and Linux ar
 Windows is not supported. Other channels and source builds:
 [INSTALL](./docs/INSTALL.md).
 
+Interactive entry points require terminal stdin and stdout. For redirected
+work, use the headless commands below; they never need a TTY.
+
 The same terminals work without a TTY, from scripts, CI, or an agent:
 
 ```sh

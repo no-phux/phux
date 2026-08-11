@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -24,6 +25,16 @@ use crate::commands::{DEFAULT_SESSION_NAME, print_attach_error, server::ensure_s
 /// driver's render sink for the duration of one attach, and a graceful-upgrade
 /// reconnect (ADR-0032) starts a *second* attach against the *same* recording.
 type RecorderHandle = Rc<RefCell<SessionRecorder>>;
+
+/// Refuse interactive entry points before they can start a server, connect,
+/// or let the driver write terminal-control sequences.
+pub(crate) fn interactive_tty_preflight() -> Result<(), ExitCode> {
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        return Ok(());
+    }
+    eprintln!("phux: interactive use requires both stdin and stdout to be terminals");
+    Err(ExitCode::FAILURE)
+}
 
 /// phux-i0e8.2.2: explain how a successful attach ended, once the TUI is
 /// down and stdout/stderr are the user's cooked terminal again.
@@ -84,6 +95,10 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
     // human can read it. The banner stays on the long-running foreground
     // entry points (`phux server`, `phux relay run`), whose stderr
     // remains visible.
+
+    if let Err(code) = interactive_tty_preflight() {
+        return code;
+    }
 
     let socket_path = socket.unwrap_or_else(default_socket_path);
     // phux-iwuc: a socket path over the platform's sockaddr_un limit can
@@ -687,6 +702,10 @@ pub(crate) fn run_attach_rec(
     socket: Option<PathBuf>,
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
+    if let Err(code) = interactive_tty_preflight() {
+        return code;
+    }
+
     // A name in the registry is a deliberate operator statement — they ran
     // `phux host enroll` or `phux host add` for it — so it wins over the
     // local-session reading of the same word. `--socket` is an explicit

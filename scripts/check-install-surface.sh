@@ -67,6 +67,8 @@ require_fixed docs/RELEASING.md 'do not point installers or the tap at it'
 require_fixed docs/INSTALL.md "Windows is not supported"
 require_fixed docs/INSTALL.md "First run: persistent session + agent loop"
 require_fixed docs/INSTALL.md 'verifies the release `.sha256` sidecar before unpacking'
+require_fixed docs/INSTALL.md 'prints the exact command to run next'
+require_fixed docs/INSTALL.md 'only when that directory is not already on `PATH`'
 require_fixed docs/INSTALL.md "| macOS (x86_64) | Not supported. No official release artifact; Homebrew and the curl installer both refuse. Source: yes. |"
 require_fixed docs/INSTALL.md "| Linux aarch64 | Curl/tarball: yes. Homebrew: yes where Linuxbrew supports the host. Source: yes. |"
 
@@ -96,7 +98,13 @@ require_fixed scripts/install.sh 'download "$sha_url" "$sha_path"'
 require_fixed scripts/install.sh 'sha256sum -c "$(basename "$sha_path")"'
 require_fixed scripts/install.sh 'shasum -a 256 -c "$(basename "$sha_path")"'
 require_fixed scripts/install.sh '"${stage_name}/phux-mcp"'
-require_fixed scripts/install.sh 'cp -f "${stage_dir}/phux-mcp" "${install_dir}/phux-mcp"'
+require_fixed scripts/install.sh 'publish_dir="$(mktemp -d "${install_dir}/.phux-install.XXXXXX")"'
+require_fixed scripts/install.sh 'rollback_publish'
+require_fixed scripts/install.sh 'mv "${publish_dir}/phux-mcp" "${install_dir}/phux-mcp"'
+require_fixed scripts/install.sh 'echo "next: phux"'
+require_fixed scripts/install.sh 'PATH remedy: export PATH=%q:"$PATH"'
+require_fixed scripts/install.sh 'found_command="$(command -v phux 2>/dev/null || true)"'
+require_fixed scripts/test-install.sh 'installer transaction tests passed'
 
 require_fixed justfile "release-preflight TAG:"
 require_fixed justfile "release-preflight-fast TAG:"
@@ -225,4 +233,5 @@ if [ "$failures" -ne 0 ]; then
   exit 1
 fi
 
+bash "$ROOT/scripts/test-install.sh"
 echo "install surface check passed"

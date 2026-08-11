@@ -33,6 +33,37 @@ fn dead_socket() -> String {
     format!("/tmp/phux-no-such-server-{}.sock", std::process::id())
 }
 
+#[test]
+fn redirected_interactive_invocations_do_not_spawn_or_emit_terminal_bytes() {
+    for args in [&[][..], &["attach"][..], &["new", "redirected"][..]] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("phux.sock");
+        let out = Command::new(PHUX)
+            .args(args)
+            .args(["--socket"])
+            .arg(&socket)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("run redirected interactive invocation");
+
+        assert!(!out.status.success(), "redirected {args:?} must fail");
+        assert_eq!(out.stdout, b"", "redirected {args:?} emitted stdout bytes");
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("interactive use requires both stdin and stdout to be terminals"),
+            "redirected {args:?} did not explain the TTY requirement: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !socket.exists(),
+            "redirected {args:?} created a server socket at {}",
+            socket.display()
+        );
+    }
+}
+
 /// Run `phux <args...>` and return `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
     let out = Command::new(PHUX)

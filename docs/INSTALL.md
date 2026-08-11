@@ -53,10 +53,13 @@ The installer is a convenience wrapper over the same GitHub release assets:
 curl -fsSL https://raw.githubusercontent.com/phall1/phux/main/scripts/install.sh | bash
 ```
 
-It verifies the release `.sha256` sidecar before unpacking and installs
-`phux` and `phux-mcp` into `${PHUX_INSTALL_DIR:-$HOME/.local/bin}`. Set
-`PHUX_INSTALL_DIR` to choose a different bin directory. With no `--version`, it
-uses the latest GitHub release.
+It verifies the release `.sha256` sidecar before unpacking and transactionally
+installs `phux` and `phux-mcp` into `${PHUX_INSTALL_DIR:-$HOME/.local/bin}`.
+The previous pair is restored if publication is interrupted or either binary
+cannot be published. Set `PHUX_INSTALL_DIR` to choose a different bin
+directory. With no `--version`, it uses the latest GitHub release. On success,
+the installer prints the exact command to run next. It prints a copy-paste
+`PATH` remedy only when that directory is not already on `PATH`.
 Every portable tarball and installer path includes `phux-mcp`; there is no
 separate MCP package to install.
 
@@ -103,6 +106,9 @@ phux
 
 `phux` with no arguments auto-spawns a server and attaches to it. Detach with
 `Ctrl-A d`; run `phux` again to re-attach.
+Interactive `phux`, `phux attach`, and `phux new` require both stdin and stdout
+to be terminals. Redirected invocations refuse before starting a server or
+emitting terminal control bytes; use the headless verbs for scripts and CI.
 
 If you are developing rather than installing, use `nix develop` or `direnv
 allow` and then the `just` commands in [`QUICKSTART.md`](./QUICKSTART.md).

@@ -12,9 +12,9 @@ use phux_protocol::wire::frame::{
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{
-    DEFAULT_SESSION_NAME, attach::client_cwd, attach::report_attach_end,
-    attach::resolved_default_session_name, attach::run_attach_once, cli_runtime, json_err, partial,
-    print_attach_error, server::ensure_server,
+    DEFAULT_SESSION_NAME, attach::client_cwd, attach::interactive_tty_preflight,
+    attach::report_attach_end, attach::resolved_default_session_name, attach::run_attach_once,
+    cli_runtime, json_err, partial, print_attach_error, server::ensure_server,
 };
 
 /// `phux new` — create a *new* session and attach to it.
@@ -49,6 +49,10 @@ pub(crate) fn run_new(
         (Some(positional), _) => Some(positional),
         (None, flag) => flag,
     };
+
+    if !json && let Err(code) = interactive_tty_preflight() {
+        return code;
+    }
 
     let socket_path = socket.unwrap_or_else(default_socket_path);
     // phux-iwuc: fail before auto-spawn with the sockaddr_un limit named,
