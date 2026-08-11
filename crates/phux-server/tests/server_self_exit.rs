@@ -45,8 +45,23 @@ fn server_self_exits_after_serving_a_client() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        // Live long enough for the client to attach, then exit → reap.
-        let cfg = seeded_cfg(socket_path.clone(), "sleep 0.3; exit 0");
+
+        // The pane exits when this test says so, never on a clock.
+        //
+        // This used to be `sleep 0.3; exit 0`, which raced the attach against
+        // a fixed 300ms: on a loaded machine the attach lost, the pane had
+        // already exited, its session was reaped, and the ATTACH came back as
+        // ERROR rather than ATTACHED. That is the server behaving correctly —
+        // there was nothing left to attach to — so the flake was entirely in
+        // the test's timing assumption (phux-w266, ~1 in 6 under load).
+        let release = tmp.path().join("release");
+        let cfg = seeded_cfg(
+            socket_path.clone(),
+            &format!(
+                "until [ -f '{}' ]; do sleep 0.01; done; exit 0",
+                release.display()
+            ),
+        );
 
         // `pending()` shutdown: the ONLY way `run_async` can return is the
         // reap-driven self-exit (armed once a client has attached).
@@ -65,7 +80,11 @@ fn server_self_exits_after_serving_a_client() {
             "attach must land before the pane exits",
         );
 
-        // The pane exits ~0.3s in; the reap then self-exits the server.
+        // Only now let the pane go. The attach has landed, so the server has
+        // provably "served a client" and the self-exit is armed.
+        std::fs::write(&release, b"go").expect("release the seed pane");
+
+        // The pane exits; the reap then self-exits the server.
         let run = timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, handle)
             .await
             .expect("server did not self-exit within 5s after its only pane died")

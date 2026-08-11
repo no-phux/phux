@@ -45,9 +45,8 @@ use phux_server_testkit::{
     spawn_server_with_seed_cmd, wait_for_socket,
 };
 
-/// A shell that lives long enough for the test client to complete
-/// `ATTACH` + receive `TERMINAL_SNAPSHOT` (the existing wire contract)
-/// BEFORE the EOF fires, then exits with code `0`.
+/// A shell that outlives the `ATTACH` handshake and then exits with code
+/// `0` **when the test says so**, by waiting for `release` to appear.
 ///
 /// We want the child to outlive the handshake — otherwise we're
 /// asserting on a race we don't care about ("client never even received
@@ -55,14 +54,20 @@ use phux_server_testkit::{
 /// we want to pin down ("server reports the pane died, with its exit
 /// status, when the PTY exits").
 ///
-/// 200ms is a generous floor against a slow CI scheduler while still
-/// being well below the test's drain deadline. The exact value isn't
-/// load-bearing; anything from ~50ms up works. `sleep` is POSIX so no
-/// path probing needed.
-fn pick_true_command() -> CommandBuilder {
+/// This was `sleep 0.2; exit 0`, whose doc claimed the value was not
+/// load-bearing. It was: under parallel test load the attach lost the race,
+/// the pane had already exited, its session was reaped, and `ATTACH` came
+/// back as `ERROR` rather than `ATTACHED` (phux-w266, ~1 in 5). A barrier
+/// expresses the same intent without a number to be wrong about, and makes
+/// the EOF fire at a point the test chooses rather than one it hopes for.
+/// `sleep` and `[ -f ]` are POSIX so no path probing is needed.
+fn pick_true_command(release: &std::path::Path) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.arg("-c");
-    cmd.arg("sleep 0.2; exit 0");
+    cmd.arg(format!(
+        "until [ -f '{}' ]; do sleep 0.01; done; exit 0",
+        release.display()
+    ));
     cmd
 }
 
@@ -118,10 +123,12 @@ fn pty_eof_drives_terminal_closed_to_attached_client() {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
 
-        // The seed shell exits with code 0 after a short sleep → PTY EOF
-        // lands in the actor, guaranteeing the EOF watcher fires while the
-        // client is still draining.
-        let cmd = pick_true_command();
+        // The seed shell exits with code 0 once this test releases it → PTY
+        // EOF lands in the actor. Releasing it after ATTACHED is what makes
+        // "the EOF watcher fires while the client is still draining" a fact
+        // rather than a hope.
+        let release = tmp.path().join("release");
+        let cmd = pick_true_command(&release);
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
 
@@ -136,6 +143,10 @@ fn pty_eof_drives_terminal_closed_to_attached_client() {
             type_byte, TYPE_ATTACHED,
             "first server-to-client frame must be ATTACHED",
         );
+
+        // The handshake has landed, so the pane may now die: everything below
+        // is the lifecycle this test exists to pin.
+        std::fs::write(&release, b"go").expect("release the seed pane");
 
         // ---- TERMINAL_SNAPSHOT (one per pane in focused window) ----
         let (type_byte, _snap_frame) = recv_typed(&mut stream).await;
