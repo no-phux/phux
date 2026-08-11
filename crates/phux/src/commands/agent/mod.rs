@@ -36,7 +36,7 @@ pub(crate) use self::session::{
 
 #[derive(Debug, clap::Subcommand)]
 pub(crate) enum AgentAction {
-    /// List inferred agent state for every pane.
+    /// List every pane's detected or declared agent and current state.
     #[command(visible_alias = "ls")]
     List {
         /// Emit machine-readable JSON instead of the table.
@@ -89,8 +89,7 @@ pub(crate) enum AgentAction {
         #[arg(long, value_parser = ["auto", "json", "text"], requires = "file")]
         format: Option<String>,
     },
-    /// Declare a pane's agent identity (writes the phux.agent/v1 L3
-    /// record).
+    /// Declare the agent identity and state associated with a pane.
     Set {
         /// Target selector (resolves to one pane). Omit for the focused
         /// pane.
@@ -204,9 +203,9 @@ pub(crate) enum AgentAction {
     /// Send keys to a pane, but only if it still hosts the expected agent.
     ///
     /// The agent-addressed sibling of top-level `phux send-keys`, and it
-    /// differs from it in exactly one way: it re-reads the pane's
-    /// phux.agent/v1 record immediately before writing and refuses if the
-    /// occupant changed. `phux send-keys` addresses a pane and deliberately
+    /// differs from it in exactly one way: it re-checks the pane's declared
+    /// agent identity immediately before writing and refuses if the occupant
+    /// changed. `phux send-keys` addresses a pane and deliberately
     /// checks no identity; use that one when a pane is what you mean.
     ///
     /// Every key is validated before any byte is written, so a typo in the
@@ -333,7 +332,7 @@ pub(crate) enum AgentAction {
         #[arg(last = true, value_name = "ARGS")]
         args: Vec<String>,
     },
-    /// Clear a pane's declared agent identity (deletes phux.agent/v1).
+    /// Clear a pane's declared agent identity.
     Clear {
         /// Target selector (resolves to one pane). Omit for the focused
         /// pane.
@@ -626,6 +625,12 @@ fn print_agent_states(states: &[AgentStateReport], json: bool, view: AgentView) 
                 ExitCode::FAILURE
             }
         };
+    }
+    if states.is_empty() {
+        outln!(
+            "No panes are reporting agents. Run `phux launch --list` to see what you can start."
+        );
+        return ExitCode::SUCCESS;
     }
     for state in states {
         outln!(

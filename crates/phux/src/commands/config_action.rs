@@ -77,8 +77,8 @@ pub(crate) enum ConfigAction {
         json: bool,
     },
 
-    /// List agent states from configured plugin manifests, merged with
-    /// live `phux.agent/v1` records when a server is running.
+    /// List configured agents, merged with live pane state when a server is
+    /// running.
     Agents {
         /// Emit a stable JSON document instead of human text.
         #[arg(long)]

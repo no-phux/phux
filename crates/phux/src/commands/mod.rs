@@ -500,14 +500,14 @@ pub(crate) enum Command {
         command: Vec<String>,
     },
 
-    /// Spawn a Terminal without attaching (`SPAWN_TERMINAL`).
+    /// Create a pane without attaching.
     ///
     /// With `--target`, the pane is inserted beside an exact local owner;
     /// otherwise it joins the server's most recently active session. The new
-    /// Terminal's id prints to stdout. With `--satellite NAME` on a
+    /// pane's id prints to stdout. With `--satellite NAME` on a
     /// federation hub (`phux server --hub`), the spawn is routed over
     /// the hub's link to that satellite and the returned id is
-    /// satellite-tagged — addressable through the hub by every
+    /// qualified with that host — addressable through the hub by every
     /// satellite-capable verb. Does not auto-start a server.
     Spawn {
         /// Route the spawn to a configured federation satellite (a name
@@ -544,12 +544,9 @@ pub(crate) enum Command {
     /// Launch an agent integration in a new pane.
     ///
     /// Resolves INTEGRATION (a `phux launch --list` id) to its `[launch]`
-    /// command from an enabled plugin's integration template, then spawns a
-    /// pane running it. The template routes the agent through its identity
-    /// wrapper, so the pane self-declares its `phux.agent/v1` identity with
-    /// no alias or per-shell config: the server injects `PHUX_TERMINAL_ID`,
-    /// the wrapper targets its own pane with it, and writes name + kind at
-    /// launch.
+    /// command from an enabled plugin's integration template, then creates a
+    /// pane running it. The integration also gives the pane its agent name
+    /// and kind automatically, with no alias or per-shell config.
     ///
     /// `--print` resolves and prints the argv without spawning (a server-free
     /// dry run). Extra agent arguments follow `--`:
@@ -1375,11 +1372,10 @@ pub(crate) enum Command {
         action: WorkspaceAction,
     },
 
-    /// Read and write a Terminal's L3 tags.
+    /// Read and write pane tags.
     ///
-    /// Tags are freeform strings stored as L3 metadata (`phux.tags/v1`),
-    /// the server stores them opaquely. Once a Terminal is tagged, the
-    /// `#tag` selector addresses every Terminal carrying that tag — e.g.
+    /// Tags are freeform strings attached to panes. Once a pane is tagged,
+    /// the `#tag` selector addresses every pane carrying that tag — e.g.
     /// `phux kill #build`, `phux snapshot #web`.
     Tag {
         #[command(subcommand)]
@@ -1805,7 +1801,7 @@ pub(crate) enum WorktreeAction {
 /// the aliases here are the long forms.
 #[derive(Debug, Subcommand)]
 pub(crate) enum TagAction {
-    /// List the tags on each Terminal a selector resolves to.
+    /// List the tags on each pane a selector resolves to.
     #[command(visible_alias = "list")]
     Ls {
         /// Target selector (session, `session:window`, `@id`, `.`, `#tag`).
@@ -1815,7 +1811,7 @@ pub(crate) enum TagAction {
         json: JsonOpt,
     },
 
-    /// Add one or more tags to each Terminal a selector resolves to.
+    /// Add one or more tags to each pane a selector resolves to.
     Add {
         /// Target selector.
         target: String,
@@ -1827,7 +1823,7 @@ pub(crate) enum TagAction {
         json: JsonOpt,
     },
 
-    /// Remove one or more tags from each Terminal a selector resolves to.
+    /// Remove one or more tags from each pane a selector resolves to.
     #[command(visible_alias = "remove")]
     Rm {
         /// Target selector.

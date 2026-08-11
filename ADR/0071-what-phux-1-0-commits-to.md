@@ -85,8 +85,9 @@ production never builds (the ADR-0030 demotion cascade).
 6. **The agent surface is inside the freeze, enumerated rather than assumed.**
    Point 1 named categories; the agent verbs grew faster than the categories
    were read, so they are listed. **Verbs and flags:** `agent list` / `show` /
-   `explain` (`--file`, `--kind`) / `set` (`--name`, `--kind`, `--state`,
-   `--attention`, `--session`) / `clear` / `install-claude`; `agent wait
+   `explain` (`--file`, `--kind`, `--title`, `--format`) / `set` (`--name`,
+   `--kind`, `--state`, `--attention`, `--session`) / `clear` /
+   `install-claude`; `agent wait
    [TARGET] --until STATE... --timeout SECS --json`, `--until` spelling exactly
    `idle|working|blocked|done` with `unknown` deliberately unspellable and
    `idle,blocked,done` the default set; `agent send-keys TARGET KEYS...
@@ -95,9 +96,11 @@ production never builds (the ADR-0030 demotion cascade).
    `--timeout`, `--json`); `agent answer TARGET --id ID` with exactly one of
    `--choice` or `--text` and the explicit `--allow-unlisted` override; `agent
    start NAME --kind KIND --target TARGET` (`--integration`, `--timeout`,
-   `--no-wait`, `--force`, trailing argv, `--json`); `%name` selectors over
-   explicit names only; `watch --until EVENT --timeout SECS`; `worktree new
-   --json`; `skill`; `snapshot --tail[=N]` and `--unwrap` with `--rendered`'s
+   `--no-wait`, `--force`, trailing argv, `--json`); `agent install-claude`
+   and `agent uninstall-claude`; `spawn`; `launch`; `%name` selectors over
+   explicit names only and `#tag` selectors over pane tags; `watch --until
+   EVENT --timeout SECS`; `worktree new --json`; `skill`; `snapshot --tail[=N]`
+   and `--unwrap` with `--rendered`'s
    conflict set; `wait --regex`, `--tail[=N]`, `--output-only`. **`--json`
    documents:** `AgentExplainJson` (v1, `capture` +
    `explain`); the `agent wait` document (v1: `terminal`, `satisfied`, `edge`

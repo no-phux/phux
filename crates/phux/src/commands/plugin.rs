@@ -43,6 +43,10 @@ fn run_list(json: bool) -> ExitCode {
     match load_registry() {
         Ok(entries) if json => print_plugins_json(&entries),
         Ok(entries) => {
+            if entries.is_empty() {
+                outln!("No plugins configured. Install one with `phux plugin install SOURCE`.");
+                return ExitCode::SUCCESS;
+            }
             for entry in entries {
                 let state = if entry.enabled { "enabled" } else { "disabled" };
                 outln!("{} {} ({state})", entry.manifest.id, entry.manifest.version);

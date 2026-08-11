@@ -144,6 +144,21 @@ fn help_does_not_print_banner() {
 }
 
 #[test]
+fn short_and_long_help_progressively_disclose_the_root() {
+    let (short_code, short, short_err) = run(&["-h"]);
+    let (long_code, long, long_err) = run(&["--help"]);
+    assert_eq!(short_code, 0, "short help failed: {short_err}");
+    assert_eq!(long_code, 0, "long help failed: {long_err}");
+    assert!(short.contains("Start here:"), "short help:\n{short}");
+    assert!(short.contains("phux                     Attach"));
+    assert!(!short.contains("ATTACH / SERVE"), "short help:\n{short}");
+    assert!(long.contains("ATTACH / SERVE"), "long help:\n{long}");
+    assert!(long.contains("  spawn      Create a pane"));
+    assert!(long.contains("  launch     Start a configured agent"));
+    assert!(!long.contains("\nCommands:\n"), "long help:\n{long}");
+}
+
+#[test]
 fn ls_json_no_server_is_silent_stdout_and_banner_free() {
     let sock = dead_socket();
     let (code, stdout, stderr) = run(&["ls", "--json", "--socket", &sock]);

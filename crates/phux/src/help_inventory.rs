@@ -217,6 +217,74 @@ fn top_level_help_lists_every_subcommand() {
 }
 
 #[test]
+fn short_help_is_a_small_start_here_view() {
+    assert!(crate::SHORT_HELP.contains("phux                     Attach"));
+    assert!(crate::SHORT_HELP.contains("phux --help` for every command"));
+    let daily = crate::SHORT_HELP
+        .lines()
+        .filter(|line| line.trim_start().starts_with("phux "))
+        .count();
+    assert!(
+        (6..=8).contains(&daily),
+        "short help should carry 6-8 daily commands, got {daily}:\n{}",
+        crate::SHORT_HELP
+    );
+    assert!(!crate::SHORT_HELP.contains("ATTACH / SERVE"));
+}
+
+#[test]
+fn long_help_has_one_complete_grouped_inventory() {
+    const HEADINGS: &[&str] = &[
+        "ATTACH / SERVE",
+        "INSPECT",
+        "DRIVE",
+        "SUPERVISE",
+        "ORGANIZE",
+        "FEDERATION",
+    ];
+    let mut root = Cli::command();
+    let long = root.render_long_help().to_string();
+    let mut listed = Vec::new();
+    let mut in_group = false;
+    for line in long.lines() {
+        let trimmed = line.trim();
+        if HEADINGS.contains(&trimmed) {
+            in_group = true;
+            continue;
+        }
+        if in_group && trimmed.is_empty() {
+            in_group = false;
+            continue;
+        }
+        if in_group && let Some(name) = trimmed.split_whitespace().next() {
+            listed.push(name.to_owned());
+        }
+    }
+
+    let mut expected: Vec<_> = Cli::command()
+        .get_subcommands()
+        .filter(|sub| sub.get_name() != "help" && !sub.is_hide_set())
+        .map(|sub| sub.get_name().to_owned())
+        .collect();
+    expected.sort();
+    listed.sort();
+    assert_eq!(
+        listed, expected,
+        "grouped root inventory is incomplete or duplicated"
+    );
+    assert!(
+        !long.contains("\nCommands:\n"),
+        "flat Clap catalog returned"
+    );
+    for jargon in ["SPAWN_TERMINAL", "phux.agent/v1", " L3 "] {
+        assert!(
+            !long.contains(jargon),
+            "root help leaks protocol jargon {jargon}"
+        );
+    }
+}
+
+#[test]
 fn help_leaks_no_internal_ids() {
     let mut buf = String::new();
     all_long_help(&Cli::command(), &mut buf);
@@ -239,6 +307,12 @@ fn help_leaks_no_internal_ids() {
         !buf.contains("CREATE_SESSION"),
         "help still describes the removed CREATE_SESSION verb"
     );
+    for jargon in ["SPAWN_TERMINAL", "phux.agent/v1", " L3 "] {
+        assert!(
+            !buf.contains(jargon),
+            "user-facing help leaks protocol jargon {jargon}"
+        );
+    }
     let leaks = ticket_like_tokens(&buf);
     assert!(
         leaks.is_empty(),

@@ -60,6 +60,7 @@ mod help_inventory;
 #[derive(Debug, Parser)]
 #[command(
     version,
+    help_template = "{about-with-newline}\n{usage-heading} {usage}\n\n{options}{after-help}",
     // NOTE: the root deliberately does NOT set `args_conflicts_with_subcommands`.
     // That setting would also refuse `phux --socket X ls` — clap 4.5 rejects
     // ANY matched root arg followed by a subcommand, with no exemption for
@@ -67,7 +68,7 @@ mod help_inventory;
     // `--rec`-belongs-to-naked-`phux` rule that setting used to enforce is a
     // post-parse check instead: see `root_rec_before_verb` below (ADR-0065).
     about = "A terminal multiplexer you can drive by hand or script.",
-    long_about = "phux — a libghostty-backed terminal multiplexer and control plane.\n\n\
+    long_about = "phux — a terminal multiplexer you can drive by hand or script.\n\n\
         Run `phux` with no arguments to attach to your session (auto-starting a\n\
         server if needed). The control verbs below read and drive panes without a\n\
         TTY, and most accept `--json` for clean, scriptable output.\n\n\
@@ -80,14 +81,16 @@ mod help_inventory;
           upgrade    Hot-swap the running server binary, keeping sessions alive\n\n\
         INSPECT\n  \
           ls         List sessions\n  \
-          status     Report the running server: pid, uptime, protocol, clients, logs\n  \
+          status     Report the running server: pid, uptime, version, clients, logs\n  \
           snapshot   Capture a pane's screen as JSON or a boxed view\n  \
           watch      Stream a pane's live events (bell, title, output, lifecycle)\n  \
           rec        Record a pane to an asciinema cast, a GIF, or an APNG\n  \
           play       Play a recording back as a live pane\n  \
-          agent      List, show, explain, set, or clear per-pane agent state\n\n\
+          agent      Observe agents, send prompts, answer questions, and wait for turns\n\n\
         DRIVE\n  \
           new        Create a session\n  \
+          spawn      Create a pane without attaching\n  \
+          launch     Start a configured agent integration in a new pane\n  \
           kill       Kill a session, window, or pane\n  \
           detach     Detach clients from a session\n  \
           insert-pane Insert an already-created pane into a layout\n  \
@@ -117,9 +120,10 @@ mod help_inventory;
         FEDERATION\n  \
           pair       Mint a pairing token for a remote consumer\n  \
           relay      Run a standalone relay, or enroll a route with it\n\n\
-        TARGET is the selector grammar: a session name, `name:window`,\n\
-        `name:window.pane`, `@id`, or `.` (focused). `=` is reserved for the attached TUI's client-local focus MRU. The same\n\
-        grammar works across kill/snapshot/send-keys/run/wait/ask.",
+        TARGET is a session name, `name:window`, `name:window.pane`, `@id`,\n\
+        `#tag`, `%agent-name`, or `.` (focused). `=` is reserved for the\n\
+        attached view's focus history. The same selectors work across\n\
+        kill/snapshot/send-keys/run/wait/ask.",
     // The EXIT STATUS section renders from the canonical table in
     // `exit_codes.rs` (phux-i0e8.11.4) — the same source the generated
     // `docs/reference/exit-codes.md` page uses, so `--help` and the docs
@@ -185,6 +189,26 @@ const ENVIRONMENT_HELP: &str = "ENVIRONMENT\n  \
         RUST_LOG           tracing level filter, e.g. phux=debug.\n\n\
         Run `phux server --listen 127.0.0.1:8787` to expose a port; see\n  \
         `phux help server` for the remote/TLS details.";
+
+/// Deliberately small `phux -h` start-here view. `phux --help` owns the full
+/// inventory; keeping the two surfaces distinct makes the first one useful.
+const SHORT_HELP: &str = "A terminal multiplexer you can drive by hand or script.\n\n\
+Usage: phux [OPTIONS] [COMMAND]\n\n\
+Start here:\n  \
+  phux                     Attach to your session (starts phux if needed)\n  \
+  phux new NAME            Create and attach to a session\n  \
+  phux ls                  List sessions\n  \
+  phux spawn -- COMMAND    Create a pane without attaching\n  \
+  phux launch --list       List configured agent integrations\n  \
+  phux snapshot TARGET     Read a pane\n  \
+  phux send-keys TARGET K  Send input to a pane\n  \
+  phux agent list          See agents and their current state\n\n\
+Run `phux --help` for every command or `phux <command> --help` for details.\n";
+
+fn short_help_requested() -> bool {
+    let mut args = std::env::args_os().skip(1);
+    args.next().is_some_and(|arg| arg == "-h") && args.next().is_none()
+}
 
 /// The teaching error for a root `--rec` in front of a verb.
 ///
@@ -406,6 +430,11 @@ fn main() -> ExitCode {
     // would drop immediately) so the guard lives until `main` returns.
     #[cfg(feature = "dhat-heap")]
     let _dhat = dhat::Profiler::new_heap();
+
+    if short_help_requested() {
+        output::bytes(SHORT_HELP.as_bytes());
+        return ExitCode::SUCCESS;
+    }
 
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,

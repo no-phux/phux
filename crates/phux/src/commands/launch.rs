@@ -192,9 +192,8 @@ fn run_list(config_path: &std::path::Path, json: bool) -> ExitCode {
         };
     }
     if integrations.is_empty() {
-        eprintln!(
-            "phux: no launchable integrations in any enabled plugin \
-             (install one, e.g. the agent-tools plugin, then `phux plugin enable`)"
+        outln!(
+            "No agent integrations available. Install a plugin with `phux plugin install SOURCE`."
         );
         return ExitCode::SUCCESS;
     }
@@ -262,9 +261,8 @@ fn print_launched(
         };
     }
     outln!(
-        "launched {} in terminal {id} ({})",
-        resolved.integration_id,
-        resolved.plugin_id
+        "Launched {} in pane @{id}. Next: `phux agent show @{id}`.",
+        resolved.integration_id
     );
     ExitCode::SUCCESS
 }

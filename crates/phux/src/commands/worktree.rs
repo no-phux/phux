@@ -523,7 +523,10 @@ fn emit_binding(
     terminal_id: u64,
 ) -> ExitCode {
     if !json {
-        outln!("{session}");
+        outln!(
+            "Created session {session} for {}. Next: `phux attach {session}`.",
+            path.display()
+        );
         return ExitCode::SUCCESS;
     }
     print_json(&binding_json(branch, path, session, terminal_id))
@@ -607,7 +610,7 @@ fn run_open(
                 u64::from(terminal_id),
             );
         }
-        outln!("{name}");
+        outln!("Session {name} is already open. Next: `phux attach {name}`.");
         return ExitCode::SUCCESS;
     }
 

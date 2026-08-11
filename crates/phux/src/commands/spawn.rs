@@ -366,8 +366,10 @@ fn print_spawned(terminal_id: &TerminalId, json: bool) -> ExitCode {
         }
     } else {
         match host {
-            Some(host) => outln!("spawned terminal {id} on satellite {host}"),
-            None => outln!("spawned terminal {id}"),
+            Some(host) => {
+                outln!("Created pane {host}/@{id}. Next: `phux snapshot {host}/@{id}`.")
+            }
+            None => outln!("Created pane @{id}. Next: `phux snapshot @{id}`."),
         }
         ExitCode::SUCCESS
     }

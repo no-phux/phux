@@ -19,7 +19,7 @@ Each section below is the verbatim `--help` text for one invocation path, render
 ## `phux`
 
 ```text
-phux — a libghostty-backed terminal multiplexer and control plane.
+phux — a terminal multiplexer you can drive by hand or script.
 
 Run `phux` with no arguments to attach to your session (auto-starting a
 server if needed). The control verbs below read and drive panes without a
@@ -35,15 +35,17 @@ ATTACH / SERVE
 
 INSPECT
   ls         List sessions
-  status     Report the running server: pid, uptime, protocol, clients, logs
+  status     Report the running server: pid, uptime, version, clients, logs
   snapshot   Capture a pane's screen as JSON or a boxed view
   watch      Stream a pane's live events (bell, title, output, lifecycle)
   rec        Record a pane to an asciinema cast, a GIF, or an APNG
   play       Play a recording back as a live pane
-  agent      List, show, explain, set, or clear per-pane agent state
+  agent      Observe agents, send prompts, answer questions, and wait for turns
 
 DRIVE
   new        Create a session
+  spawn      Create a pane without attaching
+  launch     Start a configured agent integration in a new pane
   kill       Kill a session, window, or pane
   detach     Detach clients from a session
   insert-pane Insert an already-created pane into a layout
@@ -77,58 +79,13 @@ FEDERATION
   pair       Mint a pairing token for a remote consumer
   relay      Run a standalone relay, or enroll a route with it
 
-TARGET is the selector grammar: a session name, `name:window`,
-`name:window.pane`, `@id`, or `.` (focused). `=` is reserved for the attached TUI's client-local focus MRU. The same
-grammar works across kill/snapshot/send-keys/run/wait/ask.
+TARGET is a session name, `name:window`, `name:window.pane`, `@id`,
+`#tag`, `%agent-name`, or `.` (focused). `=` is reserved for the
+attached view's focus history. The same selectors work across
+kill/snapshot/send-keys/run/wait/ask.
 
 Usage: phux [OPTIONS] [COMMAND]
 
-Commands:
-  attach       Attach to a session (interactive) [aliases: a]
-  server       Run a phux server in the foreground
-  ls           List sessions on the running server [aliases: list]
-  status       Report the running server: pid, up since, protocol, clients, logs
-  new          Create a new session and attach to it
-  spawn        Spawn a Terminal without attaching (`SPAWN_TERMINAL`)
-  launch       Launch an agent integration in a new pane
-  kill         Kill a session, window, pane, or the server itself
-  insert-pane  Insert an already-created pane into a session layout
-  move-pane    Move one existing pane beside another, even across sessions
-  swap-pane    Swap two existing pane leaves in the same session layout
-  resize       Set a pane's grid size, with no TTY
-  detach       Detach clients from a session, from outside the attach UI
-  take         Take the input wheel of a pane
-  give         Give back the input wheel of a pane
-  signal       Signal a pane's process group
-  update       Update phux to the latest release, keeping sessions alive
-  upgrade      Graceful-upgrade the running server in place
-  rename       Rename a session
-  snapshot     Capture a pane's screen as JSON or a boxed text view
-  send-keys    Send keys to a pane
-  paste        Paste text into a pane (bracketed when the pane asks for it)
-  wait         Block until a pane meets a condition
-  watch        Stream a pane's live events (bell, title, dirty/idle, lifecycle)
-  rec          Record a pane and export it as a cast, GIF, or APNG
-  play         Play a recording back as a live pane
-  ask          Report an agent ask event for a pane
-  agent        List, show, explain, set, or clear per-pane agent state
-  run          Run a command in a pane and capture its exit code
-  config       Inspect, scaffold, and reload the phux config file
-  plugin       Manage local plugin manifests in the phux config registry
-  workspace    Inspect a git workspace and its worktrees for agent orchestration
-  tag          Read and write a Terminal's L3 tags
-  relay        Run a standalone relay, or enroll a route with it
-  pair         Mint a pairing token for a remote consumer
-  host         Register the machines phux talks to: remotes and satellites
-  service      Keep a server running across logout and reboot
-  completion   Print a shell completion script on stdout
-  skill        Print the agent skill this binary ships with, on stdout
-  doctor       Diagnose a phux install: config, socket, server, plugins
-  worktree     Manage git worktrees and the sessions bound to them
-  logs         Show where phux's logs live, or tail one of them
-  help         Print this message or the help of the given subcommand(s)
-
-Options:
       --rec <PATH>
           Record this session while it runs and write the result to PATH.
 
@@ -205,16 +162,16 @@ Inference (`list`/`show`/`explain`) reports the agent phux infers is running in 
 Usage: phux agent [OPTIONS] <COMMAND>
 
 Commands:
-  list              List inferred agent state for every pane [aliases: ls]
+  list              List every pane's detected or declared agent and current state [aliases: ls]
   show              Show inferred state for one pane
   explain           Explain the evidence behind one pane's state
-  set               Declare a pane's agent identity (writes the phux.agent/v1 L3 record)
+  set               Declare the agent identity and state associated with a pane
   wait              Block until a pane's agent TRANSITIONS into a lifecycle state
   prompt            Hand an agent a turn's worth of work, with a delivery receipt
   send-keys         Send keys to a pane, but only if it still hosts the expected agent
   answer            Answer a pane's pending agent question by validated choice
   start             Start an agent INSIDE an existing shell pane, and return when it is ready for input
-  clear             Clear a pane's declared agent identity (deletes phux.agent/v1)
+  clear             Clear a pane's declared agent identity
   install-claude    Make plain `claude` launch inside phux and declare its identity
   uninstall-claude  Remove the claude-in-phux shim and shell activation
   help              Print this message or the help of the given subcommand(s)
@@ -270,7 +227,7 @@ Options:
 ## `phux agent clear`
 
 ```text
-Clear a pane's declared agent identity (deletes phux.agent/v1)
+Clear a pane's declared agent identity
 
 Usage: phux agent clear [OPTIONS] [TARGET]
 
@@ -352,7 +309,7 @@ Options:
 ## `phux agent list`
 
 ```text
-List inferred agent state for every pane
+List every pane's detected or declared agent and current state
 
 Usage: phux agent list [OPTIONS]
 
@@ -424,7 +381,7 @@ Options:
 ```text
 Send keys to a pane, but only if it still hosts the expected agent.
 
-The agent-addressed sibling of top-level `phux send-keys`, and it differs from it in exactly one way: it re-reads the pane's phux.agent/v1 record immediately before writing and refuses if the occupant changed. `phux send-keys` addresses a pane and deliberately checks no identity; use that one when a pane is what you mean.
+The agent-addressed sibling of top-level `phux send-keys`, and it differs from it in exactly one way: it re-checks the pane's declared agent identity immediately before writing and refuses if the occupant changed. `phux send-keys` addresses a pane and deliberately checks no identity; use that one when a pane is what you mean.
 
 Every key is validated before any byte is written, so a typo in the third key cannot leave the first two delivered — and since the whole batch now rides ONE acknowledged operation, that all-or-nothing promise covers delivery as well as validation. A caller that loses the answer can ask again under the same operation id instead of guessing whether the keys landed. For prose you want an agent to act on, `phux agent prompt` is the verb.
 
@@ -457,7 +414,7 @@ Options:
 ## `phux agent set`
 
 ```text
-Declare a pane's agent identity (writes the phux.agent/v1 L3 record)
+Declare the agent identity and state associated with a pane
 
 Usage: phux agent set [OPTIONS] --name <NAME> [TARGET]
 
@@ -759,7 +716,7 @@ Commands:
   check    Validate the config and report every problem, with full key paths
   show     Print the effective config (shipped defaults + your overrides) as TOML. With `--default`, print the shipped defaults verbatim instead, ignoring any user config. With `--layers`, print which layer of the `extends` stack set each effective key instead of the values
   plugins  List plugin manifests declared by `[[plugins]]`
-  agents   List agent states from configured plugin manifests, merged with live `phux.agent/v1` records when a server is running
+  agents   List configured agents, merged with live pane state when a server is running
   reload   Re-read the layered config and apply it to running clients in place
   run      Execute one action declared by a configured plugin manifest
   help     Print this message or the help of the given subcommand(s)
@@ -775,7 +732,7 @@ Options:
 ## `phux config agents`
 
 ```text
-List agent states from configured plugin manifests, merged with live `phux.agent/v1` records when a server is running
+List configured agents, merged with live pane state when a server is running
 
 Usage: phux config agents [OPTIONS]
 
@@ -1266,7 +1223,7 @@ Options:
 ```text
 Launch an agent integration in a new pane.
 
-Resolves INTEGRATION (a `phux launch --list` id) to its `[launch]` command from an enabled plugin's integration template, then spawns a pane running it. The template routes the agent through its identity wrapper, so the pane self-declares its `phux.agent/v1` identity with no alias or per-shell config: the server injects `PHUX_TERMINAL_ID`, the wrapper targets its own pane with it, and writes name + kind at launch.
+Resolves INTEGRATION (a `phux launch --list` id) to its `[launch]` command from an enabled plugin's integration template, then creates a pane running it. The integration also gives the pane its agent name and kind automatically, with no alias or per-shell config.
 
 `--print` resolves and prints the argv without spawning (a server-free dry run). Extra agent arguments follow `--`: `phux launch codex -- --model o3`.
 
@@ -2338,9 +2295,9 @@ Options:
 ## `phux spawn`
 
 ```text
-Spawn a Terminal without attaching (`SPAWN_TERMINAL`).
+Create a pane without attaching.
 
-With `--target`, the pane is inserted beside an exact local owner; otherwise it joins the server's most recently active session. The new Terminal's id prints to stdout. With `--satellite NAME` on a federation hub (`phux server --hub`), the spawn is routed over the hub's link to that satellite and the returned id is satellite-tagged — addressable through the hub by every satellite-capable verb. Does not auto-start a server.
+With `--target`, the pane is inserted beside an exact local owner; otherwise it joins the server's most recently active session. The new pane's id prints to stdout. With `--satellite NAME` on a federation hub (`phux server --hub`), the spawn is routed over the hub's link to that satellite and the returned id is qualified with that host — addressable through the hub by every satellite-capable verb. Does not auto-start a server.
 
 Usage: phux spawn [OPTIONS] [-- <COMMAND>...]
 
@@ -2429,16 +2386,16 @@ Options:
 ## `phux tag`
 
 ```text
-Read and write a Terminal's L3 tags.
+Read and write pane tags.
 
-Tags are freeform strings stored as L3 metadata (`phux.tags/v1`), the server stores them opaquely. Once a Terminal is tagged, the `#tag` selector addresses every Terminal carrying that tag — e.g. `phux kill #build`, `phux snapshot #web`.
+Tags are freeform strings attached to panes. Once a pane is tagged, the `#tag` selector addresses every pane carrying that tag — e.g. `phux kill #build`, `phux snapshot #web`.
 
 Usage: phux tag [OPTIONS] <COMMAND>
 
 Commands:
-  ls    List the tags on each Terminal a selector resolves to [aliases: list]
-  add   Add one or more tags to each Terminal a selector resolves to
-  rm    Remove one or more tags from each Terminal a selector resolves to [aliases: remove]
+  ls    List the tags on each pane a selector resolves to [aliases: list]
+  add   Add one or more tags to each pane a selector resolves to
+  rm    Remove one or more tags from each pane a selector resolves to [aliases: remove]
   help  Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2452,7 +2409,7 @@ Options:
 ## `phux tag add`
 
 ```text
-Add one or more tags to each Terminal a selector resolves to
+Add one or more tags to each pane a selector resolves to
 
 Usage: phux tag add [OPTIONS] <TARGET> <TAGS>...
 
@@ -2477,7 +2434,7 @@ Options:
 ## `phux tag ls`
 
 ```text
-List the tags on each Terminal a selector resolves to
+List the tags on each pane a selector resolves to
 
 Usage: phux tag ls [OPTIONS] <TARGET>
 
@@ -2499,7 +2456,7 @@ Options:
 ## `phux tag rm`
 
 ```text
-Remove one or more tags from each Terminal a selector resolves to
+Remove one or more tags from each pane a selector resolves to
 
 Usage: phux tag rm [OPTIONS] <TARGET> <TAGS>...
 
