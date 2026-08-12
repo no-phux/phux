@@ -7,9 +7,10 @@
 //! suggested answers) without re-deriving it from the grid. This test pins
 //! the server half of that contract from the wire's point of view:
 //!
-//! 1. Pre-seed a PTY-backed pane with a shell that, after a short delay (so
-//!    the client wins the race to subscribe), sets its terminal title via
-//!    OSC 2 to a `phux-ask` sentinel, then idles so the marker stays set.
+//! 1. Pre-seed a PTY-backed pane with a shell that waits on a release file
+//!    (so the client provably wins the race to subscribe), then sets its
+//!    terminal title via OSC 2 to a `phux-ask` sentinel and idles so the
+//!    marker stays set.
 //! 2. Attach a client and `SUBSCRIBE_EVENTS { terminal: None }`
 //!    (server-wide).
 //! 3. Assert an `Asked` event arrives carrying the parsed id, question, and
@@ -22,10 +23,12 @@
 //! sentinel. Full agent-state detection (manifests / hooks / OSC-9
 //! surfacing) is the follow-up phux-2sl6.4.
 //!
-//! The leading sleep is the same race-avoidance trick `agent_events.rs`
-//! uses: the event stream is a best-effort accelerator, so a marker set
-//! before the subscription lands is legitimately dropped; the seed defers
-//! its observable output until the client has subscribed.
+//! The release file exists because the event stream is a best-effort
+//! accelerator: a marker set before the subscription lands is legitimately
+//! dropped, so the seed defers its observable output until the client has
+//! subscribed. "Subscribed" has to mean *the server processed the subscribe*
+//! — `SUBSCRIBE_EVENTS` is answered with no frame, so the test forces the
+//! ordering with a following command whose reply it waits for.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -86,7 +89,9 @@ fn seed_with_ask_title(release: &std::path::Path) -> CommandBuilder {
     // This was `sleep 0.25`, which is the same shape as the flakes fixed in
     // phux-w266: it bets that a subscribe completes inside a fixed window,
     // and loses that bet under parallel test load. The barrier removes the
-    // bet.
+    // bet — but only if the file is written once the server has *processed*
+    // the subscribe, not merely once the client has sent it. See the barrier
+    // comment at the write site.
     //
     // The trailing sleep was `2`, which was a second, subtler race: it bounds
     // how long the ask marker stays set, and the collector waits up to
@@ -188,18 +193,56 @@ fn subscribed_client_receives_asked_event_from_ask_title() {
         // ---- ATTACH ---- (so the client has an `attached` mailbox the
         // event fanout can target).
         send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (type_byte, _attached) = recv_typed(&mut stream).await;
+        let (type_byte, attached) = recv_typed(&mut stream).await;
         assert_eq!(
             type_byte, TYPE_ATTACHED,
             "first server-to-client frame must be ATTACHED",
         );
+        let FrameKind::Attached { snapshot, .. } = attached else {
+            panic!("expected ATTACHED to carry a snapshot");
+        };
 
         // ---- SUBSCRIBE_EVENTS (server-wide) ----
         send_frame(&mut stream, &FrameKind::SubscribeEvents { terminal: None }).await;
 
-        // Only now let the seed emit the ask title. Subscribing first is the
-        // precondition the whole test rests on, so it is enforced rather than
-        // raced.
+        // Wait until the server has *processed* the subscribe before letting
+        // the seed emit the title.
+        //
+        // The previous barrier released on `send_frame` returning, which only
+        // proves the bytes left this end. `SUBSCRIBE_EVENTS` carries no
+        // request_id and is answered with no frame, so there is nothing to
+        // wait for directly -- and under parallel load the title could still
+        // fire before `handle_subscribe_events` ran, dropping the event the
+        // test exists to observe. That is the residual half of the phux-w266
+        // race class: not "the pane died too early" but "the event fired
+        // before the observer was registered".
+        //
+        // A command that *does* reply, sent after the subscribe on the same
+        // connection, is the barrier: the per-connection frame loop handles
+        // frames in order, so a `CommandResult` for this request proves the
+        // subscribe ahead of it is already installed. `GetTerminalState` is
+        // read-only, so waiting on it changes nothing else.
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 1,
+                command: Command::GetTerminalState {
+                    terminal_id: snapshot.focused_pane,
+                    include_scrollback: false,
+                    max_scrollback_lines: 0,
+                },
+            },
+        )
+        .await;
+        let barrier = timeout(WIRE_RECV_TIMEOUT, recv_command_result(&mut stream, 1))
+            .await
+            .expect("the server must answer GET_TERMINAL_STATE before the collection window");
+        assert!(
+            !matches!(barrier, CommandResult::Error { .. }),
+            "the subscribe barrier must succeed, got {barrier:?}",
+        );
+
+        // Only now let the seed emit the ask title.
         std::fs::write(&release, b"go").expect("release the ask title");
 
         // ---- collect until the Asked event arrives ----
