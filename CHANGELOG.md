@@ -9,6 +9,45 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.16.0](https://github.com/phall1/phux/compare/v0.15.0...v0.16.0) (2026-08-12)
+
+
+### Features
+
+* **agent:** ship two evidence-backed screen working-backstop rules ([74ee298](https://github.com/phall1/phux/commit/74ee2985dbf2c0ed751bfc3802e27faee20e7039))
+* **mcp:** add phux_detach, the bounded half of attach/detach ([#434](https://github.com/phall1/phux/issues/434)) ([3e98e17](https://github.com/phall1/phux/commit/3e98e176d3ee87e9e9e65778b8d5463ba293d1be))
+* **protocol:** give DETACHED the reason and message the spec requires ([#435](https://github.com/phall1/phux/issues/435)) ([dc09cf9](https://github.com/phall1/phux/commit/dc09cf9b019027712f6f6ea1211a92ba7fe913cb))
+* **service:** reconcile a legacy supervisor unit in place ([#433](https://github.com/phall1/phux/issues/433)) ([18df3df](https://github.com/phall1/phux/commit/18df3dfe4d375a6470cc50e7cd48b645159e317c))
+
+
+### Bug Fixes
+
+* **agent:** delete inert visible-blocker and visible-working manifest flags ([acbd945](https://github.com/phall1/phux/commit/acbd945ecb986959ce5e2ba007fb5156879a48aa))
+* **agent:** distinguish provably-not-written input from delivery_unknown ([363cb2e](https://github.com/phall1/phux/commit/363cb2eb4f48aed3fd1100125926ed3ac1efd9d5))
+* **agent:** join the two halves of the claude shim detector proof ([81ec230](https://github.com/phall1/phux/commit/81ec23073d2a42e138ea252e5a9aece5f652ca1e))
+* **build:** decouple dhat-heap from the phux binary so --all-features is safe ([#436](https://github.com/phall1/phux/issues/436)) ([9304f83](https://github.com/phall1/phux/commit/9304f831afadfe71a7cae857c11f17410c044ecd))
+* **doctor:** report every applicable server-health condition, not just the first ([#430](https://github.com/phall1/phux/issues/430)) ([e035ee7](https://github.com/phall1/phux/commit/e035ee74e35f9b96e639932e44edb6ee55da79eb))
+* **lifecycle:** profile-scope service units, always render dry runs, bound auto-spawned daemons ([#427](https://github.com/phall1/phux/issues/427)) ([3c7a838](https://github.com/phall1/phux/commit/3c7a838a7efb3a4e6a370ba5d73ae98c31aba9fa))
+* **server:** bound and reap per-connection metadata subscriptions ([a26fb6f](https://github.com/phall1/phux/commit/a26fb6fc889593090cb1942de288c49f31e6ae93))
+* **server:** deliver TERMINAL_CLOSED to ATTACH_TERMINAL-only subscribers ([c7a9e50](https://github.com/phall1/phux/commit/c7a9e502d16decaba9b7fb8f8405113570529be3))
+* **server:** keep HELLO layers and peer identity across mid-connection DETACH ([70f41e2](https://github.com/phall1/phux/commit/70f41e2c0ef14072bf28d3faaf7c5a2881b97ce4))
+* **server:** rotate server.log while the server is live, not just at start ([#437](https://github.com/phall1/phux/issues/437)) ([58625c3](https://github.com/phall1/phux/commit/58625c34595b877965f8786648897917ae88569b))
+* **server:** spawn panes at the geometry the client already knows ([c0ad143](https://github.com/phall1/phux/commit/c0ad143eecacbbc77057c6848fb31fc085c47840))
+
+
+### Performance
+
+* **agent:** poll the foreground pgid every tick, read argv only on change ([71134cc](https://github.com/phall1/phux/commit/71134cca55327a4f166515883eb397d738304fd4))
+
+
+### Documentation
+
+* **adr:** add a ratification brief for the agent-surface batch ([#431](https://github.com/phall1/phux/issues/431)) ([c2683e4](https://github.com/phall1/phux/commit/c2683e41bbc8a81eb200d2dde9fb7fddb96de2a9))
+* **adr:** renumber ci-metrics ADR to 0082, gate number uniqueness ([#429](https://github.com/phall1/phux/issues/429)) ([970acc7](https://github.com/phall1/phux/commit/970acc72c715c396814c866acd3978367038dcf7))
+* **agent:** capture whether claude code emits OSC 9;4 and title kill-switch scope ([#432](https://github.com/phall1/phux/issues/432)) ([430e461](https://github.com/phall1/phux/commit/430e461ffa45c117e086e3d716ac20942411c011))
+* **agents:** document the direct-push policy and its two rulesets ([b973ca8](https://github.com/phall1/phux/commit/b973ca87d75f0b1030751ea1c8a92cec459f29ab))
+* **agents:** name ci-full as the PR bar, not ci ([#428](https://github.com/phall1/phux/issues/428)) ([365cdb9](https://github.com/phall1/phux/commit/365cdb998c4bbafc2de5df94f936e21ef5273a50))
+
 ## [0.15.0](https://github.com/phall1/phux/compare/v0.14.1...v0.15.0) (2026-08-11)
 
 
