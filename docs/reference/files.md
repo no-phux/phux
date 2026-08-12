@@ -45,7 +45,7 @@ The state directory is `$XDG_STATE_HOME/<profile-dir>`, falling back to `~/.loca
 ```
 $XDG_STATE_HOME/<profile-dir>/
 ├── server.log          # the ONE server log, both spawn paths
-├── server.log.1        # the previous generation, after rotation
+├── server.log.1..4     # older generations, rotated while live
 ├── server-starts.log   # one line per server start (crash-loop check)
 ├── client-<pid>.log    # per-pid interactive-client log
 ├── onboarding.json     # versioned first-use journey progress
@@ -55,7 +55,7 @@ $XDG_STATE_HOME/<profile-dir>/
 └── remote-tokens       # pairing-token store (owner-only, 0600)
 ```
 
-- `server.log` is the canonical server log regardless of how the server was started: the auto-spawn path redirects the daemon's stderr here, and the service unit points its log capture at the same file. `phux logs` and `phux service logs` read it; `PHUX_LOG` tees the server's structured log to an additional file without moving this one. It is rolled aside to `server.log.1` when it exceeds 8 MiB at server start; one previous generation is kept.
+- `server.log` is the canonical server log regardless of how the server was started: the auto-spawn path redirects the daemon's stderr here, and the service unit points its log capture at the same file. `phux logs` and `phux service logs` read it; `PHUX_LOG` tees the server's structured log to an additional file without moving this one. Whenever it exceeds 8 MiB it is rolled aside to `server.log.1` (older generations shifting to `.2`, `.3`, `.4`, oldest dropped), checked at server start and again periodically for as long as the server runs -- so one very long-lived server is bounded the same as many short-lived ones. Rotation truncates the live file in place rather than replacing it, so a `tail -f` or the OS-redirected stdio a service-managed server writes through keeps working across it.
 - `server-starts.log` records `<epoch> <pid> <version>` per server start. `phux doctor` counts recent entries to report a crash-loop, and compares the newest version against the running binary's to detect an upgrade the server has not picked up.
 - `client-<pid>.log` is where an interactive client writes its trace — the TUI owns the alt screen, so the client never logs to stderr. `PHUX_LOG` redirects it. Log files are created mode `0600`.
 - `onboarding.json` records only the versioned first-use journey stage. `onboarding.lock` serializes delivery within that profile. State is best-effort: missing state starts the guidance, while unreadable, unknown, or unwritable state stays quiet and never prevents attach.

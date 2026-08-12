@@ -333,6 +333,16 @@ pub(crate) fn run_server(
     if let Some(fd) = resume {
         server = server.resume(fd);
     }
+    // Live rotation for the canonical server log for as long as this
+    // process runs (phux-j1zj): startup-only rotation still lets one very
+    // long-lived, chatty server exceed `server.log`'s size threshold
+    // within a single run. Spawned directly on `rt` (not inside the
+    // `block_on` future below) — a `Runtime` can be spawned onto before
+    // its first `block_on`, and the task is driven by the same runtime
+    // either way. It runs until `rt` itself is dropped at shutdown,
+    // alongside `server.run_async`.
+    rt.spawn(phux_server::telemetry::run_log_rotation_task());
+
     let result = rt.block_on(async move { server.run_async(shutdown_signal()).await });
 
     match result {

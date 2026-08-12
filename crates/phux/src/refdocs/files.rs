@@ -72,7 +72,7 @@ pub(crate) fn page() -> Page {
          ```\n\
          $XDG_STATE_HOME/<profile-dir>/\n\
          ├── server.log          # the ONE server log, both spawn paths\n\
-         ├── server.log.1        # the previous generation, after rotation\n\
+         ├── server.log.1..4     # older generations, rotated while live\n\
          ├── server-starts.log   # one line per server start (crash-loop check)\n\
          ├── client-<pid>.log    # per-pid interactive-client log\n\
          ├── onboarding.json     # versioned first-use journey progress\n\
@@ -86,9 +86,15 @@ pub(crate) fn page() -> Page {
            daemon's stderr here, and the service unit points its log \
            capture at the same file. `phux logs` and `phux service \
            logs` read it; `PHUX_LOG` tees the server's structured log \
-           to an additional file without moving this one. It is rolled \
-           aside to `server.log.1` when it exceeds 8 MiB at server start; \
-           one previous generation is kept.\n\
+           to an additional file without moving this one. Whenever it \
+           exceeds 8 MiB it is rolled aside to `server.log.1` (older \
+           generations shifting to `.2`, `.3`, `.4`, oldest dropped), \
+           checked at server start and again periodically for as long \
+           as the server runs -- so one very long-lived server is \
+           bounded the same as many short-lived ones. Rotation \
+           truncates the live file in place rather than replacing it, \
+           so a `tail -f` or the OS-redirected stdio a service-managed \
+           server writes through keeps working across it.\n\
          - `server-starts.log` records `<epoch> <pid> <version>` per \
            server start. `phux doctor` counts recent entries to report a \
            crash-loop, and compares the newest version against the \

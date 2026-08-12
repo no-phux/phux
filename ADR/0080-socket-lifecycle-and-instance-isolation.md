@@ -165,6 +165,12 @@ in-place handoff automatically, and `phux doctor` reports it.
   chatty server to exceed the threshold within a single run; bounding that
   needs a rolling appender and is deferred until there is evidence it matters.
 
+  > **Update 2026-08-12:** closed by phux-j1zj. Rotation now also runs
+  > periodically for as long as the server is live, keeps up to four
+  > previous generations (not one), and truncates the live path in place
+  > rather than renaming it aside, so a reader already following `server.log`
+  > by name survives a rotation. See `phux_server::telemetry::rotate_log`.
+
 ## Alternatives considered
 
 **A pidfile.** Rejected as the primary mechanism: a pidfile can be stale in

@@ -46,6 +46,13 @@
 //! most once per process. Subsequent calls return `Err` via `try_init`'s
 //! error path; callers should not call them from tests.
 //!
+//! The canonical server log is also **rotated while the server runs**, not
+//! only at startup: [`run_log_rotation_task`] is a background task the
+//! server binary spawns on its own tokio runtime, which periodically bounds
+//! `server.log` at `LOG_ROTATE_THRESHOLD_BYTES` the same way startup
+//! rotation already bounds it across many short-lived server generations
+//! (phux-j1zj).
+//!
 //! ## Why factor this out
 //!
 //! A follow-up agent will add a `dhat-heap` feature that swaps the global
@@ -137,39 +144,176 @@ where
     }
 }
 
-/// Size at which the log is rolled aside on startup (phux-zomb.5).
+/// Size at which the log is rolled aside (phux-zomb.5, phux-j1zj).
 ///
 /// Deliberately generous: the log has to be long enough to cover a real
-/// debugging session, and the failure this bounds is unbounded growth across
-/// *generations*, not a single verbose run.
+/// debugging session, and the failure this bounds is unbounded growth
+/// across *generations* (many short-lived servers appending to one file)
+/// as well as within a single very long-lived, chatty run.
 const LOG_ROTATE_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Roll `path` aside if it has grown past [`LOG_ROTATE_THRESHOLD_BYTES`].
+/// How many previous generations of a rotated log are kept
+/// (`<path>.1` .. `<path>.{LOG_ROTATE_MAX_GENERATIONS}`).
 ///
-/// One generation of history is kept, at `<path>.1`. Checked once per server
-/// start rather than continuously: the growth this bounds came from many
-/// short-lived servers appending to one file — a supervisor respawning after
-/// each crash produced 1487 generations and a 17 MB log on one machine, with
-/// the earliest entries (the ones explaining the first failure) buried.
+/// Bounds total retained history to roughly `LOG_ROTATE_MAX_GENERATIONS *
+/// LOG_ROTATE_THRESHOLD_BYTES` on top of the live file, instead of letting
+/// `.1`, `.2`, … accumulate without limit — the total is capped, not merely
+/// chunked into more, equally-unbounded pieces.
 ///
-/// Startup-only means a single very long-lived, very chatty server can still
-/// exceed the threshold within one run; bounding that needs a rolling
-/// appender and is left for when there is evidence it matters.
+/// A constant rather than a config knob: the config schema is inside the
+/// ADR-0071 1.0 freeze, and nothing about this number has proven worth
+/// exposing yet.
+const LOG_ROTATE_MAX_GENERATIONS: usize = 4;
+
+/// How often [`run_log_rotation_task`] re-checks the canonical server log's
+/// size while the server is live (phux-j1zj).
 ///
-/// Every failure here is swallowed: logging must never be the reason a server
-/// refuses to start.
-fn rotate_if_oversized(path: &Path) {
+/// Five minutes keeps the check itself cheap (one `stat`, almost always a
+/// no-op) while staying well under the time it would take a single
+/// long-lived, chatty server to cross [`LOG_ROTATE_THRESHOLD_BYTES`]
+/// unnoticed.
+const LOG_ROTATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Whether `size` bytes warrants rotating the log.
+///
+/// Pure and filesystem-free so the rotation *trigger* is testable with
+/// synthetic sizes rather than real files or a wall clock.
+const fn needs_rotation(size: u64, threshold: u64) -> bool {
+    size >= threshold
+}
+
+/// The path of the `n`th rotated generation of `base`: `base.1`, `base.2`, …
+fn generation_path(base: &Path, n: usize) -> PathBuf {
+    let mut path = base.as_os_str().to_owned();
+    path.push(format!(".{n}"));
+    PathBuf::from(path)
+}
+
+/// The renames needed to shift existing rotated generations up one slot
+/// before a fresh `.1` is written, in the order they must be applied
+/// (highest generation first, so no rename clobbers a file that hasn't
+/// moved yet).
+///
+/// The final rename in the plan (`.{max-1}` -> `.{max}`) overwrites
+/// whatever already sits at `.{max}` — `std::fs::rename` replaces an
+/// existing destination atomically — which is how the oldest generation is
+/// dropped: by that overwrite, not a separate delete. With
+/// `max_generations <= 1` there is nothing to shift, so the plan is empty.
+///
+/// Pure and filesystem-free: the plan depends only on `base` and
+/// `max_generations`, so the retention *cap* is testable without touching
+/// disk.
+fn shift_plan(base: &Path, max_generations: usize) -> Vec<(PathBuf, PathBuf)> {
+    (1..max_generations)
+        .rev()
+        .map(|n| (generation_path(base, n), generation_path(base, n + 1)))
+        .collect()
+}
+
+/// Roll `path` aside if it has grown past `threshold`, keeping up to
+/// `max_generations` previous generations at `path.1` .. `path.{max_generations}`.
+///
+/// Copies the live file's content into `path.1` (after shifting any
+/// existing `.1` .. `.{max_generations - 1}` up one slot, oldest dropped),
+/// then **truncates `path` in place** — it never renames or recreates the
+/// live path itself. That distinction matters because `path` is a shared,
+/// fixed location: a service-managed server's stdio redirect and any
+/// reader already following it by name (`tail -f`, `phux logs --server
+/// -f`) have it open *before* this runs. An in-place truncate leaves their
+/// file descriptor pointing at the same inode, so an `O_APPEND` writer
+/// keeps landing at the (now-zero) end of the file and a `tail -f` reader
+/// sees the truncation and keeps following — neither has to reopen
+/// anything. A rename-based rotation would instead orphan every existing
+/// reader or writer on the old inode, silently.
+///
+/// Called both once at startup (via [`file_writer`], for the optional
+/// `PHUX_LOG` tee) and periodically for as long as the server runs (via
+/// [`run_log_rotation_task`], for the canonical `server.log`), so a single
+/// very long-lived, very chatty server is bounded the same way many
+/// short-lived ones already were (phux-j1zj).
+///
+/// Returns `Ok(true)` if a rotation happened. Callers swallow every `Err`:
+/// logging must never be the reason a server refuses to start or stumbles
+/// while running.
+fn rotate_log(path: &Path, threshold: u64, max_generations: usize) -> std::io::Result<bool> {
     let Ok(meta) = std::fs::metadata(path) else {
-        return;
+        return Ok(false);
     };
-    if meta.len() < LOG_ROTATE_THRESHOLD_BYTES {
-        return;
+    if !needs_rotation(meta.len(), threshold) {
+        return Ok(false);
     }
-    let mut rotated = path.as_os_str().to_owned();
-    rotated.push(".1");
-    // `rename` replaces an existing `.1` atomically, so exactly one previous
-    // generation survives and the live path is free for a fresh sink.
-    let _ = std::fs::rename(path, PathBuf::from(rotated));
+    for (from, to) in shift_plan(path, max_generations) {
+        if from.exists() {
+            std::fs::rename(&from, &to)?;
+        }
+    }
+    if max_generations > 0 {
+        let gen1 = generation_path(path, 1);
+        std::fs::copy(path, &gen1)?;
+        // `fs::copy` carries the source's permission bits on Unix, but
+        // re-harden explicitly (ADR-0028) rather than lean on that being
+        // true on every platform forever.
+        harden_log_sink(&gen1)?;
+    }
+    // In-place truncate (not a rename+recreate) — see the doc comment above
+    // for why that is load-bearing for readers and writers already holding
+    // `path` open by name.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    Ok(true)
+}
+
+/// One rotation check against the canonical server log, with production's
+/// threshold and retention cap.
+///
+/// Synchronous and tokio-free by design: it is the entire body of one
+/// [`run_log_rotation_task`] tick, factored out so the "does the canonical
+/// path get rotated with the right numbers" wiring is unit-testable
+/// directly — set `XDG_STATE_HOME`, seed a file, call this, assert — with
+/// no runtime, no background task, and no timing involved.
+fn rotate_server_log_if_needed() -> std::io::Result<bool> {
+    rotate_log(
+        &server_log_path(),
+        LOG_ROTATE_THRESHOLD_BYTES,
+        LOG_ROTATE_MAX_GENERATIONS,
+    )
+}
+
+/// Periodically rotate the canonical `server.log` for as long as the
+/// server is live (phux-j1zj).
+///
+/// Startup-only rotation (the check inside `file_writer`) bounds growth
+/// across many short-lived server generations, but a single very
+/// long-lived, chatty server could still cross `LOG_ROTATE_THRESHOLD_BYTES`
+/// within one run and never get rolled aside. This task closes that gap:
+/// spawn it once, on the server's own tokio runtime, and let it run until
+/// the runtime is dropped at shutdown.
+///
+/// `tokio::time::interval` fires its first tick immediately, so a log that
+/// was already oversized when this server started gets bounded right away
+/// rather than after a full `LOG_ROTATE_CHECK_INTERVAL` — on top of,
+/// not instead of, whatever startup-time rotation an explicit `PHUX_LOG`
+/// path already received from [`init`].
+///
+/// The actual check runs via `spawn_blocking`: almost every tick it is one
+/// cheap `stat`, but on the rare oversized tick it becomes a multi-MiB file
+/// copy, which must not run inline on a current-thread runtime's single
+/// reactor thread (ADR-0003) — that would stall every pane's PTY I/O and
+/// every socket accept for the duration of the copy.
+pub async fn run_log_rotation_task() {
+    let mut ticker = tokio::time::interval(LOG_ROTATE_CHECK_INTERVAL);
+    loop {
+        ticker.tick().await;
+        let outcome = tokio::task::spawn_blocking(rotate_server_log_if_needed).await;
+        if let Ok(Err(err)) = outcome {
+            tracing::debug!(error = %err, "server log rotation check failed");
+        }
+        // A panicked join (`Err` from `spawn_blocking`) is swallowed the
+        // same as an `Err` from the rotation itself: a broken rotation
+        // check is never a reason to bring the server down.
+    }
 }
 
 /// Open a non-blocking file appender at `path`, creating the parent
@@ -179,14 +323,16 @@ fn rotate_if_oversized(path: &Path) {
 /// background writer alive) alongside a `MakeWriter` factory. We use a
 /// fixed file name rather than a daily-rolling one so a `PHUX_LOG` path the
 /// operator names points at exactly that file; size-based rotation happens
-/// once here, at startup ([`rotate_if_oversized`]).
+/// here at startup ([`rotate_log`]), and — for the canonical server log —
+/// again periodically for as long as the server runs
+/// ([`run_log_rotation_task`]).
 fn file_writer(
     path: &Path,
 ) -> std::io::Result<(tracing_appender::non_blocking::NonBlocking, WorkerGuard)> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    rotate_if_oversized(path);
+    let _ = rotate_log(path, LOG_ROTATE_THRESHOLD_BYTES, LOG_ROTATE_MAX_GENERATIONS);
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
     let file_name = path.file_name().ok_or_else(|| {
         std::io::Error::other(format!(
@@ -615,6 +761,228 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "re-hardened sink mode was {mode:o}");
+    }
+
+    // -----------------------------------------------------------------
+    // live rotation (phux-j1zj)
+    // -----------------------------------------------------------------
+
+    /// The rotation trigger is a pure `>=` comparison against the
+    /// threshold, exercised with synthetic sizes — no real file and no
+    /// wall clock involved.
+    #[test]
+    fn needs_rotation_triggers_at_and_above_threshold_only() {
+        assert!(!needs_rotation(7, 8));
+        assert!(needs_rotation(8, 8));
+        assert!(needs_rotation(9, 8));
+    }
+
+    /// The shift plan orders the highest existing generation first (so an
+    /// applied rename never clobbers a file that hasn't moved yet) and
+    /// stops one short of `max_generations` — the final rename in the
+    /// plan is the one whose *destination* is the cap, so applying the
+    /// plan in order both shifts every kept generation up and drops the
+    /// oldest one (by overwrite) in a single pass. Pure path arithmetic,
+    /// no filesystem.
+    #[test]
+    fn shift_plan_orders_highest_generation_first_within_the_cap() {
+        let base = Path::new("/state/phux/server.log");
+        let plan = shift_plan(base, 4);
+        assert_eq!(
+            plan,
+            vec![
+                (generation_path(base, 3), generation_path(base, 4)),
+                (generation_path(base, 2), generation_path(base, 3)),
+                (generation_path(base, 1), generation_path(base, 2)),
+            ]
+        );
+    }
+
+    /// Keeping at most one generation (or zero) means there is nothing to
+    /// shift — `.1` is always written fresh by `rotate_log` itself.
+    #[test]
+    fn shift_plan_is_empty_when_at_most_one_generation_is_kept() {
+        let base = Path::new("/state/phux/server.log");
+        assert!(shift_plan(base, 1).is_empty());
+        assert!(shift_plan(base, 0).is_empty());
+    }
+
+    /// Below the threshold, `rotate_log` leaves everything untouched.
+    #[test]
+    fn rotate_log_below_threshold_is_a_noop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("server.log");
+        std::fs::write(&path, b"small\n").expect("seed");
+
+        let rotated = rotate_log(&path, 1024, 4).expect("rotate check");
+
+        assert!(!rotated);
+        assert!(!generation_path(&path, 1).exists());
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "small\n");
+    }
+
+    /// Over the threshold, `rotate_log` copies the live content into `.1`
+    /// and truncates the live path to empty — the size-based trigger and
+    /// the actual rotation, driven end to end (not just the pure
+    /// decision function above).
+    #[test]
+    fn rotate_log_rotates_an_oversized_file_into_generation_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("server.log");
+        std::fs::write(&path, b"a line of pre-rotation content\n").expect("seed");
+
+        let rotated = rotate_log(&path, 4, 4).expect("rotate");
+
+        assert!(rotated);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read live path after rotation"),
+            "",
+            "live path should be truncated to empty"
+        );
+        assert_eq!(
+            std::fs::read_to_string(generation_path(&path, 1)).expect("read .1"),
+            "a line of pre-rotation content\n"
+        );
+    }
+
+    /// Rotation truncates the live path IN PLACE rather than renaming it
+    /// aside — a reader that already has `path` open by name (`tail -f`,
+    /// or a service-managed server's OS-redirected stdio, both of which
+    /// open it before this ever runs) must keep working through a
+    /// rotation without reopening anything. Proven here by asserting the
+    /// path's inode is unchanged across the call, and that a handle
+    /// opened before rotation observes the truncation directly.
+    #[cfg(unix)]
+    #[test]
+    fn rotate_log_truncates_in_place_so_open_readers_keep_the_same_inode() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("server.log");
+        std::fs::write(&path, b"a line of pre-rotation content\n").expect("seed");
+
+        // Stand-in for a `tail -f` reader (or the OS-redirected stdio fd a
+        // service-managed server writes through): already open by name
+        // before rotation happens.
+        let reader = std::fs::File::open(&path).expect("open before rotation");
+        let ino_before = reader.metadata().expect("metadata").ino();
+
+        let rotated = rotate_log(&path, 4, 4).expect("rotate");
+        assert!(rotated);
+
+        let ino_after = std::fs::metadata(&path)
+            .expect("metadata after rotation")
+            .ino();
+        assert_eq!(
+            ino_before, ino_after,
+            "rotation must truncate the live path in place, not replace its inode"
+        );
+        // The already-open handle observes the truncation without
+        // reopening — it is the same file.
+        let via_old_handle = std::fs::read_to_string(&path).expect("read via live path");
+        assert_eq!(
+            via_old_handle, "",
+            "existing reader should see the truncation"
+        );
+        drop(reader);
+    }
+
+    /// Existing generations shift up one slot on each rotation, and the
+    /// oldest is dropped once `max_generations` is reached — the total is
+    /// capped, not merely chunked into more, equally unbounded pieces.
+    #[test]
+    fn rotate_log_caps_retained_generations_dropping_the_oldest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("server.log");
+        std::fs::write(&path, b"newest live content\n").expect("seed live");
+        let gen1 = generation_path(&path, 1);
+        let gen2 = generation_path(&path, 2);
+        std::fs::write(&gen1, b"generation one\n").expect("seed .1");
+        std::fs::write(&gen2, b"generation two (oldest, should be dropped)\n").expect("seed .2");
+
+        let rotated = rotate_log(&path, 1, 2).expect("rotate");
+
+        assert!(rotated);
+        assert_eq!(
+            std::fs::read_to_string(&gen2).expect("read .2"),
+            "generation one\n",
+            ".2 should now hold what was in .1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&gen1).expect("read .1"),
+            "newest live content\n",
+            ".1 should now hold the just-rotated live content"
+        );
+        assert!(
+            !generation_path(&path, 3).exists(),
+            "max_generations=2 must never produce a .3"
+        );
+    }
+
+    /// The rotated-aside generation is created owner-only (mode `0o600`),
+    /// same as the live file it was copied from (ADR-0028) — rotation must
+    /// not loosen a log's permissions.
+    #[cfg(unix)]
+    #[test]
+    fn rotate_log_preserves_0o600_on_the_live_file_and_the_rotated_generation() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("server.log");
+        std::fs::write(&path, b"oversized content to force rotation\n").expect("seed");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+
+        rotate_log(&path, 4, 4).expect("rotate");
+
+        let live_mode = std::fs::metadata(&path)
+            .expect("live metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(live_mode, 0o600, "live file mode was {live_mode:o}");
+        let gen1_mode = std::fs::metadata(generation_path(&path, 1))
+            .expect(".1 metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(gen1_mode, 0o600, ".1 mode was {gen1_mode:o}");
+    }
+
+    /// The wiring `run_log_rotation_task` calls on every tick —
+    /// `rotate_server_log_if_needed` — resolves the *real* canonical path
+    /// (via `XDG_STATE_HOME`) and rotates it with production's threshold
+    /// and retention cap. Entirely synchronous: no tokio runtime, no
+    /// background task, and nothing timing-dependent — the async task
+    /// itself is a thin, untested wrapper around this (interval scheduling
+    /// is tokio's contract, not this crate's logic to re-test).
+    #[test]
+    fn rotate_server_log_if_needed_rotates_the_canonical_path_when_oversized() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var_os("XDG_STATE_HOME");
+        // SAFETY-NOTE: env mutation is process-global; nextest runs each
+        // test in its own process, and we restore the var below. `set_var`
+        // is unsafe in edition 2024; the harness owns the process here.
+        unsafe { std::env::set_var("XDG_STATE_HOME", dir.path()) };
+
+        let path = server_log_path();
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        let oversized_len = usize::try_from(LOG_ROTATE_THRESHOLD_BYTES + 1).expect("fits usize");
+        std::fs::write(&path, vec![b'x'; oversized_len]).expect("seed an already-oversized log");
+
+        let rotated = rotate_server_log_if_needed().expect("rotation check");
+
+        assert!(rotated, "an oversized canonical log should have rotated");
+        assert!(generation_path(&path, 1).exists());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("live path after rotation"),
+            "",
+            "live path should be truncated after rotation"
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("XDG_STATE_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
+        }
     }
 
     /// A panic routed through the hook's tracing call writes the panic
