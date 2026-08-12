@@ -25,12 +25,23 @@ libghostty-vt's build, plus `nextest`, `deny`, `watch`, `insta`,
 
 ```bash
 nix develop      # or direnv allow once
-just ci          # everything CI must pass: fmt-check + lint + test + deny
+just ci          # the inner loop: every deterministic gate CI runs
+just ci-full     # ci + the real-server e2e and agent smoke lanes
 just check       # quick type-check
-just test        # cargo nextest run --workspace --all-features
+just test        # cargo nextest run --workspace
 ```
 
-`just ci` is the bar in CONTRIBUTING.md. Do not push without it green.
+**`just ci-full` is the complete PR bar; `just ci` is the inner loop.** CI's
+`test` job runs `cargo nextest run --workspace` *plus* `just e2e` *plus*
+`just agents-fleet-smoke`, and only the first of those is inside `just ci` —
+so a branch can be `just ci` green and still fail a required check. `just e2e`
+is kept out of `just ci` deliberately (it spawns real PTY-backed servers, so a
+`just ci` failure always means a real defect); `just ci-full` is where you pay
+for that coverage. See CONTRIBUTING.md §"Bar for any change" for the
+gate-by-gate map.
+
+Note `commitlint` is a required check and lints **every commit in the PR**,
+not just the title — one malformed message fails the branch.
 
 ## Architecture Overview
 
