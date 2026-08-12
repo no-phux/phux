@@ -22,6 +22,11 @@ behavior, follow the cross-link to the ADR or to the relevant
   capability survey of `libghostty-vt`'s `RenderState` read API and
   dirty-tracking model; the renderer-side contract phux drives in both
   client and server.
+- [`2026-08-12-osc-9-4-claude-code.md`](./2026-08-12-osc-9-4-claude-code.md) —
+  raw-byte capture answering whether Claude Code emits OSC 9;4 and
+  whether `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also suppresses it
+  (phux-w7z2.15); gates the OSC-9;4 detection region in phux-w7z2.16.
+
 ## archive/
 
 Holds ratified-or-absorbed notes. Each one carries a banner linking to
