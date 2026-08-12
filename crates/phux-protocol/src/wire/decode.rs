@@ -8,20 +8,20 @@ use super::error::DecodeError;
 use super::field;
 use super::frame::Scope;
 use super::frame::{
-    ErrorCode, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN,
-    MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS, MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_ATTACH,
-    TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK,
-    TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND, TYPE_COMMAND_RESULT,
-    TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK,
-    TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED,
-    TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
-    TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_METADATA,
-    TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_TERMINAL, TYPE_PING,
-    TYPE_PONG, TYPE_SET_METADATA, TYPE_SPAWN_TERMINAL, TYPE_SUBSCRIBE_EVENTS,
-    TYPE_SUBSCRIBE_METADATA, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_MOVED, TYPE_TERMINAL_OUTPUT,
-    TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SPAWNED, TYPE_VIEWPORT_RESIZE, TombstoneReason,
-    decode_agent_event, decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id,
-    decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
+    DetachReason, ErrorCode, FrameKind, HistoryRejectionReason, HistoryTombstoneReason,
+    MAX_FRAME_LEN, MAX_HISTORY_CURSOR_BYTES, MAX_HISTORY_PAGE_ROWS, MAX_INPUT_TERMINAL_REPLY_BYTES,
+    TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL, TYPE_BOOTSTRAP_BEGIN,
+    TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND,
+    TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED, TYPE_ERROR, TYPE_EVENT,
+    TYPE_FRAME_ACK, TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE,
+    TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS,
+    TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY,
+    TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE,
+    TYPE_MOVE_TERMINAL, TYPE_PING, TYPE_PONG, TYPE_SET_METADATA, TYPE_SPAWN_TERMINAL,
+    TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_TERMINAL_CLOSED, TYPE_TERMINAL_MOVED,
+    TYPE_TERMINAL_OUTPUT, TYPE_TERMINAL_RESIZE, TYPE_TERMINAL_SPAWNED, TYPE_VIEWPORT_RESIZE,
+    TombstoneReason, decode_agent_event, decode_attach_target, decode_bootstrap_codec,
+    decode_bootstrap_id, decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
     decode_command_result, decode_env, decode_focus_event, decode_key_event,
     decode_metadata_scope_key, decode_mouse_event, decode_move_result, decode_paste_event,
     decode_scope, decode_spawn_result, decode_stream_id, decode_string_list, decode_terminal_id,
@@ -1178,8 +1178,32 @@ impl<'a> Decoder<'a> {
                 }
             }
             TYPE_DETACHED => {
-                while self.read_field()?.is_some() {}
-                FrameKind::Detached
+                let mut reason: Option<DetachReason> = None;
+                let mut message: Option<String> = None;
+                while let Some((id, value)) = self.read_field()? {
+                    match id {
+                        field::detached::REASON => {
+                            let raw = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                            // Deliberately tolerant: an unrecognised reason
+                            // decodes as "unstated" rather than failing the
+                            // frame. See `DetachReason::from_wire`.
+                            reason = DetachReason::from_wire(raw);
+                        }
+                        field::detached::MESSAGE => {
+                            message = Some(
+                                core::str::from_utf8(value)
+                                    .map_err(|_| DecodeError::InvalidUtf8)?
+                                    .to_owned(),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                FrameKind::Detached {
+                    reason,
+                    // Absent message field = empty, per §7.2.
+                    message: message.unwrap_or_default(),
+                }
             }
             TYPE_BELL => {
                 let mut terminal_id: Option<TerminalId> = None;

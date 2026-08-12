@@ -29,7 +29,7 @@ use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
 };
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
+use phux_protocol::wire::frame::{AttachTarget, DetachReason, FrameKind, ViewportInfo};
 use phux_protocol::{BootstrapId, StreamId, TerminalId};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -635,7 +635,11 @@ async fn detach_attached(mut client: AttachedClient) {
     send_frame(&mut client.stream, &FrameKind::Detach).await;
     assert!(matches!(
         recv_until_detached(&mut client.stream).await,
-        FrameKind::Detached
+        // phux-l83x: the ack for a client-sent DETACH names REQUESTED.
+        FrameKind::Detached {
+            reason: Some(DetachReason::Requested),
+            ..
+        }
     ));
 }
 
@@ -843,7 +847,10 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
         send_frame(&mut established.stream, &FrameKind::Detach).await;
         assert!(matches!(
             recv_until_detached(&mut established.stream).await,
-            FrameKind::Detached
+            FrameKind::Detached {
+                reason: Some(DetachReason::Requested),
+                ..
+            }
         ));
 
         let probe_stream = wait_for_native_socket(&socket).await;

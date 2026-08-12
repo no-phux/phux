@@ -578,10 +578,15 @@ session, the client's attach was forcibly closed, or after a successful
 transport.
 
 ```
-DETACHED { reason: DetachReason, message: str }
+DETACHED {
+    reason:  optional<DetachReason>,   // field id 1
+    message: optional<str>,            // field id 2
+}
 
 DetachReason = enum {
-    REQUESTED         = 0,  // client asked
+    REQUESTED         = 0,  // a detach was asked for: the client's own
+                            //   DETACH, or an operator's DETACH_CLIENTS
+                            //   sweep on its behalf
     SERVER_SHUTDOWN   = 1,
     SESSION_KILLED    = 2,  // legacy name; retained for wire compat.
                             //   Means "the group the attach was rooted
@@ -592,6 +597,43 @@ DetachReason = enum {
     INTERNAL_ERROR    = 255,
 }
 ```
+
+Both fields are optional-absent, which is what makes them additive under
+§6.3: a server that predates `0.7.0-draft.7` encodes an empty `DETACHED`
+body, and one that states no reason encodes the same empty body, so the
+common case is byte-identical to what every `0.7.0` peer already emits.
+
+- A sender SHOULD state a `reason` whenever it knows one. It MUST NOT
+  encode `reason` merely to fill the field: an absent reason is honest,
+  a wrong one is not.
+- A consumer MUST treat an absent `reason` as *unstated*. It MUST NOT
+  infer `REQUESTED` — "the server did not say" and "you asked for this"
+  are different endings, and only one of them is worth explaining to a
+  user.
+- A consumer MUST tolerate a `reason` value it does not recognise,
+  treating it exactly as absent. Failing the frame is forbidden:
+  `DETACHED` plus transport close is the only ending a consumer may act
+  on (§9), so refusing to decode it converts an explained ending into an
+  unexplained transport error — and would make every later
+  `DetachReason` allocation a fleet-wide break rather than an additive
+  one.
+- `message` is diagnostic text for a human or a log. A consumer MUST NOT
+  parse it or condition behavior on it; `reason` is the contract.
+
+`DetachReason` values are allocated sequentially from `0`, with `255`
+reserved for `INTERNAL_ERROR`; a new value is additive and needs no
+version bump ([ADR-0061](../../ADR/0061-capabilities-add-versions-break.md)).
+
+<!-- impl-status: partial; probe: DetachReason -->
+> **Status: partial.** The frame, both fields, and the consumer surface
+> are shipped. The reference server states `REQUESTED` (for a client's
+> `DETACH` and for a `DETACH_CLIENTS` sweep) and `SESSION_KILLED` (when
+> the group an attach was rooted in is reaped). It does not yet *emit*
+> `SERVER_SHUTDOWN`, `REPLACED`, `PROTOCOL_ERROR`, or `INTERNAL_ERROR`:
+> shutdown and fatal-error closes still drop the transport without a
+> `DETACHED`, and role takeover is unimplemented (§7.1). A consumer must
+> therefore keep treating a bare disconnect as an ending, exactly as
+> before.
 
 ### 7.3 SUBSCRIBE
 
@@ -742,7 +784,9 @@ the slot stays retired rather than being reused. Unknown codes are surfaced,
 never mapped to a placeholder.
 
 A fatal error MUST be followed by `DETACHED { reason: PROTOCOL_ERROR }`
-and transport close.
+and transport close. `reason` is the §7.2 field: before `0.7.0-draft.7`
+the frame had nowhere to carry it, so this clause named a value the wire
+could not express.
 
 Receipt of an `ERROR` is not itself an ending. A consumer MUST NOT treat the
 receipt of an `ERROR` as terminating its attach or its connection. A

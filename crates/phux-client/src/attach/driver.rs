@@ -1261,7 +1261,10 @@ async fn detach_and_drain(conn: &mut Connection) -> Result<(), AttachError> {
     conn.send(&FrameKind::Detach).await?;
     loop {
         match conn.recv().await? {
-            FrameKind::Detached => return Ok(()),
+            // Any reason ends the drain: we asked for this detach, and the
+            // next ATTACH rebuilds every session-scoped thing the reason
+            // could have qualified.
+            FrameKind::Detached { .. } => return Ok(()),
             other => {
                 tracing::trace!(kind = ?other, "draining frame during session switch");
             }
@@ -1458,7 +1461,7 @@ enum LoopExit {
 /// A server `DETACHED` is local only when this client had already requested
 /// detach; pane death remains its own ending even if the events race.
 const fn is_local_detach(end: AttachEnd, local_intent: bool) -> bool {
-    local_intent && matches!(end, AttachEnd::Detached)
+    local_intent && matches!(end, AttachEnd::Detached { .. })
 }
 
 const fn detached_loop_exit(end: AttachEnd, local_intent: bool) -> LoopExit {
@@ -1903,7 +1906,9 @@ async fn main_loop<W: super::RenderSink>(
         false,
     )?;
     if outcome.exit {
-        let end = outcome.exit_reason.unwrap_or(AttachEnd::Detached);
+        let end = outcome
+            .exit_reason
+            .unwrap_or(AttachEnd::Detached { reason: None });
         return Ok(detached_loop_exit(end, false));
     }
     vcs.apply_snapshot(outcome.pane_cwds);
@@ -2653,7 +2658,7 @@ async fn main_loop<W: super::RenderSink>(
                         focus_history.observe(focused_before_frame, focused_pane.as_ref());
                         focus_history.repair(focused_pane.as_ref(), &workspace);
                         if outcome.exit {
-                            let end = outcome.exit_reason.unwrap_or(AttachEnd::Detached);
+                            let end = outcome.exit_reason.unwrap_or(AttachEnd::Detached { reason: None });
                             return Ok(detached_loop_exit(end, detach_pending));
                         }
                         if outcome.resync_required {
@@ -3152,8 +3157,12 @@ async fn main_loop<W: super::RenderSink>(
                         // Server closed the socket without a `DETACHED`
                         // frame — treat it as a clean shutdown because
                         // the user requested detach. Otherwise the loop
-                        // bubbles the disconnect up unchanged.
-                        return Ok(detached_loop_exit(AttachEnd::Detached, true));
+                        // bubbles the disconnect up unchanged. No frame
+                        // arrived, so there is no stated reason to carry.
+                        return Ok(detached_loop_exit(
+                            AttachEnd::Detached { reason: None },
+                            true,
+                        ));
                     }
                     Err(err) => return Err(err),
                 }
@@ -5096,14 +5105,33 @@ mod tests {
         BootstrapCapabilities, ServerCapabilities, TerminalColor, TerminalDefaultColors,
         select_bootstrap_profile,
     };
+    use phux_protocol::wire::frame::DetachReason;
     use tokio::net::UnixStream;
 
     static TERMINAL_RESET_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn detach_classification_requires_local_intent_and_plain_detach() {
-        assert!(is_local_detach(AttachEnd::Detached, true));
-        assert!(!is_local_detach(AttachEnd::Detached, false));
+        assert!(is_local_detach(AttachEnd::Detached { reason: None }, true));
+        assert!(!is_local_detach(
+            AttachEnd::Detached { reason: None },
+            false
+        ));
+        // The reason qualifies the ending, never the local-intent test: a
+        // server that names REQUESTED for a detach we asked for is the same
+        // local detach as a server that names nothing.
+        assert!(is_local_detach(
+            AttachEnd::Detached {
+                reason: Some(DetachReason::Requested),
+            },
+            true,
+        ));
+        assert!(!is_local_detach(
+            AttachEnd::Detached {
+                reason: Some(DetachReason::ServerShutdown),
+            },
+            false,
+        ));
         assert!(!is_local_detach(
             AttachEnd::LastPaneClosed {
                 exit_status: Some(0),
@@ -6576,7 +6604,10 @@ mod tests {
                 "first client frame must be HELLO"
             );
             server
-                .send(&FrameKind::Detached)
+                .send(&FrameKind::Detached {
+                    reason: Some(DetachReason::ProtocolError),
+                    message: String::new(),
+                })
                 .await
                 .expect("server send detached");
         };

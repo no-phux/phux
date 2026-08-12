@@ -14,7 +14,7 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{BootstrapId, FileUploadId, StreamId, TerminalId};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACHED,
+    Command, CommandResult, CommandValue, DetachReason, ErrorCode, FrameKind, TYPE_ATTACHED,
     TYPE_BOOTSTRAP_BEGIN, TYPE_ERROR, TYPE_HELLO_OK,
 };
 use sha2::{Digest, Sha256};
@@ -676,7 +676,13 @@ fn detach_clean_shutdown() {
 
         send_frame(&mut client_a, &FrameKind::Detach).await;
         let detached = recv_until_detached(&mut client_a).await;
-        assert!(matches!(detached, FrameKind::Detached));
+        assert!(matches!(
+            detached,
+            FrameKind::Detached {
+                reason: Some(DetachReason::Requested),
+                ..
+            }
+        ));
         drop(client_a);
 
         // Server still accepting: a fresh client must complete an

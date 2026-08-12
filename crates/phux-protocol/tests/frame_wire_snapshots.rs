@@ -16,7 +16,8 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    ErrorCode, FrameKind, MoveError, MoveResult, Scope, SpawnError, SpawnResult, ViewportInfo,
+    DetachReason, ErrorCode, FrameKind, MoveError, MoveResult, Scope, SpawnError, SpawnResult,
+    ViewportInfo,
 };
 
 /// Render `bytes` as an `xxd`-style hex dump: 16 cols per row,
@@ -70,9 +71,24 @@ fn dump_frame(frame: &FrameKind) -> String {
 #[allow(clippy::too_many_lines)]
 fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
     vec![
-        // DETACH / DETACHED — unit messages.
+        // DETACH is a unit message; DETACHED carries two optional-absent
+        // fields, so the reason-less shape must stay byte-identical to the
+        // empty body every 0.7.0 peer already emits.
         ("snap_detach", FrameKind::Detach),
-        ("snap_detached", FrameKind::Detached),
+        (
+            "snap_detached",
+            FrameKind::Detached {
+                reason: None,
+                message: String::new(),
+            },
+        ),
+        (
+            "snap_detached_reason",
+            FrameKind::Detached {
+                reason: Some(DetachReason::ServerShutdown),
+                message: "server is stopping".to_owned(),
+            },
+        ),
         // INPUT_*
         (
             "snap_input_key_letter_a_press",

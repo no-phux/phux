@@ -876,18 +876,26 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                 client.owned_effects.push(effect);
                 client.rebuild_effect_views();
             }
-            FrameKind::Detached => {
+            FrameKind::Detached { reason, message } => {
                 if !client.attach_queued && !client.attached {
                     return Err(BridgeError::protocol(
                         "DETACHED arrived outside an active ATTACH phase",
                     ));
                 }
                 client.detach();
-                client.owned_effects.push(OwnedEffect::simple(
-                    2,
-                    5,
-                    phux_protocol::TerminalId::local(0),
-                ));
+                let mut effect = OwnedEffect::simple(2, 5, phux_protocol::TerminalId::local(0));
+                // phux-l83x: carry the ending's reason across the bridge as a
+                // stable wire value, the way RESYNC_REQUIRED carries its
+                // `TombstoneReason`. A consumer that only sees "detached"
+                // cannot tell a requested detach from a server that died
+                // under it. `DETACH_REASON_UNSTATED` is distinct from every
+                // wire value precisely so absence stays legible: `REQUESTED`
+                // is `0`, so a zero default would have claimed the user asked
+                // for an ending they did not.
+                effect.status_code =
+                    reason.map_or(DETACH_REASON_UNSTATED, |reason| u32::from(reason.as_wire()));
+                effect.bytes = message.into_bytes();
+                client.owned_effects.push(effect);
                 client.rebuild_effect_views();
             }
             _ => {
@@ -1593,6 +1601,7 @@ pub unsafe extern "C" fn phux_client_search_results_release(
 mod tests {
     use super::*;
     use phux_protocol::caps::ServerCapabilities;
+    use phux_protocol::wire::frame::DetachReason;
     use std::ffi::c_void;
 
     struct CallbackContext {
@@ -1987,7 +1996,13 @@ mod tests {
             (*client).inner.protocol_ready = true;
         }
         assert_eq!(
-            feed_kind(client, &FrameKind::Detached),
+            feed_kind(
+                client,
+                &FrameKind::Detached {
+                    reason: None,
+                    message: String::new()
+                }
+            ),
             PhuxClientResult::ProtocolError
         );
         assert!(!unsafe { (*client).inner.detached });
@@ -2018,7 +2033,13 @@ mod tests {
         )
         .expect("seed active ATTACH inventory");
         assert_eq!(
-            feed_kind(client, &FrameKind::Detached),
+            feed_kind(
+                client,
+                &FrameKind::Detached {
+                    reason: None,
+                    message: String::new()
+                }
+            ),
             PhuxClientResult::Ok
         );
         let client_ref = unsafe { &*client };
@@ -2045,6 +2066,47 @@ mod tests {
         let client_ref = unsafe { &*client };
         assert_eq!(client_ref.inner.owned_effects.len(), effects_before);
         unsafe { phux_client_free(client) };
+    }
+
+    /// phux-l83x: the DETACHED status effect carries the reason as a stable
+    /// wire value and the message verbatim, and an unstated reason is
+    /// reported as UNSTATED rather than as `REQUESTED` (which is `0`, the
+    /// value a zero-default would have produced).
+    #[test]
+    fn detached_status_effect_carries_the_reason_and_message() {
+        for (reason, expected_code) in [
+            (None, DETACH_REASON_UNSTATED),
+            (Some(DetachReason::Requested), 0),
+            (Some(DetachReason::ServerShutdown), 1),
+            (Some(DetachReason::InternalError), 255),
+        ] {
+            let client = boxed_client();
+            unsafe {
+                (*client).inner.protocol_ready = true;
+                (*client).inner.attach_queued = true;
+            }
+            assert_eq!(
+                feed_kind(
+                    client,
+                    &FrameKind::Detached {
+                        reason,
+                        message: "server is stopping".to_owned(),
+                    }
+                ),
+                PhuxClientResult::Ok
+            );
+            let client_ref = unsafe { &*client };
+            let effect = client_ref
+                .inner
+                .owned_effects
+                .last()
+                .expect("DETACHED pushes a status effect");
+            assert_eq!(effect.kind, 2);
+            assert_eq!(effect.detail, 5);
+            assert_eq!(effect.status_code, expected_code, "reason {reason:?}");
+            assert_eq!(effect.bytes, b"server is stopping");
+            unsafe { phux_client_free(client) };
+        }
     }
 
     #[test]

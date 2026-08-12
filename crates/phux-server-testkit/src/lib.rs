@@ -354,7 +354,7 @@ pub async fn recv_typed(stream: &mut UnixStream) -> (u8, FrameKind) {
 pub async fn recv_until_detached(stream: &mut UnixStream) -> FrameKind {
     loop {
         let (_, frame) = recv_typed(stream).await;
-        if matches!(frame, FrameKind::Detached) {
+        if matches!(frame, FrameKind::Detached { .. }) {
             return frame;
         }
     }

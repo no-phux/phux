@@ -2194,11 +2194,21 @@ Since phux-i0e8.2.2 that exit is *explained*: after the alt screen is
 gone and the terminal is cooked again, the client prints one line to
 stderr — `phux: session ended: the last pane exited 137` (or
 `... killed (signal or unknown)`) — so an OOM-killed shell no longer
-looks like a phux crash. A clean detach prints nothing, and the process
-exit code stays `0` in both cases: the attach succeeded; the ending just
-gets words. (Internally the `run_*` attach entry points return an
-`AttachEnd` — `Detached` vs `LastPaneClosed { exit_status }` — that the
-CLI callers format.)
+looks like a phux crash. A detach the user asked for prints nothing, and
+the process exit code stays `0` in every case: the attach succeeded; the
+ending just gets words. (Internally the `run_*` attach entry points
+return an `AttachEnd` — `Detached { reason }` vs
+`LastPaneClosed { exit_status }` — that the CLI callers format.)
+
+A detach the user did *not* ask for is explained the same way
+(phux-l83x). `DETACHED` carries an optional `DetachReason`
+([proto.md §7.2](../spec/proto.md)), and any reason other than
+`REQUESTED` prints one stderr line after teardown — for example
+`phux: detached: the server is shutting down` or
+`phux: detached: another client took over this attach`. A server that
+states no reason (one predating `0.7.0-draft.7`, or a bare disconnect
+with no frame at all) prints nothing, exactly as before: the client
+never invents a reason it was not told.
 
 Precedence and degradation:
 

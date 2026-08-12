@@ -30,8 +30,8 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ControlAction, ErrorCode,
-    FileUploadAck, InputMode, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
+    AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ControlAction, DetachReason,
+    ErrorCode, FileUploadAck, InputMode, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
     MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, MoveError, MoveResult, Scope, SpawnError,
     SpawnResult, StateScope, TerminalLifecycle, TerminalSignal, ViewportInfo,
 };
@@ -220,8 +220,23 @@ fn arb_frame_kind() -> impl Strategy<Value = FrameKind> {
             },),
         any::<u64>().prop_map(|nonce| FrameKind::Ping { nonce }),
         Just(FrameKind::Detach),
-        Just(FrameKind::Detached),
+        (arb_detach_reason(), ".{0,128}")
+            .prop_map(|(reason, message)| FrameKind::Detached { reason, message }),
         arb_terminal_id().prop_map(|terminal_id| FrameKind::Bell { terminal_id }),
+    ]
+}
+
+/// Strategy over every `DETACHED` reason shape, including the absent one a
+/// server predating `0.7.0-draft.7` encodes.
+fn arb_detach_reason() -> impl Strategy<Value = Option<DetachReason>> {
+    prop_oneof![
+        Just(None),
+        Just(Some(DetachReason::Requested)),
+        Just(Some(DetachReason::ServerShutdown)),
+        Just(Some(DetachReason::SessionKilled)),
+        Just(Some(DetachReason::Replaced)),
+        Just(Some(DetachReason::ProtocolError)),
+        Just(Some(DetachReason::InternalError)),
     ]
 }
 
@@ -1909,6 +1924,99 @@ fn command_detach_clients_round_trips() {
             request_id: 44,
             command: Command::DetachClients { session },
         });
+    }
+}
+
+/// Every `DetachReason` the catalog defines, paired with a message and with
+/// none, survives a full encode/decode cycle.
+#[test]
+fn detached_reason_and_message_round_trip() {
+    for reason in [
+        None,
+        Some(DetachReason::Requested),
+        Some(DetachReason::ServerShutdown),
+        Some(DetachReason::SessionKilled),
+        Some(DetachReason::Replaced),
+        Some(DetachReason::ProtocolError),
+        Some(DetachReason::InternalError),
+    ] {
+        for message in [String::new(), "the server is stopping".to_owned()] {
+            assert_round_trip(&FrameKind::Detached { reason, message });
+        }
+    }
+}
+
+/// The reason-less shape MUST stay byte-identical to the empty body every
+/// pre-`0.7.0-draft.7` peer emits — that byte equality is what makes the
+/// field-id addition additive rather than a fleet-wide break (ADR-0061).
+#[test]
+fn detached_without_a_reason_encodes_the_legacy_empty_body() {
+    let mut buf = BytesMut::new();
+    FrameKind::Detached {
+        reason: None,
+        message: String::new(),
+    }
+    .encode(&mut buf);
+    assert_eq!(
+        buf.as_ref(),
+        framed_tlv(0x82, &[]).as_slice(),
+        "an unstated reason must not add bytes to DETACHED"
+    );
+}
+
+/// The other direction of the same compatibility claim: a `DETACHED` encoded
+/// by a server that predates the fields decodes as "reason unstated", never
+/// as a decode failure and never as `Requested`.
+#[test]
+fn detached_empty_body_decodes_as_unstated() {
+    let buf = framed_tlv(0x82, &[]);
+    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
+    assert_eq!(
+        decoded,
+        FrameKind::Detached {
+            reason: None,
+            message: String::new(),
+        }
+    );
+    assert!(tail.is_empty());
+}
+
+/// A reason value allocated by a *later* draft must decode as unstated rather
+/// than failing the frame: `DETACHED` plus transport close is the only
+/// termination signal a consumer may act on (proto.md §9), so rejecting it
+/// would turn an explained ending into an unexplained disconnect — and would
+/// make every future `DetachReason` a fleet-wide break.
+#[test]
+fn detached_unknown_reason_decodes_as_unstated_and_keeps_the_message() {
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &[0x7f]); // field::detached::REASON, unallocated
+    tlv_field(&mut fields, 2, b"from the future"); // field::detached::MESSAGE
+    let buf = framed_tlv(0x82, &fields);
+
+    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
+    assert_eq!(
+        decoded,
+        FrameKind::Detached {
+            reason: None,
+            message: "from the future".to_owned(),
+        },
+        "an unrecognised reason must degrade to unstated, not fail the frame"
+    );
+    assert!(tail.is_empty());
+}
+
+/// `DetachReason` wire values are normative (proto.md §7.2). Pin them here so
+/// a reordering of the enum cannot silently renumber the wire.
+#[test]
+fn detach_reason_wire_values_match_spec() {
+    assert_eq!(DetachReason::Requested.as_wire(), 0);
+    assert_eq!(DetachReason::ServerShutdown.as_wire(), 1);
+    assert_eq!(DetachReason::SessionKilled.as_wire(), 2);
+    assert_eq!(DetachReason::Replaced.as_wire(), 3);
+    assert_eq!(DetachReason::ProtocolError.as_wire(), 4);
+    assert_eq!(DetachReason::InternalError.as_wire(), 255);
+    for unallocated in [5u8, 6, 42, 254] {
+        assert_eq!(DetachReason::from_wire(unallocated), None);
     }
 }
 

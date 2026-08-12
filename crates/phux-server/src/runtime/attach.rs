@@ -8,8 +8,8 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{BootstrapId, GroupId, StreamId};
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, MoveError,
-    MoveResult, SpawnError, SpawnResult,
+    AgentEvent, AttachTarget, DetachReason, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES,
+    MoveError, MoveResult, SpawnError, SpawnResult,
 };
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -1075,7 +1075,15 @@ pub(crate) async fn handle_move_terminal(
     for (detached_client, tx) in clients_to_detach {
         let detached_state = state.clone();
         tokio::task::spawn_local(async move {
-            let _ = tx.send(Outbound::Frame(FrameKind::Detached)).await;
+            let _ = tx
+                .send(Outbound::Frame(FrameKind::Detached {
+                    // The group this attach was rooted in is gone — the
+                    // `SESSION_KILLED` case in proto.md §7.2, under its legacy
+                    // wire name (ADR-0030).
+                    reason: Some(DetachReason::SessionKilled),
+                    message: "the session this attach was rooted in was reaped".to_owned(),
+                }))
+                .await;
             super::client::detach_and_release_consumer_state(&detached_state, detached_client);
         });
     }

@@ -1689,7 +1689,10 @@ mod tests {
             // connection, but the old per-pane pump no longer forwards bytes.
             assert!(
                 out_tx
-                    .send(Outbound::Frame(FrameKind::Detached))
+                    .send(Outbound::Frame(FrameKind::Detached {
+                        reason: Some(phux_protocol::wire::frame::DetachReason::Requested),
+                        message: String::new(),
+                    }))
                     .await
                     .is_ok()
             );
@@ -1703,7 +1706,10 @@ mod tests {
                 .await
                 .expect("DETACHED timed out")
                 .expect("writer mailbox closed");
-            assert!(matches!(detached, Outbound::Frame(FrameKind::Detached)));
+            assert!(matches!(
+                detached,
+                Outbound::Frame(FrameKind::Detached { .. })
+            ));
             tokio::task::yield_now().await;
             assert!(
                 out_rx.try_recv().is_err(),

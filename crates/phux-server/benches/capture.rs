@@ -367,7 +367,7 @@ async fn native_warm_attach(socket: &std::path::Path) -> Duration {
     common::send_frame(&mut stream, &FrameKind::Detach).await;
     let (kind, detached) = common::recv_typed(&mut stream).await;
     assert_eq!(kind, TYPE_DETACHED);
-    assert!(matches!(detached, FrameKind::Detached));
+    assert!(matches!(detached, FrameKind::Detached { .. }));
     ready
 }
 

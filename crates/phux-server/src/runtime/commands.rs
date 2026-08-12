@@ -4,8 +4,8 @@ use bytes::Bytes;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, CommandValue, ControlAction, ErrorCode, FrameKind,
-    InputMode, StateScope, TerminalLifecycle, TerminalSignal, ViewportInfo,
+    AgentEvent, Command, CommandResult, CommandValue, ControlAction, DetachReason, ErrorCode,
+    FrameKind, InputMode, StateScope, TerminalLifecycle, TerminalSignal, ViewportInfo,
 };
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -2098,7 +2098,14 @@ pub(crate) fn handle_detach_clients(state: &SharedState, session: Option<&str>) 
         // loop on the victim's back-pressure. If the frame is dropped, the
         // teardown below still removes the client and its connection closes,
         // which the TUI treats as a disconnect and exits anyway.
-        let _ = tx.try_send(Outbound::Frame(FrameKind::Detached));
+        // `REQUESTED` covers an operator asking on the client's behalf as well
+        // as the client's own `DETACH`: proto.md §7.2 reads it as "a detach was
+        // asked for", not "*this* connection asked". The distinguishing detail
+        // rides the message.
+        let _ = tx.try_send(Outbound::Frame(FrameKind::Detached {
+            reason: Some(DetachReason::Requested),
+            message: "detached by `phux detach`".to_owned(),
+        }));
         super::client::detach_and_release_consumer_state(state, client_id);
     }
     debug!(

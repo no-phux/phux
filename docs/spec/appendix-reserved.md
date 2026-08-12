@@ -84,6 +84,14 @@ this document.
 `ErrorCode = 5` is permanently reserved for the withdrawn `OUT_OF_TIER`
 proposal and is never reused. `CODEC_UNAVAILABLE = 6` is allocated by ADR-0070.
 
+`DetachReason` ([proto.md §7.2](./proto.md)) allocates sequentially from `0`
+— `0..=4` are taken — with `255` permanently reserved for `INTERNAL_ERROR`.
+It differs from the enums above in how an unallocated value decodes: a
+consumer MUST read one it does not recognise as an *unstated* reason rather
+than as a decode error, because `DETACHED` is the termination signal and
+failing it would both hide the ending and make each new value a fleet-wide
+break. New values are therefore additive and need no version bump.
+
 (Earlier drafts of the SPEC reserved a `DiffOp` tag range here; per
 [ADR-0013](../../ADR/0013-libghostty-bytes-on-wire.md), Terminal
 content is now a VT byte stream and `DiffOp` no

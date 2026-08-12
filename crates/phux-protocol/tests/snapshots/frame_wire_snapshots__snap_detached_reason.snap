@@ -1,0 +1,6 @@
+---
+source: crates/phux-protocol/tests/frame_wire_snapshots.rs
+expression: dump_frame(&frame)
+---
+00000000 | 00 00 00 1a 82 01 04 01  01 02 04 12 73 65 72 76 |............serv
+00000010 | 65 72 20 69 73 20 73 74  6f 70 70 69 6e 67       |er is stopping

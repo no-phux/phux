@@ -910,6 +910,78 @@ impl TombstoneReason {
     }
 }
 
+/// Why the server ended an attach (`docs/spec/proto.md` §7.2).
+///
+/// Carried by `DETACHED`, which — with the transport close that follows it —
+/// is the only ending a consumer is allowed to act on. An `ERROR` is never
+/// itself an ending (proto.md §9), so this enum is the sole channel through
+/// which a consumer learns *why* its connection is over.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DetachReason {
+    /// The consumer asked: its own `DETACH`, or an operator's
+    /// `DETACH_CLIENTS` sweep on its behalf.
+    Requested = 0,
+    /// The server process is stopping (`SHUTDOWN`, signal, or supervisor).
+    ServerShutdown = 1,
+    /// Legacy name, retained for wire compatibility: the group the attach was
+    /// rooted in was torn down (now a `KILL_TERMINALS` over its members; see
+    /// `docs/spec/L2.md` / ADR-0030).
+    SessionKilled = 2,
+    /// Another consumer took over an exclusive attach.
+    Replaced = 3,
+    /// The peer violated the protocol; the sender is closing the transport.
+    /// A fatal `ERROR` MUST be followed by `DETACHED` carrying this reason.
+    ProtocolError = 4,
+    /// The server hit an unrecoverable internal fault.
+    InternalError = 255,
+}
+
+impl DetachReason {
+    /// Stable wire discriminant.
+    #[must_use]
+    pub const fn as_wire(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode a known detach reason, or `None` for a value this build does
+    /// not recognise.
+    ///
+    /// Unlike [`TombstoneReason`] and [`ErrorCode`], an unrecognised value
+    /// here is deliberately *not* a decode error. `DETACHED` is the
+    /// termination signal; failing the frame would convert a clean, explained
+    /// ending into an unexplained transport error, and would make every later
+    /// `DetachReason` allocation a fleet-wide break (ADR-0061). Callers treat
+    /// `None` exactly as they treat an absent `reason` field: unstated.
+    #[must_use]
+    pub const fn from_wire(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::Requested,
+            1 => Self::ServerShutdown,
+            2 => Self::SessionKilled,
+            3 => Self::Replaced,
+            4 => Self::ProtocolError,
+            255 => Self::InternalError,
+            _ => return None,
+        })
+    }
+
+    /// One-line human-readable summary, for consumers that surface the
+    /// ending on a cooked terminal.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Requested => "detach was requested",
+            Self::ServerShutdown => "the server is shutting down",
+            Self::SessionKilled => "the session was killed",
+            Self::Replaced => "another client took over this attach",
+            Self::ProtocolError => "the connection violated the protocol",
+            Self::InternalError => "the server hit an internal error",
+        }
+    }
+}
+
 /// Why one progressive history cursor can no longer be consumed.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2119,10 +2191,21 @@ pub enum FrameKind {
     /// `DETACHED` — server confirms detach and closes the transport
     /// (`docs/spec/proto.md` §7.2).
     ///
-    /// Phux-4az scaffold carries no fields. SPEC §7.3 defines
-    /// `{ reason: DetachReason, message: str }`; those land in a follow-up
-    /// once the server actually distinguishes shutdown causes.
-    Detached,
+    /// With the transport close that follows it, this is the *only* ending a
+    /// consumer may act on: receipt of an `ERROR` never terminates an attach
+    /// (proto.md §9). Both fields are additive and optional-absent, so a
+    /// server that predates `0.7.0-draft.7` still round-trips as
+    /// `{ reason: None, message: "" }`.
+    Detached {
+        /// Why the attach ended, or `None` when the peer stated no reason —
+        /// either because it predates the field or because it sent a
+        /// [`DetachReason`] this build does not recognise. A consumer MUST
+        /// NOT infer [`DetachReason::Requested`] from absence.
+        reason: Option<DetachReason>,
+        /// Human-readable detail; empty when the peer sent none. Never a
+        /// substitute for `reason` — it is diagnostic text, not a contract.
+        message: String,
+    },
 
     /// `BOOTSTRAP_BEGIN` — declares one replacement replica generation.
     BootstrapBegin {
@@ -2692,7 +2775,7 @@ impl FrameKind {
             Self::ViewportResize { .. } => TYPE_VIEWPORT_RESIZE,
             Self::Attached { .. } => TYPE_ATTACHED,
             Self::AttachReady { .. } => TYPE_ATTACH_READY,
-            Self::Detached => TYPE_DETACHED,
+            Self::Detached { .. } => TYPE_DETACHED,
             Self::HistoryRequest { .. } => TYPE_HISTORY_REQUEST,
             Self::BootstrapBegin { .. } => TYPE_BOOTSTRAP_BEGIN,
             Self::BootstrapChunk { .. } => TYPE_BOOTSTRAP_CHUNK,
@@ -2871,9 +2954,23 @@ impl FrameKind {
                 });
                 enc.write_field_with(field::attach::ATTACH_ID, |e| e.write_u32_be(*attach_id));
             }
-            // `Detach` and `Detached` are unit variants: type byte only, no
-            // fields. Merged to satisfy `clippy::match_same_arms`.
-            Self::Detach | Self::Detached => {}
+            // `Detach` is a unit variant: type byte only, no fields.
+            Self::Detach => {}
+            Self::Detached { reason, message } => {
+                // Both fields are optional-absent (field.rs allocation
+                // discipline): an unstated reason and an empty message encode
+                // as nothing at all, which keeps the common
+                // acknowledge-a-clean-detach frame byte-identical to what
+                // every 0.7.0 peer already emits.
+                if let Some(reason) = reason {
+                    enc.write_field_with(field::detached::REASON, |e| {
+                        e.write_u8(reason.as_wire());
+                    });
+                }
+                if !message.is_empty() {
+                    enc.write_field(field::detached::MESSAGE, message.as_bytes());
+                }
+            }
             Self::InputKey { terminal_id, event } => {
                 enc.write_field_with(field::input_key::TERMINAL_ID, |e| {
                     encode_terminal_id(terminal_id, e);

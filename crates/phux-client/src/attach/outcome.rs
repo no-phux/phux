@@ -14,6 +14,8 @@
 
 use std::io;
 
+use phux_protocol::wire::frame::DetachReason;
+
 /// Errors the attach loop can surface to its caller.
 ///
 /// Most variants wrap a richer underlying cause; the driver is careful to
@@ -113,9 +115,19 @@ impl From<super::render::RenderError> for AttachError {
 /// (the process exits `0`); this is an explanation, not an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachEnd {
-    /// The user detached (or the server acknowledged a detach-intended
-    /// disconnect). The quiet, expected ending — nothing to explain.
-    Detached,
+    /// The server ended the attach with `DETACHED`, or the client tore its
+    /// own attach down after asking for one.
+    Detached {
+        /// The `DETACHED` frame's reason, or `None` when the server stated
+        /// none — a server predating `0.7.0-draft.7`, a reason this build
+        /// does not recognise, or an ending this client drove locally
+        /// without a server frame.
+        ///
+        /// `None` and `Some(Requested)` are both the quiet, expected ending
+        /// and explain themselves; every other reason is something the user
+        /// did not ask for and gets words on the cooked terminal.
+        reason: Option<DetachReason>,
+    },
     /// The last pane's process exited, so there was nothing left to
     /// render or route input to and the consumer-owned detach policy
     /// (phux-4r1) left the session.
@@ -138,7 +150,15 @@ impl AttachEnd {
     #[must_use]
     pub fn explanation(self) -> Option<String> {
         match self {
-            Self::Detached => None,
+            // A detach the user asked for needs no words. Anything else —
+            // the server shut down, the session was killed, another client
+            // took over, the connection broke the protocol — is an ending
+            // the user did not choose, and before phux-l83x the wire could
+            // not tell them apart.
+            Self::Detached { reason } => match reason {
+                None | Some(DetachReason::Requested) => None,
+                Some(reason) => Some(format!("phux: detached: {}", reason.describe())),
+            },
             Self::LastPaneClosed { exit_status } => Some(format!(
                 "phux: session ended: the last pane {}",
                 describe_exit(exit_status),

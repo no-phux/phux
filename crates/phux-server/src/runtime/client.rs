@@ -13,7 +13,9 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet, ServerCapabilities,
     ServerFeature, ServerFeatureSet, select_bootstrap_profile,
 };
-use phux_protocol::wire::frame::{AgentEvent, ErrorCode, FrameKind, TERMINAL_AGENT_KEY};
+use phux_protocol::wire::frame::{
+    AgentEvent, DetachReason, ErrorCode, FrameKind, TERMINAL_AGENT_KEY,
+};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -1524,7 +1526,12 @@ where
                 // writer being gone is the next thing to happen
                 // anyway. Logging here would be pure noise.
                 abort_output_pumps(&mut output_pumps, client_id, "DETACH").await;
-                let _ = out_tx.send(Outbound::Frame(FrameKind::Detached)).await;
+                let _ = out_tx
+                    .send(Outbound::Frame(FrameKind::Detached {
+                        reason: Some(DetachReason::Requested),
+                        message: String::new(),
+                    }))
+                    .await;
                 detach_and_release_consumer_state(&state, client_id);
             }
             FrameKind::ViewportResize { viewport } => {

@@ -16,6 +16,15 @@ pub const CELL_SELECTED: u32 = 1 << 8;
 pub const CELL_PROTECTED: u32 = 1 << 9;
 pub const CELL_HYPERLINK: u32 = 1 << 10;
 
+/// `status_code` on a `DETACHED` status effect when the server stated no
+/// reason — an older server, or a `DetachReason` this build does not
+/// recognise (`docs/spec/proto.md` §7.2).
+///
+/// Deliberately outside the one-byte wire space rather than `0`: `REQUESTED`
+/// *is* `0`, so a zero default would report "the user asked to detach" for
+/// every ending nobody asked for.
+pub const DETACH_REASON_UNSTATED: u32 = 0xFFFF;
+
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PhuxClientResult {

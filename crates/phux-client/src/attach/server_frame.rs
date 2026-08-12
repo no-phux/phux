@@ -128,8 +128,10 @@ pub(super) struct FrameOutcome {
     /// `Some(LastPaneClosed { .. })` is set ONLY by the `TerminalClosed`
     /// arm when the fold emptied the workspace, carrying the dead pane's
     /// exit status so the CLI can explain the exit on the cooked terminal
-    /// after teardown. `None` with `exit: true` means a plain detach
-    /// (server `DETACHED`); the driver folds it to [`AttachEnd::Detached`].
+    /// after teardown. `Some(Detached { reason })` is set by the `Detached`
+    /// arm, carrying the server's stated reason (phux-l83x). `None` with
+    /// `exit: true` is a detach with nothing to say about it; the driver
+    /// folds it to a reason-less [`AttachEnd::Detached`].
     pub(super) exit_reason: Option<AttachEnd>,
     /// `true` ⇒ ATTACHED just landed; the driver should emit
     /// `GET_METADATA` + `SUBSCRIBE_METADATA` for the layout key so
@@ -256,7 +258,7 @@ const fn frame_kind_label(frame: &FrameKind) -> &'static str {
         FrameKind::BootstrapTombstone { .. } => "bootstrap_tombstone",
         FrameKind::AttachReady { .. } => "attach_ready",
         FrameKind::TerminalOutput { .. } => "terminal_output",
-        FrameKind::Detached => "detached",
+        FrameKind::Detached { .. } => "detached",
         FrameKind::Bell { .. } => "bell",
         FrameKind::MetadataValue { .. } => "metadata_value",
         FrameKind::MetadataChanged { .. } => "metadata_changed",
@@ -1143,10 +1145,19 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             })
         }
         FrameKind::BootstrapTombstone { .. } => Ok(FrameOutcome::default()),
-        FrameKind::Detached => Ok(FrameOutcome {
-            exit: true,
-            ..FrameOutcome::default()
-        }),
+        FrameKind::Detached { reason, message } => {
+            // The reason is the whole point of the frame (phux-l83x): with
+            // `ERROR` non-fatal at the receiver, `DETACHED` plus transport
+            // close is the only ending a consumer may act on, so this is the
+            // one place the client learns *why*. The message is diagnostic
+            // text — logged, never trusted as the contract.
+            tracing::info!(?reason, %message, "DETACHED");
+            Ok(FrameOutcome {
+                exit: true,
+                exit_reason: Some(AttachEnd::Detached { reason }),
+                ..FrameOutcome::default()
+            })
+        }
         FrameKind::Bell { .. } => {
             // Forward bell to the outer terminal. The user's terminal
             // emulator decides whether to render visually, audibly, or
@@ -1888,7 +1899,7 @@ mod tests {
     use std::sync::Mutex;
 
     use phux_protocol::ids::{ClientId, SessionId, TerminalId, WindowId};
-    use phux_protocol::wire::frame::FrameKind;
+    use phux_protocol::wire::frame::{DetachReason, FrameKind};
     use phux_protocol::wire::info::{
         LayoutNode, SessionInfo, SessionSnapshot, SplitDir, TerminalInfo, WindowInfo,
     };
@@ -4258,6 +4269,65 @@ mod tests {
             outcome.exit_reason,
             Some(AttachEnd::LastPaneClosed { exit_status: None }),
         );
+    }
+
+    /// phux-l83x: `DETACHED` exits the loop *with* the server's stated
+    /// reason. Before the frame carried one, every ending — a requested
+    /// detach, a server shutting down under the user, another client taking
+    /// the attach — reached the CLI as the same wordless `Detached`.
+    #[test]
+    fn detached_carries_the_servers_reason_into_the_exit() {
+        for reason in [
+            None,
+            Some(DetachReason::Requested),
+            Some(DetachReason::ServerShutdown),
+            Some(DetachReason::Replaced),
+        ] {
+            let pane = tid(1);
+            let mut workspace = Workspace::single(pane.clone());
+            let mut focused = Some(pane.clone());
+            let mut panes = panes_for(&[&pane]);
+            let mut out: Vec<u8> = Vec::new();
+            let mut session_name = String::new();
+            let mut zoomed: Option<TerminalId> = None;
+            let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
+            let overlay = Overlay;
+            let mut pending_splits = HashMap::new();
+            let mut pending_windows = HashMap::new();
+
+            let outcome = handle_server_frame(
+                &mut out,
+                FrameKind::Detached {
+                    reason,
+                    message: "diagnostic only".to_owned(),
+                },
+                &mut panes,
+                &mut workspace,
+                &mut focused,
+                &mut zoomed,
+                &mut session_name,
+                None,
+                None,
+                (80, 24),
+                &mut predict,
+                &overlay,
+                None,
+                &mut pending_splits,
+                &mut pending_windows,
+                &mut HashSet::new(),
+                &mut AgentMetaIndex::default(),
+                false,
+                false,
+            )
+            .expect("handle_server_frame");
+
+            assert!(outcome.exit, "DETACHED always ends the loop");
+            assert_eq!(
+                outcome.exit_reason,
+                Some(AttachEnd::Detached { reason }),
+                "the ending must carry the reason the server stated, including none",
+            );
+        }
     }
 
     /// Drive an `EVENT { terminal, Asked }` through [`handle_server_frame`]

@@ -34,7 +34,8 @@
 
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_TERMINAL_OUTPUT,
+    DetachReason, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED,
+    TYPE_TERMINAL_OUTPUT,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -188,7 +189,13 @@ fn reconnect_after_detach_replays_snapshot_and_resumes_output() {
             }
             assert_eq!(type_byte, TYPE_DETACHED, "client A: DETACHED reply");
             assert!(
-                matches!(frame, FrameKind::Detached),
+                matches!(
+                    frame,
+                    FrameKind::Detached {
+                        reason: Some(DetachReason::Requested),
+                        ..
+                    }
+                ),
                 "client A: DETACHED payload (got {frame:?})",
             );
             break;

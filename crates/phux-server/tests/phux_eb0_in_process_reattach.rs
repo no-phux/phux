@@ -27,8 +27,8 @@
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_TERMINAL_OUTPUT,
-    ViewportInfo,
+    AttachTarget, DetachReason, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN,
+    TYPE_TERMINAL_OUTPUT, ViewportInfo,
 };
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -85,7 +85,13 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
             // consumer state before we drop the socket.
             send_frame(&mut seed, &FrameKind::Detach).await;
             let detached = recv_until_detached(&mut seed).await;
-            assert!(matches!(detached, FrameKind::Detached));
+            assert!(matches!(
+                detached,
+                FrameKind::Detached {
+                    reason: Some(DetachReason::Requested),
+                    ..
+                }
+            ));
             drop(seed);
         }
 
@@ -123,7 +129,13 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
         // ------------------------------------------------------------
         send_frame(&mut client, &FrameKind::Detach).await;
         let detached = recv_until_detached(&mut client).await;
-        assert!(matches!(detached, FrameKind::Detached));
+        assert!(matches!(
+            detached,
+            FrameKind::Detached {
+                reason: Some(DetachReason::Requested),
+                ..
+            }
+        ));
 
         // Same connection, new target.
         send_frame(&mut client, &attach_by_name_with_id("beta", 2)).await;
@@ -216,7 +228,13 @@ fn reattach_to_other_session_does_not_forward_old_session_output() {
             assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN, "seed {name}: snapshot");
             send_frame(&mut seed, &FrameKind::Detach).await;
             let detached = recv_until_detached(&mut seed).await;
-            assert!(matches!(detached, FrameKind::Detached));
+            assert!(matches!(
+                detached,
+                FrameKind::Detached {
+                    reason: Some(DetachReason::Requested),
+                    ..
+                }
+            ));
         }
 
         let mut client = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
@@ -242,7 +260,13 @@ fn reattach_to_other_session_does_not_forward_old_session_output() {
 
         send_frame(&mut client, &FrameKind::Detach).await;
         let detached = recv_until_detached(&mut client).await;
-        assert!(matches!(detached, FrameKind::Detached));
+        assert!(matches!(
+            detached,
+            FrameKind::Detached {
+                reason: Some(DetachReason::Requested),
+                ..
+            }
+        ));
 
         send_frame(&mut client, &attach_by_name_with_id("beta", 2)).await;
         let (type_byte, _attached_b) = recv_typed(&mut client).await;

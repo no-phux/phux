@@ -402,6 +402,23 @@ typedef enum PhuxClientStatusKind {
     PHUX_CLIENT_STATUS_HISTORY = 6,
     PHUX_CLIENT_STATUS_HISTORY_UNAVAILABLE = 7
 } PhuxClientStatusKind;
+/**
+ * status_code on a PHUX_CLIENT_STATUS_DETACHED effect: the DETACHED frame's
+ * DetachReason wire value (proto.md 7.2), or PHUX_CLIENT_DETACH_REASON_UNSTATED
+ * when the server stated none. bytes carries the frame's human-readable
+ * message, which may be empty and must not be parsed. Do not treat UNSTATED as
+ * REQUESTED: a server may end an attach without saying why.
+ */
+typedef enum PhuxClientDetachReason {
+    PHUX_CLIENT_DETACH_REQUESTED = 0,
+    PHUX_CLIENT_DETACH_SERVER_SHUTDOWN = 1,
+    PHUX_CLIENT_DETACH_SESSION_KILLED = 2,
+    PHUX_CLIENT_DETACH_REPLACED = 3,
+    PHUX_CLIENT_DETACH_PROTOCOL_ERROR = 4,
+    PHUX_CLIENT_DETACH_INTERNAL_ERROR = 255,
+    PHUX_CLIENT_DETACH_REASON_UNSTATED = 0xFFFF
+} PhuxClientDetachReason;
+
 typedef enum PhuxClientHistoryLoadCode {
     PHUX_CLIENT_HISTORY_IDLE = 0,
     PHUX_CLIENT_HISTORY_LOADING = 1,
@@ -426,7 +443,8 @@ typedef enum PhuxClientHistoryUnavailableCode {
 /**
  * status_code is a stable TombstoneReason wire value for RESYNC_REQUIRED,
  * PhuxClientHistoryLoadCode for HISTORY, PhuxClientHistoryUnavailableCode for
- * HISTORY_UNAVAILABLE, and zero otherwise.
+ * HISTORY_UNAVAILABLE, PhuxClientDetachReason for DETACHED, and zero
+ * otherwise.
  */
 
 /** Borrowed effect. bytes contains title/error detail when defined by kind. Emulator PTY replies never appear here: when HELLO_OK advertises TERMINAL_REPLY they are queued as exact outgoing INPUT_TERMINAL_REPLY frames; without that feature, feed_frame returns PHUX_CLIENT_ENGINE_ERROR and queues no reply. */

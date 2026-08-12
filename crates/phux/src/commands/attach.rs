@@ -1133,6 +1133,8 @@ pub(crate) fn run_attach_ws(
 
 #[cfg(test)]
 mod tests {
+    use phux_protocol::wire::frame::DetachReason;
+
     use super::*;
 
     /// phux-i0e8.2.2: the one-line ending explanation both CLI callers
@@ -1143,9 +1145,36 @@ mod tests {
     #[test]
     fn attach_end_explanation_covers_all_shapes() {
         assert_eq!(
-            AttachEnd::Detached.explanation(),
+            AttachEnd::Detached { reason: None }.explanation(),
             None,
             "a plain detach needs no words"
+        );
+        assert_eq!(
+            AttachEnd::Detached {
+                reason: Some(DetachReason::Requested),
+            }
+            .explanation(),
+            None,
+            "a detach the user asked for needs no words either"
+        );
+        // phux-l83x: every other reason is an ending the user did not
+        // choose, and before the DETACHED payload existed all of them were
+        // indistinguishable from the quiet case above.
+        assert_eq!(
+            AttachEnd::Detached {
+                reason: Some(DetachReason::ServerShutdown),
+            }
+            .explanation()
+            .as_deref(),
+            Some("phux: detached: the server is shutting down"),
+        );
+        assert_eq!(
+            AttachEnd::Detached {
+                reason: Some(DetachReason::Replaced),
+            }
+            .explanation()
+            .as_deref(),
+            Some("phux: detached: another client took over this attach"),
         );
         assert_eq!(
             AttachEnd::LastPaneClosed {

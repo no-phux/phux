@@ -301,6 +301,18 @@ pub mod history_rejected {
     pub const REQUIRED_ROWS: u32 = 7;
 }
 
+/// `DETACHED` body fields (`docs/spec/proto.md` §7.2).
+///
+/// Both ids are optional-absent: a server that predates `0.7.0-draft.7`
+/// encodes an empty `DETACHED` body, and a consumer applies the documented
+/// defaults (`reason` unstated, `message` empty) rather than failing.
+pub mod detached {
+    /// `DetachReason` tag (`u8`). Absent = the peer stated no reason.
+    pub const REASON: u32 = 1;
+    /// Human-readable UTF-8 detail. Absent = empty.
+    pub const MESSAGE: u32 = 2;
+}
+
 /// `BELL` body fields (`docs/spec/L1.md` §1.2).
 pub mod bell {
     /// Terminal that received the bell character (positional tagged union).
