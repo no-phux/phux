@@ -99,14 +99,24 @@ ready.
 (`debug_assertions`, or an executable under a Cargo `target/` directory), else
 `default`. The profile suffixes the runtime directory
 (`/tmp/phux-$USER[-<profile>]`, `$XDG_RUNTIME_DIR/phux[-<profile>]`) and the
-state directory (`$XDG_STATE_HOME/phux[-<profile>]`). The default profile is
-unsuffixed, so paths created by earlier releases stay valid.
+state directory (`$XDG_STATE_HOME/phux[-<profile>]`), and the service unit —
+its launchd label (`com.phux.server[.<profile>]`) and its systemd unit name
+(`phux[-<profile>].service`), which together scope the unit's own filename.
+The default profile is unsuffixed everywhere, so paths and jobs created by
+earlier releases stay valid and addressable.
 
 Isolation is **automatic rather than opt-in**. An environment variable a
 developer must remember is not isolation: the one time it is forgotten is the
 time a `cargo run` takes over the production socket. `phux doctor` reports a
 non-default profile as a warning, since the isolation is otherwise silent and
 its only symptom is "my sessions are gone."
+
+Scoping the service unit is the same rule applied to the one path that
+originally escaped it. `service install` already wrote profile-scoped socket,
+state and log paths, but filed them under a single hard-coded label — so a
+dev-profile install silently *replaced* the job supervising the production
+server (phux-gyza). A partial isolation is worse than none here: it looks
+correct in every path the operator inspects and fails at the one they do not.
 
 **Supervision is corrected, not withdrawn.** An always-on server that survives
 logout and reboot is the point of ADR-0055 and worth keeping. What was wrong

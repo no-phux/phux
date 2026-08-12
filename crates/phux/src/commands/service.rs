@@ -22,12 +22,62 @@ use std::process::ExitCode;
 
 use phux_config::socket::{self, SocketState};
 
-/// launchd's reverse-DNS job label, and the basename of the plist it loads.
+/// launchd's reverse-DNS job label for the default profile, and the basename
+/// of the plist it loads.
 const LAUNCHD_LABEL: &str = "com.phux.server";
 
-/// systemd's unit name. `--user` scope, so it lives under
-/// `$XDG_CONFIG_HOME/systemd/user/`.
+/// systemd's unit name for the default profile. `--user` scope, so it lives
+/// under `$XDG_CONFIG_HOME/systemd/user/`.
 const SYSTEMD_UNIT: &str = "phux.service";
+
+/// launchd's job label for the *active* profile.
+///
+/// The default profile keeps the bare `com.phux.server`, for the same reason
+/// [`phux_config::instance::DEFAULT_PROFILE`] is stored unsuffixed on disk: a
+/// user upgrading into a profile-aware build must not end up with their
+/// already-loaded job orphaned under a name nothing addresses.
+///
+/// Every other profile is suffixed. Without this, ADR-0080's isolation was
+/// half-applied: `resolve_plan` already scopes the socket, state and log paths
+/// by profile, so a dev-profile `service install` wrote a unit pointing at
+/// `phux-dev` locations — but filed under the *production* label, silently
+/// replacing the job that supervises the user's real server (phux-gyza).
+fn launchd_label() -> String {
+    launchd_label_for(profile_suffix().as_deref())
+}
+
+/// systemd's unit name for the active profile. See [`launchd_label`] for why
+/// the default profile keeps the bare name.
+fn systemd_unit() -> String {
+    systemd_unit_for(profile_suffix().as_deref())
+}
+
+/// [`launchd_label`] with the profile injected, so tests can drive both the
+/// default and a named profile without mutating the process environment
+/// (`env::set_var` is unsafe under edition 2024 and this crate forbids
+/// unsafe). Same `*_from` idiom as [`home_dir_from`].
+fn launchd_label_for(profile: Option<&str>) -> String {
+    profile.map_or_else(
+        || LAUNCHD_LABEL.to_owned(),
+        |profile| format!("{LAUNCHD_LABEL}.{profile}"),
+    )
+}
+
+/// [`systemd_unit`] with the profile injected. See [`launchd_label_for`].
+fn systemd_unit_for(profile: Option<&str>) -> String {
+    profile.map_or_else(
+        || SYSTEMD_UNIT.to_owned(),
+        |profile| format!("phux-{profile}.service"),
+    )
+}
+
+/// The active profile when it is not the default, else `None`.
+///
+/// One place resolves it so the label, the unit name and the refusal message
+/// cannot disagree about which profile they are talking about.
+fn profile_suffix() -> Option<String> {
+    (!phux_config::instance::is_default_profile()).then(phux_config::instance::profile)
+}
 
 /// Minimum seconds between supervised restarts (phux-zomb.4).
 ///
@@ -111,16 +161,18 @@ impl Manager {
     /// write the unit under whatever the current working directory
     /// happened to be, silently. Fail here instead, at the one place that
     /// knows why.
-    fn unit_path(self) -> Result<PathBuf, String> {
+    /// `profile` is the ADR-0080 profile suffix (`None` for the default), so
+    /// the basename is scoped exactly the way the label inside the unit is.
+    fn unit_path(self, profile: Option<&str>) -> Result<PathBuf, String> {
         match self {
             Self::Launchd => Ok(home_dir()?
                 .join("Library")
                 .join("LaunchAgents")
-                .join(format!("{LAUNCHD_LABEL}.plist"))),
+                .join(format!("{}.plist", launchd_label_for(profile)))),
             Self::Systemd => Ok(config_home()?
                 .join("systemd")
                 .join("user")
-                .join(SYSTEMD_UNIT)),
+                .join(systemd_unit_for(profile))),
         }
     }
 }
@@ -163,6 +215,13 @@ pub(crate) struct ServicePlan {
     /// implementation of the precedence rules
     /// (`$PHUX_SOCKET` > `$XDG_RUNTIME_DIR` > `/tmp/phux-$USER`).
     pub(crate) socket_path: PathBuf,
+    /// The active ADR-0080 profile when it is not the default, else `None`.
+    ///
+    /// Resolved once here, with every other path, so the renderers stay pure:
+    /// the label a plist carries and the basename the unit is written under
+    /// both come from this field rather than from the ambient environment,
+    /// which is what lets a test drive either profile (phux-gyza).
+    pub(crate) profile: Option<String>,
     /// Where the service's stdout and stderr land.
     pub(crate) log: PathBuf,
     /// Workspace archive path when `--restore` is on. `Some` switches the
@@ -237,7 +296,11 @@ pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
     out.push_str("  <!-- Edits are overwritten on the next install. -->\n");
 
     out.push_str("  <key>Label</key>\n");
-    let _ = writeln!(out, "  <string>{LAUNCHD_LABEL}</string>");
+    let _ = writeln!(
+        out,
+        "  <string>{}</string>",
+        launchd_label_for(plan.profile.as_deref())
+    );
 
     out.push_str("  <key>ProgramArguments</key>\n  <array>\n");
     for arg in plan.program_arguments() {
@@ -451,6 +514,7 @@ fn resolve_plan(
         socket,
         hub,
         socket_path,
+        profile: profile_suffix(),
         // The ONE canonical server log — resolved through the shared helper
         // so the unit's writer and `phux service logs`'s reader can never
         // disagree (phux-i0e8.5.1).
@@ -466,6 +530,25 @@ fn render_unit(manager: Manager, plan: &ServicePlan) -> String {
         Manager::Launchd => render_launchd_plist(plan),
         Manager::Systemd => render_systemd_unit(plan),
     }
+}
+
+/// Write the unit (and the restore wrapper, when `--restore` asked for one) to
+/// stdout without touching the filesystem.
+///
+/// `manager` is `None` on a platform with no generator. That case still gets
+/// text, per ADR-0055, and the text is the **systemd** unit: the ADR groups
+/// third platforms with non-systemd Linux, where the systemd unit is the
+/// directly relevant reference, and it is the more transferable of the two
+/// renderings for anyone hand-translating it. Emitting both instead would put
+/// two documents on one stdout, and a plist cannot legally carry a leading
+/// comment saying which is which.
+fn dry_run_text(manager: Option<Manager>, plan: &ServicePlan) -> String {
+    let mut text = render_unit(manager.unwrap_or(Manager::Systemd), plan);
+    if plan.restore.is_some() {
+        text.push('\n');
+        text.push_str(&render_wrapper_script(plan));
+    }
+    text
 }
 
 /// `phux service install` — write the unit and hand it to the init system.
@@ -498,25 +581,32 @@ pub(crate) fn run_install(
         }
     };
 
-    let Some(manager) = Manager::host() else {
-        eprintln!(
-            "phux service: no unit generator for this platform; \
-             run `phux server` under your own supervisor."
-        );
-        return ExitCode::FAILURE;
-    };
-
     // `--print` is a dry run: render everything to stdout, touch nothing.
     // The unit is the reviewable artifact, so being able to read it before
     // it lands is worth a flag.
+    //
+    // Deliberately ahead of the platform check. A dry run needs no launchd and
+    // no systemd -- it renders text -- and gating it behind `Manager::host()`
+    // made `service install --print` fail on exactly the platforms ADR-0055
+    // promises a printed unit to (phux-l83y).
     if print {
-        out!("{}", render_unit(manager, &plan));
-        if plan.restore.is_some() {
-            outln!();
-            out!("{}", render_wrapper_script(&plan));
-        }
+        out!("{}", dry_run_text(Manager::host(), &plan));
         return ExitCode::SUCCESS;
     }
+
+    let Some(manager) = Manager::host() else {
+        // Not a bare error: ADR-0055 commits that a platform with no generator
+        // gets the unit and an instruction. It is still a non-zero exit,
+        // because nothing was installed and `phux service install && ...` must
+        // not run its right-hand side.
+        out!("{}", dry_run_text(None, &plan));
+        eprintln!(
+            "\nphux service: no unit generator for this platform. Nothing was installed.\n\
+             The unit above is a starting point -- adapt it for your init system, or run\n\
+             `phux server` under your own supervisor."
+        );
+        return ExitCode::FAILURE;
+    };
 
     // Refuse rather than install a unit that provably cannot work.
     //
@@ -552,7 +642,7 @@ pub(crate) fn run_install(
         return ExitCode::FAILURE;
     }
 
-    let unit_path = match manager.unit_path() {
+    let unit_path = match manager.unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
             eprintln!("phux service: {err}");
@@ -623,7 +713,7 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 /// user has a session — on a headless host that means enabling automatic
 /// login.
 fn launchd_target() -> String {
-    format!("gui/{}/{LAUNCHD_LABEL}", uid())
+    format!("gui/{}/{}", uid(), launchd_label())
 }
 
 /// This process's real user id, for launchd's domain syntax.
@@ -660,7 +750,7 @@ fn reload(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> Result<(), 
                     "--user".to_owned(),
                     "enable".to_owned(),
                     "--now".to_owned(),
-                    SYSTEMD_UNIT.to_owned(),
+                    systemd_unit(),
                 ],
             )
         }
@@ -693,6 +783,9 @@ fn report_install(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
     outln!("phux service installed.");
     outln!("  unit    {}", unit_path.display());
     outln!("  binary  {}", plan.binary.display());
+    if let Some(profile) = profile_suffix() {
+        outln!("  profile {profile}");
+    }
     if let Some(quic) = &plan.quic {
         outln!("  quic    {quic}");
     }
@@ -722,6 +815,20 @@ fn report_install(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
         );
     }
 
+    // A non-default profile is usually a development build (ADR-0080 resolves
+    // one automatically), and "I installed the service and my sessions are
+    // still gone" is the failure it produces if this goes unsaid: the unit is
+    // real, it is loaded, and it supervises a server on a different socket
+    // than the one a released `phux` attaches to.
+    if let Some(profile) = profile_suffix() {
+        outln!();
+        outln!(
+            "This unit is scoped to the `{profile}` profile — its own label, socket and\n\
+             state. It does not supervise, replace, or interfere with a default-profile\n\
+             server. Set PHUX_PROFILE={profile} to reach the server it starts."
+        );
+    }
+
     // Stale per-pid client logs accumulate one file per client that ever
     // ran; report but never delete without being asked.
     if let Ok(count) = count_client_logs()
@@ -738,8 +845,15 @@ fn report_install(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
 
 /// `phux service uninstall` — unload the unit and remove what install wrote.
 pub(crate) fn run_uninstall() -> ExitCode {
+    // Unlike `install --print`, there is nothing useful to render here: this
+    // build has no generator for this platform, so it never wrote a unit to
+    // remove. Say that, rather than the bare platform line, so the operator
+    // does not go looking for one.
     let Some(manager) = Manager::host() else {
-        eprintln!("phux service: no unit generator for this platform.");
+        eprintln!(
+            "phux service: no unit generator for this platform, so `phux service install`\n\
+             never wrote a unit here. Remove whatever supervises `phux server` by hand."
+        );
         return ExitCode::FAILURE;
     };
 
@@ -753,7 +867,7 @@ pub(crate) fn run_uninstall() -> ExitCode {
                 "--user".to_owned(),
                 "disable".to_owned(),
                 "--now".to_owned(),
-                SYSTEMD_UNIT.to_owned(),
+                systemd_unit(),
             ],
         ),
     };
@@ -763,7 +877,7 @@ pub(crate) fn run_uninstall() -> ExitCode {
         eprintln!("phux service: note: {err}");
     }
 
-    let unit_path = match manager.unit_path() {
+    let unit_path = match manager.unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
             eprintln!("phux service: {err}");
@@ -805,12 +919,17 @@ pub(crate) fn run_uninstall() -> ExitCode {
 /// `phux service status` — is a unit installed, and is the init system
 /// running it?
 pub(crate) fn run_status() -> ExitCode {
+    // Same reasoning as `run_uninstall`: nothing to report on, because nothing
+    // this build could have installed exists here.
     let Some(manager) = Manager::host() else {
-        eprintln!("phux service: no unit generator for this platform.");
+        eprintln!(
+            "phux service: no unit generator for this platform, so there is no phux unit\n\
+             to report on. `phux doctor` still checks the server itself."
+        );
         return ExitCode::FAILURE;
     };
 
-    let unit_path = match manager.unit_path() {
+    let unit_path = match manager.unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
             eprintln!("phux service: {err}");
@@ -831,7 +950,7 @@ pub(crate) fn run_status() -> ExitCode {
             .args(["print", &launchd_target()])
             .status(),
         Manager::Systemd => std::process::Command::new("systemctl")
-            .args(["--user", "status", SYSTEMD_UNIT])
+            .args(["--user", "status", &systemd_unit()])
             .status(),
     };
 
@@ -1026,8 +1145,9 @@ fn config_home_from(
 mod tests {
     use super::{
         Manager, RESTART_THROTTLE_SECS, SERVICE_MANAGED_ENV, START_LIMIT_BURST, ServicePlan,
-        config_home_from, home_dir_from, render_launchd_plist, render_systemd_unit,
-        render_wrapper_script, resolve_plan, sh_quote, systemd_escape, systemd_quote, xml_escape,
+        config_home_from, dry_run_text, home_dir_from, launchd_label_for, render_launchd_plist,
+        render_systemd_unit, render_wrapper_script, resolve_plan, sh_quote, systemd_escape,
+        systemd_quote, systemd_unit_for, xml_escape,
     };
     use std::path::PathBuf;
 
@@ -1044,6 +1164,9 @@ mod tests {
             socket: None,
             hub: false,
             socket_path: PathBuf::from("/run/user/1000/phux/phux.sock"),
+            // The default profile, so every renderer test that predates
+            // phux-gyza keeps asserting the names it always did.
+            profile: None,
             log: PathBuf::from("/home/u/.local/state/phux/server.log"),
             restore: None,
             wrapper: PathBuf::from("/home/u/.local/state/phux/service-wrapper.sh"),
@@ -1312,15 +1435,136 @@ mod tests {
         // ADR-0055: never a system-wide unit — that implies a multi-user
         // server, which ADR-0003 does not have.
         let launchd = Manager::Launchd
-            .unit_path()
+            .unit_path(None)
             .expect("HOME is set in this test process");
         assert!(launchd.ends_with("Library/LaunchAgents/com.phux.server.plist"));
         assert!(!launchd.starts_with("/Library"));
         let systemd = Manager::Systemd
-            .unit_path()
+            .unit_path(None)
             .expect("HOME is set in this test process");
         assert!(systemd.ends_with("systemd/user/phux.service"));
         assert!(!systemd.starts_with("/etc"));
+    }
+
+    /// phux-gyza: the unit *path* is profile-scoped too, not just the label
+    /// inside it.
+    ///
+    /// Both halves matter. A shared path means a dev install overwrites the
+    /// production unit file; a shared label means it overwrites the loaded
+    /// job. Scoping only one would still leave a way to clobber the other.
+    #[test]
+    fn a_non_default_profile_writes_its_unit_beside_the_default_one() {
+        let default_launchd = Manager::Launchd
+            .unit_path(None)
+            .expect("HOME is set in this test process");
+        let dev_launchd = Manager::Launchd
+            .unit_path(Some("dev"))
+            .expect("HOME is set in this test process");
+        assert_ne!(default_launchd, dev_launchd);
+        assert!(dev_launchd.ends_with("com.phux.server.dev.plist"));
+        assert_eq!(default_launchd.parent(), dev_launchd.parent());
+
+        let default_systemd = Manager::Systemd
+            .unit_path(None)
+            .expect("HOME is set in this test process");
+        let dev_systemd = Manager::Systemd
+            .unit_path(Some("dev"))
+            .expect("HOME is set in this test process");
+        assert_ne!(default_systemd, dev_systemd);
+        assert!(dev_systemd.ends_with("phux-dev.service"));
+        assert_eq!(default_systemd.parent(), dev_systemd.parent());
+    }
+
+    /// The label a launchd plist carries follows the plan's profile, not the
+    /// ambient environment — which is what keeps the renderers pure and
+    /// testable (phux-gyza).
+    #[test]
+    fn the_plist_label_follows_the_plans_profile() {
+        let default_plist = render_launchd_plist(&plan());
+        assert!(
+            default_plist.contains("<string>com.phux.server</string>"),
+            "got {default_plist}"
+        );
+
+        let mut dev = plan();
+        dev.profile = Some("dev".to_owned());
+        let dev_plist = render_launchd_plist(&dev);
+        assert!(
+            dev_plist.contains("<string>com.phux.server.dev</string>"),
+            "got {dev_plist}"
+        );
+        assert!(
+            !dev_plist.contains("<string>com.phux.server</string>\n"),
+            "the dev label must not also emit the bare production one: {dev_plist}"
+        );
+    }
+
+    /// phux-l83y regression: a dry run renders on every platform.
+    ///
+    /// ADR-0055 commits that a platform with no unit generator gets "a printed
+    /// unit and a manual instruction, not an error". `--print` used to be
+    /// gated *behind* `Manager::host()`, so on exactly those platforms the one
+    /// subcommand that needs no init system at all — it renders text — failed
+    /// instead. `dry_run_text` takes `Option<Manager>` so the `None` case has
+    /// to be answered rather than short-circuited.
+    #[test]
+    fn a_dry_run_renders_even_with_no_unit_generator_for_the_platform() {
+        let text = dry_run_text(None, &plan());
+        assert!(
+            !text.is_empty(),
+            "an unsupported platform must still get a unit to adapt"
+        );
+        // The systemd rendering is the fallback: ADR-0055 groups third
+        // platforms with non-systemd Linux, where it is the relevant text.
+        assert_eq!(text, dry_run_text(Some(Manager::Systemd), &plan()));
+        assert!(text.contains("[Service]"), "got {text}");
+    }
+
+    /// The dry run still renders the host's own manager when there is one, and
+    /// still appends the wrapper when `--restore` asked for one.
+    #[test]
+    fn a_dry_run_carries_the_restore_wrapper_when_one_was_planned() {
+        let mut with_restore = plan();
+        with_restore.restore = Some(PathBuf::from("/home/u/.local/state/phux/workspace.json"));
+
+        let plain = dry_run_text(Some(Manager::Launchd), &plan());
+        assert!(plain.contains("<?xml"), "got {plain}");
+        assert!(!plain.contains("workspace restore"), "got {plain}");
+
+        let wrapped = dry_run_text(Some(Manager::Launchd), &with_restore);
+        assert!(wrapped.contains("<?xml"), "got {wrapped}");
+        assert!(wrapped.contains("workspace restore"), "got {wrapped}");
+    }
+
+    /// The default profile keeps the historical, unsuffixed names.
+    ///
+    /// Load-bearing for upgrades: a user who already ran `service install` has
+    /// a job loaded under `com.phux.server`. If a profile-aware build renamed
+    /// it, `uninstall` and `status` would address a name the init system has
+    /// never heard of, and the old job would keep running with nothing able to
+    /// stop it. Same reason `DEFAULT_PROFILE` is stored unsuffixed on disk.
+    #[test]
+    fn the_default_profile_keeps_the_historical_unit_names() {
+        assert_eq!(launchd_label_for(None), "com.phux.server");
+        assert_eq!(systemd_unit_for(None), "phux.service");
+    }
+
+    /// phux-gyza regression: a non-default profile gets its own label.
+    ///
+    /// Before this, `resolve_plan` scoped the socket, state and log paths by
+    /// profile but the label was a single constant — so `phux service install`
+    /// from a dev build wrote a unit pointing at `phux-dev` locations *under
+    /// the production label*, silently replacing the job supervising the
+    /// user's real server. The isolation ADR-0080 makes automatic everywhere
+    /// else has to hold here too.
+    #[test]
+    fn a_non_default_profile_gets_its_own_label_and_unit_name() {
+        assert_eq!(launchd_label_for(Some("dev")), "com.phux.server.dev");
+        assert_eq!(systemd_unit_for(Some("dev")), "phux-dev.service");
+
+        // Distinct from the default's, which is the whole point.
+        assert_ne!(launchd_label_for(Some("dev")), launchd_label_for(None));
+        assert_ne!(systemd_unit_for(Some("dev")), systemd_unit_for(None));
     }
 
     /// phux-8wm regression: with `HOME` unset, the naive

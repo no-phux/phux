@@ -27,7 +27,7 @@
 //!
 //! # Do not let these tests reach a real install
 //!
-//! `Manager::unit_path()` resolves from `HOME`, **not** from `--socket`. A
+//! `Manager::unit_path` resolves from `HOME`, **not** from `--socket`. A
 //! `phux service install` that gets past the guard therefore writes to the
 //! developer's own `~/Library/LaunchAgents/com.phux.server.plist` (or
 //! `$XDG_CONFIG_HOME/systemd/user/phux.service`) and then runs `launchctl
@@ -96,10 +96,17 @@ impl Drop for Cleanup {
 ///
 /// Both platforms' paths are checked regardless of which one this build
 /// targets, so the assertion does not silently become a no-op on the other.
-fn unit_paths_under(home: &Path) -> [std::path::PathBuf; 2] {
+///
+/// Both *profiles* are checked for the same reason (phux-gyza): the unit name
+/// is scoped by the ADR-0080 profile, and a test binary resolves to `dev`, so
+/// checking only the default-profile names would let a regression write the
+/// file this suite exists to prove is never written.
+fn unit_paths_under(home: &Path) -> [std::path::PathBuf; 4] {
     [
         home.join("Library/LaunchAgents/com.phux.server.plist"),
         home.join(".config/systemd/user/phux.service"),
+        home.join("Library/LaunchAgents/com.phux.server.dev.plist"),
+        home.join(".config/systemd/user/phux-dev.service"),
     ]
 }
 

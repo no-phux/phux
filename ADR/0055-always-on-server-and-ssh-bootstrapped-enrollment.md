@@ -119,7 +119,12 @@ one-time credential bootstrap.
 - Two init systems to generate for, and their reload semantics differ
   (`launchctl bootstrap`/`bootout` vs `systemctl --user`). Third
   platforms and non-systemd Linux get a printed unit and a manual
-  instruction, not an error.
+  instruction rather than a bare error: `install --print` renders on every
+  platform and exits 0, and `install` proper prints the same unit plus the
+  instruction. `install` still exits non-zero there, because nothing was
+  installed and `phux service install && …` must not run its right-hand
+  side; the promise is that the operator is never left without the
+  artifact, not that a no-op reports success (phux-l83y).
 - `phux enroll` shells out to ssh and inherits every ssh failure mode
   (agent not loaded, host key prompt, `phux` not on the remote `PATH`)
   into a phux error surface. Mitigated by naming the failing step, never
