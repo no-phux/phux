@@ -2071,6 +2071,7 @@ Usage: phux service [OPTIONS] <COMMAND>
 
 Commands:
   install     Write the unit and hand it to the init system
+  reconcile   Bring an installed unit's restart policy up to date, in place
   uninstall   Unload the unit and remove what `install` wrote
   status      Report whether a unit is installed and running
   logs        Show the supervised server's log
@@ -2156,6 +2157,28 @@ Options:
 
   -h, --help
           Print help
+```
+
+## `phux service reconcile`
+
+```text
+Bring an installed unit's restart policy up to date, in place.
+
+Rewrites only the keys that carry the restart policy and leaves every other byte of the unit alone, so the listeners, hub mode and socket baked into it by an earlier `install` are preserved rather than re-derived. Nothing is stopped and no pane is lost.
+
+On Linux `systemctl --user daemon-reload` picks the change up without touching the running service. On macOS launchd cannot re-read a plist for a loaded job, so the corrected policy takes effect at the next login or reboot; the command says so rather than claiming otherwise.
+
+Usage: phux service reconcile [OPTIONS]
+
+Options:
+      --print
+          Print the reconciled unit to stdout without writing anything
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ## `phux service status`

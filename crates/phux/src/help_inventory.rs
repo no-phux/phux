@@ -159,6 +159,7 @@ phux service
 phux service install
 phux service logs
 phux service prune-logs
+phux service reconcile
 phux service status
 phux service uninstall
 phux signal

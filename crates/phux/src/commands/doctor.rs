@@ -271,8 +271,9 @@ fn server_health_checks(
     }
 
     // A unit generated before phux-zomb.4 restarts on *every* exit with no
-    // throttle. Reinstalling replaces it with the throttled, failure-only
-    // policy, which is both the fix and the way a crash-loop stays visible.
+    // throttle. `phux service reconcile` replaces its restart-policy keys with
+    // the throttled, failure-only ones, which is both the fix and the way a
+    // crash-loop stays visible.
     if let Some(unit) = legacy_unit {
         checks.push(Check::warn(
             "server-health",
@@ -280,16 +281,19 @@ fn server_health_checks(
                 "the supervisor unit at {} restarts on every exit, unthrottled",
                 unit.display()
             ),
-            // Say what the remedy costs. Replacing the unit reloads it, and
-            // the reload boots out the running job -- so following this hint
-            // ends every pane and its in-flight shells, agents, and
+            // This hint used to name `phux service install`, which reloads the
+            // unit -- and the reload boots out the running job, so following
+            // it ended every pane and its in-flight shells, agents, and
             // subagents. A Warn exits 0 and reads as routine housekeeping,
             // which is exactly when an unannounced destructive step does the
-            // most damage (phux-nvi2).
-            "it resurrects servers you stopped and hides crash-loops — re-run \
-             `phux service install` to replace it, but note that this restarts \
-             the server and ends every pane, so do it when you can afford to \
-             lose them (`phux ls` shows what is running)",
+            // most damage (phux-nvi2). `reconcile` (phux-l1yx) rewrites the
+            // policy in place and stops nothing, so the hint can now point at
+            // a remedy whose cost is zero -- and say where it is not yet in
+            // force, rather than leaving macOS users to assume it is.
+            "it resurrects servers you stopped and hides crash-loops — run \
+             `phux service reconcile` to correct it in place; nothing is \
+             stopped and no pane is lost (on macOS the corrected policy takes \
+             effect at your next login, which that command spells out)",
         ));
     }
 
@@ -1069,20 +1073,47 @@ mod tests {
         assert!(checks[0].detail.contains("2 server start(s)"));
     }
 
-    /// phux-nvi2: the legacy-unit hint must keep naming the pane-loss cost of
-    /// its own remedy. A `Warn` exits 0 and reads as routine housekeeping,
+    /// phux-nvi2: the legacy-unit hint must stay honest about what following
+    /// it actually does. A `Warn` exits 0 and reads as routine housekeeping,
     /// which is exactly when an unannounced destructive step does the most
-    /// damage — this must not regress silently in a future edit of this hint.
+    /// damage.
+    ///
+    /// The guard survives phux-l1yx, but its *premise* moved and the
+    /// assertions moved with it. The remedy used to be `phux service install`,
+    /// which reloads the unit and therefore ends every pane, so the hint had
+    /// to say so. It is now `phux service reconcile`, which rewrites the
+    /// policy keys in place and stops nothing — so the honest hint no longer
+    /// warns about pane loss, because there is none to warn about.
+    ///
+    /// What nvi2 actually guarantees is unchanged and is what is asserted
+    /// here: the hint names its remedy, that remedy is not the destructive
+    /// one, and any way in which following it falls short of a complete fix
+    /// is stated rather than left to be discovered. On macOS the corrected
+    /// policy cannot take effect without a `bootout`, so "not in force until
+    /// next login" is exactly that kind of shortfall.
     #[test]
-    fn legacy_unit_hint_names_the_cost_of_its_own_remedy() {
+    fn legacy_unit_hint_stays_honest_about_its_own_remedy() {
         let unit = std::path::Path::new("/home/u/Library/LaunchAgents/com.phux.server.plist");
         let checks = server_health_checks(None, Some(unit), None, || 0);
         let hint = checks[0]
             .hint
             .as_ref()
             .expect("a warn without a hint is half a diagnosis");
-        assert!(hint.contains("service install"), "{hint}");
-        assert!(hint.contains("ends every pane"), "{hint}");
+        assert!(hint.contains("service reconcile"), "{hint}");
+        assert!(
+            !hint.contains("service install"),
+            "the hint must not send a user at the pane-killing remedy now that \
+             a non-destructive one exists (phux-nvi2, phux-l1yx): {hint}"
+        );
+        assert!(
+            hint.contains("no pane is lost"),
+            "the remedy's zero cost is the reason it replaced the old one; say it: {hint}"
+        );
+        assert!(
+            hint.contains("next login"),
+            "on macOS the policy is not in force until then, and a hint that \
+             implies otherwise is the same dishonesty nvi2 was filed for: {hint}"
+        );
     }
 
     // -----------------------------------------------------------------

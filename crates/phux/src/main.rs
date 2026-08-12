@@ -902,6 +902,7 @@ fn main() -> ExitCode {
                 hub,
                 print,
             } => commands::service::run_install(quic, listen, restore, socket, hub, print),
+            commands::ServiceAction::Reconcile { print } => commands::service::run_reconcile(print),
             commands::ServiceAction::Uninstall => commands::service::run_uninstall(),
             commands::ServiceAction::Status => commands::service::run_status(),
             commands::ServiceAction::Logs { follow, lines } => {

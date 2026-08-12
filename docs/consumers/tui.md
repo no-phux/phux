@@ -214,12 +214,15 @@ phux host <add|ls|rm>         # one namespace over both machine registries
                               # separate `phux remote`, `phux satellite`,
                               # and top-level `phux enroll` verbs, absorbed
                               # into this one namespace (ADR-0066)
-phux service <install|uninstall|status|logs|prune-logs>
+phux service <install|reconcile|uninstall|status|logs|prune-logs>
                               # per-user service unit (launchd LaunchAgent on
                               # macOS, systemd user unit on Linux) that keeps
                               # a server running across logout and reboot.
                               # `install --hub` persists federation hub mode;
-                              # `install --restore` adds workspace save/restore
+                              # `install --restore` adds workspace save/restore;
+                              # `reconcile` corrects an older unit's restart
+                              # policy in place — nothing is stopped and no
+                              # pane is lost, unlike a reinstall (ADR-0083)
 phux --version                # print version
 phux help [COMMAND]
 ```

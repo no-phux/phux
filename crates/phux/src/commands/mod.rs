@@ -232,6 +232,10 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Service { action } => match action {
             // `install` bakes the socket into the generated unit.
             ServiceAction::Install { .. } => None,
+            // `reconcile` reads the socket out of the unit it is reconciling —
+            // the only socket whose liveness is relevant — so a `--socket` on
+            // the command line would be silently ignored.
+            ServiceAction::Reconcile { .. } => Some("service reconcile"),
             ServiceAction::Uninstall => Some("service uninstall"),
             ServiceAction::Status => Some("service status"),
             ServiceAction::Logs { .. } => Some("service logs"),
@@ -1654,6 +1658,23 @@ pub(crate) enum ServiceAction {
 
         /// Print the unit (and the restore wrapper) to stdout without
         /// writing or loading anything.
+        #[arg(long)]
+        print: bool,
+    },
+
+    /// Bring an installed unit's restart policy up to date, in place.
+    ///
+    /// Rewrites only the keys that carry the restart policy and leaves every
+    /// other byte of the unit alone, so the listeners, hub mode and socket
+    /// baked into it by an earlier `install` are preserved rather than
+    /// re-derived. Nothing is stopped and no pane is lost.
+    ///
+    /// On Linux `systemctl --user daemon-reload` picks the change up without
+    /// touching the running service. On macOS launchd cannot re-read a plist
+    /// for a loaded job, so the corrected policy takes effect at the next
+    /// login or reboot; the command says so rather than claiming otherwise.
+    Reconcile {
+        /// Print the reconciled unit to stdout without writing anything.
         #[arg(long)]
         print: bool,
     },

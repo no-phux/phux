@@ -276,6 +276,72 @@ impl ServicePlan {
     }
 }
 
+/// The launchd keys that carry the ADR-0080 restart policy, exactly as the
+/// generator emits them.
+///
+/// Shared with [`reconcile_unit`] rather than written twice: the reconciler
+/// decides a unit is current by patching it and finding nothing changed, so a
+/// generator and a reconciler that disagree by one byte would make `phux
+/// service reconcile` rewrite the file `phux service install` had just
+/// written, on every run, forever. One definition removes the failure mode
+/// instead of testing for it.
+///
+/// phux-zomb.4: restart on ABNORMAL exit only, and rate-limit it.
+///
+/// `KeepAlive: true` — what this generator used to emit — restarts on
+/// *every* exit at full speed. Two consequences, both observed in the
+/// field: `phux kill --server` (a clean exit) came straight back, so a
+/// server could not be stopped; and a server crashing at startup produced
+/// a silent respawn storm (1487 generations against one log on one
+/// machine) that made a dead server look like a running one.
+///
+/// `SuccessfulExit: false` restarts only when the server exits non-zero or
+/// on a signal, so a deliberate shutdown stays down. `ThrottleInterval`
+/// holds launchd to one start per 30s, which turns a crash-loop into
+/// something a human — and `phux doctor` — can see rather than a firehose.
+fn launchd_policy_lines() -> Vec<String> {
+    vec![
+        "  <key>KeepAlive</key>".to_owned(),
+        "  <dict>".to_owned(),
+        "    <key>SuccessfulExit</key>".to_owned(),
+        "    <false/>".to_owned(),
+        "  </dict>".to_owned(),
+        "  <key>ThrottleInterval</key>".to_owned(),
+        format!("  <integer>{RESTART_THROTTLE_SECS}</integer>"),
+    ]
+}
+
+/// The systemd spelling of [`launchd_policy_lines`], and shared with
+/// [`reconcile_unit`] for the same reason.
+///
+/// `StartLimitIntervalSec`/`StartLimitBurst` make systemd give up eventually.
+/// Its default rate limit is 5 starts in 10s, which at a `RestartSec` of 30s
+/// can never trip — so without these a server that fails every start retries
+/// forever (phux-67wg). The window is sized to admit the throttle:
+/// `START_LIMIT_BURST` starts spaced `RESTART_THROTTLE_SECS` apart fit inside
+/// it, so a genuine crash-loop is caught while an occasional restart is not.
+fn systemd_policy_lines() -> Vec<String> {
+    vec![
+        "Restart=on-failure".to_owned(),
+        format!("RestartSec={RESTART_THROTTLE_SECS}s"),
+        format!(
+            "StartLimitIntervalSec={}s",
+            RESTART_THROTTLE_SECS * (START_LIMIT_BURST + 1)
+        ),
+        format!("StartLimitBurst={START_LIMIT_BURST}"),
+    ]
+}
+
+/// The `[Service]` keys [`reconcile_unit`] owns in a systemd unit. Every
+/// assignment of one is replaced by [`systemd_policy_lines`]; nothing else in
+/// the file is touched.
+const SYSTEMD_POLICY_KEYS: [&str; 4] = [
+    "Restart",
+    "RestartSec",
+    "StartLimitIntervalSec",
+    "StartLimitBurst",
+];
+
 /// Render the launchd `LaunchAgent` plist.
 ///
 /// `RunAtLoad` starts the server when the agent is bootstrapped (login, and
@@ -310,26 +376,11 @@ pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
 
     out.push_str("  <key>RunAtLoad</key>\n  <true/>\n");
 
-    // phux-zomb.4: restart on ABNORMAL exit only, and rate-limit it.
-    //
-    // `KeepAlive: true` — what this generator used to emit — restarts on
-    // *every* exit at full speed. Two consequences, both observed in the
-    // field: `phux kill --server` (a clean exit) came straight back, so a
-    // server could not be stopped; and a server crashing at startup produced
-    // a silent respawn storm (1487 generations against one log on one
-    // machine) that made a dead server look like a running one.
-    //
-    // `SuccessfulExit: false` restarts only when the server exits non-zero or
-    // on a signal, so a deliberate shutdown stays down. `ThrottleInterval`
-    // holds launchd to one start per 30s, which turns a crash-loop into
-    // something a human — and `phux doctor` — can see rather than a firehose.
-    out.push_str("  <key>KeepAlive</key>\n  <dict>\n");
-    out.push_str("    <key>SuccessfulExit</key>\n    <false/>\n");
-    out.push_str("  </dict>\n");
-    let _ = writeln!(
-        out,
-        "  <key>ThrottleInterval</key>\n  <integer>{RESTART_THROTTLE_SECS}</integer>"
-    );
+    // The restart policy (phux-zomb.4) lives in `launchd_policy_lines` so the
+    // reconciler and the generator cannot drift; its doc explains the policy.
+    for line in launchd_policy_lines() {
+        let _ = writeln!(out, "{line}");
+    }
     out.push_str("  <key>ProcessType</key>\n  <string>Background</string>\n");
 
     let env = plan.environment();
@@ -381,20 +432,9 @@ pub(crate) fn render_systemd_unit(plan: &ServicePlan) -> String {
             .collect::<Vec<_>>()
             .join(" ")
     );
-    out.push_str("Restart=on-failure\n");
-    let _ = writeln!(out, "RestartSec={RESTART_THROTTLE_SECS}s");
-    // Give up eventually. systemd's default rate limit is 5 starts in 10s,
-    // which at a `RestartSec` of 30s can never trip -- so without these a
-    // server that fails every start retries forever (phux-67wg). The window
-    // is sized to admit the throttle: `START_LIMIT_BURST` starts spaced
-    // `RESTART_THROTTLE_SECS` apart fit inside it, so a genuine crash-loop is
-    // caught while an occasional restart is not.
-    let _ = writeln!(
-        out,
-        "StartLimitIntervalSec={}s",
-        RESTART_THROTTLE_SECS * (START_LIMIT_BURST + 1)
-    );
-    let _ = writeln!(out, "StartLimitBurst={START_LIMIT_BURST}");
+    for line in systemd_policy_lines() {
+        let _ = writeln!(out, "{line}");
+    }
     for (key, value) in plan.environment() {
         let _ = writeln!(out, "Environment=\"{key}={}\"", systemd_quote(&value));
     }
@@ -481,6 +521,447 @@ pub(crate) fn render_wrapper_script(plan: &ServicePlan) -> String {
          \n\
          wait \"$server\"\n"
     )
+}
+
+// ---------------------------------------------------------------------------
+// In-place reconcile (phux-l1yx / phux-bd30)
+// ---------------------------------------------------------------------------
+//
+// A unit written before phux-zomb.4 keeps its unthrottled restart-on-any-exit
+// policy until something rewrites it. Until now the only "something" was
+// `phux service install`, and that is a bad trade for two independent reasons:
+//
+//   1. It re-renders the unit from a *fresh* `ServicePlan`. `--quic`,
+//      `--listen`, `--restore`, `--hub` and `--socket` survive only inside the
+//      rendered unit — nothing parses one back — so a blind re-run silently
+//      drops the operator's listeners and hub mode.
+//   2. It reloads. `launchctl bootout` and `systemctl enable --now` stop the
+//      supervised server, and every pane and its in-flight shells, agents and
+//      subagents die with it (phux-nvi2).
+//
+// So the reconcile does neither. It reads the installed file, replaces only
+// the keys that carry the restart policy, and leaves every other byte exactly
+// where it was — which makes obstacle 1 structurally impossible rather than
+// carefully avoided, since the flags are never re-derived at all.
+
+/// What reconciling an installed unit's restart policy would do to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Reconcile {
+    /// The file already carries the current policy, byte for byte. Nothing to
+    /// write. This is not detected by looking for markers — it is what falls
+    /// out when the patch produces the input unchanged, so "current" can never
+    /// mean anything other than "what this binary would write".
+    Current,
+    /// The patched file. Every byte outside the policy keys is the operator's.
+    Patched(String),
+    /// The file is not a shape this can rewrite without guessing.
+    ///
+    /// Refusing is the whole point: a mis-scoped edit produces a unit the init
+    /// system silently declines to load, which is strictly worse than the
+    /// legacy policy this was trying to fix.
+    Unrecognized(&'static str),
+}
+
+/// Rewrite `body`'s restart-policy keys to the current policy.
+///
+/// Pure: no environment, no filesystem, no `ServicePlan`. That is what lets it
+/// run over a unit generated by a *different* build, with flags this process
+/// knows nothing about, and still be safe.
+pub(crate) fn reconcile_unit(manager: Manager, body: &str) -> Reconcile {
+    match manager {
+        Manager::Launchd => reconcile_launchd(body),
+        Manager::Systemd => reconcile_systemd(body),
+    }
+}
+
+/// `Current` when the patch was a no-op, `Patched` otherwise.
+fn settled(original: &str, patched: &[String]) -> Reconcile {
+    let patched = patched.join("\n");
+    if patched == original {
+        Reconcile::Current
+    } else {
+        Reconcile::Patched(patched)
+    }
+}
+
+/// Replace the `KeepAlive` and `ThrottleInterval` entries of a plist's
+/// top-level dict, preserving every other entry and its formatting.
+fn reconcile_launchd(body: &str) -> Reconcile {
+    let lines: Vec<&str> = body.split('\n').collect();
+    let mut kept: Vec<String> = Vec::with_capacity(lines.len() + 8);
+    // Where the first policy key stood, so the replacement lands in the same
+    // place and a unit this binary generated reconciles to itself byte for
+    // byte (`the_generated_units_reconcile_to_themselves`).
+    let mut anchor: Option<usize> = None;
+
+    // Nesting depth, so only the *top-level* dict's entries are candidates. A
+    // `<key>KeepAlive</key>` inside `EnvironmentVariables` would be an
+    // environment variable of that name, not the restart policy, and rewriting
+    // it would corrupt the unit while leaving the real policy untouched.
+    let mut depth = 0_usize;
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = line.trim();
+        if depth == 1
+            && (trimmed == "<key>KeepAlive</key>" || trimmed == "<key>ThrottleInterval</key>")
+        {
+            // The value element is balanced, so skipping it leaves `depth`
+            // exactly where it was.
+            let Some(end) = plist_value_end(&lines, index + 1) else {
+                return Reconcile::Unrecognized(
+                    "its KeepAlive/ThrottleInterval value is a shape this cannot rewrite safely",
+                );
+            };
+            let _ = anchor.get_or_insert(kept.len());
+            index = end;
+            continue;
+        }
+        if trimmed == "<dict>" || trimmed == "<array>" {
+            depth += 1;
+        } else if trimmed == "</dict>" || trimmed == "</array>" {
+            depth = depth.saturating_sub(1);
+        }
+        kept.push(line.to_owned());
+        index += 1;
+    }
+
+    // No policy keys at all. A plist dict is unordered, so appending at the end
+    // of the top-level dict is as valid as anywhere else and needs no guess
+    // about where the operator would have wanted it.
+    let anchor = if let Some(at) = anchor {
+        at
+    } else {
+        let Some(plist_end) = kept.iter().rposition(|line| line.trim() == "</plist>") else {
+            return Reconcile::Unrecognized("it does not close a <plist> element");
+        };
+        let Some(dict_end) = kept
+            .iter()
+            .take(plist_end)
+            .rposition(|line| line.trim() == "</dict>")
+        else {
+            return Reconcile::Unrecognized("it has no top-level <dict> to carry the policy");
+        };
+        dict_end
+    };
+
+    for (offset, line) in launchd_policy_lines().into_iter().enumerate() {
+        kept.insert(anchor + offset, line);
+    }
+    settled(body, &kept)
+}
+
+/// Index just past the plist value element starting at or after `start`, or
+/// `None` when it is a shape [`reconcile_launchd`] must not touch.
+///
+/// Covers what launchd units actually contain: a self-closing scalar
+/// (`<true/>`), a one-line element (`<integer>30</integer>`), and a nested
+/// `<dict>`/`<array>` block. Everything else — a multi-line `<data>` blob, an
+/// XML comment between key and value, a hand-wrapped string — falls through to
+/// `None` deliberately.
+fn plist_value_end(lines: &[&str], start: usize) -> Option<usize> {
+    let mut index = start;
+    while lines.get(index).is_some_and(|line| line.trim().is_empty()) {
+        index += 1;
+    }
+    let first = lines.get(index)?.trim();
+
+    if first == "<dict>" || first == "<array>" {
+        let mut depth = 0_usize;
+        while let Some(line) = lines.get(index) {
+            let trimmed = line.trim();
+            if trimmed == "<dict>" || trimmed == "<array>" {
+                depth += 1;
+            } else if trimmed == "</dict>" || trimmed == "</array>" {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+            index += 1;
+        }
+        return None;
+    }
+
+    // `<true/>`, `<dict/>`: one tag, self-closing.
+    if first.starts_with('<') && first.ends_with("/>") && first.matches('<').count() == 1 {
+        return Some(index + 1);
+    }
+    // `<integer>30</integer>`: opens and closes on the same line.
+    if first.starts_with('<') && first.ends_with('>') && first.matches('<').count() == 2 {
+        return Some(index + 1);
+    }
+    None
+}
+
+/// Replace the restart-policy assignments in a systemd unit's `[Service]`
+/// section, preserving every other directive, comment and blank line.
+fn reconcile_systemd(body: &str) -> Reconcile {
+    let lines: Vec<&str> = body.split('\n').collect();
+    let mut kept: Vec<String> = Vec::with_capacity(lines.len() + 4);
+    let mut in_service = false;
+    let mut anchor: Option<usize> = None;
+    // Fallbacks for a unit that carries no policy keys yet: the end of the
+    // `[Service]` block's last directive, else just after its header.
+    let mut service_tail: Option<usize> = None;
+    let mut service_head: Option<usize> = None;
+
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_service = trimmed == "[Service]";
+            if in_service {
+                service_head = Some(kept.len() + 1);
+            }
+        } else if in_service {
+            let key = trimmed.split('=').next().unwrap_or_default().trim();
+            if trimmed.contains('=') && SYSTEMD_POLICY_KEYS.contains(&key) {
+                let _ = anchor.get_or_insert(kept.len());
+                continue;
+            }
+            if !trimmed.is_empty() {
+                service_tail = Some(kept.len() + 1);
+            }
+        }
+        kept.push((*line).to_owned());
+    }
+
+    let Some(anchor) = anchor.or(service_tail).or(service_head) else {
+        return Reconcile::Unrecognized("it has no [Service] section to carry the policy");
+    };
+
+    for (offset, line) in systemd_policy_lines().into_iter().enumerate() {
+        kept.insert(anchor + offset, line);
+    }
+    settled(body, &kept)
+}
+
+/// The `PHUX_SOCKET` a unit pins, when it pins one.
+///
+/// Read from the unit rather than from `--socket` or the ambient environment,
+/// because the question a reconcile has to answer is "is the server *this
+/// unit* supervises alive", and only the unit knows. A unit with no override
+/// leaves the caller on [`phux_server::runtime::default_socket_path`], which
+/// is exactly what the supervised server would resolve.
+fn unit_socket_override(manager: Manager, body: &str) -> Option<PathBuf> {
+    match manager {
+        Manager::Launchd => {
+            let key = body
+                .lines()
+                .position(|line| line.trim() == "<key>PHUX_SOCKET</key>")?;
+            let value = body.lines().nth(key + 1)?.trim();
+            let inner = value.strip_prefix("<string>")?.strip_suffix("</string>")?;
+            Some(PathBuf::from(xml_unescape(inner)))
+        }
+        Manager::Systemd => {
+            let value = body.lines().find_map(|line| {
+                line.trim()
+                    .strip_prefix("Environment=\"PHUX_SOCKET=")?
+                    .strip_suffix('"')
+            })?;
+            Some(PathBuf::from(systemd_unquote(value)))
+        }
+    }
+}
+
+/// `phux service reconcile` — bring an installed unit's restart policy up to
+/// date without stopping the server it supervises.
+///
+/// The honest contract, which differs per platform and says so:
+///
+/// - **systemd** can re-read a unit file without touching the running service.
+///   `daemon-reload` does exactly that, so the corrected policy governs the
+///   running server's very next exit and no pane is disturbed.
+/// - **launchd** cannot. A loaded job keeps the policy it was bootstrapped
+///   with, and the only way to replace it is `bootout` + `bootstrap`, which
+///   SIGTERMs the job. So this writes the file, reports that the *loaded* job
+///   is still on the old policy, and says both when it fixes itself (next
+///   login or reboot, no action needed) and what doing it now would cost.
+///
+/// Printing "reconciled" on macOS and stopping there would be the failure this
+/// verb exists to avoid: a command that claims a fix it did not make.
+pub(crate) fn run_reconcile(print: bool) -> ExitCode {
+    let Some(manager) = Manager::host() else {
+        eprintln!(
+            "phux service: no unit generator for this platform, so `phux service install`\n\
+             never wrote a unit here. There is nothing to reconcile."
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let unit_path = match manager.unit_path(profile_suffix().as_deref()) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("phux service: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let body = match std::fs::read_to_string(&unit_path) {
+        Ok(body) => body,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            outln!("not installed (no unit at {})", unit_path.display());
+            outln!("Install one with `phux service install`.");
+            return ExitCode::FAILURE;
+        }
+        Err(err) => {
+            eprintln!(
+                "phux service: could not read {}: {err}",
+                unit_path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match reconcile_unit(manager, &body) {
+        Reconcile::Unrecognized(why) => {
+            eprintln!(
+                "phux service: {} was left alone — {why}.\n\
+                 \n\
+                 Rewriting it would risk a unit the init system silently refuses to load, which\n\
+                 is worse than the policy it carries now. Compare it against `phux service\n\
+                 install --print` and correct the restart policy by hand.",
+                unit_path.display()
+            );
+            ExitCode::FAILURE
+        }
+        Reconcile::Current => {
+            if print {
+                out!("{body}");
+                return ExitCode::SUCCESS;
+            }
+            outln!(
+                "Already current: {} carries the throttled, failure-only restart policy.",
+                unit_path.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Reconcile::Patched(patched) => {
+            if print {
+                out!("{patched}");
+                return ExitCode::SUCCESS;
+            }
+            if let Err(err) = std::fs::write(&unit_path, &patched) {
+                eprintln!(
+                    "phux service: could not write {}: {err}",
+                    unit_path.display()
+                );
+                return ExitCode::FAILURE;
+            }
+            outln!("Rewrote the restart policy in {}.", unit_path.display());
+            outln!("  policy  restart on failure only, one start per {RESTART_THROTTLE_SECS}s");
+            outln!("  panes   untouched — nothing was stopped");
+            outln!();
+            let live = socket::probe(
+                &unit_socket_override(manager, &body)
+                    .unwrap_or_else(phux_server::runtime::default_socket_path),
+            ) == SocketState::Live;
+            report_policy_reach(manager, &unit_path, live);
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+/// Say, per platform, whether the policy just written is *in effect* — and
+/// when it is not, what it would cost to make it so.
+///
+/// Split out because [`run_reconcile`] and the post-update reconcile print the
+/// same thing, and the one paragraph a user acts on must not have two
+/// wordings that can drift apart.
+fn report_policy_reach(manager: Manager, unit_path: &Path, live: bool) {
+    match manager {
+        Manager::Systemd => match run_tool(
+            "systemctl",
+            &["--user".to_owned(), "daemon-reload".to_owned()],
+        ) {
+            Ok(()) => outln!(
+                "systemd re-read the unit. The running server kept running, and the corrected\n\
+                 policy governs its next exit."
+            ),
+            Err(err) => {
+                eprintln!("phux service: note: {err}");
+                outln!(
+                    "The file is correct, but systemd is still holding the definition it loaded\n\
+                     earlier. Run `systemctl --user daemon-reload` to pick this up; it stops\n\
+                     nothing."
+                );
+            }
+        },
+        Manager::Launchd => {
+            outln!(
+                "The corrected policy is NOT active yet. launchd has no way to re-read a plist\n\
+                 for a job that is already loaded — `bootout` is the only path, and it stops the\n\
+                 job. So the loaded job keeps the old policy for now."
+            );
+            outln!();
+            outln!(
+                "It fixes itself at your next login or reboot, when launchd bootstraps the job\n\
+                 from the file above. No action needed."
+            );
+            outln!();
+            if live {
+                outln!(
+                    "To make it active right now, at the cost of every running pane and its\n\
+                     in-flight shells and agents (`phux ls` shows what would be lost):"
+                );
+            } else {
+                outln!(
+                    "Nothing is listening on this unit's socket, so there are no panes to lose.\n\
+                     To make it active right now:"
+                );
+            }
+            outln!();
+            outln!("    launchctl bootout {}", launchd_target());
+            outln!(
+                "    launchctl bootstrap gui/{} {}",
+                uid(),
+                unit_path.display()
+            );
+        }
+    }
+}
+
+/// Reconcile an installed unit after `phux update` replaced the binary
+/// (phux-bd30).
+///
+/// Automatic *only* because the reconcile is non-destructive by construction:
+/// it rewrites a file and, on systemd, asks for a reload that stops nothing.
+/// An automatic reconcile of the older, reinstall-shaped kind would have ended
+/// every pane in the middle of an update with no prompt at all — which is why
+/// phux-bd30's "have `phux update` do it" waited on phux-l1yx rather than
+/// shipping first.
+///
+/// Silent unless it changed something, and never fatal: an update that
+/// succeeded must not report failure because a unit could not be tidied.
+pub(crate) fn reconcile_after_update() {
+    let Some(manager) = Manager::host() else {
+        return;
+    };
+    let Ok(unit_path) = manager.unit_path(profile_suffix().as_deref()) else {
+        return;
+    };
+    let Ok(body) = std::fs::read_to_string(&unit_path) else {
+        return;
+    };
+    let Reconcile::Patched(patched) = reconcile_unit(manager, &body) else {
+        return;
+    };
+    if std::fs::write(&unit_path, &patched).is_err() {
+        return;
+    }
+
+    outln!();
+    outln!(
+        "Your service unit predated the corrected restart policy; phux rewrote it in\n\
+         place. Nothing was stopped."
+    );
+    outln!("  unit    {}", unit_path.display());
+    outln!();
+    let live = socket::probe(
+        &unit_socket_override(manager, &body)
+            .unwrap_or_else(phux_server::runtime::default_socket_path),
+    ) == SocketState::Live;
+    report_policy_reach(manager, &unit_path, live);
 }
 
 /// Build the plan an install will write, resolving every path and default
@@ -639,6 +1120,22 @@ pub(crate) fn run_install(
             plan.socket_path.display(),
             plan.socket_path.display(),
         );
+        // The single most common reason to be standing here: `phux doctor`
+        // said the unit is legacy, and re-running install was the only remedy
+        // it could name (phux-nvi2). It is not the only remedy any more, and
+        // the non-destructive one costs nothing to mention (phux-l1yx).
+        if let Ok(unit_path) = manager.unit_path(profile_suffix().as_deref())
+            && let Ok(body) = std::fs::read_to_string(&unit_path)
+            && matches!(reconcile_unit(manager, &body), Reconcile::Patched(_))
+        {
+            eprintln!(
+                "The unit at {} predates the corrected restart policy. If bringing\n\
+                 that policy up to date is what you were after, `phux service reconcile` does\n\
+                 it in place — no stop, no lost panes, and none of the flags baked into that\n\
+                 unit are re-derived or dropped.\n",
+                unit_path.display()
+            );
+        }
         return ExitCode::FAILURE;
     }
 
@@ -1058,6 +1555,57 @@ fn xml_escape(value: &str) -> String {
     out
 }
 
+/// Undo [`xml_escape`], for reading a value back out of an installed plist.
+///
+/// A single pass rather than chained `replace`s: `&amp;amp;` must decode to
+/// the literal `&amp;` the operator wrote, and sequential replacement would
+/// decode it twice.
+fn xml_unescape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let decoded = [
+            ("&amp;", '&'),
+            ("&lt;", '<'),
+            ("&gt;", '>'),
+            ("&quot;", '"'),
+            ("&apos;", '\''),
+        ]
+        .into_iter()
+        .find_map(|(entity, ch)| tail.strip_prefix(entity).map(|rest| (ch, rest)));
+        if let Some((ch, remainder)) = decoded {
+            out.push(ch);
+            rest = remainder;
+        } else {
+            // Not an entity this ever writes; pass the `&` through verbatim
+            // rather than dropping a byte of somebody's path.
+            out.push('&');
+            rest = &tail[1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Undo [`systemd_quote`], for reading a value back out of an installed unit.
+///
+/// One pass, for the same reason [`xml_unescape`] takes one: chained
+/// `replace`s would turn the escaped form of a literal `$$` back into `$`.
+fn systemd_unquote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let escaped = match (ch, chars.peek()) {
+            ('\\', Some('\\' | '"')) | ('%', Some('%')) | ('$', Some('$')) => chars.next(),
+            _ => None,
+        };
+        out.push(escaped.unwrap_or(ch));
+    }
+    out
+}
+
 /// Escape an `ExecStart` argument for systemd's own unquoting pass.
 ///
 /// systemd splits `ExecStart` on whitespace, so a path containing a space
@@ -1144,12 +1692,77 @@ fn config_home_from(
 #[cfg(test)]
 mod tests {
     use super::{
-        Manager, RESTART_THROTTLE_SECS, SERVICE_MANAGED_ENV, START_LIMIT_BURST, ServicePlan,
-        config_home_from, dry_run_text, home_dir_from, launchd_label_for, render_launchd_plist,
-        render_systemd_unit, render_wrapper_script, resolve_plan, sh_quote, systemd_escape,
-        systemd_quote, systemd_unit_for, xml_escape,
+        Manager, RESTART_THROTTLE_SECS, Reconcile, SERVICE_MANAGED_ENV, START_LIMIT_BURST,
+        ServicePlan, config_home_from, dry_run_text, home_dir_from, launchd_label_for,
+        launchd_policy_lines, reconcile_unit, render_launchd_plist, render_systemd_unit,
+        render_unit, render_wrapper_script, resolve_plan, sh_quote, systemd_escape,
+        systemd_policy_lines, systemd_quote, systemd_unit_for, systemd_unquote,
+        unit_socket_override, xml_escape, xml_unescape,
     };
     use std::path::PathBuf;
+
+    /// A launchd plist as `phux service install` wrote them before
+    /// phux-zomb.4: `KeepAlive: true`, no throttle. Carries `--hub`, a QUIC
+    /// listener and a socket override, because those are precisely the things
+    /// a reconcile must not lose (see `reconcile_keeps_what_a_reinstall_would_drop`).
+    const LEGACY_PLIST: &str = "\
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<plist version=\"1.0\">
+<dict>
+  <key>Label</key>
+  <string>com.phux.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/phux</string>
+    <string>server</string>
+    <string>--hub</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PHUX_QUIC_ADDR</key>
+    <string>0.0.0.0:8788</string>
+    <key>PHUX_SOCKET</key>
+    <string>/tmp/custom/phux.sock</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/home/u/.local/state/phux/server.log</string>
+</dict>
+</plist>
+";
+
+    /// The systemd equivalent: `Restart=always`, no `RestartSec`, no start
+    /// limit, and the same operator-supplied listeners baked into it.
+    const LEGACY_UNIT: &str = "\
+# Generated by `phux service install` (ADR-0055).
+
+[Unit]
+Description=phux terminal control plane server
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/phux server --hub
+Restart=always
+Environment=\"PHUX_QUIC_ADDR=0.0.0.0:8788\"
+Environment=\"PHUX_SOCKET=/tmp/custom/phux.sock\"
+StandardOutput=append:/home/u/.local/state/phux/server.log
+
+[Install]
+WantedBy=default.target
+";
+
+    /// Unwrap a `Patched`, failing loudly on any other outcome.
+    fn patched(outcome: Reconcile) -> String {
+        match outcome {
+            Reconcile::Patched(body) => body,
+            other => panic!("expected a patch, got {other:?}"),
+        }
+    }
 
     /// A plan with every optional field populated, so a renderer test sees
     /// the full shape unless it deliberately clears a field.
@@ -1597,6 +2210,299 @@ mod tests {
         let empty_home_err = home_dir_from(Some(std::ffi::OsString::new()))
             .expect_err("an empty HOME must be refused the same as an unset one");
         assert!(empty_home_err.contains("HOME"), "got {empty_home_err}");
+    }
+
+    /// The anti-drift test for the whole reconcile (phux-l1yx).
+    ///
+    /// `reconcile_unit` decides a unit is already current by patching it and
+    /// finding nothing changed — there is no separate "is it legacy" predicate
+    /// to keep in sync. That is only sound while the generator and the
+    /// reconciler agree byte for byte about the policy block. If they ever
+    /// disagree by one space, `phux service reconcile` rewrites the file
+    /// `phux service install` just wrote, on every run, forever, and reports a
+    /// change each time. Both share `launchd_policy_lines` /
+    /// `systemd_policy_lines` so that cannot happen; this proves it end to end
+    /// through the real renderers.
+    #[test]
+    fn the_units_this_binary_generates_reconcile_to_themselves() {
+        for manager in [Manager::Launchd, Manager::Systemd] {
+            let unit = render_unit(manager, &plan());
+            assert_eq!(
+                reconcile_unit(manager, &unit),
+                Reconcile::Current,
+                "{manager:?} generates a unit its own reconciler wants to rewrite:\n{unit}"
+            );
+        }
+    }
+
+    /// The reason this verb exists rather than "just re-run install"
+    /// (phux-l1yx obstacle 1).
+    ///
+    /// `--quic`, `--listen`, `--restore`, `--hub` and `--socket` survive only
+    /// inside the rendered unit; nothing parses one back into a `ServicePlan`.
+    /// So a `phux service install` re-run renders a unit with every flag the
+    /// operator does not retype silently DROPPED — their QUIC listener and hub
+    /// mode gone, discovered days later from a device that will not attach.
+    ///
+    /// The reconcile never re-derives them, because it never re-renders. If
+    /// this test starts failing, the reconcile has grown a `ServicePlan` and
+    /// has become a reinstall wearing a different name.
+    #[test]
+    fn reconcile_keeps_what_a_reinstall_would_drop() {
+        for (manager, legacy, kept) in [
+            (
+                Manager::Launchd,
+                LEGACY_PLIST,
+                vec![
+                    "<string>--hub</string>",
+                    "<key>PHUX_QUIC_ADDR</key>",
+                    "<string>0.0.0.0:8788</string>",
+                    "<string>/tmp/custom/phux.sock</string>",
+                    "<string>/home/u/.local/state/phux/server.log</string>",
+                ],
+            ),
+            (
+                Manager::Systemd,
+                LEGACY_UNIT,
+                vec![
+                    "ExecStart=/usr/local/bin/phux server --hub",
+                    "Environment=\"PHUX_QUIC_ADDR=0.0.0.0:8788\"",
+                    "Environment=\"PHUX_SOCKET=/tmp/custom/phux.sock\"",
+                    "StandardOutput=append:/home/u/.local/state/phux/server.log",
+                ],
+            ),
+        ] {
+            let body = patched(reconcile_unit(manager, legacy));
+            for line in kept {
+                assert!(
+                    body.contains(line),
+                    "{manager:?} reconcile dropped `{line}`:\n{body}"
+                );
+            }
+        }
+    }
+
+    /// A legacy plist gains the policy and loses nothing else.
+    ///
+    /// The `RunAtLoad` assertion is the sharp one: its value is also a bare
+    /// `<true/>`, one line above `KeepAlive`'s. A reconcile that matched on
+    /// the value instead of scoping to the key it follows would eat the wrong
+    /// element and produce a plist launchd silently declines to load — the
+    /// exact failure this command is supposed to cure.
+    #[test]
+    fn reconciling_a_legacy_launchd_plist_replaces_only_the_policy() {
+        let body = patched(reconcile_unit(Manager::Launchd, LEGACY_PLIST));
+        assert!(
+            body.contains(&launchd_policy_lines().join("\n")),
+            "the corrected policy is not present as a block:\n{body}"
+        );
+        assert!(
+            !body.contains("<key>KeepAlive</key>\n  <true/>"),
+            "the unconditional KeepAlive survived:\n{body}"
+        );
+        assert!(
+            body.contains("<key>RunAtLoad</key>\n  <true/>"),
+            "RunAtLoad's own <true/> was consumed:\n{body}"
+        );
+        // Two lines out (the key and its value), seven in.
+        assert_eq!(
+            body.lines().count(),
+            LEGACY_PLIST.lines().count() - 2 + launchd_policy_lines().len()
+        );
+    }
+
+    /// The systemd half, including the keys a legacy unit never had at all:
+    /// `RestartSec`, `StartLimitIntervalSec` and `StartLimitBurst` are
+    /// inserted, not merely corrected.
+    #[test]
+    fn reconciling_a_legacy_systemd_unit_replaces_only_the_policy() {
+        let body = patched(reconcile_unit(Manager::Systemd, LEGACY_UNIT));
+        assert!(
+            body.contains(&systemd_policy_lines().join("\n")),
+            "the corrected policy is not present as a block:\n{body}"
+        );
+        assert!(
+            !body.contains("Restart=always"),
+            "the restart-on-any-exit policy survived:\n{body}"
+        );
+        // The `[Unit]` and `[Install]` sections are none of the reconcile's
+        // business and must come through untouched.
+        assert!(body.contains("[Unit]\nDescription=phux terminal control plane server"));
+        assert!(body.contains("[Install]\nWantedBy=default.target"));
+        assert!(body.starts_with("# Generated by `phux service install`"));
+    }
+
+    /// Reconciling twice must be a no-op the second time.
+    ///
+    /// Not a nicety: `phux update` runs this unprompted (phux-bd30) and
+    /// reports what it changed. A reconcile that kept "changing" an already
+    /// correct unit would print a scary paragraph about restart policy after
+    /// every single update, forever, and train people to ignore it.
+    #[test]
+    fn reconcile_is_idempotent() {
+        for (manager, legacy) in [
+            (Manager::Launchd, LEGACY_PLIST),
+            (Manager::Systemd, LEGACY_UNIT),
+        ] {
+            let once = patched(reconcile_unit(manager, legacy));
+            assert_eq!(
+                reconcile_unit(manager, &once),
+                Reconcile::Current,
+                "{manager:?} reconcile is not a fixed point:\n{once}"
+            );
+        }
+    }
+
+    /// A shape the reconciler cannot parse must be refused, not guessed at.
+    ///
+    /// A half-rewritten plist is a unit launchd silently refuses to load,
+    /// which leaves the user with NO supervisor rather than a badly configured
+    /// one — strictly worse than the legacy policy being corrected. The same
+    /// applies to a systemd file with no `[Service]` section: there is nowhere
+    /// the policy could go that would mean anything.
+    #[test]
+    fn an_unparseable_unit_is_refused_rather_than_rewritten() {
+        let opaque_value = "\
+<plist version=\"1.0\">
+<dict>
+  <key>KeepAlive</key>
+  <data>
+  QUJD
+  </data>
+</dict>
+</plist>
+";
+        assert!(
+            matches!(
+                reconcile_unit(Manager::Launchd, opaque_value),
+                Reconcile::Unrecognized(_)
+            ),
+            "a multi-line value must not be rewritten by guesswork"
+        );
+
+        assert!(
+            matches!(
+                reconcile_unit(Manager::Launchd, "not a plist at all\n"),
+                Reconcile::Unrecognized(_)
+            ),
+            "a file with no top-level dict has nowhere to put the policy"
+        );
+
+        assert!(
+            matches!(
+                reconcile_unit(Manager::Systemd, "[Unit]\nDescription=x\n"),
+                Reconcile::Unrecognized(_)
+            ),
+            "a unit with no [Service] section has nowhere to put the policy"
+        );
+    }
+
+    /// `KeepAlive` inside `EnvironmentVariables` is an environment variable
+    /// named `KeepAlive`, not the restart policy.
+    ///
+    /// Rewriting it would corrupt the server's environment AND leave the real
+    /// policy legacy — a silent double failure. The reconciler scopes its
+    /// match to the top-level dict by tracking nesting depth; this pins that.
+    #[test]
+    fn a_nested_keepalive_key_is_not_the_restart_policy() {
+        let nested = "\
+<plist version=\"1.0\">
+<dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>KeepAlive</key>
+    <string>not-a-policy</string>
+  </dict>
+</dict>
+</plist>
+";
+        let body = patched(reconcile_unit(Manager::Launchd, nested));
+        assert!(
+            body.contains("    <key>KeepAlive</key>\n    <string>not-a-policy</string>"),
+            "the nested environment entry was rewritten:\n{body}"
+        );
+        assert!(
+            body.contains(&launchd_policy_lines().join("\n")),
+            "the real policy was not corrected:\n{body}"
+        );
+    }
+
+    /// The reconcile probes the socket the UNIT names, not the one this
+    /// process would resolve.
+    ///
+    /// That probe decides which paragraph the user reads on macOS — "nothing
+    /// is running, reloading is free" versus "this costs you every pane".
+    /// Reading the wrong socket makes the command confidently tell an operator
+    /// with live work that there is nothing to lose.
+    #[test]
+    fn the_socket_probed_is_the_one_the_unit_pins() {
+        assert_eq!(
+            unit_socket_override(Manager::Launchd, LEGACY_PLIST),
+            Some(PathBuf::from("/tmp/custom/phux.sock"))
+        );
+        assert_eq!(
+            unit_socket_override(Manager::Systemd, LEGACY_UNIT),
+            Some(PathBuf::from("/tmp/custom/phux.sock"))
+        );
+
+        // A unit with no override leaves the caller on the default path
+        // rather than inventing one.
+        let mut plain = plan();
+        plain.socket = None;
+        assert_eq!(
+            unit_socket_override(Manager::Launchd, &render_launchd_plist(&plain)),
+            None
+        );
+        assert_eq!(
+            unit_socket_override(Manager::Systemd, &render_systemd_unit(&plain)),
+            None
+        );
+
+        // And it survives the escaping the renderers apply on the way in —
+        // otherwise a socket path containing `%`, `$` or `&` would be probed
+        // as the literal escaped text, which no server is ever listening on.
+        let mut awkward = plan();
+        awkward.socket = Some(PathBuf::from("/tmp/100%/$HOME/a&b/phux.sock"));
+        assert_eq!(
+            unit_socket_override(Manager::Launchd, &render_launchd_plist(&awkward)),
+            awkward.socket
+        );
+        assert_eq!(
+            unit_socket_override(Manager::Systemd, &render_systemd_unit(&awkward)),
+            awkward.socket
+        );
+    }
+
+    /// The unescapers are exact inverses of the escapers.
+    ///
+    /// Chained `replace` calls would not be: the escaped form of a literal
+    /// `$$` is `$$$$`, and decoding it in two passes yields `$`. The values
+    /// under test are operator-supplied paths, so getting this wrong silently
+    /// probes a path nobody has.
+    #[test]
+    fn the_unescapers_invert_the_escapers() {
+        for value in [
+            "/plain/path",
+            "100%",
+            "$FOO",
+            "$$",
+            "%%",
+            "a&b",
+            "&amp;",
+            "<x>",
+            "say \"hi\"",
+            "back\\slash",
+            "\\$mixed%",
+        ] {
+            assert_eq!(xml_unescape(&xml_escape(value)), value, "xml: {value}");
+            assert_eq!(
+                systemd_unquote(&systemd_quote(value)),
+                value,
+                "systemd: {value}"
+            );
+        }
     }
 
     /// phux-87rr acceptance criterion 4: whatever `PATH` happens to be

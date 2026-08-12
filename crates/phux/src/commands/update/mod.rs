@@ -820,6 +820,16 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
                 for line in outcome.lines() {
                     outln!("{line}");
                 }
+                // phux-bd30: a unit written before the ADR-0080 restart policy
+                // stays wrong until something rewrites it, and an update is the
+                // one moment a user is already expecting phux to move parts
+                // around. Safe to do unprompted only because the reconcile is
+                // non-destructive by construction -- it rewrites a file and
+                // stops nothing. Human output only: the `--json` document's
+                // shape is frozen (ADR-0071), and this is a note, not a result.
+                if outcome.action == Action::Installed {
+                    super::service::reconcile_after_update();
+                }
             }
             ExitCode::from(EXIT_SUCCESS)
         }
