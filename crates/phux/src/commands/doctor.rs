@@ -102,16 +102,17 @@ impl Check {
 /// failed.
 pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
-    let checks = vec![
+    let mut checks = vec![
         check_config(),
         check_instance(),
         check_socket_path(&socket_path),
         check_server(&socket_path),
-        check_server_health(),
-        check_plugins(),
-        check_agent_shim(),
-        check_logs(),
     ];
+    // Not a single `Check`: several server-health conditions can hold at
+    // once, and per phux-67wg they co-occur more than they don't. See
+    // `check_server_health`'s doc comment.
+    checks.extend(check_server_health());
+    checks.extend([check_plugins(), check_agent_shim(), check_logs()]);
 
     if json {
         return report_json(&checks);
@@ -208,12 +209,56 @@ fn check_instance() -> Check {
 /// indistinguishable from one that never fell over — the socket answers
 /// either way. Counting restarts is the only way the difference becomes
 /// visible without reading a log (ADR-0080).
-fn check_server_health() -> Check {
+///
+/// Gathers the three signals and hands them to [`server_health_checks`],
+/// which reports every one that applies (phux-dsg1) — a crash-looping host
+/// with a legacy unit is not a corner case: per phux-67wg, a legacy unit's
+/// unthrottled restarts are exactly what produces a crash-loop, so the two
+/// conditions co-occur precisely when hearing about only one is least
+/// useful.
+fn check_server_health() -> Vec<Check> {
     let unit = legacy_service_unit_path().filter(|path| path.exists());
+    let legacy_unit = unit
+        .as_deref()
+        .filter(|unit| supervisor_unit_is_legacy(unit));
 
-    if let Some(count) = phux_server::health::crash_loop() {
-        let window_mins = phux_server::health::CRASH_LOOP_WINDOW.as_secs() / 60;
-        return Check::fail(
+    let crash_loop = phux_server::health::crash_loop()
+        .map(|count| (count, phux_server::health::CRASH_LOOP_WINDOW.as_secs() / 60));
+
+    // Version skew: a package manager replaced the binary but nothing
+    // restarted the server, so it is still serving the old build (phux-zomb.7).
+    let ours = env!("CARGO_PKG_VERSION");
+    let theirs = phux_server::health::running_version();
+    let version_skew = theirs
+        .as_deref()
+        .filter(|theirs| *theirs != ours)
+        .map(|theirs| (theirs, ours));
+
+    server_health_checks(crash_loop, legacy_unit, version_skew, || {
+        phux_server::health::recent_starts(phux_server::health::CRASH_LOOP_WINDOW).len()
+    })
+}
+
+/// The pure half of [`check_server_health`]: turns already-gathered signals
+/// into every applicable [`Check`], instead of the first one found. Split out
+/// so the co-occurrence behavior itself is testable without a running
+/// server, a real supervisor unit on disk, or a mutated environment — same
+/// idiom as [`shim_check`] beside [`check_agent_shim`].
+///
+/// `recent_starts` is a closure, not a value, so the Pass-fallback count is
+/// read only when nothing else already applies — matching the original
+/// early-return version, which never paid for that read once a fail or warn
+/// fired first.
+fn server_health_checks(
+    crash_loop: Option<(usize, u64)>,
+    legacy_unit: Option<&std::path::Path>,
+    version_skew: Option<(&str, &str)>,
+    recent_starts: impl FnOnce() -> usize,
+) -> Vec<Check> {
+    let mut checks = Vec::new();
+
+    if let Some((count, window_mins)) = crash_loop {
+        checks.push(Check::fail(
             "server-health",
             format!(
                 "the server started {count} times in the last {window_mins} minutes — it is crash-looping"
@@ -222,16 +267,14 @@ fn check_server_health() -> Check {
                 "something is killing the server on startup; the reason is in {}",
                 phux_server::telemetry::server_log_path().display()
             ),
-        );
+        ));
     }
 
     // A unit generated before phux-zomb.4 restarts on *every* exit with no
     // throttle. Reinstalling replaces it with the throttled, failure-only
     // policy, which is both the fix and the way a crash-loop stays visible.
-    if let Some(unit) = unit
-        && supervisor_unit_is_legacy(&unit)
-    {
-        return Check::warn(
+    if let Some(unit) = legacy_unit {
+        checks.push(Check::warn(
             "server-health",
             format!(
                 "the supervisor unit at {} restarts on every exit, unthrottled",
@@ -247,66 +290,210 @@ fn check_server_health() -> Check {
              `phux service install` to replace it, but note that this restarts \
              the server and ends every pane, so do it when you can afford to \
              lose them (`phux ls` shows what is running)",
-        );
+        ));
     }
 
-    // Version skew: a package manager replaced the binary but nothing
-    // restarted the server, so it is still serving the old build (phux-zomb.7).
-    let ours = env!("CARGO_PKG_VERSION");
-    if let Some(theirs) = phux_server::health::running_version()
-        && theirs != ours
-    {
-        return Check::warn(
+    if let Some((theirs, ours)) = version_skew {
+        checks.push(Check::warn(
             "server-health",
             format!("the running server is {theirs}; this binary is {ours}"),
             "run `phux upgrade` to hand the server over in place (panes survive), \
              or attach with `phux`, which now does it automatically",
-        );
+        ));
     }
 
-    let recent = phux_server::health::recent_starts(phux_server::health::CRASH_LOOP_WINDOW).len();
-    Check::pass(
-        "server-health",
-        format!("{recent} server start(s) in the last hour"),
-    )
+    if checks.is_empty() {
+        checks.push(Check::pass(
+            "server-health",
+            format!("{} server start(s) in the last hour", recent_starts()),
+        ));
+    }
+
+    checks
 }
 
 /// Whether `unit` was generated before the restart policy was corrected.
 ///
-/// Keys on the two markers the corrected generator always emits. A unit
-/// missing them predates phux-zomb.4 (or was hand-edited into the same
-/// unthrottled shape), and either way deserves the same warning.
+/// Compares actual VALUES against what [`crate::commands::service`]'s
+/// renderers write, not just whether the keys that carry them appear
+/// anywhere in the file. A unit that merely contains the tokens
+/// `ThrottleInterval` / `RestartSec` / `SuccessfulExit` / `Restart=on-failure`
+/// — with a zero throttle, a `Restart=always` policy, or a stray match inside
+/// an unrelated line — is not the corrected policy; only the values the
+/// generator actually writes are. A unit missing them entirely predates
+/// phux-zomb.4 (or was hand-edited into the same unthrottled shape), and
+/// either way deserves the same warning.
 fn supervisor_unit_is_legacy(unit: &std::path::Path) -> bool {
     let Ok(body) = std::fs::read_to_string(unit) else {
         return false;
     };
-    let throttled = body.contains("ThrottleInterval") || body.contains("RestartSec");
-    let failure_only = body.contains("SuccessfulExit") || body.contains("Restart=on-failure");
-    !(throttled && failure_only)
+    !(restart_is_failure_only(&body) && restart_is_throttled(&body))
+}
+
+/// Does `body` restart only on abnormal exit — launchd's
+/// `<key>SuccessfulExit</key><false/>`, or systemd's exact `Restart=on-failure`
+/// (never `Restart=always`, which still contains the bare substring
+/// `Restart=` the old check keyed on)?
+fn restart_is_failure_only(body: &str) -> bool {
+    if let Some((_, rest)) = body.split_once("<key>SuccessfulExit</key>") {
+        return rest.trim_start().starts_with("<false/>");
+    }
+    if let Some((_, rest)) = body.split_once("Restart=") {
+        return value_token(rest) == "on-failure";
+    }
+    false
+}
+
+/// Does `body` throttle restarts to a positive interval — launchd's
+/// `<key>ThrottleInterval</key><integer>N</integer>`, or systemd's
+/// `RestartSec=Ns` — with `N` greater than zero in both cases? `N == 0` wears
+/// the corrected key over the legacy (unthrottled) behavior.
+fn restart_is_throttled(body: &str) -> bool {
+    if let Some((_, rest)) = body.split_once("<key>ThrottleInterval</key>") {
+        return plist_integer(rest).is_some_and(|n| n > 0);
+    }
+    if let Some((_, rest)) = body.split_once("RestartSec=") {
+        return leading_digits(value_token(rest)).is_some_and(|n| n > 0);
+    }
+    false
+}
+
+/// The `<integer>N</integer>` immediately following a plist key's closing
+/// tag, exactly as [`crate::commands::service::render_launchd_plist`] emits
+/// it: `rest` starts right after `</key>`.
+fn plist_integer(rest_after_key: &str) -> Option<u64> {
+    let (_, rest) = rest_after_key.split_once("<integer>")?;
+    let (digits, _) = rest.split_once("</integer>")?;
+    digits.trim().parse().ok()
+}
+
+/// The next whitespace-delimited token in `rest`, which starts right after a
+/// systemd `Key=` marker.
+fn value_token(rest: &str) -> &str {
+    let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+    rest[..end].trim()
+}
+
+/// The leading run of ASCII digits in `value`, parsed as an integer — enough
+/// to read a systemd time span like `30s`, or a bare `30`.
+fn leading_digits(value: &str) -> Option<u64> {
+    let digits: String = value.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
+/// Which init system a legacy unit would have been written for. Mirrors
+/// `service::Manager`, kept as its own type (rather than importing that one)
+/// for the same reason [`legacy_service_unit_path`] duplicates its path
+/// logic instead of calling it.
+///
+/// The allow sits on the *type*, not on one variant, and that is the whole
+/// subtlety: `host()` constructs exactly one of these per target, so which
+/// variant is dead depends on which platform is compiling. Allowing only
+/// `Systemd` passed on macOS and failed CI on Linux with "variant `Launchd`
+/// is never constructed". Both stay constructible from tests on every
+/// platform, which is the point — `legacy_service_unit_path_for` must be
+/// driveable for both managers regardless of which host runs the suite.
+#[allow(
+    dead_code,
+    reason = "host() constructs one variant per target; the other is reached \
+              only from tests, and which one that is flips with the platform"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyManager {
+    Launchd,
+    Systemd,
+}
+
+impl LegacyManager {
+    /// The manager for the host we were built for. `None` on a platform with
+    /// neither — there is no legacy unit to look for there.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "None is reachable on targets that are neither macOS nor Linux; clippy only sees the active cfg"
+    )]
+    const fn host() -> Option<Self> {
+        #[cfg(target_os = "macos")]
+        {
+            Some(Self::Launchd)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Some(Self::Systemd)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            None
+        }
+    }
 }
 
 /// Where `service install` writes its unit.
 ///
 /// Duplicated from the `service` module's private path logic rather than
 /// exposed from it, because doctor must keep reporting the location even for
-/// units this build would no longer generate.
+/// units this build would no longer generate. That reasoning still holds,
+/// but the duplication now has to track more than a fixed pair of paths:
+/// `service::launchd_label_for` / `service::systemd_unit_for` profile-scope
+/// every unit but the default profile's (phux-gyza), and this mirrors that
+/// scoping. Without it, doctor would silently stop finding a legacy unit on
+/// any non-default profile — exactly the profile-aware detection ADR-0080
+/// exists to give.
 fn legacy_service_unit_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").filter(|v| !v.is_empty())?;
-    if cfg!(target_os = "macos") {
-        return Some(
-            PathBuf::from(home)
-                .join("Library")
-                .join("LaunchAgents")
-                .join("com.phux.server.plist"),
-        );
+    legacy_service_unit_path_for(
+        LegacyManager::host()?,
+        std::env::var_os("HOME"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        legacy_profile_suffix().as_deref(),
+    )
+}
+
+/// The active ADR-0080 profile when it is not the default, else `None`. Same
+/// rule as `service::profile_suffix`, duplicated for the same reason as
+/// [`legacy_service_unit_path`].
+fn legacy_profile_suffix() -> Option<String> {
+    (!phux_config::instance::is_default_profile()).then(phux_config::instance::profile)
+}
+
+/// [`legacy_service_unit_path`] with every input injectable: which manager,
+/// `HOME`, `XDG_CONFIG_HOME`, and the active profile. Lets a test drive both
+/// managers and either profile from one platform, and an unset `HOME`,
+/// without mutating the process environment (`env::set_var` is unsafe under
+/// edition 2024 and this crate forbids unsafe code) — same idiom as
+/// `service::home_dir_from`.
+fn legacy_service_unit_path_for(
+    manager: LegacyManager,
+    home: Option<std::ffi::OsString>,
+    xdg_config_home: Option<std::ffi::OsString>,
+    profile: Option<&str>,
+) -> Option<PathBuf> {
+    let home = PathBuf::from(home.filter(|value| !value.is_empty())?);
+    match manager {
+        LegacyManager::Launchd => {
+            let label = profile.map_or_else(
+                || "com.phux.server".to_owned(),
+                |profile| format!("com.phux.server.{profile}"),
+            );
+            Some(
+                home.join("Library")
+                    .join("LaunchAgents")
+                    .join(format!("{label}.plist")),
+            )
+        }
+        LegacyManager::Systemd => {
+            let config = xdg_config_home
+                .filter(|value| !value.is_empty())
+                .map_or_else(|| home.join(".config"), PathBuf::from);
+            let unit = profile.map_or_else(
+                || "phux.service".to_owned(),
+                |profile| format!("phux-{profile}.service"),
+            );
+            Some(config.join("systemd").join("user").join(unit))
+        }
     }
-    if cfg!(target_os = "linux") {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|v| !v.is_empty())
-            .map_or_else(|| PathBuf::from(home).join(".config"), PathBuf::from);
-        return Some(config.join("systemd").join("user").join("phux.service"));
-    }
-    None
 }
 
 /// Will the socket path fit in a `sockaddr_un`?
@@ -831,5 +1018,282 @@ mod tests {
             .hint
             .expect("a warn without a hint is half a diagnosis");
         assert!(hint.contains(&dir.path().display().to_string()));
+    }
+
+    // -----------------------------------------------------------------
+    // server-health: co-occurrence (phux-dsg1)
+    // -----------------------------------------------------------------
+
+    /// phux-dsg1's headline defect: crash-loop and a legacy supervisor unit
+    /// co-occur precisely when the old early-return version most needed to
+    /// report both — per phux-67wg, a legacy unit's unthrottled restarts are
+    /// exactly what produces a crash-loop. Breaking this back into "only the
+    /// first condition is reported" means a user with two problems hears
+    /// about one. The `recent_starts` closure panics if called, pinning that
+    /// the Pass-fallback count is never read once something else applies.
+    #[test]
+    fn every_applicable_server_health_condition_is_reported() {
+        let unit = std::path::Path::new("/home/u/.config/systemd/user/phux.service");
+        let checks = server_health_checks(
+            Some((9, 60)),
+            Some(unit),
+            Some(("0.13.0", "0.14.0")),
+            || panic!("recent_starts must not be read once another condition already applies"),
+        );
+
+        assert_eq!(checks.len(), 3, "{checks:?}");
+        assert_eq!(checks[0].status, Status::Fail);
+        assert!(
+            checks[0].detail.contains("crash-looping"),
+            "{}",
+            checks[0].detail
+        );
+        assert_eq!(checks[1].status, Status::Warn);
+        assert!(
+            checks[1].detail.contains(&unit.display().to_string()),
+            "{}",
+            checks[1].detail
+        );
+        assert_eq!(checks[2].status, Status::Warn);
+        assert!(checks[2].detail.contains("0.13.0"), "{}", checks[2].detail);
+        assert!(checks[2].detail.contains("0.14.0"), "{}", checks[2].detail);
+    }
+
+    /// A clean host still gets exactly one report — the pre-phux-dsg1 shape
+    /// when nothing applies must survive the rewrite unchanged.
+    #[test]
+    fn server_health_passes_when_nothing_applies() {
+        let checks = server_health_checks(None, None, None, || 2);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, Status::Pass);
+        assert!(checks[0].detail.contains("2 server start(s)"));
+    }
+
+    /// phux-nvi2: the legacy-unit hint must keep naming the pane-loss cost of
+    /// its own remedy. A `Warn` exits 0 and reads as routine housekeeping,
+    /// which is exactly when an unannounced destructive step does the most
+    /// damage — this must not regress silently in a future edit of this hint.
+    #[test]
+    fn legacy_unit_hint_names_the_cost_of_its_own_remedy() {
+        let unit = std::path::Path::new("/home/u/Library/LaunchAgents/com.phux.server.plist");
+        let checks = server_health_checks(None, Some(unit), None, || 0);
+        let hint = checks[0]
+            .hint
+            .as_ref()
+            .expect("a warn without a hint is half a diagnosis");
+        assert!(hint.contains("service install"), "{hint}");
+        assert!(hint.contains("ends every pane"), "{hint}");
+    }
+
+    // -----------------------------------------------------------------
+    // supervisor_unit_is_legacy: values, not key presence (phux-dsg1)
+    // -----------------------------------------------------------------
+
+    /// A `ServicePlan` with every field populated, for feeding the real
+    /// `service` renderers. Ties the legacy-detection tests to what
+    /// `service install` actually writes today, rather than a hand-typed
+    /// fixture that could quietly drift from it.
+    fn service_plan_fixture() -> crate::commands::service::ServicePlan {
+        crate::commands::service::ServicePlan {
+            binary: PathBuf::from("/usr/local/bin/phux"),
+            quic: None,
+            listen: None,
+            tokens: PathBuf::from("/home/u/.local/state/phux/remote-tokens"),
+            cert: PathBuf::from("/home/u/.local/state/phux/remote-cert.pem"),
+            key: PathBuf::from("/home/u/.local/state/phux/remote-key.pem"),
+            socket: None,
+            hub: false,
+            socket_path: PathBuf::from("/tmp/phux.sock"),
+            profile: None,
+            log: PathBuf::from("/home/u/.local/state/phux/server.log"),
+            restore: None,
+            wrapper: PathBuf::from("/home/u/.local/state/phux/service-wrapper.sh"),
+        }
+    }
+
+    /// Whatever `service install` writes today must never trip doctor's
+    /// legacy warning. This is the test the bug report says was missing
+    /// entirely: the detection logic is the half of ADR-0080 that runs on
+    /// users' machines, while the rendering it detects already had 17 tests.
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "test code")]
+    fn a_freshly_generated_launchd_unit_is_never_flagged_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("com.phux.server.plist");
+        let plist = crate::commands::service::render_launchd_plist(&service_plan_fixture());
+        std::fs::write(&path, plist).unwrap();
+
+        assert!(!supervisor_unit_is_legacy(&path));
+    }
+
+    /// The systemd half of the same guarantee.
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "test code")]
+    fn a_freshly_generated_systemd_unit_is_never_flagged_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("phux.service");
+        let unit = crate::commands::service::render_systemd_unit(&service_plan_fixture());
+        std::fs::write(&path, unit).unwrap();
+
+        assert!(!supervisor_unit_is_legacy(&path));
+    }
+
+    /// The actual pre-phux-zomb.4 shape: `KeepAlive` as a bare boolean, no
+    /// `SuccessfulExit` or `ThrottleInterval` keys at all. This is the unit
+    /// every host that has never re-run `phux service install` since is
+    /// still running.
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "test code")]
+    fn a_pre_zomb4_launchd_unit_is_flagged_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("com.phux.server.plist");
+        std::fs::write(
+            &path,
+            "<?xml version=\"1.0\"?>\n<plist><dict>\n  \
+             <key>Label</key>\n  <string>com.phux.server</string>\n  \
+             <key>KeepAlive</key>\n  <true/>\n</dict></plist>\n",
+        )
+        .unwrap();
+
+        assert!(supervisor_unit_is_legacy(&path));
+    }
+
+    /// phux-dsg1's cited false pass: a zero throttle wears the corrected key
+    /// but keeps the legacy (unthrottled) behavior. The old substring-only
+    /// check could not tell the difference between this and a real 30s
+    /// throttle.
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "test code")]
+    fn a_zero_throttle_interval_is_still_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("com.phux.server.plist");
+        std::fs::write(
+            &path,
+            "<plist><dict>\n  <key>SuccessfulExit</key>\n    <false/>\n  \
+             <key>ThrottleInterval</key>\n  <integer>0</integer>\n</dict></plist>\n",
+        )
+        .unwrap();
+
+        assert!(
+            supervisor_unit_is_legacy(&path),
+            "a zero throttle is the legacy behavior wearing the corrected key"
+        );
+    }
+
+    /// phux-dsg1's other cited false pass: `Restart=always` beside a stray
+    /// mention of `SuccessfulExit` (e.g. in a comment) used to read as legacy
+    /// because the old check only asked whether each word appeared anywhere
+    /// in the file, never what value it carried.
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "test code")]
+    fn restart_always_is_legacy_despite_a_stray_successfulexit_mention() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("phux.service");
+        std::fs::write(
+            &path,
+            "[Service]\n# SuccessfulExit is launchd's spelling, not used here\n\
+             Restart=always\nRestartSec=30s\n",
+        )
+        .unwrap();
+
+        assert!(
+            supervisor_unit_is_legacy(&path),
+            "`Restart=always` is the legacy policy regardless of what other tokens appear in the file"
+        );
+    }
+
+    /// A unit doctor cannot read (removed mid-check, permissions, etc.) must
+    /// not be guessed broken — `check_server_health` already filters to
+    /// existing paths, but this pins the function's own defensive behavior.
+    #[test]
+    fn an_unreadable_unit_is_not_flagged_legacy() {
+        let path = std::path::Path::new("/nonexistent/phux-doctor-test/unit-file");
+        assert!(!supervisor_unit_is_legacy(path));
+    }
+
+    // -----------------------------------------------------------------
+    // legacy_service_unit_path: profile scoping (phux-dsg1)
+    // -----------------------------------------------------------------
+
+    /// The default profile keeps the unscoped name, matching
+    /// `service::launchd_label_for`/`unit_path` for the default profile.
+    #[test]
+    fn legacy_unit_path_default_profile_launchd() {
+        let path = legacy_service_unit_path_for(
+            LegacyManager::Launchd,
+            Some(std::ffi::OsString::from("/Users/u")),
+            None,
+            None,
+        );
+        assert_eq!(
+            path,
+            Some(PathBuf::from(
+                "/Users/u/Library/LaunchAgents/com.phux.server.plist"
+            ))
+        );
+    }
+
+    /// phux-gyza / phux-dsg1: a non-default profile's unit is filed under a
+    /// suffixed label, not the bare one — `service.rs` profile-scopes every
+    /// unit but the default profile's, and this duplicate has to track that
+    /// scoping or doctor silently stops finding a legacy unit on any
+    /// non-default profile.
+    #[test]
+    fn legacy_unit_path_scopes_by_profile_launchd() {
+        let path = legacy_service_unit_path_for(
+            LegacyManager::Launchd,
+            Some(std::ffi::OsString::from("/Users/u")),
+            None,
+            Some("dev"),
+        );
+        assert_eq!(
+            path,
+            Some(PathBuf::from(
+                "/Users/u/Library/LaunchAgents/com.phux.server.dev.plist"
+            ))
+        );
+    }
+
+    /// The systemd half of the same profile-scoping guarantee.
+    #[test]
+    fn legacy_unit_path_scopes_by_profile_systemd() {
+        let path = legacy_service_unit_path_for(
+            LegacyManager::Systemd,
+            Some(std::ffi::OsString::from("/home/u")),
+            None,
+            Some("dev"),
+        );
+        assert_eq!(
+            path,
+            Some(PathBuf::from(
+                "/home/u/.config/systemd/user/phux-dev.service"
+            ))
+        );
+    }
+
+    /// `XDG_CONFIG_HOME` still overrides the default `~/.config` join on the
+    /// systemd side, same as `service::config_home`.
+    #[test]
+    fn legacy_unit_path_systemd_respects_xdg_config_home() {
+        let path = legacy_service_unit_path_for(
+            LegacyManager::Systemd,
+            Some(std::ffi::OsString::from("/home/u")),
+            Some(std::ffi::OsString::from("/custom/config")),
+            None,
+        );
+        assert_eq!(
+            path,
+            Some(PathBuf::from("/custom/config/systemd/user/phux.service"))
+        );
+    }
+
+    /// No `HOME` means no path — the naive join used to silently produce a
+    /// path relative to the current working directory instead.
+    #[test]
+    fn legacy_unit_path_none_without_home() {
+        assert_eq!(
+            legacy_service_unit_path_for(LegacyManager::Launchd, None, None, None),
+            None
+        );
     }
 }
