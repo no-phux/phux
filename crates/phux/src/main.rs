@@ -184,6 +184,12 @@ const ENVIRONMENT_HELP: &str = "ENVIRONMENT\n  \
         \x20                 dial ssh:// satellites (default: `ssh` on PATH).\n  \
         PHUX_TAILSCALE     Tailscale-compatible CLI `phux pair` runs to detect the\n  \
         \x20                 overlay address (default: `tailscale` on PATH).\n  \
+        PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE\n  \
+        \x20                 Give an auto-spawned server an idle limit in seconds\n  \
+        \x20                 (1..=86400), as if it were started with\n  \
+        \x20                 `phux server --exit-after-idle`. Unset means no limit,\n  \
+        \x20                 which is the multiplexer default. For test harnesses and\n  \
+        \x20                 CI jobs that cannot guarantee their own cleanup runs.\n  \
         PHUX_LOG           Write logs to this file (server tees; client writes here).\n  \
         PHUX_LOG_FORMAT    text (default) or json — log line format.\n  \
         RUST_LOG           tracing level filter, e.g. phux=debug.\n\n\

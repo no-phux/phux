@@ -403,3 +403,176 @@ fn without_the_flag_the_server_outlives_every_idle_window() {
     // And it is still serving, not merely still resident.
     server.success(&["ls"]);
 }
+
+/// An **auto-spawned** daemon, which no test can pass a flag to.
+///
+/// `ServerGuard` starts `phux server` directly, so it can hand it
+/// `--exit-after-idle`. The auto-spawn path cannot be driven that way: it is
+/// what a naked `phux` (or any client verb) does for you, it builds its own
+/// argv, and it deliberately drops the `Child` because the server owns its
+/// lifecycle from then on. There is therefore no handle to wait on and no
+/// flag to pass — the two things every test above relies on.
+///
+/// That is precisely the hole phux-nbam names: an auto-spawned daemon had no
+/// owner *and* no timer, and the last-pane self-exit only arms once a client
+/// has attached, so one that never served a client never left at all.
+///
+/// Liveness is therefore observed through the socket rather than through a
+/// pid, which is what a user (or a leaked-server sweep) would do anyway.
+struct AutoSpawned {
+    socket: PathBuf,
+    /// Owns the scratch directory. Never read — held so it outlives the
+    /// guard rather than being unlinked the moment `start` returns.
+    _dir: tempfile::TempDir,
+}
+
+impl Drop for AutoSpawned {
+    fn drop(&mut self) {
+        // `phux kill --server` is idempotent and exits 0 on an absent or
+        // stale socket (phux-pimp), so this is correct whether or not the
+        // idle limit already fired. A panicking assertion must not leak a
+        // daemon — the exact failure this feature exists to prevent.
+        let _ = Command::new(PHUX)
+            .args(["kill", "--server", "--socket"])
+            .arg(&self.socket)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::fs::remove_file(&self.socket);
+    }
+}
+
+impl AutoSpawned {
+    /// Trigger an auto-spawn with `phux new`, optionally setting the
+    /// environment variable that gives the daemon an idle limit.
+    fn start(idle_secs: Option<u64>) -> Self {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let socket = PathBuf::from(format!(
+            "/tmp/phux-idle-auto-{}-{n}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&socket);
+        let dir = tempfile::tempdir().expect("create temp dir");
+
+        // `--json` because a bare `phux new` attaches, and attaching refuses
+        // without a tty on both ends. The document is unread here; what
+        // matters is that the verb auto-spawns a server and returns.
+        let mut cmd = Command::new(PHUX);
+        cmd.args(["new", "--session", SESSION, "--json", "--socket"])
+            .arg(&socket);
+        match idle_secs {
+            Some(secs) => {
+                cmd.env("PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE", secs.to_string());
+            }
+            // Explicitly cleared rather than merely not set: an ambient value
+            // in the developer's shell would make the guard test below pass
+            // for the wrong reason.
+            None => {
+                cmd.env_remove("PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE");
+            }
+        }
+        let out = cmd
+            .stdin(Stdio::null())
+            .output()
+            .expect("run phux new (auto-spawns a server)");
+        assert!(
+            out.status.success(),
+            "phux new exited {:?}; stderr={}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr),
+        );
+
+        Self { socket, _dir: dir }
+    }
+
+    /// Whether the socket answers a connect, right now.
+    ///
+    /// **Costs one connection**, which re-arms the idle clock — see
+    /// [`Self::wait_until_gone`]. Call it to establish a premise, never in a
+    /// loop.
+    fn is_answering(&self) -> bool {
+        UnixStream::connect(&self.socket).is_ok()
+    }
+
+    /// Poll until the server is gone. `None` if it still was at the deadline.
+    ///
+    /// Gates on the socket **file** disappearing, not on a connect failing,
+    /// and the distinction is load-bearing rather than stylistic. Every
+    /// `UnixStream::connect` is a client connection, and `--exit-after-idle`
+    /// counts from the moment the last one goes away — so a loop that probed
+    /// by connecting would postpone the exit it was waiting for, once per
+    /// `POLL`, forever. The first draft of this did exactly that and sat
+    /// through the entire hang ceiling watching a server it was itself
+    /// keeping alive.
+    ///
+    /// File absence is also the stronger assertion: the socket is unlinked by
+    /// `unlink_socket_if_ours` on the root-token shutdown path, so its
+    /// disappearance proves the *graceful* exit ran rather than merely that
+    /// the process stopped answering (phux-1wka).
+    fn wait_until_gone(&self, within: Duration) -> Option<Duration> {
+        let start = Instant::now();
+        while start.elapsed() < within {
+            if !self.socket.exists() {
+                return Some(start.elapsed());
+            }
+            std::thread::sleep(POLL);
+        }
+        None
+    }
+}
+
+/// phux-nbam: an auto-spawned daemon honours the idle limit it is given.
+///
+/// Without this seam every explicitly-spawned test server carried
+/// `--exit-after-idle` as its survives-a-SIGKILLed-runner backstop while
+/// every auto-spawned one carried nothing — so a suite that died between
+/// setup and teardown left an immortal daemon holding a PTY, findable only
+/// with `ps`.
+#[test]
+#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
+fn an_auto_spawned_server_honours_the_environment_idle_limit() {
+    let server = AutoSpawned::start(Some(IDLE_SECS));
+    assert!(
+        server.is_answering(),
+        "phux new reported success but nothing is listening on the socket",
+    );
+
+    server
+        .wait_until_gone(EXIT_HANG_CEILING)
+        .unwrap_or_else(|| {
+            panic!(
+                "an auto-spawned server with PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE={IDLE_SECS} \
+             was still answering {EXIT_HANG_CEILING:?} later. The variable is read by \
+             the spawning process and passed to the child as --exit-after-idle, so a \
+             break is either in that hand-off or in the flag itself",
+            )
+        });
+}
+
+/// The guard: WITHOUT the variable, auto-spawn is unchanged.
+///
+/// ADR-0063 and `without_the_flag_the_server_outlives_every_idle_window` pin
+/// that an unattended server stays up, and that contract belongs to the
+/// auto-spawn path too — it is the one a naked `phux` uses, which is to say
+/// the one a human's session actually runs on. A default lifetime here would
+/// end sessions while their owner was at lunch.
+#[test]
+#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
+fn auto_spawn_has_no_idle_limit_unless_asked() {
+    let server = AutoSpawned::start(None);
+
+    assert!(
+        server.wait_until_gone(NO_LIFETIME_OBSERVATION).is_none(),
+        "an auto-spawned server went away after {NO_LIFETIME_OBSERVATION:?} with no \
+         PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE set; the idle lifetime is opt-in, and \
+         auto-spawn is the path a human's own session runs on",
+    );
+
+    // Still serving, not merely still resident — and the one connection this
+    // costs is spent after the observation window, never inside it.
+    assert!(
+        server.is_answering(),
+        "the socket file survived but nothing is listening on it",
+    );
+}

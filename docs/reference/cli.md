@@ -144,6 +144,12 @@ ENVIRONMENT
                     dial ssh:// satellites (default: `ssh` on PATH).
   PHUX_TAILSCALE     Tailscale-compatible CLI `phux pair` runs to detect the
                     overlay address (default: `tailscale` on PATH).
+  PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE
+                    Give an auto-spawned server an idle limit in seconds
+                    (1..=86400), as if it were started with
+                    `phux server --exit-after-idle`. Unset means no limit,
+                    which is the multiplexer default. For test harnesses and
+                    CI jobs that cannot guarantee their own cleanup runs.
   PHUX_LOG           Write logs to this file (server tees; client writes here).
   PHUX_LOG_FORMAT    text (default) or json — log line format.
   RUST_LOG           tracing level filter, e.g. phux=debug.

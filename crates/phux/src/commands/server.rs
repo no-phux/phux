@@ -420,6 +420,68 @@ fn open_server_log(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// Environment variable that gives an auto-spawned daemon an idle backstop.
+///
+/// Seconds, in the same `1..=86_400` range `--exit-after-idle` accepts.
+const AUTO_SPAWN_IDLE_ENV: &str = "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE";
+
+/// The upper bound `--exit-after-idle` accepts, mirrored here so an
+/// out-of-range value is rejected by the parent with a message about the
+/// variable rather than by the child with one about a flag the caller never
+/// typed.
+const AUTO_SPAWN_IDLE_MAX_SECS: u64 = 86_400;
+
+/// Resolve the idle limit an auto-spawned daemon should carry, if any.
+///
+/// **`None` in production, and deliberately so.** Every *explicitly* spawned
+/// test server passes `--exit-after-idle` as its survives-a-SIGKILLed-runner
+/// backstop, but the auto-spawn path could not: nothing passed it, and the
+/// child is intentionally orphaned. So an auto-spawned daemon had no owner and
+/// no timer — and the last-pane self-exit is armed only once a client attaches,
+/// so one that never served a client never exited either. That is the
+/// structural root of the leaked-server problem (phux-nbam, phux-whhd).
+///
+/// The fix is an opt-in seam, not a new default. ADR-0063 and
+/// `server_idle_exit::without_the_flag_an_unattended_server_stays_up`
+/// deliberately pin that an unattended server stays up; making auto-spawn
+/// finite would change the multiplexer contract, which is a product decision
+/// and not a test-hygiene fix. This extends the mechanism ADR-0063 already
+/// established rather than inventing one.
+///
+/// A malformed value warns and is ignored rather than failing the spawn: this
+/// runs on the hot path of a naked `phux`, and refusing to start a terminal
+/// because of a stray environment variable is worse than starting one without
+/// a bound. It must not be *silent*, though — the whole point of setting it is
+/// a bound that actually applies — so the warning rides the same `quiet` gate
+/// as the auto-spawn banner (suppressed only under `--json`, whose stderr
+/// contract is the error document and nothing else).
+fn auto_spawn_idle_limit(quiet: bool) -> Option<u64> {
+    let raw = std::env::var_os(AUTO_SPAWN_IDLE_ENV)?;
+    let text = raw.to_string_lossy();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = parse_auto_spawn_idle(trimmed);
+    if parsed.is_none() && !quiet {
+        eprintln!(
+            "phux: ignoring {AUTO_SPAWN_IDLE_ENV}={trimmed} \
+             (want whole seconds, 1..={AUTO_SPAWN_IDLE_MAX_SECS}); \
+             the auto-spawned server will have no idle limit"
+        );
+    }
+    parsed
+}
+
+/// The pure half of [`auto_spawn_idle_limit`]: `None` for anything the
+/// `--exit-after-idle` parser would itself reject, so the parent and the child
+/// agree on what counts as a usable value.
+fn parse_auto_spawn_idle(raw: &str) -> Option<u64> {
+    raw.parse::<u64>()
+        .ok()
+        .filter(|secs| (1..=AUTO_SPAWN_IDLE_MAX_SECS).contains(secs))
+}
+
 /// Fork-exec the current binary as `phux server` (with the same
 /// `--socket` override), then poll for the socket to appear.
 ///
@@ -432,6 +494,12 @@ fn open_server_log(path: &Path) -> std::io::Result<std::fs::File> {
 /// debuggable and `phux service logs` tails the right file for every
 /// spawn path (phux-i0e8.5.1). The server never opens a tty afterward,
 /// so a session-leader double-fork isn't needed.
+///
+/// **Lifetime.** The child is deliberately not kept as a `Child` — it owns
+/// its own lifecycle — and by default it carries no idle backstop, which
+/// ADR-0063 pins: an unattended server stays up, because that is the
+/// multiplexer contract. `$PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE` opts a caller
+/// out of that (see [`auto_spawn_idle_limit`]).
 ///
 /// Returns `Ok` if the socket showed up within the timeout.
 pub(crate) fn maybe_auto_spawn_server(
@@ -473,6 +541,13 @@ pub(crate) fn maybe_auto_spawn_server(
     // `defaults.spawn-on-attach`; other callers pass `None`).
     if let Some(seed) = seed_command {
         cmd.arg("--seed-command").arg(seed);
+    }
+    // phux-nbam: an opt-in idle backstop for this daemon. Passed as the flag
+    // rather than left to the child's inherited environment so a leaked server
+    // shows its own bound in `ps`, which is exactly the moment someone is
+    // trying to work out why it is still running.
+    if let Some(secs) = auto_spawn_idle_limit(quiet) {
+        cmd.arg("--exit-after-idle").arg(secs.to_string());
     }
     match log {
         Some(file) => {
@@ -691,6 +766,31 @@ mod tests {
             token_file: Some(PathBuf::from(token)),
             cert_fingerprint: Some("AB".to_owned()),
         }
+    }
+
+    /// phux-nbam: the auto-spawn idle backstop accepts exactly what
+    /// `--exit-after-idle` accepts.
+    ///
+    /// The parent parses the variable and passes the flag, so a value the
+    /// parent waves through but the child's clap parser rejects would turn a
+    /// naked `phux` into a spawn failure. Pinning both to `1..=86_400` is what
+    /// keeps that from being possible.
+    #[test]
+    fn the_auto_spawn_idle_backstop_accepts_what_the_flag_accepts() {
+        assert_eq!(parse_auto_spawn_idle("600"), Some(600));
+        assert_eq!(parse_auto_spawn_idle("1"), Some(1));
+        assert_eq!(parse_auto_spawn_idle("86400"), Some(86_400));
+
+        // Rejected exactly where the flag's `range(1..=86_400)` rejects.
+        assert_eq!(parse_auto_spawn_idle("0"), None);
+        assert_eq!(parse_auto_spawn_idle("86401"), None);
+
+        // And on anything that is not a whole number of seconds.
+        assert_eq!(parse_auto_spawn_idle(""), None);
+        assert_eq!(parse_auto_spawn_idle("600s"), None);
+        assert_eq!(parse_auto_spawn_idle("1.5"), None);
+        assert_eq!(parse_auto_spawn_idle("-1"), None);
+        assert_eq!(parse_auto_spawn_idle("forever"), None);
     }
 
     #[test]
