@@ -15,6 +15,8 @@
 #                           resolves to a real file
 #   - adr-status          : every ADR's `Status:` line is one of the
 #                           four blessed forms
+#   - adr-number-unique   : no two files under ADR/ share the same
+#                           leading NNNN number
 #   - spec-version-sync   : docs/spec/CHANGELOG.md head version agrees
 #                           with phux-protocol's PROTOCOL_VERSION
 #                           (skipped while the SPEC split is in flight)
@@ -43,6 +45,7 @@ ALL_GATES=(
     tldr-present
     dead-link
     adr-status
+    adr-number-unique
     spec-version-sync
     impl-status
 )
@@ -522,6 +525,42 @@ gate_adr_status() {
 }
 
 # ---------------------------------------------------------------------------
+# Gate 5b: adr-number-unique
+# ---------------------------------------------------------------------------
+
+# Every ADR filename opens with a 4-digit number (NNNN-slug.md). That number
+# is the identity readers and cross-references use ("ADR-NNNN") — two files
+# sharing one make every such reference ambiguous, with no signal to the
+# reader that they might have landed on the wrong decision. This gate fails
+# if any number prefix under ADR/ is claimed by more than one file.
+
+gate_adr_number_unique() {
+    local file
+    if [[ ! -d "$ROOT/ADR" ]]; then
+        return
+    fi
+
+    local -A first_seen=()
+    while IFS= read -r file; do
+        local base
+        base="$(basename "$file")"
+        if [[ "$base" == "README.md" ]]; then
+            continue
+        fi
+        if [[ ! "$base" =~ ^([0-9]{4})- ]]; then
+            continue
+        fi
+        local num="${BASH_REMATCH[1]}"
+        if [[ -n "${first_seen[$num]:-}" ]]; then
+            violate adr-number-unique "$file" \
+                "ADR number $num is also used by ${first_seen[$num]#"$ROOT"/} — renumber one of the two (pick whichever has fewer inbound references) to the next free ADR number, then update every 'ADR-$num' cross-reference (prose, markdown links, code comments) that meant the renumbered file"
+        else
+            first_seen[$num]="$file"
+        fi
+    done < <(find "$ROOT/ADR" -type f -name '*.md' | LC_ALL=C sort)
+}
+
+# ---------------------------------------------------------------------------
 # Gate 6: spec-version-sync
 # ---------------------------------------------------------------------------
 
@@ -851,6 +890,7 @@ run_gate() {
         tldr-present)        gate_tldr_present        ;;
         dead-link)           gate_dead_link           ;;
         adr-status)          gate_adr_status          ;;
+        adr-number-unique)   gate_adr_number_unique   ;;
         spec-version-sync)   gate_spec_version_sync   ;;
         impl-status)         gate_impl_status         ;;
         *) echo "internal error: unknown gate '$gate'" >&2; exit 2 ;;

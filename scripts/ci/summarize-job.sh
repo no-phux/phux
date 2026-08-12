@@ -3,7 +3,7 @@
 # table of phase timings (from scripts/ci/timed.sh), cache effectiveness,
 # target-dir size, and the slowest tests when a nextest junit report exists.
 #
-# The run page is the whole dashboard (ADR-0080). This used to also emit an
+# The run page is the whole dashboard (ADR-0082). This used to also emit an
 # NDJSON record for a collector that swept it into a metrics branch; that
 # store is retired, so nothing here outlives the run.
 #

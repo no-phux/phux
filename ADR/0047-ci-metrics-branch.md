@@ -11,10 +11,10 @@ phase timings, cold-build timelines, binary sizes, dependency stats) was
 recorded as NDJSON on an orphan `ci-metrics` branch by a single collector
 workflow, which also rendered `DASHBOARD.md` and a compact `site/summary.json`
 that phux.phall.io/ci read directly. Retired by
-[ADR-0080](./0080-retire-the-ci-metrics-store.md); the branch, the collector,
+[ADR-0082](./0082-retire-the-ci-metrics-store.md); the branch, the collector,
 and the `observatory` lane are gone.
 
-Status: Superseded by ADR-0080
+Status: Superseded by ADR-0082
 Date: 2026-07-14
 
 ## Context

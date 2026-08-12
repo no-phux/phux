@@ -90,7 +90,7 @@ red build in one of them, the answer is on the runner, not on your machine.
   sccache, the runner disk-headroom step). Runner infrastructure. A cache
   miss is a slow CI run, never a wrong one.
 - **CI observability** (`scripts/ci/timed.sh` and the `lane signal` step).
-  Pure step-summary rendering on the run page; nothing is stored (ADR-0080).
+  Pure step-summary rendering on the run page; nothing is stored (ADR-0082).
   Run `just dep-stats` or `just timings` locally for the same lenses.
 - **Heavy stress storms** (`stress` workflow, post-merge and nightly). Not
   slow because they are thorough — slow because a 2-core hosted runner
@@ -250,7 +250,7 @@ the protocol epic):
 
 ## Observability: CI itself
 
-CI reports where its own minutes go, and keeps nothing (ADR-0080). Where to
+CI reports where its own minutes go, and keeps nothing (ADR-0082). Where to
 look, cheapest first:
 
 - **Any run's step summary** — every lane renders its cargo phase timings,

@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-08-09
 ---
 
-# 0080 — Retire the CI metrics store; the run page is the dashboard
+# 0082 — Retire the CI metrics store; the run page is the dashboard
 
 **TL;DR.** The orphan `ci-metrics` branch, its collector workflow, and the
 weekly `observatory` lane are deleted. CI observability is now exactly what a

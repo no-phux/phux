@@ -83,12 +83,12 @@
 # PR "Ready for review" runs everything — that event is in the trigger
 # types. Rationale and safety analysis on the `changes` job comment.
 #
-# OBSERVABILITY (ADR-0080): each cargo phase runs under scripts/ci/timed.sh,
+# OBSERVABILITY (ADR-0082): each cargo phase runs under scripts/ci/timed.sh,
 # and a trailing `lane signal` step renders the phase timings, cache
 # effectiveness, and slowest tests into the job's step summary. That is the
 # whole of it — the run page is the dashboard. The recorded store this used
 # to feed (the `ci-metrics` branch and its collector) is retired; see
-# ADR-0080. The instrumentation adds no compilation and only seconds of
+# ADR-0082. The instrumentation adds no compilation and only seconds of
 # wall; keep it `if: always()` so a red lane still reports where the time
 # went.
 

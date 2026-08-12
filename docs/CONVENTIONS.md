@@ -381,6 +381,7 @@ The discipline layer is mechanically checked. See
 | tldr-present | A doc whose first non-header content isn't `**TL;DR.**` |
 | dead-link | A relative link that doesn't resolve |
 | adr-status | An ADR with a non-vocabulary `Status:` line |
+| adr-number-unique | Two files under `ADR/` sharing the same leading `NNNN` number |
 | spec-version-sync | `docs/spec/CHANGELOG.md` head version vs `phux-protocol`'s declared protocol version |
 | impl-status | A `shipped` / `partial` / `spec-only` claim in `docs/spec/` or `docs/consumers/` that the code contradicts, and a `> **Status` callout with no marker behind it |
 

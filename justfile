@@ -445,7 +445,7 @@ profile *ARGS:
 #   just timings --release       # the release/LTO timeline
 # CAVEAT: a WARM build's timeline is near-empty because cached crates don't
 # recompile. For a true cold picture, `cargo clean` first. There is no CI
-# lane that builds cold for you any more (ADR-0080) — this is the tool.
+# lane that builds cold for you any more (ADR-0082) — this is the tool.
 
 # HTML compile-time report (critical path, codegen vs frontend).
 timings *ARGS:
