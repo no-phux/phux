@@ -487,8 +487,12 @@ gate_adr_status() {
         return
     fi
     while IFS= read -r file; do
-        # Skip the ADR README.
-        if [[ "$(basename "$file")" == "README.md" ]]; then
+        # Skip anything in ADR/ that is not itself an ADR. An ADR is named
+        # `NNNN-slug.md`; the README index and companion documents (such as a
+        # ratification brief) carry no decision and must not be given a
+        # `Status:` line, since that vocabulary means "the repository has
+        # decided". They still keep every other gate.
+        if [[ ! "$(basename "$file")" =~ ^[0-9]{4}- ]]; then
             continue
         fi
         local close
