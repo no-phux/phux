@@ -153,6 +153,11 @@ pub struct ScriptSpec {
     /// When set, every `SPAWN_TERMINAL` is refused with a *correlated*
     /// `ERROR` instead of a `TERMINAL_SPAWNED`.
     spawn_error: Option<(ErrorCode, String)>,
+    /// The client count a `DetachClients` command acks with. `None` defaults
+    /// to `0` (nobody was attached) — `handle_detach_clients`
+    /// (`crates/phux-server/src/runtime/commands.rs`) always answers
+    /// `OkWith(Json(count))` and never refuses, so this needs no error twin.
+    detach_result: Option<u64>,
     /// Pushed once the client's `SUBSCRIBE_EVENTS` registers.
     script: Vec<FrameKind>,
     /// What to do after the script.
@@ -170,6 +175,7 @@ impl fmt::Debug for ScriptSpec {
             .field("metadata_error", &self.metadata_error)
             .field("spawn", &self.spawn)
             .field("spawn_error", &self.spawn_error)
+            .field("detach_result", &self.detach_result)
             .field("script", &self.script)
             .field("end", &self.end)
             .finish()
@@ -327,6 +333,14 @@ impl ScriptSpec {
     #[must_use]
     pub fn refuse_spawn(mut self, code: ErrorCode, message: &str) -> Self {
         self.spawn_error = Some((code, message.to_owned()));
+        self
+    }
+
+    /// The client count a `DetachClients` command acks with. Defaults to `0`
+    /// when unset, matching a real server that matched nobody.
+    #[must_use]
+    pub const fn detach_result(mut self, count: u64) -> Self {
+        self.detach_result = Some(count);
         self
     }
 
@@ -627,6 +641,17 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
                 CommandResult::OkWith(CommandValue::State(snapshot))
             });
             out.push(FrameKind::CommandResult { request_id, result });
+        }
+        // `handle_detach_clients` (`crates/phux-server/src/runtime/commands.rs`)
+        // always answers `OkWith(Json(count))`, never a bare `Ok` — modeled
+        // explicitly rather than falling into the generic wildcard below,
+        // which would teach a client under test the wrong reply shape.
+        Command::DetachClients { .. } => {
+            let count = spec.detach_result.unwrap_or(0);
+            out.push(FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::OkWith(CommandValue::Json(count.to_string())),
+            });
         }
         _ => out.push(FrameKind::CommandResult {
             request_id,

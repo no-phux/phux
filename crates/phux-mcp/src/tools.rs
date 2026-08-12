@@ -18,12 +18,14 @@
 use std::time::Duration;
 
 use phux_client::attach::AttachError;
+use phux_client::attach::connection::Connection;
 use phux_client::selector::{self, Selector};
 use phux_client::state::{self, StateView};
 use phux_client::wait::{Condition, DEFAULT_IDLE_DWELL, DEFAULT_POLL_INTERVAL, WaitOutcome};
 use phux_client::watch::WatchItem;
 use phux_protocol::ids::TerminalId;
 use phux_protocol::input::paste::PasteTrust;
+use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, CommandValue};
 use serde_json::{Value, json};
 
 use crate::socket;
@@ -175,6 +177,20 @@ pub(crate) fn catalog() -> Value {
             }
         },
         {
+            "name": "phux_detach",
+            "description": "Force-detach every client attached to a session, or every client attached anywhere on the server if `session` is omitted, from outside any attach UI. This is the control-plane counterpart to the interactive `C-a d` self-detach, not a self-detach: it never attaches, and there is no live view of this MCP connection's own to end. Use it to reclaim a session that is attached (or wedged) elsewhere so it is free for the next attach. The session and its panes are unaffected — only the viewing clients are disconnected, each cleanly (a `DETACHED` frame, clean TUI exit). Returns `detached`, the number of clients actually disconnected; `0` means nobody was attached there, which is success, not a miss. Requires confirm=true: this forcibly ejects whatever human or agent is currently attached, without their say-so.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "session": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Session to detach clients from. Omit to detach every attached client on the server." },
+                    "confirm": { "type": "boolean", "const": true, "description": "Required explicit confirmation: this forcibly disconnects whoever is attached." },
+                    "socket": { "type": "string" }
+                },
+                "required": ["confirm"]
+            }
+        },
+        {
             "name": "phux_watch",
             "description": "Collect server-pushed events (command_started/finished, title_changed, asked, bell, pane_spawned/closed, dirty, idle) plus agent_state changes for a pane, or events alone server-wide. Bounded one-shot: returns after max_events or timeout_secs. An agent_state item reports one change to a pane's phux.agent/v1 record — name, kind, session, the new state, effective attention, and `from` when this call already saw a prior record; a present-and-null `state` is the tombstone (the record went away). agent_state items appear ONLY when `target` names a pane: the metadata subscription addresses one Terminal and L3 has no wildcard scope, so a server-wide watch carries events only. Observing an agent reach a state here is not a completion gate — see phux_agent_wait.",
             "inputSchema": {
@@ -227,6 +243,7 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
         "phux_wait" => phux_wait(args).await,
         "phux_new" => phux_new(args).await,
         "phux_kill" => phux_kill(args).await,
+        "phux_detach" => phux_detach(args).await,
         "phux_watch" => phux_watch(args).await,
         "phux_ask" => crate::ask_tool::call(args).await,
         "phux_launch" | "phux_spawn" | "phux_signal" | "phux_tag" | "phux_rename"
@@ -480,6 +497,51 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
         .run(argv, crate::cli_adapter::DEFAULT_CALL_TIMEOUT)
         .await?;
     Ok(json!({ "schema_version": 1, "killed": true, "target": target }))
+}
+
+/// `phux_detach` — force-detach clients from *outside* the attach UI.
+///
+/// Direct `DETACH_CLIENTS` over the wire (`phux_client::attach::connection`)
+/// rather than a `phux detach` subprocess: the CLI verb has no `--json`, and
+/// the one fact this tool exists to report — how many clients were actually
+/// disconnected — only rides the wire reply
+/// (`phux_protocol::wire::frame::Command::DetachClients`'s doc comment:
+/// `OkWith(Json(count))`, unconditionally; the server never refuses this
+/// command). This is the bounded, request/response half of "attach or
+/// detach" (bead phux-fwwa): unlike `phux attach`, it does not open a live
+/// terminal stream, so it fits the one-text-content-block `tools/call`
+/// envelope the way `phux_agent_*`'s header comment says a raw ANSI stream
+/// cannot.
+async fn phux_detach(args: &Value) -> Result<Value, ToolError> {
+    strict_object(args, &["session", "confirm", "socket"], &["confirm"])?;
+    if args.get("confirm") != Some(&Value::Bool(true)) {
+        return Err(ToolError::new(
+            "phux_detach forcibly disconnects attached clients; pass `confirm: true`",
+        ));
+    }
+    let socket = socket::resolve(str_arg(args, "socket"));
+    let session = crate::cli_adapter::bounded_string(args, "session", false)?;
+    let mut conn = Connection::connect(&socket).await?;
+    let (result, _interleaved) = conn
+        .request(
+            1,
+            WireCommand::DetachClients {
+                session: session.clone(),
+            },
+        )
+        .await?
+        .into_parts();
+    match result {
+        CommandResult::OkWith(CommandValue::Json(count)) => {
+            let detached = count.trim().parse::<u64>().map_err(|_| {
+                ToolError::new(format!("phux detach returned a malformed count: {count:?}"))
+            })?;
+            Ok(json!({ "schema_version": 1, "detached": detached, "session": session }))
+        }
+        other => Err(ToolError::new(phux_client::explain::explain_unexpected(
+            "detach", &other,
+        ))),
+    }
 }
 
 /// `phux_watch` — collect server-pushed watch items, bounded.
@@ -855,6 +917,7 @@ mod tests {
                 "phux_wait",
                 "phux_new",
                 "phux_kill",
+                "phux_detach",
                 "phux_watch",
                 "phux_ask",
                 "phux_launch",
@@ -993,6 +1056,27 @@ mod tests {
         assert_eq!(
             kill_error.0, "missing required argument `confirm`",
             "kill must reject before discovering or starting the CLI",
+        );
+        // Same shape as `kill`: rejected before any socket connection, and a
+        // present-but-false `confirm` is a distinct, equally-rejected case
+        // from an absent one.
+        let detach_error = dispatch("phux_detach", &json!({})).await.unwrap_err();
+        assert_eq!(detach_error.0, "missing required argument `confirm`");
+        assert!(
+            dispatch("phux_detach", &json!({ "confirm": false }))
+                .await
+                .unwrap_err()
+                .0
+                .contains("confirm: true"),
+        );
+        assert!(
+            dispatch(
+                "phux_detach",
+                &json!({ "confirm": true, "session": "work", "target": "@1" })
+            )
+            .await
+            .is_err(),
+            "phux_detach has no `target` — it addresses a session, not a pane",
         );
         assert!(dispatch("phux_launch", &json!({})).await.is_err());
         // paste rejects a missing payload and unknown keys before any
@@ -1412,6 +1496,82 @@ mod tests {
                 .iter()
                 .all(|frame| matches!(frame, FrameKind::GetMetadata { .. })),
             "HELLO must be followed only by GET_METADATA; got {seen:?}"
+        );
+    }
+
+    /// `phux_detach` sends `DetachClients { session }` over the wire (no CLI
+    /// subprocess — the CLI verb has no `--json`) and reports the real
+    /// count the server acked, not an echo of the input.
+    #[tokio::test]
+    async fn phux_detach_reports_the_server_acked_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("mcp-detach.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let spec = ScriptSpec::new().detach_result(2);
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+
+        let result = dispatch(
+            "phux_detach",
+            &json!({ "session": "work", "confirm": true, "socket": socket.to_string_lossy() }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["schema_version"], json!(1));
+        assert_eq!(result["detached"], json!(2));
+        assert_eq!(result["session"], json!("work"));
+
+        let seen = server.await.unwrap();
+        assert!(
+            matches!(seen.first(), Some(FrameKind::Hello { .. })),
+            "the client must negotiate before DETACH_CLIENTS; got {seen:?}"
+        );
+        assert!(
+            matches!(
+                seen.get(1),
+                Some(FrameKind::Command {
+                    command: WireCommand::DetachClients { session },
+                    ..
+                }) if session.as_deref() == Some("work")
+            ),
+            "the named session must ride the wire command verbatim; got {seen:?}"
+        );
+    }
+
+    /// Omitting `session` detaches server-wide — `None` rides the wire as
+    /// `None`, not the empty string, and the JSON result's `session` is
+    /// `null` rather than absent, so a consumer keyed on the field sees the
+    /// server-wide call distinctly from a per-session one.
+    #[tokio::test]
+    async fn phux_detach_omits_session_for_a_server_wide_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("mcp-detach-all.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let spec = ScriptSpec::new().detach_result(0);
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+
+        let result = dispatch(
+            "phux_detach",
+            &json!({ "confirm": true, "socket": socket.to_string_lossy() }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result["detached"],
+            json!(0),
+            "0 detached is success, not a miss"
+        );
+        assert!(result["session"].is_null());
+
+        let seen = server.await.unwrap();
+        assert!(
+            matches!(
+                seen.get(1),
+                Some(FrameKind::Command {
+                    command: WireCommand::DetachClients { session: None },
+                    ..
+                })
+            ),
+            "no session named must ride as None, not an empty string; got {seen:?}"
         );
     }
 

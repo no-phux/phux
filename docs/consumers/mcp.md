@@ -6,7 +6,7 @@ last-reviewed: 2026-07-15
 
 # The phux MCP adapter
 
-**TL;DR.** This doc covers what is MCP-specific in `phux-mcp`: the 22
+**TL;DR.** This doc covers what is MCP-specific in `phux-mcp`: the 32
 JSON-RPC stdio tools spanning inspection, execution, session lifecycle,
 agent identity, existing-pane layout, and bounded plugin/workspace operations;
 the stdio transport and lifecycle; target resolution; and the `tools/call`
@@ -166,7 +166,7 @@ the literal `default`).
 
 ## 3. The tool catalog
 
-Thirty-one tools, returned verbatim by `tools/list`. Each `inputSchema` is a
+Thirty-two tools, returned verbatim by `tools/list`. Each `inputSchema` is a
 JSON Schema `object`. Tools that take no required argument (e.g.
 `phux_ls`) work with no `arguments` at all. The return shapes are the
 shared agent shapes owned by [`agents.md`](./agents.md) §4; each tool
@@ -315,7 +315,40 @@ Result: `{ "schema_version": 1, "killed": true, "target": "..." }` after the
 canonical CLI exits successfully. A clean server disconnect after reaping its
 last session is already treated as success by that CLI path.
 
-### 3.8 `phux_watch`
+### 3.8 `phux_detach`
+
+Force-detaches every client attached to a session — or every client attached
+anywhere on the server, with no `session` — from outside any attach UI. No
+`target`: this addresses a session by name, the same scope `phux detach`
+addresses, not a pane.
+
+| Param | Type | Required | Meaning |
+|---|---|---|---|
+| `session` | string | no | Session to detach clients from. Omit to detach every attached client on the server. |
+| `confirm` | boolean (`true`) | yes | Explicit confirmation; false or absent is rejected before any connection. |
+| `socket` | string | no | Override the UDS path (see §2). |
+
+Result: `{ "schema_version": 1, "detached": N, "session": "..." | null }`.
+`detached` is the number of clients actually disconnected, read back from the
+server's reply rather than assumed — `0` means nobody was attached there,
+which is success, not a miss.
+
+This is the bounded, request/response half of "attach or detach": it never
+opens a live terminal stream, so — unlike `phux attach` — it fits the
+one-text-content-block `tools/call` envelope described in §4. It talks
+`DETACH_CLIENTS` directly over the wire (the `phux detach` CLI verb has no
+`--json` to execute instead) through the same `phux_client::attach::connection`
+primitives the CLI opens itself, rather than a subprocess — see §5 for the
+in-process/subprocess split. **There is deliberately no MCP `phux_attach`.**
+The CLI's `attach` starts a full TUI renderer over a live ANSI stream, which
+has no request/response shape and cannot ride the single text content block a
+`tools/call` result carries — the same reasoning
+[`agent_tools.rs`](../../crates/phux-mcp/src/agent_tools.rs) already gives
+for declining `phux_agent_attach`/`observe`. A headless host that wants the
+live stream shells out to `phux attach` itself; MCP exposes only the
+lifecycle edge (force-ending someone else's attachment), never the stream.
+
+### 3.9 `phux_watch`
 
 The push half of the agent surface — tagged lifecycle/activity events
 (`command_started`/`finished`, `title_changed`, `bell`,
@@ -342,7 +375,7 @@ one is an ordinary bounded document. It is an
 accelerator of `phux_wait`'s poll floor, not a replacement: `phux_wait` is
 still the way to block on a specific screen condition.
 
-### 3.9 `phux_plugin_action`
+### 3.10 `phux_plugin_action`
 
 Executes one action declared by an enabled configured plugin manifest.
 
@@ -360,7 +393,7 @@ Result: the same `schema_version = 1` action result as
 executes argv directly from the plugin root; there is no hidden shell
 expansion.
 
-### 3.10 `phux_ask`
+### 3.11 `phux_ask`
 
 Reports that an agent in a pane is asking for human input. This is the
 MCP twin of `phux ask`: it emits the same `asked` event that
@@ -383,7 +416,7 @@ advisory attention, not focus authority: present the payload to the human and
 point them to TUI `C-a q` (next ask) / `C-a Q` (return); do not synthesize those
 keys from MCP.
 
-### 3.11 `phux_plugin_workspace`
+### 3.12 `phux_plugin_workspace`
 
 Lists configured plugin workspace profiles. This is the workspace
 composition/read half of the plugin surface: it returns the manifest-level
@@ -402,7 +435,7 @@ Result: `{ workspaces, count }`, where each item contains
 `plugin_id`, `plugin_name`, `enabled`, and the serialized plugin
 `workspace` profile. A filtered miss is an MCP tool error.
 
-### 3.12 `phux_paste`
+### 3.13 `phux_paste`
 
 Pastes a payload into the resolved pane as one paste event. No attach, no
 resize. The server picks the delivery form from the pane's live terminal
@@ -427,7 +460,7 @@ is the canonical direct selector (`@N` or `host/@N`). A dropped untrusted
 payload still reports `sent: true` — the route was accepted; the drop is
 the pane's policy.
 
-### 3.13–3.31 Orchestration parity tools
+### 3.14–3.32 Orchestration parity tools
 
 The remaining strict-schema tools execute the canonical `phux` CLI with
 argv (never a shell), parse its JSON or small documented text shape, cap each
@@ -457,14 +490,19 @@ Every schema in this parity table sets `additionalProperties: false`, and
 handlers enforce that again before side effects. Before `phux_kill`, a caller
 must display the resolved target and obtain explicit human confirmation; the
 tool does not add an implicit confirmation protocol. `phux_signal` enforces
-`confirm: true` for interrupt/terminate/kill in addition to that human step.
-There are deliberately no MCP `take`/`give` tools:
+`confirm: true` for interrupt/terminate/kill in addition to that human step,
+and §3.8's `phux_detach` enforces it unconditionally. There are deliberately
+no MCP `take`/`give` tools:
 the CLI lease belongs to the short-lived subprocess connection, so advertising
 a persistent lease would be dishonest. There is no headless focus tool because
-focus is client-local. `attach`, `server`, `stdio-bridge`, and `upgrade` are
-interactive/daemon/operator lifecycles; `pair` and satellite registry mutation
-handle credentials; plugin installation and config editing mutate local trust
-configuration. Those remain intentionally outside the model-facing tool set.
+focus is client-local. `attach` itself — opening a live rendering
+connection — stays excluded for the reason §3.8 gives (no request/response
+shape for an ANSI stream); its non-streaming lifecycle half, forcibly ending
+*someone else's* attachment, is `phux_detach`. `server`, `stdio-bridge`, and
+`upgrade` are interactive/daemon/operator lifecycles; `pair` and satellite
+registry mutation handle credentials; plugin installation and config editing
+mutate local trust configuration. Those remain intentionally outside the
+model-facing tool set.
 
 ### Composing the tools safely
 
@@ -525,7 +563,11 @@ launch/spawn/signal/tag/rename/agent/layout/workspace name-for-name.
 `phux_plugin_action` maps to `phux config run`; `phux_plugin_workspace` reads
 the same plugin manifest workspace profile. CLI-subprocess tools consume the
 canonical JSON directly; in-process tools reuse the same `phux-client` or
-`phux-plugin` implementation as the CLI.
+`phux-plugin` implementation as the CLI. `phux_detach` (§3.8) is one of the
+in-process tools, but with no CLI counterpart it reuses: `phux detach` has no
+`--json`, so the tool opens `phux_client::attach::connection::Connection`
+itself and sends `Command::DetachClients` directly, the same primitive the
+CLI's `detach.rs` opens.
 
 Per [ADR-0022](../../ADR/0022-tool-for-agents.md), the CLI and its JSON
 schema are the stable agent contract; the wire underneath stays additive

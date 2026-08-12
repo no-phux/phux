@@ -667,13 +667,22 @@ agent verbs and their JSON. Exit codes are collected in §5.2.
 
 `insert-pane` is intentionally not named `split`: it edits topology around a
 pane that already exists and performs no implicit spawn. Spawn-and-place remains
-a separate operation. `detach` is still an interactive TUI action. The shipped
-verbs are listed in [`tui.md`](./tui.md) §1.
+a separate operation. Self-`detach` (`C-a d`, `FrameKind::Detach`) is still an
+interactive TUI-only action — it ends the calling client's own attachment, and
+a headless caller was never attached to end. Forcibly detaching *other*
+clients is a different, request/response operation
+(`Command::DetachClients`, backing `phux detach [SESSION]`); it has no CLI
+`--json` today, but is reachable headlessly via the MCP `phux_detach` tool
+([`mcp.md`](./mcp.md) §3.8), which talks to it directly over the wire rather
+than shelling out. The shipped verbs are listed in [`tui.md`](./tui.md) §1.
 
 **Destructive boundary.** An agent must resolve and display the exact target,
 snapshot relevant state, explain what will be lost, and obtain affirmative human
 confirmation before `kill` or a destructive signal. The MCP signal adapter also
-requires `confirm: true` for interrupt/terminate/kill. A watcher ending is not
+requires `confirm: true` for interrupt/terminate/kill, and `phux_detach`
+requires it too — not because it destroys data (the session and its panes
+keep running), but because it forcibly ejects whatever human or agent is
+currently attached without their say-so. A watcher ending is not
 proof of completion; verify inventory or terminal state under a finite bound.
 
 **How `new` decomposes on the wire.** Session create is no longer an L1
