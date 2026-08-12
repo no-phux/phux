@@ -31,13 +31,15 @@ use std::process::Command;
 use tempfile::TempDir;
 
 /// The canonical deprecation table, compiled straight from the binary's
-/// own source (the bin crate exposes no library target): the same rows
-/// drive this audit, the generated `docs/reference/deprecations.md` page,
-/// and the clap-tree consistency test in `main.rs`, so none can drift.
+/// own source (its module and items are `pub(crate)`, not part of the
+/// `phux` lib crate's public API, so this integration test cannot reach it
+/// through the ordinary `phux::` path): the same rows drive this audit,
+/// the generated `docs/reference/deprecations.md` page, and the clap-tree
+/// consistency test in `lib.rs`, so none can drift.
 #[allow(dead_code, reason = "the audit consumes a subset of each row")]
 #[allow(
     clippy::redundant_pub_crate,
-    reason = "the file's pub(crate) is correct in its home crate, the binary"
+    reason = "the file's pub(crate) is correct in its home crate, the phux lib"
 )]
 #[path = "../src/deprecations.rs"]
 mod table;
@@ -90,7 +92,7 @@ fn assert_exact_note(stderr: &str, expected: &str) {
 // `deprecations::DEPRECATED`, straight from the binary's own source, gets
 // the same three assertions — parses-and-warns, hidden from --help, hidden
 // from completions. The reverse guarantee (every hidden alias in the clap
-// tree HAS a row here) is the tree-walk test in `main.rs`, which shares
+// tree HAS a row here) is the tree-walk test in `lib.rs`, which shares
 // this exact table.
 // ---------------------------------------------------------------------------
 
@@ -171,7 +173,7 @@ fn no_table_row_surfaces_in_help() {
 /// completion scripts. Verb rows grep the joined path markers
 /// `clap_complete` 4.6.7 actually emits (`phux__subcmd__<verb>`, which
 /// cannot collide with the legitimate `host` subtree — see the completion
-/// unit test in `main.rs` for the G3 history); flag rows grep the long
+/// unit test in `lib.rs` for the G3 history); flag rows grep the long
 /// flag itself, which no visible verb shares.
 #[test]
 fn no_table_row_surfaces_in_completions() {

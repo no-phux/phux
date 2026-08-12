@@ -16,6 +16,16 @@ workspace = true
 name = "phux"
 path = "src/main.rs"
 
+# Heap-profiling entry point, gated by the `dhat-heap` feature below.
+# Deliberately a SEPARATE binary from `phux` (see src/lib.rs's "Why this is
+# a library crate" and src/bin/dhat_heap.rs) so `--all-features` never wires
+# dhat's global allocator into the `phux` binary that `cargo test`'s
+# integration tests spawn via `CARGO_BIN_EXE_phux`.
+[[bin]]
+name = "phux-dhat-heap"
+path = "src/bin/dhat_heap.rs"
+required-features = ["dhat-heap"]
+
 [dependencies]
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
@@ -103,12 +113,17 @@ libghostty-vt.workspace = true
 tempfile.workspace = true
 
 [features]
-# Heap profiling via dhat. Swaps the global allocator for `dhat::Alloc`
-# and installs a `dhat::Profiler` guard for the lifetime of `main()`.
-# On clean shutdown, the guard's Drop writes `./dhat-heap.json` (viewable
-# at https://nnethercote.github.io/dh_view/dh_view.html).
+# Heap profiling via dhat, consumed ONLY by the `phux-dhat-heap` binary
+# above (src/bin/dhat_heap.rs) — never by the `phux` binary itself. See
+# src/lib.rs's "Why this is a library crate" doc: dhat's `Profiler` Drop
+# always writes a summary to stderr with no way to silence it, so keeping
+# this out of the `phux` binary is what makes `cargo test -p phux
+# --all-features` safe (it used to corrupt the stderr integration tests
+# spawned via `CARGO_BIN_EXE_phux` assert on).
 #
-# Run with: cargo run --features dhat-heap -- server
+# Run with: cargo run --features dhat-heap --bin phux-dhat-heap -- server
+# On clean shutdown, the profiler guard's Drop writes `./dhat-heap.json`
+# (viewable at https://nnethercote.github.io/dh_view/dh_view.html).
 # Warning: the instrumented allocator is significantly slower than the
 # system allocator; do not use in production builds.
 dhat-heap = ["dep:dhat"]

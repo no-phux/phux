@@ -9,14 +9,17 @@
 //!   the old spelling must be absent from `--help` and shell completions;
 //! - `refdocs::deprecations` renders `docs/reference/deprecations.md` from
 //!   the same rows, pinned by the refdocs freshness test;
-//! - the clap-tree consistency test in `main.rs` walks the parser and
+//! - the clap-tree consistency test in `lib.rs` walks the parser and
 //!   asserts these rows are exactly the hidden deprecation surface — an
 //!   unregistered hidden alias or a stale row fails there.
 //!
 //! This file is deliberately self-contained — no `crate::` paths, no
-//! imports, no inline tests — because the binary crate exposes no library
-//! target, so the integration test compiles this source file directly
-//! (via `#[path]`) to read the same table the binary was compiled with.
+//! imports, no inline tests — because this module and its items are
+//! `pub(crate)`, not part of the crate's public API, so an integration
+//! test (a separate crate) cannot reach them through the ordinary `phux::`
+//! path. `tests/deprecated_aliases.rs` instead compiles this source file
+//! directly (via `#[path]`) to read the same table the binary was compiled
+//! with.
 
 /// Which kind of hidden surface carries an old spelling.
 // No variant is constructed while `DEPRECATED` is empty; both stay live for
@@ -104,7 +107,7 @@ impl Deprecation {
 /// `removed_in` release shipped. The table, and every consumer that reads
 /// it (the audit in `tests/deprecated_aliases.rs`, the generated
 /// `docs/reference/deprecations.md`, and the clap-tree pin test in
-/// `main.rs`), stay wired up for the next spelling that needs one release
+/// `lib.rs`), stay wired up for the next spelling that needs one release
 /// cycle of warning before it goes.
 pub(crate) const DEPRECATED: &[Deprecation] = &[];
 

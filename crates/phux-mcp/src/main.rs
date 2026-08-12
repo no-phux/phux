@@ -31,7 +31,7 @@
 )]
 #![allow(
     clippy::redundant_pub_crate,
-    reason = "bin-internal modules expose items via `pub`; `pub(crate)` would trip unreachable_pub in a binary with no external API (matches crates/phux/src/main.rs)"
+    reason = "bin-internal modules expose items via `pub`; `pub(crate)` would trip unreachable_pub in a binary with no external API (same pattern crates/phux/src/lib.rs uses for its own internal modules)"
 )]
 
 mod agent_tools;

@@ -76,7 +76,7 @@ pub(crate) fn bytes_now(buf: &[u8]) {
 /// `pub(crate)` for the one stdout write this module cannot own: clap's
 /// `Error::print()` for `--help`/`--version`, which renders straight to
 /// `io::stdout()` inside clap. Its caller (`report_parse_error` in
-/// `main.rs`) settles the returned `io::Result` here so a reader that hung
+/// `lib.rs`) settles the returned `io::Result` here so a reader that hung
 /// up gets the same clean `exit(0)` as every `outln!` site.
 pub(crate) fn settle(result: io::Result<()>) {
     let Err(err) = result else { return };

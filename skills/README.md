@@ -1,7 +1,7 @@
 # skills/
 
 `phux/SKILL.md` is the agent skill `phux skill` prints. It is **compiled into
-the binary** with `include_str!` (see `crates/phux/src/main.rs`), so the text an
+the binary** with `include_str!` (see `crates/phux/src/lib.rs`), so the text an
 agent reads always belongs to the binary it is driving. There is no separate
 shipped copy to fall out of date.
 

@@ -919,7 +919,7 @@ fn resolve_quic_target(
 /// the naked path does; an explicit name attaches to that session only.
 #[allow(
     clippy::needless_pass_by_value,
-    reason = "clap hands over the owned HOST:PORT value; a &str signature would only push the borrow into main.rs's dispatch"
+    reason = "clap hands over the owned HOST:PORT value; a &str signature would only push the borrow into lib.rs's dispatch"
 )]
 pub(crate) fn run_attach_quic(
     session: Option<String>,

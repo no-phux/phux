@@ -195,7 +195,7 @@ fn command_inventory_matches_snapshot() {
         EXPECTED_INVENTORY,
         "the phux command inventory drifted from the pinned snapshot; if you \
          added or removed a subcommand, update EXPECTED_INVENTORY in \
-         src/help_inventory.rs and the curated top-level help in main.rs"
+         src/help_inventory.rs and the curated top-level help in lib.rs"
     );
 }
 

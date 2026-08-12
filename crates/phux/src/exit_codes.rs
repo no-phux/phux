@@ -2,7 +2,7 @@
 //!
 //! This module is the single source both exit-status surfaces render
 //! from: the root `--help` EXIT STATUS section (`root_after_long_help` in
-//! `main.rs` builds it via [`exit_status_section`]) and the generated
+//! `lib.rs` builds it via [`exit_status_section`]) and the generated
 //! `docs/reference/exit-codes.md` page (`refdocs::exit_codes`). Adding or
 //! changing a code here updates both; using a code the table does not
 //! carry is what the audit below exists to prevent.
@@ -91,7 +91,7 @@ pub(crate) const EXIT_CODES: &[ExitCodeSpec] = &[
 ];
 
 /// Render the EXIT STATUS help section from [`EXIT_CODES`] — the exact
-/// block `phux --help` shows (via `root_after_long_help` in `main.rs`).
+/// block `phux --help` shows (via `root_after_long_help` in `lib.rs`).
 pub(crate) fn exit_status_section() -> String {
     use std::fmt::Write as _;
 

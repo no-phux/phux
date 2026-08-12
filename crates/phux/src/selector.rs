@@ -4,7 +4,7 @@
 //! [`phux_client::selector`] so the MCP adapter (phux-gj6) can reach the
 //! same parser and resolver the CLI uses, rather than carrying a reduced
 //! duplicate. This module re-exports it under the `selector::` path the
-//! binary already references throughout `main.rs`.
+//! binary already references throughout `lib.rs`.
 
 //! One form does **not** come through this door. `%name`
 //! ([ADR-0075](../../../ADR/0075-agent-name-addressing.md)) parses to

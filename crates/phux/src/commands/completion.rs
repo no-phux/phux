@@ -111,8 +111,8 @@ pub(crate) fn run_completion(shell: Shell) -> ExitCode {
 }
 
 /// The completion script for `shell`, exactly as `phux completion` prints
-/// it. Shared with the leak tests in `main.rs` so they pin the shipped
-/// script, not a lookalike tree.
+/// it. Shared with the leak tests in `help_inventory.rs` so they pin the
+/// shipped script, not a lookalike tree.
 pub(crate) fn completion_script(shell: Shell) -> Vec<u8> {
     let mut cmd = completion_tree();
     let mut script: Vec<u8> = Vec::new();
@@ -225,7 +225,7 @@ mod tests {
     /// Recursive walk of the real parser against the completion tree:
     /// every command path offers exactly the visible args and exactly the
     /// visible subcommands of its real counterpart (phux-c1ry). This is
-    /// the structural guard behind the script-level pins in `main.rs` --
+    /// the structural guard behind the script-level pins in `lib.rs` --
     /// it fails naming the exact path and arg when a future hidden flag
     /// (or nested hidden verb) leaks into the offered tree.
     fn assert_visible_surface(real: &clap::Command, offered: &clap::Command, path: &str) {
