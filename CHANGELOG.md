@@ -9,6 +9,40 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.17.0](https://github.com/phall1/phux/compare/v0.16.0...v0.17.0) (2026-08-14)
+
+
+### Features
+
+* **agent:** accept hook-sourced state ([45e409a](https://github.com/phall1/phux/commit/45e409a237b335153d1b5293ef66f9b8bee6279d))
+* **agent:** detect Claude progress from OSC 9;4 ([d7e74c4](https://github.com/phall1/phux/commit/d7e74c45e39862ed7416e4cb31a6e5f79e532d51))
+* **agent:** publish pane occupant metadata ([c229d90](https://github.com/phall1/phux/commit/c229d9038cefe86a1c0c0acdea65bb79e3e1f4ad))
+* **cli:** add agent skill flag ([deb73ca](https://github.com/phall1/phux/commit/deb73ca19fd8db27b8407f2a26d2b275b0dfe61d))
+* **cli:** add phux mcp launcher ([f712d2e](https://github.com/phall1/phux/commit/f712d2ed4e0705e075f85c6471826cad90407260))
+* **integrations:** ship first-class agent plugins ([1510b59](https://github.com/phall1/phux/commit/1510b591f454377d3cf5cf67d8309aa33b76502c))
+* ship agent discovery suite ([a77daec](https://github.com/phall1/phux/commit/a77daec47d4e07c4bc0a04e5f6f9ae9011b7fb07))
+
+
+### Bug Fixes
+
+* **agent:** share acknowledged input classification ([1b8f5b5](https://github.com/phall1/phux/commit/1b8f5b57c95a61efa3a656d19930e6c014c4148c))
+* **ci:** run doc and deny before test so a flaky test can't mask them ([685cb5a](https://github.com/phall1/phux/commit/685cb5a0a7a54ee84580f2f586b8128462847305))
+* **docs:** stop advertising inactive name selectors ([cc9084d](https://github.com/phall1/phux/commit/cc9084d7bedbc7aa3ad89e304205b747b8d3dcc0))
+* **protocol:** explain fatal connection endings ([ffbaedb](https://github.com/phall1/phux/commit/ffbaedbb6c3b83057e50422d56b103948204bb31))
+* **server:** gate overlay detection before it runs, and run it once ([14429d9](https://github.com/phall1/phux/commit/14429d946d87767dc1f96441dea10fa1cf51b171))
+* **server:** refuse satellite metadata subscriptions instead of accepting them silently ([9b61a3c](https://github.com/phall1/phux/commit/9b61a3c55b06cbaf4904df5b44e4fe72288f61e5))
+* **ux:** make detach recovery transport-safe ([2f12497](https://github.com/phall1/phux/commit/2f1249741f70a32d98a054ca6742f61694e07db1))
+
+
+### Refactors
+
+* **client:** document why deliver_answer skips backoff retry ([8c58f62](https://github.com/phall1/phux/commit/8c58f62ba13b64ee23301902c43152a7af9e7d44))
+
+
+### Documentation
+
+* **adr:** define in-place agent startup contract ([b6de174](https://github.com/phall1/phux/commit/b6de1741cb12389a893c4398b6da0b3775d03de6))
+
 ## [0.16.0](https://github.com/phall1/phux/compare/v0.15.0...v0.16.0) (2026-08-12)
 
 
