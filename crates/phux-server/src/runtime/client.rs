@@ -30,7 +30,9 @@ use super::{
 };
 use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState, TerminalInput};
 use crate::terminal_actor::ConsumerDetachRequest;
-use crate::transport::{FrameReader, FrameWriter, Incoming};
+use crate::transport::{
+    AcceptErrorDisposition, FrameReader, FrameWriter, Incoming, WS_REJECTION_WARN_INTERVAL,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct NegotiatedConnection {
@@ -1119,10 +1121,40 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         if listener.accept_errors_are_fatal() {
                             return Err(err.into());
                         }
-                        // Accept errors are typically transient (EMFILE,
-                        // ECONNABORTED). Log and continue rather than killing
-                        // the server.
-                        error!(error = %err, "accept failed");
+                        match listener.accept_error_disposition(&err) {
+                            AcceptErrorDisposition::Default => {
+                                // Listener and resource errors are typically
+                                // transient (EMFILE, ECONNABORTED). Preserve
+                                // their default-visible diagnosis and continue.
+                                error!(error = %err, "accept failed");
+                            }
+                            AcceptErrorDisposition::PeerRejected {
+                                stage,
+                                source_ip,
+                                warn_suppressed,
+                            } => {
+                                // Every peer-caused rejection remains available
+                                // to an operator who opts into DEBUG. The WARN
+                                // summary is listener-rate-limited, so an
+                                // unauthenticated peer cannot flood defaults.
+                                debug!(
+                                    transport = listener.kind(),
+                                    stage,
+                                    %source_ip,
+                                    "peer connection rejected"
+                                );
+                                if let Some(suppressed_count) = warn_suppressed {
+                                    warn!(
+                                        transport = listener.kind(),
+                                        stage,
+                                        %source_ip,
+                                        suppressed_count,
+                                        interval_seconds = WS_REJECTION_WARN_INTERVAL.as_secs(),
+                                        "peer connection rejections observed"
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }

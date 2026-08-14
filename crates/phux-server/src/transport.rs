@@ -25,7 +25,9 @@ pub mod tls;
 pub mod webtransport;
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
@@ -35,12 +37,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream, UnixListener};
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request};
+use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 
 use phux_protocol::wire::frame::MAX_FRAME_LEN;
 
 const LENGTH_PREFIX: usize = 4;
+pub(crate) const WS_REJECTION_WARN_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Read side of a client connection: yields one complete encoded frame (length
 /// prefix included) per call, or `None` at end-of-stream.
@@ -61,6 +64,16 @@ pub(crate) trait Incoming {
     type Reader: FrameReader + 'static;
     type Writer: FrameWriter + 'static;
     async fn accept(&self) -> io::Result<(Self::Reader, Self::Writer, PeerIdentity)>;
+
+    /// Classify a non-fatal accept error for the shared accept loop's logging.
+    ///
+    /// The default preserves the loop's `ERROR` event for listener and resource
+    /// failures. A listener may return a narrower disposition only for errors it
+    /// created and can recognize without inspecting their display text.
+    fn accept_error_disposition(&self, _error: &io::Error) -> AcceptErrorDisposition {
+        AcceptErrorDisposition::Default
+    }
+
     /// Whether an accept error means the whole incoming source is gone.
     ///
     /// Socket listeners keep serving after transient per-connection errors.
@@ -72,6 +85,20 @@ pub(crate) trait Incoming {
     }
     /// Short transport label for logs (`"uds"` / `"ws"`).
     fn kind(&self) -> &'static str;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcceptErrorDisposition {
+    /// Preserve the shared accept loop's default `ERROR` event.
+    Default,
+    /// The listener recognized a privacy-safe peer-caused rejection. The loop
+    /// always emits it at `DEBUG`; `warn_suppressed` adds the rate-limited
+    /// default-visible summary and reports how many summaries were suppressed.
+    PeerRejected {
+        stage: &'static str,
+        source_ip: IpAddr,
+        warn_suppressed: Option<u64>,
+    },
 }
 
 // ── Unix domain socket ───────────────────────────────────────────────────────
@@ -284,16 +311,26 @@ pub(crate) struct WsListener {
     tcp: TcpListener,
     tls: Option<tokio_rustls::TlsAcceptor>,
     tokens: Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>,
+    rejection_warnings: Mutex<PeerRejectionWarnLimiter>,
 }
 
 impl WsListener {
+    const fn from_parts(
+        tcp: TcpListener,
+        tls: Option<tokio_rustls::TlsAcceptor>,
+        tokens: Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>,
+    ) -> Self {
+        Self {
+            tcp,
+            tls,
+            tokens,
+            rejection_warnings: Mutex::new(PeerRejectionWarnLimiter::new()),
+        }
+    }
+
     /// Bind a plaintext, unauthenticated listener (loopback browser client).
     pub(crate) async fn bind(addr: SocketAddr) -> io::Result<Self> {
-        Ok(Self {
-            tcp: TcpListener::bind(addr).await?,
-            tls: None,
-            tokens: None,
-        })
+        Ok(Self::from_parts(TcpListener::bind(addr).await?, None, None))
     }
 
     /// Bind a TLS-terminated, token-authenticated listener for remote consumers.
@@ -307,11 +344,11 @@ impl WsListener {
         tls: tokio_rustls::TlsAcceptor,
         tokens: std::sync::Arc<crate::auth::ReloadingTokenStore>,
     ) -> io::Result<Self> {
-        Ok(Self {
-            tcp: TcpListener::bind(addr).await?,
-            tls: Some(tls),
-            tokens: Some(tokens),
-        })
+        Ok(Self::from_parts(
+            TcpListener::bind(addr).await?,
+            Some(tls),
+            Some(tokens),
+        ))
     }
 
     pub(crate) fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -371,11 +408,21 @@ impl Incoming for WsListener {
 
     async fn accept(&self) -> io::Result<(WsReader, WsWriter, PeerIdentity)> {
         let (tcp, peer) = self.tcp.accept().await?;
+        // The remote ephemeral port is neither useful for pairing diagnosis nor
+        // stable enough to be an identity field. Retain only the source IP.
+        let source_ip = peer.ip();
 
         // TLS handshake first (if configured), so the bearer token in the
-        // upgrade request is already encrypted when we read it.
+        // upgrade request is already encrypted when we read it. The underlying
+        // TLS error is deliberately discarded: certificate and handshake
+        // details are not part of the default-log privacy surface.
         let stream = match &self.tls {
-            Some(acceptor) => ServerStream::Tls(Box::new(acceptor.accept(tcp).await?)),
+            Some(acceptor) => ServerStream::Tls(Box::new(
+                acceptor
+                    .accept(tcp)
+                    .await
+                    .map_err(|_| ws_accept_error(WsAcceptStage::TlsHandshake, source_ip))?,
+            )),
             None => ServerStream::Plain(tcp),
         };
 
@@ -400,14 +447,14 @@ impl Incoming for WsListener {
                     )
                 })
                 .await
-                .map_err(io::Error::other)?;
+                .map_err(|error| classify_ws_upgrade_error(&error, source_ip))?;
                 let id = captured.borrow_mut().take();
                 (ws, id)
             }
             None => (
                 tokio_tungstenite::accept_async(stream)
                     .await
-                    .map_err(io::Error::other)?,
+                    .map_err(|_| ws_accept_error(WsAcceptStage::Upgrade, source_ip))?,
                 None,
             ),
         };
@@ -415,23 +462,162 @@ impl Incoming for WsListener {
         // An authenticated remote consumer is a first-class peer: its
         // device id rides `mcp_host_key` (the existing attestation slot), so
         // policy and audit see a non-anonymous identity rather than the
-        // `uid: 0` stamp the plaintext browser path carries.
+        // `uid: 0` stamp the plaintext browser path carries. Log the explicitly
+        // privacy-safe fields before the identity moves into server state.
+        if let Some(device_pseudonym) = device_id.as_deref() {
+            tracing::info!(
+                transport = "ws",
+                %source_ip,
+                device_pseudonym,
+                "paired WebSocket consumer admitted"
+            );
+        }
         let peer_identity = PeerIdentity {
             uid: 0,
             pid: None,
             exe_path: None,
             mcp_host_key: device_id,
             transport: TransportType::WebSocket,
-            source_addr: Some(peer.ip()),
+            source_addr: Some(source_ip),
         };
 
         let (tx, rx) = ws.split();
         Ok((WsReader { rx }, WsWriter { tx }, peer_identity))
     }
 
+    fn accept_error_disposition(&self, error: &io::Error) -> AcceptErrorDisposition {
+        let Some(rejection) = error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<WsPeerRejection>())
+        else {
+            return AcceptErrorDisposition::Default;
+        };
+
+        let decision = {
+            let mut limiter = match self.rejection_warnings.lock() {
+                Ok(limiter) => limiter,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            limiter.observe(Instant::now())
+        };
+        let warn_suppressed = match decision {
+            PeerRejectionWarnDecision::Suppress => None,
+            PeerRejectionWarnDecision::Emit { suppressed } => Some(suppressed),
+        };
+        AcceptErrorDisposition::PeerRejected {
+            stage: rejection.stage.as_str(),
+            source_ip: rejection.source_ip,
+            warn_suppressed,
+        }
+    }
+
     fn kind(&self) -> &'static str {
         "ws"
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WsAcceptStage {
+    TlsHandshake,
+    PairingAuthentication,
+    Upgrade,
+}
+
+impl WsAcceptStage {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::TlsHandshake => "tls_handshake",
+            Self::PairingAuthentication => "pairing_authentication",
+            Self::Upgrade => "websocket_upgrade",
+        }
+    }
+}
+
+/// A typed, privacy-safe peer rejection created by [`WsListener`].
+///
+/// It intentionally carries no source error: TLS and HTTP/WebSocket errors can
+/// contain request, URI, header, certificate, or token material that must not
+/// reach default logs. The shared accept loop recognizes this concrete type
+/// rather than parsing display strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WsPeerRejection {
+    stage: WsAcceptStage,
+    source_ip: IpAddr,
+}
+
+impl std::fmt::Display for WsPeerRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let diagnosis = match self.stage {
+            WsAcceptStage::TlsHandshake => "WebSocket TLS handshake failed",
+            WsAcceptStage::PairingAuthentication => "WebSocket pairing authentication rejected",
+            WsAcceptStage::Upgrade => "WebSocket upgrade failed",
+        };
+        write!(formatter, "{diagnosis} (source_ip={})", self.source_ip)
+    }
+}
+
+impl std::error::Error for WsPeerRejection {}
+
+fn ws_accept_error(stage: WsAcceptStage, source_ip: IpAddr) -> io::Error {
+    io::Error::other(WsPeerRejection { stage, source_ip })
+}
+
+/// Authentication is the one HTTP response generated by our callback. All
+/// other failures belong to the WebSocket upgrade stage. Neither branch keeps
+/// or formats the underlying tungstenite error.
+fn classify_ws_upgrade_error(error: &WebSocketError, source_ip: IpAddr) -> io::Error {
+    ws_accept_error(classify_ws_upgrade_stage(error), source_ip)
+}
+
+fn classify_ws_upgrade_stage(error: &WebSocketError) -> WsAcceptStage {
+    match error {
+        WebSocketError::Http(response)
+            if response.status()
+                == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED =>
+        {
+            WsAcceptStage::PairingAuthentication
+        }
+        _ => WsAcceptStage::Upgrade,
+    }
+}
+
+#[derive(Debug)]
+struct PeerRejectionWarnLimiter {
+    last_warning: Option<Instant>,
+    suppressed: u64,
+}
+
+impl PeerRejectionWarnLimiter {
+    const fn new() -> Self {
+        Self {
+            last_warning: None,
+            suppressed: 0,
+        }
+    }
+
+    /// Pure state transition over an injected monotonic timestamp. The first
+    /// rejection warns immediately; later warnings occur at most once per
+    /// interval. One listener-wide counter keeps memory bounded independently
+    /// of how many source addresses connect.
+    fn observe(&mut self, now: Instant) -> PeerRejectionWarnDecision {
+        let should_warn = self
+            .last_warning
+            .is_none_or(|last| now.saturating_duration_since(last) >= WS_REJECTION_WARN_INTERVAL);
+        if should_warn {
+            self.last_warning = Some(now);
+            let suppressed = std::mem::take(&mut self.suppressed);
+            PeerRejectionWarnDecision::Emit { suppressed }
+        } else {
+            self.suppressed = self.suppressed.saturating_add(1);
+            PeerRejectionWarnDecision::Suppress
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeerRejectionWarnDecision {
+    Suppress,
+    Emit { suppressed: u64 },
 }
 
 /// Extract and verify the `Authorization: Bearer <hex>` pairing token from a
@@ -490,11 +676,7 @@ mod tests {
 
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp.local_addr().unwrap();
-        let listener = WsListener {
-            tcp,
-            tls: None,
-            tokens: Some(Arc::new(store)),
-        };
+        let listener = WsListener::from_parts(tcp, None, Some(Arc::new(store)));
         (listener, addr, token_hex, file)
     }
 
@@ -533,27 +715,80 @@ mod tests {
 
         let ((got, peer), ()) = tokio::join!(server, client);
         assert_eq!(got.unwrap().as_ref(), frame.as_slice(), "frame round-trips");
+        let expected_device = hex::encode(&Sha256::digest(TEST_TOKEN)[..8]);
         assert_eq!(peer.transport, TransportType::WebSocket);
-        assert!(
-            peer.mcp_host_key.is_some(),
-            "an authenticated remote peer is non-anonymous"
+        assert_eq!(peer.source_addr, Some(addr.ip()));
+        assert_eq!(peer.mcp_host_key.as_deref(), Some(expected_device.as_str()));
+        assert_eq!(peer.uid, 0);
+        assert_eq!(peer.pid, None);
+        assert_eq!(peer.exe_path, None);
+    }
+
+    async fn refused_handshake(
+        listener: &WsListener,
+        addr: SocketAddr,
+        request: Request,
+    ) -> (String, WebSocketError) {
+        let server = listener.accept();
+        let client = async {
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            tokio_tungstenite::client_async(request, tcp).await
+        };
+        let (server_result, client_result) = tokio::join!(server, client);
+        let server_error = match server_result {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("server unexpectedly admitted rejected handshake"),
+        };
+        let Err(client_error) = client_result else {
+            panic!("client unexpectedly completed rejected handshake");
+        };
+        (server_error, client_error)
+    }
+
+    fn assert_generic_unauthorized(error: WebSocketError) {
+        let WebSocketError::Http(response) = error else {
+            panic!("expected HTTP rejection");
+        };
+        assert_eq!(
+            response.status(),
+            tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            response.body().as_deref(),
+            Some(b"missing or invalid pairing token".as_slice())
         );
     }
 
     #[tokio::test]
-    async fn invalid_token_is_refused_at_the_handshake() {
+    async fn invalid_malformed_and_missing_tokens_are_identical_safe_rejections() {
         let (listener, addr, _token_hex, _tokens) = token_listener().await;
         let wrong = hex::encode([0x22u8; crate::auth::TOKEN_LEN]);
 
-        let server = async { listener.accept().await };
-        let client = async {
-            let tcp = TcpStream::connect(addr).await.unwrap();
-            tokio_tungstenite::client_async(bearer_request(addr, &wrong), tcp).await
-        };
+        let (invalid_error, invalid_response) =
+            refused_handshake(&listener, addr, bearer_request(addr, &wrong)).await;
+        let (malformed_error, malformed_response) =
+            refused_handshake(&listener, addr, bearer_request(addr, "not-hex")).await;
+        let missing_request = format!("ws://{addr}/").into_client_request().unwrap();
+        let (missing_error, missing_response) =
+            refused_handshake(&listener, addr, missing_request).await;
 
-        let (server_res, client_res) = tokio::join!(server, client);
-        assert!(server_res.is_err(), "server rejects the unknown token");
-        assert!(client_res.is_err(), "client upgrade fails with HTTP 401");
+        assert_generic_unauthorized(invalid_response);
+        assert_generic_unauthorized(malformed_response);
+        assert_generic_unauthorized(missing_response);
+        assert_eq!(invalid_error, malformed_error);
+        assert_eq!(invalid_error, missing_error);
+        assert_eq!(
+            invalid_error,
+            format!(
+                "WebSocket pairing authentication rejected (source_ip={})",
+                addr.ip()
+            )
+        );
+        assert!(!invalid_error.contains(&wrong));
+        assert!(!invalid_error.contains("not-hex"));
+        assert!(!invalid_error.to_ascii_lowercase().contains("authorization"));
+        assert!(!invalid_error.to_ascii_lowercase().contains("bearer"));
+        assert!(!invalid_error.contains(&addr.port().to_string()));
     }
 
     /// phux-0d92: ADR-0081 promises `phux pair` is a pure credential operation
@@ -610,20 +845,83 @@ mod tests {
         assert!(client_res.is_err());
     }
 
-    #[tokio::test]
-    async fn missing_authorization_header_is_refused() {
-        let (listener, addr, _token_hex, _tokens) = token_listener().await;
+    #[test]
+    fn websocket_accept_errors_are_typed_and_classified_without_display_parsing() {
+        let source_ip = "192.0.2.41".parse().unwrap();
+        let tls_error = ws_accept_error(WsAcceptStage::TlsHandshake, source_ip);
+        assert_eq!(
+            tls_error.to_string(),
+            "WebSocket TLS handshake failed (source_ip=192.0.2.41)"
+        );
+        let typed = tls_error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<WsPeerRejection>())
+            .expect("listener errors retain the safe concrete type");
+        assert_eq!(typed.stage, WsAcceptStage::TlsHandshake);
+        assert_eq!(typed.source_ip, source_ip);
 
-        let server = async { listener.accept().await };
-        let client = async {
-            let tcp = TcpStream::connect(addr).await.unwrap();
-            let req = format!("ws://{addr}/").into_client_request().unwrap();
-            tokio_tungstenite::client_async(req, tcp).await
-        };
+        let auth_error = WebSocketError::Http(
+            tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED)
+                .body(None::<Vec<u8>>)
+                .unwrap(),
+        );
+        assert_eq!(
+            classify_ws_upgrade_stage(&auth_error),
+            WsAcceptStage::PairingAuthentication
+        );
 
-        let (server_res, client_res) = tokio::join!(server, client);
-        assert!(server_res.is_err());
-        assert!(client_res.is_err());
+        let unsafe_underlying = WebSocketError::Protocol(
+            tokio_tungstenite::tungstenite::error::ProtocolError::InvalidHeader(
+                "authorization".parse().unwrap(),
+            ),
+        );
+        assert_eq!(
+            classify_ws_upgrade_stage(&unsafe_underlying),
+            WsAcceptStage::Upgrade
+        );
+        let safe_upgrade = classify_ws_upgrade_error(&unsafe_underlying, source_ip).to_string();
+        assert_eq!(
+            safe_upgrade,
+            "WebSocket upgrade failed (source_ip=192.0.2.41)"
+        );
+        assert!(!safe_upgrade.contains("authorization"));
+    }
+
+    #[test]
+    fn peer_rejection_warning_limiter_is_global_bounded_and_deterministic() {
+        let start = Instant::now();
+        let mut limiter = PeerRejectionWarnLimiter::new();
+
+        assert_eq!(
+            limiter.observe(start),
+            PeerRejectionWarnDecision::Emit { suppressed: 0 }
+        );
+        assert_eq!(
+            limiter.observe(
+                start + WS_REJECTION_WARN_INTERVAL.saturating_sub(Duration::from_nanos(1)),
+            ),
+            PeerRejectionWarnDecision::Suppress
+        );
+        assert_eq!(
+            limiter.observe(start + WS_REJECTION_WARN_INTERVAL),
+            PeerRejectionWarnDecision::Emit { suppressed: 1 }
+        );
+        assert_eq!(
+            limiter.observe(start + WS_REJECTION_WARN_INTERVAL),
+            PeerRejectionWarnDecision::Suppress
+        );
+        assert_eq!(
+            limiter.observe(start + WS_REJECTION_WARN_INTERVAL * 2),
+            PeerRejectionWarnDecision::Emit { suppressed: 1 }
+        );
+
+        limiter.suppressed = u64::MAX;
+        assert_eq!(
+            limiter.observe(start + WS_REJECTION_WARN_INTERVAL * 2),
+            PeerRejectionWarnDecision::Suppress
+        );
+        assert_eq!(limiter.suppressed, u64::MAX);
     }
 
     #[test]

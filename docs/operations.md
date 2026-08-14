@@ -90,6 +90,40 @@ The non-blocking file writer offloads I/O to a background thread; its `WorkerGua
 
 Log sinks are created with mode `0o600` (owner-only) on Unix so another user on a shared box cannot read them ([ADR-0028](../ADR/0028-runtime-log-control.md)). Input atoms are **self-narrating and redaction-safe**: `KeyEvent` and `PasteEvent` have hand-written `Debug` impls (and `InputEvent::narrate`) that report only structural facts — action, physical key, modifiers, payload *lengths* — and never the typed key text or pasted bytes. A `trace!(?input, …)` therefore records that a keystroke or paste happened, with its shape, without spilling the secret it carried.
 
+### Remote WebSocket pairing admissions
+
+The default log keeps remote pairing diagnosis visible without making request
+material visible. Its decision tree is:
+
+- Every peer-caused TLS, pairing-authentication, or WebSocket-upgrade rejection
+  produces one `DEBUG` event naming its safe `stage` and `source_ip`. A
+  listener-wide limiter also emits an immediate `WARN`, then at most one `WARN`
+  per 60 seconds while further rejections arrive. A later warning carries the
+  latest safe stage/source IP and `suppressed_count` since the previous warning.
+  The limiter has one saturating counter, not a per-IP map, so hostile source
+  churn cannot grow memory or flood the default log. These handled events never
+  fall through to the accept loop's default `ERROR`, so they are not duplicated.
+- Listener and resource failures the WebSocket listener did not create (such as
+  TCP accept exhaustion), and accept errors from listeners using the default
+  disposition, retain the shared accept loop's single `ERROR` event.
+- Peer rejection errors are a concrete safe type recognized without parsing
+  error text. They retain stage diagnosis but exclude the ephemeral port and
+  discard the underlying TLS/HTTP/WebSocket error so URIs, headers,
+  certificates, and tokens cannot be formatted accidentally. Missing,
+  malformed, unknown, and revoked tokens all use the same pairing-authentication
+  text and the same generic HTTP 401 response.
+- A successfully token-authenticated WebSocket admission produces one `INFO`
+  event with only `transport=ws`, `source_ip`, and `device_pseudonym`. The
+  pseudonym is the existing non-reversible 16-hex SHA-256 prefix derived from
+  the presented token; it is useful for correlating reconnects but is not the
+  bearer token.
+- Anonymous loopback WebSocket admissions and admissions on other transports
+  retain the shared `DEBUG` connection event; they gain no default-visible
+  identity event.
+
+These are connection diagnostics, not a durable access or per-operation audit
+log. `PeerIdentity` is never logged wholesale.
+
 ### Crash capture
 
 Panics are durable on both sides. The **client** panic hook logs the panic message plus a captured `std::backtrace::Backtrace` to its file sink *before* it restores the terminal (survives even though the default hook's stderr backtrace would vanish into the dead alt screen). The **server** panic hook logs task/actor panics with their backtrace through `tracing`, so a daemonized server's crash lands in the log file. Both honor `RUST_BACKTRACE` for trace verbosity.
