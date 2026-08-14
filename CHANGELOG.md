@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.18.0](https://github.com/phall1/phux/compare/v0.17.0...v0.18.0) (2026-08-14)
+
+
+### Features
+
+* **remote:** make pairing attempts diagnosable ([84eb836](https://github.com/phall1/phux/commit/84eb8369fd3af38c653de1c6805c219a66b1a6c4))
+
+
+### Bug Fixes
+
+* **ci:** provision just before integration gate ([7f9536f](https://github.com/phall1/phux/commit/7f9536fc92aee4f4a6b34a4fd93946691d75c21d))
+
 ## [0.17.0](https://github.com/phall1/phux/compare/v0.16.0...v0.17.0) (2026-08-14)
 
 
