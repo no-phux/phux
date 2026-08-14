@@ -222,8 +222,6 @@ jobs:
             integrations/opencode/package-lock.json
             integrations/pi/package-lock.json
             integrations/claude/package-lock.json
-      - name: agent integration gates
-        run: just agent-integrations-check
       # Runner disk headroom (phux-a5g7): the restore stack (nix store via
       # cachix + rust-cache + sccache) sits near the hosted runner's free
       # space; run 29443995632 died with ENOSPC before its first cargo
@@ -245,6 +243,10 @@ jobs:
           name: phux
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
+      # `just` is provided by the pinned dev shell, not the hosted runner.
+      # Keep this after Nix setup or every PR fails before reaching Rust.
+      - name: agent integration gates
+        run: nix develop -c just agent-integrations-check
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         id: rust-cache
