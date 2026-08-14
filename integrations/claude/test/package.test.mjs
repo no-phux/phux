@@ -10,10 +10,11 @@ const root = new URL("../", import.meta.url);
 
 test("declares one marketplace-ready plugin with phux MCP and bounded lifecycle hooks", async () => {
   const manifest = JSON.parse(await readFile(new URL("../.claude-plugin/plugin.json", import.meta.url)));
+  const packageManifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url)));
   const mcp = JSON.parse(await readFile(new URL("../.mcp.json", import.meta.url)));
   const hooks = JSON.parse(await readFile(new URL("../hooks/hooks.json", import.meta.url)));
   assert.equal(manifest.name, "phux");
-  assert.equal(manifest.version, "0.1.0");
+  assert.equal(manifest.version, packageManifest.version);
   assert.deepEqual(mcp.mcpServers.phux, { command: "phux", args: ["mcp"] });
   assert.deepEqual(Object.keys(hooks.hooks).sort(), [
     "Notification", "PermissionRequest", "SessionEnd", "SessionStart",
