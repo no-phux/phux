@@ -239,7 +239,17 @@ fn attach_sizes_the_pane_to_the_viewport_minus_the_status_bar() {
     let _client = AttachedClient::start(&server, ATTACH_PTY);
 
     let (cols, rows) = ATTACH_PTY;
-    let want = (u64::from(cols), u64::from(rows) - 1);
+    // phux-k0cw: the content rect is narrower as well as shorter now — the
+    // window sidebar ships enabled, so it reserves its columns on the same
+    // attach. Both axes are the same reconciliation, so assert the whole
+    // content rect rather than only the row this test was written for.
+    // Read from the shipped default rather than hardcoded, so changing the
+    // width in one place does not silently leave this asserting the old one.
+    let sidebar = phux_config::SidebarCfg::default();
+    let want = (
+        u64::from(cols) - u64::from(sidebar.width),
+        u64::from(rows) - 1,
+    );
     let deadline = Instant::now() + ATTACH_DEADLINE;
     let mut seen = server.pane_size();
     while Instant::now() < deadline && seen != want {
@@ -247,13 +257,16 @@ fn attach_sizes_the_pane_to_the_viewport_minus_the_status_bar() {
         seen = server.pane_size();
     }
     assert_eq!(
-        seen, want,
+        seen,
+        want,
         "an attached client on a {cols}x{rows} PTY reserves one row for the \
-         status bar, so the pane's real grid must settle at {want:?}. Seeing \
-         {rows} rows means the client never sent the post-attach \
-         TERMINAL_RESIZE: the PTY is a row taller than the rect the client \
-         paints into, so the shell's bottom line renders into a row that is \
-         clipped away and the bar looks like it overwrote it."
+         status bar and {sidebar_width} columns for the window sidebar, so \
+         the pane's real grid must settle at {want:?}. Seeing the full {rows} \
+         rows or {cols} columns means the client never sent the post-attach \
+         TERMINAL_RESIZE: the PTY is larger than the rect the client paints \
+         into, so the shell renders into cells that are clipped away and the \
+         chrome looks like it overwrote them.",
+        sidebar_width = sidebar.width
     );
 }
 
