@@ -163,6 +163,54 @@ fn format_attention_hint(asking: usize) -> Option<String> {
     clippy::too_many_arguments,
     reason = "arg list mirrors the driver's chrome state; the ADR-0040 agent index made it 8 and the phux-p4vp vcs index 9"
 )]
+/// An empty peer bundle for unit tests that exercise the chrome refresh
+/// without any cross-session state.
+#[cfg(test)]
+fn no_peers() -> super::sidebar_zones::PeerInputs<'static> {
+    use std::sync::LazyLock;
+    static SESSIONS: &[phux_protocol::wire::info::SessionInfo] = &[];
+    static LAYOUTS: LazyLock<HashMap<phux_protocol::ids::SessionId, Workspace>> =
+        LazyLock::new(HashMap::new);
+    static AGENTS: LazyLock<HashMap<TerminalId, AgentRecord>> = LazyLock::new(HashMap::new);
+    static ATTENTION: LazyLock<std::collections::HashSet<TerminalId>> =
+        LazyLock::new(std::collections::HashSet::new);
+    super::sidebar_zones::PeerInputs {
+        sessions: SESSIONS,
+        focused_session: None,
+        foreign_layouts: &LAYOUTS,
+        foreign_agents: &AGENTS,
+        foreign_attention: &ATTENTION,
+    }
+}
+
+/// Bundle the driver's peer-wide caches for the sidebar's cross-session
+/// zones (phux-k0cw).
+///
+/// A free function rather than a method so the call sites read the same at
+/// all eleven of them, and so a test can build one from synthetic state
+/// without standing up a driver.
+const fn peer_inputs<'a>(
+    sessions: &'a [phux_protocol::wire::info::SessionInfo],
+    focused_session: Option<phux_protocol::ids::SessionId>,
+    foreign_layouts: &'a HashMap<phux_protocol::ids::SessionId, Workspace>,
+    foreign_agents: &'a HashMap<TerminalId, AgentRecord>,
+    foreign_attention: &'a std::collections::HashSet<TerminalId>,
+) -> super::sidebar_zones::PeerInputs<'a> {
+    super::sidebar_zones::PeerInputs {
+        sessions,
+        focused_session,
+        foreign_layouts,
+        foreign_agents,
+        foreign_attention,
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the chrome refresh is the single chokepoint every painter feeds \
+              through; collapsing the list means a context struct, which is \
+              phux-jx39's job and not this stage's"
+)]
 fn refresh_window_chrome(
     status_bar: Option<&mut StatusBarPainter>,
     sidebar_painter: &mut SidebarPainter,
@@ -180,6 +228,11 @@ fn refresh_window_chrome(
     // phux-p4vp: pane cwd + branch memo; each window's branch line derives
     // from its focused leaf's working directory.
     vcs: &mut VcsIndex,
+    // phux-k0cw: the peer-wide state zones 1 and 3 are projected from. One
+    // struct rather than five more positional parameters — this function
+    // already carried a `too_many_arguments` allow, and growing that list is
+    // how a 22-argument function happens (phux-jx39).
+    peers: super::sidebar_zones::PeerInputs<'_>,
 ) -> bool {
     let windows = window_infos(workspace, panes, zoomed, &agent_meta.records, vcs);
     let mut changed = false;
@@ -197,9 +250,15 @@ fn refresh_window_chrome(
         changed |= sb.set_last_exit(focused.and_then(|slot| slot.last_exit));
     }
     changed |= sidebar_painter.set_windows(windows);
-    // phux-foz.9: the sidebar's agents section — one row per agent-running
-    // pane, sourced from the ADR-0040 records with the OSC-title fallback.
-    changed |= sidebar_painter.set_needs_you(agent_entries(workspace, panes, agent_meta));
+    // phux-foz.9 / phux-k0cw: zone 1 is the attention queue — the local rows
+    // the ADR-0040 records produce, merged with every peer session's and
+    // ranked as one list, because urgency ignores locality.
+    changed |= sidebar_painter.set_needs_you(super::sidebar_zones::needs_you_queue(
+        agent_entries(workspace, panes, agent_meta),
+        &peers,
+    ));
+    // phux-k0cw: zone 3 is the roster — one rolled-up line per other session.
+    changed |= sidebar_painter.set_roster(super::sidebar_zones::session_roster(&peers));
     changed
 }
 
@@ -978,8 +1037,14 @@ pub async fn run_headless_rendered(
     // composited frame shows the sidebar tabs when `[sidebar]` is enabled.
     let mut sidebar_painter = SidebarPainter::new(sidebar_theme);
     sidebar_painter.set_windows(windows);
-    // phux-foz.9: and the agents section, from the same record index +
+    // phux-foz.9: and the attention queue, from the same record index +
     // title fallback a live attach renders.
+    //
+    // phux-k0cw: LOCAL rows only, and no roster at all. A capture must be
+    // reproducible from one session's state; sweeping the server for peer
+    // layouts would make the same command emit different bytes depending on
+    // what else happened to be running at the time. The composite has no
+    // subscriptions and no event loop to keep such a sweep honest anyway.
     sidebar_painter.set_needs_you(agent_entries(&workspace, &panes, &agent_meta));
 
     // Compose the assembled frame against the render layout (honoring zoom).
@@ -2007,6 +2072,12 @@ async fn main_loop<W: super::RenderSink>(
         std::collections::HashSet::new();
     let mut foreign_agent_subscribed: std::collections::HashSet<TerminalId> =
         std::collections::HashSet::new();
+    // phux-k0cw: peer panes whose agent has asked for a human (an ADR-0035
+    // `Asked` for a Terminal outside this client's pane set). The local
+    // equivalent is `PaneSlot::attention`, which a foreign pane has no slot
+    // to carry, so the flag lives here and is pruned with the peer records.
+    let mut foreign_attention: std::collections::HashSet<TerminalId> =
+        std::collections::HashSet::new();
     // phux-foz.8: the deferred window select of a one-step cross-session
     // pick, consumed on the first layout reconcile below. phux-jpqd:
     // `pending_pane` is the DFS leaf ordinal focused after the window
@@ -2233,6 +2304,18 @@ async fn main_loop<W: super::RenderSink>(
             own_client_id,
             &agent_meta,
             &mut vcs,
+            // phux-k0cw: the peer sweep has not answered yet at bootstrap, so
+            // zones 1 and 3 start empty and fill as the replies land. That is
+            // the intended shape: the queue holds at zero rows rather than
+            // animating to correctness in the user's peripheral vision on
+            // every attach.
+            peer_inputs(
+                &sessions,
+                focused_session,
+                &foreign_layouts,
+                &foreign_agents,
+                &foreign_attention,
+            ),
         );
     }
 
@@ -2335,6 +2418,13 @@ async fn main_loop<W: super::RenderSink>(
                 own_client_id,
                 &agent_meta,
                 &mut vcs,
+                peer_inputs(
+                    &sessions,
+                    focused_session,
+                    &foreign_layouts,
+                    &foreign_agents,
+                    &foreign_attention,
+                ),
             );
             // ADR-0029: demoting a ladder row touches no pane interior, so this
             // is an in-place CHROME paint, never a full-frame clear. Gated on
@@ -2623,6 +2713,13 @@ async fn main_loop<W: super::RenderSink>(
                         own_client_id,
                         &agent_meta,
                     &mut vcs,
+                    peer_inputs(
+                        &sessions,
+                        focused_session,
+                        &foreign_layouts,
+                        &foreign_agents,
+                        &foreign_attention,
+                    ),
                     );
                     // phux-5ke.4: on overlay dismiss the dispatcher
                     // sets layout_changed=true; the full-frame repaint
@@ -2700,6 +2797,13 @@ async fn main_loop<W: super::RenderSink>(
                         own_client_id,
                         &agent_meta,
                         &mut vcs,
+                        peer_inputs(
+                            &sessions,
+                            focused_session,
+                            &foreign_layouts,
+                            &foreign_agents,
+                            &foreign_attention,
+                        ),
                         viewport_dims,
                         sidebar,
                         &session_name,
@@ -2984,15 +3088,17 @@ async fn main_loop<W: super::RenderSink>(
                         } else {
                             false
                         };
-                        // A peer's asked flag has nowhere to live yet — a
-                        // foreign pane has no `PaneSlot` — so it lands with
-                        // the rest of the peer state in the k0cw.6
-                        // projection; here it is a repaint reason. Likewise a
-                        // peer spawn/close: the layouts are re-read on the
-                        // next sweep, so flagging is enough.
+                        // Only a NEW ask is a repaint reason; a repeated one
+                        // changes nothing the strip renders.
+                        let asked_folded = outcome
+                            .foreign_attention
+                            .is_some_and(|id| foreign_attention.insert(id));
+                        // A peer spawn/close needs no fold of its own: the
+                        // layouts are re-read on the next sweep, so flagging
+                        // the repaint is enough.
                         let foreign_dirty = layout_folded
                             || agent_folded
-                            || outcome.foreign_attention.is_some()
+                            || asked_folded
                             || outcome.foreign_pane_set_dirty;
                         if foreign_dirty {
                             repaint.raise_chrome();
@@ -3061,6 +3167,13 @@ async fn main_loop<W: super::RenderSink>(
                                 own_client_id,
                                 &agent_meta,
                             &mut vcs,
+                            peer_inputs(
+                                &sessions,
+                                focused_session,
+                                &foreign_layouts,
+                                &foreign_agents,
+                                &foreign_attention,
+                            ),
                             );
                             // ADR-0029: nothing about a title / lease /
                             // attention change touches a pane interior, so this
@@ -3248,6 +3361,13 @@ async fn main_loop<W: super::RenderSink>(
                                 own_client_id,
                                 &agent_meta,
                             &mut vcs,
+                            peer_inputs(
+                                &sessions,
+                                focused_session,
+                                &foreign_layouts,
+                                &foreign_agents,
+                                &foreign_attention,
+                            ),
                             );
                             // phux-z6wt: this arm fires for a peer's layout
                             // broadcast and for the TerminalSpawned/
@@ -3312,6 +3432,13 @@ async fn main_loop<W: super::RenderSink>(
                                 own_client_id,
                                 &agent_meta,
                             &mut vcs,
+                            peer_inputs(
+                                &sessions,
+                                focused_session,
+                                &foreign_layouts,
+                                &foreign_agents,
+                                &foreign_attention,
+                            ),
                             );
                             if chrome_changed && !overlays.is_active() {
                                 repaint.raise_chrome();
@@ -3345,6 +3472,13 @@ async fn main_loop<W: super::RenderSink>(
                                 own_client_id,
                                 &agent_meta,
                                 &mut vcs,
+                                peer_inputs(
+                                    &sessions,
+                                    focused_session,
+                                    &foreign_layouts,
+                                    &foreign_agents,
+                                    &foreign_attention,
+                                ),
                                 viewport_dims,
                                 sidebar,
                                 &session_name,
@@ -3628,6 +3762,13 @@ async fn main_loop<W: super::RenderSink>(
                         own_client_id,
                         &agent_meta,
                     &mut vcs,
+                    peer_inputs(
+                        &sessions,
+                        focused_session,
+                        &foreign_layouts,
+                        &foreign_agents,
+                        &foreign_attention,
+                    ),
                     );
                 }
                 if layout_changed
@@ -3700,6 +3841,13 @@ async fn main_loop<W: super::RenderSink>(
                         own_client_id,
                         &agent_meta,
                         &mut vcs,
+                        peer_inputs(
+                            &sessions,
+                            focused_session,
+                            &foreign_layouts,
+                            &foreign_agents,
+                            &foreign_attention,
+                        ),
                         viewport_dims,
                         sidebar,
                         &session_name,
@@ -4722,6 +4870,10 @@ fn handle_config_reload<W: super::RenderSink>(
     own_client_id: Option<ClientId>,
     agent_meta: &AgentMetaIndex,
     vcs: &mut VcsIndex,
+    // phux-k0cw: a reload rebuilds the sidebar painter cache-cold, so the
+    // cross-session zones must be re-projected with it or the strip comes
+    // back with an empty queue and roster until the next peer push.
+    peers: super::sidebar_zones::PeerInputs<'_>,
     viewport_dims: (u16, u16),
     sidebar: Option<SidebarReservation>,
     session_name: &str,
@@ -4761,6 +4913,7 @@ fn handle_config_reload<W: super::RenderSink>(
                 own_client_id,
                 agent_meta,
                 vcs,
+                peers,
             );
             if !overlays.is_active()
                 && let Some(ls) = workspace.render_window(zoomed).as_deref()
@@ -6665,6 +6818,7 @@ mod tests {
             None,
             &meta,
             &mut vcs,
+            no_peers(),
         );
 
         // The user is now looking at the finished pane.
@@ -6685,6 +6839,7 @@ mod tests {
             None,
             &meta,
             &mut vcs,
+            no_peers(),
         );
         assert!(
             chrome_changed,
@@ -6723,6 +6878,7 @@ mod tests {
                 None,
                 &meta,
                 &mut vcs,
+                no_peers(),
             ),
             "an unchanged chrome must stay zero-cost"
         );

@@ -59,6 +59,7 @@ mod pane_state;
 pub mod plugin_actions;
 pub mod plugin_panes;
 pub mod quic;
+mod sidebar_zones;
 // ADR-0060: the `phux --rec` tee. A `Write` wrapper on the one RenderSink the
 // driver already threads through the render path, so a recording is exactly
 // the bytes the human's glass received.
