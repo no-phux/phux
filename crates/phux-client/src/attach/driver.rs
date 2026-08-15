@@ -1324,6 +1324,22 @@ fn take_terminal_replies(
     outcome: &mut FrameOutcome,
     terminal_reply_supported: bool,
 ) -> Vec<(TerminalId, Vec<u8>)> {
+    // phux-501l (hardening, not the fix — see `peer_gone` for that): an
+    // outcome that ends the attach loop should not put another byte on the
+    // wire. A terminal reply is addressed to a pane's PTY, and once an outcome
+    // carries `exit` there is no pane left to route it to.
+    //
+    // This matters because the call site sends replies BEFORE it inspects
+    // `outcome.exit`, so an outcome carrying both would write into a session
+    // it is in the middle of abandoning. No current handler produces that
+    // combination — the last-pane-closed branch returns a `FrameOutcome` with
+    // `pty_writes` defaulted empty — so this closes a latent hole rather than
+    // an observed one. It is cheap and it makes the ordering at the call site
+    // stop mattering.
+    if outcome.exit {
+        outcome.pty_writes.clear();
+        return Vec::new();
+    }
     if terminal_reply_supported {
         return std::mem::take(&mut outcome.pty_writes);
     }
@@ -1342,13 +1358,85 @@ async fn send_terminal_replies(
     replies: Vec<(TerminalId, Vec<u8>)>,
 ) -> Result<(), AttachError> {
     for (terminal_id, bytes) in replies {
-        conn.send(&FrameKind::InputTerminalReply {
-            terminal_id,
-            bytes: bytes::Bytes::from(bytes),
-        })
+        send_unless_peer_gone(
+            conn,
+            &FrameKind::InputTerminalReply {
+                terminal_id,
+                bytes: bytes::Bytes::from(bytes),
+            },
+        )
         .await?;
     }
     Ok(())
+}
+
+/// Whether a write failed because the peer had already closed the connection.
+///
+/// `BrokenPipe` is the local half discovering the socket is gone;
+/// `ConnectionReset`/`ConnectionAborted` are the same discovery on the
+/// transports where the kernel reports it that way. None of them describe a
+/// fault in *this* process — they describe a peer that is no longer there.
+fn peer_gone(err: &AttachError) -> bool {
+    matches!(
+        err,
+        AttachError::Io(inner)
+            if matches!(
+                inner.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+            )
+    )
+}
+
+/// Send a frame, treating "the peer already hung up" as success.
+///
+/// phux-501l. THE READ SIDE OWNS THE ENDING. A failed write tells us only that
+/// the connection is gone; the reason a session ended is carried by frames the
+/// server sent *before* it went, and those are already sitting in our decode
+/// buffer. Failing the attach loop on the write throws that reason away and
+/// replaces it with the mechanical symptom.
+///
+/// Concretely, the bug this fixes: the last pane's shell exits, so the server
+/// emits `TERMINAL_OUTPUT` (the shell's final bytes) immediately followed by
+/// `TERMINAL_CLOSED`, then reaps the now-empty session and exits, closing the
+/// UDS. The client's next read pulls BOTH frames into one coalesced batch. It
+/// processes the `TERMINAL_OUTPUT` first and answers it with a `FRAME_ACK` — a
+/// write, into a socket the server has already closed. That returns EPIPE, `?`
+/// turns it into `AttachError::Io`, and the loop dies **without ever
+/// processing the `TERMINAL_CLOSED` sitting in the same batch**. The user typed
+/// `exit 7` and got
+///     phux: attach failed: attach loop io error: Broken pipe (os error 32)
+/// instead of "session ended: the last pane exited 7".
+///
+/// Whether the write lost that race was pure scheduling, which is why it read
+/// as a flake — nextest's retries had been hiding it on `main`, and it failed
+/// 6/6 on the runners where the server won.
+///
+/// Swallowing the error loses nothing. Every write in the inbound arm is
+/// either advisory (`FRAME_ACK` is flow-control accounting the server drops
+/// outright for a raw consumer) or a request whose answer can no longer
+/// arrive. In both cases the loop continues, drains the frames it already
+/// holds, and ends for the reason those frames give: `LastPaneClosed` here, or
+/// `AttachError::Disconnected` from the EOF on the following `recv` if the
+/// batch carried no ending. Both are strictly better than `Io`, and neither
+/// can mask a live-server fault — if the server were still there, the write
+/// would not have failed.
+async fn send_unless_peer_gone(
+    conn: &mut Connection,
+    frame: &FrameKind,
+) -> Result<(), AttachError> {
+    match conn.send(frame).await {
+        Ok(()) => Ok(()),
+        Err(err) if peer_gone(&err) => {
+            tracing::debug!(
+                ?err,
+                "write dropped: peer already closed; letting the read side name the ending",
+            );
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 /// Build the reference TUI's per-connection HELLO profile.
 ///
@@ -2747,7 +2835,7 @@ async fn main_loop<W: super::RenderSink>(
                         for terminal_id in &outcome.attach_panes {
                             let request_id = next_request_id;
                             next_request_id = next_request_id.wrapping_add(1);
-                            conn.send(&FrameKind::Command {
+                            send_unless_peer_gone(conn, &FrameKind::Command {
                                 request_id,
                                 command: Command::AttachTerminal {
                                     terminal_id: terminal_id.clone(),
@@ -2864,7 +2952,7 @@ async fn main_loop<W: super::RenderSink>(
                         if let Some((terminal_id, stream_id, bootstrap_id, seq)) =
                             should_emit_frame_ack(wants_state_sync, outcome.ack)
                         {
-                            conn.send(&FrameKind::FrameAck {
+                            send_unless_peer_gone(conn, &FrameKind::FrameAck {
                                 terminal_id,
                                 stream_id,
                                 bootstrap_id,
@@ -2881,7 +2969,7 @@ async fn main_loop<W: super::RenderSink>(
                             max_rows,
                         )) = outcome.history_request
                         {
-                            conn.send(&FrameKind::HistoryRequest {
+                            send_unless_peer_gone(conn, &FrameKind::HistoryRequest {
                                 terminal_id,
                                 stream_id,
                                 bootstrap_id,
@@ -2902,7 +2990,7 @@ async fn main_loop<W: super::RenderSink>(
                         {
                             let request_id = next_request_id;
                             next_request_id = next_request_id.wrapping_add(1);
-                            conn.send(&FrameKind::SetMetadata {
+                            send_unless_peer_gone(conn, &FrameKind::SetMetadata {
                                 request_id,
                                 scope: Scope::Group(DEFAULT_GROUP_ID),
                                 key: layout_key(session),
@@ -2937,7 +3025,7 @@ async fn main_loop<W: super::RenderSink>(
                                 new_content,
                             );
                             for (terminal_id, new_rect) in &diff.changed {
-                                conn.send(&FrameKind::TerminalResize {
+                                send_unless_peer_gone(conn, &FrameKind::TerminalResize {
                                     terminal_id: terminal_id.clone(),
                                     cols: new_rect.w,
                                     rows: new_rect.h,
@@ -6463,6 +6551,89 @@ mod tests {
         assert_eq!(old_server.notices.len(), 1);
         assert!(old_server.notices[0].text.contains("terminal-reply"));
     }
+
+    /// phux-501l hardening: an outcome that ends the loop writes nothing.
+    ///
+    /// Both call sites send terminal replies before they read `outcome.exit`,
+    /// so an outcome carrying both would write into a session it is already
+    /// abandoning. Suppression belongs here, at the seam the two share, rather
+    /// than at either one.
+    ///
+    /// Note the `terminal_reply_supported = true` argument: this must hold on
+    /// the path where replies are otherwise perfectly sendable. It is the exit,
+    /// not the feature negotiation, that makes them pointless.
+    #[test]
+    fn an_exiting_outcome_sends_no_terminal_reply() {
+        let mut exiting = FrameOutcome {
+            pty_writes: vec![(TerminalId::local(7), b"\x1b[0n".to_vec())],
+            exit: true,
+            exit_reason: Some(AttachEnd::LastPaneClosed {
+                exit_status: Some(7),
+            }),
+            ..FrameOutcome::default()
+        };
+        assert!(
+            take_terminal_replies(&mut exiting, true).is_empty(),
+            "an ended session has no PTY to answer; writing here races the server's own exit",
+        );
+        assert!(exiting.pty_writes.is_empty());
+        // No notice: this is the normal end of a session, not a degradation
+        // the user needs told about. The `LastPaneClosed` explanation is what
+        // the CLI prints, and it must survive intact.
+        assert!(exiting.notices.is_empty());
+        assert_eq!(
+            exiting.exit_reason,
+            Some(AttachEnd::LastPaneClosed {
+                exit_status: Some(7)
+            })
+        );
+    }
+
+    /// phux-501l, the actual defect: a write that fails because the peer is
+    /// already gone must not become the reason the attach loop ended.
+    ///
+    /// The last pane's shell exits, so the server emits `TERMINAL_OUTPUT` then
+    /// `TERMINAL_CLOSED` back to back and exits, closing the socket. One client
+    /// read pulls both frames. Acking the output writes into the dead socket
+    /// and, before this, killed the loop with `Io(BrokenPipe)` — so the
+    /// `TERMINAL_CLOSED` sitting in the *same batch* was never processed and
+    /// "the last pane exited 7" was replaced by "attach loop io error".
+    ///
+    /// The classifier is what lets the loop keep going and end for the reason
+    /// the frames give. A genuine local IO fault must still be fatal, so the
+    /// discrimination is on `ErrorKind`, not on "any Io".
+    #[test]
+    fn a_write_to_a_departed_peer_is_not_a_loop_ending_error() {
+        for kind in [
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionAborted,
+        ] {
+            assert!(
+                peer_gone(&AttachError::Io(io::Error::from(kind))),
+                "{kind:?} means the peer hung up, not that this process faulted",
+            );
+        }
+
+        // A real local failure is still fatal: if the server were still there,
+        // the write would not have failed, so these cannot be a departed peer.
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::OutOfMemory,
+            io::ErrorKind::InvalidData,
+        ] {
+            assert!(
+                !peer_gone(&AttachError::Io(io::Error::from(kind))),
+                "{kind:?} is a local fault and must still fail the loop",
+            );
+        }
+
+        // Non-Io endings are classified by their own variants and must never
+        // be swallowed as a departed peer.
+        assert!(!peer_gone(&AttachError::Disconnected));
+        assert!(!peer_gone(&AttachError::Protocol("bad frame".to_owned())));
+    }
+
     #[test]
     fn headless_completion_drains_history_and_metadata_after_attach_ready() {
         let terminal_id = TerminalId::local(7);
