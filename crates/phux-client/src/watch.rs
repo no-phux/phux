@@ -407,6 +407,70 @@ mod tests {
         (items, seen)
     }
 
+    /// phux-k0cw: `push_after_subscribe` releases its frames only to a client
+    /// that subscribed to that exact `(scope, key)`.
+    ///
+    /// This is what makes the cross-session subscription assertions
+    /// meaningful. The unkeyed `push` releases on the FIRST
+    /// `SUBSCRIBE_METADATA` of any shape, so a test written against it passes
+    /// even against a client that subscribed to the wrong key — exactly the
+    /// bug worth catching once a client watches several keys at once.
+    #[tokio::test]
+    async fn a_keyed_push_waits_for_its_own_subscription() {
+        async fn drive_keyed(scope: Scope, key: &str) -> Vec<WatchItem> {
+            let pane = TerminalId::local(7);
+            let dir = tempfile::tempdir().expect("temp dir");
+            let socket = dir.path().join("phux.sock");
+            let listener = UnixListener::bind(&socket).expect("bind scripted server");
+            let key = key.to_owned();
+            let record = agent_record(&pane, r#"{"name":"reviewer"}"#);
+            let server = tokio::spawn(async move {
+                ScriptedServer::accept(
+                    &listener,
+                    ScriptSpec::new()
+                        .push_after_subscribe(scope, key, vec![record])
+                        .end(EndOfScript::HangUp),
+                )
+                .await
+            });
+            let mut items = Vec::new();
+            watch_events(&socket, Some(pane), |item| {
+                items.push(item);
+                true
+            })
+            .await
+            .expect("a scripted hang-up is a clean EOF");
+            let _ = server.await;
+            items
+        }
+
+        // The watch subscribes to `Terminal(7) / phux.agent/v1`, so a push
+        // keyed to exactly that is released.
+        let matched = drive_keyed(Scope::Terminal(TerminalId::local(7)), TERMINAL_AGENT_KEY).await;
+        assert!(
+            matched
+                .iter()
+                .any(|i| matches!(i, WatchItem::AgentState { .. })),
+            "a push keyed to the subscribed pair must be released; got {matched:?}"
+        );
+
+        // Same key, different scope: never released, because a real server
+        // fans a METADATA_CHANGED only to that scope's subscribers.
+        let wrong_scope =
+            drive_keyed(Scope::Terminal(TerminalId::local(8)), TERMINAL_AGENT_KEY).await;
+        assert!(
+            wrong_scope.is_empty(),
+            "a push keyed to another pane must not reach this watch; got {wrong_scope:?}"
+        );
+
+        // Same scope, different key: likewise.
+        let wrong_key = drive_keyed(Scope::Terminal(TerminalId::local(7)), "phux.other/v1").await;
+        assert!(
+            wrong_key.is_empty(),
+            "a push keyed to another key must not reach this watch; got {wrong_key:?}"
+        );
+    }
+
     /// The bug this module's metadata half exists to fix: a terminal-scoped
     /// watch must ask for the `phux.agent/v1` key, or the ADR-0046
     /// detector's publications never reach a headless consumer.

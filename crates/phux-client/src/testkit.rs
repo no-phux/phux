@@ -160,6 +160,10 @@ pub struct ScriptSpec {
     detach_result: Option<u64>,
     /// Pushed once the client's `SUBSCRIBE_EVENTS` registers.
     script: Vec<FrameKind>,
+    /// phux-k0cw: frames released only when the client subscribes to that
+    /// exact `(scope, key)` — the fanout rule a real server applies, and the
+    /// only way to assert a client subscribed to the RIGHT key.
+    keyed_script: Vec<(Scope, String, Vec<FrameKind>)>,
     /// What to do after the script.
     end: EndOfScript,
 }
@@ -358,6 +362,26 @@ impl ScriptSpec {
         self
     }
 
+    /// Append frames released only once the client has subscribed to THIS
+    /// exact `(scope, key)` pair (phux-k0cw).
+    ///
+    /// The unkeyed [`Self::push`] releases its whole script on the first
+    /// `SUBSCRIBE_METADATA` of any shape. That is fine while a client has one
+    /// metadata subscription, but it cannot express "the server fans this out
+    /// to subscribers of THIS key" — so a test written against it passes
+    /// against a client that subscribed to the WRONG key, which is precisely
+    /// the bug worth catching once a client watches several.
+    #[must_use]
+    pub fn push_after_subscribe(
+        mut self,
+        scope: Scope,
+        key: impl Into<String>,
+        frames: Vec<FrameKind>,
+    ) -> Self {
+        self.keyed_script.push((scope, key.into(), frames));
+        self
+    }
+
     /// What the server does once the script is played.
     #[must_use]
     pub const fn end(mut self, end: EndOfScript) -> Self {
@@ -369,9 +393,15 @@ impl ScriptSpec {
     /// fans out to a metadata subscriber, so [`ScriptedServer::run`] knows
     /// which `SUBSCRIBE_*` unlocks it.
     fn script_needs_metadata_subscription(&self) -> bool {
-        self.script
-            .iter()
-            .any(|frame| matches!(frame, FrameKind::MetadataChanged { .. }))
+        // A keyed script is by definition released by a SUBSCRIBE_METADATA,
+        // so it must also hold the hang-up open past SUBSCRIBE_EVENTS —
+        // otherwise the fixture closes before the client has asked for the
+        // key, and every keyed assertion would vacuously fail (phux-k0cw).
+        !self.keyed_script.is_empty()
+            || self
+                .script
+                .iter()
+                .any(|frame| matches!(frame, FrameKind::MetadataChanged { .. }))
     }
 }
 
@@ -449,6 +479,24 @@ impl ScriptedServer {
             };
             if subscribed {
                 for pushed in std::mem::take(&mut self.spec.script) {
+                    self.link.send(&pushed).await;
+                }
+            }
+            // phux-k0cw: a keyed push models the real fanout rule — a
+            // METADATA_CHANGED reaches only the clients subscribed to that
+            // (scope, key). Released on the matching subscribe and never
+            // before, so a client that watched the wrong key sees nothing.
+            if let FrameKind::SubscribeMetadata { scope, key } = &frame {
+                let mut released: Vec<FrameKind> = Vec::new();
+                self.spec.keyed_script.retain(|(s, k, frames)| {
+                    if s == scope && k == key {
+                        released.extend(frames.iter().cloned());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                for pushed in released {
                     self.link.send(&pushed).await;
                 }
             }
