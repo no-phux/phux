@@ -1921,6 +1921,14 @@ async fn main_loop<W: super::RenderSink>(
     // shape as the foreign layouts above (ADR-0018 / ADR-0030).
     let mut foreign_agents: HashMap<TerminalId, AgentRecord> = HashMap::new();
     let mut foreign_agent_pending: HashMap<u32, TerminalId> = HashMap::new();
+    // phux-k0cw: which peer keys this connection has already subscribed to.
+    // Send-once bookkeeping, not teardown: L3 has no UNSUBSCRIBE_METADATA
+    // verb, so a subscription lives as long as the connection and re-sending
+    // one would just be noise on the wire.
+    let mut foreign_layout_subscribed: std::collections::HashSet<phux_protocol::ids::SessionId> =
+        std::collections::HashSet::new();
+    let mut foreign_agent_subscribed: std::collections::HashSet<TerminalId> =
+        std::collections::HashSet::new();
     // phux-foz.8: the deferred window select of a one-step cross-session
     // pick, consumed on the first layout reconcile below. phux-jpqd:
     // `pending_pane` is the DFS leaf ordinal focused after the window
@@ -2067,12 +2075,15 @@ async fn main_loop<W: super::RenderSink>(
     // picker can list foreign windows as one-step jump rows. Fire-and-forget:
     // replies drain through the recv arm below; a peer with nothing persisted
     // never replies with a value and simply keeps its fallback row.
-    request_foreign_layouts(
+    // phux-k0cw: and SUBSCRIBE, so the roster tracks peers live instead of
+    // showing an attach-time snapshot that silently rots.
+    sync_foreign_layout_subscriptions(
         conn,
         &sessions,
         focused_session,
         &mut next_request_id,
         &mut foreign_layout_pending,
+        &mut foreign_layout_subscribed,
     )
     .await?;
     // ADR-0033: cache our own ClientId (for the "you hold the wheel" badge) and
@@ -2686,13 +2697,18 @@ async fn main_loop<W: super::RenderSink>(
                                         session,
                                         value.as_deref(),
                                     );
-                                    prune_foreign_agents(&mut foreign_agents, &foreign_layouts);
+                                    prune_foreign_agents(
+                                        &mut foreign_agents,
+                                        &mut foreign_agent_subscribed,
+                                        &foreign_layouts,
+                                    );
                                     if let Some(ws) = foreign_layouts.get(&session) {
-                                        request_foreign_agents(
+                                        sync_foreign_agent_subscriptions(
                                             conn,
                                             ws,
                                             &mut next_request_id,
                                             &mut foreign_agent_pending,
+                                            &mut foreign_agent_subscribed,
                                         )
                                         .await?;
                                     }
@@ -2872,7 +2888,11 @@ async fn main_loop<W: super::RenderSink>(
                                     session,
                                     value.as_deref(),
                                 );
-                                prune_foreign_agents(&mut foreign_agents, &foreign_layouts);
+                                prune_foreign_agents(
+                                        &mut foreign_agents,
+                                        &mut foreign_agent_subscribed,
+                                        &foreign_layouts,
+                                    );
                                 true
                             } else {
                                 false
@@ -2929,12 +2949,13 @@ async fn main_loop<W: super::RenderSink>(
                         if let Some((list, focused)) = outcome.sessions {
                             sessions = list;
                             focused_session = Some(focused);
-                            request_foreign_layouts(
+                            sync_foreign_layout_subscriptions(
                                 conn,
                                 &sessions,
                                 focused_session,
                                 &mut next_request_id,
                                 &mut foreign_layout_pending,
+                                &mut foreign_layout_subscribed,
                             )
                             .await?;
                         }
@@ -3925,23 +3946,40 @@ async fn main_loop<W: super::RenderSink>(
 /// cache. Best-effort: a peer with nothing persisted replies `value: None`
 /// (dropped by [`apply_foreign_layout_reply`]) and keeps its fallback
 /// "switch to this session" row.
-async fn request_foreign_layouts(
+async fn sync_foreign_layout_subscriptions(
     conn: &mut Connection,
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
     next_request_id: &mut u32,
     pending: &mut HashMap<u32, phux_protocol::ids::SessionId>,
+    subscribed: &mut std::collections::HashSet<phux_protocol::ids::SessionId>,
 ) -> Result<(), AttachError> {
     for s in sessions.iter().filter(|s| Some(s.id) != focused) {
         let request_id = *next_request_id;
         *next_request_id = next_request_id.wrapping_add(1);
         pending.insert(request_id, s.id);
+        let key = layout_key(s.id);
         conn.send(&FrameKind::GetMetadata {
             request_id,
             scope: Scope::Group(DEFAULT_GROUP_ID),
-            key: layout_key(s.id),
+            key: key.clone(),
         })
         .await?;
+        // phux-k0cw: the GET is the level; this is the edge. Sent even when
+        // the GET will answer `None` — a peer that has not persisted a layout
+        // yet is precisely the one whose FIRST write matters, and without the
+        // subscription that write is invisible until the next attach.
+        //
+        // Send-once bookkeeping rather than teardown: L3 has no
+        // UNSUBSCRIBE_METADATA verb (docs/spec/L3.md), so a subscription ends
+        // with the connection.
+        if subscribed.insert(s.id) {
+            conn.send(&FrameKind::SubscribeMetadata {
+                scope: Scope::Group(DEFAULT_GROUP_ID),
+                key,
+            })
+            .await?;
+        }
     }
     Ok(())
 }
@@ -3984,11 +4022,12 @@ fn apply_foreign_layout_reply(
 /// so a re-fold (session-graph refresh re-requests the layout) does not
 /// duplicate traffic. One-shot reads, no subscription — the same lazy-query
 /// shape as [`request_foreign_layouts`] (ADR-0018 / ADR-0030).
-async fn request_foreign_agents(
+async fn sync_foreign_agent_subscriptions(
     conn: &mut Connection,
     workspace: &Workspace,
     next_request_id: &mut u32,
     pending: &mut HashMap<u32, TerminalId>,
+    subscribed: &mut std::collections::HashSet<TerminalId>,
 ) -> Result<(), AttachError> {
     // Collect the leaf ids first so the immutable borrow of `pending` (for
     // the in-flight check) is released before we mutate it in the send loop.
@@ -3998,6 +4037,15 @@ async fn request_foreign_agents(
         for window in &workspace.windows {
             if let Some(tree) = window.state.tree.as_ref() {
                 for id in crate::layout::leaves(tree) {
+                    // phux-k0cw: a satellite Terminal's metadata scope is
+                    // normatively refused (docs/spec/L3.md), so subscribing
+                    // would earn one UNSUPPORTED_SATELLITE_ROUTE per sweep —
+                    // errors the correlated-refusal intercept swallows
+                    // silently, which is the worst kind of noise. The same
+                    // skip `sync_agent_meta_subscriptions` already applies.
+                    if !id.is_local() {
+                        continue;
+                    }
                     if !in_flight.contains(&id) && !targets.contains(&id) {
                         targets.push(id);
                     }
@@ -4012,10 +4060,18 @@ async fn request_foreign_agents(
         pending.insert(request_id, id.clone());
         conn.send(&FrameKind::GetMetadata {
             request_id,
-            scope: Scope::Terminal(id),
+            scope: Scope::Terminal(id.clone()),
             key: TERMINAL_AGENT_KEY.to_owned(),
         })
         .await?;
+        // The level, then the edge — same shape as the layout sweep.
+        if subscribed.insert(id.clone()) {
+            conn.send(&FrameKind::SubscribeMetadata {
+                scope: Scope::Terminal(id),
+                key: TERMINAL_AGENT_KEY.to_owned(),
+            })
+            .await?;
+        }
     }
     Ok(())
 }
@@ -4044,8 +4100,14 @@ fn apply_foreign_agent_reply(
 /// cached foreign layout (a peer closed a pane, or a session left the
 /// graph), keeping the cache bounded to the live foreign pane set. Called
 /// on each foreign-layout fold, before re-requesting the surviving panes.
+///
+/// phux-k0cw: the send-once subscription bookkeeping is pruned with it. A
+/// pane that leaves and later returns under the same id must be re-subscribed
+/// — leaving it in the `subscribed` set would suppress the re-subscribe and
+/// the row would go permanently silent.
 fn prune_foreign_agents(
     cache: &mut HashMap<TerminalId, AgentRecord>,
+    subscribed: &mut std::collections::HashSet<TerminalId>,
     foreign_layouts: &HashMap<phux_protocol::ids::SessionId, Workspace>,
 ) {
     let live: std::collections::HashSet<TerminalId> = foreign_layouts
@@ -4055,6 +4117,7 @@ fn prune_foreign_agents(
         .flat_map(crate::layout::leaves)
         .collect();
     cache.retain(|id, _| live.contains(id));
+    subscribed.retain(|id| live.contains(id));
 }
 
 /// phux-jpqd: rebuild and repaint the agent-fleet dashboard in place when it
@@ -6012,6 +6075,159 @@ mod tests {
 
     /// phux-jpqd: pruning keeps only the agent records whose panes still
     /// appear in some cached foreign layout — a peer closing a pane (or a
+    fn session_info(id: u32, name: &str) -> phux_protocol::wire::info::SessionInfo {
+        phux_protocol::wire::info::SessionInfo::new(phux_protocol::ids::SessionId::new(id), name)
+            .with_window_count(1)
+    }
+
+    /// phux-k0cw: peer layout keys are SUBSCRIBED, not merely read once.
+    ///
+    /// The one-shot sweep this replaces was an attach-time photograph that
+    /// rotted silently — tolerable while peers appeared only inside a modal
+    /// the user had just opened, wrong once they feed the always-on strip.
+    /// The subscribe must go out even when the GET will answer `None`: a peer
+    /// that has not persisted a layout yet is exactly the one whose first
+    /// write matters.
+    #[tokio::test]
+    async fn peer_layout_keys_are_subscribed_not_just_read() {
+        let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+        let mut client = Connection::from_stream(client_stream);
+        let mut server = Connection::from_stream(server_stream);
+
+        let sessions = vec![session_info(1, "work"), session_info(2, "scratch")];
+        let mut next_request_id = 1;
+        let mut pending = HashMap::new();
+        let mut subscribed = std::collections::HashSet::new();
+
+        let sent = async {
+            sync_foreign_layout_subscriptions(
+                &mut client,
+                &sessions,
+                Some(phux_protocol::ids::SessionId::new(1)),
+                &mut next_request_id,
+                &mut pending,
+                &mut subscribed,
+            )
+            .await
+            .expect("sweep sends");
+            // A second sweep against the same graph must not re-subscribe:
+            // there is no UNSUBSCRIBE verb, so a resend is pure wire noise.
+            sync_foreign_layout_subscriptions(
+                &mut client,
+                &sessions,
+                Some(phux_protocol::ids::SessionId::new(1)),
+                &mut next_request_id,
+                &mut pending,
+                &mut subscribed,
+            )
+            .await
+            .expect("second sweep sends");
+            drop(client);
+        };
+
+        let collect = async {
+            let mut frames = Vec::new();
+            while let Ok(frame) = server.recv().await {
+                frames.push(frame);
+            }
+            frames
+        };
+        let ((), frames) = tokio::join!(sent, collect);
+
+        let peer_key = crate::layout_ops::layout_key(phux_protocol::ids::SessionId::new(2));
+        let peer_subscribes: Vec<_> = frames
+            .iter()
+            .filter(|f| {
+                matches!(f, FrameKind::SubscribeMetadata { scope, key }
+                    if *scope == Scope::Group(DEFAULT_GROUP_ID) && *key == peer_key)
+            })
+            .collect();
+        assert_eq!(
+            peer_subscribes.len(),
+            1,
+            "the peer's layout key is subscribed exactly once across two sweeps: {frames:?}"
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|f| matches!(f, FrameKind::GetMetadata { key, .. } if *key == peer_key)),
+            "the GET is still sent — the subscribe is the edge, the GET is the level: {frames:?}"
+        );
+
+        // Our OWN session is never subscribed through this path; the driver
+        // already holds its layout subscription, and a second one would
+        // double every local broadcast.
+        let own_key = crate::layout_ops::layout_key(phux_protocol::ids::SessionId::new(1));
+        assert!(
+            !frames
+                .iter()
+                .any(|f| matches!(f, FrameKind::SubscribeMetadata { key, .. } if *key == own_key)),
+            "the focused session is excluded: {frames:?}"
+        );
+    }
+
+    /// phux-k0cw: a satellite pane's metadata scope is normatively refused
+    /// (`docs/spec/L3.md`), so subscribing to one earns an
+    /// `UNSUPPORTED_SATELLITE_ROUTE` per sweep — errors the correlated-refusal
+    /// intercept swallows silently, which is the worst kind of wire noise.
+    #[tokio::test]
+    async fn satellite_panes_are_never_subscribed() {
+        let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+        let mut client = Connection::from_stream(client_stream);
+        let mut server = Connection::from_stream(server_stream);
+
+        let local = TerminalId::local(1);
+        let satellite = TerminalId::satellite("prod-3", 2);
+        let mut ws = Workspace::single(local.clone());
+        ws.add_window("remote".to_owned(), satellite.clone());
+
+        let mut next_request_id = 1;
+        let mut pending = HashMap::new();
+        let mut subscribed = std::collections::HashSet::new();
+
+        let sent = async {
+            sync_foreign_agent_subscriptions(
+                &mut client,
+                &ws,
+                &mut next_request_id,
+                &mut pending,
+                &mut subscribed,
+            )
+            .await
+            .expect("sweep sends");
+            drop(client);
+        };
+        let collect = async {
+            let mut frames = Vec::new();
+            while let Ok(frame) = server.recv().await {
+                frames.push(frame);
+            }
+            frames
+        };
+        let ((), frames) = tokio::join!(sent, collect);
+
+        assert!(
+            frames.iter().any(|f| matches!(
+                f,
+                FrameKind::SubscribeMetadata { scope, .. } if *scope == Scope::Terminal(local.clone())
+            )),
+            "the local pane is subscribed: {frames:?}"
+        );
+        assert!(
+            !frames.iter().any(|f| matches!(
+                f,
+                FrameKind::SubscribeMetadata { scope, .. }
+                    | FrameKind::GetMetadata { scope, .. }
+                    if *scope == Scope::Terminal(satellite.clone())
+            )),
+            "a satellite pane is never asked for or subscribed: {frames:?}"
+        );
+        assert!(
+            !subscribed.contains(&satellite),
+            "and it never enters the send-once bookkeeping"
+        );
+    }
+
     /// session leaving the graph) evicts its record so the cache stays
     /// bounded to the live foreign pane set.
     #[test]
@@ -6022,12 +6238,14 @@ mod tests {
         let mut cache: HashMap<TerminalId, AgentRecord> = HashMap::new();
         cache.insert(live.clone(), AgentRecord::default());
         cache.insert(stale.clone(), AgentRecord::default());
+        let mut subscribed: std::collections::HashSet<TerminalId> =
+            [live.clone(), stale.clone()].into_iter().collect();
 
         // One foreign layout holds only `live`.
         let mut foreign_layouts: HashMap<SessionId, Workspace> = HashMap::new();
         foreign_layouts.insert(SessionId::new(9), Workspace::single(live.clone()));
 
-        prune_foreign_agents(&mut cache, &foreign_layouts);
+        prune_foreign_agents(&mut cache, &mut subscribed, &foreign_layouts);
         assert!(
             cache.contains_key(&live),
             "a pane still in a layout survives"
@@ -6036,10 +6254,19 @@ mod tests {
             !cache.contains_key(&stale),
             "a pane in no layout is evicted"
         );
+        // phux-k0cw: the send-once subscription bookkeeping is pruned with
+        // the record. Left behind, it would suppress the re-subscribe if that
+        // pane id ever came back, and the row would go permanently silent.
+        assert!(subscribed.contains(&live));
+        assert!(
+            !subscribed.contains(&stale),
+            "a dead pane's subscription marker is dropped so a re-spawn re-subscribes"
+        );
 
         // No cached layouts at all evicts everything.
-        prune_foreign_agents(&mut cache, &HashMap::new());
+        prune_foreign_agents(&mut cache, &mut subscribed, &HashMap::new());
         assert!(cache.is_empty(), "no foreign layouts => no foreign agents");
+        assert!(subscribed.is_empty());
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //! dispatch path. Zero new wire surface (ADR-0030): this module is a pure
 //! client-side projection of state the client already receives.
 //!
-//! ## Foreign sessions: lazy per-pane query, no new wire (phux-jpqd)
+//! ## Foreign sessions: subscribed, not sampled (phux-jpqd, phux-k0cw)
 //!
 //! The `ATTACHED` snapshot's session graph
 //! ([`phux_protocol::wire::info::SessionInfo`]) describes *other* sessions
@@ -17,20 +17,37 @@
 //! subscriptions are per-attached-pane — so a foreign session's pane
 //! topology and agent records are not in the attach stream. Rather than
 //! grow the stream (ADR-0030 forbids new structured wire surface), the
-//! driver reuses two **existing** L3 reads, the same lazy-query shape
-//! phux-foz.8 established for the window picker (ADR-0018): the peer's
-//! persisted `phux.tui.layout/v1` workspace (its pane tree) and, for each
-//! `TerminalId` in that tree, a one-shot `GET_METADATA` on the pane's
-//! `phux.agent/v1` record. Both land in [`fleet_items`] as
-//! `foreign_layouts` + `foreign_agents`, so a peer session renders one
-//! selectable row per pane committing a one-step
+//! driver reuses two **existing** L3 keys, the same shape phux-foz.8
+//! established for the window picker (ADR-0018): the peer's persisted
+//! `phux.tui.layout/v1/<session>` workspace (its pane tree) and, per
+//! `TerminalId` in that tree, the pane's `phux.agent/v1` record.
+//!
+//! phux-k0cw changed HOW those are read. They were a one-shot
+//! `GET_METADATA` sweep at attach — an attach-time photograph that rotted
+//! silently, which was tolerable while peers only appeared inside a modal
+//! the user had just opened. Now each key is also SUBSCRIBED, so peer state
+//! tracks live, and `AgentEvent::PaneSpawned` / `PaneClosed` on the
+//! already-open server-wide event subscription keep the subscribed pane set
+//! current — the enumerate-then-follow shape, with no wildcard scope and no
+//! wire change.
+//!
+//! Both land in [`fleet_items`] as `foreign_layouts` + `foreign_agents`, so
+//! a peer session renders one selectable row per pane committing a one-step
 //! `switch-session { name, window, pane }` — the re-attach lands directly
 //! on that pane with its agent glyph/state already shown. A peer with no
 //! cached layout yet (nothing persisted, reply not landed, or created
 //! after attach) still falls back to the single "switch to this session"
-//! row. Foreign rows carry no asked flag or branch/cwd — those need a live
-//! per-pane subscription, so the record's declared state is the honest
-//! maximum until the client attaches there. The `phux agent list` CLI
+//! row.
+//!
+//! Two honest limits remain. **Satellite** sessions cannot be watched at
+//! all: `SUBSCRIBE_METADATA` on a satellite Terminal scope is normatively
+//! refused (`docs/spec/L3.md`), so their panes are skipped and their state
+//! is rendered as explicitly unknown rather than as a calm zero. And
+//! foreign rows still carry no **branch/cwd** — a foreign pane has no local
+//! `PaneSlot`, and `CwdChanged` is dropped for an unknown Terminal. The
+//! asked flag, which this doc previously listed alongside them, IS
+//! available now: an ADR-0035 `Asked` for a pane outside the local set
+//! arrives on the server-wide event stream. The `phux agent list` CLI
 //! remains the exhaustive projection (it queries the server per terminal).
 //!
 //! ## Row anatomy
