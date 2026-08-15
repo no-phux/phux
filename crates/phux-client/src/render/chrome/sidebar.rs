@@ -113,11 +113,28 @@ const MIN_FOOTER_HEIGHT: u16 = 4;
 /// ([`crate::agent_meta::agent_name_from_title`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentEntry {
+    /// The session holding the agent's pane, or `None` for the session this
+    /// client is attached to (phux-k0cw).
+    ///
+    /// `None` is what keeps a local row cheap: it commits `select-window`,
+    /// which moves client-local focus and nothing else. `Some(name)` commits
+    /// `switch-session { name, window, pane }` — a real re-attach — so the
+    /// two are deliberately different types of click, not the same click with
+    /// a different argument.
+    pub session: Option<String>,
     /// Index of the window holding the agent's pane (its `select-window`
     /// index) — clicking the row jumps there.
     pub window: usize,
     /// The window's stored name, herdr's "workspace" column on the row.
     pub window_name: String,
+    /// The pane's DFS leaf ordinal inside its window, when known
+    /// (phux-k0cw).
+    ///
+    /// Only a cross-session commit needs it: `switch-session` can select the
+    /// pane as well as the window, so a queue row lands the user on the pane
+    /// that wants them rather than on its window's remembered focus. `None`
+    /// for a local row, which never needs it.
+    pub pane: Option<usize>,
     /// Agent display name, e.g. `claude` or `merge-queue-w5`.
     pub name: String,
     /// Lifecycle state; picks the row's glyph + color.
@@ -170,6 +187,72 @@ pub const fn attention_rank(state: AgentMetaState, attention: bool, seen: bool) 
         AgentMetaState::Working => 2,
         AgentMetaState::Done | AgentMetaState::Idle => 1,
         AgentMetaState::Unknown => 0,
+    }
+}
+
+/// One OTHER session, rolled up to a single roster line (phux-k0cw).
+///
+/// The roster is the answer to "which sessions are on the line?" — the
+/// question the old session-local strip could not answer at all. It stays one
+/// line per session on purpose: the queue above it is what competes for the
+/// eye and is therefore capped, while the roster is meant to be COMPLETE.
+/// Twelve sessions are twelve lines, not sixty.
+///
+/// The counts are carried rather than reduced to a single worst-state colour
+/// because a dot says *what* and a count says *how much*: `!1 *2` is a
+/// different morning than `!1`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRosterEntry {
+    /// The session's name — also what a click commits as
+    /// `switch-session { name }`.
+    pub name: String,
+    /// Panes on the top rung: blocked, or explicitly asking for a human.
+    pub blocked: usize,
+    /// Panes running work right now.
+    pub working: usize,
+    /// Panes that finished while the user was elsewhere and have not been
+    /// visited since. The rung that makes this roster worth reading.
+    pub done_unvisited: usize,
+    /// Panes that are idle, or done and already reviewed.
+    pub settled: usize,
+    /// Panes whose agent state could not be determined. Always the count for
+    /// a satellite session, whose per-Terminal metadata this client may not
+    /// subscribe to (`docs/spec/L3.md` §5).
+    pub unknown: usize,
+    /// `true` for a session on a federated satellite. Its state is
+    /// structurally unknowable from here, so the row is painted as explicitly
+    /// unknown rather than being allowed to read as a calm zero.
+    pub satellite: bool,
+}
+
+impl SessionRosterEntry {
+    /// The session's own rung on the attention ladder: the highest rung any
+    /// of its panes occupies.
+    ///
+    /// Deliberately returns the SAME rungs [`attention_rank`] does, so zone
+    /// 3's dot and zone 1's queue can never disagree about which session is
+    /// the worst one. A roster row painted calm while one of its agents sits
+    /// at the top of the queue would be the one bug that discredits the whole
+    /// strip.
+    #[must_use]
+    pub const fn top_rank(&self) -> u8 {
+        if self.blocked > 0 {
+            4
+        } else if self.done_unvisited > 0 {
+            3
+        } else if self.working > 0 {
+            2
+        } else if self.settled > 0 {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Total panes counted into this row, across every rung.
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.blocked + self.working + self.done_unvisited + self.settled + self.unknown
     }
 }
 
@@ -697,12 +780,31 @@ mod tests {
 
     fn agent(window: usize, window_name: &str, name: &str, state: AgentMetaState) -> AgentEntry {
         AgentEntry {
+            session: None,
             window,
             window_name: window_name.to_owned(),
+            pane: None,
             name: name.to_owned(),
             state,
             attention: false,
             seen: false,
+        }
+    }
+
+    fn roster(
+        name: &str,
+        blocked: usize,
+        working: usize,
+        done_unvisited: usize,
+    ) -> SessionRosterEntry {
+        SessionRosterEntry {
+            name: name.to_owned(),
+            blocked,
+            working,
+            done_unvisited,
+            settled: 0,
+            unknown: 0,
+            satellite: false,
         }
     }
 
@@ -744,6 +846,69 @@ mod tests {
                 "{state:?}"
             );
         }
+    }
+
+    /// A roster row's dot and the queue's ordering must agree about severity.
+    /// They are two renderings of ONE ladder, so `top_rank` returns the same
+    /// rungs `attention_rank` does — a session painted calm while one of its
+    /// agents sits at the top of the queue would discredit the whole strip.
+    #[test]
+    fn roster_top_rank_follows_the_attention_ladder() {
+        use AgentMetaState as S;
+
+        assert_eq!(
+            roster("a", 1, 3, 2).top_rank(),
+            attention_rank(S::Blocked, false, false),
+            "one blocked pane pins the session to the blocked rung"
+        );
+        assert_eq!(
+            roster("a", 0, 3, 2).top_rank(),
+            attention_rank(S::Done, false, false),
+            "unreviewed done outranks working at the session level too"
+        );
+        assert_eq!(
+            roster("a", 0, 3, 0).top_rank(),
+            attention_rank(S::Working, false, false),
+        );
+
+        let settled = SessionRosterEntry {
+            settled: 4,
+            ..roster("a", 0, 0, 0)
+        };
+        assert_eq!(settled.top_rank(), attention_rank(S::Idle, false, true));
+
+        // A satellite session cannot be inspected from here (spec/L3.md §5),
+        // so it lands on the bottom rung — explicitly unknown, never a calm
+        // zero that reads as "nothing to see".
+        let sat = SessionRosterEntry {
+            unknown: 3,
+            satellite: true,
+            ..roster("prod-3", 0, 0, 0)
+        };
+        assert_eq!(sat.top_rank(), attention_rank(S::Unknown, false, true));
+        assert_eq!(sat.total(), 3, "unknown panes still count toward the total");
+        assert_eq!(roster("a", 1, 3, 2).total(), 6);
+    }
+
+    /// `session` and `pane` are display/commit inputs, so they MUST join the
+    /// painter's content-cache key: two rows differing only by session are
+    /// different rows, and a cache that conflated them would paint one
+    /// session's queue while clicking through to another's.
+    #[test]
+    fn session_identity_participates_in_the_cache_key() {
+        let local = agent(0, "edit", "claude", AgentMetaState::Working);
+        let peer = AgentEntry {
+            session: Some("phux-feat-auth".to_owned()),
+            ..local.clone()
+        };
+        assert_ne!(local, peer, "session is part of row identity");
+
+        let other_pane = AgentEntry {
+            pane: Some(2),
+            ..local.clone()
+        };
+        assert_ne!(local, other_pane, "pane ordinal is part of row identity");
+        assert_eq!(local, local.clone(), "otherwise identical rows still match");
     }
 
     /// The unreviewed-`done` row must be visually distinct from both a

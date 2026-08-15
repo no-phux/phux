@@ -4284,7 +4284,7 @@ fn agent_entries(
             .as_ref()
             .map(crate::layout::leaves)
             .unwrap_or_default();
-        for id in &leaves {
+        for (leaf, id) in leaves.iter().enumerate() {
             let asked = panes.get(id).is_some_and(|slot| slot.attention);
             let seen = panes.get(id).is_some_and(|slot| slot.seen);
             let change_at = agent_meta.change_at.get(id).copied();
@@ -4294,8 +4294,12 @@ fn agent_entries(
             };
             if let Some(record) = agent_meta.records.get(id) {
                 push(AgentEntry {
+                    // Local rows: `None` commits the cheap client-local
+                    // `select-window` rather than a re-attach (phux-k0cw).
+                    session: None,
                     window: i,
                     window_name: w.name.clone(),
+                    pane: Some(leaf),
                     name: record.name.clone(),
                     state: record.state,
                     attention: asked || record.effective_attention() == AgentAttention::High,
@@ -4309,8 +4313,10 @@ fn agent_entries(
                 .and_then(agent_name_from_title);
             if let Some(name) = title_name {
                 push(AgentEntry {
+                    session: None,
                     window: i,
                     window_name: w.name.clone(),
+                    pane: Some(leaf),
                     name: name.to_owned(),
                     state: if asked {
                         AgentMetaState::Blocked
