@@ -45,11 +45,26 @@ pub fn layout_key(session: SessionId) -> String {
     format!("{LAYOUT_KEY}/{}", session.get())
 }
 
-/// Whether `key` is any session's layout key — the bare [`LAYOUT_KEY`] (legacy
-/// persisted value) or a `LAYOUT_KEY/<session>` form. Used to recognise layout
-/// `SET_METADATA` broadcasts (a client only ever receives its own session's).
-pub(crate) fn is_layout_key_string(key: &str) -> bool {
-    key == LAYOUT_KEY || key.starts_with(&format!("{LAYOUT_KEY}/"))
+/// Which session a layout key names: `Some(None)` for the bare legacy
+/// [`LAYOUT_KEY`], `Some(Some(id))` for the per-session form, `None` when the
+/// key is not in the family at all.
+///
+/// The distinction stops mattering only while a client subscribes to exactly
+/// one layout key. Once it watches peers too (phux-k0cw), "is this the layout
+/// family?" is the wrong question — adopting a peer's topology as your own
+/// would silently replace your pane tree — and the right one is "whose layout
+/// is this?".
+pub(crate) fn layout_key_session(key: &str) -> Option<Option<SessionId>> {
+    if key == LAYOUT_KEY {
+        return Some(None);
+    }
+    let suffix = key.strip_prefix(&format!("{LAYOUT_KEY}/"))?;
+    // An unparsable suffix names no session we can attribute. It must NOT
+    // collapse to `Some(None)` — that is the bare-legacy answer, which the
+    // caller reads as "ours" and adopts. Answering `None` drops the frame
+    // instead, which is the only safe direction for a layout we cannot prove
+    // is our own.
+    Some(Some(SessionId::new(suffix.parse::<u32>().ok()?)))
 }
 
 /// One pure mutation of a decoded [`Workspace`].
@@ -483,15 +498,31 @@ mod tests {
         TerminalId::local(id)
     }
 
+    /// phux-k0cw: the family test became a WHOSE test, because a client that
+    /// watches peers must not adopt their layouts.
     #[test]
-    fn is_layout_key_string_matches_the_family_only() {
-        // Bare legacy key + any session-suffixed key are layout keys.
-        assert!(is_layout_key_string(LAYOUT_KEY));
-        assert!(is_layout_key_string("phux.tui.layout/v1/7"));
-        // A different key that merely shares the prefix-without-separator is
-        // NOT matched, and unrelated keys aren't either.
-        assert!(!is_layout_key_string("phux.tui.layout/v12"));
-        assert!(!is_layout_key_string("phux.tui.other/v1"));
+    fn layout_key_session_names_the_owner_not_just_the_family() {
+        // The bare legacy key predates per-session keying, so it names no
+        // session and can only be our own.
+        assert_eq!(layout_key_session(LAYOUT_KEY), Some(None));
+        assert_eq!(
+            layout_key_session("phux.tui.layout/v1/7"),
+            Some(Some(SessionId::new(7)))
+        );
+        assert_eq!(
+            layout_key_session(&layout_key(SessionId::new(42))),
+            Some(Some(SessionId::new(42))),
+            "the writer and the reader must agree on the key shape"
+        );
+        // Unparsable suffix: NOT `Some(None)`. That is the bare-legacy
+        // answer, which the caller adopts as its own layout — so an
+        // unattributable key must drop out of the family entirely rather
+        // than be mistaken for ours.
+        assert_eq!(layout_key_session("phux.tui.layout/v1/zzz"), None);
+        // A key that merely shares the prefix-without-separator is not in the
+        // family, and unrelated keys aren't either.
+        assert_eq!(layout_key_session("phux.tui.layout/v12"), None);
+        assert_eq!(layout_key_session("phux.tui.other/v1"), None);
     }
 
     fn split(left: u32, right: u32, dir: SplitDir, ratio: f32) -> LayoutNode {

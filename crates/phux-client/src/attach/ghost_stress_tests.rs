@@ -199,6 +199,7 @@ impl Rig {
             &mut self.zoomed,
             &mut self.session_name,
             None,
+            None,
             self.sidebar,
             self.viewport,
             &mut self.predict,

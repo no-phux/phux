@@ -28,7 +28,7 @@ use super::paint::{
 use super::pane_state::{PaneSlot, published_terminal, reanchor_predict_to_pane};
 use crate::agent_meta::{AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
 use crate::layout::{self, LayoutState, Workspace};
-use crate::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, is_layout_key_string};
+use crate::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key_session};
 use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell};
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 
@@ -137,6 +137,33 @@ pub(super) struct FrameOutcome {
     /// `GET_METADATA` + `SUBSCRIBE_METADATA` for the layout key so
     /// other clients' mutations broadcast back to us (ADR-0019).
     pub(super) subscribe_layout: bool,
+    /// phux-k0cw: a layout broadcast for a session that is NOT this client's
+    /// — `(session, Some(bytes))` for a value, `(session, None)` for a
+    /// tombstone.
+    ///
+    /// This field is the whole point of the foreign-metadata guard. Before it
+    /// existed, the layout arm matched the key FAMILY and adopted whatever it
+    /// decoded as the local workspace, which was safe only while a client
+    /// subscribed to exactly one layout key. The moment it watches peers, that
+    /// same code path would let another session's window rearrangement replace
+    /// your pane tree.
+    pub(super) foreign_layout: Option<(SessionId, Option<Vec<u8>>)>,
+    /// phux-k0cw: a `phux.agent/v1` push for a Terminal this client does not
+    /// hold a pane slot for.
+    ///
+    /// Routed out rather than folded into the local [`AgentMetaIndex`],
+    /// because `sync_agent_meta_subscriptions` retains that index against the
+    /// LOCAL pane set and would silently evict a foreign record on the next
+    /// sweep.
+    pub(super) foreign_agent: Option<(TerminalId, Option<Vec<u8>>)>,
+    /// phux-k0cw: an ADR-0035 `Asked` event for a Terminal outside this
+    /// client's pane set — a peer agent is blocked on a human.
+    pub(super) foreign_attention: Option<TerminalId>,
+    /// phux-k0cw: a `PaneSpawned` / `PaneClosed` for a Terminal this client
+    /// does not hold, so the peer pane set (and its subscriptions) needs
+    /// re-sweeping. This is what closes the enumerate-then-subscribe race
+    /// without any wire change.
+    pub(super) foreign_pane_set_dirty: bool,
     /// `true` ⇒ the multi-pane composition needs a full repaint.
     ///
     /// Set both when the workspace was replaced by a server-side layout
@@ -681,6 +708,10 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
     // reads (focus reconcile) keep using the REAL `active_window`.
     zoomed: &mut Option<TerminalId>,
     session_name: &mut String,
+    // phux-k0cw: this client's own session, so the layout arm can tell OUR
+    // layout broadcast from a peer's. `None` before ATTACHED resolves one, in
+    // which case only the bare legacy key is adopted — the safe direction.
+    focused_session: Option<SessionId>,
     status_bar: Option<&mut StatusBarPainter>,
     // phux-4h5a: the window-sidebar reservation, threaded identically to
     // `status_bar` so every layout site in this dispatcher tiles panes into
@@ -1244,6 +1275,18 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             // the record and the label falls back to the OSC title.
             if key == TERMINAL_AGENT_KEY {
                 if let Scope::Terminal(terminal) = &scope {
+                    // phux-k0cw: a record for a pane THIS client does not
+                    // hold belongs to a peer session. It must not enter the
+                    // local `AgentMetaIndex`, because
+                    // `sync_agent_meta_subscriptions` retains that index
+                    // against the local pane set and would evict it on the
+                    // next sweep — the record would flicker in and vanish.
+                    if !panes.contains_key(terminal) {
+                        return Ok(FrameOutcome {
+                            foreign_agent: Some((terminal.clone(), value)),
+                            ..FrameOutcome::default()
+                        });
+                    }
                     let changed = agent_meta.apply(terminal, value.as_deref());
                     if changed {
                         note_agent_change(panes, focused_pane.as_ref(), terminal);
@@ -1264,8 +1307,25 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                     ..FrameOutcome::default()
                 });
             }
-            if !is_layout_key(&scope, &key) {
+            let Some(key_session) = layout_key_scope_session(&scope, &key) else {
                 return Ok(FrameOutcome::default());
+            };
+            // phux-k0cw: adopt ONLY our own session's layout (or the bare
+            // legacy key, which predates per-session keying and can only be
+            // ours). A peer's topology is routed out as `foreign_layout` for
+            // the roster to read; adopting it here would replace the local
+            // pane tree with another session's.
+            let is_ours = match (key_session, focused_session) {
+                (None, _) => true,
+                (Some(k), Some(own)) => k == own,
+                (Some(_), None) => false,
+            };
+            if !is_ours {
+                let session = key_session.expect("a foreign key names a session");
+                return Ok(FrameOutcome {
+                    foreign_layout: Some((session, value)),
+                    ..FrameOutcome::default()
+                });
             }
             if let Some(bytes) = value {
                 match Workspace::decode_cbor(&bytes) {
@@ -1617,11 +1677,18 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                     })
                 }
             } else {
-                // An Asked for a pane we have no slot for yet (it can precede
-                // the first snapshot). Dropped like an early TerminalControl;
-                // the ADR-0036 detector coalesces repeated markers, so the
-                // next re-ask re-raises it once the slot exists.
-                Ok(FrameOutcome::default())
+                // phux-k0cw: no slot means either a pane whose snapshot has
+                // not landed yet, or — now that this client subscribes
+                // server-wide — a pane in ANOTHER session whose agent is
+                // blocked on a human. Both route out as `foreign_attention`:
+                // the roster and queue want it, and the local pane map has
+                // nowhere to put it. The ADR-0036 detector coalesces repeated
+                // markers, so a genuinely-early local ask still re-raises
+                // once the slot exists.
+                Ok(FrameOutcome {
+                    foreign_attention: Some(terminal),
+                    ..FrameOutcome::default()
+                })
             }
         }
         // phux-foz.4: the pane's shell changed directory (kernel-observed,
@@ -1667,6 +1734,18 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
         // but most do not affect the interactive client's projection. They
         // remain valid server traffic: ignoring them must not tear down an
         // otherwise healthy attach.
+        // phux-k0cw: the pane set of ANOTHER session changed. This client
+        // holds a server-wide `SUBSCRIBE_EVENTS { terminal: None }`, so the
+        // server announces every spawn and close — which is precisely what
+        // makes enumerate-then-subscribe race-free and keeps the whole
+        // cross-session sidebar inside the existing wire (ADR-0030).
+        FrameKind::Event {
+            terminal: Some(terminal),
+            event: AgentEvent::PaneSpawned | AgentEvent::PaneClosed { .. },
+        } if !panes.contains_key(&terminal) => Ok(FrameOutcome {
+            foreign_pane_set_dirty: true,
+            ..FrameOutcome::default()
+        }),
         FrameKind::Event { .. } => Ok(FrameOutcome::default()),
         // phux-ijuj: ERROR never terminates the attach. SPEC §9 puts
         // termination on `DETACHED` plus transport close, and the same
@@ -1779,14 +1858,22 @@ fn focused_session_name(snapshot: &phux_protocol::wire::info::SessionSnapshot) -
         .unwrap_or_default()
 }
 
-/// Decide whether `(scope, key)` matches a layout-coordination key ADR-0019
-/// reserves (`phux.tui.layout/v1[/<session>]`, scoped to the default Group).
+/// Which session a layout-coordination key names, for keys ADR-0019 reserves
+/// (`phux.tui.layout/v1[/<session>]`, scoped to the default Group).
 ///
-/// Per-session keying (phux-jy4t) means the key carries a session suffix; a
-/// client only ever receives broadcasts for the key it subscribed to (its own
-/// session), so matching the family is sufficient.
-fn is_layout_key(scope: &Scope, key: &str) -> bool {
-    matches!(scope, Scope::Group(id) if *id == DEFAULT_GROUP_ID) && is_layout_key_string(key)
+/// `None` ⇒ not a layout key at all. `Some(None)` ⇒ the bare legacy key.
+/// `Some(Some(id))` ⇒ that session's key.
+///
+/// phux-k0cw replaced the old boolean `is_layout_key`. Its doc comment said
+/// matching the family was sufficient because "a client only ever receives
+/// broadcasts for the key it subscribed to (its own session)" — an invariant
+/// the cross-session sidebar removes, which is exactly why the caller must now
+/// know WHOSE layout arrived before deciding to adopt it.
+fn layout_key_scope_session(scope: &Scope, key: &str) -> Option<Option<SessionId>> {
+    if !matches!(scope, Scope::Group(id) if *id == DEFAULT_GROUP_ID) {
+        return None;
+    }
+    layout_key_session(key)
 }
 
 /// Adopt a decoded workspace's topology without adopting its sender's focus.
@@ -2368,6 +2455,7 @@ mod tests {
             &mut session_name,
             None,
             None,
+            None,
             (80, 24),
             &mut predict,
             &overlay,
@@ -2668,6 +2756,9 @@ mod tests {
         focused_pane: &mut Option<TerminalId>,
         zoomed: &mut Option<TerminalId>,
         session_name: &mut String,
+        // phux-k0cw: this client's own session, so a test can drive the
+        // foreign-layout guard.
+        focused_session: Option<SessionId>,
         status_bar: Option<&mut crate::render::chrome::status_bar::StatusBarPainter>,
         sidebar: Option<crate::attach::paint::SidebarReservation>,
         viewport_dims: (u16, u16),
@@ -2698,6 +2789,7 @@ mod tests {
             focused_pane,
             zoomed,
             session_name,
+            focused_session,
             status_bar,
             sidebar,
             viewport_dims,
@@ -2870,6 +2962,10 @@ mod tests {
             focused,
             &mut zoomed,
             &mut session_name,
+            // phux-k0cw: these fixtures are session 1, so a
+            // `phux.tui.layout/v1/1` broadcast is OUR layout and is adopted.
+            // A key naming any other session is a peer's and must not be.
+            Some(SessionId::new(1)),
             None,
             None,
             (80, 24),
@@ -2978,6 +3074,135 @@ mod tests {
             local.windows[1].state.tree,
             Some(LayoutNode::Split { ratio, .. }) if (ratio - 0.7).abs() < f32::EPSILON
         ));
+    }
+
+    /// phux-k0cw, THE guard this stage exists for: once a client subscribes
+    /// to peers' layout keys, a peer's broadcast must not touch the local
+    /// pane tree. Before the guard, the layout arm matched the key FAMILY and
+    /// adopted whatever it decoded — safe only while a client watched exactly
+    /// one key.
+    #[test]
+    fn a_peer_layout_broadcast_leaves_the_local_workspace_untouched() {
+        use phux_protocol::wire::frame::Scope;
+
+        let mut local = ws1(split2(1, 2, 1));
+        let before = local.clone();
+        let peer = ws1(split2(5, 6, 1));
+        let bytes = peer.encode_cbor().expect("encode peer workspace");
+        let mut focused = Some(tid(1));
+        let focused_before = focused.clone();
+        let mut panes = panes_for(&[&tid(1), &tid(2)]);
+
+        let outcome = drive_layout_frame(
+            FrameKind::MetadataChanged {
+                scope: Scope::Group(super::DEFAULT_GROUP_ID),
+                // Session 2; the fixture client is session 1.
+                key: crate::layout_ops::layout_key(SessionId::new(2)),
+                value: Some(bytes.clone()),
+            },
+            None,
+            &mut local,
+            &mut focused,
+            &mut panes,
+        );
+
+        assert!(
+            !outcome.layout_replaced,
+            "a peer's layout must not replace ours"
+        );
+        assert_eq!(local, before, "the local workspace is byte-identical");
+        assert_eq!(focused, focused_before, "local focus is untouched");
+        assert!(
+            outcome.attach_panes.is_empty(),
+            "we must not attach a peer's panes"
+        );
+        assert_eq!(
+            outcome.foreign_layout,
+            Some((SessionId::new(2), Some(bytes))),
+            "the payload is routed out for the roster instead"
+        );
+
+        // A peer tombstone routes out too, rather than resetting our layout
+        // to the single-pane bootstrap.
+        let outcome = drive_layout_frame(
+            FrameKind::MetadataChanged {
+                scope: Scope::Group(super::DEFAULT_GROUP_ID),
+                key: crate::layout_ops::layout_key(SessionId::new(2)),
+                value: None,
+            },
+            None,
+            &mut local,
+            &mut focused,
+            &mut panes,
+        );
+        assert!(!outcome.layout_replaced);
+        assert_eq!(local, before, "a peer tombstone is not our reset");
+        assert_eq!(outcome.foreign_layout, Some((SessionId::new(2), None)));
+    }
+
+    /// The bare legacy key predates per-session keying, so it can only be
+    /// ours and must still be adopted — the guard tightens attribution
+    /// without breaking a config written by an older client.
+    #[test]
+    fn the_bare_legacy_layout_key_is_still_adopted() {
+        use phux_protocol::wire::frame::Scope;
+
+        let mut local = Workspace::single(tid(1));
+        let incoming = ws1(split2(1, 2, 1));
+        let bytes = incoming.encode_cbor().expect("encode workspace");
+        let mut focused = Some(tid(1));
+        let mut panes = panes_for(&[&tid(1), &tid(2)]);
+
+        let outcome = drive_layout_frame(
+            FrameKind::MetadataChanged {
+                scope: Scope::Group(super::DEFAULT_GROUP_ID),
+                key: crate::layout_ops::LAYOUT_KEY.to_owned(),
+                value: Some(bytes),
+            },
+            None,
+            &mut local,
+            &mut focused,
+            &mut panes,
+        );
+
+        assert!(outcome.layout_replaced, "the legacy key is ours");
+        assert!(outcome.foreign_layout.is_none());
+    }
+
+    /// phux-k0cw: a `phux.agent/v1` push for a pane we hold no slot for is a
+    /// peer's. It must not enter the local index, which
+    /// `sync_agent_meta_subscriptions` retains against the LOCAL pane set —
+    /// a foreign record folded in there would be evicted on the next sweep.
+    #[test]
+    fn a_foreign_agent_record_push_stays_out_of_the_local_index() {
+        use phux_protocol::wire::frame::{Scope, TERMINAL_AGENT_KEY};
+
+        let mut local = Workspace::single(tid(1));
+        let mut focused = Some(tid(1));
+        let mut panes = panes_for(&[&tid(1)]);
+        let record = br#"{"name":"claude","kind":"claude","state":"blocked"}"#.to_vec();
+
+        let outcome = drive_layout_frame(
+            FrameKind::MetadataChanged {
+                scope: Scope::Terminal(tid(77)),
+                key: TERMINAL_AGENT_KEY.to_owned(),
+                value: Some(record.clone()),
+            },
+            None,
+            &mut local,
+            &mut focused,
+            &mut panes,
+        );
+
+        assert!(
+            !outcome.agent_meta_changed,
+            "a peer's record is not a local index change"
+        );
+        assert_eq!(
+            outcome.foreign_agent.as_ref().map(|(id, _)| id.clone()),
+            Some(tid(77)),
+            "the record routes out to the peer cache"
+        );
     }
 
     #[test]
@@ -3244,6 +3469,7 @@ mod tests {
             focused,
             &mut zoomed,
             &mut session_name,
+            None,
             None,
             None,
             viewport_dims,
@@ -3526,6 +3752,7 @@ mod tests {
             &mut session_name,
             None,
             None,
+            None,
             (132, 43),
             &mut predict,
             &overlay,
@@ -3697,6 +3924,7 @@ mod tests {
                     focused,
                     &mut zoomed,
                     &mut session_name,
+                    None,
                     None,
                     None,
                     viewport_dims,
@@ -4001,6 +4229,7 @@ mod tests {
             &mut session_name,
             None,
             None,
+            None,
             (80, 24),
             &mut predict,
             &overlay,
@@ -4147,6 +4376,7 @@ mod tests {
             &mut session_name,
             None,
             None,
+            None,
             (80, 24),
             &mut predict,
             &overlay,
@@ -4211,6 +4441,7 @@ mod tests {
             focused,
             &mut zoomed,
             &mut session_name,
+            None,
             None,
             None,
             (80, 24),
@@ -4319,6 +4550,7 @@ mod tests {
                 &mut session_name,
                 None,
                 None,
+                None,
                 (80, 24),
                 &mut predict,
                 &overlay,
@@ -4374,6 +4606,7 @@ mod tests {
             focused,
             &mut zoomed,
             &mut session_name,
+            None,
             None,
             None,
             (80, 24),
@@ -4482,6 +4715,7 @@ mod tests {
             &mut focused,
             &mut zoomed,
             &mut session_name,
+            None,
             None,
             None,
             (80, 24),
@@ -4643,6 +4877,7 @@ mod tests {
             &mut focused,
             &mut zoomed,
             &mut session_name,
+            None,
             None,
             None,
             (80, 24),
@@ -5058,8 +5293,12 @@ mod tests {
     fn drive_meta_frame(frame: FrameKind, agent_meta: &mut AgentMetaIndex) -> FrameOutcome {
         let pane = tid(1);
         let mut layout = Workspace::single(pane.clone());
-        let mut focused = Some(pane);
-        let mut panes: HashMap<TerminalId, PaneSlot> = HashMap::new();
+        let mut focused = Some(pane.clone());
+        // phux-k0cw: the agent arm now checks pane membership before folding
+        // a record into the LOCAL index, so the fixture must hold the slot it
+        // claims to be receiving records for — which is what a subscribed
+        // pane always has in practice.
+        let mut panes: HashMap<TerminalId, PaneSlot> = panes_for(&[&pane]);
         let mut out: Vec<u8> = Vec::new();
         let mut session_name = String::new();
         let mut zoomed: Option<TerminalId> = None;
@@ -5075,6 +5314,7 @@ mod tests {
             &mut focused,
             &mut zoomed,
             &mut session_name,
+            None,
             None,
             None,
             (80, 24),

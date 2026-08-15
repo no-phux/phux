@@ -817,6 +817,10 @@ pub async fn run_headless_rendered(
     let mut expected_closes: HashSet<TerminalId> = HashSet::new();
 
     // Replay ATTACHED so the focused-pane + workspace bootstrap runs once.
+    // phux-k0cw: no session is known yet (ATTACHED is what reports it), and
+    // the headless composite never subscribes, so it never receives a layout
+    // BROADCAST to adopt or reject — only the GET answer it asked for, which
+    // takes the `MetadataValue` path.
     let outcome = handle_server_frame(
         &mut engine_kernel,
         &mut kernel_effects,
@@ -827,6 +831,7 @@ pub async fn run_headless_rendered(
         &mut focused_pane,
         &mut zoomed,
         &mut session_name,
+        None,
         status_bar.as_mut(),
         sidebar,
         viewport_dims,
@@ -894,6 +899,7 @@ pub async fn run_headless_rendered(
                 &mut focused_pane,
                 &mut zoomed,
                 &mut session_name,
+                focused_session,
                 status_bar.as_mut(),
                 sidebar,
                 viewport_dims,
@@ -1915,6 +1921,13 @@ async fn main_loop<W: super::RenderSink>(
     // shape as the foreign layouts above (ADR-0018 / ADR-0030).
     let mut foreign_agents: HashMap<TerminalId, AgentRecord> = HashMap::new();
     let mut foreign_agent_pending: HashMap<u32, TerminalId> = HashMap::new();
+    // phux-k0cw: peer panes whose agent has asked for a human (ADR-0035
+    // `Asked` for a Terminal outside this client's pane set). The local
+    // equivalent lives on `PaneSlot::attention`, which a foreign pane has no
+    // slot to carry. Cleared when the pane's record says it is no longer
+    // blocked, and pruned with the rest of the peer state.
+    let mut foreign_attention: std::collections::HashSet<TerminalId> =
+        std::collections::HashSet::new();
     // phux-foz.8: the deferred window select of a one-step cross-session
     // pick, consumed on the first layout reconcile below. phux-jpqd:
     // `pending_pane` is the DFS leaf ordinal focused after the window
@@ -2002,6 +2015,7 @@ async fn main_loop<W: super::RenderSink>(
         &mut focused_pane,
         &mut zoomed,
         &mut session_name,
+        focused_session,
         status_bar.as_mut(),
         sidebar,
         viewport_dims,
@@ -2781,6 +2795,7 @@ async fn main_loop<W: super::RenderSink>(
                             &mut focused_pane,
                             &mut zoomed,
                             &mut session_name,
+                            focused_session,
                             status_bar.as_mut(),
                             sidebar,
                             viewport_dims,
@@ -2847,6 +2862,48 @@ async fn main_loop<W: super::RenderSink>(
                             || outcome.layout_replaced
                             || outcome.reflow_panes
                             || outcome.sessions.is_some();
+                        // phux-k0cw: fold anything the frame said about a
+                        // session OTHER than ours into the peer caches the
+                        // roster and cross-session queue read.
+                        //
+                        // Both repaint kinds are raised, not just the fleet
+                        // one: the peer state now feeds the always-on strip,
+                        // so raising `fleet` alone would leave a peer's
+                        // change invisible unless the fleet modal happened to
+                        // be open (`refresh_fleet_if_open` returns
+                        // `NotPublished` when it is not).
+                        let mut foreign_dirty = false;
+                        if let Some((session, value)) = outcome.foreign_layout {
+                            apply_foreign_layout_reply(
+                                &mut foreign_layouts,
+                                session,
+                                value.as_deref(),
+                            );
+                            prune_foreign_agents(&mut foreign_agents, &foreign_layouts);
+                            foreign_dirty = true;
+                        }
+                        if let Some((id, value)) = outcome.foreign_agent {
+                            apply_foreign_agent_reply(
+                                &mut foreign_agents,
+                                id,
+                                value.as_deref(),
+                            );
+                            foreign_dirty = true;
+                        }
+                        if let Some(id) = outcome.foreign_attention {
+                            foreign_attention.insert(id);
+                            foreign_dirty = true;
+                        }
+                        if outcome.foreign_pane_set_dirty {
+                            // A peer spawned or closed a pane. The peer
+                            // layouts are re-read on the next sweep; flagging
+                            // is enough here.
+                            foreign_dirty = true;
+                        }
+                        if foreign_dirty {
+                            repaint.raise_chrome();
+                            repaint.raise_fleet();
+                        }
                         finish_return_onboarding_after_paint(
                             &mut onboarding_claim,
                             status_bar.as_ref(),
