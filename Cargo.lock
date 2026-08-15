@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "phux"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -2161,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2197,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "ciborium",
  "criterion",
@@ -2214,7 +2214,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -2224,7 +2224,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "chrono",
  "insta",
@@ -2241,7 +2241,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "proptest",
  "serde",
@@ -2252,7 +2252,7 @@ dependencies = [
 
 [[package]]
 name = "phux-crash"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "backtrace",
  "libc",
@@ -2263,7 +2263,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -2279,7 +2279,7 @@ dependencies = [
 
 [[package]]
 name = "phux-mcp"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "phux-client",
  "phux-config",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "phux-plugin"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "phux-config",
  "serde",
@@ -2304,7 +2304,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "bitflags 2.13.0",
  "bytes",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "phux-record"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "gif",
  "libghostty-vt",
@@ -2332,7 +2332,7 @@ dependencies = [
 
 [[package]]
 name = "phux-relay"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "getrandom 0.2.17",
  "hex",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "allocator-api2 0.4.0",
  "bytes",
@@ -2399,7 +2399,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server-testkit"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "portable-pty-adopt"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "libc",
