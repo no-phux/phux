@@ -1040,6 +1040,23 @@ impl FrameReader {
     }
 }
 
+/// Name the frame a failed write was carrying, preserving [`io::ErrorKind`].
+///
+/// phux-501l. "attach loop io error: Broken pipe (os error 32)" names the
+/// symptom and nothing else — not which write, so not which code path. That
+/// cost two wrong diagnoses of the last-pane-death race before anyone thought
+/// to ask the question this answers. A write error now says what it was
+/// sending.
+///
+/// The kind is carried through deliberately: [`super::driver::peer_gone`]
+/// classifies on `ErrorKind`, so wrapping must not flatten it to `Other`.
+fn write_failed(frame: &FrameKind, err: &io::Error) -> AttachError {
+    AttachError::Io(io::Error::new(
+        err.kind(),
+        format!("sending frame type 0x{:02x}: {err}", frame.type_byte()),
+    ))
+}
+
 impl UdsWriter {
     /// Encode `frame` into the internal buffer and flush it to the socket.
     async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
@@ -1048,9 +1065,12 @@ impl UdsWriter {
         self.inner
             .write_all(&self.out)
             .await
-            .map_err(AttachError::Io)?;
+            .map_err(|err| write_failed(frame, &err))?;
         // `flush` on a `UnixStream` half is a no-op, but harmless and explicit.
-        self.inner.flush().await.map_err(AttachError::Io)?;
+        self.inner
+            .flush()
+            .await
+            .map_err(|err| write_failed(frame, &err))?;
         Ok(())
     }
 }
