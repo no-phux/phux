@@ -1,0 +1,112 @@
+# linear-release — report a release to the Linear `phux` pipeline.
+#
+# Linear resolves the issues a release carried from the Linear identifiers and
+# PR references in its commit range, so it needs the full history at the tag,
+# not a shallow clone.
+#
+# Two stages, because a release is not one moment:
+#   building  — the tag exists and the release is being built. Linear shows it
+#               in Building. Called by release-please.yml at tag time.
+#   released  — binaries, tap, and the public GitHub release are all complete.
+#               Called by release-please.yml after release-artifacts succeeds.
+#
+# A failed artifact build therefore leaves the Linear release in Building next
+# to a private draft on GitHub, which is the honest state.
+#
+# WHY THIS IS A SEPARATE, DISPATCHABLE WORKFLOW rather than two jobs inline in
+# release-please.yml: those jobs are gated on release-please's `release_created`
+# output, and release-please.yml only runs `on: push: branches: [main]`. When a
+# release has to be recovered by hand — as v0.19.0 was, after release-please
+# built no release for it at all — that output is false and never fires, so the
+# release ships to users and Linear never hears about it. There was no way to
+# report it after the fact short of pushing a commit. Extracting it here gives
+# the recovery path an entry point, and keeps exactly one definition of how a
+# release is reported: release-please.yml calls this workflow, it does not
+# duplicate it.
+
+name: linear-release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Existing release tag to report (e.g. v0.1.0)."
+        required: true
+        type: string
+      stage:
+        description: "building = tagged and building; released = fully published."
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to report (e.g. v0.1.0). Must already exist."
+        required: true
+        type: string
+      stage:
+        description: "building = tagged and building; released = fully published."
+        required: true
+        default: released
+        type: choice
+        options:
+          - building
+          - released
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linear-release-${{ inputs.tag }}-${{ inputs.stage }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: report ${{ inputs.tag }} to Linear (${{ inputs.stage }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Validate stage
+        env:
+          STAGE: ${{ inputs.stage }}
+        run: |
+          set -euo pipefail
+          case "$STAGE" in
+            building|released) ;;
+            *) echo "::error::stage must be 'building' or 'released', got '${STAGE}'"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v7
+        with:
+          # The CLI scans the whole commit range, so shallow will not do.
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+
+      - name: Capture the GitHub release body as the Linear release notes
+        if: inputs.stage == 'building'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
+            > release-notes.md || : > release-notes.md
+
+      - uses: linear/linear-release-action@v0.15.1
+        if: inputs.stage == 'building'
+        with:
+          access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
+          command: sync
+          version: ${{ inputs.tag }}
+          release_notes: release-notes.md
+          links: |
+            GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
+
+      - uses: linear/linear-release-action@v0.15.1
+        if: inputs.stage == 'released'
+        with:
+          access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
+          command: update
+          stage: Released
+          version: ${{ inputs.tag }}
