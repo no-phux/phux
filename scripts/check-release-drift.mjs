@@ -36,6 +36,24 @@ const now = Date.now();
 const graceMs = graceMinutes * 60_000;
 const failures = [];
 
+// A token without push access is not shown draft releases at all — the REST
+// API simply omits them. Two of the four checks below are about drafts, so
+// under such a token they cannot fail: an empty draft list is indistinguishable
+// from a healthy one, and this check would report success on a repository full
+// of stuck releases.
+//
+// That is the precise failure mode this whole script exists to catch, so it
+// refuses to run blind rather than passing quietly. The first CI run of
+// release-drift.yml hit exactly this: `contents: read` hid both stuck drafts,
+// and only the manifest-versus-tag check noticed anything was wrong.
+const canSeeDrafts = gh(["api", `repos/${repo}`, "--jq", "{push: .permissions.push}"])[0]?.push;
+assert.ok(
+  canSeeDrafts,
+  `the token for ${repo} lacks push access, so the GitHub API will not list draft releases. ` +
+    "Two of this check's four assertions are about drafts and would pass vacuously. " +
+    "Grant `contents: write` (read-only for this job's purposes — see release-drift.yml).",
+);
+
 const releases = gh([
   "api",
   `repos/${repo}/releases`,

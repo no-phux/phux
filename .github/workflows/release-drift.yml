@@ -36,7 +36,22 @@ on:
         type: string
 
 permissions:
-  contents: read
+  # `contents: write` is required to SEE, not to change, anything. The REST API
+  # only lists draft releases to a token with push access, so under
+  # `contents: read` every draft is invisible and the stuck-draft check — the
+  # primary one, and the reason this workflow exists — silently passes on a
+  # repository full of stuck drafts.
+  #
+  # This was not theoretical. The first CI run of this workflow reported the
+  # two stuck integration releases via the manifest-versus-tag check ("has no
+  # GitHub release") while the same script run locally, with a token that has
+  # push access, reported them as long-lived drafts. Same two releases, two
+  # different checks, because CI could not see the drafts at all. Only the
+  # backup check fired.
+  #
+  # The job runs one read-only script and pushes nothing. If that ever stops
+  # being true, this permission is the thing to re-examine.
+  contents: write
   issues: read
   pull-requests: read
 
