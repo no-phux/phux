@@ -1213,7 +1213,7 @@ Recognized slots:
 | `selection_fg`   | `#c0caf5`   | Selected list row / copy-mode strip foreground |
 | `selection_bg`   | `#33467c`   | Selected list row / copy-mode strip background |
 | `attention`      | `#ff9e64`   | Agent-attention chrome (asked marker/hint, fleet-dashboard hot rows) |
-| `sidebar_section`| `#565f89`   | Sidebar `spaces` / `agents` section headers + affordance action glyphs |
+| `sidebar_section`| `#565f89`   | Sidebar `needs you` / `here` / `spaces` zone headers + affordance action glyphs |
 | `agent_idle`     | `#565f89`   | Sidebar agent row in the `idle` state      |
 | `agent_working`  | `#9ece6a`   | Sidebar agent row in the `working` state   |
 | `agent_blocked`  | `#ff9e64`   | Sidebar agent row in the `blocked` state   |
@@ -1738,12 +1738,16 @@ The new layout broadcasts to other attached clients via `SET_METADATA`
 
 <!-- impl-status: shipped; probe: toggle-sidebar -->
 > **Status:** Shipped (`phux-4h5a`; herdr-shaped by `phux-p4vp`;
-> interactive per `phux-fce4`; sectioned + agent-aware per `phux-foz.9`).
+> interactive per `phux-fce4`; sectioned + agent-aware per `phux-foz.9`;
+> three-zone attention inbox per `phux-k0cw` / [ADR-0089](../../ADR/0089-three-zone-attention-sidebar.md)).
 
-`[sidebar]` docks a vertical strip on the left (default) or right edge;
-`toggle-sidebar` (`C-a b`) flips it at runtime, and so does clicking the
-collapse chevron in the strip's bottom corner. Panes tile into the
-remaining content rect, so the strip never overlaps content.
+`[sidebar]` docks a vertical strip on the left (default) or right edge.
+It is **on by default**; `toggle-sidebar` (`C-a b`) flips it at runtime,
+and so does clicking the collapse chevron in the strip's bottom corner.
+That runtime choice is client-local chrome: it persists across
+`switch-session` for the life of the attach, and `[sidebar] enabled`
+seeds it at attach only. Panes tile into the remaining content rect, so
+the strip never overlaps content.
 
 The strip runs the **full height** of the terminal, and the status bar
 yields its columns rather than spanning underneath it (`phux-qtw8`): with
@@ -1751,11 +1755,32 @@ the sidebar open, the bar — window tabs included — starts beside the
 strip. The three regions tile the viewport without overlap, and a click
 in the strip's columns is the strip's, on every row.
 
-The strip is laid out herdr-style in two labelled sections, headed by
-muted lowercase headers (the `sidebar_section` theme slot):
+The strip is **three zones**, headed by muted lowercase headers (the
+`sidebar_section` theme slot). They are ordered by how much each row wants
+a human, not by where the row lives:
 
-**`spaces`** — one fixed **two-row block** per window, top to bottom in
-`select-window` index order:
+**`needs you`** — the **cross-session attention queue**: every agent
+wanting a human, on this server, worst first. Rows carry the same glyph
+and state word as the `agents` section they replace, but a row from
+another session is labelled by its **session** rather than its window (a
+window name out of its session's context locates nothing). Committing a
+row runs `select-window` for a local agent and
+`switch-session { name, window, pane }` for a peer's — a single Enter or
+click lands on the pane that wants you.
+
+The queue is **capped** (five rows) with a `+N more` row that opens the
+agent-fleet dashboard, and it contributes **zero rows when nothing wants
+a human** — no header, no gap, no placeholder. The strip shrinks when the
+fleet is calm; that is the point of it, not an optimization.
+
+Two limits are structural rather than temporary. A **peer** row never
+becomes `seen` (visiting a pane is what marks it, and visiting a peer's
+pane means switching there), so a peer's finished-and-unread agent stays
+on its rung until someone looks. And peer rows have no last-change clock,
+so equal-rank peers hold the session graph's order.
+
+**`here`** — the focused session's windows: one fixed **two-row block**
+per window, top to bottom in `select-window` index order:
 
 - **Name row.** A status dot (filled + `accent` for the active window,
   hollow + `dim` otherwise, `attention` amber when a pane in the window
@@ -1767,11 +1792,10 @@ muted lowercase headers (the `sidebar_section` theme slot):
   commit hash for a detached HEAD). Blank when the pane's working
   directory is not inside a git repository.
 
-**`agents`** — one row per agent-running pane: a lifecycle glyph, the
-window's stored name, and `state - agent-name` (e.g. `idle - claude`,
-`working - merge-queue-w5`), colored by the `agent_idle` /
-`agent_working` / `agent_blocked` / `agent_done` theme slots (an
-undeclared state renders in `dim`). Per pane, in preference order:
+A queue row's agent identity, per pane, comes from one of two sources in
+preference order (colored by the `agent_idle` / `agent_working` /
+`agent_blocked` / `agent_done` theme slots; an undeclared state renders in
+`dim`):
 
 1. **The structured `phux.agent/v1` record** (ADR-0040). The server
    derives and writes this record for a pane it owns
@@ -1795,26 +1819,49 @@ undeclared state renders in `dim`). Per pane, in preference order:
    pane's title as content frames apply, so the row appears when the
    agent sets its title and disappears when the shell resets it on exit.
 
-Rows are ordered by **how much they want a human**, not by window index:
+Rows are ordered by **how much they want a human**, not by session or
+window index:
 
     blocked  >  done (unvisited)  >  working  >  done/idle (visited)  >  unknown
 
 "Finished, and you have not looked at it yet" therefore sorts above
-"still working" — the whole point of the section is to answer "which of
-my agents needs me?" without reading it top to bottom. Ties break by most
-recent state change, then by window order. A pane is **seen** once you
-focus it; a *new* state landing on a pane you are not looking at marks it
-unseen again, so an agent that finishes in a background window rises back
-to the top rather than staying quietly settled from an hour ago.
+"still working" — the whole point of the zone is to answer "which of my
+agents needs me?" without reading it top to bottom. Ties break by most
+recent state change, then by declaration order. A pane is **seen** once
+you focus it; a *new* state landing on a pane you are not looking at marks
+it unseen again, so an agent that finishes in a background window rises
+back to the top rather than staying quietly settled from an hour ago.
 
-Panes matching neither source produce no row — the section lists agents,
-not shells. When no pane matches, the section still renders its header
-with a quiet `no agents` empty-state line (dim + italic) rather than
-vanishing, so the strip reads as two composed sections; the `spaces`
-section shows an equivalent `no spaces` placeholder when there are no
-windows. The empty-state lines are inert — never click targets. (A short
-strip that cannot fit the gap + header + one row drops the whole agents
-section as before.)
+Panes matching neither source produce no row — the zone lists agents, not
+shells. A peer pane that raised an ADR-0035 ask but declares no record
+still earns a row, labelled `unnamed agent`: it is blocked on a human by
+definition, and the strip can say what happened without claiming to know
+who.
+
+**`spaces`** — one **rolled-up line per other session**: a status dot
+taking that session's worst rung, its name, and a compact histogram
+(`!1 *2` — one blocked, two working). A dot says *what*; the count says
+*how much*. Committing a row runs `switch-session { name }`.
+
+The roster is deliberately **not** capped the way the queue is: it answers
+"which sessions are on the line?", and a truncated list answers that
+wrongly. It is bounded only by the strip's height, with its own `+N more`
+overflow row. With no other sessions it contributes zero rows, so a
+single-session user never reads an empty section.
+
+A **satellite** session shows a pane count and an explicitly unknown dot
+(`?4`). Its per-Terminal metadata is not subscribable from here
+(`docs/spec/L3.md`), so its state is unknowable and must not render as a
+calm zero — an attention surface that reports `0 blocked` for something it
+cannot see is worse than one that says it cannot see it.
+
+Zone 2 keeps a floor of a header plus one window block, so a blocked fleet
+can never squeeze the session you are working in off its own strip. When
+the focused session somehow has no windows, zone 2 shows a quiet
+`no windows` placeholder. Empty-state and overflow lines are inert as
+click targets except the overflow rows, which open the fleet dashboard.
+(A short strip that cannot fit a zone's gap + header + one row drops that
+zone whole, rather than leaving a dangling header.)
 
 Two environment knobs govern the server-side derivation (the client has
 no switch of its own; it renders whatever the record says):
@@ -1844,7 +1891,10 @@ row would — one `run_action` dispatch path, no bespoke click semantics:
 | Target                      | Committed action                       |
 |-----------------------------|----------------------------------------|
 | A window block (either row) | `select-window { index }`              |
-| An agent row                | `select-window { index }` for the window holding the agent's pane |
+| A `needs you` row (local)   | `select-window { index }` for the window holding the agent's pane |
+| A `needs you` row (peer)    | `switch-session { name, window, pane }` |
+| A `spaces` roster row       | `switch-session { name }`              |
+| Either `+N more` row        | `agent-fleet`                          |
 | `+ new`                     | `new-window`                           |
 | `= menu`                    | `command-palette` (the session/plugin menu; `new-session` lives in its Session group) |
 | The collapse chevron        | `toggle-sidebar`                       |

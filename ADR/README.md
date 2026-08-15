@@ -117,6 +117,7 @@ amends / extends) are hand-curated from each ADR's body.
 | [0086](./0086-shared-render-pool.md) | The pooled libghostty render trio lives in `phux-protocol` | Accepted (one `RenderPool` owns the `RenderState`/`RowIterator`/`CellIterator` trio and the `phux-5pyx` rebuild-on-resize, behind the existing `server` feature; dirty-bit policy stays at the call sites, which deliberately differ) |
 | [0087](./0087-elastic-status-bar-space.md) | Elastic status-bar space is row-wide slack, not slot layout | Proposed (defines the `spacer` widget frozen by [0071](./0071-what-phux-1-0-commits-to.md): paid from the row's leftover width, split evenly, zero on an overflowing row — rather than giving `[status]` slots a two-pass width budget) |
 | [0088](./0088-adopting-a-live-server-into-supervision.md) | Adopting a live server into supervision | Accepted (no supervisor can restart-manage a pid it did not start, so `install --adopt` transfers the supervision rather than the process: the unit is armed instead of loaded, the incumbent keeps its panes, and the auto-spawn path completes the hand-over) |
+| [0089](./0089-three-zone-attention-sidebar.md) | The sidebar is a bounded attention inbox, not a structural list | Accepted (three zones ranked by how much each row wants a human: a capped cross-session queue that contributes zero rows when nothing is blocked, the focused session's windows behind a floor, and one rolled-up line per other session; built from verbs the client already sends, so no wire surface is added) |
 
 ## When to write an ADR
 
