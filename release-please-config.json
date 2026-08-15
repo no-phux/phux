@@ -26,7 +26,6 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "package-name": "phux",
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
         "integrations/opencode",

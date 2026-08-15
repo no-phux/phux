@@ -59,6 +59,37 @@
 #   PR ever again proposes commits that are already in CHANGELOG.md, look here
 #   first.
 #
+# DO NOT REINTRODUCE `package-name` ON THE ROOT PACKAGE (this is the bug that
+# silently skipped v0.19.0):
+#   `release-please-config.json` sets `"include-component-in-tag": false` for
+#   `"."`, so the root's component is empty everywhere the TAG and the PR BODY
+#   are concerned. But `package-name` is a second, independent source for the
+#   component: BaseStrategy computes `component = options.component ||
+#   normalizeComponent(packageName)`, and `getBranchComponent()` — unlike
+#   `getComponent()` — does NOT honour `include-component-in-tag`. With
+#   `"package-name": "phux"` the branch component was therefore "phux" while the
+#   PR branch is plainly `release-please--branches--main`, component undefined.
+#
+#   That mismatch only bites on the single-section path. `buildRelease()` treats
+#   a merged release PR whose body has exactly ONE component-less release
+#   section as a "standalone release PR" and requires branch component ==
+#   configured component; it bails with "PR component: undefined does not match
+#   configured component: phux" and creates NO release. When two or more
+#   sections are present it takes the multi-component path instead, which
+#   matches on `getComponent()` (empty) and works fine.
+#
+#   So the release only ever worked by accident: every cycle up to v0.18.0
+#   happened to carry an integrations/* bump alongside the root one. v0.19.0 was
+#   the first root-only cycle, and it vanished — no tag, no release, no
+#   artifacts, and PR #445 left labelled `autorelease: pending`, which then
+#   aborts every subsequent run with "There are untagged, merged release PRs
+#   outstanding". Dropping `package-name` makes the branch component empty on
+#   both sides. It cannot change the tag or the release name: both are gated on
+#   `include-component-in-tag`, which stays false.
+#
+#   Symptom to look for: a release-please run that is GREEN but reports
+#   `releases_created: false` right after a release PR merged.
+#
 # crates.io is deliberately NOT wired in here. Publishing is irreversible and
 # there is no human in a tag-triggered path, so phux-protocol is published only
 # via the manual publish-crate.yml dispatch. See CONTRIBUTING.md.

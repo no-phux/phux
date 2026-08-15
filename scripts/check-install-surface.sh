@@ -182,13 +182,25 @@ require_fixed release-please-config.json '"jsonpath": "$.workspace.package.versi
 # Without this, the first `feat!:` bumps 0.x straight to 1.0.0.
 require_fixed release-please-config.json '"bump-minor-pre-major": true'
 
-# TAG SHAPE. release-please defaults `include-component-in-tag` to TRUE, and with
-# `"package-name": "phux"` that renders the tag as `phux-v0.2.0`. Every downstream
-# consumer of the tag assumes a bare `vX.Y.Z`: release.yml's `^v[0-9]+...` regex,
+# TAG SHAPE. release-please defaults `include-component-in-tag` to TRUE, and a
+# root component renders the tag as `phux-v0.2.0`. Every downstream consumer of
+# the tag assumes a bare `vX.Y.Z`: release.yml's `^v[0-9]+...` regex,
 # check-release-version.sh, install.sh's `case "$version" in v*)` guard, and
 # gen-formula.sh's artifact URLs. A component-prefixed tag would sail past all of
 # them and publish a release with zero attached artifacts.
 require_fixed release-please-config.json '"include-component-in-tag": false'
+
+# ROOT COMPONENT. `package-name` is a SECOND source for the component, and
+# `getBranchComponent()` reads it without honouring `include-component-in-tag`.
+# With `"package-name": "phux"` the branch component is "phux" while the release
+# PR branch is `release-please--branches--main` (component undefined), and
+# `buildRelease()`'s standalone path — taken whenever the merged PR body carries
+# exactly ONE component-less release section, i.e. every root-only cycle —
+# refuses to create the release. That is how v0.19.0 was silently skipped: green
+# run, `releases_created: false`, no tag, no artifacts. The integrations packages
+# carry their component under `component`, so nothing in this file needs
+# `package-name`. See the header of .github/workflows/release-please.yml.
+forbid_fixed release-please-config.json '"package-name"'
 
 # The release PR is opened, and the Cargo.lock sync is pushed, as a GitHub App —
 # NOT GITHUB_TOKEN. main's ruleset requires the `check`/`test` contexts with an
