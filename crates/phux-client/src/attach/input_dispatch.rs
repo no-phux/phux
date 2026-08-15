@@ -186,13 +186,13 @@ pub(super) struct DispatchCtx<'a> {
     ///
     /// [`sidebar_reservation`]: crate::attach::paint::sidebar_reservation
     pub chrome: ChromeBreakpoints,
-    /// phux-foz.9: the window index of each sidebar agents-section row, in
-    /// display order — the same list the strip painter rendered from
-    /// ([`crate::render::chrome::sidebar::SidebarPainter::agent_windows`]).
-    /// `hit_test` needs it to resolve a click on an agent row to the
-    /// window holding that agent's pane. Empty when the section is empty
-    /// (or in fixtures that don't exercise the sidebar).
-    pub sidebar_agents: &'a [usize],
+    /// phux-k0cw: the sidebar's click-resolution table for the frame on
+    /// screen — the same one the strip painter rendered from
+    /// ([`crate::render::chrome::sidebar::SidebarPainter::click_targets`]).
+    /// It carries both the counts `hit_test` derives the row shape from and
+    /// the per-row targets a queue or roster click commits. Default (all
+    /// zero, no targets) in fixtures that don't exercise the sidebar.
+    pub sidebar_targets: &'a crate::render::chrome::sidebar::SidebarTargets,
     /// The status bar's row reservation this frame (`None` when no bar;
     /// the painter's `Position` otherwise — phux-foz.8). Mouse routing
     /// folds this into the same `content_rect(viewport, bar, sidebar)` the
@@ -615,13 +615,7 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
                 let strip = super::paint::sidebar_rect(ctx.viewport, res);
                 let (cell_x, cell_y) = (quantize_cell(mouse.x), quantize_cell(mouse.y));
                 if strip_contains(strip, cell_x, cell_y) {
-                    let hit = sidebar_click_action(
-                        strip,
-                        ctx.workspace.windows.len(),
-                        ctx.sidebar_agents,
-                        cell_x,
-                        cell_y,
-                    );
+                    let hit = sidebar_click_action(strip, ctx.sidebar_targets, cell_x, cell_y);
                     if matches!(mouse.action, MouseAction::Press)
                         && mouse.button == MouseButton::Left
                         && let Some(resolved) = hit
@@ -1367,9 +1361,14 @@ const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) -> bool {
 /// dispatch path, no bespoke click semantics:
 ///
 /// * a window block (name or branch row) commits `select-window { index }`;
-/// * an agents-section row (phux-foz.9) commits `select-window` for the
-///   window holding that agent's pane (`agent_windows` carries the
-///   row-to-window mapping);
+/// * a zone-1 `needs you` row (phux-k0cw) commits `select-window` when the
+///   agent is in this session, and `switch-session { name, window, pane }`
+///   when it is in another one — the row resolves through `targets`, which
+///   carries the NAME the frame was painted with rather than re-deriving it
+///   from a queue that may have reordered since;
+/// * a zone-3 roster row commits `switch-session { name }`;
+/// * either zone's overflow row commits `agent-fleet` — the strip drops
+///   rows, the dashboard is where they all still are;
 /// * `+ new` commits `new-window` (the strip lists windows, so its create
 ///   affordance creates one);
 /// * `= menu` commits `command-palette` — the menu covering window,
@@ -1379,21 +1378,46 @@ const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) -> bool {
 ///   `toggle-sidebar`.
 fn sidebar_click_action(
     strip: crate::layout::Rect,
-    window_count: usize,
-    agent_windows: &[usize],
+    targets: &crate::render::chrome::sidebar::SidebarTargets,
     x: u16,
     y: u16,
 ) -> Option<phux_config::keybind::ResolvedAction> {
-    use crate::render::chrome::sidebar::{SidebarHit, hit_test};
-    let (action, args) = match hit_test(strip, window_count, agent_windows, x, y)? {
-        SidebarHit::Window(i) => {
+    use crate::render::chrome::sidebar::{SidebarHit, SidebarTarget, hit_test};
+    let select_window = |i: usize| {
+        let mut args = std::collections::BTreeMap::new();
+        args.insert(
+            "index".to_owned(),
+            toml::Value::Integer(i64::try_from(i).ok()?),
+        );
+        Some(("select-window", args))
+    };
+    let (action, args) = match hit_test(strip, targets.counts, x, y)? {
+        SidebarHit::Window(i) => select_window(i)?,
+        SidebarHit::NeedsYou(j) => match targets.needs_you.get(j)? {
+            SidebarTarget::Window(i) => select_window(*i)?,
+            SidebarTarget::Session { name, window, pane } => {
+                let mut args = std::collections::BTreeMap::new();
+                args.insert("name".to_owned(), toml::Value::String(name.clone()));
+                args.insert(
+                    "window".to_owned(),
+                    toml::Value::Integer(i64::try_from(*window).ok()?),
+                );
+                args.insert(
+                    "pane".to_owned(),
+                    toml::Value::Integer(i64::try_from(*pane).ok()?),
+                );
+                ("switch-session", args)
+            }
+        },
+        SidebarHit::Roster(j) => {
             let mut args = std::collections::BTreeMap::new();
             args.insert(
-                "index".to_owned(),
-                toml::Value::Integer(i64::try_from(i).ok()?),
+                "name".to_owned(),
+                toml::Value::String(targets.roster.get(j)?.clone()),
             );
-            ("select-window", args)
+            ("switch-session", args)
         }
+        SidebarHit::Fleet => ("agent-fleet", std::collections::BTreeMap::new()),
         SidebarHit::NewWindow => ("new-window", std::collections::BTreeMap::new()),
         SidebarHit::Menu => ("command-palette", std::collections::BTreeMap::new()),
         SidebarHit::Collapse => ("toggle-sidebar", std::collections::BTreeMap::new()),
@@ -3410,6 +3434,10 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -3437,7 +3465,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,
@@ -3980,6 +4008,10 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -4006,7 +4038,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,
@@ -4052,6 +4084,10 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -4078,7 +4114,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,
@@ -4159,6 +4195,10 @@ mod tests {
             let fleet_agent_meta = HashMap::new();
             let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
             let mut engine_kernel = test_engine_kernel();
+            // phux-k0cw: the strip's shape comes from the painted target
+            // table now, not from the workspace, so a fixture that wants
+            // hit-testable window rows must declare them.
+            let sidebar_targets = targets(0, workspace.windows.len(), 0);
             let mut ctx = DispatchCtx {
                 engine_kernel: &mut engine_kernel,
                 resolver: None,
@@ -4185,7 +4225,7 @@ mod tests {
                 sidebar_enabled: &mut sidebar_enabled,
                 sidebar_width: 20,
                 chrome: ChromeBreakpoints::default(),
-                sidebar_agents: &[],
+                sidebar_targets: &sidebar_targets,
                 bar: None,
                 status_bar: None,
                 drag: &mut drag,
@@ -4329,6 +4369,10 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -4355,7 +4399,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,
@@ -4778,6 +4822,10 @@ mod tests {
         let focus_history = FocusHistory::default();
         let focused = workspace.active_window().and_then(|w| w.focus.clone());
         let mut engine_kernel = test_engine_kernel();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -4803,7 +4851,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,
@@ -5265,6 +5313,10 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -5291,7 +5343,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,
@@ -5358,6 +5410,10 @@ mod tests {
             let fleet_agent_meta = HashMap::new();
             let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
             let mut engine_kernel = test_engine_kernel();
+            // phux-k0cw: the strip's shape comes from the painted target
+            // table now, not from the workspace, so a fixture that wants
+            // hit-testable window rows must declare them.
+            let sidebar_targets = targets(0, workspace.windows.len(), 0);
             let mut ctx = DispatchCtx {
                 engine_kernel: &mut engine_kernel,
                 resolver: None,
@@ -5384,7 +5440,7 @@ mod tests {
                 sidebar_enabled: &mut sidebar_enabled,
                 sidebar_width: 20,
                 chrome: ChromeBreakpoints::default(),
-                sidebar_agents: &[],
+                sidebar_targets: &sidebar_targets,
                 bar: None,
                 status_bar: None,
                 drag: &mut drag,
@@ -5539,6 +5595,10 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: Some(&mut resolver),
@@ -5565,7 +5625,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,
@@ -5670,6 +5730,10 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: Some(&mut resolver),
@@ -5696,7 +5760,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,
@@ -5856,6 +5920,10 @@ mod tests {
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -5882,7 +5950,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,
@@ -5929,51 +5997,132 @@ mod tests {
 
     // ---------- phux-fce4: sidebar hit targets ----------
 
-    /// The pure click→action mapping: window blocks and agent rows commit
+    fn targets(
+        needs_you: usize,
+        windows: usize,
+        roster: usize,
+    ) -> crate::render::chrome::sidebar::SidebarTargets {
+        use crate::render::chrome::sidebar::{SidebarCounts, SidebarTarget, SidebarTargets};
+        SidebarTargets {
+            counts: SidebarCounts {
+                needs_you,
+                windows,
+                roster,
+            },
+            needs_you: (0..needs_you)
+                .map(|j| {
+                    // Row 0 is local; the rest are peers, so one fixture
+                    // exercises both commit shapes.
+                    if j == 0 {
+                        SidebarTarget::Window(1)
+                    } else {
+                        SidebarTarget::Session {
+                            name: format!("peer-{j}"),
+                            window: 2,
+                            pane: 3,
+                        }
+                    }
+                })
+                .collect(),
+            roster: (0..roster).map(|j| format!("space-{j}")).collect(),
+        }
+    }
+
+    fn str_arg(r: &phux_config::keybind::ResolvedAction, key: &str) -> Option<String> {
+        r.args.get(key)?.as_str().map(str::to_owned)
+    }
+
+    /// The pure click→action mapping: window blocks commit
     /// `select-window { index }`, the footer rows `new-window` and
     /// `command-palette`, the collapse corner `toggle-sidebar`, and
     /// header/blank/separator cells nothing.
     #[test]
     fn sidebar_click_action_maps_rows_to_registry_actions() {
         // Left-docked 20-column strip over a 24-row viewport with a status
-        // bar: rows 0..=22, footer on rows 21 (new) and 22 (menu). Row 0 is
-        // the `spaces` header (phux-foz.9), so window 1's block sits on
-        // rows 3-4.
+        // bar: rows 0..=22, footer on rows 21 (new) and 22 (menu). With a
+        // quiet queue row 0 is the `here` header (phux-k0cw), so window 1's
+        // block sits on rows 3-4.
         let strip = crate::layout::Rect {
             x: 0,
             y: 0,
             w: 20,
             h: 23,
         };
+        let quiet = targets(0, 2, 0);
         // Window 1's name row (y = 3) and branch row (y = 4) both select it.
         for y in [3, 4] {
-            let resolved = sidebar_click_action(strip, 2, &[], 4, y).expect("window row hits");
+            let resolved = sidebar_click_action(strip, &quiet, 4, y).expect("window row hits");
             assert_eq!(resolved.action, "select-window");
             assert_eq!(index_arg(&resolved), Some(1));
         }
-        // phux-foz.9: an agents-section row (gap y=5, header y=6, first
-        // entry y=7) selects the window holding the agent's pane.
-        let agent = sidebar_click_action(strip, 2, &[1], 4, 7).expect("agent row hits");
-        assert_eq!(agent.action, "select-window");
-        assert_eq!(index_arg(&agent), Some(1));
-        assert!(
-            sidebar_click_action(strip, 2, &[1], 4, 6).is_none(),
-            "the agents header is inert"
-        );
-        let new = sidebar_click_action(strip, 2, &[], 4, 21).expect("new row hits");
+        let new = sidebar_click_action(strip, &quiet, 4, 21).expect("new row hits");
         assert_eq!(new.action, "new-window");
         assert!(new.args.is_empty());
-        let menu = sidebar_click_action(strip, 2, &[], 4, 22).expect("menu row hits");
+        let menu = sidebar_click_action(strip, &quiet, 4, 22).expect("menu row hits");
         assert_eq!(menu.action, "command-palette");
         // phux-foz.9: the collapse chevron in the bottom corner.
-        let collapse = sidebar_click_action(strip, 2, &[], 19, 22).expect("collapse corner hits");
+        let collapse = sidebar_click_action(strip, &quiet, 19, 22).expect("collapse corner hits");
         assert_eq!(collapse.action, "toggle-sidebar");
         assert!(collapse.args.is_empty());
         // Header row, blank padding row, and the separator column (outside
         // the chevron corner) commit nothing.
-        assert!(sidebar_click_action(strip, 2, &[], 4, 0).is_none());
-        assert!(sidebar_click_action(strip, 2, &[], 4, 10).is_none());
-        assert!(sidebar_click_action(strip, 2, &[], 19, 0).is_none());
+        assert!(sidebar_click_action(strip, &quiet, 4, 0).is_none());
+        assert!(sidebar_click_action(strip, &quiet, 4, 10).is_none());
+        assert!(sidebar_click_action(strip, &quiet, 19, 0).is_none());
+    }
+
+    /// phux-k0cw: a queue row commits a LOCAL focus or a CROSS-SESSION
+    /// re-attach depending on the row, and a roster row switches session.
+    /// The two are deliberately different commits — the distinction is the
+    /// whole reason the target table is snapshotted per paint.
+    #[test]
+    fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
+        let strip = crate::layout::Rect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 23,
+        };
+        // 2 queued + 2 windows: rows 0 header, 1-2 queue, 3 gap, 4 `here`.
+        let t = targets(2, 2, 0);
+        let local = sidebar_click_action(strip, &t, 4, 1).expect("queue row 0 hits");
+        assert_eq!(local.action, "select-window", "a local row stays local");
+        assert_eq!(index_arg(&local), Some(1));
+
+        let peer = sidebar_click_action(strip, &t, 4, 2).expect("queue row 1 hits");
+        assert_eq!(peer.action, "switch-session");
+        assert_eq!(str_arg(&peer, "name").as_deref(), Some("peer-1"));
+        assert_eq!(usize_arg(&peer, "window"), Some(2));
+        assert_eq!(usize_arg(&peer, "pane"), Some(3));
+        assert!(
+            sidebar_click_action(strip, &t, 4, 0).is_none(),
+            "the queue header is inert"
+        );
+
+        // 2 windows + 2 peers: rows 0 `here`, 1-4 blocks, 5 gap,
+        // 6 `spaces`, 7-8 roster.
+        let t = targets(0, 2, 2);
+        assert!(
+            sidebar_click_action(strip, &t, 4, 6).is_none(),
+            "the spaces header is inert"
+        );
+        let space = sidebar_click_action(strip, &t, 4, 7).expect("roster row hits");
+        assert_eq!(space.action, "switch-session");
+        assert_eq!(str_arg(&space, "name").as_deref(), Some("space-0"));
+        assert!(
+            !space.args.contains_key("pane"),
+            "a roster click names a session, not a pane"
+        );
+
+        // The overflow row hands off to the dashboard.
+        let t = targets(9, 1, 0);
+        let overflow = (0..strip.h)
+            .filter_map(|y| sidebar_click_action(strip, &t, 4, y))
+            .find(|r| r.action == "agent-fleet");
+        assert!(
+            overflow.is_some(),
+            "an overflow row opens the fleet dashboard"
+        );
     }
 
     /// Every action a sidebar click can commit must be a dispatched action
@@ -5986,9 +6135,11 @@ mod tests {
             w: 20,
             h: 23,
         };
+        // Every zone populated, so the sweep reaches every commit shape.
+        let t = targets(9, 3, 2);
         for y in 0..strip.h {
             for x in [2u16, 19] {
-                if let Some(resolved) = sidebar_click_action(strip, 3, &[0, 2], x, y) {
+                if let Some(resolved) = sidebar_click_action(strip, &t, x, y) {
                     assert!(
                         ACTION_NAMES.contains(&resolved.action.as_str()),
                         "sidebar committed `{}`, which run_action does not dispatch",
@@ -6059,6 +6210,10 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -6088,7 +6243,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: Some(crate::render::chrome::status_bar::Position::Bottom),
             status_bar: None,
             drag: &mut drag,
@@ -6283,6 +6438,10 @@ mod tests {
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         {
             let mut engine_kernel = test_engine_kernel();
+            // phux-k0cw: the strip's shape comes from the painted target
+            // table now, not from the workspace, so a fixture that wants
+            // hit-testable window rows must declare them.
+            let sidebar_targets = targets(0, workspace.windows.len(), 0);
             let mut ctx = DispatchCtx {
                 engine_kernel: &mut engine_kernel,
                 resolver: None,
@@ -6309,7 +6468,7 @@ mod tests {
                 sidebar_enabled: &mut sidebar_enabled,
                 sidebar_width: 20,
                 chrome: ChromeBreakpoints::default(),
-                sidebar_agents: &[],
+                sidebar_targets: &sidebar_targets,
                 bar: Some(position),
                 status_bar: with_painter.then_some(&painter),
                 drag: &mut drag,
@@ -6608,6 +6767,10 @@ mod tests {
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let repainted;
         {
+            // phux-k0cw: the strip's shape comes from the painted target
+            // table now, not from the workspace, so a fixture that wants
+            // hit-testable window rows must declare them.
+            let sidebar_targets = targets(0, workspace.windows.len(), 0);
             let mut ctx = DispatchCtx {
                 engine_kernel: &mut engine_kernel,
                 resolver: None,
@@ -6634,7 +6797,7 @@ mod tests {
                 sidebar_enabled: &mut sidebar_enabled,
                 sidebar_width: 20,
                 chrome: ChromeBreakpoints::default(),
-                sidebar_agents: &[],
+                sidebar_targets: &sidebar_targets,
                 bar: None,
                 status_bar: None,
                 drag: &mut drag,
@@ -7094,6 +7257,10 @@ mod tests {
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
         let mut engine_kernel = test_engine_kernel();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -7120,7 +7287,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,
@@ -7328,6 +7495,10 @@ mod tests {
             std::collections::HashSet::new();
         let fleet_agent_meta = HashMap::new();
         let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
+        // phux-k0cw: the strip's shape comes from the painted target
+        // table now, not from the workspace, so a fixture that wants
+        // hit-testable window rows must declare them.
+        let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
             engine_kernel: &mut engine_kernel,
             // No resolver: every key forwards straight through to the pane,
@@ -7357,7 +7528,7 @@ mod tests {
             sidebar_enabled: &mut sidebar_enabled,
             sidebar_width: 20,
             chrome: ChromeBreakpoints::default(),
-            sidebar_agents: &[],
+            sidebar_targets: &sidebar_targets,
             bar: None,
             status_bar: None,
             drag: &mut drag,

@@ -1,0 +1,22 @@
+---
+source: crates/phux-client/src/render/chrome/sidebar.rs
+expression: "strip_text(&p, rect)"
+---
+here                     │
+● phux                   │
+  main                   │
+○ scratch                │
+                         │
+                         │
+spaces                   │
+◐ feat-auth            *1│
+○ prod-3               ?2│
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+  + new                  │
+  = menu                 ‹

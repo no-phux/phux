@@ -457,21 +457,23 @@ mod tests {
             sep.contains('│'),
             "sidebar separator must sit at the strip's last column (19); got {sep:?}"
         );
-        // Row 0 carries the `spaces` section header (phux-foz.9); the
-        // first window's name row is row 1.
-        let header_text: String = (0..19)
-            .filter_map(|c| enabled.cell(0, c).map(|cell| cell.grapheme.clone()))
+        // phux-k0cw: the strip is three zones now and which one tops it
+        // depends on whether anything wants a human, so locate the rows by
+        // searching the strip rather than pinning row 0 to one header.
+        let strip_rows: Vec<String> = (0..24)
+            .map(|r| {
+                (0..19)
+                    .filter_map(|c| enabled.cell(r, c).map(|cell| cell.grapheme.clone()))
+                    .collect::<String>()
+            })
             .collect();
         assert!(
-            header_text.contains("spaces"),
-            "the spaces header must top the strip; got {header_text:?}"
+            strip_rows.iter().any(|row| row.contains("here")),
+            "the focused session's header must paint into the strip; got {strip_rows:?}"
         );
-        let strip_text: String = (0..19)
-            .filter_map(|c| enabled.cell(1, c).map(|cell| cell.grapheme.clone()))
-            .collect();
         assert!(
-            strip_text.contains("editor"),
-            "active window label 'editor' must paint into the strip's text columns; got {strip_text:?}"
+            strip_rows.iter().any(|row| row.contains("editor")),
+            "active window label 'editor' must paint into the strip's text columns; got {strip_rows:?}"
         );
 
         // (b) Panes inset: with a 20-col Left strip, the content rect starts at

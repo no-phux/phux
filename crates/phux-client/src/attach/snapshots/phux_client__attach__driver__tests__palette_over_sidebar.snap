@@ -2,12 +2,12 @@
 source: crates/phux-client/src/attach/driver.rs
 expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")"
 ---
-spaces             │PANE-BASE
+here               │PANE-BASE
 ● w1-agent         │
   foz10-br         │
                    │
-agents             │
-  no agents        │┌──────────────────── command palette ─────────────────────┐
+                   │
+                   │┌──────────────────── command palette ─────────────────────┐
                    ││>                                                         │
                    ││                                                          │
                    ││detach                                                    │

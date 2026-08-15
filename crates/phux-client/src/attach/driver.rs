@@ -199,7 +199,7 @@ fn refresh_window_chrome(
     changed |= sidebar_painter.set_windows(windows);
     // phux-foz.9: the sidebar's agents section — one row per agent-running
     // pane, sourced from the ADR-0040 records with the OSC-title fallback.
-    changed |= sidebar_painter.set_agents(agent_entries(workspace, panes, agent_meta));
+    changed |= sidebar_painter.set_needs_you(agent_entries(workspace, panes, agent_meta));
     changed
 }
 
@@ -974,7 +974,7 @@ pub async fn run_headless_rendered(
     sidebar_painter.set_windows(windows);
     // phux-foz.9: and the agents section, from the same record index +
     // title fallback a live attach renders.
-    sidebar_painter.set_agents(agent_entries(&workspace, &panes, &agent_meta));
+    sidebar_painter.set_needs_you(agent_entries(&workspace, &panes, &agent_meta));
 
     // Compose the assembled frame against the render layout (honoring zoom).
     let layout_state = workspace.render_window(zoomed.as_ref()).map_or_else(
@@ -2423,7 +2423,7 @@ async fn main_loop<W: super::RenderSink>(
                 // phux-foz.9: the agents-section row -> window mapping,
                 // snapshotted from the strip painter so a click on an
                 // agent row hit-tests against exactly what was painted.
-                let sidebar_agent_rows = sidebar_painter.agent_windows();
+                let sidebar_targets = sidebar_painter.click_targets();
                 let mut ctx = DispatchCtx {
                     engine_kernel: &mut engine_kernel,
                     resolver: resolver.as_mut(),
@@ -2450,7 +2450,7 @@ async fn main_loop<W: super::RenderSink>(
                     sidebar_enabled: &mut sidebar_enabled,
                     sidebar_width,
                     chrome: chrome_breakpoints,
-                    sidebar_agents: &sidebar_agent_rows,
+                    sidebar_targets: &sidebar_targets,
                     bar: status_bar.as_ref().map(StatusBarPainter::position),
                     status_bar: status_bar.as_ref(),
                     drag: &mut drag,
@@ -3376,7 +3376,7 @@ async fn main_loop<W: super::RenderSink>(
                     viewport_dims,
                 );
                 // phux-foz.9: same agents-row snapshot as the stdin arm.
-                let sidebar_agent_rows = sidebar_painter.agent_windows();
+                let sidebar_targets = sidebar_painter.click_targets();
                 let mut ctx = DispatchCtx {
                     engine_kernel: &mut engine_kernel,
                     resolver: resolver.as_mut(),
@@ -3403,7 +3403,7 @@ async fn main_loop<W: super::RenderSink>(
                     sidebar_enabled: &mut sidebar_enabled,
                     sidebar_width,
                     chrome: chrome_breakpoints,
-                    sidebar_agents: &sidebar_agent_rows,
+                    sidebar_targets: &sidebar_targets,
                     bar: status_bar.as_ref().map(StatusBarPainter::position),
                     status_bar: status_bar.as_ref(),
                     drag: &mut drag,
