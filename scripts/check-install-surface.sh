@@ -45,6 +45,10 @@ forbid_fixed README.md "macOS x86_64"
 # Version literals in the README rot; forbid the one that already did
 # (the README pinned v0.0.3 while the repo shipped v0.7.0).
 forbid_fixed README.md "v0.0.3"
+# Same defect, second file: docs/RELEASING.md carried "v0.0.3 is the current
+# portable public release" all the way to v0.19.0. Prose that names a current
+# version is stale by the next release; point at "the latest release" instead.
+forbid_fixed docs/RELEASING.md "v0.0.3"
 
 require_fixed docs/INSTALL.md "Homebrew is the recommended install on supported macOS and Linux"
 require_fixed docs/INSTALL.md "Supported install channels"
@@ -212,6 +216,39 @@ forbid_fixed .github/workflows/release-please.yml 'token: ${{ secrets.GITHUB_TOK
 
 require_fixed .github/workflows/publish-crate.yml 'workflow_dispatch'
 require_fixed .github/workflows/publish-crate.yml 'environment: crates-io'
+
+# --- Agent integration release lane -------------------------------------------
+#
+# This lane publishes integrations/* off `<component>-vX.Y.Z` tags. Its first
+# four invocations all failed and left four permanent 0-asset drafts with
+# nothing on npm, and none of it was noticed: unlike the root lane, a component
+# release stuck in draft is indistinguishable from one nobody cut. Each pin
+# below is one of those four defects. The full post-mortem is in the header of
+# the workflow.
+
+# The publish job intentionally has no checkout, so gh has no git remote to
+# infer the repository from and every `gh release ...` call fails with
+# "fatal: not a git repository". GH_REPO is what replaces the remote.
+require_fixed .github/workflows/agent-integration-release.yml 'GH_REPO: ${{ github.repository }}'
+
+# `npm pack` runs `prepack`, whose stdout shares the fd with the JSON. opencode's
+# prepack is tsup, which prints a colourised banner, so the parse died on an
+# escape sequence. Pack to a directory and glob; never read npm's stdout.
+require_fixed .github/workflows/agent-integration-release.yml 'npm pack --pack-destination'
+forbid_fixed .github/workflows/agent-integration-release.yml 'npm pack --json'
+
+# A relative tarball path containing `/` and no leading `./` is parsed by npm as
+# the GitHub shorthand `owner/repo`. Tarball arguments must be absolute.
+forbid_fixed .github/workflows/agent-integration-release.yml 'npm publish --dry-run "release/'
+forbid_fixed .github/workflows/agent-integration-release.yml 'echo "tarball=${tarballs[0]}"'
+
+# Missing npm credentials must fail at step one with a legible message, not four
+# minutes later inside npm as a git error.
+require_fixed .github/workflows/agent-integration-release.yml 'Require npm credentials for a real npm publish'
+
+# `-type f -name a -o -name b` binds as `(-type f -a -name a) -o (-name b)`,
+# silently dropping the type filter from the second branch.
+forbid_fixed .github/workflows/agent-integration-release.yml "-type f -name '*.tgz' -o -name '*.tar.gz'"
 
 # --- Self-update contract (ADR-0074) ------------------------------------------
 #

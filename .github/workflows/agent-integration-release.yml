@@ -1,3 +1,52 @@
+# Release agent integration — the publish lane for integrations/*.
+#
+# Flow: release-please merges a release PR, creates `<component>-vX.Y.Z`, and
+# leaves a DRAFT GitHub release (release-please-config.json sets "draft": true
+# globally). That tag push lands here. This workflow re-tests the exact tagged
+# tree, packs the immutable artifact, publishes it to npm where applicable,
+# attaches the artifact to the draft, and only then flips the draft public.
+#
+# The tag is created by the release App, not GITHUB_TOKEN, so the push DOES
+# raise a workflow run — see the header of release-please.yml for why that
+# distinction is load-bearing.
+#
+# THIS LANE WAS DEAD ON ARRIVAL. Its first four invocations all failed, leaving
+# four permanent 0-asset drafts (opencode-plugin-v0.2.0, pi-extension-v0.2.0,
+# claude-plugin-v0.2.0/v0.2.1) and nothing on npm. It failed silently: the root
+# `vX.Y.Z` lane is self-announcing because a missing release is obvious, but a
+# component release that never leaves draft looks exactly like one nobody cut.
+# The four independent defects, all fixed here — do not reintroduce any of them:
+#
+#   1. `npm pack` in JSON mode piped into a JSON parser. `npm pack` runs the `prepack`
+#      lifecycle script, whose stdout is interleaved with the JSON on the same
+#      fd. integrations/opencode's prepack is `tsup`, which prints a colourised
+#      "CLI Building entry..." banner, so the parse died on
+#      `Unexpected token '^[', "^[[34mCLI^[["...`. integrations/pi survived only
+#      because its prepack is a silent `tsc`. Never parse npm's stdout: pack to
+#      a known directory and glob for the artifact.
+#
+#   2. The publish job had no `actions/checkout` and no `GH_REPO`, so every
+#      `gh release ...` call died on "failed to run git: fatal: not a git
+#      repository". gh resolves the target repo from the git remote unless told
+#      otherwise, and downloading an artifact does not make a git repo. The job
+#      deliberately stays checkout-free — it must publish only the bytes the
+#      package job built — so GH_REPO is set at job level instead.
+#
+#   3. `npm publish "release/foo.tgz"`. A relative path containing a `/` and no
+#      leading `./` is parsed by npm as the GitHub shorthand `owner/repo`, so
+#      npm tried `git ls-remote ssh://git@github.com/release/phux-pi-0.2.0.tgz.git`
+#      and exited 128. Tarball arguments are resolved to absolute paths here.
+#
+#   4. Nothing checked that npm credentials existed. With NPM_TOKEN unset the
+#      lane ran all the way to the publish step before failing, and the failure
+#      surfaced as an unrelated-looking git error. The prepare job now fails
+#      closed with a legible message, in the same spirit as release-please.yml's
+#      "Require the release App" step.
+#
+# `find` note: the artifact globs are parenthesised. `-type f -name a -o -name b`
+# binds as `(-type f -a -name a) -o (-name b)`, which silently drops the type
+# filter from the second branch.
+
 name: Release agent integration
 
 on:
@@ -89,6 +138,21 @@ jobs:
             echo "dry_run=$dry_run"
           } >> "$GITHUB_OUTPUT"
 
+      # Fail closed, at step one, rather than 3 minutes and two jobs later in
+      # the middle of `npm publish` — where a missing token surfaces as an
+      # unrelated-looking git error and leaves the release stuck in draft.
+      - name: Require npm credentials for a real npm publish
+        if: steps.release.outputs.publish_npm == 'true' && steps.release.outputs.dry_run == 'false'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN (repo secret) must be set to publish ${PACKAGE_NAME} to npm. Create an npm automation token with publish rights on the @phux scope and add it as the NPM_TOKEN repository secret. Re-run this workflow (workflow_dispatch, dry_run=false) against this tag once it is set; the lane is idempotent. Until then the component release stays a draft on purpose — publishing the GitHub release without the npm artifact would advertise a version nobody can install."
+            exit 1
+          fi
+
   package:
     name: Test and package exact artifact
     needs: prepare
@@ -125,8 +189,18 @@ jobs:
           set -euo pipefail
           mkdir release
           if [[ "$PUBLISH_NPM" == true ]]; then
-            tarball="$(cd "$DIRECTORY" && npm pack --json | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s)[0].filename))')"
-            mv "$DIRECTORY/$tarball" "release/$tarball"
+            # Pack straight into release/ and discover the artifact by glob.
+            # npm's stdout is NOT parseable: `npm pack` runs `prepack`, and that
+            # script's output shares the fd (tsup's colourised banner is what
+            # broke opencode-plugin-v0.2.0). The directory is ours and empty, so
+            # exactly one .tgz can land in it.
+            (cd "$DIRECTORY" && npm pack --pack-destination "$GITHUB_WORKSPACE/release")
+            mapfile -t packed < <(find release -maxdepth 1 -type f -name '*.tgz')
+            if [[ "${#packed[@]}" -ne 1 ]]; then
+              echo "::error::expected exactly one packed tarball, found ${#packed[@]}: ${packed[*]-}"
+              exit 1
+            fi
+            tarball="$(basename "${packed[0]}")"
           else
             tarball="phux-claude-plugin-${VERSION}.tar.gz"
             git archive --format=tar.gz --prefix="phux-claude-plugin-${VERSION}/" -o "release/$tarball" "${TAG}:${DIRECTORY}"
@@ -162,6 +236,12 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    # This job never checks out: it must publish exactly the bytes the package
+    # job built, and nothing else. That leaves gh with no git remote to infer
+    # the repository from, so name it explicitly — without this every
+    # `gh release ...` call dies on "fatal: not a git repository".
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
@@ -178,10 +258,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t tarballs < <(find release -maxdepth 1 -type f -name '*.tgz' -o -name '*.tar.gz')
+          mapfile -t tarballs < <(find release -maxdepth 1 -type f \( -name '*.tgz' -o -name '*.tar.gz' \))
           test "${#tarballs[@]}" -eq 1
           (cd release && sha256sum --check "$(basename "${tarballs[0]}").sha256")
-          echo "tarball=${tarballs[0]}" >> "$GITHUB_OUTPUT"
+          # Absolute, always. `npm publish release/foo.tgz` is read by npm as the
+          # GitHub shorthand `owner/repo` — a relative path with a `/` and no
+          # leading `./` is indistinguishable from one — and npm goes looking for
+          # ssh://git@github.com/release/foo.tgz.git.
+          echo "tarball=$(cd "$(dirname "${tarballs[0]}")" && pwd)/$(basename "${tarballs[0]}")" >> "$GITHUB_OUTPUT"
+
+      # Proves repository resolution and release existence on the dry-run path
+      # too, so a dispatch with dry_run=true actually exercises the gh wiring
+      # instead of skipping straight past it.
+      - name: Verify the draft release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release view "$TAG" --json tagName,isDraft --jq '"\(.tagName) draft=\(.isDraft)"'
 
       - name: Exercise npm publication
         if: needs.prepare.outputs.publish_npm == 'true' && needs.prepare.outputs.dry_run == 'true'
@@ -201,8 +294,15 @@ jobs:
           npm install --global npm@11.5.1
           local_shasum="$(sha1sum "$TARBALL" | cut -d' ' -f1)"
           published_shasum="$(npm view "${PACKAGE_NAME}@${VERSION}" dist.shasum 2>/dev/null || true)"
+          # An npm version is immutable, so a re-run against an already-published
+          # version must not republish — it verifies the registry holds the same
+          # bytes and moves on, which keeps the whole lane replayable.
           if [[ -n "$published_shasum" ]]; then
-            test "$published_shasum" = "$local_shasum"
+            if [[ "$published_shasum" != "$local_shasum" ]]; then
+              echo "::error::${PACKAGE_NAME}@${VERSION} is already on npm with shasum ${published_shasum}, but this run packed ${local_shasum}. The registry version is immutable; cut a new version rather than trying to overwrite it."
+              exit 1
+            fi
+            echo "${PACKAGE_NAME}@${VERSION} already published with matching shasum; nothing to do."
           else
             npm publish --provenance --access public "$TARBALL"
           fi

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-07-14
+last-reviewed: 2026-08-15
 ---
 
 # Releasing
@@ -52,6 +52,8 @@ generated changelog or expose a half-built release.
 | Re-build or re-attach assets for an existing tag | Dispatch **Actions -> release** with `tag=vX.Y.Z` |
 | Publish `phux-protocol` to crates.io | Dispatch **Actions -> publish-crate** with `tag=vX.Y.Z`, `dry_run=false` |
 | Revalidate an integration tag without publishing | Dispatch **Actions -> Release agent integration** with its component tag and `dry_run=true` |
+| Finish an integration release that stalled in draft | Dispatch **Actions -> Release agent integration** with its component tag and `dry_run=false` |
+| Ask whether anything is stuck right now | `just release-drift` (needs an authenticated `gh`) |
 | Check a suspected install-doc drift | `bash scripts/check-install-surface.sh` |
 
 ## What runs when
@@ -66,14 +68,49 @@ generated changelog or expose a half-built release.
 | Crate publish | manual `publish-crate` workflow | `phux-protocol` package dry-run, then publish when `dry_run=false`. |
 | Agent integration release | component tag or manual dry run | Re-runs locked gates, creates one checksummed artifact, clean-installs npm artifacts, publishes npm with provenance where applicable, and publishes the component draft release. |
 | Stress lane | nightly, manual, or PR label `stress` | Heavy resize/output/lifecycle storms that are useful but too slow for every PR. |
+| Release drift | daily at 15:20 UTC, or manual | `scripts/check-release-drift.mjs`. Fails if a release is stuck. See "When a release goes quiet". |
 
 Required secrets:
 
-| Secret | Used by | Required for |
-|---|---|---|
-| `HOMEBREW_TAP_DEPLOY_KEY` | `release.yml` | Automatic push to `phall1/homebrew-tap`. If absent, the release still publishes and the tap step warns/skips. |
-| `CARGO_REGISTRY_TOKEN` | `publish-crate.yml` | Publishing `phux-protocol` to crates.io. Not needed for binary/Homebrew-only releases. |
-| `NPM_TOKEN` | `agent-integration-release.yml` | Publishing `@phux/opencode` and `@phux/pi`; npm trusted publishing should also be configured for provenance. |
+| Secret | Used by | Required for | Set? |
+|---|---|---|---|
+| `HOMEBREW_TAP_DEPLOY_KEY` | `release.yml` | Automatic push to `phall1/homebrew-tap`. If absent, the release still publishes and the tap step warns/skips. | yes |
+| `CARGO_REGISTRY_TOKEN` | `publish-crate.yml` | Publishing `phux-protocol` to crates.io. Not needed for binary/Homebrew-only releases. | yes |
+| `NPM_TOKEN` | `agent-integration-release.yml` | Publishing `@phux/opencode` and `@phux/pi`; npm trusted publishing should also be configured for provenance. | **no — see below** |
+
+`NPM_TOKEN` has never been configured, so `@phux/opencode` and `@phux/pi` have
+never reached npm and both are 404 on the registry. The lane now fails closed at
+its first step with that instruction rather than dying inside `npm publish`, so
+the gap is legible instead of mysterious — but it is still a gap. To close it,
+create an npm automation token with publish rights on the `@phux` scope, add it
+as the `NPM_TOKEN` repository secret, then dispatch **Release agent integration**
+against each stuck component tag with `dry_run=false`. The lane is idempotent:
+it verifies rather than republishes a version already on the registry.
+
+## When a release goes quiet
+
+Every release defect this repo has hit failed **silently**, which is why the
+drift check exists and why it is worth understanding what it looks for.
+
+`v0.19.0` was prepared and then dropped: release-please's release step aborted
+*inside a green run*, so there was no tag, no release, and no artifacts, while
+the merged release PR kept its `autorelease: pending` label — which in turn
+blocks release-please from opening the *next* release PR. The agent integration
+lane failed on all four of its first invocations and left four permanent
+0-asset drafts. Nothing was red in any of those cases.
+
+So a release is finished only when all four of these hold, and
+`scripts/check-release-drift.mjs` asserts each one:
+
+| Assertion | The failure it catches |
+|---|---|
+| No release has been a draft longer than the grace window | A publish lane that never attached assets or never flipped the draft |
+| No published release has zero assets | A draft flipped public before, or instead of, its upload |
+| No merged PR still carries `autorelease: pending` | release-please built no release for a merged release PR |
+| Every version in `.release-please-manifest.json` has its tag | A release prepared, merged, and then never cut |
+
+A failing drift run means a release is stuck, not that the check is broken; the
+failure message carries the exact dispatch command to unstick it.
 
 Post-release verification:
 
@@ -223,9 +260,13 @@ while every digest stayed on `0.15.2`, so all three matrix legs failed at
 compares the pins against `https://ziglang.org/download/index.json` and fails on
 a stale one; it skips itself when the index is unreachable.
 
-`v0.0.3` is the current portable public release. `v0.0.1` was seeded with a Linux
+The latest GitHub release is always the portable public release to point at.
+Naming a current version in prose is how the README came to advertise a
+long-superseded tag while the repo shipped `v0.7.0`, so don't reintroduce one
+here. `v0.0.1` is the single exception worth naming: it was seeded with a Linux
 x86_64 tarball plus checksum, but that first artifact is Nix-linked and not
-portable; do not point installers or the tap at it.
+portable, so
+do not point installers or the tap at it.
 
 For an emergency host-only artifact, use the same dist layout locally:
 
@@ -258,8 +299,8 @@ time instead of receiving an arm64 binary that cannot exec.
 ### Curl installer contract
 
 The curl installer is a convenience layer over GitHub release artifacts. The
-unversioned command is user-facing because `v0.0.3` or newer is now the latest
-GitHub release:
+unversioned command is user-facing because every current GitHub release is
+portable:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/phall1/phux/main/scripts/install.sh | bash
@@ -270,8 +311,8 @@ tarball and `.sha256` sidecar from the selected release, verify the checksum
 before unpacking, and install `phux` + `phux-mcp` into
 `${PHUX_INSTALL_DIR:-$HOME/.local/bin}`. With no `--version`, it resolves the
 current GitHub release. Keep the explicit `v0.0.1` refusal as a historical
-safety guard. User-facing docs should identify `v0.0.3` or newer as the current
-portable release.
+safety guard. User-facing docs should point at the latest GitHub release rather
+than naming a version, which goes stale the moment the next one ships.
 
 ### CPU baseline caveat
 

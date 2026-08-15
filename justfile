@@ -409,6 +409,14 @@ agent-integrations-check:
       npm --prefix "$package" run gates
     done
 
+# Are any releases stuck? Reports drafts that never published, published
+# releases with no assets, merged release PRs release-please never tagged, and
+# manifest versions with no release. Needs an authenticated `gh`, so it is NOT
+# in `ci` — it reads live GitHub state, not the working tree. release-drift.yml
+# runs it daily; this is the same check, on demand.
+release-drift grace="120":
+    GRACE_MINUTES={{ grace }} node scripts/check-release-drift.mjs
+
 # The inner-loop bar — every deterministic gate CI runs. Run before pushing.
 ci: fmt-check lint doc deny docs-check formula-check font-check e2e-lane-check zig-pin-check install-surface-check skill-contract agent-integrations-check test
     @echo "ok"

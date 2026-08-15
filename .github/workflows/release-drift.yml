@@ -1,0 +1,68 @@
+# release-drift — the alarm for releases that start and never finish.
+#
+# Every release defect this repo has hit failed SILENTLY, and that is the actual
+# problem this workflow exists to solve:
+#
+#   * v0.19.0's release step aborted inside a GREEN release-please run. No tag,
+#     no release, no artifacts, and the merged release PR left labelled
+#     `autorelease: pending` — which then blocks every subsequent release PR.
+#   * agent-integration-release.yml failed on all four of its first invocations
+#     and left four permanent 0-asset drafts, with nothing published to npm.
+#
+# Neither was red. A release that never happens looks exactly like a release
+# nobody cut, so both sat there until someone went looking. This job is what
+# goes looking, on a schedule, so nobody has to remember to.
+#
+# It reads GitHub's release/PR state rather than the run logs of the workflows
+# it polices, so it catches a stuck release regardless of which step failed —
+# or whether the workflow that was supposed to run ever ran at all.
+#
+# A failing run means a release is stuck, not that this check is broken. The
+# failure message carries the exact command to unstick it.
+
+name: release-drift
+
+on:
+  schedule:
+    # 15:20 UTC daily. Offset off the hour so it does not queue behind the
+    # top-of-hour rush on shared runners.
+    - cron: "20 15 * * *"
+  workflow_dispatch:
+    inputs:
+      grace_minutes:
+        description: "How long a release may legitimately be mid-flight before it counts as stuck."
+        required: false
+        default: "120"
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: release-drift
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    name: Detect stuck releases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The manifest-versus-tag check reads the commit date of
+          # .release-please-manifest.json, which a shallow clone does not carry.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+
+      - name: Check for stuck releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GRACE_MINUTES: ${{ inputs.grace_minutes || '120' }}
+        run: node scripts/check-release-drift.mjs
