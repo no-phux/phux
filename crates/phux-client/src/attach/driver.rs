@@ -1143,6 +1143,12 @@ async fn attach_session<W: super::RenderSink>(
     // of a one-step cross-session pane pick (`switch-session { .., pane }`).
     let mut pending_window: Option<usize> = None;
     let mut pending_pane: Option<usize> = None;
+    // The window sidebar's runtime on/off state, handed back by each
+    // `LoopExit::SwitchTo` and fed into the next `main_loop` entry. `None` on
+    // the first attach so `[sidebar] enabled` decides. Unlike `pending_window`
+    // / `pending_pane` this is deliberately NOT `take`n — it persists for the
+    // life of the attach, across any number of switches.
+    let mut carried_sidebar_enabled: Option<bool> = None;
     // phux-i0e8.2.3: hand the reconnect notice to the first `main_loop`
     // entry only (same `take` pattern as the onboarding hint above): a
     // session switch re-enters `main_loop` but is not a reconnect.
@@ -1160,6 +1166,7 @@ async fn attach_session<W: super::RenderSink>(
             initial_notice.take(),
             pending_window.take(),
             pending_pane.take(),
+            carried_sidebar_enabled,
         )
         .await
         {
@@ -1195,40 +1202,24 @@ async fn attach_session<W: super::RenderSink>(
                 }
                 exit_after_detach(end, locally_requested, &onboarding_path, recorder.as_ref());
             }
-            LoopExit::SwitchTo(target) => {
+            LoopExit::SwitchTo {
+                target,
+                sidebar_enabled,
+            } => {
+                // The sidebar is the human's chrome, not the session's. Carry
+                // the toggle into the next entry so the strip does not blink
+                // shut on every space switch.
+                carried_sidebar_enabled = Some(sidebar_enabled);
                 // Lifecycle transition (info): switching sessions on the
                 // same connection. `?target` names the destination.
                 tracing::info!(?target, "attach loop: SWITCH_TO; re-attaching");
-                // Tear down the current session on the server so it frees
-                // our per-consumer reference grid + reaps the detached
-                // consumer (the just-landed per-consumer detach reaping —
-                // don't leak). DETACH does NOT close the connection
-                // server-side (see `phux-server::runtime`'s DETACH arm:
-                // it emits DETACHED and keeps the read loop alive), so the
-                // same `conn` is reusable for the new ATTACH.
-                detach_and_drain(&mut conn).await?;
-                // Re-run the handshake against the new target on the same
-                // connection. No reconnect: one server owns all the
-                // sessions, and the transport is bound to the server, not
-                // to any single session. An existing session re-attaches
-                // by name; a new-session request creates it (or attaches if
-                // the name is already taken) via CreateIfMissing.
-                // phux-foz.8: a one-step window pick carries the target
-                // window; stash it for the next `main_loop` entry, which
-                // resolves it once the new session's layout loads. phux-jpqd:
-                // a foreign fleet row also carries the target pane, resolved
-                // after the window select.
-                let attach_target = match target {
-                    ReattachTarget::Existing { name, window, pane } => {
-                        pending_window = window;
-                        pending_pane = pane;
-                        AttachTarget::ByName(name)
-                    }
-                    ReattachTarget::Create(name) => create_session_target(name),
-                };
-                let attach_id = send_attach(&mut conn, attach_target).await?;
-                attached = wait_for_attached(&mut conn, attach_id).await?;
-                tracing::info!("attach loop: re-attach handshake complete");
+                attached = reattach_on_same_connection(
+                    &mut conn,
+                    target,
+                    &mut pending_window,
+                    &mut pending_pane,
+                )
+                .await?;
                 // Re-enter `main_loop`, which rebuilds ALL session-scoped
                 // state fresh (pane mirrors, workspace, predict, overlays,
                 // pending-spawn maps, layout subscription) from the new
@@ -1239,6 +1230,44 @@ async fn attach_session<W: super::RenderSink>(
             }
         }
     }
+}
+
+/// Detach the current session and re-handshake against `target` on the SAME
+/// connection, returning the new `ATTACHED` frame.
+///
+/// Tears down the current session on the server first so it frees our
+/// per-consumer reference grid and reaps the detached consumer rather than
+/// leaking it. `DETACH` does not close the connection server-side (the
+/// server's DETACH arm emits `DETACHED` and keeps its read loop alive), so
+/// the same `conn` is reusable — no reconnect, because one server owns all
+/// the sessions and the transport is bound to the server, not to any single
+/// session.
+///
+/// An existing session re-attaches by name; a new-session request creates it
+/// (or attaches, if the name is already taken) via `CreateIfMissing`.
+/// phux-foz.8: a one-step window pick carries a target window, stashed in
+/// `pending_window` for the next `main_loop` entry, which resolves it once the
+/// new session's layout loads. phux-jpqd: a foreign fleet row also carries a
+/// target pane, resolved after the window select.
+async fn reattach_on_same_connection(
+    conn: &mut Connection,
+    target: ReattachTarget,
+    pending_window: &mut Option<usize>,
+    pending_pane: &mut Option<usize>,
+) -> Result<phux_protocol::wire::frame::FrameKind, AttachError> {
+    detach_and_drain(conn).await?;
+    let attach_target = match target {
+        ReattachTarget::Existing { name, window, pane } => {
+            *pending_window = window;
+            *pending_pane = pane;
+            AttachTarget::ByName(name)
+        }
+        ReattachTarget::Create(name) => create_session_target(name),
+    };
+    let attach_id = send_attach(conn, attach_target).await?;
+    let attached = wait_for_attached(conn, attach_id).await?;
+    tracing::info!("attach loop: re-attach handshake complete");
+    Ok(attached)
 }
 
 /// Build the `CreateIfMissing` target for an in-TUI session create (the
@@ -1557,7 +1586,20 @@ enum LoopExit {
     },
     /// Re-attach on the same connection — to an existing session or a
     /// newly-created one.
-    SwitchTo(ReattachTarget),
+    SwitchTo {
+        /// Where to re-attach.
+        target: ReattachTarget,
+        /// The window sidebar's RUNTIME on/off state at the moment of the
+        /// switch.
+        ///
+        /// `main_loop` rebuilds every session-scoped local on re-entry, which
+        /// is right for session state and wrong for this: the sidebar is the
+        /// human's chrome, not the session's, and switching spaces does not
+        /// change which window they are looking at. Without carrying it out,
+        /// the next entry re-seeds the strip from `[sidebar] enabled` and
+        /// silently reverts a `toggle-sidebar` the user made.
+        sidebar_enabled: bool,
+    },
 }
 
 /// Classify a detach independently from the wire frame that completed it.
@@ -1571,6 +1613,29 @@ const fn detached_loop_exit(end: AttachEnd, local_intent: bool) -> LoopExit {
     LoopExit::Detached {
         end,
         locally_requested: is_local_detach(end, local_intent),
+    }
+}
+
+/// The window sidebar's enabled flag at `main_loop` entry.
+///
+/// A first attach carries nothing, so `[sidebar] enabled` decides. An
+/// in-process session switch carries the RUNTIME value — `toggle-sidebar` may
+/// have flipped it since attach — and that wins over the config default in
+/// BOTH directions: a strip opened by hand stays open across
+/// `switch-session`, and one closed by hand stays closed even under a config
+/// that defaults it on.
+///
+/// This is the client-local half of the driver's reset convention.
+/// Session-scoped locals (`zoomed`, the pane map, `attention_navigation`) are
+/// rebuilt on every entry because they name things that belong to the session
+/// being left. The sidebar names something that belongs to the human's
+/// window, and it was the only chrome toggle on the wrong side of that line.
+///
+/// Deliberately not `Option::unwrap_or`, which is not `const`.
+const fn seed_sidebar_enabled(carried: Option<bool>, configured: bool) -> bool {
+    match carried {
+        Some(enabled) => enabled,
+        None => configured,
     }
 }
 
@@ -1657,6 +1722,13 @@ async fn main_loop<W: super::RenderSink>(
     // window-only pick; resolved alongside `initial_window` and, like it,
     // degrades to a logged no-op if out of range.
     initial_pane: Option<usize>,
+    // The window sidebar's on/off state carried in from the previous
+    // `main_loop` entry when a `switch-session` drove this one. `None` on the
+    // first attach — `[sidebar] enabled` seeds it; `Some(v)` on every
+    // in-process switch, so a `toggle-sidebar` the user made survives moving
+    // between spaces. Only the toggle is carried: the strip's width and edge
+    // stay pure config, re-derived per entry.
+    carried_sidebar_enabled: Option<bool>,
 ) -> Result<LoopExit, AttachError> {
     let onboarding_moment = onboarding_claim
         .as_ref()
@@ -1832,7 +1904,13 @@ async fn main_loop<W: super::RenderSink>(
     // the strip itself agree on the same inset. Default-off keeps the disabled
     // path byte-identical.
     let sidebar_cfg = loaded_cfg.as_ref().map(|c| c.sidebar.clone());
-    let mut sidebar_enabled = sidebar_cfg.as_ref().is_some_and(|c| c.enabled);
+    // A `switch-session` re-enters this function, so `[sidebar] enabled` seeds
+    // the flag only on the FIRST attach; a carried runtime value wins after
+    // that (see `seed_sidebar_enabled`).
+    let mut sidebar_enabled = seed_sidebar_enabled(
+        carried_sidebar_enabled,
+        sidebar_cfg.as_ref().is_some_and(|c| c.enabled),
+    );
     let sidebar_width = sidebar_cfg.as_ref().map_or(20, |c| c.width);
     let sidebar_edge = match sidebar_cfg.as_ref().map(|c| c.position) {
         Some(SidebarPosition::Right) => SidebarEdge::Right,
@@ -2503,7 +2581,10 @@ async fn main_loop<W: super::RenderSink>(
                 // the outer driver re-attaches. Return BEFORE any repaint
                 // — the new session's ATTACHED + snapshot will repaint.
                 if let Some(target) = switch_request.take() {
-                    return Ok(LoopExit::SwitchTo(target));
+                    return Ok(LoopExit::SwitchTo {
+                        target,
+                        sidebar_enabled,
+                    });
                 }
                 // Zoom and sidebar toggles both change pane geometry. Resize
                 // every affected PTY before repainting so applications reflow
@@ -3508,7 +3589,10 @@ async fn main_loop<W: super::RenderSink>(
                 // A bare-ESC flush can carry the final chord of a
                 // `<leader> a` selection committed via Enter.
                 if let Some(target) = switch_request.take() {
-                    return Ok(LoopExit::SwitchTo(target));
+                    return Ok(LoopExit::SwitchTo {
+                        target,
+                        sidebar_enabled,
+                    });
                 }
                 if zoomed != prev_zoomed || sidebar != prev_sidebar {
                     emit_view_reflow(
@@ -5676,6 +5760,29 @@ mod tests {
         assert_eq!(full.get(&id).expect("full rect").w, 100);
         assert_eq!(inset.get(&id).expect("inset rect").w, 80);
         assert_eq!(inset.get(&id).expect("inset rect").x, 20);
+    }
+
+    /// `toggle-sidebar` is client-local chrome, not session state, and a
+    /// `switch-session` re-enters `main_loop` — which re-reads
+    /// `[sidebar] enabled`. Without the carry, the user's toggle is silently
+    /// reverted on every space switch: the strip blinks shut exactly when
+    /// they are moving between the spaces it exists to show them.
+    ///
+    /// Both directions must carry. The runtime value is authoritative once it
+    /// exists, so a config default can neither re-open a strip the user shut
+    /// nor close one they opened.
+    #[test]
+    fn sidebar_enabled_carries_across_a_session_switch() {
+        // First attach: nothing carried, so `[sidebar] enabled` decides —
+        // including the shipped default, which must stay byte-identical.
+        assert!(!seed_sidebar_enabled(None, false));
+        assert!(seed_sidebar_enabled(None, true));
+        // Switched after `toggle-sidebar` opened it: the runtime value wins
+        // over a config that defaults the strip off. This is the regression.
+        assert!(seed_sidebar_enabled(Some(true), false));
+        // ...and symmetrically, closing it by hand survives a config that
+        // defaults it on — a switch must not re-open what the user shut.
+        assert!(!seed_sidebar_enabled(Some(false), true));
     }
 
     #[test]
