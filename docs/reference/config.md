@@ -52,9 +52,9 @@ Every scalar knob with its shipped default, serialized from the schema itself. K
 | `keybindings.prefix` | `"C-a"` |
 | `keybindings.which-key` | `true` |
 | `keybindings.which-key-delay-ms` | `400` |
-| `sidebar.enabled` | `false` |
+| `sidebar.enabled` | `true` |
 | `sidebar.position` | `"left"` |
-| `sidebar.width` | `20` |
+| `sidebar.width` | `28` |
 | `status.position` | `"bottom"` |
 
 ## The annotated default config
@@ -495,11 +495,25 @@ right = [
 # agent_blocked   = "#ff9e64"  # agent lifecycle: waiting on a human
 # agent_done      = "#7dcfff"  # agent lifecycle: finished
 
-# The window sidebar (prefix-b toggles it): a vertical strip listing the
-# session's windows as tabs, each labelled by its OSC title (falling back
-# to the window name), the focused one highlighted. Off by default; when
-# enabled it reserves `width` columns on the `position` edge ("left" or
-# "right") and the panes tile into the remaining area.
+# The window sidebar (prefix-b toggles it): a vertical strip in three
+# zones, ON by default.
+#
+#   needs you   every agent wanting a human, ACROSS SESSIONS, worst first —
+#               and absent entirely when nothing does. The strip shrinks
+#               when you are calm; that is the point of it.
+#   here        this session's windows, each with its branch line.
+#   spaces      one rolled-up line per OTHER session: a status dot and a
+#               `!1 *2` count, so you can see what is on the line without
+#               opening anything.
+#
+# Clicking a `needs you` row jumps to that agent, switching sessions if it
+# lives in another one; a `spaces` row switches to that session; the `+N
+# more` row opens the full fleet dashboard (prefix A).
+#
+# It reserves `width` columns on the `position` edge ("left" or "right")
+# and the panes tile into the remaining area. `prefix-b` turns it off, and
+# that choice now sticks across session switches for the life of the
+# attach.
 #
 # The strip yields on a terminal too narrow to afford it: below
 # `width` + 40 columns it is not reserved at all and the panes get the
@@ -510,8 +524,8 @@ right = [
 # is the navigation surface — it opens full-screen there.
 #
 # [sidebar]
-# enabled = false
-# width = 20
+# enabled = true
+# width = 28
 # position = "left"
 
 # Responsive-chrome breakpoints. The chrome adapts to small terminals

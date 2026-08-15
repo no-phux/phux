@@ -366,7 +366,7 @@ mod tests {
         for row in [
             "| `defaults.history-limit` | `50000` |",
             "| `keybindings.prefix` | `\"C-a\"` |",
-            "| `sidebar.width` | `20` |",
+            "| `sidebar.width` | `28` |",
             "| `status.position` | `\"bottom\"` |",
         ] {
             assert!(page.body.contains(row), "scalar table lost the row {row:?}");

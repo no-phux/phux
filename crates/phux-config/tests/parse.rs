@@ -119,7 +119,8 @@ shell = "/bin/bash"
 ///   vi command-mode and no-echo prompts remain un-gatable client-side,
 ///   and mosh's RTT-adaptive gating is not yet ported — opt in with
 ///   `predictive-echo = true`);
-/// - sidebar disabled, width 20, on the left (phux-4h5a);
+/// - sidebar ENABLED, width 28, on the left (phux-4h5a, on by default
+///   per phux-k0cw);
 /// - status bar at the bottom (phux-foz.8);
 /// - spawn knobs at their shipped values (phux-4li.1);
 /// - `defaults.term` = xterm-256color (phux-ign): a regression here
@@ -133,8 +134,12 @@ fn empty_input_is_full_defaults() {
     assert!(cfg.keybindings.which_key);
     assert_eq!(cfg.keybindings.which_key_delay_ms, 400);
     assert!(!cfg.experimental.predictive_echo);
-    assert!(!cfg.sidebar.enabled, "sidebar is off by default");
-    assert_eq!(cfg.sidebar.width, 20, "default width");
+    assert!(
+        cfg.sidebar.enabled,
+        "the sidebar ships ON: it is the answer to 'which agent needs me?', \
+         and an answer nobody finds is not an answer"
+    );
+    assert_eq!(cfg.sidebar.width, 28, "default width fits a nested tree");
     assert_eq!(cfg.sidebar.position, SidebarPosition::Left);
     assert_eq!(cfg.status.position, StatusPosition::Bottom);
     assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::InheritFocused);

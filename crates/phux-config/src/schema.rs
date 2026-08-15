@@ -442,10 +442,15 @@ pub enum StatusPosition {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SidebarCfg {
-    /// Show the sidebar. Default `false`.
-    #[serde(default)]
+    /// Show the sidebar. Default `true` (phux-k0cw).
+    ///
+    /// It ships on because the strip is the product's answer to "which of my
+    /// agents needs me?", and an answer nobody finds is not an answer. It
+    /// costs a calm user almost nothing: with nothing blocked and no peer
+    /// sessions the strip is just the window list it replaced.
+    #[serde(default = "default_sidebar_enabled")]
     pub enabled: bool,
-    /// Width in columns when shown. Default `20`.
+    /// Width in columns when shown. Default `28`.
     #[serde(default = "default_sidebar_width")]
     pub width: u16,
     /// Which edge the sidebar docks to. Default `left`.
@@ -456,15 +461,23 @@ pub struct SidebarCfg {
 impl Default for SidebarCfg {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_sidebar_enabled(),
             width: default_sidebar_width(),
             position: SidebarPosition::default(),
         }
     }
 }
 
+const fn default_sidebar_enabled() -> bool {
+    true
+}
+
+/// Wide enough for a nested tree: a status dot, a two-space indent, a
+/// session or window name, and a `!1 *2` histogram without the name
+/// truncating on the common case. 20 fitted a flat window list and no longer
+/// fits what the strip shows.
 const fn default_sidebar_width() -> u16 {
-    20
+    28
 }
 
 /// Which edge the [`SidebarCfg`] docks to.
