@@ -278,10 +278,55 @@ impl PtyClient {
         strip_terminal_controls(&self.transcript.lock().expect("transcript lock"))
     }
 
+    /// [`Self::visible_text`] read back as flowing prose: box-drawing rules
+    /// become spaces and every run of whitespace — including the renderer's
+    /// line breaks — collapses to one.
+    ///
+    /// An overlay wraps its prose to the content rect, and the content rect
+    /// narrows when chrome is docked (the window sidebar ships enabled, so
+    /// it is, by default). A sentence therefore breaks mid-phrase with the
+    /// modal's own border between the halves. A first-run assertion is about
+    /// whether the promise was MADE, not about which column it happened to
+    /// break at, so reading the prose back out of the box keeps the test
+    /// honest about the former without pinning the latter — and stops it
+    /// failing on any future chrome that changes the available width.
+    fn flowed_text(&self) -> String {
+        let visible = self.visible_text();
+        let unboxed: String = visible
+            .chars()
+            .map(|c| {
+                if matches!(c, '│' | '┌' | '┐' | '└' | '┘' | '─' | '‹') {
+                    ' '
+                } else {
+                    c
+                }
+            })
+            .collect();
+        unboxed.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// Wait for prose that may wrap: matches against [`Self::flowed_text`].
+    /// Wait for prose that may wrap: matches against [`Self::flowed_text`].
+    fn wait_for_prose(&mut self, description: &str, needle: &str) {
+        let needle = needle.to_owned();
+        self.wait_for_with(description, Self::flowed_text, move |text| {
+            text.contains(&needle)
+        });
+    }
+
     fn wait_for(&mut self, description: &str, predicate: impl Fn(&str) -> bool) {
+        self.wait_for_with(description, Self::visible_text, predicate);
+    }
+
+    fn wait_for_with(
+        &mut self,
+        description: &str,
+        view: impl Fn(&Self) -> String,
+        predicate: impl Fn(&str) -> bool,
+    ) {
         let deadline = Instant::now() + DEADLINE;
         loop {
-            let visible = self.visible_text();
+            let visible = view(self);
             if predicate(&visible) {
                 return;
             }
@@ -424,9 +469,10 @@ fn run_journey(harness: &mut Harness) {
     first.wait_for("the first-use title", |text| {
         text.contains("Your session is live")
     });
-    first.wait_for("the first-use persistence promise", |text| {
-        text.contains("phux keeps this session alive")
-    });
+    first.wait_for_prose(
+        "the first-use persistence promise",
+        "phux keeps this session alive",
+    );
     first.wait_for("the active default detach binding", |text| {
         text.lines()
             .any(|line| line.contains("C-a d") && line.contains("leave this view"))
