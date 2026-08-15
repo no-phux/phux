@@ -92,6 +92,14 @@ impl From<phux_dial::DialError> for AttachError {
             phux_dial::DialError::Io(err) => Self::Io(err),
             phux_dial::DialError::Connect(msg) => Self::Connect(msg),
             phux_dial::DialError::Unreachable(msg) => Self::Unreachable(msg),
+            // A stalled lane IS a disconnection — the peer is gone, we just
+            // had to ask to find out. Mapping it here is what routes a
+            // half-open `wss://` socket into the same bounded reconnect the
+            // UDS graceful-upgrade blink uses, instead of hanging forever.
+            phux_dial::DialError::Stalled(msg) => {
+                tracing::info!(reason = %msg, "WebSocket lane stalled; treating it as a disconnect");
+                Self::Disconnected
+            }
         }
     }
 }
@@ -190,5 +198,35 @@ mod tests {
         assert_eq!(super::describe_exit(Some(137)), "exited 137");
         assert_eq!(super::describe_exit(Some(-1)), "exited -1");
         assert_eq!(super::describe_exit(None), "killed (signal or unknown)");
+    }
+
+    /// The link between "the WebSocket keepalive noticed a stalled peer" and
+    /// "the client enters its reconnect window": `attach_with_reconnect`
+    /// reconnects on `Disconnected` and on nothing else, so a `Stalled` that
+    /// mapped to `Io` or `Connect` would detect the network switch and then
+    /// exit on it anyway. The other variants must NOT collapse into
+    /// `Disconnected` — a pin mismatch or an unreachable host is a fault to
+    /// report, not a blip to wait out.
+    #[test]
+    fn a_stalled_lane_maps_to_disconnected_and_nothing_else_does() {
+        assert!(matches!(
+            super::AttachError::from(phux_dial::DialError::Stalled("no pong".to_owned())),
+            super::AttachError::Disconnected
+        ));
+
+        assert!(matches!(
+            super::AttachError::from(phux_dial::DialError::Unreachable("no route".to_owned())),
+            super::AttachError::Unreachable(_)
+        ));
+        assert!(matches!(
+            super::AttachError::from(phux_dial::DialError::Connect("pin mismatch".to_owned())),
+            super::AttachError::Connect(_)
+        ));
+        assert!(matches!(
+            super::AttachError::from(phux_dial::DialError::Io(std::io::Error::from(
+                std::io::ErrorKind::BrokenPipe
+            ))),
+            super::AttachError::Io(_)
+        ));
     }
 }

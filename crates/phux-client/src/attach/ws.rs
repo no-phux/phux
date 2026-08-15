@@ -8,7 +8,7 @@
 //! resolving and maps [`phux_dial::DialError`] into [`AttachError`] at the
 //! attach-loop boundary. Framing stays in [`super::connection`].
 
-pub use phux_dial::ws::{Ws, WsDial, WsReader, WsTarget, WsWriter};
+pub use phux_dial::ws::{Ws, WsDial, WsReader, WsTarget, WsWriter, recv_message_alive};
 
 use super::outcome::AttachError;
 

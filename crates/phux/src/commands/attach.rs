@@ -325,12 +325,75 @@ pub(crate) fn client_cwd() -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-/// How long a vanished server is given to come back before the client gives up
-/// and exits. A graceful upgrade (ADR-0032) re-execs in well under a second;
-/// the generous window only matters for a server that crashed and won't return.
-const RECONNECT_DEADLINE: Duration = Duration::from_secs(10);
-/// Poll cadence while waiting for the re-exec'd server to start accepting.
-const RECONNECT_POLL: Duration = Duration::from_millis(100);
+/// How long a vanished server is given to come back, and how hard to poll for
+/// it while waiting.
+///
+/// One policy per *dial lane*, because "the server vanished" means two
+/// different things on the two kinds of lane and the right response to each is
+/// the wrong response to the other. See [`reconnect_policy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReconnectPolicy {
+    /// How long to keep trying before giving up and exiting.
+    deadline: Duration,
+    /// Delay before the second attempt (the first is immediate).
+    initial_backoff: Duration,
+    /// Ceiling the backoff doubles up to. Equal to `initial_backoff` for a
+    /// flat poll.
+    max_backoff: Duration,
+}
+
+/// The local lane: the ADR-0032 graceful-upgrade blink.
+///
+/// The re-exec'd server keeps the socket bound and is back in well under a
+/// second, so a flat 100ms poll re-attaches almost invisibly, and a `connect`
+/// on a Unix socket that is not accepting is a cheap, purely local failure —
+/// there is nothing to be gentle about. Ten seconds is generous for a re-exec
+/// and short enough that a server which actually crashed reports promptly
+/// rather than leaving the user staring at a countdown.
+const UDS_RECONNECT: ReconnectPolicy = ReconnectPolicy {
+    deadline: Duration::from_secs(10),
+    initial_backoff: Duration::from_millis(100),
+    max_backoff: Duration::from_millis(100),
+};
+
+/// The remote lanes: a network transition, not a process restart.
+///
+/// The overwhelmingly common cause of a dropped `wss://` or QUIC attach is the
+/// *client's* network changing under it — a laptop moving from wifi to
+/// cellular, or sleeping and rejoining on a different AP. The server never
+/// went anywhere. Association plus DHCP plus DNS plus, on an overlay network,
+/// Tailscale re-establishing its own path routinely runs past ten seconds, so
+/// the local deadline would give up while the machine was still coming back
+/// and drop the user out of a session that was about to be reachable again.
+///
+/// The backoff matters just as much as the deadline. Each remote probe
+/// completes a real connection — for `wss://` that is a TCP connect plus a
+/// full TLS 1.3 handshake plus the RFC 6455 upgrade — so a flat 100ms poll is
+/// ten handshakes a second against a server that is probably fine, on a radio
+/// the user would like to still have a battery for. Exponential 500ms to 8s
+/// turns ~600 handshakes over a minute into about a dozen while still
+/// re-attaching within a second or two of the network actually returning.
+const REMOTE_RECONNECT: ReconnectPolicy = ReconnectPolicy {
+    deadline: Duration::from_secs(60),
+    initial_backoff: Duration::from_millis(500),
+    max_backoff: Duration::from_secs(8),
+};
+
+/// Which policy governs this dial.
+const fn reconnect_policy(dial: &Dial) -> ReconnectPolicy {
+    match dial {
+        Dial::Uds(_) => UDS_RECONNECT,
+        Dial::Quic(_) | Dial::Ws(_) => REMOTE_RECONNECT,
+    }
+}
+
+impl ReconnectPolicy {
+    /// The delay after one that waited `previous`, capped at
+    /// [`Self::max_backoff`]. A flat policy (`max == initial`) never grows.
+    fn next_backoff(self, previous: Duration) -> Duration {
+        previous.saturating_mul(2).min(self.max_backoff)
+    }
+}
 
 /// Drive an attach, transparently reconnecting if the server *vanishes*
 /// mid-session — the graceful-upgrade blink (ADR-0032): the re-exec'd server
@@ -414,11 +477,12 @@ async fn attach_with_reconnect(
                 // so this whole window runs on the cooked primary screen —
                 // an honest, visible countdown instead of ~10 s of blank
                 // terminal (phux-i0e8.2.3).
+                let policy = reconnect_policy(dial);
                 eprintln!(
                     "phux: lost the server connection; waiting up to {}s for it to come back",
-                    RECONNECT_DEADLINE.as_secs()
+                    policy.deadline.as_secs()
                 );
-                match wait_with_countdown(dial, RECONNECT_DEADLINE).await {
+                match wait_with_countdown(dial, policy).await {
                     ReconnectOutcome::Connectable => {
                         eprintln!("phux: server is back; re-attaching…");
                         initial_notice = Some(Notice::info(RECONNECT_NOTICE_TEXT));
@@ -428,7 +492,7 @@ async fn attach_with_reconnect(
                         // `Disconnected` breaking out of this loop straight
                         // to the failure exit code without a second remedy
                         // block (see `run_naked` / `run_attach`).
-                        for line in reconnect_failure_lines(outcome, RECONNECT_DEADLINE) {
+                        for line in reconnect_failure_lines(outcome, policy.deadline) {
                             eprintln!("{line}");
                         }
                         break Err(AttachError::Disconnected);
@@ -511,9 +575,9 @@ fn reconnect_failure_lines(outcome: ReconnectOutcome, deadline: Duration) -> Vec
 ///
 /// The countdown line is erased (`\r` + EL) before returning, so whatever
 /// the caller prints next starts on a clean line.
-async fn wait_with_countdown(dial: &Dial, deadline: Duration) -> ReconnectOutcome {
-    let end = Instant::now() + deadline;
-    let mut probe = std::pin::pin!(wait_until_connectable(dial, deadline));
+async fn wait_with_countdown(dial: &Dial, policy: ReconnectPolicy) -> ReconnectOutcome {
+    let end = Instant::now() + policy.deadline;
+    let mut probe = std::pin::pin!(wait_until_connectable(dial, policy));
     // The first tick fires immediately, so the countdown appears at the
     // full deadline before the first probe can even fail.
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
@@ -557,8 +621,15 @@ fn close_recorder(recorder: Option<RecorderHandle>) {
 /// into the retry-until-connectable path. Remote transports probe by
 /// completing a real dial and dropping it, the transport analogue of the UDS
 /// connect-and-drop probe.
-async fn wait_until_connectable(dial: &Dial, deadline: Duration) -> ReconnectOutcome {
-    let end = Instant::now() + deadline;
+///
+/// `policy` supplies both the deadline and the retry cadence: flat for UDS
+/// (see [`UDS_RECONNECT`]), exponential for the remote lanes, where each probe
+/// is a full TLS handshake (see [`REMOTE_RECONNECT`]). The *first* attempt is
+/// immediate under either policy, so the graceful-upgrade blink and a network
+/// that has already come back are both caught without waiting.
+async fn wait_until_connectable(dial: &Dial, policy: ReconnectPolicy) -> ReconnectOutcome {
+    let end = Instant::now() + policy.deadline;
+    let mut backoff = policy.initial_backoff;
     loop {
         let connectable = match dial {
             Dial::Uds(path) => {
@@ -591,7 +662,8 @@ async fn wait_until_connectable(dial: &Dial, deadline: Duration) -> ReconnectOut
         if Instant::now() >= end {
             return ReconnectOutcome::TimedOut;
         }
-        tokio::time::sleep(RECONNECT_POLL).await;
+        tokio::time::sleep(backoff).await;
+        backoff = policy.next_backoff(backoff);
     }
 }
 
@@ -1231,7 +1303,7 @@ mod tests {
         // No socket file: nothing to reconnect to — returns without waiting.
         let start = Instant::now();
         assert_eq!(
-            wait_until_connectable(&Dial::uds(&path), Duration::from_secs(5)).await,
+            wait_until_connectable(&Dial::uds(&path), with_deadline(Duration::from_secs(5))).await,
             ReconnectOutcome::SocketGone
         );
         assert!(
@@ -1242,7 +1314,7 @@ mod tests {
         // A bound listener: connectable.
         let listener = tokio::net::UnixListener::bind(&path).expect("bind");
         assert_eq!(
-            wait_until_connectable(&Dial::uds(&path), Duration::from_secs(2)).await,
+            wait_until_connectable(&Dial::uds(&path), with_deadline(Duration::from_secs(2))).await,
             ReconnectOutcome::Connectable
         );
         drop(listener);
@@ -1251,8 +1323,117 @@ mod tests {
         std::fs::remove_file(&path).ok();
         std::fs::File::create(&path).expect("plug the socket path");
         assert_eq!(
-            wait_until_connectable(&Dial::uds(&path), Duration::from_millis(300)).await,
+            wait_until_connectable(&Dial::uds(&path), with_deadline(Duration::from_millis(300)))
+                .await,
             ReconnectOutcome::TimedOut
+        );
+    }
+
+    /// The UDS policy with a test-length deadline; cadence untouched.
+    fn with_deadline(deadline: Duration) -> ReconnectPolicy {
+        ReconnectPolicy {
+            deadline,
+            ..UDS_RECONNECT
+        }
+    }
+
+    /// The local lane's reconnect behavior is load-bearing for ADR-0032: the
+    /// re-exec'd server keeps the socket bound and is back in under a second,
+    /// so the 100ms flat poll and the 10s deadline make the graceful-upgrade
+    /// blink invisible. Making the remote lanes patient must not make the
+    /// local one sluggish, so the exact numbers are pinned here.
+    #[test]
+    fn uds_reconnect_policy_is_unchanged_flat_100ms_over_10s() {
+        let policy = reconnect_policy(&Dial::uds(std::path::Path::new("/tmp/phux-test.sock")));
+
+        assert_eq!(policy.deadline, Duration::from_secs(10));
+        assert_eq!(policy.initial_backoff, Duration::from_millis(100));
+        assert_eq!(
+            policy.max_backoff,
+            Duration::from_millis(100),
+            "UDS must not back off — a graceful upgrade is over in <1s"
+        );
+
+        // Flat means flat, however many times it is applied.
+        let mut backoff = policy.initial_backoff;
+        for _ in 0..10 {
+            backoff = policy.next_backoff(backoff);
+            assert_eq!(backoff, Duration::from_millis(100));
+        }
+    }
+
+    /// Both remote lanes get the patient, backing-off policy: each probe is a
+    /// real handshake over a radio, and the thing that broke is usually the
+    /// client's own network rather than the server.
+    #[test]
+    fn remote_lanes_get_backoff_and_a_longer_deadline() {
+        let ws = reconnect_policy(&Dial::Ws(WsDial {
+            url: "wss://example.ts.net:8788".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+            tls_server_name: None,
+        }));
+        let quic = reconnect_policy(&Dial::Quic(QuicDial {
+            addr: "127.0.0.1:8788".parse().expect("addr"),
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+        }));
+
+        assert_eq!(ws, quic, "the two remote lanes share one policy");
+        assert!(
+            ws.deadline > UDS_RECONNECT.deadline,
+            "a wifi transition outlasts a re-exec: {:?}",
+            ws.deadline
+        );
+        assert!(
+            ws.max_backoff > ws.initial_backoff,
+            "remote probes must back off, not hammer TLS"
+        );
+    }
+
+    /// The backoff doubles and then holds at the ceiling, and the whole
+    /// schedule stays far cheaper than the flat poll it replaces — the point
+    /// of the change is TLS handshakes not attempted.
+    #[test]
+    fn remote_backoff_doubles_to_the_ceiling_and_stops() {
+        let policy = REMOTE_RECONNECT;
+        let mut backoff = policy.initial_backoff;
+        let mut schedule = vec![backoff];
+        // The first attempt is immediate, so `deadline` is covered by the
+        // sum of the sleeps between attempts.
+        let mut waited = Duration::ZERO;
+        while waited < policy.deadline {
+            waited += backoff;
+            backoff = policy.next_backoff(backoff);
+            schedule.push(backoff);
+        }
+
+        assert_eq!(
+            &schedule[..5],
+            &[
+                Duration::from_millis(500),
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(4),
+                Duration::from_secs(8),
+            ]
+        );
+        assert!(
+            schedule.iter().all(|d| *d <= policy.max_backoff),
+            "backoff never exceeds the ceiling: {schedule:?}"
+        );
+        assert_eq!(
+            *schedule.last().expect("non-empty"),
+            policy.max_backoff,
+            "it holds at the ceiling rather than growing without bound"
+        );
+        // One attempt per sleep, plus the immediate first one. The flat
+        // 100ms poll would have made 600 over the same window.
+        assert!(
+            schedule.len() < 20,
+            "a minute of reconnecting is ~a dozen handshakes, not hundreds: {}",
+            schedule.len()
         );
     }
 

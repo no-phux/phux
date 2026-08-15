@@ -60,6 +60,15 @@ pub enum DialError {
     /// certificate-pin and auth failures stay in [`Self::Connect`].
     #[error("transport connect error: {0}")]
     Unreachable(String),
+
+    /// An established connection stopped answering: nothing inbound — not
+    /// even a pong for our RFC 6455 keepalive ping — within the liveness
+    /// timeout. This is what a laptop switching networks looks like on a
+    /// TCP-based lane, where the old socket is never FIN'd or RST'd and a
+    /// read would otherwise park forever. Callers treat it as a
+    /// disconnection and reconnect; see [`ws::WsKeepalive`].
+    #[error("transport stalled: {0}")]
+    Stalled(String),
 }
 
 /// Whether an I/O error means the remote host never answered — the

@@ -360,7 +360,7 @@ impl Connection {
         let (tx, rx) = futures_util::StreamExt::split(ws);
         Ok(Self {
             reader: FrameReader::Ws(WsReader {
-                inner: ws::WsReader { rx },
+                inner: ws::WsReader::new(rx),
                 bootstrap_limits: BootstrapLimits::default(),
             }),
             writer: FrameWriter::Ws(WsWriter {
@@ -476,7 +476,7 @@ impl Connection {
                 client_caps,
             })
             .await?;
-        match self.reader.recv().await? {
+        match self.recv().await? {
             FrameKind::HelloOk {
                 protocol_major,
                 protocol_minor,
@@ -537,8 +537,20 @@ impl Connection {
     }
 
     /// Read the next frame from the server.
+    ///
+    /// On the WebSocket lane this is also where liveness is maintained: the
+    /// read is paired with its own write half so an idle connection is
+    /// ping/pong probed, and a peer that stops answering surfaces as
+    /// [`AttachError::Disconnected`] rather than parking forever. UDS gets
+    /// EOF from the kernel and QUIC has its own keep-alive, so both read
+    /// straight through.
     pub async fn recv(&mut self) -> Result<FrameKind, AttachError> {
-        self.reader.recv().await
+        match (&mut self.reader, &mut self.writer) {
+            (FrameReader::Ws(reader), FrameWriter::Ws(writer)) => {
+                reader.recv_alive(&mut writer.inner).await
+            }
+            (reader, _) => reader.recv().await,
+        }
     }
 
     /// Pull a frame that is *already available* without awaiting the socket.
@@ -1175,7 +1187,20 @@ impl WsWriter {
 
 impl WsReader {
     async fn recv(&mut self) -> Result<FrameKind, AttachError> {
-        let Some(frame) = self.inner.recv_message().await? else {
+        let message = self.inner.recv_message().await?;
+        self.decode(message)
+    }
+
+    /// [`Self::recv`] with RFC 6455 liveness, which needs the paired write
+    /// half to ask the question. [`Connection::recv`] routes every WebSocket
+    /// read through here.
+    async fn recv_alive(&mut self, writer: &mut ws::WsWriter) -> Result<FrameKind, AttachError> {
+        let message = ws::recv_message_alive(&mut self.inner, writer).await?;
+        self.decode(message)
+    }
+
+    fn decode(&self, message: Option<Vec<u8>>) -> Result<FrameKind, AttachError> {
+        let Some(frame) = message else {
             return Err(AttachError::Disconnected);
         };
         // One binary message is exactly one frame: `check_frame` rejects an

@@ -35,7 +35,16 @@ additive rather than invasive.
   state locally; the bytes on the wire are identical to the UDS path, only
   the byte stream underneath differs. Native attach can also use this path
   with `phux attach --ws`, making it the TCP fallback when UDP/QUIC is
-  blocked.
+  blocked. **Keepalive / idle:** TCP has no transport-level idle
+  detection, so this lane carries the contract itself — the native
+  consumer originates an RFC 6455 ping after `WS_PING_INTERVAL` (10s) of
+  silence and treats `WS_LIVENESS_TIMEOUT` (30s) with nothing inbound as a
+  disconnect (`phux_dial::ws::WsKeepalive`), the same interval/timeout pair
+  the QUIC lane gets from quinn and the hub link applies to its own WS
+  satellites. Client-originated because every RFC 6455 peer must answer a
+  ping, so it needs nothing of the server. Without it a half-open socket —
+  the laptop that changed networks — never surfaces as an error and the
+  read parks forever.
 - **QUIC transport** (via `quinn`, ADR-0007) — for remote clients. Each
   connection opens one bidirectional QUIC stream and frames the identical
   codec over it. TLS 1.3 is intrinsic; a routable listener authenticates
@@ -99,6 +108,16 @@ each end. The SSH-stdio path does not go through `phux-dial` — its
 "establishment" is a child-process spawn, and its trust stack is SSH's,
 not rustls — but it feeds the same link supervisors, backoff, and
 per-satellite status reporting on the hub.
+
+**Redialing is per-lane.** The consumer-side reconnect window
+(`phux::commands::attach`) picks its deadline and retry cadence from the
+`Dial` variant, because a dropped link means different things on the two
+kinds of lane. On UDS the server *process* went away and the ADR-0032
+re-exec brings it back in under a second, so the client polls flat every
+100ms for 10s. On `--ws` / `--quic` the usual cause is the client's own
+network changing — and each probe is a real TLS handshake — so those
+lanes wait 60s with exponential backoff from 500ms to 8s. Same shape as
+the hub's capped-backoff redial, tuned for an interactive attach.
 
 ## The hub relays frames over its links
 

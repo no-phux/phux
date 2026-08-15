@@ -2329,15 +2329,37 @@ Precedence and degradation:
 
 When the server vanishes mid-session (the graceful-upgrade blink of
 ADR-0032, or a crash), the TUI tears down to the cooked primary screen
-and the client waits up to **10 seconds** for the server to come back —
-visibly, not as a blank terminal (phux-i0e8.2.3):
+and waits for the server to come back — visibly, not as a blank
+terminal (phux-i0e8.2.3):
 
 ```
 phux: lost the server connection; waiting up to 10s for it to come back
 phux: reconnecting… 7s left (Ctrl-C to give up)
 ```
 
-The second line is overwritten in place once per second. Three endings:
+The second line is overwritten in place once per second.
+
+**How long it waits, and how hard it retries, depends on the lane.** On
+the local Unix socket the thing that vanished is a *process*: the
+ADR-0032 re-exec keeps the socket bound and is back in well under a
+second, so the client polls flat every 100ms for **10 seconds** and the
+blink is nearly invisible. On the remote lanes (`--ws`, `--quic`) the
+thing that vanished is usually the *client's own network* — a laptop
+moving between wifi and cellular, or waking on a different AP — and the
+server never went anywhere. Association, DHCP, DNS, and an overlay
+network re-establishing its path routinely run past ten seconds, so
+those lanes wait **60 seconds** and back off exponentially from 500ms to
+8s between attempts rather than re-running a TLS handshake ten times a
+second on battery.
+
+On the remote lanes, *entering* the window at all depends on noticing
+the drop: a stalled TCP connection produces no FIN and no RST, so the
+`wss://` lane carries RFC 6455 ping/pong liveness (10s probe, 30s
+timeout, matching the QUIC lane's transport-level contract) and reports
+a peer that stops answering as a disconnect. See
+[transport.md](../architecture/transport.md).
+
+Three endings:
 
 - **The server comes back** (a graceful upgrade re-execs in well under
   a second): `phux: server is back; re-attaching…`, the TUI returns
