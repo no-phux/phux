@@ -66,9 +66,10 @@ pub const HERE_HEADER: &str = "here";
 /// Zone 3's header (phux-k0cw) — herdr's word, now applied at herdr's
 /// level: one line per OTHER session, not per window.
 pub const SPACES_HEADER: &str = "spaces";
-/// Empty-state placeholder for zone 2 (phux-foz.13, retargeted by
-/// phux-k0cw) — shown in place of window blocks when the focused session
-/// somehow has none, so the section reads as composed rather than vanishing.
+/// Empty-state placeholder for zone 2 (phux-foz.13, retargeted by phux-k0cw).
+///
+/// Shown in place of window blocks when the focused session somehow has none,
+/// so the section reads as composed rather than vanishing.
 pub const HERE_EMPTY: &str = "no windows";
 /// Label of a truncated zone's overflow row (phux-k0cw). Clicking it opens
 /// the agent-fleet dashboard, which is the surface that shows everything.
@@ -560,6 +561,18 @@ pub fn hit_test(rect: Rect, counts: SidebarCounts, x: u16, y: u16) -> Option<Sid
     }
 }
 
+/// Everything one painted frame was composed from (phux-k0cw).
+///
+/// EVERY projection the strip paints must be in here. A zone left out does
+/// not merely paint stale — it freezes for the life of the session, because
+/// the cache reports a hit forever.
+type PaintCacheKey = (
+    Rect,
+    Vec<WindowInfo>,
+    Vec<AgentEntry>,
+    Vec<SessionRosterEntry>,
+);
+
 /// VT painter for the window sidebar.
 #[derive(Debug)]
 pub struct SidebarPainter {
@@ -573,12 +586,7 @@ pub struct SidebarPainter {
     /// EVERY projection the strip paints must be in here. A zone left out of
     /// the key does not merely paint stale — it freezes for the life of the
     /// session, because the cache reports a hit forever.
-    last: Option<(
-        Rect,
-        Vec<WindowInfo>,
-        Vec<AgentEntry>,
-        Vec<SessionRosterEntry>,
-    )>,
+    last: Option<PaintCacheKey>,
 }
 
 impl SidebarPainter {
@@ -631,7 +639,7 @@ impl SidebarPainter {
     /// The counts [`row_model`] and [`hit_test`] derive the strip's shape
     /// from.
     #[must_use]
-    pub fn counts(&self) -> SidebarCounts {
+    pub const fn counts(&self) -> SidebarCounts {
         SidebarCounts {
             needs_you: self.needs_you.len(),
             windows: self.windows.len(),
@@ -867,23 +875,21 @@ impl SidebarPainter {
         // The histogram is the "how much" the dot cannot carry. Only
         // non-zero rungs appear, worst first, so the common calm case adds
         // no noise at all.
-        let mut counts = String::new();
-        if s.satellite {
-            counts = format!("?{}", s.total());
+        let counts = if s.satellite {
+            format!("?{}", s.total())
         } else {
+            let mut parts: Vec<String> = Vec::new();
             for (glyph, n) in [
                 ("!", s.blocked),
                 ("\u{25c6}", s.done_unvisited),
                 ("*", s.working),
             ] {
                 if n > 0 {
-                    if !counts.is_empty() {
-                        counts.push(' ');
-                    }
-                    counts.push_str(&format!("{glyph}{n}"));
+                    parts.push(format!("{glyph}{n}"));
                 }
             }
-        }
+            parts.join(" ")
+        };
         let avail = usize::from(text_w).saturating_sub(2); // dot + space
         let name_budget = avail.saturating_sub(if counts.is_empty() {
             0

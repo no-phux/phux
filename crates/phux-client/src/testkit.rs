@@ -172,6 +172,7 @@ impl fmt::Debug for ScriptSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ScriptSpec")
             .field("priming", &self.priming)
+            .field("keyed_script", &self.keyed_script.len())
             .field("state", &self.state)
             .field("pre_ack", &self.pre_ack)
             .field("metadata", &self.metadata.is_some())

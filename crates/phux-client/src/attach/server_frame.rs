@@ -28,7 +28,9 @@ use super::paint::{
 use super::pane_state::{PaneSlot, published_terminal, reanchor_predict_to_pane};
 use crate::agent_meta::{AgentRecord, TERMINAL_AGENT_KEY, parse_agent_record};
 use crate::layout::{self, LayoutState, Workspace};
-use crate::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key_session};
+use crate::layout_ops::{
+    DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, LayoutKeyOwner, layout_key_session,
+};
 use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell};
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 
@@ -1310,18 +1312,15 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
             let Some(key_session) = layout_key_scope_session(&scope, &key) else {
                 return Ok(FrameOutcome::default());
             };
-            // phux-k0cw: adopt ONLY our own session's layout (or the bare
-            // legacy key, which predates per-session keying and can only be
-            // ours). A peer's topology is routed out as `foreign_layout` for
-            // the roster to read; adopting it here would replace the local
-            // pane tree with another session's.
-            let is_ours = match (key_session, focused_session) {
-                (None, _) => true,
-                (Some(k), Some(own)) => k == own,
-                (Some(_), None) => false,
-            };
-            if !is_ours {
-                let session = key_session.expect("a foreign key names a session");
+            // phux-k0cw: adopt ONLY our own session's layout. The legacy
+            // key predates per-session keying and is ours by construction;
+            // any NAMED session must match our own, including when we have no
+            // session yet, in which case nothing named is ours. A peer's
+            // topology routes out as `foreign_layout` for the roster to read;
+            // adopting it here would replace the local pane tree.
+            if let LayoutKeyOwner::Session(session) = key_session
+                && focused_session != Some(session)
+            {
                 return Ok(FrameOutcome {
                     foreign_layout: Some((session, value)),
                     ..FrameOutcome::default()
@@ -1861,15 +1860,14 @@ fn focused_session_name(snapshot: &phux_protocol::wire::info::SessionSnapshot) -
 /// Which session a layout-coordination key names, for keys ADR-0019 reserves
 /// (`phux.tui.layout/v1[/<session>]`, scoped to the default Group).
 ///
-/// `None` ⇒ not a layout key at all. `Some(None)` ⇒ the bare legacy key.
-/// `Some(Some(id))` ⇒ that session's key.
+/// `None` ⇒ not a layout key we can attribute.
 ///
 /// phux-k0cw replaced the old boolean `is_layout_key`. Its doc comment said
 /// matching the family was sufficient because "a client only ever receives
 /// broadcasts for the key it subscribed to (its own session)" — an invariant
 /// the cross-session sidebar removes, which is exactly why the caller must now
 /// know WHOSE layout arrived before deciding to adopt it.
-fn layout_key_scope_session(scope: &Scope, key: &str) -> Option<Option<SessionId>> {
+fn layout_key_scope_session(scope: &Scope, key: &str) -> Option<LayoutKeyOwner> {
     if !matches!(scope, Scope::Group(id) if *id == DEFAULT_GROUP_ID) {
         return None;
     }
@@ -3186,7 +3184,7 @@ mod tests {
             FrameKind::MetadataChanged {
                 scope: Scope::Terminal(tid(77)),
                 key: TERMINAL_AGENT_KEY.to_owned(),
-                value: Some(record.clone()),
+                value: Some(record),
             },
             None,
             &mut local,

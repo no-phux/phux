@@ -45,26 +45,35 @@ pub fn layout_key(session: SessionId) -> String {
     format!("{LAYOUT_KEY}/{}", session.get())
 }
 
-/// Which session a layout key names: `Some(None)` for the bare legacy
-/// [`LAYOUT_KEY`], `Some(Some(id))` for the per-session form, `None` when the
-/// key is not in the family at all.
+/// Whose layout a [`LAYOUT_KEY`] names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayoutKeyOwner {
+    /// The bare legacy key, written before per-session keying existed. It
+    /// names no session, so it can only be the reader's own.
+    Legacy,
+    /// The per-session key for this session.
+    Session(SessionId),
+}
+
+/// Whose layout `key` names, or `None` when it is not a layout key we can
+/// attribute.
 ///
-/// The distinction stops mattering only while a client subscribes to exactly
-/// one layout key. Once it watches peers too (phux-k0cw), "is this the layout
-/// family?" is the wrong question — adopting a peer's topology as your own
-/// would silently replace your pane tree — and the right one is "whose layout
-/// is this?".
-pub(crate) fn layout_key_session(key: &str) -> Option<Option<SessionId>> {
+/// "Is this the layout family?" was the right question only while a client
+/// subscribed to exactly one layout key. Once it watches peers too
+/// (phux-k0cw), adopting a peer's topology as your own would silently replace
+/// your pane tree, so the question becomes "whose layout is this?".
+pub(crate) fn layout_key_session(key: &str) -> Option<LayoutKeyOwner> {
     if key == LAYOUT_KEY {
-        return Some(None);
+        return Some(LayoutKeyOwner::Legacy);
     }
     let suffix = key.strip_prefix(&format!("{LAYOUT_KEY}/"))?;
     // An unparsable suffix names no session we can attribute. It must NOT
-    // collapse to `Some(None)` — that is the bare-legacy answer, which the
-    // caller reads as "ours" and adopts. Answering `None` drops the frame
-    // instead, which is the only safe direction for a layout we cannot prove
-    // is our own.
-    Some(Some(SessionId::new(suffix.parse::<u32>().ok()?)))
+    // fall back to `Legacy` — the caller reads that as "ours" and adopts it.
+    // Answering `None` drops the frame instead, the only safe direction for a
+    // layout we cannot prove is our own.
+    Some(LayoutKeyOwner::Session(SessionId::new(
+        suffix.parse::<u32>().ok()?,
+    )))
 }
 
 /// One pure mutation of a decoded [`Workspace`].
@@ -504,20 +513,19 @@ mod tests {
     fn layout_key_session_names_the_owner_not_just_the_family() {
         // The bare legacy key predates per-session keying, so it names no
         // session and can only be our own.
-        assert_eq!(layout_key_session(LAYOUT_KEY), Some(None));
+        assert_eq!(layout_key_session(LAYOUT_KEY), Some(LayoutKeyOwner::Legacy));
         assert_eq!(
             layout_key_session("phux.tui.layout/v1/7"),
-            Some(Some(SessionId::new(7)))
+            Some(LayoutKeyOwner::Session(SessionId::new(7)))
         );
         assert_eq!(
             layout_key_session(&layout_key(SessionId::new(42))),
-            Some(Some(SessionId::new(42))),
+            Some(LayoutKeyOwner::Session(SessionId::new(42))),
             "the writer and the reader must agree on the key shape"
         );
-        // Unparsable suffix: NOT `Some(None)`. That is the bare-legacy
-        // answer, which the caller adopts as its own layout — so an
-        // unattributable key must drop out of the family entirely rather
-        // than be mistaken for ours.
+        // Unparsable suffix: NOT `Legacy`. That is the answer the caller
+        // adopts as its own layout — so an unattributable key must drop out
+        // of the family entirely rather than be mistaken for ours.
         assert_eq!(layout_key_session("phux.tui.layout/v1/zzz"), None);
         // A key that merely shares the prefix-without-separator is not in the
         // family, and unrelated keys aren't either.

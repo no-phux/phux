@@ -1921,13 +1921,6 @@ async fn main_loop<W: super::RenderSink>(
     // shape as the foreign layouts above (ADR-0018 / ADR-0030).
     let mut foreign_agents: HashMap<TerminalId, AgentRecord> = HashMap::new();
     let mut foreign_agent_pending: HashMap<u32, TerminalId> = HashMap::new();
-    // phux-k0cw: peer panes whose agent has asked for a human (ADR-0035
-    // `Asked` for a Terminal outside this client's pane set). The local
-    // equivalent lives on `PaneSlot::attention`, which a foreign pane has no
-    // slot to carry. Cleared when the pane's record says it is no longer
-    // blocked, and pruned with the rest of the peer state.
-    let mut foreign_attention: std::collections::HashSet<TerminalId> =
-        std::collections::HashSet::new();
     // phux-foz.8: the deferred window select of a one-step cross-session
     // pick, consumed on the first layout reconcile below. phux-jpqd:
     // `pending_pane` is the DFS leaf ordinal focused after the window
@@ -2872,34 +2865,34 @@ async fn main_loop<W: super::RenderSink>(
                         // change invisible unless the fleet modal happened to
                         // be open (`refresh_fleet_if_open` returns
                         // `NotPublished` when it is not).
-                        let mut foreign_dirty = false;
-                        if let Some((session, value)) = outcome.foreign_layout {
-                            apply_foreign_layout_reply(
-                                &mut foreign_layouts,
-                                session,
-                                value.as_deref(),
-                            );
-                            prune_foreign_agents(&mut foreign_agents, &foreign_layouts);
-                            foreign_dirty = true;
-                        }
-                        if let Some((id, value)) = outcome.foreign_agent {
-                            apply_foreign_agent_reply(
-                                &mut foreign_agents,
-                                id,
-                                value.as_deref(),
-                            );
-                            foreign_dirty = true;
-                        }
-                        if let Some(id) = outcome.foreign_attention {
-                            foreign_attention.insert(id);
-                            foreign_dirty = true;
-                        }
-                        if outcome.foreign_pane_set_dirty {
-                            // A peer spawned or closed a pane. The peer
-                            // layouts are re-read on the next sweep; flagging
-                            // is enough here.
-                            foreign_dirty = true;
-                        }
+                        let layout_folded =
+                            if let Some((session, value)) = outcome.foreign_layout {
+                                apply_foreign_layout_reply(
+                                    &mut foreign_layouts,
+                                    session,
+                                    value.as_deref(),
+                                );
+                                prune_foreign_agents(&mut foreign_agents, &foreign_layouts);
+                                true
+                            } else {
+                                false
+                            };
+                        let agent_folded = if let Some((id, value)) = outcome.foreign_agent {
+                            apply_foreign_agent_reply(&mut foreign_agents, id, value.as_deref());
+                            true
+                        } else {
+                            false
+                        };
+                        // A peer's asked flag has nowhere to live yet — a
+                        // foreign pane has no `PaneSlot` — so it lands with
+                        // the rest of the peer state in the k0cw.6
+                        // projection; here it is a repaint reason. Likewise a
+                        // peer spawn/close: the layouts are re-read on the
+                        // next sweep, so flagging is enough.
+                        let foreign_dirty = layout_folded
+                            || agent_folded
+                            || outcome.foreign_attention.is_some()
+                            || outcome.foreign_pane_set_dirty;
                         if foreign_dirty {
                             repaint.raise_chrome();
                             repaint.raise_fleet();
