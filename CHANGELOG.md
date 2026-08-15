@@ -9,6 +9,38 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.19.0](https://github.com/phall1/phux/compare/v0.18.0...v0.19.0) (2026-08-15)
+
+
+### Features
+
+* **chrome:** configurable compact breakpoints and an elastic spacer widget ([5fe42ba](https://github.com/phall1/phux/commit/5fe42bae8ec953c07d02840f8b35660e50b2b7ab))
+* **mcp:** add phux_status and phux_doctor so an agent can diagnose its server ([37ffde6](https://github.com/phall1/phux/commit/37ffde6ec938d44d7975409c419fdcc2364647b2))
+* **service:** adopt a live server into supervision without killing panes ([73b5aae](https://github.com/phall1/phux/commit/73b5aaec466e3413bd3b6156c04bf31bde09e9a0))
+* **tracker:** gate milestone labels against the live store, not the export ([a78eb84](https://github.com/phall1/phux/commit/a78eb84e15576e8008942e5155058694ab92b330))
+
+
+### Bug Fixes
+
+* **agent:** repair the drifted claude busy-title rule and the stale spec counts ([bc5b6c1](https://github.com/phall1/phux/commit/bc5b6c13388b01b3e9da22c56e2f6670cfca6a2d))
+* **test:** swap the flake family's timing bets for real barriers ([59f09cb](https://github.com/phall1/phux/commit/59f09cb2dd80ba88436422326febd423409551e2))
+
+
+### Performance
+
+* **server:** move overlay detection off the pane-startup window ([df93361](https://github.com/phall1/phux/commit/df93361ef3ad01c01a7d211137e7cd755a81d028))
+
+
+### Refactors
+
+* **protocol:** own SPEC §5 length-prefix framing in phux-protocol ([5be2b16](https://github.com/phall1/phux/commit/5be2b167a07b32b3d4920bdb7a1a8674e74cddca))
+* **render:** share the pooled libghostty render trio (phux-wbak) ([8037835](https://github.com/phall1/phux/commit/8037835e9ae4ded7f507dea841b24d03eacac204))
+
+
+### Documentation
+
+* **adr:** re-verify the ratification brief against protocol 0.8.0 ([109dfbd](https://github.com/phall1/phux/commit/109dfbd26f62fa8f1e36f727bdff691f988d26d0))
+
 ## [0.18.0](https://github.com/phall1/phux/compare/v0.17.0...v0.18.0) (2026-08-14)
 
 
