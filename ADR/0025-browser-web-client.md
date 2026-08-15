@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-05-30
+last-reviewed: 2026-08-15
 ---
 
 # 0025 — Browser web client over a WebSocket transport
@@ -16,9 +16,9 @@ frame-level `Transport` abstraction with a **WebSocket** impl alongside UDS
 (one binary message = one `FrameKind`); the per-client dispatch loop and codec
 are transport-agnostic. The client is single-terminal: `HELLO` → `ATTACH` →
 feed `TERMINAL_SNAPSHOT`/`TERMINAL_OUTPUT` into the engine → paint the grid to a
-`<canvas>`; keystrokes become `INPUT_KEY`. It deliberately does **not** share a
-"client-core" with the multi-pane ratatui TUI — the two consumers' rendering and
-concerns differ enough that a shared core would couple more than it saves.
+`<canvas>`; keystrokes become `INPUT_KEY`. Rendering is **not** shared with the
+multi-pane ratatui TUI, but the session kernel is: `phux-web` depends on
+`phux-client-core`, reversing this ADR's original no-shared-core call.
 
 Status: Accepted
 Date: 2026-05-30
@@ -67,15 +67,24 @@ ghostty intends its wasm engine to be embedded.
 - The browser↔engine boundary copies bytes across two wasm linear memories (the
   Rust client and `ghostty-vt.wasm`). Fine for a terminal; the @wterm ecosystem
   proves the model.
-- `phux-web` and the native TUI duplicate the small "decode frame → feed engine"
-  step. We accept it rather than coupling two consumers whose renderers (canvas
-  vs VT-to-stdout + ratatui chrome) and feature sets diverge.
+- The renderers stay separate — canvas vs VT-to-stdout plus ratatui chrome — so
+  the paint layer is written twice. The decode-and-feed step is not: both
+  consumers drive `phux-client-core`'s session kernel, so replica lifecycle,
+  generation validation, ordering, and READY fences exist once. See the
+  "shared `phux-client-core`" entry under Alternatives for how that changed.
 
 ## Alternatives considered
 
-- **A shared `phux-client-core` for native + web.** The original plan; descoped.
-  The genuinely shared surface is tiny, and the consumers' rendering differs
-  entirely — extraction would couple more than it de-duplicates.
+- **A shared `phux-client-core` for native + web.** The original plan, descoped
+  here on the reasoning that the shared surface was tiny. That sizing was wrong
+  and this decision has since been reversed in tree. The crate was extracted for
+  the native client on 2026-05-31 — to fence `ratatui` behind a
+  compiler-enforced boundary ([ADR-0020](0020-layered-render.md)), not for the
+  browser — and `phux-web` adopted it on 2026-08-04. It is roughly 16.7k lines
+  across six modules, of which `phux-web` imports three: `engine`, `history`,
+  and `session`. What survives from this ADR is the narrower rendering claim:
+  the two consumers' renderers do differ entirely, and they are still not
+  shared. What was falsified is the conclusion drawn from it.
 - **A JS terminal (xterm.js) fed by the wire.** Rejected: it drops the modern
   protocols that distinguish phux, and reimplements the wire in TypeScript.
 

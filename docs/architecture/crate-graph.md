@@ -35,7 +35,7 @@ the L1/L2/L3 wire layering from ADR-0015.
                         └───────────────────┘      ADR-0013)
 ```
 
-Three crate boundaries carry weight:
+Four crate boundaries carry weight:
 
 1. **`phux-core` and `phux-protocol` do not depend on each other.** Core
    holds the in-process domain (slotmap keys with generational tags,
@@ -82,6 +82,12 @@ for the renderer-side contract on both ends.
 `phux-config` is a sibling of `core` and is consumed by the binary and
 the client.
 
+`phux-client-ffi` sits above `phux-client-core` and below nothing in this
+workspace: it is a stable C ABI over the synchronous session kernel, for
+native embedders that are not written in Rust. It is compile-time excluded
+on wasm. Nothing else in the graph depends on it — it is a leaf, and the
+crate to reach for before hand-rolling a second bridge to the kernel.
+
 ## Browser client crates (standalone wasm workspace)
 
 The browser client lives under `clients/` as its **own cargo workspace**,
@@ -90,13 +96,14 @@ excluded from the native `cargo build --workspace` / CI (`exclude =
 and never builds the native binary.
 
 ```
-                    ghostty (Zig) ──zig build──► ghostty-vt.wasm
-                                                      │ include_bytes!
-   phux-protocol ──┐                                  ▼
-   (default feats, ├──────────────►  phux-web ◄── phux-vt-web (engine driver)
-    wasm-safe)     │   wasm-pack          │
-   web-sys ────────┘                      ▼
-                                  phux_web_bg.wasm + phux_web.js
+                     ghostty (Zig) ──zig build──► ghostty-vt.wasm
+                                                       │ include_bytes!
+   phux-protocol ───┐                                  ▼
+   (default feats,  ├─────────────►  phux-web ◄── phux-vt-web (engine driver)
+    wasm-safe)      │   wasm-pack         │
+   phux-client-core─┤                     ▼
+   (session kernel) │           phux_web_bg.wasm + phux_web.js
+   web-sys ─────────┘
 ```
 
 - **`clients/phux-vt-web`** — a safe Rust driver over `ghostty-vt.wasm` (the
@@ -104,7 +111,13 @@ and never builds the native binary.
   not linked in (ADR-0025). Depends on nothing phux.
 - **`clients/phux-web`** — the browser client: `phux-vt-web` (engine) +
   `phux-protocol` (the wire codec, **default-features** so it's libghostty-free
-  and wasm-safe per ADR-0024) + `web-sys` (WebSocket/canvas/keyboard).
+  and wasm-safe per ADR-0024) + `phux-client-core` (the session kernel — it
+  imports `engine`, `history`, and `session`) + `web-sys`
+  (WebSocket/canvas/keyboard). The `phux-client-core` edge crosses the
+  workspace boundary by path; wasm consumers depend on the crate directly and
+  never enable its `native-engine` feature, which is what keeps it wasm-safe.
+  ADR-0025 originally descoped a shared core for native + web; that call was
+  reversed, and the ADR records the correction.
 
 This is the one place `phux-protocol`'s default-features-off shell pays off: the
 web client compiles the codec to wasm without the `server` feature's

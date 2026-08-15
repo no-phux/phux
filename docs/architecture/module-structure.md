@@ -16,7 +16,7 @@ dependency edges are documented in [`crate-graph.md`](./crate-graph.md).
 ---
 
 What is in tree today. New modules land in the shape that fits the crate;
-do not retrofit older layouts onto new work. Fourteen crates make up the
+do not retrofit older layouts onto new work. Sixteen crates make up the
 workspace; the sections below cover them roughly in dependency order
 (wire, domain, daemon, clients, config, binary, then the smaller
 special-purpose crates).
@@ -320,6 +320,12 @@ rather than a layer with its own internal architecture worth diagramming:
 - **`phux-client-ffi`** — a stable native C bridge over
   `phux-client-core`'s synchronous session kernel, for non-Rust native
   embedders; compile-time excluded on wasm.
+- **`phux-crash`** — vendored fatal-signal handler (see its NOTICE; the one
+  Apache-2.0-only crate in the workspace). SIGSEGV/SIGBUS/SIGABRT do not
+  unwind, so neither `RawModeGuard::drop` nor the panic hook runs; this
+  handler writes the DECSET resets and restores the saved termios from an
+  alternate signal stack before re-raising, so a crash does not strand the
+  user in raw mode inside the alt screen.
 - **`phux-server-testkit`** — shared scaffolding for `phux-server`'s wire
   integration tests, factored out of a `tests/common` module that used to
   be recompiled once per test binary.
