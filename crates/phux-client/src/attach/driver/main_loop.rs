@@ -489,6 +489,19 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // to carry, so the flag lives here and is pruned with the peer records.
     let mut foreign_attention: std::collections::HashSet<TerminalId> =
         std::collections::HashSet::new();
+    // phux-k0cw.10: the peer sweep owes the first paint its silence. Set here
+    // and consumed at the ONE drain below, so bootstrap sends no peer traffic
+    // until this session has actually painted.
+    //
+    // Why a flag rather than a call at bootstrap: a session switch re-enters
+    // `main_loop` through the same bootstrap, and the server drops every
+    // subscription with the old attach, so a switch rebuilds all of this from
+    // empty. Sweeping before the loop therefore puts N peer GET/SUBSCRIBE
+    // pairs — plus M per-pane pairs once the layouts land — ahead of the
+    // `TERMINAL_SNAPSHOT` burst that produces the first paint, and the switch
+    // pays for the roster's freshness in exactly the moment the roster exists
+    // to make fast. One flag covers both entries because both run this code.
+    let mut peer_sweep_pending = true;
     // phux-foz.8: the deferred window select of a one-step cross-session
     // pick, consumed on the first layout reconcile below. phux-jpqd:
     // `pending_pane` is the DFS leaf ordinal focused after the window
@@ -631,21 +644,21 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
         sessions = list;
         focused_session = Some(focused);
     }
-    // phux-foz.8: fetch each peer session's persisted layout so the window
-    // picker can list foreign windows as one-step jump rows. Fire-and-forget:
-    // replies drain through the recv arm below; a peer with nothing persisted
-    // never replies with a value and simply keeps its fallback row.
-    // phux-k0cw: and SUBSCRIBE, so the roster tracks peers live instead of
-    // showing an attach-time snapshot that silently rots.
-    sync_foreign_layout_subscriptions(
-        conn,
-        &sessions,
-        focused_session,
-        &mut next_request_id,
-        &mut foreign_layout_pending,
-        &mut foreign_layout_subscribed,
-    )
-    .await?;
+    // phux-k0cw.10: the peer sweep belongs HERE in reading order — this is
+    // where the session graph it reads (`sessions` / `focused_session`) has
+    // just been folded from the ATTACHED replay above — but it is issued from
+    // the ONE drain in the recv arm instead, carried there by
+    // `peer_sweep_pending`, so the first paint never queues behind peer
+    // traffic. Both are loop state, so the deferred call sweeps the same graph
+    // a call here would have.
+    //
+    // What it does when it runs, unchanged: phux-foz.8 fetches each peer
+    // session's persisted layout so the window picker can list foreign windows
+    // as one-step jump rows, and phux-k0cw SUBSCRIBEs the same keys so the
+    // roster tracks peers live rather than showing an attach-time snapshot
+    // that silently rots. Fire-and-forget either way — replies drain through
+    // the recv arm, and a peer with nothing persisted never replies with a
+    // value and simply keeps its fallback row.
     // ADR-0033: cache our own ClientId (for the "you hold the wheel" badge) and
     // opt into the agent-event stream so `TerminalControl` broadcasts (lease +
     // lifecycle) reach this client. Server-scoped (`terminal: None`) so we see
@@ -1547,6 +1560,15 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
                         if let Some((list, focused)) = outcome.sessions {
                             sessions = list;
                             focused_session = Some(focused);
+                            // phux-k0cw.10: a graph refresh in the SAME batch
+                            // that satisfies the deferred bootstrap sweep does
+                            // its whole job — same call, same arguments, and
+                            // against a fresher graph. Clear the flag so the
+                            // drain below does not re-send a GET per peer that
+                            // this call already has in flight (the send-once
+                            // `subscribed` set covers the SUBSCRIBE half, but
+                            // nothing dedupes the GET).
+                            peer_sweep_pending = false;
                             sync_foreign_layout_subscriptions(
                                 conn,
                                 &sessions,
@@ -1993,6 +2015,38 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
                                 status_bar.as_ref(),
                                 status_bar_painted,
                             );
+                        }
+                        // phux-k0cw.10: the first paint is behind us, so the
+                        // peer sweep can go out now. Placed after the drain,
+                        // not before it, so the frames it sends never sit
+                        // between a snapshot burst and the paint that burst
+                        // produces.
+                        //
+                        // Conditioned on reaching the drain rather than on
+                        // `drained.level`: a batch that paints nothing still
+                        // means the burst is drained and the loop is idle
+                        // enough to spend, and gating on a paint that a quiet
+                        // attach may never produce would strand the roster
+                        // empty for the whole session. The zones already
+                        // tolerate this arriving late — zone 1 holds at zero
+                        // rows until the first full fold and zone 3 renders
+                        // nothing until a roster entry exists.
+                        //
+                        // The per-pane agent sweep needs no deferral of its
+                        // own: it hangs off the layout replies this sweep
+                        // asks for, so it lands strictly later by
+                        // construction.
+                        if peer_sweep_pending {
+                            peer_sweep_pending = false;
+                            sync_foreign_layout_subscriptions(
+                                conn,
+                                &sessions,
+                                focused_session,
+                                &mut next_request_id,
+                                &mut foreign_layout_pending,
+                                &mut foreign_layout_subscribed,
+                            )
+                            .await?;
                         }
                     }
                     Err(AttachError::Disconnected) if detach_pending => {

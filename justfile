@@ -179,7 +179,7 @@ e2e:
     cargo build -p phux-mcp
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace --run-ignored all \
       --test-threads=1 --retries=2 \
-      -E 'binary_id(phux::run_wait_e2e) + binary_id(phux::agent_record_e2e) + binary_id(phux::spatial_e2e) + binary_id(phux::rec_e2e) + binary_id(phux::resize_e2e) + binary_id(phux::play_e2e) + binary_id(phux::idle_exit_e2e) + binary_id(phux::plugin_agent_bench_e2e) + binary_id(phux::upgrade_e2e) + binary_id(phux::workspace_archive_e2e) + binary_id(phux::failure_ux_e2e) + binary_id(phux::first_five_minutes_e2e)'
+      -E 'binary_id(phux::run_wait_e2e) + binary_id(phux::agent_record_e2e) + binary_id(phux::spatial_e2e) + binary_id(phux::rec_e2e) + binary_id(phux::resize_e2e) + binary_id(phux::play_e2e) + binary_id(phux::idle_exit_e2e) + binary_id(phux::plugin_agent_bench_e2e) + binary_id(phux::upgrade_e2e) + binary_id(phux::workspace_archive_e2e) + binary_id(phux::failure_ux_e2e) + binary_id(phux::first_five_minutes_e2e) + binary_id(phux::fleet_sidebar_e2e)'
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::perf_latency) + binary_id(phux-server::perf_colored_output)'
