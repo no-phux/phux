@@ -9,6 +9,44 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.20.0](https://github.com/phall1/phux/compare/v0.19.0...v0.20.0) (2026-08-16)
+
+
+### Features
+
+* **client:** give sidebar agent rows session identity and add the roster row type ([264cdf3](https://github.com/phall1/phux/commit/264cdf396e229f34d3844d0669a4d2e268b8012a))
+* **client:** keep peer session layout and agent records live ([c5ac7e5](https://github.com/phall1/phux/commit/c5ac7e54b87c95cb50d45351a4c510c50ea84843))
+* **client:** project the cross-session attention queue and session roster ([e9b4972](https://github.com/phall1/phux/commit/e9b49723a6638ad5c4269bab175ec5c70561fb3a))
+* **client:** rebuild the sidebar row model as three zones ([3220fef](https://github.com/phall1/phux/commit/3220fef9567f24f0bb1427247bc7f65b0d278c5d))
+* **config:** turn the sidebar on by default and widen the strip ([b97d7fd](https://github.com/phall1/phux/commit/b97d7fddecec95486f3bbb0ab7b2d1f484f935a7))
+* **release:** make the Linear release report recoverable by hand ([c42578b](https://github.com/phall1/phux/commit/c42578b936e6ab605921a138ea8d1dbaddbd8053))
+* **tui:** unify help with the command finder ([72fca3c](https://github.com/phall1/phux/commit/72fca3ce27d7dc52f71f81fa5ac2dc401015988f))
+
+
+### Bug Fixes
+
+* **agent:** stop the shim pty test inheriting the phux env it tests ([90613b9](https://github.com/phall1/phux/commit/90613b9073a4efe16c6b87538c7bf9f1a599b490))
+* **client:** keep the sidebar open across a session switch ([a73cf31](https://github.com/phall1/phux/commit/a73cf318c978368d7ecbb2bf456d0382facf5d8c))
+* **client:** let the read side name ending when write has peer gone ([#449](https://github.com/phall1/phux/issues/449)) ([d07f7df](https://github.com/phall1/phux/commit/d07f7df60dbd7c905bc4da5a63d14678e0760347))
+* **client:** reflow panes to the content rect at attach ([3e8b65b](https://github.com/phall1/phux/commit/3e8b65b70f1e78a5be6605175ffb3e70cfe8f650))
+* **client:** route peer layout and agent metadata away from local state ([1d04c4b](https://github.com/phall1/phux/commit/1d04c4b91714c96d767a602f819c81179e5fc5b4))
+* **release:** drop the root package-name that silently skipped v0.19.0 ([41c032c](https://github.com/phall1/phux/commit/41c032cac59a3341eb2fa6abeef43c04d18a4c13))
+* **release:** repair the dead integration publish lane and alarm on stuck releases ([5900c69](https://github.com/phall1/phux/commit/5900c6907b5caf83670edfb908f712fd779742dd))
+* **release:** stop the drift check from running blind to draft releases ([59d3c5a](https://github.com/phall1/phux/commit/59d3c5a76d8a2210bfec96b3899f09226e99b60f))
+* **transport:** give the WebSocket lane liveness and make reconnect transport-aware ([#469](https://github.com/phall1/phux/issues/469)) ([d46db0a](https://github.com/phall1/phux/commit/d46db0adaf71271598ab9f103265234a311aa37c))
+
+
+### Refactors
+
+* **client:** make the layout-key owner explicit and clear the lint gate ([8e58f88](https://github.com/phall1/phux/commit/8e58f88bf52032234f783ebd5725c1e11773c901))
+
+
+### Documentation
+
+* correct the ADR-0025 no-shared-core claim and the crate map ([#468](https://github.com/phall1/phux/issues/468)) ([8f06701](https://github.com/phall1/phux/commit/8f0670186afbbe4354844d1a2cdf7e4c59df4875))
+* **protocol:** reconcile published 0.8 reference ([987fbd1](https://github.com/phall1/phux/commit/987fbd1a717932d62276556296e864c19475e59f))
+* **tui:** document the three-zone sidebar and record ADR-0089 ([eb7c180](https://github.com/phall1/phux/commit/eb7c180908883f29614dcdce69693e496ed465bd))
+
 ## [0.19.0](https://github.com/phall1/phux/compare/v0.18.0...v0.19.0) (2026-08-15)
 
 
