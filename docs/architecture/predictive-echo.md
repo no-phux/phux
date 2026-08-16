@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-07-09
+last-reviewed: 2026-08-16
 ---
 
 # Predictive local echo
@@ -10,7 +10,9 @@ last-reviewed: 2026-07-09
 renders a conservative set of likely keystroke results with an underline,
 keeps the libghostty mirror authoritative, and reconciles each prediction when
 real `TERMINAL_OUTPUT` arrives. Contradictions discard the suspect suffix and
-repeated misses temporarily disable prediction.
+repeated misses temporarily hide the overlay. On the alternate screen the
+display is confirmation-gated: nothing paints until the app proves it echoes
+([ADR-0090](../../ADR/0090-confirmation-gated-predictive-echo.md)).
 
 ---
 
@@ -77,10 +79,28 @@ follows authoritative terminal output, not acknowledgements. `FRAME_ACK` exists
 only for `SynthesizedVtStateSync`, after applying its transition; native and
 synthesized-raw streams never send it.
 
-Repeated contradictions trigger adaptive backoff. Prediction pauses after a
-short run of misses and resumes only after clean authoritative confirmations.
-That prevents a modal editor, vi-mode shell, or fast layout transition from
-producing a sustained stream of incorrect local guesses.
+Repeated contradictions turn the display tentative (mosh's term): after a
+short run of misses the overlay hides while predictions keep queueing and
+reconciling silently, and it re-shows only after clean authoritative
+confirmations prove typing has normalized. That prevents a modal editor,
+vi-mode shell, or fast layout transition from painting a sustained stream of
+incorrect local guesses — and because prediction itself never stops, the
+confirmations that lift the lock can actually occur.
+
+## Alternate-screen display policy (ADR-0090)
+
+Full-screen apps split into two populations: those that echo typed text (vim
+insert mode, an agent TUI's prompt) and those that treat keys as commands
+(htop, less, vim normal mode). The client cannot tell them apart from mode
+bits, so it measures: on the alternate screen predictions queue and reconcile
+as usual, but the overlay stays hidden until a reconcile confirms a
+**non-blank insert** against authoritative cells — proof the app echoes.
+Blank confirmations never count (space is page-down in less), any
+contradiction re-locks the display, and mode-changing input (Esc, chords,
+arrows, function keys) kills the evidence. Enter on the alternate screen
+suspends the burst instead of predicting a newline — in a TUI it submits.
+A one-second display TTL on the front-of-queue prediction bounds any
+unconfirmed overlay on either screen.
 
 ## Code map
 

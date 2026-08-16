@@ -1000,22 +1000,25 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
         // `focused_pane` local (server-frame handlers rely on it);
         // either reads the same TerminalId here.
         //
-        // phux-51n6.1: proactive full-screen-app gate. When the focused
-        // pane is on the alternate screen (vim/nvim, a pager, an agent
-        // TUI), a printable key is a command the shell never echoes, so a
-        // speculative insert would paint a ghost the server contradicts.
-        // Predictive echo does nothing for app mode anyway — skip it here
-        // rather than rely on the reactive auto-back-off to clean up after
-        // the ghosts. The keystroke still travels upstream normally below.
+        // ADR-0090: predictions queue on both screens; only *display* is
+        // policy. The predictor learns which screen the pane is on (a
+        // transition drops the queue and the echo evidence) and stamps
+        // each guess with a monotonic clock so the display TTL can expire
+        // an overlay the server never answered. On the alternate screen
+        // the overlay stays hidden until the app proves it echoes (vim
+        // insert mode, an agent TUI's prompt), so non-echoing apps (htop,
+        // less) behave exactly as under the retired binary gate
+        // (phux-51n6.1). The keystroke still travels upstream normally
+        // below.
         if let InputEvent::Key(key_event) = &ev
             && predict.is_enabled()
             && let Some(fid) = ctx.workspace.active_window().and_then(|w| w.focus.as_ref())
             && let Some(terminal) = published_terminal(ctx.engine_kernel, fid)
-            && !terminal_in_alt_screen(terminal)
             && let Some(slot) = panes.get_mut(fid)
         {
             use crate::predict::PredictionOutcome;
-            let outcome = predict.predict_key_with_grid(key_event, |r, c| {
+            predict.set_alt_screen(terminal_in_alt_screen(terminal));
+            let outcome = predict.predict_key_with_grid_at(key_event, predict_now_ms(), |r, c| {
                 slot.renderer
                     .read_grapheme_at(terminal, r, c)
                     .ok()
@@ -1055,8 +1058,11 @@ pub(super) async fn dispatch_input_events<W: super::RenderSink>(
     // keystrokes produces a single positioned write run, not one per
     // event. The overlay is a no-op on an empty queue. Predictions are
     // pane-local; shift them by the focused pane's render origin so a
-    // non-top-left pane echoes over its own cells (phux-7ry0).
-    if predicted_any {
+    // non-top-left pane echoes over its own cells (phux-7ry0). ADR-0090:
+    // the display policy gates the paint — on the alternate screen
+    // without echo evidence (or while tentative / past the TTL) the queue
+    // reconciles silently and nothing is painted.
+    if predicted_any && predict.should_display(predict_now_ms()) {
         let origin = ctx
             .workspace
             .active_window()
@@ -1112,21 +1118,34 @@ fn terminal_alt_scroll(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
     terminal.mode(Mode::ALT_SCROLL).unwrap_or(false)
 }
 
+/// Monotonic milliseconds since the first call, for stamping predictions
+/// and evaluating the ADR-0090 display policy. Process-local epoch: the
+/// absolute value is meaningless, only differences matter, which is all
+/// [`PredictionState::should_display`] needs. Lives here (not in
+/// `phux-client-core`) because `std::time::Instant` is unavailable on the
+/// wasm targets the core also serves.
+pub(super) fn predict_now_ms() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Whether the pane's mirror is on the alternate screen buffer — the
-/// proactive "full-screen app mode" gate for predictive echo (phux-51n6.1).
+/// screen-mode signal for predictive echo's confirmation-gated display
+/// (ADR-0090).
 ///
 /// A pane running vim/nvim, `less`, `htop`, a pager, or an agent TUI (Claude
 /// Code, codex) switches to the alternate screen via DEC private mode `?1049h`
-/// (or the legacy `?1047h` / `?47h`). On the alt screen a printable keystroke
-/// is a *command*, not text the shell echoes — so a speculative local insert
-/// would paint a ghost the server never confirms. Predictive echo is inert in
-/// app mode anyway (the latency win is a shell-prompt phenomenon), so the
-/// correct behaviour is to predict nothing there rather than lean on the
-/// reactive [`PredictionState`] auto-back-off to clean up after up to
-/// `BACKOFF_THRESHOLD` mispredicted ghosts. libghostty tracks each variant
-/// independently and reports it via `terminal.mode()` (verified against a
-/// `?1049h`/`?1047h` probe), the same query path the mouse-tracking and
-fn terminal_in_alt_screen(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
+/// (or the legacy `?1047h` / `?47h`). The driver feeds this into
+/// [`PredictionState::set_alt_screen`], which flips the display policy to
+/// confirmation-gated: predictions still queue and reconcile there, but the
+/// overlay stays hidden until the app proves it echoes. libghostty tracks
+/// each variant independently and reports it via `terminal.mode()` (verified
+/// against a `?1049h`/`?1047h` probe), the same query path the mouse-tracking
+/// and synchronized-output gates use.
+pub(super) fn terminal_in_alt_screen(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
     [
         Mode::ALT_SCREEN_SAVE,
         Mode::ALT_SCREEN,
@@ -7445,21 +7464,22 @@ mod tests {
     }
 
     /// Drive the REAL [`dispatch_input_events`] with one printable keystroke
-    /// against a focused pane, returning how many predictions were queued
-    /// afterward. When `alt_screen` is set, the pane's mirror is switched to
-    /// the alternate screen (`?1049h`) before dispatch, so the phux-51n6.1
-    /// app-mode gate must suppress the prediction.
+    /// against a focused pane, returning the predictor afterward so tests
+    /// can assert on both the queue and the ADR-0090 display policy. When
+    /// `alt_screen` is set, the pane's mirror is switched to the alternate
+    /// screen (`?1049h`) before dispatch, so the keystroke must queue a
+    /// prediction whose display stays confirmation-gated.
     ///
-    /// This exercises the true dispatch-site condition
-    /// (`predict.is_enabled() && ... && !terminal_in_alt_screen(slot)`) end to
-    /// end rather than re-stating it inline — so a refactor that silently drops
-    /// the `&& !terminal_in_alt_screen(slot)` clause turns the alt-screen case
-    /// red instead of passing on a private copy of the predicate.
+    /// This exercises the true dispatch-site behaviour (the
+    /// `predict.set_alt_screen(...)` sync and the timestamped predict call)
+    /// end to end rather than re-stating it inline — so a refactor that
+    /// silently drops the screen-mode sync turns the alt-screen case red
+    /// instead of passing on a private copy of the predicate.
     #[allow(
         clippy::future_not_send,
         reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
     )]
-    async fn predictions_after_key_dispatch(alt_screen: bool) -> usize {
+    async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
         use phux_protocol::input::key::PhysicalKey;
 
         let theme = Theme::default();
@@ -7556,30 +7576,43 @@ mod tests {
         .await
         .expect("dispatch");
 
-        predict.pending_len()
+        predict
     }
 
     /// Cooked shell prompt (main screen): driving the real dispatch path with
-    /// a printable key queues exactly one speculative ghost.
+    /// a printable key queues exactly one speculative ghost, displayable
+    /// immediately (no gate on the primary screen).
     #[tokio::test]
     async fn dispatch_predicts_key_at_cooked_prompt() {
+        let predict = predict_state_after_key_dispatch(false).await;
         assert_eq!(
-            predictions_after_key_dispatch(false).await,
+            predict.pending_len(),
             1,
             "main-screen prompt: the keystroke echoes speculatively"
+        );
+        assert!(
+            predict.should_display(predict_now_ms()),
+            "primary screen displays immediately"
         );
     }
 
     /// Full-screen app (alt screen via `?1049h`, as vim/nvim/less/an agent TUI
-    /// do): the same real dispatch path queues nothing — the app-mode gate
-    /// suppresses the prediction before `predict_key_with_grid` is reached.
-    /// Dropping the `!terminal_in_alt_screen(slot)` clause fails this.
+    /// do): the same real dispatch path queues the prediction — reconcile
+    /// needs it to measure whether the app echoes — but the ADR-0090 display
+    /// policy keeps it hidden until a non-blank echo confirms. Dropping the
+    /// `set_alt_screen` sync at the dispatch site fails this.
     #[tokio::test]
-    async fn dispatch_gates_prediction_in_alt_screen_app() {
+    async fn dispatch_predicts_but_hides_in_alt_screen_app() {
+        let predict = predict_state_after_key_dispatch(true).await;
         assert_eq!(
-            predictions_after_key_dispatch(true).await,
-            0,
-            "alt-screen app: the gate suppresses the ghost, no back-off needed"
+            predict.pending_len(),
+            1,
+            "alt-screen app: the keystroke still queues for reconciliation"
         );
+        assert!(
+            !predict.should_display(predict_now_ms()),
+            "no echo evidence yet — the ghost must not display"
+        );
+        assert!(!predict.echo_confirmed());
     }
 }

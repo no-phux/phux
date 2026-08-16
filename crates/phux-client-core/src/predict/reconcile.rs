@@ -113,6 +113,14 @@ where
         match verdict {
             Verdict::Confirmed => {
                 summary.confirmed += 1;
+                // ADR-0090: only a NON-BLANK insert confirmation is echo
+                // evidence. A confirmed backspace or a confirmed space is
+                // trivially satisfiable by a blank cell in a non-echoing
+                // app (space is page-down in less, pause in htop), so it
+                // must not unlock alt-screen display.
+                if kind == PredictionKind::Insert && predicted != " " {
+                    state.confirm_echo();
+                }
                 let _ = state.pop_front();
             }
             Verdict::Pending => {
@@ -135,11 +143,13 @@ where
         state.set_cursor(cursor_row, cursor_col);
     }
 
-    // Feed this pass into the adaptive auto-back-off heuristic (phux-pxaj):
-    // a run of contradicting passes (vi-mode, a modal app, fast transitions)
-    // auto-suspends predicting; clean productive passes afterward re-arm it.
-    // Done after the cursor resync so a back-off survives the `set_cursor`
-    // above (which would otherwise re-arm an ordinary suspend).
+    // Feed this pass into the adaptive tentative-display heuristic
+    // (phux-pxaj, reshaped by ADR-0090): a run of contradicting passes
+    // (vi-mode, a modal app, fast transitions) hides the overlay; clean
+    // productive passes afterward lift the lock. Predicting itself keeps
+    // running while tentative — a confirmed prediction is the only
+    // re-arm signal, so suspending prediction here would make the lock
+    // permanent.
     state.note_reconcile(summary);
 
     summary
@@ -627,7 +637,7 @@ mod tests {
         assert_eq!(s.cursor(), (0, 4));
     }
 
-    // -- adaptive auto-back-off integration (phux-pxaj) -----------------
+    // -- adaptive tentative display (phux-pxaj, reshaped by ADR-0090) ---
 
     /// Type one char and reconcile against a cell the server painted
     /// differently — a single contradicting per-cell pass driven entirely
@@ -652,57 +662,151 @@ mod tests {
     }
 
     #[test]
-    fn three_contradicting_reconciles_suspend_then_skip() {
+    fn three_contradicting_reconciles_hide_the_overlay() {
         // End-to-end: three contradicting per-cell reconciles via the real
-        // reconcile entry point auto-suspend the predictor. The next
-        // keystroke is then Skipped rather than echoed.
+        // reconcile entry point turn the state tentative. Keystrokes keep
+        // queueing (the lift signal is a confirmed prediction) but the
+        // display policy hides them.
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         contradict_one_insert(&mut s);
         contradict_one_insert(&mut s);
-        assert!(!s.is_suspended(), "two contradictions: still armed");
-        // set_cursor in the helper re-armed an ordinary suspend, but the
-        // third contradiction is what trips the (sticky) back-off.
+        assert!(!s.is_tentative(), "two contradictions: still displaying");
         contradict_one_insert(&mut s);
-        assert!(s.is_suspended(), "three contradictions auto-suspend");
-        assert!(s.is_auto_backed_off());
-        // A keystroke now skips — no ghost echoed.
-        assert_eq!(s.predict_key(&key_text("a")), PredictionOutcome::Skipped);
-        assert_eq!(s.pending_len(), 0);
+        assert!(s.is_tentative(), "three contradictions turn tentative");
+        assert_eq!(s.predict_key(&key_text("a")), PredictionOutcome::Predicted);
+        assert!(!s.should_display(0), "queued but hidden — no ghost painted");
     }
 
     #[test]
-    fn back_off_then_clean_reconciles_re_arm() {
-        // After backing off, two clean productive reconciles lift the
-        // back-off and prediction resumes.
+    fn tentative_then_clean_reconciles_lift_through_the_production_path() {
+        // The lock lifts entirely through the production path: predicting
+        // continues while tentative, so the server confirming two typed
+        // characters is observable by note_reconcile and re-shows the
+        // overlay. (Under the retired predict-suspend model this was
+        // impossible — no predictions meant no confirms, ever.)
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         contradict_one_insert(&mut s);
         contradict_one_insert(&mut s);
         contradict_one_insert(&mut s);
-        assert!(s.is_suspended());
+        assert!(s.is_tentative());
 
-        // While backed off, predict_key is a no-op, so a confirming reconcile
-        // must be fed directly (no queued prediction to confirm via typing).
-        // Simulate the server confirming nothing-contradicted productive work
-        // through the per-cell path: queue is empty, so use note_reconcile via
-        // a confirming pass on a fresh prediction once re-armed is not possible
-        // yet — instead exercise the documented contract: clean productive
-        // passes re-arm. Drive them through the public reconcile by predicting
-        // is blocked, so assert through is_auto_backed_off using direct passes.
-        s.note_reconcile(ReconcileStats {
-            confirmed: 1,
-            contradicted: 0,
-            pending: 0,
-        });
-        assert!(s.is_suspended(), "one clean pass is not enough");
-        s.note_reconcile(ReconcileStats {
-            confirmed: 1,
-            contradicted: 0,
-            pending: 0,
-        });
-        assert!(!s.is_suspended(), "two clean passes re-arm");
-        assert!(!s.is_auto_backed_off());
-
-        // Prediction works again end-to-end.
         confirm_one_insert(&mut s);
+        assert!(s.is_tentative(), "one clean pass is not enough");
+        confirm_one_insert(&mut s);
+        assert!(!s.is_tentative(), "two clean passes lift the lock");
+
+        s.set_cursor(0, 0);
+        s.predict_key(&key_text("a"));
+        assert!(s.should_display(0), "overlay displays again");
+    }
+
+    // -- ADR-0090: confirmation-gated alt-screen display, app by app ----
+
+    #[test]
+    fn alt_screen_echo_confirmation_unlocks_the_pending_suffix() {
+        // An agent TUI / vim insert mode: the app echoes. The first
+        // confirmed non-blank insert is the evidence; the still-pending
+        // tail of the burst becomes displayable at once — the warm-up is
+        // paid once per screen session, not per key.
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.set_alt_screen(true);
+        s.set_cursor(5, 3);
+        for (ch, t) in [("a", 100), ("b", 110), ("c", 120)] {
+            assert_eq!(
+                s.predict_key_at(&key_text(ch), t),
+                PredictionOutcome::Predicted
+            );
+        }
+        assert!(!s.should_display(130), "no evidence yet — hidden");
+        // Server echoes 'a'; 'b' and 'c' still in flight.
+        let summary =
+            reconcile_terminal_output_per_cell(&mut s, 5, 4, row_reader(&[((5, 3), "a")]));
+        assert_eq!(summary.confirmed, 1);
+        assert_eq!(s.pending_len(), 2);
+        assert!(s.should_display(150), "confirmed echo unlocks display");
+        assert_eq!(s.displayable(150).count(), 2, "whole tail displayable");
+    }
+
+    #[test]
+    fn htop_style_silence_never_displays_and_still_reconciles() {
+        // htop: keys act (sort order flips) but nothing echoes — the
+        // anchor cells stay blank forever. Pending is not evidence.
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.set_alt_screen(true);
+        s.set_cursor(3, 7);
+        for (ch, t) in [("j", 100), ("j", 110), ("k", 120)] {
+            s.predict_key_at(&key_text(ch), t);
+        }
+        for now in [130, 500, 5_000] {
+            assert!(!s.should_display(now), "silence must never display");
+        }
+        let summary = reconcile_terminal_output_per_cell(&mut s, 3, 7, row_reader(&[]));
+        assert_eq!(summary.pending, 3, "blank cells leave the queue pending");
+        assert!(!s.should_display(5_000));
+    }
+
+    #[test]
+    fn htop_style_repaint_contradicts_without_ever_displaying() {
+        // htop repaints its meters over the anchor: the guess contradicts.
+        // The queue drops, the latch stays locked, and later keys stay
+        // hidden — the ghost-glyph regression is structurally impossible.
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.set_alt_screen(true);
+        s.set_cursor(0, 0);
+        s.predict_key_at(&key_text("q"), 100);
+        let summary =
+            reconcile_terminal_output_per_cell(&mut s, 0, 0, row_reader(&[((0, 0), "C")]));
+        assert_eq!(summary.contradicted, 1); // "CPU" repaint
+        s.predict_key_at(&key_text("q"), 200);
+        assert!(!s.should_display(210), "contradiction is not evidence");
+    }
+
+    #[test]
+    fn less_style_blank_confirms_never_earn_evidence() {
+        // less: space pages down; the predicted " " matches a blank cell
+        // without any echo happening. It must not unlock display for what
+        // follows.
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.set_alt_screen(true);
+        s.set_cursor(0, 0);
+        s.predict_key_at(&key_text(" "), 100);
+        let summary =
+            reconcile_terminal_output_per_cell(&mut s, 0, 1, row_reader(&[((0, 0), " ")]));
+        assert_eq!(summary.confirmed, 1, "blank confirmed and drained");
+        assert!(!s.echo_confirmed(), "blank confirm is not evidence");
+        s.predict_key_at(&key_text("q"), 200);
+        assert!(!s.should_display(210), "still no evidence — still hidden");
+    }
+
+    #[test]
+    fn vim_contradiction_relocks_the_earned_latch() {
+        // vim insert mode earned the latch; the app then diverges (left
+        // insert mode, prompt redrew) — display re-locks and must be
+        // re-earned before anything shows again.
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.set_alt_screen(true);
+        s.set_cursor(0, 0);
+        s.predict_key_at(&key_text("a"), 100);
+        reconcile_terminal_output_per_cell(&mut s, 0, 1, row_reader(&[((0, 0), "a")]));
+        assert!(s.echo_confirmed(), "evidence earned");
+        s.predict_key_at(&key_text("b"), 200);
+        assert!(s.should_display(210));
+        reconcile_terminal_output_per_cell(&mut s, 0, 1, row_reader(&[((0, 1), "X")]));
+        assert!(!s.echo_confirmed(), "contradiction killed the evidence");
+        s.predict_key_at(&key_text("c"), 300);
+        assert!(!s.should_display(310), "re-earn evidence after divergence");
+    }
+
+    #[test]
+    fn overdue_overlay_recovers_once_authority_catches_up() {
+        // Glitch back-off is a hide, not a kill: when the late echo
+        // finally confirms, fresh guesses display again immediately.
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.set_cursor(0, 0);
+        s.predict_key_at(&key_text("a"), 100);
+        assert!(!s.should_display(2_000), "overdue — hidden");
+        reconcile_terminal_output_per_cell(&mut s, 0, 1, row_reader(&[((0, 0), "a")]));
+        s.predict_key_at(&key_text("b"), 2_500);
+        assert!(s.should_display(2_510), "fresh front displays again");
     }
 }

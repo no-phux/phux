@@ -622,30 +622,33 @@ pub struct ExperimentalCfg {
     /// When `true`, the attach loop dispatches to
     /// `phux_client::attach::run_with_predict_dial` with a
     /// `PredictiveConfig { enabled: true, .. }`. See `phux-9gw.1` for
-    /// the algorithm and `crates/phux-client/src/predict/` for the
+    /// the algorithm and `crates/phux-client-core/src/predict/` for the
     /// implementation.
     ///
-    /// Default `false` (phux-pxaj, re-evaluated phux-51n6.1): predictive
-    /// echo is a shell-prompt latency win and inert in full-screen app mode.
-    /// The client now gates it proactively on the alternate screen — a pane
-    /// running vim/nvim, a pager, or an agent TUI predicts nothing, since a
-    /// keystroke there is a command the shell never echoes (see
-    /// `phux_client::attach`'s `terminal_in_alt_screen`). Two real cases the
-    /// client still cannot gate keep the *default* off, though the opt-in is
-    /// safe to use:
+    /// On the alternate screen (vim/nvim, pagers, agent TUIs) the display
+    /// is confirmation-gated (ADR-0090): predictions queue and reconcile
+    /// but paint nothing until the app proves it echoes (vim insert mode,
+    /// an agent prompt), so non-echoing full-screen apps never show a
+    /// ghost while the ones people type into keep their echo. A display
+    /// timeout additionally expires any unconfirmed overlay after one
+    /// second, on either screen.
     ///
-    /// 1. readline vi command-mode at the prompt (`set -o vi`) is on the main
-    ///    screen with no DEC mode bit to detect it, so normal-mode keys are
-    ///    mispredicted as inserts until the reactive auto-back-off suspends
-    ///    (a brief underlined flicker, then quiet);
+    /// Default `false` (phux-pxaj). Two main-screen cases the client
+    /// cannot detect keep the *default* off, though the opt-in is safe to
+    /// use:
+    ///
+    /// 1. readline vi command-mode at the prompt (`set -o vi`) has no DEC
+    ///    mode bit to detect it, so normal-mode keys are mispredicted as
+    ///    inserts until the reactive tentative lock hides the overlay (a
+    ///    brief underlined flicker, then quiet);
     /// 2. no-echo prompts (`sudo`/`ssh` password) suppress echo via the PTY's
     ///    termios, which the client mirror never sees — so a predicted insert
-    ///    would momentarily render the typed characters locally.
+    ///    momentarily renders the typed characters locally, bounded by the
+    ///    display timeout.
     ///
-    /// Making on-by-default safe needs the mosh mechanisms not yet ported: an
-    /// RTT-adaptive gate (predict only when the round trip is worth hiding —
-    /// over local UDS it is not) and a prediction display-timeout that expires
-    /// unconfirmed ghosts. Until then it is opt-in.
+    /// Making on-by-default safe still wants an RTT-adaptive gate (predict
+    /// only when the round trip is worth hiding — over local UDS it is
+    /// not). Until then it is opt-in.
     ///
     /// Set `true` to engage Mosh-class local echo (the predicted classes are
     /// the conservative mosh-proven subset; a wrong guess is stomped by the

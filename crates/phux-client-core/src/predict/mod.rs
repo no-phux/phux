@@ -110,24 +110,37 @@
 //! as normal; only the local echo is skipped. Follow-up tickets widen
 //! the safe set further once the reconcile path has miles on it.
 //!
-//! ## Full-screen-app gate (client-side, phux-51n6.1)
+//! ## Confirmation-gated alt-screen display (ADR-0090)
 //!
-//! This state machine is terminal-agnostic: it decides *what* is safe to
-//! predict from the keystroke alone, but has no view of the pane's terminal
-//! modes. The attach driver adds a **proactive app-mode gate** in front of
-//! it: when the focused pane is on the alternate screen (`?1049h`/`?1047h`,
-//! as vim/nvim, pagers, and agent TUIs use), the driver does not call
-//! [`PredictionState::predict_key`] at all — a keystroke there is a command
-//! the shell never echoes, so a speculative insert would only paint a ghost
-//! the server contradicts. Predictive echo is a shell-prompt phenomenon; it
-//! does nothing for app mode, so gating there is pure upside. The gate lives
-//! in `phux_client::attach` (`terminal_in_alt_screen`), reading the same
-//! libghostty `terminal.mode()` query the mouse-tracking and
-//! synchronized-output gates use. This is a stronger, cheaper signal than
-//! waiting for the reactive auto-back-off below to notice the mispredict
-//! storm — the two compose: the gate silences full-screen apps up front, and
-//! the back-off still catches main-screen mispredict modes (readline
-//! vi command-mode) the gate cannot see.
+//! On the alternate screen (`?1049h`/`?1047h`, as vim/nvim, pagers, and
+//! agent TUIs use) predictions queue and reconcile as usual but the
+//! overlay is **confirmation-gated**: nothing displays until a reconcile
+//! confirms a non-blank insert against authoritative cells — proof the
+//! app echoes (vim insert mode, an agent TUI's prompt). Apps that never
+//! echo (htop, less, vim normal mode) never display a guess, which is
+//! pixel-identical to the retired binary gate that skipped
+//! [`PredictionState::predict_key`] entirely in app mode (phux-51n6.1) —
+//! while apps people actually type into get their echo back. Mosh's
+//! "tentative until validated" model, collapsed onto the single queue:
+//!
+//! - a contradiction clears the queue *and* re-locks display; evidence is
+//!   re-earned on the next confirmed echo;
+//! - mode-changing input (Esc, chords, arrows, function keys) kills the
+//!   evidence — typing in vim normal mode after Esc can never paint a
+//!   ghost on stale evidence;
+//! - Enter suspends the burst instead of predicting (in a TUI it submits,
+//!   not line-feeds) but keeps the evidence — a submit does not change
+//!   who echoes;
+//! - a front-of-queue prediction older than the display TTL hides the
+//!   overlay until authority catches up (glitch back-off), on either
+//!   screen.
+//!
+//! The driver feeds the screen mode ([`PredictionState::set_alt_screen`],
+//! reading the same libghostty `terminal.mode()` query the mouse-tracking
+//! and synchronized-output gates use), stamps guesses with a monotonic
+//! clock (the `*_at` entry points), and paints via
+//! [`PredictionState::should_display`] /
+//! [`PredictionState::displayable`].
 //!
 //! # Off by default
 //!
@@ -136,8 +149,9 @@
 //! until the feature has miles on it. The TOML `[experimental]
 //! predictive-echo = true` knob is parsed by `phux-config` and converted
 //! into `PredictiveConfig { enabled: true, .. }` by the attach command.
-//! Repeated contradictions trigger adaptive auto-backoff before clean
-//! confirmations re-arm prediction.
+//! Repeated contradictions turn the display tentative (the overlay hides,
+//! prediction continues) until clean confirmations show typing has
+//! normalized.
 //!
 //! # Reconciliation policy
 //!

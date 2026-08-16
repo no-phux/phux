@@ -73,6 +73,13 @@ pub struct Prediction {
     /// Kind of prediction, for reconciliation diagnostics + the
     /// per-class confirm/contradict bookkeeping.
     pub kind: PredictionKind,
+    /// When the guess was queued, in caller-supplied monotonic
+    /// milliseconds (ADR-0090). Feeds the display timeout in
+    /// [`PredictionState::should_display`]. `0` from the timeless entry
+    /// points ([`PredictionState::predict_key`] /
+    /// [`PredictionState::predict_key_with_grid`]) — a zero-queued guess
+    /// never expires under a zero clock.
+    pub queued_at_ms: u64,
 }
 
 /// What the prediction was modelling. The per-cell reconcile path branches
@@ -131,6 +138,12 @@ pub enum PredictionOutcome {
 ///   keeps, or drops predictions cell by cell and resyncs the cursor
 ///   estimate from authoritative state once the queue drains.
 #[derive(Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "suspended / tentative / alt_screen / echo_confirmed are four \
+              independent latches with individually documented set/clear \
+              rules; an enum would cross-product them into unnameable states"
+)]
 pub struct PredictionState {
     cfg: PredictiveConfig,
     /// FIFO of pending predictions. Ordered by issue time so the overlay
@@ -175,8 +188,8 @@ pub struct PredictionState {
     /// split / focus change (phux-7ry0 follow-up). Defaults to `false` (armed).
     suspended: bool,
     /// Consecutive reconcile passes that contradicted a prediction, for
-    /// the adaptive auto-back-off heuristic (phux-pxaj). When this reaches
-    /// [`BACKOFF_THRESHOLD`] the state auto-suspends predicting: vi-mode
+    /// the adaptive back-off heuristic (phux-pxaj). When this reaches
+    /// [`BACKOFF_THRESHOLD`] the state turns [`Self::tentative`]: vi-mode
     /// shells, modal apps, and fast layout transitions all manifest as a
     /// run of contradictions where the server keeps painting cells we did
     /// not predict. Reset to `0` by a clean productive reconcile pass, not
@@ -184,23 +197,34 @@ pub struct PredictionState {
     /// contradiction and must not erase the running tally).
     contradiction_streak: u32,
     /// Consecutive clean productive reconcile passes (something confirmed,
-    /// nothing contradicted) observed *since* an auto-back-off suspend.
-    /// When this reaches [`REARM_THRESHOLD`] the back-off is lifted and
-    /// predicting resumes — typing has normalized. Reset to `0` by any
-    /// contradiction. Like [`Self::contradiction_streak`], it survives
-    /// [`Self::clear`] / [`Self::suspend`].
+    /// nothing contradicted) observed *since* the state turned tentative.
+    /// When this reaches [`REARM_THRESHOLD`] the tentative lock is lifted
+    /// and predictions display again — typing has normalized. Reset to `0`
+    /// by any contradiction. Like [`Self::contradiction_streak`], it
+    /// survives [`Self::clear`] / [`Self::suspend`].
     clean_confirm_streak: u32,
-    /// Distinguishes an auto-back-off suspend ([`Self::note_reconcile`])
-    /// from the re-anchor suspend ([`Self::suspend`]). The re-anchor
-    /// suspend is cleared by the very next authoritative cursor sync
-    /// ([`Self::set_cursor`]); a back-off must *survive* cursor/snapshot
-    /// syncs and only lift via the clean-confirm path, otherwise a single
-    /// reconcile would re-arm predicting straight back into the mispredict
-    /// storm it just backed off from (phux-pxaj).
-    auto_backed_off: bool,
+    /// Mosh's "become tentative" (ADR-0090): the server has been
+    /// contradicting our guesses, so predictions keep queueing and
+    /// reconciling but [`Self::should_display`] hides the overlay until
+    /// [`REARM_THRESHOLD`] clean productive passes prove typing has
+    /// normalized. A *display* lock rather than a predict suspend on
+    /// purpose: the re-arm signal is a confirmed prediction, so predicting
+    /// must continue while tentative or the lock could never lift.
+    tentative: bool,
+    /// ADR-0090: the terminal is on the alternate screen. Flips the
+    /// display policy to confirmation-gated ([`Self::should_display`])
+    /// and the Enter policy to suspend (Enter *submits* in a TUI; the
+    /// row+1 guess is a primary-screen shape).
+    alt_screen: bool,
+    /// ADR-0090: the app has proven it echoes — a non-blank insert
+    /// prediction was confirmed against authoritative output since the
+    /// last screen switch / contradiction / resync. Unlocks alt-screen
+    /// display.
+    echo_confirmed: bool,
 }
 
-/// Consecutive contradicting reconcile passes that trip auto-back-off.
+/// Consecutive contradicting reconcile passes that turn the state
+/// tentative (hide the overlay).
 ///
 /// Hardcoded for this slice; doc-earmarked as a future `PredictiveConfig`
 /// field (alongside the timeout / decoration / RTT knobs noted at
@@ -210,13 +234,22 @@ pub struct PredictionState {
 /// handles cheaply.
 const BACKOFF_THRESHOLD: u32 = 3;
 
-/// Consecutive clean productive reconcile passes that lift auto-back-off.
+/// Consecutive clean productive reconcile passes that lift the tentative
+/// display lock.
 ///
 /// Hardcoded for this slice; future `PredictiveConfig` field. Two clean
 /// productive passes (a prediction confirmed with nothing contradicted)
 /// are required so a single fluke confirm during a mispredict storm does
 /// not prematurely re-arm.
 const REARM_THRESHOLD: u32 = 2;
+
+/// ADR-0090: how long the front prediction may keep the overlay visible
+/// while unconfirmed. Past this the link or the app has stopped
+/// cooperating and the overlay hides (mosh's "glitch" back-off) while the
+/// queue keeps reconciling. Chosen to clear the worst observed cellular
+/// RTT (~400 ms) with margin; the ADR earmarks an SRTT-derived
+/// replacement once the wire exposes an estimate.
+const DISPLAY_TTL_MS: u64 = 1_000;
 
 impl PredictionState {
     /// New state with predictive echo configured per `cfg` and an
@@ -234,7 +267,9 @@ impl PredictionState {
             suspended: false,
             contradiction_streak: 0,
             clean_confirm_streak: 0,
-            auto_backed_off: false,
+            tentative: false,
+            alt_screen: false,
+            echo_confirmed: false,
         }
     }
 
@@ -280,6 +315,24 @@ impl PredictionState {
         // A resize reflows the grid; the typed-input anchor no longer
         // describes the new layout. Forget it (phux-9gw.1.5).
         self.prompt_boundary = None;
+        // ADR-0090: echo evidence gathered at the old geometry (or, via
+        // the pane re-anchor path, on a different pane) is stale too —
+        // re-earn it. Fail-safe is cheap here: one RTT of warm-up.
+        self.echo_confirmed = false;
+    }
+
+    /// ADR-0090: record which screen the terminal is on. A transition
+    /// drops the queue (the anchors belong to the other screen), the
+    /// prompt anchor, and the echo latch (evidence does not carry across
+    /// screens). No-op when the screen has not changed.
+    pub fn set_alt_screen(&mut self, alt: bool) {
+        if alt == self.alt_screen {
+            return;
+        }
+        self.alt_screen = alt;
+        self.pending.clear();
+        self.prompt_boundary = None;
+        self.echo_confirmed = false;
     }
 
     /// Re-anchor the cursor estimate from authoritative state. Called
@@ -306,19 +359,17 @@ impl PredictionState {
         self.cursor_col = col.min(self.cols.saturating_sub(1));
         // An authoritative cursor (snapshot render or output reconcile) means
         // we now know where the focused pane's cursor is — re-arm prediction
-        // if a re-anchor had suspended it. An adaptive auto-back-off suspend
-        // (phux-pxaj) is the exception: it must survive cursor/snapshot syncs
-        // and lift only via the clean-confirm path in
-        // [`Self::note_reconcile`], otherwise a single reconcile would re-arm
-        // predicting straight back into the mispredict storm it backed off
-        // from.
-        if !self.auto_backed_off {
-            self.suspended = false;
-        }
+        // if a re-anchor (or an alt-screen Enter, ADR-0090) had suspended
+        // it. The tentative display lock (phux-pxaj) is deliberately NOT
+        // touched: it lifts only via the clean-confirm path in
+        // [`Self::note_reconcile`], otherwise a single reconcile would
+        // re-show the overlay straight back into the mispredict storm it
+        // just hid from.
+        self.suspended = false;
     }
 
     /// Feed the outcome of one per-cell reconcile pass into the adaptive
-    /// auto-back-off heuristic (phux-pxaj).
+    /// tentative-display heuristic (phux-pxaj, reshaped by ADR-0090).
     ///
     /// Predictive echo mispredicts hard in a few recurring modes: vi-mode
     /// shells (normal-mode `h`/`j`/`k`/`l`/`x` are commands, not inserts),
@@ -326,12 +377,16 @@ impl PredictionState {
     /// manifests the same way — the server keeps *contradicting* what we
     /// predicted. This heuristic watches the contradiction rate and:
     ///
-    /// - after `BACKOFF_THRESHOLD` consecutive contradicting passes,
-    ///   auto-suspends predicting (drops the queue, stops echoing) so the
-    ///   user stops seeing ghosts the server immediately overwrites;
+    /// - after `BACKOFF_THRESHOLD` consecutive contradicting passes, turns
+    ///   the state tentative (drops the queued ghosts and hides the
+    ///   overlay via [`Self::should_display`]) so the user stops seeing
+    ///   guesses the server immediately overwrites;
     /// - after `REARM_THRESHOLD` consecutive *clean productive* passes
-    ///   (something confirmed, nothing contradicted) following a back-off,
-    ///   lifts the suspend and resumes — typing has normalized.
+    ///   (something confirmed, nothing contradicted) while tentative,
+    ///   lifts the lock and the overlay displays again — typing has
+    ///   normalized. Predicting itself never stops while tentative: the
+    ///   re-arm signal *is* a confirmed prediction, so suspending
+    ///   prediction here would make the lock permanent.
     ///
     /// A pass is classified from `stats`:
     /// - `contradicted > 0` ⇒ a contradicting pass (regardless of any
@@ -340,26 +395,25 @@ impl PredictionState {
     /// - `contradicted == 0 && confirmed > 0` ⇒ a clean productive pass;
     /// - `confirmed == 0 && contradicted == 0` (only pendings, or an empty
     ///   queue) ⇒ **neutral** — leaves both streaks untouched so a quiet
-    ///   link neither trips nor lifts the back-off.
+    ///   link neither trips nor lifts the lock.
     ///
     /// Called from [`super::reconcile_terminal_output_per_cell`] just before
-    /// it returns, so every per-cell reconcile caller gets back-off for
-    /// free.
+    /// it returns, so every per-cell reconcile caller gets the heuristic
+    /// for free.
     pub fn note_reconcile(&mut self, stats: ReconcileStats) {
         if stats.contradicted > 0 {
             self.contradiction_streak = self.contradiction_streak.saturating_add(1);
             self.clean_confirm_streak = 0;
             if self.contradiction_streak >= BACKOFF_THRESHOLD {
-                self.auto_suspend();
+                self.enter_tentative();
             }
         } else if stats.confirmed > 0 {
             // Clean productive pass.
             self.contradiction_streak = 0;
             self.clean_confirm_streak = self.clean_confirm_streak.saturating_add(1);
-            if self.auto_backed_off && self.clean_confirm_streak >= REARM_THRESHOLD {
-                // Typing normalized — lift the back-off and re-arm.
-                self.auto_backed_off = false;
-                self.suspended = false;
+            if self.tentative && self.clean_confirm_streak >= REARM_THRESHOLD {
+                // Typing normalized — lift the lock and display again.
+                self.tentative = false;
                 self.clean_confirm_streak = 0;
             }
         }
@@ -367,26 +421,27 @@ impl PredictionState {
         // both streaks alone.
     }
 
-    /// Suspend predicting because the server has been contradicting our
-    /// guesses (phux-pxaj). Unlike the re-anchor [`Self::suspend`], this
-    /// sets [`Self::auto_backed_off`] so the suspend survives authoritative
-    /// cursor syncs and only lifts via the clean-confirm path in
-    /// [`Self::note_reconcile`].
-    fn auto_suspend(&mut self) {
+    /// Hide the overlay because the server has been contradicting our
+    /// guesses (phux-pxaj). Mosh's "become tentative" (ADR-0090): the
+    /// queued ghosts drop, [`Self::should_display`] goes dark, but
+    /// predicting and reconciling continue so the clean-confirm path in
+    /// [`Self::note_reconcile`] can observe typing normalizing and lift
+    /// the lock. It survives authoritative cursor syncs for the same
+    /// reason the streaks do.
+    fn enter_tentative(&mut self) {
         self.pending.clear();
         self.prompt_boundary = None;
-        self.suspended = true;
-        self.auto_backed_off = true;
+        self.tentative = true;
         // Start counting clean passes afresh for the re-arm decision.
         self.clean_confirm_streak = 0;
     }
 
-    /// Whether predicting is currently suspended by adaptive auto-back-off
-    /// (phux-pxaj), as opposed to the re-anchor suspend. Exposed for
+    /// Whether the overlay is currently hidden by the adaptive tentative
+    /// lock (phux-pxaj), as opposed to the re-anchor suspend. Exposed for
     /// diagnostics and tests.
     #[must_use]
-    pub const fn is_auto_backed_off(&self) -> bool {
-        self.auto_backed_off
+    pub const fn is_tentative(&self) -> bool {
+        self.tentative
     }
 
     /// Number of predictions waiting for confirmation.
@@ -402,9 +457,66 @@ impl PredictionState {
         (self.cursor_row, self.cursor_col)
     }
 
-    /// Read-only access to the pending queue (used by the overlay).
+    /// Read-only access to the pending queue. Reconciliation always walks
+    /// the full queue; renderers painting an overlay should use
+    /// [`Self::displayable`] instead so the ADR-0090 display policy
+    /// applies.
     pub fn pending(&self) -> impl Iterator<Item = &Prediction> {
         self.pending.iter()
+    }
+
+    /// ADR-0090: the predictions the renderer may PAINT right now —
+    /// [`Self::pending`] filtered by the display policy
+    /// ([`Self::should_display`]). All-or-nothing: either the whole queue
+    /// is presentable or none of it is.
+    pub fn displayable(&self, now_ms: u64) -> impl Iterator<Item = &Prediction> {
+        let show = self.should_display(now_ms);
+        self.pending.iter().filter(move |_| show)
+    }
+
+    /// ADR-0090: whether the overlay should be presented at all. Mosh's
+    /// tentative-display model, collapsed onto the single queue:
+    ///
+    /// - nothing pending ⇒ nothing to show;
+    /// - the adaptive tentative lock is on ([`Self::note_reconcile`]) ⇒
+    ///   hidden until clean confirms lift it;
+    /// - on the alternate screen without echo evidence
+    ///   ([`Self::echo_confirmed`]) ⇒ hidden — a full-screen app that
+    ///   never echoes (htop, less, vim normal mode) must never paint a
+    ///   guess;
+    /// - a front prediction older than `DISPLAY_TTL_MS` ⇒ hidden until
+    ///   authority catches up (glitch back-off).
+    ///
+    /// `now_ms` is the caller's monotonic clock, the same one stamped
+    /// onto guesses via the `*_at` predict entry points.
+    #[must_use]
+    pub fn should_display(&self, now_ms: u64) -> bool {
+        let Some(front) = self.pending.front() else {
+            return false;
+        };
+        if self.tentative {
+            return false;
+        }
+        if self.alt_screen && !self.echo_confirmed {
+            return false;
+        }
+        now_ms.saturating_sub(front.queued_at_ms) <= DISPLAY_TTL_MS
+    }
+
+    /// ADR-0090: whether the app has proven it echoes since the last
+    /// screen switch / contradiction / resync. Exposed for diagnostics
+    /// and tests.
+    #[must_use]
+    pub const fn echo_confirmed(&self) -> bool {
+        self.echo_confirmed
+    }
+
+    /// ADR-0090: record echo evidence — the reconcile path confirmed a
+    /// non-blank insert against authoritative output, proving the app
+    /// echoes. Unlocks alt-screen display until the evidence is
+    /// invalidated (contradiction, screen switch, resize, resync).
+    pub(crate) const fn confirm_echo(&mut self) {
+        self.echo_confirmed = true;
     }
 
     /// Drop every pending prediction. Called by the reconcile path.
@@ -413,9 +525,12 @@ impl PredictionState {
     /// guesses: the queue suffix is suspect, so the typed-input anchor we
     /// derived from those guesses is suspect too. Forget it rather than
     /// erase to a column the server may not agree with (phux-9gw.1.5).
+    /// ADR-0090: callers also clear on snapshot replay / resync — the echo
+    /// evidence predates the replay, so it is re-earned too.
     pub fn clear(&mut self) {
         self.pending.clear();
         self.prompt_boundary = None;
+        self.echo_confirmed = false;
     }
 
     /// Current prompt-boundary anchor `(row, col)`, if known for the
@@ -458,9 +573,17 @@ impl PredictionState {
     /// [`PhysicalKey::ArrowRight`]) require a peek at the cell grid so
     /// the predict layer knows the width of the grapheme being stepped
     /// over; they are routed through [`Self::predict_key_with_grid`].
-    /// This entry point skips arrows.
+    /// This entry point skips arrows. Timeless (`now_ms = 0`): guesses
+    /// queued through it never hit the display TTL under a zero clock.
     pub fn predict_key(&mut self, event: &KeyEvent) -> PredictionOutcome {
-        self.predict_key_with_grid(event, |_, _| None)
+        self.predict_key_with_grid_at(event, 0, |_, _| None)
+    }
+
+    /// [`Self::predict_key`] with a caller-supplied monotonic clock so
+    /// the ADR-0090 display timeout can be evaluated against the guess's
+    /// age.
+    pub fn predict_key_at(&mut self, event: &KeyEvent, now_ms: u64) -> PredictionOutcome {
+        self.predict_key_with_grid_at(event, now_ms, |_, _| None)
     }
 
     /// Same as [`Self::predict_key`] but with a read closure into the
@@ -470,10 +593,23 @@ impl PredictionState {
     ///
     /// The closure is invoked at most once per call, only when a
     /// cursor-motion arrow needs to know the width of the grapheme it
-    /// would step over.
-    pub fn predict_key_with_grid<F>(
+    /// would step over. Timeless (`now_ms = 0`), like
+    /// [`Self::predict_key`].
+    pub fn predict_key_with_grid<F>(&mut self, event: &KeyEvent, read_cell: F) -> PredictionOutcome
+    where
+        F: FnMut(u16, u16) -> Option<char>,
+    {
+        self.predict_key_with_grid_at(event, 0, read_cell)
+    }
+
+    /// [`Self::predict_key_with_grid`] with a caller-supplied monotonic
+    /// clock (ADR-0090). The clock stamps each queued guess so
+    /// [`Self::should_display`] can expire an overlay the server never
+    /// answered.
+    pub fn predict_key_with_grid_at<F>(
         &mut self,
         event: &KeyEvent,
+        now_ms: u64,
         mut read_cell: F,
     ) -> PredictionOutcome
     where
@@ -482,15 +618,26 @@ impl PredictionState {
         if !self.cfg.enabled {
             return PredictionOutcome::Disabled;
         }
+        // Reject any non-Press action — repeats and releases produce
+        // their own server-side echo path we don't model yet.
+        if !matches!(event.action, phux_protocol::input::key::KeyAction::Press) {
+            return PredictionOutcome::Skipped;
+        }
+        // ADR-0090: on the alternate screen, mode-changing input kills
+        // the echo evidence and the burst — Esc is exactly how vim
+        // leaves insert mode, and chords / arrows / function keys are
+        // app commands, so typing after one of them can never paint a
+        // ghost on stale evidence. Checked before the suspended guard so
+        // the latch dies even while a burst is suspended.
+        if self.alt_screen && is_mode_changing_input(event) {
+            self.suspend();
+            self.echo_confirmed = false;
+            return PredictionOutcome::Skipped;
+        }
         // Suspended after a re-anchor to a pane with no known cursor: predict
         // nothing until an authoritative cursor sync re-arms us, so a fast
         // keystroke after a split can't echo a ghost at the guessed (0, 0).
         if self.suspended {
-            return PredictionOutcome::Skipped;
-        }
-        // Reject any non-Press action — repeats and releases produce
-        // their own server-side echo path we don't model yet.
-        if !matches!(event.action, phux_protocol::input::key::KeyAction::Press) {
             return PredictionOutcome::Skipped;
         }
         // Ctrl-U (kill-to-start-of-line) is the one CTRL chord we predict
@@ -498,9 +645,10 @@ impl PredictionState {
         // the generic command-modifier reject below. We only predict it
         // when the prompt boundary is known for the current row — the
         // full-line erase is exactly the case that risks eating the
-        // prompt, so an unknown boundary means refuse.
+        // prompt, so an unknown boundary means refuse. On the alternate
+        // screen it never reaches here (mode-changing input above).
         if event.key == PhysicalKey::U && event.mods == ModSet::CTRL {
-            return self.predict_kill_to_boundary();
+            return self.predict_kill_to_boundary(now_ms);
         }
         // Reject keystrokes with any "command-y" modifier active. SHIFT
         // is OK because it's already baked into `text` for letters.
@@ -510,16 +658,27 @@ impl PredictionState {
         }
 
         if event.key == PhysicalKey::Backspace {
-            return self.predict_backspace_eol();
+            return self.predict_backspace_eol(now_ms);
         }
         if event.key == PhysicalKey::Enter {
-            return self.predict_enter();
+            // ADR-0090: on the alternate screen Enter is a SUBMIT
+            // (Claude Code sends the prompt, vim executes), not a line
+            // feed — the row+1/col-0 guess would anchor the rest of the
+            // burst wrong. Suspend instead; the next authoritative
+            // cursor sync re-arms. The echo latch survives: a submit
+            // does not change who echoes (an agent TUI's prompt keeps
+            // echoing the next message).
+            if self.alt_screen {
+                self.suspend();
+                return PredictionOutcome::Skipped;
+            }
+            return self.predict_enter(now_ms);
         }
         if event.key == PhysicalKey::ArrowLeft {
-            return self.predict_arrow_left(&mut read_cell);
+            return self.predict_arrow_left(&mut read_cell, now_ms);
         }
         if event.key == PhysicalKey::ArrowRight {
-            return self.predict_arrow_right(&mut read_cell);
+            return self.predict_arrow_right(&mut read_cell, now_ms);
         }
 
         // Printable insert. The `text` payload is one grapheme cluster in
@@ -543,7 +702,7 @@ impl PredictionState {
         let Some(width) = cluster_width(cluster) else {
             return PredictionOutcome::Skipped;
         };
-        self.predict_insert(cluster, width)
+        self.predict_insert(cluster, width, now_ms)
     }
 
     /// Predict an Enter keystroke as a cursor jump to `(row+1, 0)`.
@@ -560,7 +719,7 @@ impl PredictionState {
     /// Refuses to predict at the last row (would need to model scroll)
     /// or at column 0 (would need to know whether the shell discards a
     /// bare Enter or echoes a fresh prompt).
-    fn predict_enter(&mut self) -> PredictionOutcome {
+    fn predict_enter(&mut self, now_ms: u64) -> PredictionOutcome {
         if self.cursor_col == 0 {
             return PredictionOutcome::Skipped;
         }
@@ -574,6 +733,7 @@ impl PredictionState {
             text: "\n".to_owned(),
             width: 0,
             kind: PredictionKind::Newline,
+            queued_at_ms: now_ms,
         });
         // Advance the cursor estimate so subsequent inserts queue on the
         // next row at column 0. The next line is a new input context, so
@@ -585,7 +745,7 @@ impl PredictionState {
         PredictionOutcome::Predicted
     }
 
-    fn predict_insert(&mut self, cluster: &str, width: u8) -> PredictionOutcome {
+    fn predict_insert(&mut self, cluster: &str, width: u8, now_ms: u64) -> PredictionOutcome {
         if self.cols == 0 || self.rows == 0 || self.cursor_row >= self.rows {
             return PredictionOutcome::Skipped;
         }
@@ -618,12 +778,13 @@ impl PredictionState {
             text: cluster.to_owned(),
             width,
             kind: PredictionKind::Insert,
+            queued_at_ms: now_ms,
         });
         self.cursor_col = end_col;
         PredictionOutcome::Predicted
     }
 
-    fn predict_backspace_eol(&mut self) -> PredictionOutcome {
+    fn predict_backspace_eol(&mut self, now_ms: u64) -> PredictionOutcome {
         // Backspace at column 0 is "move to end of previous line" on most
         // shells (or no-op). We refuse to guess either way.
         if self.cursor_col == 0 {
@@ -652,6 +813,7 @@ impl PredictionState {
             text: " ".to_owned(),
             width: 1,
             kind: PredictionKind::BackspaceEol,
+            queued_at_ms: now_ms,
         });
         self.cursor_col = new_col;
         PredictionOutcome::Predicted
@@ -680,7 +842,7 @@ impl PredictionState {
     /// kill from the cursor backwards). We predict the conservative
     /// "erase the typed run we know about" subset; the per-cell reconcile
     /// drops any cell the server disagrees with.
-    fn predict_kill_to_boundary(&mut self) -> PredictionOutcome {
+    fn predict_kill_to_boundary(&mut self, now_ms: u64) -> PredictionOutcome {
         if self.rows == 0 || self.cursor_row >= self.rows {
             return PredictionOutcome::Skipped;
         }
@@ -702,6 +864,7 @@ impl PredictionState {
                 text: " ".to_owned(),
                 width: 1,
                 kind: PredictionKind::BackspaceEol,
+                queued_at_ms: now_ms,
             });
         }
         self.cursor_col = bcol;
@@ -715,7 +878,7 @@ impl PredictionState {
     /// cell width; if the cell is blank we refuse to predict — we have
     /// no anchor to know whether the cursor would land on the prompt,
     /// on a wide grapheme's tail, or on blank text. Refuses at column 0.
-    fn predict_arrow_left<F>(&mut self, read_cell: &mut F) -> PredictionOutcome
+    fn predict_arrow_left<F>(&mut self, read_cell: &mut F, now_ms: u64) -> PredictionOutcome
     where
         F: FnMut(u16, u16) -> Option<char>,
     {
@@ -752,6 +915,7 @@ impl PredictionState {
             text: " ".to_owned(),
             width: 0,
             kind: PredictionKind::CursorLeft,
+            queued_at_ms: now_ms,
         });
         self.cursor_col = new_col;
         PredictionOutcome::Predicted
@@ -762,7 +926,7 @@ impl PredictionState {
     /// Reads the cell at the predict cursor. If that cell has a known
     /// grapheme we advance by its cell width; blank → refuse. Refuses
     /// past the right edge.
-    fn predict_arrow_right<F>(&mut self, read_cell: &mut F) -> PredictionOutcome
+    fn predict_arrow_right<F>(&mut self, read_cell: &mut F, now_ms: u64) -> PredictionOutcome
     where
         F: FnMut(u16, u16) -> Option<char>,
     {
@@ -794,9 +958,37 @@ impl PredictionState {
             text: " ".to_owned(),
             width: 0,
             kind: PredictionKind::CursorRight,
+            queued_at_ms: now_ms,
         });
         self.cursor_col = new_col;
         PredictionOutcome::Predicted
+    }
+}
+
+/// ADR-0090: whether, on the alternate screen, this key event is
+/// mode-changing input — anything that could move the app out of the
+/// echoing state the confirmation latch measured. Esc is exactly how vim
+/// leaves insert mode; Ctrl / Alt / Super chords, arrows, Tab, and
+/// function keys are app commands. Backspace and Enter are excluded
+/// because they carry dedicated alt-screen policies (Backspace predicts,
+/// display-gated; Enter suspends the burst but keeps the latch — a
+/// submit does not change who echoes). Plain printable text is never
+/// mode-changing.
+fn is_mode_changing_input(event: &KeyEvent) -> bool {
+    if matches!(event.key, PhysicalKey::Backspace | PhysicalKey::Enter) {
+        return false;
+    }
+    if event
+        .mods
+        .intersects(ModSet::CTRL | ModSet::ALT | ModSet::SUPER)
+    {
+        return true;
+    }
+    match event.text.as_deref() {
+        // A named key with no text payload: Esc, an arrow, a function
+        // key, Home/End — commands, all of them.
+        None | Some("") => true,
+        Some(text) => text.chars().next().is_some_and(char::is_control),
     }
 }
 
@@ -1510,7 +1702,7 @@ mod tests {
         assert_eq!(s.predict_key(&ev), PredictionOutcome::Skipped);
     }
 
-    // ---- phux-pxaj: adaptive auto-back-off ----------------------------
+    // ---- phux-pxaj (reshaped by ADR-0090): adaptive tentative display -
 
     fn contradicting_pass() -> ReconcileStats {
         ReconcileStats {
@@ -1537,27 +1729,31 @@ mod tests {
     }
 
     #[test]
-    fn three_contradictions_in_a_row_auto_back_off() {
+    fn three_contradictions_in_a_row_turn_tentative() {
         // The mispredict-storm signal: three consecutive contradicting
         // reconcile passes (vi normal-mode, a modal app, fast transitions)
-        // trip the back-off. Two are not enough.
+        // hide the overlay. Two are not enough.
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         s.note_reconcile(contradicting_pass());
         s.note_reconcile(contradicting_pass());
-        assert!(!s.is_suspended(), "two contradictions: not yet backed off");
-        assert!(!s.is_auto_backed_off());
+        assert!(!s.is_tentative(), "two contradictions: not yet tentative");
         s.note_reconcile(contradicting_pass());
-        assert!(s.is_suspended(), "third contradiction trips the back-off");
-        assert!(s.is_auto_backed_off());
-        // While backed off, predict_key is a no-op.
-        assert_eq!(s.predict_key(&key_text("a")), PredictionOutcome::Skipped);
-        assert_eq!(s.pending_len(), 0);
+        assert!(s.is_tentative(), "third contradiction trips the lock");
+        assert!(
+            !s.is_suspended(),
+            "tentative is a display lock, not a predict suspend"
+        );
+        // Predicting continues (the re-arm signal is a confirmed
+        // prediction) but nothing displays.
+        assert_eq!(s.predict_key(&key_text("a")), PredictionOutcome::Predicted);
+        assert_eq!(s.pending_len(), 1);
+        assert!(!s.should_display(0), "tentative hides the overlay");
     }
 
     #[test]
-    fn auto_back_off_drops_pending_queue() {
-        // The back-off must drop in-flight predictions, like the re-anchor
-        // suspend — they are exactly the ghosts the server is contradicting.
+    fn turning_tentative_drops_the_pending_queue() {
+        // The lock must drop in-flight predictions — they are exactly the
+        // ghosts the server is contradicting.
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         s.predict_key(&key_text("h"));
         s.predict_key(&key_text("i"));
@@ -1565,55 +1761,50 @@ mod tests {
         for _ in 0..BACKOFF_THRESHOLD {
             s.note_reconcile(contradicting_pass());
         }
-        assert!(s.is_auto_backed_off());
-        assert_eq!(s.pending_len(), 0, "back-off drops the queue");
+        assert!(s.is_tentative());
+        assert_eq!(s.pending_len(), 0, "turning tentative drops the queue");
     }
 
     #[test]
-    fn back_off_survives_set_cursor() {
+    fn tentative_survives_set_cursor() {
         // The re-anchor suspend is cleared by the next authoritative cursor
-        // sync; an auto-back-off must NOT be — otherwise a single reconcile
-        // would re-arm straight back into the mispredict storm.
+        // sync; the tentative lock must NOT be — otherwise a single
+        // reconcile would re-show the overlay straight back into the
+        // mispredict storm.
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         for _ in 0..BACKOFF_THRESHOLD {
             s.note_reconcile(contradicting_pass());
         }
-        assert!(s.is_suspended());
-        assert!(s.is_auto_backed_off());
+        assert!(s.is_tentative());
         s.set_cursor(2, 4);
-        assert!(s.is_suspended(), "back-off survives a cursor sync");
-        assert!(s.is_auto_backed_off());
-        assert_eq!(s.predict_key(&key_text("a")), PredictionOutcome::Skipped);
+        assert!(s.is_tentative(), "tentative survives a cursor sync");
+        s.predict_key(&key_text("a"));
+        assert!(!s.should_display(0), "still hidden after the sync");
     }
 
     #[test]
-    fn two_clean_confirms_re_arm_after_back_off() {
+    fn two_clean_confirms_lift_the_tentative_lock() {
         // Once typing normalizes — two consecutive clean productive passes —
-        // the back-off lifts and prediction resumes.
+        // the lock lifts and the overlay displays again.
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         for _ in 0..BACKOFF_THRESHOLD {
             s.note_reconcile(contradicting_pass());
         }
-        assert!(s.is_auto_backed_off());
+        assert!(s.is_tentative());
         s.note_reconcile(clean_productive_pass());
-        assert!(
-            s.is_suspended(),
-            "one clean confirm is not enough to re-arm"
-        );
-        assert!(s.is_auto_backed_off());
+        assert!(s.is_tentative(), "one clean confirm is not enough");
         s.note_reconcile(clean_productive_pass());
-        assert!(!s.is_suspended(), "two clean confirms re-arm");
-        assert!(!s.is_auto_backed_off());
-        // A cursor sync provides an anchor, then prediction works again.
+        assert!(!s.is_tentative(), "two clean confirms lift the lock");
         s.set_cursor(0, 0);
         assert_eq!(s.predict_key(&key_text("a")), PredictionOutcome::Predicted);
+        assert!(s.should_display(0), "overlay displays again");
     }
 
     #[test]
     fn a_contradiction_resets_the_clean_confirm_streak() {
-        // A fluke clean confirm mid-storm must not count toward re-arm: a
+        // A fluke clean confirm mid-storm must not count toward the lift: a
         // following contradiction resets the clean streak, so it takes two
-        // *consecutive* clean passes to lift.
+        // *consecutive* clean passes.
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         for _ in 0..BACKOFF_THRESHOLD {
             s.note_reconcile(contradicting_pass());
@@ -1621,15 +1812,15 @@ mod tests {
         s.note_reconcile(clean_productive_pass()); // clean streak = 1
         s.note_reconcile(contradicting_pass()); // resets clean streak
         s.note_reconcile(clean_productive_pass()); // clean streak = 1 again
-        assert!(s.is_suspended(), "still backed off: not two in a row");
+        assert!(s.is_tentative(), "still locked: not two in a row");
         s.note_reconcile(clean_productive_pass()); // clean streak = 2
-        assert!(!s.is_suspended(), "now two in a row → re-armed");
+        assert!(!s.is_tentative(), "now two in a row → lifted");
     }
 
     #[test]
     fn empty_passes_do_not_move_streaks() {
         // Neutral passes (only pendings, or an empty queue) must not trip
-        // the back-off nor lift it. Two contradictions then a run of neutral
+        // the lock nor lift it. Two contradictions then a run of neutral
         // passes then a third contradiction still trips: the contradiction
         // streak is preserved across the neutral passes.
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
@@ -1638,16 +1829,16 @@ mod tests {
         for _ in 0..5 {
             s.note_reconcile(neutral_pass());
         }
-        assert!(!s.is_suspended(), "neutral passes do not trip back-off");
+        assert!(!s.is_tentative(), "neutral passes do not trip the lock");
         s.note_reconcile(contradicting_pass());
         assert!(
-            s.is_suspended(),
+            s.is_tentative(),
             "contradiction streak survived neutral passes"
         );
     }
 
     #[test]
-    fn neutral_passes_do_not_re_arm_during_back_off() {
+    fn neutral_passes_do_not_lift_the_tentative_lock() {
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         for _ in 0..BACKOFF_THRESHOLD {
             s.note_reconcile(contradicting_pass());
@@ -1657,40 +1848,36 @@ mod tests {
             s.note_reconcile(neutral_pass());
         }
         // Neutral passes left the clean streak at 1; one more clean confirm
-        // reaches the threshold of 2 and re-arms.
-        assert!(s.is_suspended(), "neutral passes do not advance re-arm");
+        // reaches the threshold of 2 and lifts the lock.
+        assert!(s.is_tentative(), "neutral passes do not advance the lift");
         s.note_reconcile(clean_productive_pass());
-        assert!(!s.is_suspended());
+        assert!(!s.is_tentative());
     }
 
     #[test]
-    fn intermittent_contradictions_do_not_trip_back_off() {
+    fn intermittent_contradictions_do_not_trip_the_lock() {
         // A single contradiction broken up by clean confirms is the normal
-        // wrong-guess-then-correct rhythm — it must not back off.
+        // wrong-guess-then-correct rhythm — it must not lock.
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         for _ in 0..6 {
             s.note_reconcile(contradicting_pass());
             s.note_reconcile(clean_productive_pass());
         }
         assert!(
-            !s.is_suspended(),
+            !s.is_tentative(),
             "isolated contradictions never accumulate"
         );
-        assert!(!s.is_auto_backed_off());
     }
 
     #[test]
-    fn reanchor_suspend_is_independent_of_auto_back_off() {
-        // The re-anchor suspend() leaves auto_backed_off untouched, so a
-        // single set_cursor re-arms it (the phux-cdvr behaviour), unlike a
-        // back-off.
+    fn reanchor_suspend_is_independent_of_the_tentative_lock() {
+        // The re-anchor suspend() leaves the tentative lock untouched, so a
+        // single set_cursor re-arms it (the phux-cdvr behaviour), unlike
+        // the lock.
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         s.suspend();
         assert!(s.is_suspended());
-        assert!(
-            !s.is_auto_backed_off(),
-            "re-anchor suspend is not a back-off"
-        );
+        assert!(!s.is_tentative(), "re-anchor suspend is not the lock");
         s.set_cursor(1, 1);
         assert!(!s.is_suspended(), "re-anchor suspend clears on cursor sync");
     }
@@ -1698,7 +1885,7 @@ mod tests {
     #[test]
     fn confirmed_with_contradiction_in_same_pass_counts_as_contradiction() {
         // A pass that confirmed a prefix but contradicted the suffix means
-        // we still guessed wrong — it counts toward back-off, not re-arm.
+        // we still guessed wrong — it counts toward the lock, not the lift.
         let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
         let mixed = ReconcileStats {
             confirmed: 2,
@@ -1707,11 +1894,252 @@ mod tests {
         };
         s.note_reconcile(mixed);
         s.note_reconcile(mixed);
-        assert!(!s.is_suspended());
+        assert!(!s.is_tentative());
         s.note_reconcile(mixed);
         assert!(
-            s.is_suspended(),
+            s.is_tentative(),
             "contradicted>0 trips regardless of confirms"
         );
+    }
+
+    // ---- ADR-0090: confirmation-gated alt-screen display --------------
+
+    fn alt_state() -> PredictionState {
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.set_alt_screen(true);
+        s
+    }
+
+    fn key_esc() -> KeyEvent {
+        key_named(PhysicalKey::Escape, ModSet::empty())
+    }
+
+    #[test]
+    fn alt_screen_queues_but_hides_until_echo_confirms() {
+        let mut s = alt_state();
+        s.set_cursor(5, 3);
+        assert_eq!(
+            s.predict_key_at(&key_text("h"), 100),
+            PredictionOutcome::Predicted,
+            "alt screen predicts as usual — only display is gated"
+        );
+        assert_eq!(s.pending_len(), 1);
+        assert!(!s.should_display(110), "no echo evidence yet — hidden");
+        assert_eq!(s.displayable(110).count(), 0);
+        // The app echoes: evidence lands via the reconcile path.
+        s.confirm_echo();
+        assert!(s.should_display(150), "confirmed echo unlocks display");
+        assert_eq!(s.displayable(150).count(), 1);
+    }
+
+    #[test]
+    fn primary_screen_displays_immediately() {
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.predict_key_at(&key_text("a"), 100);
+        assert!(s.should_display(110), "no gate on the primary screen");
+        assert_eq!(s.displayable(110).count(), 1);
+    }
+
+    #[test]
+    fn an_overdue_front_hides_the_overlay_until_authority_catches_up() {
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.predict_key_at(&key_text("a"), 1_000);
+        assert!(s.should_display(1_000 + DISPLAY_TTL_MS));
+        assert!(
+            !s.should_display(1_001 + DISPLAY_TTL_MS),
+            "past the TTL the guess is a ghost — hide until authority lands"
+        );
+        assert_eq!(s.displayable(1_001 + DISPLAY_TTL_MS).count(), 0);
+        assert_eq!(s.pending_len(), 1, "the queue still reconciles normally");
+    }
+
+    #[test]
+    fn ttl_follows_the_front_of_the_queue() {
+        // Staleness is measured at the front: dropping the old front
+        // re-arms the overlay for the still-fresh suffix.
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.predict_key_at(&key_text("a"), 0);
+        s.predict_key_at(&key_text("b"), 900);
+        assert!(!s.should_display(1_050), "front (t=0) is overdue");
+        let _ = s.pop_front();
+        assert!(s.should_display(1_050), "front is now the t=900 guess");
+    }
+
+    #[test]
+    fn timeless_entry_points_never_expire() {
+        // predict_key stamps 0; a zero clock keeps existing callers
+        // byte-for-byte identical to the pre-ADR-0090 behaviour.
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.predict_key(&key_text("a"));
+        assert!(s.should_display(0));
+    }
+
+    #[test]
+    fn alt_screen_enter_suspends_instead_of_predicting() {
+        // Enter in a TUI submits (an agent prompt) or executes (vim) — the
+        // primary-screen row+1 guess would anchor the burst wrong.
+        let mut s = alt_state();
+        s.set_cursor(5, 3);
+        s.predict_key_at(&key_text("x"), 100);
+        assert_eq!(s.pending_len(), 1);
+        let enter = key_named(PhysicalKey::Enter, ModSet::empty());
+        assert_eq!(s.predict_key_at(&enter, 150), PredictionOutcome::Skipped);
+        assert_eq!(s.pending_len(), 0, "the burst dropped with the Enter");
+        assert!(s.is_suspended(), "suspended until the next cursor sync");
+    }
+
+    #[test]
+    fn alt_screen_enter_keeps_the_echo_latch() {
+        // A submit does not change who echoes: the next message displays
+        // at once (one warm-up per screen session, not per line).
+        let mut s = alt_state();
+        s.set_cursor(10, 2);
+        s.predict_key_at(&key_text("h"), 100);
+        s.confirm_echo();
+        let enter = key_named(PhysicalKey::Enter, ModSet::empty());
+        s.predict_key_at(&enter, 200);
+        s.set_cursor(11, 2); // prompt redrawn; driver reseeds
+        s.predict_key_at(&key_text("y"), 300);
+        assert!(s.should_display(310), "submit does not unlearn the echo");
+    }
+
+    #[test]
+    fn alt_screen_esc_kills_the_latch_and_the_burst() {
+        // vim insert mode echoes (latch earned); Esc leaves insert mode —
+        // mode-changing input kills the evidence, so normal-mode motions
+        // can never display, even before authority answers them.
+        let mut s = alt_state();
+        s.set_cursor(4, 0);
+        s.predict_key_at(&key_text("a"), 100);
+        s.confirm_echo();
+        s.predict_key_at(&key_text("b"), 120);
+        assert!(s.should_display(130), "insert mode earned the latch");
+
+        assert_eq!(
+            s.predict_key_at(&key_esc(), 200),
+            PredictionOutcome::Skipped
+        );
+        assert_eq!(s.pending_len(), 0, "burst dropped with the mode");
+        assert!(!s.echo_confirmed(), "Esc killed the evidence");
+        s.set_cursor(4, 1); // next keypress reseeds (driver path)
+        s.predict_key_at(&key_text("j"), 250);
+        assert!(!s.should_display(260), "normal mode must re-earn echo");
+    }
+
+    #[test]
+    fn alt_screen_mode_changing_kills_the_latch_even_while_suspended() {
+        // The suspended guard must not shadow the latch kill: Enter
+        // suspends (latch kept), then Esc arrives before any cursor sync —
+        // the evidence still dies.
+        let mut s = alt_state();
+        s.set_cursor(3, 2);
+        s.predict_key_at(&key_text("a"), 100);
+        s.confirm_echo();
+        let enter = key_named(PhysicalKey::Enter, ModSet::empty());
+        s.predict_key_at(&enter, 150); // suspended, latch alive
+        assert!(s.is_suspended());
+        assert!(s.echo_confirmed());
+        s.predict_key_at(&key_esc(), 200);
+        assert!(!s.echo_confirmed(), "Esc kills the latch mid-suspend");
+    }
+
+    #[test]
+    fn alt_screen_arrows_and_chords_are_mode_changing() {
+        for ev in [
+            key_named(PhysicalKey::ArrowLeft, ModSet::empty()),
+            key_named(PhysicalKey::ArrowRight, ModSet::empty()),
+            key_named(PhysicalKey::Tab, ModSet::empty()),
+            key_named(PhysicalKey::U, ModSet::CTRL),
+            key_named(PhysicalKey::A, ModSet::ALT),
+        ] {
+            let mut s = alt_state();
+            s.set_cursor(2, 5);
+            s.predict_key_at(&key_text("a"), 100);
+            s.confirm_echo();
+            assert_eq!(s.predict_key_at(&ev, 200), PredictionOutcome::Skipped);
+            assert!(
+                !s.echo_confirmed(),
+                "{:?} must kill the alt-screen latch",
+                ev.key
+            );
+        }
+    }
+
+    #[test]
+    fn alt_screen_backspace_is_predicted_not_mode_changing() {
+        let mut s = alt_state();
+        s.set_cursor(2, 5);
+        s.predict_key_at(&key_text("a"), 100);
+        s.confirm_echo();
+        let bs = key_named(PhysicalKey::Backspace, ModSet::empty());
+        assert_eq!(s.predict_key_at(&bs, 200), PredictionOutcome::Predicted);
+        assert!(s.echo_confirmed(), "backspace leaves the latch alone");
+    }
+
+    #[test]
+    fn primary_screen_esc_does_not_suspend() {
+        // Mode-changing handling is an alt-screen policy; on the primary
+        // screen Esc falls through to the ordinary skip (no text payload)
+        // without dropping the burst.
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.predict_key_at(&key_text("a"), 100);
+        assert_eq!(
+            s.predict_key_at(&key_esc(), 150),
+            PredictionOutcome::Skipped
+        );
+        assert_eq!(s.pending_len(), 1, "burst survives Esc on the primary");
+        assert!(!s.is_suspended());
+    }
+
+    #[test]
+    fn screen_transitions_drop_the_queue_and_the_evidence() {
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        s.predict_key_at(&key_text("a"), 100);
+        s.confirm_echo();
+        s.set_alt_screen(true);
+        assert_eq!(s.pending_len(), 0, "anchors belong to the other screen");
+        assert!(!s.echo_confirmed(), "evidence does not cross screens");
+        s.set_cursor(0, 3);
+        s.predict_key_at(&key_text("c"), 200);
+        assert!(!s.should_display(210));
+    }
+
+    #[test]
+    fn set_alt_screen_same_value_is_a_no_op() {
+        let mut s = alt_state();
+        s.set_cursor(0, 3);
+        s.predict_key_at(&key_text("a"), 100);
+        s.confirm_echo();
+        s.set_alt_screen(true);
+        assert_eq!(s.pending_len(), 1, "no transition, nothing dropped");
+        assert!(s.echo_confirmed());
+    }
+
+    #[test]
+    fn resize_and_clear_both_drop_the_evidence() {
+        // Both discontinuities (geometry shift, snapshot replay) must
+        // force the latch to be re-earned — fail-safe, one RTT of warmup.
+        let mut resized = alt_state();
+        resized.confirm_echo();
+        resized.set_viewport(81, 24);
+        assert!(!resized.echo_confirmed(), "resize dropped the latch");
+
+        let mut cleared = alt_state();
+        cleared.confirm_echo();
+        cleared.clear();
+        assert!(!cleared.echo_confirmed(), "clear dropped the latch");
+    }
+
+    #[test]
+    fn locked_overlay_still_advances_the_cursor_estimate() {
+        // Cursor consistency: while display is locked, the ESTIMATE
+        // advances (the queue is ahead) but callers gate presentation on
+        // should_display, so the authoritative cursor is what shows.
+        let mut s = alt_state();
+        s.set_cursor(2, 5);
+        s.predict_key_at(&key_text("a"), 100);
+        s.predict_key_at(&key_text("b"), 110);
+        assert_eq!(s.cursor(), (2, 7), "estimate is ahead");
+        assert!(!s.should_display(120), "but must not be presented");
     }
 }

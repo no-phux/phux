@@ -1046,6 +1046,13 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                             s.renderer.last_origin(),
                         )
                     });
+                // ADR-0090: sync the screen mode before reconciling — the
+                // frame just applied may have switched screens (vim
+                // starting or exiting), and predictions anchored to the
+                // other screen must drop rather than reconcile against
+                // this one's cells. A transition also resets the echo
+                // evidence inside the predictor.
+                predict.set_alt_screen(super::input_dispatch::terminal_in_alt_screen(terminal));
                 // Per-cell match reconcile (phux-9gw.1.1): walk pending
                 // predictions against the freshly painted cell grid;
                 // confirmed predictions drop, contradictions drop their
@@ -1074,7 +1081,13 @@ pub(super) fn handle_server_frame<W: super::RenderSink>(
                 // Overlay paints any predictions still alive (the tail
                 // of a partial confirmation), shifted by the focused pane's
                 // outer origin. On a fully-drained queue this is a no-op.
-                let _ = overlay.render(predict, pane_origin, out);
+                // ADR-0090: the display policy gates the paint — while the
+                // alt-screen echo latch is locked, the state is tentative,
+                // or the front guess is past the TTL, the tail reconciles
+                // silently instead of painting.
+                if predict.should_display(super::input_dispatch::predict_now_ms()) {
+                    let _ = overlay.render(predict, pane_origin, out);
+                }
                 // phux-9xn: compute the focused pane's Rect origin so
                 // the bar paint can park the cursor there if
                 // `last_cursor` is None. Without this fallback the
