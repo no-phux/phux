@@ -405,7 +405,7 @@ async fn ack_round_trip_emits_post_ack_tick() {
 ///    We can't read `last_acked_seq` from outside the crate, so the
 ///    assertion is operational: the actor stays healthy and the tick path
 ///    still runs afterwards. Direct field-level assertions live in
-///    `terminal_actor::tests::on_frame_ack_older_or_duplicate_is_dropped`.
+///    `terminal_actor::tests_state_sync::on_frame_ack_older_or_duplicate_is_dropped`.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn older_and_duplicate_acks_do_not_crash_the_actor() {
     let local = LocalSet::new();

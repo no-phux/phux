@@ -51,7 +51,7 @@ pub(crate) fn foreground_pgid(master_fd: RawFd) -> Option<i32> {
     }
     // SAFETY: `master_fd` is the raw fd of the `PtyOwned::master` this actor
     // owns for its entire lifetime, obtained the same way the graceful-upgrade
-    // handle obtains it (`terminal_actor::mod`'s upgrade arm). The
+    // handle obtains it (`terminal_actor::run_loop`'s upgrade arm). The
     // `BorrowedFd` is used only for the duration of the `tcgetpgrp` call and
     // is never stored, so it cannot outlive the master. A closed or invalid
     // fd makes `tcgetpgrp` return `EBADF`, which we map to `None`.
