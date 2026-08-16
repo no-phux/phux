@@ -9,6 +9,27 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.21.0](https://github.com/phall1/phux/compare/v0.20.0...v0.21.0) (2026-08-16)
+
+
+### Features
+
+* **predict:** confirmation-gated predictive echo on the alternate screen ([51234cd](https://github.com/phall1/phux/commit/51234cd03fd1f391b80bed02f0bf9ae52c8bf571))
+
+
+### Performance
+
+* **client:** issue the peer sweep after the first paint, not before it ([#484](https://github.com/phall1/phux/issues/484)) ([c0c8001](https://github.com/phall1/phux/commit/c0c800115f5a3d60e1958eee092f112d376315eb))
+
+
+### Refactors
+
+* **client:** split the 5.5k-line attach/server_frame.rs into a module directory ([8504f77](https://github.com/phall1/phux/commit/8504f778aa409e201765ccc446dd9fd9b143e505))
+* **client:** split the 7.6k-line attach/input_dispatch.rs into a module directory ([6d291b4](https://github.com/phall1/phux/commit/6d291b46edb98bd1d061790722ee09cd3a87f794))
+* **client:** split the 8.2k-line attach/driver.rs into a module directory ([024bde0](https://github.com/phall1/phux/commit/024bde0ffe7b14ff4432e157c1d8dd06a0beb55d))
+* **protocol:** split the 5.3k-line wire/frame.rs into a module directory ([35070fb](https://github.com/phall1/phux/commit/35070fb16918a0d1a84cff0f04101aba40b954ad))
+* **server:** split the 8.7k-line terminal_actor/mod.rs into submodules ([928b631](https://github.com/phall1/phux/commit/928b631429ebb9223797687b8daed909898bec00))
+
 ## [0.20.0](https://github.com/phall1/phux/compare/v0.19.0...v0.20.0) (2026-08-16)
 
 
