@@ -59,7 +59,8 @@ terminal traffic). See [ADR-0024]/[ADR-0025] for why this beats linking them.
 
 ## Public API
 
-One `#[wasm_bindgen]` entry point, designed to be driven from JS:
+Two `#[wasm_bindgen]` entry points are designed to be driven from JS. The
+original `start()` API continues to connect directly to a phux endpoint:
 
 ```js
 import init, { start } from "./pkg/phux_web.js";
@@ -67,6 +68,93 @@ await init();
 // finds <canvas id="…">, connects, attaches, and runs for the connection's life
 await start("wss://host/session", "my-canvas", /*cols*/ 100, /*rows*/ 24);
 ```
+
+Hosted endpoints use `start_hosted()`. They must send one text control message
+before any binary wire frame; every later message must be binary. The callback
+receives only validated lifecycle data:
+
+```js
+import init, { start_hosted } from "./pkg/phux_web.js";
+await init();
+
+const session = await start_hosted(
+  "wss://host/session?mode=native",
+  "my-canvas",
+  100,
+  24,
+  (event) => {
+    // event is HostedSessionEvent below; no WebSocket close reason is exposed.
+  },
+);
+
+// Idempotent and synchronous: closes the socket, detaches all handlers,
+// clears cursor blinking, and suppresses later lifecycle callbacks.
+session.close();
+```
+
+The exact JavaScript/TypeScript signature is:
+
+```ts
+function start_hosted(
+  ws_url: string,
+  canvas_id: string,
+  cols: number,
+  rows: number,
+  callback: Function,
+): Promise<HostedClient>;
+
+class HostedClient {
+  close(): void;
+}
+```
+
+```ts
+type HostedSessionEvent =
+  | {
+      type: "phux.session.v1";
+      outcome: "accepted";
+      backend: "native" | "edge";
+      expiresAt: number;
+      fallbackReason?:
+        | "auth-required"
+        | "account-concurrency"
+        | "hourly-quota"
+        | "daily-quota"
+        | "native-capacity"
+        | "ip-capacity"
+        | "native-disabled"
+        | "native-unhealthy"
+        | "startup-timeout"
+        | "startup-failed";
+    }
+  | { type: "error"; category: "transport" | "protocol" | "client" }
+  | {
+      type: "close";
+      code: number;
+      category:
+        | "normal"
+        | "going-away"
+        | "protocol"
+        | "server"
+        | "unavailable"
+        | "capacity"
+        | "rate-limited"
+        | "bad-request"
+        | "idle"
+        | "expired"
+        | "unauthorized"
+        | "network";
+      wasClean: boolean;
+    };
+```
+
+Malformed, duplicate, or later text controls and binary-before-control close
+with protocol error. Unknown close codes normalize to code `1006` and category
+`"network"`; arbitrary peer close reasons never enter the callback. Before the
+engine is ready, at most 64 binary frames totaling at most 1 MiB are buffered;
+exceeding either limit is a protocol error. Keyboard input is attached to the
+focusable canvas, not the document. `close()` is safe to call repeatedly. A
+peer close also detaches keyboard handling and clears the blink interval.
 
 ## Building
 

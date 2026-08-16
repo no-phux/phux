@@ -42,7 +42,7 @@ Two crates make it up, plus one vendored artifact:
 |---|---|---|
 | `ghostty-vt.wasm` | Zig (ghostty's) | The VT engine itself: parses escape codes, holds the grid and cursor. A vendored build artifact, not phux code. |
 | `phux-vt-web` | Rust | A safe driver over the engine's C ABI: make a `Terminal`, `write` VT bytes, read a styled `Grid` (cells, fg/bg, cursor). Depends on nothing phux. |
-| `phux-web` | Rust | The client: a WebSocket `Session` over the engine, a `<canvas>` renderer (cursor blink), keyboard handling, and the `#[wasm_bindgen]` `start()` entry. |
+| `phux-web` | Rust | The client: a WebSocket `Session` over the engine, a `<canvas>` renderer (cursor blink), keyboard handling, and the `#[wasm_bindgen]` `start()` / hosted `start_hosted()` entries. |
 
 ## The two-wasm architecture
 
@@ -93,6 +93,39 @@ the one documented in [`../spec/appendix-encoding.md`](../spec/appendix-encoding
    the cursor blink.
 6. On `keydown`, map `KeyboardEvent.code` to a `PhysicalKey`, build a
    `KeyEvent`, and send `INPUT_KEY` for the attached terminal.
+
+### Hosted session control
+
+`start_hosted(wsUrl, canvasId, cols, rows, callback)` is the hosted-only API and
+returns `Promise<HostedClient>`, where `HostedClient.close(): void` is
+idempotent. `close()` synchronously suppresses subsequent callbacks, closes the
+socket, removes its handlers and the canvas-scoped keyboard listener, and
+clears cursor blinking. A peer close performs the listener/timer cleanup
+automatically. The canvas is made focusable while the client is active.
+Its socket handlers are installed before the embedded engine is loaded, so an
+immediate first message or close cannot race startup. Accepted binary messages
+are queued until the engine is ready, capped at 64 frames and 1 MiB total;
+exceeding either cap is a protocol error. After acceptance their wire decode,
+render, acknowledgement, and keyboard paths are the same as `start()`.
+
+The hosted endpoint must send exactly one first text message:
+
+```json
+{"type":"phux.session.v1","outcome":"accepted","backend":"native","expiresAt":1786800000000}
+```
+
+`backend` is `"native"` or `"edge"`. Edge fallback responses may additionally
+carry a bounded `fallbackReason` from the deployed vocabulary documented in the
+crate README. Binary-before-control, malformed or duplicate control, any later
+text, unknown fields, and arbitrary fallback strings fail closed with WebSocket
+protocol error `1002`.
+
+The callback receives the validated accepted object, normalized `error` events,
+and exactly one normalized `close` event. Close events contain `code`,
+`category`, and `wasClean`; they never contain the peer's arbitrary close
+reason. Known hosted private codes map to capacity (`4001`), rate limit (`4002`),
+bad request (`4003`), idle (`4004`), expiry (`4005`), unauthorized (`4007`), and
+server error (`4011`). Unknown codes become `1006` / `"network"`.
 
 The render path reads the grid out of the engine the client runs — there is no
 structured screen state on the wire to consume. That is the projection

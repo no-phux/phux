@@ -29,7 +29,52 @@ pub async fn start(ws_url: String, canvas_id: String, cols: u16, rows: u16) -> R
         .and_then(|d| d.get_element_by_id(&canvas_id))
         .ok_or_else(|| JsValue::from_str("canvas element not found"))?
         .dyn_into::<web_sys::HtmlCanvasElement>()?;
-    client::run(&ws_url, canvas, cols, rows).await.map(|_| ())
+    let client = client::run(&ws_url, canvas, cols, rows).await?;
+    // Preserve the original fire-and-forget API. Socket close still removes
+    // the canvas listener and cursor timer.
+    std::mem::forget(client);
+    Ok(())
+}
+
+/// A hosted session controller returned to JavaScript.
+#[wasm_bindgen]
+pub struct HostedClient {
+    client: Option<client::Client>,
+}
+
+#[wasm_bindgen]
+impl HostedClient {
+    /// Close the socket and synchronously remove all browser handlers and timers.
+    pub fn close(&mut self) {
+        if let Some(client) = &mut self.client {
+            client.close();
+        }
+    }
+}
+
+/// Hosted JS entry point. Unlike [`start`], this requires the hosted session
+/// control preamble before accepting binary phux wire frames and reports safe,
+/// structured lifecycle events through `callback`.
+///
+/// # Errors
+/// Fails if the canvas element is missing or the connection can't be set up.
+#[wasm_bindgen]
+pub async fn start_hosted(
+    ws_url: String,
+    canvas_id: String,
+    cols: u16,
+    rows: u16,
+    callback: js_sys::Function,
+) -> Result<HostedClient, JsValue> {
+    let canvas = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(&canvas_id))
+        .ok_or_else(|| JsValue::from_str("canvas element not found"))?
+        .dyn_into::<web_sys::HtmlCanvasElement>()?;
+    let client = client::run_hosted(&ws_url, canvas, cols, rows, callback).await?;
+    Ok(HostedClient {
+        client: Some(client),
+    })
 }
 
 /// Cell geometry + font for the canvas renderer. A monospace cell grid: every

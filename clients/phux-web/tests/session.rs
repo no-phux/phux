@@ -19,7 +19,7 @@ async fn terminal_output_frame_feeds_engine_and_acks() {
     let frame = FrameKind::TerminalOutput {
         terminal_id: tid.clone(),
         seq: 7,
-        bytes: b"Hi phux".to_vec(),
+        bytes: b"Hi phux".to_vec().into(),
     };
     let mut buf = BytesMut::new();
     frame.encode(&mut buf);

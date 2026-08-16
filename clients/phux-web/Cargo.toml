@@ -32,6 +32,7 @@ web-sys = { version = "0.3", features = [
     "ImageData",
     "WebSocket",
     "MessageEvent",
+    "CloseEvent",
     "BinaryType",
     "KeyboardEvent",
     "Event",
