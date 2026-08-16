@@ -510,7 +510,7 @@ have no catalog row; the mechanism is defined in
   message ships. Decoders MUST NOT speculatively assume any particular
   discriminant slot.
 
-[`phux_protocol::wire::frame::FrameKind`]: ../../crates/phux-protocol/src/wire/frame.rs
+[`phux_protocol::wire::frame::FrameKind`]: ../../crates/phux-protocol/src/wire/frame/kind.rs
 
 ### 7.1 proto frames — connection lifecycle and flow control
 
