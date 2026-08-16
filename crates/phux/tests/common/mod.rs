@@ -187,3 +187,52 @@ fn signal(pid: u32, signal: libc::c_int) -> Result<(), String> {
 pub fn terminate(pid: u32) {
     signal(pid, libc::SIGTERM).expect("SIGTERM test server");
 }
+
+/// Remove ECMA-48 control sequences while retaining printable transcript
+/// bytes. This is intentionally a transcript view, not a screen emulator:
+/// predicates must prove that a phrase was visibly painted at some point,
+/// including renderers that put an SGR sequence between every character.
+///
+/// phux-k0cw.10: promoted here from `first_five_minutes_e2e` so a second PTY
+/// test can read painted text without a second copy of the parser (phux-wcdq).
+pub fn strip_terminal_controls(bytes: &[u8]) -> String {
+    let mut printable = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != 0x1b {
+            if bytes[index] >= 0x20 || matches!(bytes[index], b'\n' | b'\r' | b'\t') {
+                printable.push(bytes[index]);
+            }
+            index += 1;
+            continue;
+        }
+
+        index += 1;
+        let Some(&kind) = bytes.get(index) else { break };
+        index += 1;
+        match kind {
+            b'[' => {
+                while let Some(&byte) = bytes.get(index) {
+                    index += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            b']' | b'P' | b'^' | b'_' => {
+                while let Some(&byte) = bytes.get(index) {
+                    index += 1;
+                    if byte == 0x07 {
+                        break;
+                    }
+                    if byte == 0x1b && bytes.get(index) == Some(&b'\\') {
+                        index += 1;
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    String::from_utf8_lossy(&printable).into_owned()
+}

@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use common::strip_terminal_controls;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 const BUILT_PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -385,52 +386,6 @@ impl PtyClient {
             .join()
             .expect("PTY reader thread panicked");
     }
-}
-
-/// Remove ECMA-48 control sequences while retaining printable transcript
-/// bytes. This is intentionally a transcript view, not a screen emulator:
-/// predicates must prove that a phrase was visibly painted at some point,
-/// including renderers that put an SGR sequence between every character.
-fn strip_terminal_controls(bytes: &[u8]) -> String {
-    let mut printable = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != 0x1b {
-            if bytes[index] >= 0x20 || matches!(bytes[index], b'\n' | b'\r' | b'\t') {
-                printable.push(bytes[index]);
-            }
-            index += 1;
-            continue;
-        }
-
-        index += 1;
-        let Some(&kind) = bytes.get(index) else { break };
-        index += 1;
-        match kind {
-            b'[' => {
-                while let Some(&byte) = bytes.get(index) {
-                    index += 1;
-                    if (0x40..=0x7e).contains(&byte) {
-                        break;
-                    }
-                }
-            }
-            b']' | b'P' | b'^' | b'_' => {
-                while let Some(&byte) = bytes.get(index) {
-                    index += 1;
-                    if byte == 0x07 {
-                        break;
-                    }
-                    if byte == 0x1b && bytes.get(index) == Some(&b'\\') {
-                        index += 1;
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    String::from_utf8_lossy(&printable).into_owned()
 }
 
 fn assert_success(label: &str, output: &Output) -> String {
