@@ -45,6 +45,7 @@ pub(super) async fn run_buffered(
     predict: PredictiveConfig,
     rec: Option<Rc<RefCell<SessionRecorder>>>,
     initial_notice: Option<Notice>,
+    input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
     let (mut sink, writer) = crate::attach::stdout_writer::spawn_stdout_writer();
     // Cloned BEFORE any wrap: the resync flag belongs to the StdoutSink, not
@@ -65,6 +66,7 @@ pub(super) async fn run_buffered(
             true,
             initial_notice,
             Some(rec),
+            input_replay,
         )
         .await
     } else {
@@ -78,6 +80,7 @@ pub(super) async fn run_buffered(
             true,
             initial_notice,
             None,
+            input_replay,
         )
         .await
     }
@@ -125,8 +128,9 @@ pub async fn run_with_predict_dial(
     target: AttachTarget,
     predict: PredictiveConfig,
     initial_notice: Option<Notice>,
+    input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
-    run_buffered(dial, target, predict, None, initial_notice).await
+    run_buffered(dial, target, predict, None, initial_notice, input_replay).await
 }
 
 /// As [`run_with_predict_dial`], but tees the composited output stream into
@@ -146,8 +150,17 @@ pub async fn run_recorded_dial(
     predict: PredictiveConfig,
     rec: Rc<RefCell<SessionRecorder>>,
     initial_notice: Option<Notice>,
+    input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
-    run_buffered(dial, target, predict, Some(rec), initial_notice).await
+    run_buffered(
+        dial,
+        target,
+        predict,
+        Some(rec),
+        initial_notice,
+        input_replay,
+    )
+    .await
 }
 
 /// UDS attach that writes the entire composited output stream to a
@@ -194,7 +207,8 @@ pub async fn run_with_stdout_predict<W: crate::attach::RenderSink>(
     out: &mut W,
     predict: PredictiveConfig,
 ) -> Result<AttachEnd, AttachError> {
-    // Synchronous-sink test seam: no off-loop writer, no resync flag.
+    // Synchronous-sink test seam: no off-loop writer, no resync flag, and no
+    // replay journal — the UDS lane never carries one.
     attach_session(
         &Dial::uds(socket),
         target,
@@ -203,6 +217,7 @@ pub async fn run_with_stdout_predict<W: crate::attach::RenderSink>(
         None,
         None,
         false,
+        None,
         None,
         None,
     )
@@ -327,6 +342,11 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // the reconnect loop's "re-attached after server restart".
     initial_notice: Option<Notice>,
     recorder: Option<Rc<RefCell<SessionRecorder>>>,
+    // ADR-0053: the acknowledged-input replay journal, shared with the CLI's
+    // reconnect loop the same way the recorder is — it must outlive any one
+    // attach attempt so an unresolved operation survives to be replayed by
+    // the next one. `None` on UDS dials.
+    input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
     // Attach-handshake timing (info): HELLO -> ATTACH -> ATTACHED. The
     // span's CLOSE duration is the end-to-end attach latency a trace reader
@@ -424,6 +444,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
             pending_window.take(),
             pending_pane.take(),
             carried_sidebar_enabled,
+            input_replay.clone(),
         )
         .await
         {

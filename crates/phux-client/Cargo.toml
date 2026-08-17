@@ -149,6 +149,12 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 # `tracing-subscriber`'s `env-filter`); naming it here only makes explicit
 # what the workspace already builds.
 regex = "1"
+# ADR-0053: the acknowledged-input replay journal mints each operation's
+# non-zero 128-bit random id (`InputOperationId`) client-side. `uuid` v4 is
+# the workspace's established source for exactly this (the `phux` binary's
+# agent verbs mint their operation ids the same way), so this compiles NO new
+# crate — it names a dependency the workspace already builds.
+uuid = { workspace = true }
 
 [dev-dependencies]
 phux-server.workspace = true

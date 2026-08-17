@@ -2572,6 +2572,23 @@ Either failure exits non-zero. The distinction matters: a gone socket
 is an ordinary shutdown you can restart your way out of; a timeout is a
 server that needs its log read.
 
+**What happens to input caught in the drop.** Keystrokes are
+fire-and-forget by design and are not replayed — ADR-0053 explains why
+replaying them risks duplicates. A **paste** is different: on the remote
+lanes, against a server that advertises `ACKNOWLEDGED_INPUT`, the TUI
+delivers each bracketed paste as an acknowledged `APPLY_INPUT` operation
+under a client-generated idempotent id. If the connection drops before
+the receipt arrives, the re-attach resends the *same* operation id —
+same server incarnation only, within a ten-minute horizon — and the
+server's dedupe cache answers instead of writing the paste twice. A
+paste that cannot be honestly replayed (the server restarted, the
+horizon passed, the window closed without a server) is reported in the
+status bar — or on the cooked terminal at exit — as either *delivery
+unknown, read the pane before retyping* or *not delivered, safe to
+retype*, never silently dropped or doubled. On the local socket the
+lane is not armed: the ADR-0032 blink is process-local, and a restarted
+server is a new incarnation with an empty dedupe cache anyway.
+
 ---
 
 ## 9. Hooks

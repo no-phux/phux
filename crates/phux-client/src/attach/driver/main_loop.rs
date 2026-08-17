@@ -129,6 +129,15 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // between spaces. Only the toggle is carried: the strip's width and edge
     // stay pure config, re-derived per entry.
     carried_sidebar_enabled: Option<bool>,
+    // ADR-0053: the acknowledged-input replay journal, shared across attach
+    // attempts by the CLI's reconnect loop (remote dials only — `None` on
+    // UDS). The session loop re-decides every queued operation against this
+    // connection's incarnation at bootstrap and replays the survivors; the
+    // paste path in `dispatch_input_events` feeds it and the `COMMAND_RESULT`
+    // intercept in the recv arm resolves it.
+    input_replay: Option<
+        std::rc::Rc<std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
+    >,
 ) -> Result<LoopExit, AttachError> {
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("attach loop started before bootstrap negotiation".to_owned())
@@ -147,6 +156,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // the bar's normal repaint tick picks changed cells up, so the render
     // loop never blocks on a widget command. The guard aborts the tasks
     // (and via kill_on_drop, their children) when this attach loop ends.
+    session.set_input_replay(input_replay);
     let _exec_runners = spawn_exec_feed_runners(session.exec_feeds());
     if let Some(exit) = session
         .bootstrap(conn, out, initial_attached, initial_notice)

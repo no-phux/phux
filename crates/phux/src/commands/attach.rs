@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use phux_client::attach::connection::Connection;
 use phux_client::attach::record::SessionRecorder;
 use phux_client::attach::status_bar::Notice;
-use phux_client::attach::{self, AttachEnd, AttachError, CertTrust, Dial, QuicDial, WsDial};
+use phux_client::attach::{
+    self, AttachEnd, AttachError, CertTrust, Dial, InputReplayJournal, QuicDial, WsDial,
+};
 use phux_client::predict::PredictiveConfig;
 use phux_config::loader as config_loader;
 use phux_protocol::wire::frame::AttachTarget;
@@ -25,6 +27,14 @@ use crate::commands::{DEFAULT_SESSION_NAME, print_attach_error, server::ensure_s
 /// driver's render sink for the duration of one attach, and a graceful-upgrade
 /// reconnect (ADR-0032) starts a *second* attach against the *same* recording.
 type RecorderHandle = Rc<RefCell<SessionRecorder>>;
+
+/// The ADR-0053 acknowledged-input replay journal, shared between reconnect
+/// attempts for the same reason and in the same shape as [`RecorderHandle`]:
+/// an operation journaled during one attach must survive to be replayed —
+/// under its original idempotent operation id — by the attach that follows
+/// the reconnect window. Remote dials only; the UDS graceful-upgrade blink
+/// (ADR-0032) is process-local and sub-second, so its lane carries `None`.
+type ReplayHandle = Rc<RefCell<InputReplayJournal>>;
 
 /// Refuse interactive entry points before they can start a server, connect,
 /// or let the driver write terminal-control sequences.
@@ -203,7 +213,7 @@ pub(crate) async fn run_attach_once(
     target: AttachTarget,
     predict_cfg: PredictiveConfig,
 ) -> Result<AttachEnd, AttachError> {
-    run_attach_once_rec(dial, target, predict_cfg, None, None).await
+    run_attach_once_rec(dial, target, predict_cfg, None, None, None).await
 }
 
 /// [`run_attach_once`] with an optional live recorder and an optional
@@ -224,6 +234,7 @@ pub(crate) async fn run_attach_once_rec(
     predict_cfg: PredictiveConfig,
     rec: Option<RecorderHandle>,
     initial_notice: Option<Notice>,
+    input_replay: Option<ReplayHandle>,
 ) -> Result<AttachEnd, AttachError> {
     // `run_with_predict_dial` with `predict.enabled = false` is identical to the
     // non-predictive path, so one call covers both transports and both modes.
@@ -231,9 +242,13 @@ pub(crate) async fn run_attach_once_rec(
     // sink with the tee, so the two branches share every other behaviour.
     match rec {
         Some(rec) => {
-            attach::run_recorded_dial(dial, target, predict_cfg, rec, initial_notice).await
+            attach::run_recorded_dial(dial, target, predict_cfg, rec, initial_notice, input_replay)
+                .await
         }
-        None => attach::run_with_predict_dial(dial, target, predict_cfg, initial_notice).await,
+        None => {
+            attach::run_with_predict_dial(dial, target, predict_cfg, initial_notice, input_replay)
+                .await
+        }
     }
 }
 
@@ -254,6 +269,7 @@ pub(crate) async fn attach_default_with_fallback(
     predict_cfg: PredictiveConfig,
     rec: Option<&RecorderHandle>,
     initial_notice: Option<Notice>,
+    input_replay: Option<&ReplayHandle>,
 ) -> Result<AttachEnd, AttachError> {
     match run_attach_once_rec(
         dial,
@@ -261,6 +277,7 @@ pub(crate) async fn attach_default_with_fallback(
         predict_cfg,
         rec.map(Rc::clone),
         initial_notice.clone(),
+        input_replay.map(Rc::clone),
     )
     .await
     {
@@ -275,6 +292,7 @@ pub(crate) async fn attach_default_with_fallback(
                 predict_cfg,
                 rec.map(Rc::clone),
                 initial_notice,
+                input_replay.map(Rc::clone),
             )
             .await
         }
@@ -414,6 +432,19 @@ async fn attach_with_reconnect(
         None => None,
     };
 
+    // ADR-0053: the acknowledged-input replay journal, created once per
+    // invocation for the same reason the recorder is — an operation that was
+    // unresolved when the socket died must survive into the next attempt,
+    // where the driver resends it under its original idempotent operation id
+    // and the server's dedupe cache answers instead of writing twice. Remote
+    // lanes only: the UDS graceful-upgrade blink is process-local and
+    // sub-second, and its server restarts with a fresh incarnation anyway,
+    // so a journal there could only ever report "unknown".
+    let input_replay: Option<ReplayHandle> = match dial {
+        Dial::Uds(_) => None,
+        Dial::Quic(_) | Dial::Ws(_) => Some(Rc::new(RefCell::new(InputReplayJournal::new()))),
+    };
+
     // phux-i0e8.2.3: set after a successful reconnect so the NEXT attach's
     // status bar announces the recovery inside the live TUI. A cooked-
     // terminal eprintln here is alt-screened over within milliseconds, so
@@ -429,6 +460,7 @@ async fn attach_with_reconnect(
                     predict_cfg,
                     recorder.as_ref(),
                     initial_notice.take(),
+                    input_replay.as_ref(),
                 )
                 .await
             }
@@ -439,6 +471,7 @@ async fn attach_with_reconnect(
                     predict_cfg,
                     recorder.as_ref().map(Rc::clone),
                     initial_notice.take(),
+                    input_replay.as_ref().map(Rc::clone),
                 )
                 .await
             }
@@ -446,6 +479,12 @@ async fn attach_with_reconnect(
         match result {
             Ok(end) => break Ok(end),
             Err(AttachError::Disconnected) => {
+                // The in-flight correlation died with the socket; the
+                // journaled operations themselves survive for the next
+                // attempt to re-decide.
+                if let Some(journal) = input_replay.as_ref() {
+                    journal.borrow_mut().connection_lost();
+                }
                 // The RawModeGuard dropped on the unwind out of the attach,
                 // so this whole window runs on the cooked primary screen —
                 // an honest, visible countdown instead of ~10 s of blank
@@ -475,6 +514,22 @@ async fn attach_with_reconnect(
             Err(other) => break Err(other),
         }
     };
+
+    // ADR-0053: whatever is still journaled when the loop gives up resolves
+    // HERE, on the cooked terminal, by the attempted/never-sent rule — an
+    // attempted paste is honestly unknown (read the pane before retyping), a
+    // never-sent one is a safe refusal. Silence would be the one dishonest
+    // outcome. The success path exits inside the driver with an empty
+    // journal (every operation resolves against the live connection), so
+    // this drain reports on the failure paths, where it matters.
+    if let Some(journal) = input_replay.as_ref() {
+        for report in journal
+            .borrow_mut()
+            .drain_unresolved("the connection could not be re-established")
+        {
+            eprintln!("phux: {}", report.notice_line());
+        }
+    }
 
     close_recorder(recorder);
     outcome

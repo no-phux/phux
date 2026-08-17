@@ -470,6 +470,15 @@ pub(super) struct SessionLoop {
     /// name, rather than at its own default? Fixed for the life of the
     /// connection, like the reply bit above.
     spawn_initial_size_supported: bool,
+    /// Whether the server advertised `ACKNOWLEDGED_INPUT`, the bit the
+    /// ADR-0053 paste journal needs before it may route a batch.
+    acknowledged_input_supported: bool,
+    /// ADR-0053: the acknowledged-input replay journal, shared with the CLI's
+    /// reconnect loop so an operation unresolved when a socket died is
+    /// replayed by the next attach under its original operation id. `None`
+    /// on UDS dials.
+    input_replay:
+        Option<std::rc::Rc<std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>>,
     /// Whether this connection negotiated `OutputMode::StateSync`. Gates the
     /// per-frame `FRAME_ACK`: only a state-sync consumer's acks are tracked
     /// server-side, so a raw consumer skips them (see `should_emit_frame_ack`).
@@ -728,6 +737,10 @@ impl SessionLoop {
         let viewport_dims = current_viewport().map_or((80, 24), |v| (v.cols.max(1), v.rows.max(1)));
         let cell_px_dims = current_viewport().map_or(HOST_CELL_PX_FALLBACK, |v| host_cell_px(&v));
         Ok(Self {
+            acknowledged_input_supported: negotiated
+                .server_features
+                .contains(ServerFeature::AcknowledgedInput),
+            input_replay: None,
             terminal_reply_supported: negotiated
                 .server_features
                 .contains(ServerFeature::TerminalReply),
@@ -1193,7 +1206,103 @@ impl SessionLoop {
         // ADR-0040: read + watch every bootstrap pane's `phux.agent/v1` record
         // so window labels can prefer structured agent identity from the first
         // paint. The same sweep re-runs whenever the pane set changes.
-        self.sync_agent_meta(conn).await
+        self.sync_agent_meta(conn).await?;
+        self.adopt_input_replay(conn).await
+    }
+
+    /// Install the ADR-0053 replay journal the CLI's reconnect loop owns.
+    pub(super) fn set_input_replay(
+        &mut self,
+        journal: Option<
+            std::rc::Rc<std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
+        >,
+    ) {
+        self.input_replay = journal;
+    }
+
+    /// ADR-0053: adopt this connection into the acknowledged-input journal.
+    /// Every operation still queued from before the reconnect (or the
+    /// session-switch drain) is re-decided against this connection's server
+    /// incarnation: survivors are resent under their ORIGINAL operation ids —
+    /// the server's dedupe cache is what makes that honest — and everything
+    /// that cannot be replayed (expired, incarnation changed, feature gone)
+    /// resolves loudly as a status-bar notice instead of silently dropping
+    /// or doubling.
+    async fn adopt_input_replay(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
+        let Some(journal) = self.input_replay.clone() else {
+            return Ok(());
+        };
+        let mut reports = journal
+            .borrow_mut()
+            .begin_connection(conn.server_id(), self.acknowledged_input_supported);
+        let (more, replay_frame) = journal.borrow_mut().next_frame(&mut self.next_request_id);
+        reports.extend(more);
+        let now = std::time::Instant::now();
+        for report in reports {
+            if matches!(
+                report.disposition,
+                crate::attach::input_replay::ReplayDisposition::Delivered
+            ) {
+                continue;
+            }
+            let line = report.notice_line();
+            if let Some(sb) = self.status_bar.as_mut() {
+                let _ = sb.set_notice(crate::render::chrome::status_bar::Notice::warn(line), now);
+            } else {
+                tracing::warn!(line = %line, "acknowledged paste stranded");
+            }
+        }
+        if let Some(frame) = replay_frame {
+            conn.send(&frame).await?;
+        }
+        Ok(())
+    }
+
+    /// ADR-0053: the reply to one of the journal's own `APPLY_INPUT`
+    /// attempts. Delivery is silent; anything else raises a notice, and the
+    /// next queued operation (if any) goes on the wire behind the resolution.
+    async fn resolve_input_replay(
+        &mut self,
+        conn: &mut Connection,
+        request_id: u32,
+        result: &phux_protocol::wire::frame::CommandResult,
+        repaint: &mut RepaintAccumulator,
+    ) -> Result<(), AttachError> {
+        let Some(journal) = self.input_replay.clone() else {
+            return Ok(());
+        };
+        let mut reports: Vec<_> = journal
+            .borrow_mut()
+            .resolve(request_id, result)
+            .into_iter()
+            .collect();
+        let (more, next_frame) = journal.borrow_mut().next_frame(&mut self.next_request_id);
+        reports.extend(more);
+        let now = std::time::Instant::now();
+        for report in reports {
+            if matches!(
+                report.disposition,
+                crate::attach::input_replay::ReplayDisposition::Delivered
+            ) {
+                continue;
+            }
+            let line = report.notice_line();
+            let shown = self.status_bar.as_mut().is_some_and(|sb| {
+                sb.set_notice(
+                    crate::render::chrome::status_bar::Notice::warn(line.clone()),
+                    now,
+                )
+            });
+            if shown {
+                repaint.raise_chrome();
+            } else {
+                tracing::warn!(line = %line, "acknowledged paste outcome");
+            }
+        }
+        if let Some(frame) = next_frame {
+            super::session_io::send_unless_peer_gone(conn, &frame).await?;
+        }
+        Ok(())
     }
 
     /// phux-i0e8.2.3: seed the post-reconnect notice now that the session is
@@ -1740,6 +1849,7 @@ impl SessionLoop {
             reload_request: &mut self.reload_request,
             agent_meta: &self.agent_meta.records,
             vcs: &mut self.vcs,
+            input_replay: self.input_replay.as_deref(),
         };
         let layout_changed = dispatch_input_events(
             out,
@@ -1956,6 +2066,20 @@ impl SessionLoop {
             {
                 self.peers.foreign_layout_pending.remove(&request_id);
                 self.peers.foreign_agent_pending.remove(&request_id);
+                Ok(None)
+            }
+            // ADR-0053: the reply to one of the journal's own APPLY_INPUT
+            // attempts, consumed here — the same intercept shape as the
+            // foreign-layout replies above — because the attached-phase frame
+            // handler has no COMMAND_RESULT arm.
+            FrameKind::CommandResult { request_id, result }
+                if self
+                    .input_replay
+                    .as_ref()
+                    .is_some_and(|journal| journal.borrow().owns(request_id)) =>
+            {
+                self.resolve_input_replay(conn, request_id, &result, repaint)
+                    .await?;
                 Ok(None)
             }
             other => Ok(Some(other)),

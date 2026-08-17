@@ -47,6 +47,11 @@ mod focus;
 mod ghost_stress_tests;
 pub mod input;
 pub mod input_dispatch;
+// ADR-0053: the acknowledged-input replay journal for the remote reconnect
+// lanes — the CLI analogue of phux-mobile's PendingInput queue. Created per
+// attach invocation by the CLI's reconnect loop (remote dials only) and
+// threaded through the driver like the `--rec` recorder.
+pub mod input_replay;
 mod onboarding;
 // phux-4fbs.4: the attach exit vocabulary (`AttachError` / `AttachEnd`).
 // Declared beside the driver rather than inside it so the eleven siblings that
@@ -91,6 +96,7 @@ pub use driver::{
     run_headless_rendered, run_recorded_dial, run_with_predict_dial, run_with_stdout,
     write_terminal_reset,
 };
+pub use input_replay::InputReplayJournal;
 pub use outcome::{AttachEnd, AttachError};
 
 // Multi-pane composition moved to `phux-client-core` with phux-0fv

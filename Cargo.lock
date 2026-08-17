@@ -2197,6 +2197,7 @@ dependencies = [
  "tracing-core",
  "tracing-subscriber",
  "unicode-width",
+ "uuid",
 ]
 
 [[package]]

@@ -110,6 +110,13 @@ pub struct Connection {
     /// Every production constructor fills this before returning. It is an
     /// `Option` only for the crate's raw in-process transport test seam.
     negotiated_bootstrap: Option<NegotiatedBootstrap>,
+    /// `HELLO_OK.server_id` — the random 128-bit server-incarnation id
+    /// (ADR-0053 point 5). Kept beside, not inside, [`NegotiatedBootstrap`]
+    /// because that struct is `Copy` and a `Vec<u8>` would end that. The
+    /// acknowledged-input replay journal compares this across reconnects: a
+    /// changed incarnation means the server's dedupe cache is gone, so an
+    /// unresolved operation must be reported unknown rather than replayed.
+    server_id: Option<Vec<u8>>,
     next_attach_id: u32,
 }
 
@@ -298,6 +305,7 @@ impl Connection {
             }),
             peer_pid,
             negotiated_bootstrap: None,
+            server_id: None,
             next_attach_id: 1,
         })
     }
@@ -348,6 +356,7 @@ impl Connection {
             }),
             peer_pid: None,
             negotiated_bootstrap: None,
+            server_id: None,
             next_attach_id: 1,
         })
     }
@@ -390,6 +399,7 @@ impl Connection {
             }),
             peer_pid: None,
             negotiated_bootstrap: None,
+            server_id: None,
             next_attach_id: 1,
         })
     }
@@ -471,6 +481,7 @@ impl Connection {
             }),
             peer_pid,
             negotiated_bootstrap: None,
+            server_id: None,
             next_attach_id: 1,
         }
     }
@@ -504,7 +515,7 @@ impl Connection {
                 protocol_minor,
                 protocol_patch,
                 server_caps,
-                server_id: _,
+                server_id,
                 selected_profile,
                 bootstrap_limits,
             } => {
@@ -522,6 +533,7 @@ impl Connection {
                     limits: bootstrap_limits,
                     server_features: server_caps.features,
                 });
+                self.server_id = Some(server_id);
                 Ok(())
             }
             FrameKind::Error { message, .. } => Err(AttachError::Refused(message)),
@@ -539,6 +551,13 @@ impl Connection {
     #[must_use]
     pub const fn negotiated_bootstrap(&self) -> Option<NegotiatedBootstrap> {
         self.negotiated_bootstrap
+    }
+
+    /// `HELLO_OK.server_id` — this connection's server-incarnation identity
+    /// (ADR-0053 point 5), or `None` on the unnegotiated test seam.
+    #[must_use]
+    pub fn server_id(&self) -> Option<&[u8]> {
+        self.server_id.as_deref()
     }
 
     /// Allocate a non-zero correlation id for the next `ATTACH`.

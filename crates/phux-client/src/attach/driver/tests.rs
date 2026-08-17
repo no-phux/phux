@@ -1103,6 +1103,7 @@ async fn run_buffered_without_a_recorder_passes_the_bare_sink() {
         PredictiveConfig::disabled(),
         None,
         None,
+        None,
     )
     .await
     .expect_err("there is no server at that socket");
@@ -1127,6 +1128,10 @@ async fn attach_negotiation_waits_for_hello_ok_and_sends_one_hello() {
     let mut client = Connection::from_stream(client_stream);
     let server = tokio::spawn(ScriptedServer::on_stream(server_stream, ScriptSpec::new()).run());
 
+    assert!(
+        client.server_id().is_none(),
+        "no incarnation identity exists before HELLO_OK"
+    );
     let res = client
         .negotiate(attach_client_name(), attach_client_caps(None, &test_dial()))
         .await;
@@ -1138,6 +1143,14 @@ async fn attach_negotiation_waits_for_hello_ok_and_sends_one_hello() {
         .negotiated_bootstrap()
         .expect("successful negotiation installs immutable profile state");
     assert_eq!(selected.limits, phux_protocol::BootstrapLimits::default());
+    // ADR-0053: HELLO_OK.server_id is captured, not discarded — the
+    // acknowledged-input replay journal compares it across reconnects. The
+    // scripted server sends an empty id; capture is what is pinned here.
+    assert_eq!(
+        client.server_id(),
+        Some(&[][..]),
+        "negotiation must retain HELLO_OK.server_id verbatim"
+    );
     let duplicate = client
         .negotiate(attach_client_name(), attach_client_caps(None, &test_dial()))
         .await;

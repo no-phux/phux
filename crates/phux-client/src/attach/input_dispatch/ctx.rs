@@ -62,6 +62,15 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// the layout `SET_METADATA`, which doesn't need a reply), but we
     /// reserve the counter for future `SPAWN`/kill wiring.
     pub next_request_id: &'a mut u32,
+    /// ADR-0053: the acknowledged-input replay journal, when this attach
+    /// runs on a remote reconnect lane (Ws/QUIC). `Some` + active routes a
+    /// bracketed paste through `APPLY_INPUT` under a journaled operation id
+    /// — the batch that survives a reconnect — instead of the
+    /// fire-and-forget `INPUT_PASTE` frame. `None` on UDS dials (the
+    /// graceful-upgrade blink is sub-second and process-local) and in every
+    /// test fixture that doesn't exercise the lane.
+    pub input_replay:
+        Option<&'a std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
     /// phux-a5xj: did the server advertise
     /// [`ServerFeature::SpawnInitialSize`](phux_protocol::caps::ServerFeature::SpawnInitialSize)?
     /// When set, a spawn carries the tile the new leaf will occupy so the
