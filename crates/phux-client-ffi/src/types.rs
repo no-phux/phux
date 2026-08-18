@@ -74,6 +74,17 @@ pub struct PhuxTerminalId {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PhuxSessionInfo {
+    pub session_id: u32,
+    pub name: PhuxBytes,
+    pub created_at_unix_secs: i64,
+    pub window_count: u16,
+    pub attached_client_count: u16,
+    pub focused: bool,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PhuxClientOptions {
     pub size: usize,

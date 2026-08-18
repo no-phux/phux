@@ -28,6 +28,20 @@ use crate::types::{
     terminal_id_out,
 };
 
+#[derive(Debug)]
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the private module's session summaries are populated by the crate-root frame dispatcher"
+)]
+pub(crate) struct SessionSummary {
+    pub session_id: u32,
+    pub name: Vec<u8>,
+    pub created_at_unix_secs: i64,
+    pub window_count: u16,
+    pub attached_client_count: u16,
+    pub focused: bool,
+}
+
 const NO_HYPERLINK: (u32, u32) = (0, 0);
 
 #[allow(
@@ -91,6 +105,7 @@ pub(crate) struct Client {
     pub document_revisions: HashMap<TerminalId, u64>,
     pub next_document_revision: u64,
     pub search_results: Vec<PhuxSearchResult>,
+    pub sessions: Vec<SessionSummary>,
     pub anchors: HashMap<u64, (TerminalId, DocumentAnchorId)>,
     pub next_anchor_handle: u64,
     pub selections: HashMap<TerminalId, EngineDocumentSelection>,
@@ -134,6 +149,7 @@ impl Client {
             document_revisions: HashMap::new(),
             next_document_revision: 1,
             search_results: Vec::new(),
+            sessions: Vec::new(),
             last_error: Vec::new(),
             limits,
             anchors: HashMap::new(),

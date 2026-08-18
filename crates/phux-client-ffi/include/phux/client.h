@@ -320,6 +320,16 @@ typedef struct PhuxTerminalId {
     PhuxBytes host;
 } PhuxTerminalId;
 
+/** Borrowed server-owned session summary from the latest ATTACHED snapshot. */
+typedef struct PhuxSessionInfo {
+    uint32_t session_id;
+    PhuxBytes name;
+    int64_t created_at_unix_secs;
+    uint16_t window_count;
+    uint16_t attached_client_count;
+    bool focused;
+} PhuxSessionInfo;
+
 typedef struct PhuxClientOptions {
     size_t size;
     uint32_t version;
@@ -591,6 +601,8 @@ PhuxClientResult phux_client_last_error(const PhuxClient *client, PhuxBytes *out
 PhuxClientResult phux_client_queue_hello(PhuxClient *client, PhuxBytes client_name);
 PhuxClientResult phux_client_queue_attach(PhuxClient *client, const PhuxAttachOptions *options);
 PhuxClientResult phux_client_feed_frame(PhuxClient *client, const uint8_t *data, size_t len);
+size_t phux_client_session_count(const PhuxClient *client);
+PhuxClientResult phux_client_session_get(const PhuxClient *client, size_t index, PhuxSessionInfo *out_session);
 size_t phux_client_outgoing_count(const PhuxClient *client);
 PhuxClientResult phux_client_outgoing_get(const PhuxClient *client, size_t index, PhuxBytes *out_frame);
 PhuxClientResult phux_client_outgoing_clear(PhuxClient *client);

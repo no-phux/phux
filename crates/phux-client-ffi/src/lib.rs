@@ -13,7 +13,7 @@ use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
-use client::{Client, Limits};
+use client::{Client, Limits, SessionSummary};
 use error::{BridgeError, bytes_in, check_struct, outbound_bytes_in, terminal_id_in};
 use phux_client_core::engine::CanonicalGeometry;
 use phux_client_core::engine::ghostty::native_bootstrap_capabilities;
@@ -625,6 +625,19 @@ pub unsafe extern "C" fn phux_client_feed_frame(
                         "ATTACHED attach_id does not match the request",
                     ));
                 }
+                let focused_session = snapshot.focused_session;
+                client.sessions = snapshot
+                    .sessions
+                    .into_iter()
+                    .map(|session| SessionSummary {
+                        session_id: session.id.get(),
+                        name: session.name.into_bytes(),
+                        created_at_unix_secs: session.created_at_unix_secs,
+                        window_count: session.window_count,
+                        attached_client_count: session.attached_client_count,
+                        focused: session.id == focused_session,
+                    })
+                    .collect();
                 let terminals: Vec<_> = snapshot.panes.into_iter().map(|pane| pane.id).collect();
                 apply_kernel_input(
                     client,
@@ -910,6 +923,64 @@ pub unsafe extern "C" fn phux_client_feed_frame(
         invoke_attached(client)
     } else {
         result
+    }
+}
+
+/// Returns the number of sessions advertised by the latest accepted ATTACHED.
+/// Zero means either no catalog has arrived or the client pointer is invalid.
+///
+/// # Safety
+///
+/// `client`, when non-null, must remain valid and unmodified for the call and
+/// must be accessed only from its owning thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_session_count(client: *const PhuxClient) -> usize {
+    unsafe { client.as_ref() }.map_or(0, |client| {
+        if client.inner.in_callback {
+            0
+        } else {
+            client.inner.sessions.len()
+        }
+    })
+}
+
+/// Returns one borrowed server session summary from the latest ATTACHED.
+///
+/// # Safety
+///
+/// `client` must remain valid and unmodified for the call. `out_session` must
+/// be writable. The returned name remains valid until the next mutable call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_session_get(
+    client: *const PhuxClient,
+    index: usize,
+    out_session: *mut PhuxSessionInfo,
+) -> PhuxClientResult {
+    match catch_unwind(AssertUnwindSafe(|| -> Result<(), PhuxClientResult> {
+        let client = unsafe { client.as_ref() }.ok_or(PhuxClientResult::InvalidArgument)?;
+        if client.inner.in_callback {
+            return Err(PhuxClientResult::InvalidState);
+        }
+        let out = unsafe { out_session.as_mut() }.ok_or(PhuxClientResult::InvalidArgument)?;
+        *out = PhuxSessionInfo::default();
+        let session = client
+            .inner
+            .sessions
+            .get(index)
+            .ok_or(PhuxClientResult::NoValue)?;
+        *out = PhuxSessionInfo {
+            session_id: session.session_id,
+            name: bytes_out(&session.name),
+            created_at_unix_secs: session.created_at_unix_secs,
+            window_count: session.window_count,
+            attached_client_count: session.attached_client_count,
+            focused: session.focused,
+        };
+        Ok(())
+    })) {
+        Ok(Ok(())) => PhuxClientResult::Ok,
+        Ok(Err(error)) => error,
+        Err(_) => PhuxClientResult::Panic,
     }
 }
 
@@ -1837,6 +1908,64 @@ mod tests {
         );
         assert!(frame.data.is_null());
         assert_eq!(frame.len, 0);
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
+    fn attached_snapshot_exposes_the_server_session_catalog() {
+        let client = boxed_client();
+        unsafe {
+            (*client).inner.protocol_ready = true;
+            (*client).inner.attach_queued = true;
+            (*client).inner.expected_attach_id = Some(7);
+        }
+        let snapshot = phux_protocol::wire::info::SessionSnapshot::new(
+            SessionId::new(2),
+            phux_protocol::WindowId::new(20),
+            phux_protocol::TerminalId::local(30),
+        )
+        .with_sessions(vec![
+            phux_protocol::wire::info::SessionInfo::new(SessionId::new(1), "other")
+                .with_created_at_unix_secs(100)
+                .with_window_count(2),
+            phux_protocol::wire::info::SessionInfo::new(SessionId::new(2), "focused")
+                .with_created_at_unix_secs(200)
+                .with_window_count(3)
+                .with_attached_client_count(4),
+        ]);
+        assert_eq!(
+            feed_kind(
+                client,
+                &FrameKind::Attached {
+                    attach_id: 7,
+                    snapshot,
+                    initial_client_id: phux_protocol::ClientId::new(9),
+                },
+            ),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(unsafe { phux_client_session_count(client) }, 2);
+
+        let mut session = PhuxSessionInfo::default();
+        assert_eq!(
+            unsafe { phux_client_session_get(client, 1, &raw mut session) },
+            PhuxClientResult::Ok
+        );
+        assert_eq!(session.session_id, 2);
+        assert_eq!(
+            unsafe { bytes_in(session.name.data, session.name.len) }.unwrap(),
+            b"focused"
+        );
+        assert_eq!(session.created_at_unix_secs, 200);
+        assert_eq!(session.window_count, 3);
+        assert_eq!(session.attached_client_count, 4);
+        assert!(session.focused);
+
+        assert_eq!(
+            unsafe { phux_client_session_get(client, 2, &raw mut session) },
+            PhuxClientResult::NoValue
+        );
+        assert!(session.name.data.is_null());
         unsafe { phux_client_free(client) };
     }
 
