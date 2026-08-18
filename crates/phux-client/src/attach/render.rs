@@ -64,11 +64,48 @@ pub enum RenderError {
 /// a separate overlay surface.
 pub use crate::render::overlay::selection::SelectionRect;
 
-/// Fixed walk-identity token for tests that drive isolated terminals which
-/// are never replaced. Production paths thread the live replica generation
-/// from `attach::pane_state::published_replica` instead.
-#[cfg(test)]
-pub(crate) const TEST_GENERATION: TerminalGeneration = 1;
+/// One pane's published replica `Terminal` paired with the walk-identity
+/// token the renderer must walk it under.
+///
+/// The session kernel REPLACES a pane's published `Terminal` when a replica
+/// generation is republished, and the pooled render state discards its cache
+/// exactly when this token changes — even at unchanged geometry (`phux-994s`).
+/// Carrying the two halves as ONE value is what makes a mismatch
+/// unrepresentable: the only production constructor is
+/// `attach::pane_state::published_replica`, which reads both halves off the
+/// same replica, so no paint path can pick up a terminal and a token that
+/// disagree, and no walk-starting method needs two positional parameters that
+/// must be kept in order.
+///
+/// Paths that only INSPECT the terminal (alt-screen, mouse tracking, title)
+/// start no pooled walk and keep using `attach::pane_state::published_terminal`.
+///
+/// The fields are readable throughout `attach` — paint sites that also need
+/// the terminal itself (mirror dimensions, alt-screen mode) read `terminal`
+/// directly — and sealed outside it, so the only pairing a foreign crate can
+/// make is [`ReplicaWalk::for_test`]'s.
+#[derive(Debug, Clone, Copy)]
+pub struct ReplicaWalk<'a, 'alloc, 'cb> {
+    pub(super) terminal: &'a GhosttyTerminal<'alloc, 'cb>,
+    pub(super) generation: TerminalGeneration,
+}
+
+impl<'a, 'alloc, 'cb> ReplicaWalk<'a, 'alloc, 'cb> {
+    /// Pair a test-owned terminal with a fixed token.
+    ///
+    /// Fixtures build one terminal per case and never replace it, so the
+    /// token is a constant — "a generation that never changes" is exactly
+    /// what the pool's rebuild rule reads it as. Tests that specifically
+    /// exercise a REPLACEMENT build the pair directly with distinct tokens.
+    #[cfg(any(test, feature = "testkit"))]
+    #[must_use]
+    pub const fn for_test(terminal: &'a GhosttyTerminal<'alloc, 'cb>) -> Self {
+        Self {
+            terminal,
+            generation: 1,
+        }
+    }
+}
 
 /// Per-pane render scaffolding.
 ///
@@ -76,13 +113,10 @@ pub(crate) const TEST_GENERATION: TerminalGeneration = 1;
 /// geometry-change and generation-change rebuilds — so the iterators are
 /// reused across frames instead of reallocated each tick.
 ///
-/// Every walk-starting method takes the walked terminal's
-/// [`TerminalGeneration`] alongside the terminal itself: the session kernel
-/// REPLACES a pane's published `Terminal` when a replica generation is
-/// republished, and a pooled cache carried across that swap at unchanged
-/// geometry serves the old terminal's rows (`phux-994s`). Callers thread the
-/// token from `attach::pane_state::published_replica`, so a paint path that
-/// forgets the swap no longer type-checks.
+/// Every walk-starting method takes a [`ReplicaWalk`] rather than a bare
+/// terminal, so the walked terminal always arrives with the generation token
+/// the pool needs to notice a replica swap; a paint path that fetches a
+/// terminal any other way does not type-check.
 ///
 /// The pool owns allocation and geometry only. This renderer's dirty policy —
 /// clear each row it drew, then clear the snapshot-level bit — stays here,
@@ -188,13 +222,12 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// predictions against the authoritative cell grid.
     pub fn read_grapheme_at(
         &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-        generation: TerminalGeneration,
+        walk: ReplicaWalk<'_, 'alloc, '_>,
         row: u16,
         col: u16,
     ) -> Result<Option<char>, RenderError> {
         Ok(self
-            .read_cell_graphemes(terminal, generation, row, col)?
+            .read_cell_graphemes(walk, row, col)?
             .and_then(|g| g.first().copied()))
     }
 
@@ -215,20 +248,17 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// it is not called concurrently with [`Self::render`].
     pub fn read_grapheme_string_at(
         &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-        generation: TerminalGeneration,
+        walk: ReplicaWalk<'_, 'alloc, '_>,
         row: u16,
         col: u16,
     ) -> Result<Option<String>, RenderError> {
-        Ok(self
-            .read_cell_graphemes(terminal, generation, row, col)?
-            .and_then(|g| {
-                if g.is_empty() {
-                    None
-                } else {
-                    Some(g.into_iter().collect())
-                }
-            }))
+        Ok(self.read_cell_graphemes(walk, row, col)?.and_then(|g| {
+            if g.is_empty() {
+                None
+            } else {
+                Some(g.into_iter().collect())
+            }
+        }))
     }
 
     /// Shared cell-grapheme lookup backing [`Self::read_grapheme_at`] and
@@ -236,8 +266,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// or `None` when `(row, col)` is out of range.
     fn read_cell_graphemes(
         &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-        generation: TerminalGeneration,
+        walk: ReplicaWalk<'_, 'alloc, '_>,
         row: u16,
         col: u16,
     ) -> Result<Option<Vec<char>>, RenderError> {
@@ -245,7 +274,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
             snapshot,
             rows,
             cells,
-        } = self.pool.begin_generation(terminal, generation)?;
+        } = self.pool.begin(walk.terminal, walk.generation)?;
         let rows_total = snapshot.rows()?;
         let cols_total = snapshot.cols()?;
         if row >= rows_total || col >= cols_total {
@@ -282,13 +311,12 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// outer viewport.
     pub fn render(
         &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-        generation: TerminalGeneration,
+        walk: ReplicaWalk<'_, 'alloc, '_>,
         out: &mut impl Write,
     ) -> Result<Dirty, RenderError> {
         // No pane rect to clip against; the terminal's own grid defines the
         // extent (`u16::MAX` clamps to the grid size on both axes).
-        self.render_at(terminal, generation, out, (0, 0), (u16::MAX, u16::MAX))
+        self.render_at(walk, out, (0, 0), (u16::MAX, u16::MAX))
     }
 
     /// Render `terminal` into the outer viewport with its top-left at
@@ -311,13 +339,12 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// [`crate::render::chrome::dividers::render_dividers`].
     pub fn render_at(
         &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-        generation: TerminalGeneration,
+        walk: ReplicaWalk<'_, 'alloc, '_>,
         out: &mut impl Write,
         origin: (u16, u16),
         clip: (u16, u16),
     ) -> Result<Dirty, RenderError> {
-        self.render_at_inner(terminal, generation, out, origin, clip, false)
+        self.render_at_inner(walk, out, origin, clip, false)
     }
 
     /// Like [`Self::render_at`] but unconditionally repaints every row,
@@ -333,13 +360,12 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// split-leaves-original-pane-blank bug.
     pub fn render_at_full(
         &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-        generation: TerminalGeneration,
+        walk: ReplicaWalk<'_, 'alloc, '_>,
         out: &mut impl Write,
         origin: (u16, u16),
         clip: (u16, u16),
     ) -> Result<Dirty, RenderError> {
-        self.render_at_inner(terminal, generation, out, origin, clip, true)
+        self.render_at_inner(walk, out, origin, clip, true)
     }
 
     /// Project this pane's grid into a region of a dense [`RenderedFrame`]
@@ -367,8 +393,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// [`RenderedCell`]: phux_core::screen::RenderedCell
     pub fn render_at_cells(
         &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-        generation: TerminalGeneration,
+        walk: ReplicaWalk<'_, 'alloc, '_>,
         frame: &mut RenderedFrame,
         origin: (u16, u16),
         clip: (u16, u16),
@@ -379,7 +404,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
             snapshot,
             rows,
             cells,
-        } = self.pool.begin_generation(terminal, generation)?;
+        } = self.pool.begin(walk.terminal, walk.generation)?;
         // Clip to the render rect, mirroring `render_at_inner`: a
         // server-authoritative mirror may transiently exceed the client's
         // layout rect during a resize handshake; confine the walk so a wider
@@ -459,14 +484,9 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// one Terminal rendered into one slot under the nk07/xjgs geometry
     /// policy. True multi-leaf mirroring (the same Terminal in N slots) is a
     /// layout-model change and is out of scope here.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the walked terminal's generation joins an established paint arg-list; same arg-list refactor follow-up as paint_full_frame"
-    )]
     pub fn render_at_letterboxed(
         &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-        generation: TerminalGeneration,
+        walk: ReplicaWalk<'_, 'alloc, '_>,
         out: &mut impl Write,
         rect_origin: (u16, u16),
         rect_clip: (u16, u16),
@@ -479,20 +499,12 @@ impl<'alloc> TerminalRenderer<'alloc> {
         // over the interior. Skipped entirely when there is no pad (the
         // mirror-fills-the-rect / clamp case), keeping that path byte-identical.
         emit_letterbox_margins(out, lb)?;
-        self.render_at_inner(
-            terminal,
-            generation,
-            out,
-            lb.inner_origin,
-            lb.inner_clip,
-            force_full,
-        )
+        self.render_at_inner(walk, out, lb.inner_origin, lb.inner_clip, force_full)
     }
 
     fn render_at_inner(
         &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-        generation: TerminalGeneration,
+        walk: ReplicaWalk<'_, 'alloc, '_>,
         out: &mut impl Write,
         origin: (u16, u16),
         clip: (u16, u16),
@@ -509,7 +521,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
             snapshot,
             rows,
             cells,
-        } = self.pool.begin_generation(terminal, generation)?;
+        } = self.pool.begin(walk.terminal, walk.generation)?;
         let dirty = if force_full {
             Dirty::Full
         } else {
@@ -518,7 +530,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
 
         let emitted_kitty = matches!(dirty, Dirty::Clean)
             && kitty_replay::emit_kitty_graphics_replay(
-                terminal,
+                walk.terminal,
                 &mut self.kitty_placements,
                 out,
                 origin,
@@ -611,7 +623,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
         }
 
         let _ = kitty_replay::emit_kitty_graphics_replay(
-            terminal,
+            walk.terminal,
             &mut self.kitty_placements,
             out,
             origin,
@@ -1026,7 +1038,7 @@ mod tests {
             rectangle: false,
         }));
         let mut out: Vec<u8> = Vec::new();
-        let _ = r.render_at_full(&t, TEST_GENERATION, &mut out, (0, 0), (10, 2));
+        let _ = r.render_at_full(ReplicaWalk::for_test(&t), &mut out, (0, 0), (10, 2));
         let s = String::from_utf8_lossy(&out);
         // Inverse is emitted first in emit_sgr_set, so the param leads the CSI.
         assert!(
@@ -1044,7 +1056,7 @@ mod tests {
         // And without a selection the same render has no reverse-video.
         r.set_selection(None);
         let mut plain: Vec<u8> = Vec::new();
-        let _ = r.render_at_full(&t, TEST_GENERATION, &mut plain, (0, 0), (10, 2));
+        let _ = r.render_at_full(ReplicaWalk::for_test(&t), &mut plain, (0, 0), (10, 2));
         assert!(!String::from_utf8_lossy(&plain).contains("\x1b[7"));
     }
 
@@ -1077,12 +1089,12 @@ mod tests {
 
         r.set_selection(Some(sel_corners(false)));
         let mut linear_out: Vec<u8> = Vec::new();
-        let _ = r.render_at_full(&t, TEST_GENERATION, &mut linear_out, (0, 0), (8, 3));
+        let _ = r.render_at_full(ReplicaWalk::for_test(&t), &mut linear_out, (0, 0), (8, 3));
         let linear = String::from_utf8_lossy(&linear_out);
 
         r.set_selection(Some(sel_corners(true)));
         let mut block_out: Vec<u8> = Vec::new();
-        let _ = r.render_at_full(&t, TEST_GENERATION, &mut block_out, (0, 0), (8, 3));
+        let _ = r.render_at_full(ReplicaWalk::for_test(&t), &mut block_out, (0, 0), (8, 3));
         let block = String::from_utf8_lossy(&block_out);
 
         // Both invert *something*, and the two geometries produce different VT.
@@ -1146,7 +1158,7 @@ mod tests {
 
         let mut before: Vec<u8> = Vec::new();
         let _ = renderer
-            .render_at_full(&t, TEST_GENERATION, &mut before, (0, 0), (10, 2))
+            .render_at_full(ReplicaWalk::for_test(&t), &mut before, (0, 0), (10, 2))
             .expect("first paint");
         assert_eq!(
             renderer.pool.last_dims(),
@@ -1163,7 +1175,7 @@ mod tests {
 
         let mut after: Vec<u8> = Vec::new();
         let _ = renderer
-            .render_at_full(&t, TEST_GENERATION, &mut after, (0, 0), (10, 4))
+            .render_at_full(ReplicaWalk::for_test(&t), &mut after, (0, 0), (10, 4))
             .expect("post-resize paint");
         assert_eq!(
             renderer.pool.last_dims(),
@@ -1195,7 +1207,15 @@ mod tests {
 
         let mut first = Vec::new();
         let _ = renderer
-            .render_at(&t, 1, &mut first, (0, 0), (10, 2))
+            .render_at(
+                ReplicaWalk {
+                    terminal: &t,
+                    generation: 1,
+                },
+                &mut first,
+                (0, 0),
+                (10, 2),
+            )
             .expect("first paint");
         assert!(
             String::from_utf8_lossy(&first).contains("AA"),
@@ -1205,7 +1225,15 @@ mod tests {
         // Steady state under the same token: nothing changed, nothing paints.
         let mut steady = Vec::new();
         let _ = renderer
-            .render_at(&t, 1, &mut steady, (0, 0), (10, 2))
+            .render_at(
+                ReplicaWalk {
+                    terminal: &t,
+                    generation: 1,
+                },
+                &mut steady,
+                (0, 0),
+                (10, 2),
+            )
             .expect("steady paint");
         assert!(
             !String::from_utf8_lossy(&steady).contains("AA"),
@@ -1215,7 +1243,15 @@ mod tests {
         // New token, same terminal, same geometry: must repaint everything.
         let mut swapped = Vec::new();
         let _ = renderer
-            .render_at(&t, 2, &mut swapped, (0, 0), (10, 2))
+            .render_at(
+                ReplicaWalk {
+                    terminal: &t,
+                    generation: 2,
+                },
+                &mut swapped,
+                (0, 0),
+                (10, 2),
+            )
             .expect("post-swap paint");
         assert!(
             String::from_utf8_lossy(&swapped).contains("AA"),
@@ -1231,7 +1267,7 @@ mod tests {
         let mut renderer = TerminalRenderer::new().expect("TerminalRenderer::new");
         let mut buf = Vec::new();
         let _ = renderer
-            .render(&terminal, TEST_GENERATION, &mut buf)
+            .render(ReplicaWalk::for_test(&terminal), &mut buf)
             .expect("render");
         // Must start by hiding the cursor.
         assert!(buf.starts_with(b"\x1b[?25l"));
@@ -1255,7 +1291,7 @@ mod tests {
         let mut buf = Vec::new();
         // Paint as the bottom leaf of a 24-row split: origin (x=0, y=13).
         let _ = renderer
-            .render_at(&terminal, TEST_GENERATION, &mut buf, (0, 13), (5, 2))
+            .render_at(ReplicaWalk::for_test(&terminal), &mut buf, (0, 13), (5, 2))
             .expect("render_at");
         assert_eq!(
             renderer.last_cursor_local(),
@@ -1285,14 +1321,14 @@ mod tests {
         let mut renderer = TerminalRenderer::new().expect("TerminalRenderer::new");
         let mut buf = Vec::new();
         let _ = renderer
-            .render(&terminal, TEST_GENERATION, &mut buf)
+            .render(ReplicaWalk::for_test(&terminal), &mut buf)
             .expect("render 1");
 
         // Enter alt screen, paint a TUI frame, render it.
         terminal.vt_write(b"\x1b[?1049h\x1b[2J\x1b[HTUI-FRAME");
         buf.clear();
         let _ = renderer
-            .render(&terminal, TEST_GENERATION, &mut buf)
+            .render(ReplicaWalk::for_test(&terminal), &mut buf)
             .expect("render 2");
         assert!(
             String::from_utf8_lossy(&buf).contains("TUI-FRAME"),
@@ -1303,7 +1339,7 @@ mod tests {
         terminal.vt_write(b"\x1b[?1049l\r\n$ new-prompt");
         buf.clear();
         let dirty = renderer
-            .render(&terminal, TEST_GENERATION, &mut buf)
+            .render(ReplicaWalk::for_test(&terminal), &mut buf)
             .expect("render 3");
         let s = String::from_utf8_lossy(&buf);
         assert!(
@@ -1328,14 +1364,14 @@ mod tests {
         let mut renderer = TerminalRenderer::new().expect("TerminalRenderer::new");
         let mut first = Vec::new();
         let _ = renderer
-            .render(&terminal, TEST_GENERATION, &mut first)
+            .render(ReplicaWalk::for_test(&terminal), &mut first)
             .expect("first render");
         assert!(!first.is_empty(), "first render must emit content");
 
         // No new vt_write — the grid is unchanged, so render is Clean.
         let mut second = Vec::new();
         let dirty = renderer
-            .render(&terminal, TEST_GENERATION, &mut second)
+            .render(ReplicaWalk::for_test(&terminal), &mut second)
             .expect("second render");
         assert!(
             matches!(dirty, Dirty::Clean),
@@ -1359,7 +1395,7 @@ mod tests {
         let mut renderer = TerminalRenderer::new().expect("TerminalRenderer::new");
         let mut first = Vec::new();
         let _ = renderer
-            .render(&terminal, TEST_GENERATION, &mut first)
+            .render(ReplicaWalk::for_test(&terminal), &mut first)
             .expect("first render");
         assert_eq!(renderer.last_cursor(), Some((0, 5)));
 
@@ -1367,7 +1403,7 @@ mod tests {
         terminal.vt_write(b"\x1b[1;3H");
         let mut second = Vec::new();
         let dirty = renderer
-            .render(&terminal, TEST_GENERATION, &mut second)
+            .render(ReplicaWalk::for_test(&terminal), &mut second)
             .expect("second render");
         assert!(
             matches!(dirty, Dirty::Clean),
@@ -1392,14 +1428,14 @@ mod tests {
         let mut renderer = TerminalRenderer::new().expect("TerminalRenderer::new");
         let mut first = Vec::new();
         let _ = renderer
-            .render(&terminal, TEST_GENERATION, &mut first)
+            .render(ReplicaWalk::for_test(&terminal), &mut first)
             .expect("first render");
         assert_eq!(renderer.last_cursor(), Some((0, 5)));
 
         terminal.vt_write(b"\x1b[?25l");
         let mut hidden = Vec::new();
         let _ = renderer
-            .render(&terminal, TEST_GENERATION, &mut hidden)
+            .render(ReplicaWalk::for_test(&terminal), &mut hidden)
             .expect("hidden render");
         assert!(
             hidden.windows(6).any(|bytes| bytes == b"\x1b[?25l"),
@@ -1411,7 +1447,7 @@ mod tests {
         terminal.vt_write(b"\x1b[?25h");
         let mut shown = Vec::new();
         let _ = renderer
-            .render(&terminal, TEST_GENERATION, &mut shown)
+            .render(ReplicaWalk::for_test(&terminal), &mut shown)
             .expect("shown render");
         assert!(shown.windows(6).any(|bytes| bytes == b"\x1b[?25h"));
         assert_eq!(renderer.last_cursor(), Some((0, 5)));
@@ -1427,14 +1463,14 @@ mod tests {
         let mut renderer = TerminalRenderer::new().expect("TerminalRenderer::new");
         let mut first = Vec::new();
         let _ = renderer
-            .render(&terminal, TEST_GENERATION, &mut first)
+            .render(ReplicaWalk::for_test(&terminal), &mut first)
             .expect("first render");
 
         // Park the cursor on row 1 (CUP row 2, col 1) and overwrite it.
         terminal.vt_write(b"\x1b[2;1HNEW");
         let mut second = Vec::new();
         let _ = renderer
-            .render(&terminal, TEST_GENERATION, &mut second)
+            .render(ReplicaWalk::for_test(&terminal), &mut second)
             .expect("second render");
         let s = String::from_utf8_lossy(&second);
         // The changed row (row index 1 ⇒ CUP row 2) must be re-emitted with
@@ -1473,7 +1509,7 @@ mod tests {
         let mut renderer = TerminalRenderer::new().expect("TerminalRenderer::new");
         let mut buf = Vec::new();
         let _ = renderer
-            .render(terminal, TEST_GENERATION, &mut buf)
+            .render(ReplicaWalk::for_test(terminal), &mut buf)
             .expect("render");
         buf
     }
@@ -1694,7 +1730,12 @@ mod tests {
         let rect_cols = 12u16;
         let mut out: Vec<u8> = Vec::new();
         let _ = renderer
-            .render_at(&terminal, TEST_GENERATION, &mut out, (0, 0), (rect_cols, 1))
+            .render_at(
+                ReplicaWalk::for_test(&terminal),
+                &mut out,
+                (0, 0),
+                (rect_cols, 1),
+            )
             .expect("render");
         let s = String::from_utf8_lossy(&out);
         // Columns inside the rect (0..12 ⇒ 'A'..'L') are painted.
@@ -1724,7 +1765,12 @@ mod tests {
         // Rect is only 2 rows tall.
         let mut out: Vec<u8> = Vec::new();
         let _ = renderer
-            .render_at(&terminal, TEST_GENERATION, &mut out, (0, 0), (cols, 2))
+            .render_at(
+                ReplicaWalk::for_test(&terminal),
+                &mut out,
+                (0, 0),
+                (cols, 2),
+            )
             .expect("render");
         let s = String::from_utf8_lossy(&out);
         // Rows 0..2 emit a CUP (1-based rows 1 and 2); row 2/3 (1-based 3/4)
@@ -1753,7 +1799,12 @@ mod tests {
         let mut renderer = TerminalRenderer::new().expect("renderer");
         let mut frame = RenderedFrame::blank(12, 4);
         let cursor = renderer
-            .render_at_cells(&terminal, TEST_GENERATION, &mut frame, (1, 1), (10, 3))
+            .render_at_cells(
+                ReplicaWalk::for_test(&terminal),
+                &mut frame,
+                (1, 1),
+                (10, 3),
+            )
             .expect("render_at_cells");
 
         assert_eq!(frame.cell(1, 1).expect("in range").grapheme, "H");
@@ -1860,8 +1911,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let _ = renderer
             .render_at_letterboxed(
-                &terminal,
-                TEST_GENERATION,
+                ReplicaWalk::for_test(&terminal),
                 &mut out,
                 (0, 0),
                 (8, 4),
@@ -1903,8 +1953,7 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let _ = renderer
             .render_at_letterboxed(
-                &terminal,
-                TEST_GENERATION,
+                ReplicaWalk::for_test(&terminal),
                 &mut out,
                 (0, 0),
                 (8, 4),
@@ -1949,7 +1998,7 @@ mod tests {
         let mut r_a = TerminalRenderer::new().expect("renderer");
         let mut today: Vec<u8> = Vec::new();
         let _ = r_a
-            .render_at_full(&t_a, TEST_GENERATION, &mut today, (0, 0), (10, 3))
+            .render_at_full(ReplicaWalk::for_test(&t_a), &mut today, (0, 0), (10, 3))
             .expect("render_at_full");
 
         let t_b = make();
@@ -1957,8 +2006,7 @@ mod tests {
         let mut letterboxed: Vec<u8> = Vec::new();
         let _ = r_b
             .render_at_letterboxed(
-                &t_b,
-                TEST_GENERATION,
+                ReplicaWalk::for_test(&t_b),
                 &mut letterboxed,
                 (0, 0),
                 (10, 3),
@@ -1988,7 +2036,7 @@ mod tests {
         let mut r_a = TerminalRenderer::new().expect("renderer");
         let mut clamp: Vec<u8> = Vec::new();
         let _ = r_a
-            .render_at_full(&t_a, TEST_GENERATION, &mut clamp, (0, 0), (12, 2))
+            .render_at_full(ReplicaWalk::for_test(&t_a), &mut clamp, (0, 0), (12, 2))
             .expect("render_at_full");
 
         // Letterboxed path with mirror 20x4 > rect 12x2: must match.
@@ -1997,8 +2045,7 @@ mod tests {
         let mut letterboxed: Vec<u8> = Vec::new();
         let _ = r_b
             .render_at_letterboxed(
-                &t_b,
-                TEST_GENERATION,
+                ReplicaWalk::for_test(&t_b),
                 &mut letterboxed,
                 (0, 0),
                 (12, 2),
@@ -2025,8 +2072,7 @@ mod tests {
         // Rect 8x4, mirror 4x2 ⇒ pad (2 cols, 1 row).
         let _ = renderer
             .render_at_letterboxed(
-                &terminal,
-                TEST_GENERATION,
+                ReplicaWalk::for_test(&terminal),
                 &mut out,
                 (0, 0),
                 (8, 4),
@@ -2055,7 +2101,7 @@ mod tests {
         let mut renderer = TerminalRenderer::new().expect("renderer");
         let mut frame = RenderedFrame::blank(6, 2);
         let _ = renderer
-            .render_at_cells(&terminal, TEST_GENERATION, &mut frame, (0, 0), (6, 2))
+            .render_at_cells(ReplicaWalk::for_test(&terminal), &mut frame, (0, 0), (6, 2))
             .expect("render_at_cells");
         assert_eq!(frame.cell(0, 0).expect("in range").grapheme, "世");
         assert_eq!(

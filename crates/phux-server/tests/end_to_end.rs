@@ -19,13 +19,13 @@ use phux_protocol::wire::frame::{
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, recv_until_detached,
-    run_local, send_frame, spawn_server, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, expect_protocol_error_close,
+    recv_typed, recv_until_detached, run_local, send_frame, spawn_server, wait_for_raw_socket,
 };
 
 /// Bounded join: every server task must terminate within this window
@@ -106,23 +106,6 @@ async fn recv_command_result(stream: &mut UnixStream, expected_request: u32) -> 
             return result;
         }
     }
-}
-
-async fn assert_server_closed(stream: &mut UnixStream) {
-    let (_, detached) = recv_typed(stream).await;
-    assert!(matches!(
-        detached,
-        FrameKind::Detached {
-            reason: Some(DetachReason::ProtocolError),
-            ..
-        }
-    ));
-    let mut byte = [0_u8; 1];
-    let read = timeout(WIRE_RECV_TIMEOUT, stream.read(&mut byte))
-        .await
-        .expect("server must close after flushing the protocol error")
-        .expect("read after protocol error");
-    assert_eq!(read, 0, "server must close after ERROR and DETACHED");
 }
 
 #[test]
@@ -253,7 +236,7 @@ fn zero_attach_id_is_rejected_before_attached_state() {
                 ..
             } if message.contains("attach_id must be nonzero")
         ));
-        assert_server_closed(&mut stream).await;
+        expect_protocol_error_close(&mut stream, WIRE_RECV_TIMEOUT).await;
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });
 }
@@ -288,7 +271,7 @@ fn client_sent_hello_ok_is_fatal_after_negotiation() {
                 ..
             }
         ));
-        assert_server_closed(&mut stream).await;
+        expect_protocol_error_close(&mut stream, WIRE_RECV_TIMEOUT).await;
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });
 }
@@ -363,7 +346,7 @@ fn native_required_without_common_codec_fails_before_attach() {
             }
             other => panic!("expected CODEC_UNAVAILABLE, got {other:?}"),
         }
-        assert_server_closed(&mut stream).await;
+        expect_protocol_error_close(&mut stream, WIRE_RECV_TIMEOUT).await;
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });
 }
@@ -418,7 +401,7 @@ fn negotiated_chunk_limit_rejects_oversized_payload_at_runtime_decode() {
                 ..
             }
         ));
-        assert_server_closed(&mut stream).await;
+        expect_protocol_error_close(&mut stream, WIRE_RECV_TIMEOUT).await;
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });
 }
@@ -468,7 +451,7 @@ fn incompatible_handshake_returns_actionable_error() {
                 }
                 other => panic!("expected VERSION_INCOMPATIBLE, got {other:?}"),
             }
-            assert_server_closed(&mut stream).await;
+            expect_protocol_error_close(&mut stream, WIRE_RECV_TIMEOUT).await;
         }
 
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
@@ -492,7 +475,7 @@ fn uds_requires_hello_for_stateful_frames_but_ping_remains_stateless() {
                 ..
             }
         ));
-        assert_server_closed(&mut attach_stream).await;
+        expect_protocol_error_close(&mut attach_stream, WIRE_RECV_TIMEOUT).await;
 
         let mut ping_stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         send_frame(&mut ping_stream, &FrameKind::Ping { nonce: 0x5eed }).await;
@@ -517,7 +500,7 @@ fn uds_requires_hello_for_stateful_frames_but_ping_remains_stateless() {
                 ..
             }
         ));
-        assert_server_closed(&mut ping_stream).await;
+        expect_protocol_error_close(&mut ping_stream, WIRE_RECV_TIMEOUT).await;
 
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });
@@ -564,7 +547,7 @@ fn post_attach_duplicate_hello_is_rejected_and_flushed() {
             }
             other => panic!("expected duplicate HELLO error, got {other:?}"),
         }
-        assert_server_closed(&mut stream).await;
+        expect_protocol_error_close(&mut stream, WIRE_RECV_TIMEOUT).await;
 
         shutdown_and_join(shutdown_tx, server_handle, &socket_path).await;
     });

@@ -1205,10 +1205,12 @@ impl WsReader {
         };
         // One binary message is exactly one frame: `check_frame` rejects an
         // out-of-range length and a message size that disagrees with the
-        // length it declares, so the decode below cannot leave a tail.
-        framing::check_frame(&frame).map_err(|err| {
-            AttachError::Protocol(format!("server sent a malformed WebSocket frame: {err}"))
-        })?;
+        // length it declares, so the decode below cannot leave a tail. The
+        // violation stays typed (`AttachError::Framing`) rather than becoming
+        // prose here: SPEC §5's `ERROR { FRAME_TOO_LARGE }` answer is owed by
+        // any receiving peer, and this client's emission of it is deferred,
+        // not declined — see the variant's doc.
+        framing::check_frame(&frame)?;
         let (decoded, _rest) = FrameKind::decode_with_limits(&frame, self.bootstrap_limits)
             .map_err(|err| {
                 AttachError::Protocol(format!("server sent undecodable frame: {err:?}"))
@@ -1227,9 +1229,9 @@ fn decode_buffered(
     buf: &mut BytesMut,
     bootstrap_limits: BootstrapLimits,
 ) -> Result<Option<FrameKind>, AttachError> {
-    let Some(framed) = framing::split_frame(buf)
-        .map_err(|err| AttachError::Protocol(format!("server sent a malformed frame: {err}")))?
-    else {
+    // Typed, like the WebSocket seam above: the §5 goodbye this client owes
+    // is deferred (no write half here), and the type is what marks the gap.
+    let Some(framed) = framing::split_frame(buf)? else {
         // Prefix or body still in flight — wait for more bytes.
         return Ok(None);
     };

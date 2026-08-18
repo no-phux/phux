@@ -755,16 +755,28 @@ mod tests {
     /// reported as `Stalled` within the liveness window instead of hanging.
     /// `Stalled` is what the client maps to a disconnect, so this is the edge
     /// that puts a network-switched laptop onto the reconnect path at all.
+    ///
+    /// The lower bound is measured from `opened`, the instant the policy
+    /// takes as its own `last_inbound` — *not* from after the dial. The
+    /// policy condemns the peer at `opened + TEST_DEAD` no matter how long
+    /// the TCP connect and WebSocket handshake took, so timing the window
+    /// from after the handshake silently subtracts the handshake from it.
+    /// That is what made this test load-dependent (phux-5wxp.2): under a
+    /// saturated pool it failed 10 times in 200 at 297.5ms-299.99975ms
+    /// against the 300ms window, one of them short by 250 *nanoseconds*.
+    /// Sharing the origin makes the bound load-independent — elapsed time
+    /// only ever grows — while still failing loudly if the policy ever
+    /// condemns a peer before its window is up.
     #[tokio::test]
     async fn keepalive_reports_a_stalled_peer_instead_of_hanging() {
         let url = spawn_silent_ws_server().await;
+        let opened = Instant::now();
         let (mut reader, mut writer) = connect_halves(
             &url,
-            WsKeepalive::with_timings(Instant::now(), TEST_PING, TEST_DEAD),
+            WsKeepalive::with_timings(opened, TEST_PING, TEST_DEAD),
         )
         .await;
 
-        let started = Instant::now();
         let err =
             tokio::time::timeout(TEST_DEAD * 10, recv_message_alive(&mut reader, &mut writer))
                 .await
@@ -777,9 +789,9 @@ mod tests {
             "got {err}"
         );
         assert!(
-            started.elapsed() >= TEST_DEAD,
+            opened.elapsed() >= TEST_DEAD,
             "must not condemn a peer before its window elapses: {:?}",
-            started.elapsed()
+            opened.elapsed()
         );
     }
 

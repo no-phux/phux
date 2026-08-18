@@ -23,14 +23,12 @@
 
 use std::time::Duration;
 
-use phux_protocol::wire::frame::{
-    DetachReason, ErrorCode, FrameKind, MAX_FRAME_LEN, TYPE_DETACHED, TYPE_ERROR,
-};
+use phux_protocol::wire::frame::{ErrorCode, FrameKind, MAX_FRAME_LEN, TYPE_ERROR};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, expect_eof_within, recv_typed, run_local, spawn_server,
+    SOCKET_CONNECT_DEADLINE, expect_protocol_error_close, recv_typed, run_local, spawn_server,
     wait_for_socket,
 };
 
@@ -82,27 +80,11 @@ fn assert_framing_violation_close(header: [u8; 4]) {
             other => panic!("expected FrameKind::Error, got {other:?}"),
         }
 
-        // ---- 2. DETACHED { reason: PROTOCOL_ERROR } ----
-        let (type_byte, frame) = recv_typed(&mut stream).await;
-        assert_eq!(
-            type_byte, TYPE_DETACHED,
-            "ERROR must be followed by DETACHED (got type 0x{type_byte:02x})",
-        );
-        match frame {
-            FrameKind::Detached { reason, .. } => {
-                assert_eq!(
-                    reason,
-                    Some(DetachReason::ProtocolError),
-                    "a framing violation is a protocol error",
-                );
-            }
-            other => panic!("expected FrameKind::Detached, got {other:?}"),
-        }
-
-        // ---- 3. The transport closes. ----
-        expect_eof_within(&mut stream, EOF_DEADLINE)
-            .await
-            .expect("server must close the transport after ERROR + DETACHED");
+        // ---- 2+3. DETACHED { reason: PROTOCOL_ERROR }, then the close. ----
+        // The §14 fatal-close tail is identical for every protocol violation,
+        // so it is asserted by the shared testkit helper; only the ERROR above
+        // is specific to §5 framing.
+        expect_protocol_error_close(&mut stream, EOF_DEADLINE).await;
 
         drop(stream);
         shutdown_tx.send(()).ok();

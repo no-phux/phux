@@ -1316,50 +1316,114 @@ fn clear_adoption_pending() {
     let _ = std::fs::remove_file(adoption_marker_path());
 }
 
-/// The unit an armed adoption is recorded against, if the record and the
-/// unit are both still present — the read-only view `phux doctor` reports
-/// from (phux-8514, in the spirit of ADR-0080: an invisible supervision
-/// state is how a broken server passes for a working one). Only looks;
-/// sweeping a stale marker stays with the paths that own the state
-/// ([`armed_unit_for`], [`run_status`]).
-pub(crate) fn armed_adoption_unit() -> Option<PathBuf> {
-    if !adoption_marker_path().exists() {
-        return None;
-    }
-    let manager = Manager::host()?;
-    let unit_path = manager.unit_path(profile_suffix().as_deref()).ok()?;
-    unit_path.exists().then_some(unit_path)
+/// The one user-facing explanation of what an armed supervision unit means.
+///
+/// Written once because it is said twice — `phux service status` renders it
+/// under the `state armed` line, `phux doctor` carries it as the hint on its
+/// armed-supervision warning — and two copies of one explanation drift the
+/// first time either is edited (they had already drifted by a sentence and a
+/// semicolon before this was lifted out).
+///
+/// It carries the whole explanation, not the invariant half: "keeps its
+/// panes", "is not restart-managed", "here is when supervision starts" and
+/// "here is how to cancel" are one thought, and splitting them is exactly how
+/// one site ended up reassuring the user without naming the risk. Prose, not
+/// terminal layout: no embedded newlines, so each caller wraps it the way its
+/// own surface wraps.
+pub(crate) const ARMED_SUPERVISION_EXPLANATION: &str = "the running server keeps its panes and stays unsupervised, so a crash before the \
+     hand-over is not caught by anything; supervision begins at the next login, or at the \
+     first `phux` command after that server exits, and `phux service uninstall` cancels it";
+
+/// Whose supervision a [`supervision_state`] question is about.
+///
+/// The socket guard is load-bearing wherever the answer decides what happens
+/// to a *server*: a unit armed for another profile, or for an operator's
+/// `--socket` override, must neither divert this instance's cold start
+/// (ADR-0088) nor colour this instance's diagnosis. `phux service status` is
+/// the one caller whose subject is the unit itself rather than a server, and
+/// it asks without a socket.
+#[derive(Clone, Copy)]
+enum Subject<'a> {
+    /// The instance that would bind `socket_path`.
+    Server(&'a Path),
+    /// This profile's unit, whatever socket it was installed against.
+    Unit,
 }
 
-/// The armed unit waiting to supervise `socket_path`, if there is one.
+/// What an adoption marker says about supervision right now.
 ///
-/// Three conditions, all required, because the consequence of a false positive
-/// is starting a *different* instance's server:
+/// Deliberately says nothing about whether the init system is *running* the
+/// unit: that costs a subprocess, and the one caller that needs it
+/// ([`run_status`]) probes for it directly.
+enum SupervisionState {
+    /// No pending adoption for this subject — no marker, no unit generator
+    /// for this platform, or a marker whose unit belongs to some other
+    /// instance.
+    NotArmed,
+    /// A marker names a unit that is no longer readable. The adoption can
+    /// never complete, so callers that own the state sweep the marker; the
+    /// read-only callers leave it alone.
+    MarkerWithoutUnit,
+    /// Armed: the unit is written and deliberately unloaded, waiting for the
+    /// incumbent to exit.
+    Armed { manager: Manager, unit: PathBuf },
+}
+
+/// The single predicate behind every "is supervision armed?" question.
+///
+/// One reader per verb had grown into three predicates over the same two
+/// files, and the newest of them had dropped the socket guard — so `phux
+/// doctor` would report supervision armed for a marker belonging to a
+/// different profile or `--socket` override than the instance it was
+/// diagnosing. The conditions are stated once, here:
 ///
 /// 1. a marker exists — an `--adopt` install happened and has not completed;
-/// 2. the unit it names is still on disk — an `uninstall` between then and now
-///    revokes the adoption, and a marker whose unit is gone is swept here
-///    rather than retried forever;
-/// 3. the unit's own socket is the socket the caller wants. `unit_socket_override`
-///    reads it out of the unit exactly as `reconcile` does, so "the unit that
-///    supervises this socket" means one thing across the codebase. A unit for
-///    another profile, or for an operator's `--socket` override, is not an
-///    answer to this question and is left alone.
-fn armed_unit_for(socket_path: &Path) -> Option<(Manager, PathBuf)> {
+/// 2. the unit it names is still readable — an `uninstall` between then and
+///    now revokes the adoption ([`SupervisionState::MarkerWithoutUnit`]);
+/// 3. for a [`Subject::Server`], the unit's own socket is that server's
+///    socket. `unit_socket_override` reads it out of the unit exactly as
+///    `reconcile` does, so "the unit that supervises this socket" means one
+///    thing across the codebase.
+///
+/// Sweeping is not done here and is not a parameter: it is
+/// [`SupervisionState::MarkerWithoutUnit`], acted on at the call sites that
+/// own the state, so "only looks, never sweeps" is visible in every caller
+/// rather than hidden in an argument.
+fn supervision_state(subject: Subject<'_>) -> SupervisionState {
     if !adoption_marker_path().exists() {
-        return None;
+        return SupervisionState::NotArmed;
     }
-    let manager = Manager::host()?;
-    let Ok(unit_path) = manager.unit_path(profile_suffix().as_deref()) else {
-        return None;
+    let Some(manager) = Manager::host() else {
+        return SupervisionState::NotArmed;
     };
-    let Ok(body) = std::fs::read_to_string(&unit_path) else {
-        // The unit is gone; the adoption cannot complete and must not be
-        // retried on every cold start for the rest of the host's life.
-        clear_adoption_pending();
-        return None;
+    let Ok(unit) = manager.unit_path(profile_suffix().as_deref()) else {
+        return SupervisionState::NotArmed;
     };
-    unit_supervises(manager, &body, socket_path).then_some((manager, unit_path))
+    let Ok(body) = std::fs::read_to_string(&unit) else {
+        return SupervisionState::MarkerWithoutUnit;
+    };
+    match subject {
+        Subject::Unit => SupervisionState::Armed { manager, unit },
+        Subject::Server(socket_path) if unit_supervises(manager, &body, socket_path) => {
+            SupervisionState::Armed { manager, unit }
+        }
+        Subject::Server(_) => SupervisionState::NotArmed,
+    }
+}
+
+/// The unit an armed adoption is recorded against for the server on
+/// `socket_path` — the read-only view `phux doctor` reports from (phux-8514,
+/// in the spirit of ADR-0080: an invisible supervision state is how a broken
+/// server passes for a working one).
+///
+/// Only looks. A marker whose unit has vanished is left for the paths that
+/// own the state ([`complete_pending_adoption`], [`run_uninstall`]); doctor
+/// reports, it does not repair.
+pub(crate) fn armed_adoption_unit(socket_path: &Path) -> Option<PathBuf> {
+    match supervision_state(Subject::Server(socket_path)) {
+        SupervisionState::Armed { unit, .. } => Some(unit),
+        SupervisionState::NotArmed | SupervisionState::MarkerWithoutUnit => None,
+    }
 }
 
 /// Does `body` describe a unit whose server would bind `socket_path`?
@@ -1402,8 +1466,15 @@ pub(crate) enum Handover {
 /// holds the error document and nothing else, so the hand-over narrates
 /// itself only when a human is reading.
 pub(crate) fn complete_pending_adoption(socket_path: &Path, quiet: bool) -> Handover {
-    let Some((manager, unit_path)) = armed_unit_for(socket_path) else {
-        return Handover::NotTaken;
+    let (manager, unit_path) = match supervision_state(Subject::Server(socket_path)) {
+        SupervisionState::Armed { manager, unit } => (manager, unit),
+        // The unit is gone; the adoption cannot complete and must not be
+        // retried on every cold start for the rest of the host's life.
+        SupervisionState::MarkerWithoutUnit => {
+            clear_adoption_pending();
+            return Handover::NotTaken;
+        }
+        SupervisionState::NotArmed => return Handover::NotTaken,
     };
     match start_armed_unit(manager, &unit_path) {
         Ok(()) => {
@@ -1748,6 +1819,10 @@ pub(crate) fn run_uninstall() -> ExitCode {
     // Revoke any armed adoption. Without this, uninstalling between the
     // `--adopt` and the hand-over would leave a marker pointing at a unit the
     // user just deleted, and the next cold start would try to load it.
+    //
+    // The raw record rather than `supervision_state`, deliberately: the unit
+    // this would be asked about was deleted three statements ago. Revoking is
+    // not a diagnosis, and every marker goes, whatever it named.
     if adoption_marker_path().exists() {
         clear_adoption_pending();
         outln!("Cancelled the pending adoption; nothing will take this socket over.");
@@ -1808,18 +1883,24 @@ pub(crate) fn run_status() -> ExitCode {
             .output(),
     };
 
-    match status_report(adoption_marker_path().exists(), probe) {
+    // `Subject::Unit`, not the running instance's socket: this verb's subject
+    // is the unit printed above, whatever socket it was installed against.
+    let armed = matches!(
+        supervision_state(Subject::Unit),
+        SupervisionState::Armed { .. }
+    );
+    match status_report(armed, probe) {
         Ok(report) => {
-            if report.adoption_complete {
+            if armed && report.running {
                 // The init system owns the job, so the recorded hand-over is
                 // done, not pending. Sweep the marker so no later verb keeps
                 // describing a state that has already resolved — the same
-                // sweep-on-sight rule `armed_unit_for` applies to a marker
-                // whose unit has vanished.
+                // sweep-on-sight rule `complete_pending_adoption` applies to a
+                // marker whose unit has vanished.
                 clear_adoption_pending();
             }
             out!("{}", report.text);
-            if report.ok {
+            if armed || report.running {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
@@ -1837,13 +1918,16 @@ pub(crate) fn run_status() -> ExitCode {
 struct StatusReport {
     /// Everything the verb writes to stdout past the `unit` line.
     text: String,
-    /// Whether the verb exits zero. Armed counts as success: the unit is in
-    /// precisely the state `--adopt` promised, not a degraded one.
-    ok: bool,
-    /// The armed record is out of date — the init system is already running
-    /// the unit, so the hand-over it describes has completed and the marker
-    /// should be swept.
-    adoption_complete: bool,
+    /// Whether the init system is running the unit.
+    ///
+    /// The only fact the probe adds. Both verdicts the caller needs follow
+    /// from it and the armed record it already holds — exit zero when
+    /// `armed || running` (armed is the state `--adopt` promised, not a
+    /// degraded one), and sweep the marker when `armed && running`, because
+    /// a running job under an armed record means the hand-over completed.
+    /// Carrying those as fields as well gave twelve values to keep consistent
+    /// across four arms, with nothing stopping an arm from disagreeing.
+    running: bool,
 }
 
 /// The report as a pure function of the armed record and the init system's
@@ -1869,45 +1953,29 @@ fn status_report(
     // launchctl narrates its own failures ("Bad request.") and is never
     // forwarded.
     let init_report = String::from_utf8_lossy(&output.stdout);
-    let report = match (armed, running) {
-        (true, false) => StatusReport {
-            text:
-                "state armed — installed with --adopt and waiting for the running server to exit\n\
-                   \n\
-                   The server holding this unit's socket is unsupervised and keeps its panes.\n\
-                   Supervision begins at the next login, or at the first `phux` command after\n\
-                   that server exits. `phux service uninstall` cancels it.\n\
-                   \n\
-                   The init system is not running the unit — for an armed unit that is the\n\
-                   expected state, not a fault.\n"
-                    .to_owned(),
-            ok: true,
-            adoption_complete: false,
-        },
-        (true, true) => StatusReport {
-            text: format!(
-                "The hand-over armed by `phux service install --adopt` has completed: the init\n\
-                 system is running this unit now.\n\
-                 \n\
-                 {init_report}"
-            ),
-            ok: true,
-            adoption_complete: true,
-        },
-        (false, true) => StatusReport {
-            text: init_report.into_owned(),
-            ok: true,
-            adoption_complete: false,
-        },
-        (false, false) => StatusReport {
-            // The init system's stdout still goes through (systemctl explains
-            // an inactive unit there); only the verdict line is phux's.
-            text: format!("{init_report}installed, but the init system is not running it.\n"),
-            ok: false,
-            adoption_complete: false,
-        },
+    let text = match (armed, running) {
+        (true, false) => format!(
+            "state armed — installed with --adopt and waiting for the running server to exit\n\
+             \n\
+             {ARMED_SUPERVISION_EXPLANATION}\n\
+             \n\
+             The init system is not running the unit — for an armed unit that is the\n\
+             expected state, not a fault.\n"
+        ),
+        (true, true) => format!(
+            "The hand-over armed by `phux service install --adopt` has completed: the init\n\
+             system is running this unit now.\n\
+             \n\
+             {init_report}"
+        ),
+        (false, true) => init_report.into_owned(),
+        // The init system's stdout still goes through (systemctl explains an
+        // inactive unit there); only the verdict line is phux's.
+        (false, false) => {
+            format!("{init_report}installed, but the init system is not running it.\n")
+        }
     };
-    Ok(report)
+    Ok(StatusReport { text, running })
 }
 
 /// `phux service logs` — show the server's log.
@@ -2176,9 +2244,18 @@ mod tests {
         })
         .expect("the probe ran");
 
-        assert!(report.ok, "armed is the promised state, not a failure");
-        assert!(!report.adoption_complete);
+        assert!(
+            !report.running,
+            "an armed unit is deliberately unloaded, so the probe fails — and the caller's \
+             `armed || running` verdict still exits zero, while `armed && running` leaves the \
+             marker in place"
+        );
         assert!(report.text.contains("state armed"), "{}", report.text);
+        assert!(
+            report.text.contains(super::ARMED_SUPERVISION_EXPLANATION),
+            "the armed paragraph is the shared explanation verbatim: {}",
+            report.text
+        );
         assert!(
             report.text.contains("expected state, not a fault"),
             "the not-found answer must be translated into the armed vocabulary: {}",
@@ -2212,8 +2289,10 @@ mod tests {
         })
         .expect("the probe ran");
 
-        assert!(!report.ok);
-        assert!(!report.adoption_complete);
+        assert!(
+            !report.running,
+            "neither armed nor running is the one combination that exits non-zero"
+        );
         assert!(
             report
                 .text
@@ -2249,8 +2328,11 @@ mod tests {
         })
         .expect("the probe ran");
 
-        assert!(report.ok);
-        assert!(report.adoption_complete, "the stale record must be swept");
+        assert!(
+            report.running,
+            "a running job under an armed marker is `armed && running` — the caller's cue to \
+             sweep the stale record"
+        );
         assert!(report.text.contains("has completed"), "{}", report.text);
         assert!(
             report.text.contains("state = running"),
@@ -2278,8 +2360,7 @@ mod tests {
         })
         .expect("the probe ran");
 
-        assert!(report.ok);
-        assert!(!report.adoption_complete);
+        assert!(report.running);
         assert!(report.text.contains("com.phux.server"), "{}", report.text);
         assert!(!report.text.contains("noise on stderr"), "{}", report.text);
     }

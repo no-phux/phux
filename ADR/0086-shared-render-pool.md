@@ -9,10 +9,13 @@ last-reviewed: 2026-08-17
 **TL;DR.** Both ends of the wire pool a libghostty `RenderState` +
 `RowIterator` + `CellIterator`, and a pooled state serves stale rows when the
 grid it cached is no longer the grid it walks. That trio plus its rebuild —
-on a geometry change, and on a caller-named identity change for walkers whose
-`Terminal` can be replaced — now lives in one type,
-`phux_protocol::render_pool::RenderPool`, behind the existing `server`
-feature. Dirty-bit policy stays at the call sites, which legitimately differ.
+on a geometry change, and on a caller-named identity change — lives in one
+type, `phux_protocol::render_pool::RenderPool`, behind the existing `server`
+feature, with a single entry point (`begin(terminal, generation)`). The
+walkers that reach `RenderPool` are `phux-server`'s `SnapshotSynthesizer` and
+`phux-client`'s `TerminalRenderer`; `phux-record`, `phux-client-ffi`, and
+`phux-server-testkit` still hold private copies (see Tradeoffs).
+Dirty-bit policy stays at the call sites, which legitimately differ.
 
 Status: Accepted
 Date: 2026-08-15
@@ -44,11 +47,23 @@ it did with three private fields.
 
 Geometry is not the only staleness axis. A walker whose `Terminal` can be
 REPLACED between walks — the client publishes a new replica generation per
-bootstrap — calls `RenderPool::begin_generation` instead, passing an opaque
-caller-chosen identity token for the terminal it is walking. A token change
-rebuilds the trio even at identical geometry (`phux-994s`). The pool never
-interprets the token; the client packs its replica key's `(stream_id,
+bootstrap — must say so, so `begin` takes an opaque caller-chosen identity
+token for the terminal it is walking alongside the terminal itself. A token
+change rebuilds the trio even at identical geometry (`phux-994s`). The pool
+never interprets the token; the client packs its replica key's `(stream_id,
 bootstrap_id)` into one, via `ReplicaKey::generation_token`.
+
+The token is a **required** argument of the one entry point rather than a
+second `begin_generation` method. A walker whose terminal is fixed for the
+pool's life — the server synthesizer walks one PTY-backed `Terminal` per pane
+for the pane's whole life — passes a constant, which is exactly "a generation
+that never changes", so behaviour is identical either way. Two entry points
+would mean one of them was always the wrong one to reach for, and the cost of
+reaching for it was silent grid corruption that only manifests when a
+replacement terminal's pages recycle the freed allocation. On the client, the
+terminal and its token travel together as one `attach::render::ReplicaWalk`
+produced solely by `attach::pane_state::published_replica`, so a paint path
+cannot pair a terminal with a token that disagrees.
 
 It lives in `phux-protocol` behind the `server` feature. It carries no wire
 types and does not participate in protocol versioning.
@@ -92,6 +107,15 @@ adopted here. They depend on `phux-protocol` without the `server` feature, and
 turning it on pulls `png` and the full libghostty type surface into crates
 whose feature hygiene deliberately excludes them. Three copies of the trio
 therefore remain; each is tracked separately.
+
+**Not yet migrated, concretely.** `phux-client-ffi`'s `RenderCache`
+(`crates/phux-client-ffi/src/client.rs`) still holds a raw private
+`RenderState` + `RowIterator` + `CellIterator` and has never adopted
+`RenderPool` — so "the trio lives in one type" is true of the walkers named
+above and not yet of the whole workspace. Migrating it requires the
+feature-graph decision described in the paragraph above; that is tracked in
+bead `phux-u8zm`, whose id is also carried as a comment on the type itself so
+the deferral is findable from the code rather than only from this ADR.
 
 ## Alternatives
 

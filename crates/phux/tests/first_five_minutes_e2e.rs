@@ -91,60 +91,53 @@ impl Harness {
         }
     }
 
+    /// The hermetic environment, once.
+    ///
+    /// Both spawn paths — `std::process::Command` for the captured verbs and
+    /// `portable_pty::CommandBuilder` for the interactive attach — `env_clear()`
+    /// and then set exactly this table. Writing it twice, in the two crates'
+    /// two syntaxes, is why the idle backstop had to be added twice and why
+    /// nothing would have caught its absence from one of them: a divergence
+    /// between the Command path and the PTY path is precisely the class of
+    /// bug that leaked servers here (phux-8y3o).
+    ///
+    /// `AutoSpawnedServer::IDLE_BACKSTOP` is the one entry that is not about
+    /// isolation: the justfile's e2e recipe exports it, `env_clear()` wipes
+    /// it, and the daemon this harness auto-spawns needs it to bound its own
+    /// life if the harness dies before reaping it.
+    fn hermetic_env(&self) -> [(&'static str, OsString); 15] {
+        let (backstop_key, backstop_secs) = common::AutoSpawnedServer::IDLE_BACKSTOP;
+        [
+            ("HOME", self.home.clone().into_os_string()),
+            ("XDG_CONFIG_HOME", self.config.clone().into_os_string()),
+            ("XDG_CONFIG_DIRS", self.config.clone().into_os_string()),
+            ("XDG_CACHE_HOME", self.cache.clone().into_os_string()),
+            ("XDG_DATA_HOME", self.data.clone().into_os_string()),
+            ("XDG_DATA_DIRS", self.data.clone().into_os_string()),
+            ("XDG_STATE_HOME", self.state.clone().into_os_string()),
+            ("XDG_RUNTIME_DIR", self.runtime.clone().into_os_string()),
+            ("PHUX_PROFILE", OsString::from(PROFILE)),
+            ("PHUX_SOCKET", self.socket.clone().into_os_string()),
+            ("SHELL", OsString::from("/bin/sh")),
+            ("TERM", OsString::from("xterm-256color")),
+            ("RUST_LOG", OsString::from("off")),
+            (backstop_key, OsString::from(backstop_secs)),
+            ("PATH", self.path_value()),
+        ]
+    }
+
     fn apply_command_env(&self, command: &mut Command) {
-        command
-            .env_clear()
-            .env("HOME", &self.home)
-            .env("XDG_CONFIG_HOME", &self.config)
-            .env("XDG_CONFIG_DIRS", &self.config)
-            .env("XDG_CACHE_HOME", &self.cache)
-            .env("XDG_DATA_HOME", &self.data)
-            .env("XDG_DATA_DIRS", &self.data)
-            .env("XDG_STATE_HOME", &self.state)
-            .env("XDG_RUNTIME_DIR", &self.runtime)
-            .env("PHUX_PROFILE", PROFILE)
-            .env("PHUX_SOCKET", &self.socket)
-            .env("SHELL", "/bin/sh")
-            .env("TERM", "xterm-256color")
-            .env("RUST_LOG", "off")
-            // The justfile's e2e recipe exports this backstop (phux-nbam),
-            // but `env_clear()` above wipes it before it can reach the
-            // auto-spawned daemon — which is exactly how this lane leaked
-            // immortal servers (phux-8y3o). Re-arm it inside the hermetic
-            // environment so a daemon that outlives the harness (SIGKILLed
-            // runner, panic before the PID was captured) exits on its own.
-            .env("PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE", common::SERVER_IDLE_LIMIT_SECS)
-            .env("PATH", self.path_value());
+        command.env_clear();
+        for (key, value) in self.hermetic_env() {
+            command.env(key, value);
+        }
     }
 
     fn apply_pty_env(&self, command: &mut CommandBuilder) {
         command.env_clear();
-        for (key, value) in [
-            ("HOME", self.home.as_os_str()),
-            ("XDG_CONFIG_HOME", self.config.as_os_str()),
-            ("XDG_CONFIG_DIRS", self.config.as_os_str()),
-            ("XDG_CACHE_HOME", self.cache.as_os_str()),
-            ("XDG_DATA_HOME", self.data.as_os_str()),
-            ("XDG_DATA_DIRS", self.data.as_os_str()),
-            ("XDG_STATE_HOME", self.state.as_os_str()),
-            ("XDG_RUNTIME_DIR", self.runtime.as_os_str()),
-            ("PHUX_SOCKET", self.socket.as_os_str()),
-        ] {
+        for (key, value) in self.hermetic_env() {
             command.env(key, value);
         }
-        command.env("PHUX_PROFILE", PROFILE);
-        command.env("SHELL", "/bin/sh");
-        command.env("TERM", "xterm-256color");
-        command.env("RUST_LOG", "off");
-        // Same backstop as `apply_command_env`: `env_clear()` discards the
-        // justfile-level PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE, and the naked PTY
-        // attach below is the invocation that actually auto-spawns the
-        // daemon, so this is the seam that bounds a leaked one (phux-8y3o).
-        command.env(
-            "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE",
-            common::SERVER_IDLE_LIMIT_SECS,
-        );
-        command.env("PATH", self.path_value());
     }
 
     fn path_value(&self) -> OsString {

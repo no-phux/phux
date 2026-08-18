@@ -346,3 +346,105 @@ command = ["codex"]
         "got {err:?}"
     );
 }
+
+/// The default `phux agent start --kind K` resolution, in one walk of the
+/// plugin tree: the unique `[agent_identity]` claimant of the kind, with the
+/// shared trim/case tolerance.
+#[test]
+fn a_kind_resolves_the_integration_that_claims_it() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (config, _root) = write_plugin(&tmp, true);
+    let ws = workspace(&tmp);
+
+    let resolved = phux_plugin::resolve_launch_for_kind(&config, None, "codex", &[], &ws)
+        .expect("the codex template claims kind codex");
+    assert_eq!(resolved.integration_id, "codex");
+
+    let insensitive = phux_plugin::resolve_launch_for_kind(&config, None, " CODEX ", &[], &ws)
+        .expect("claims are matched with the shared tolerance");
+    assert_eq!(insensitive.integration_id, "codex");
+}
+
+/// `--integration` stays the explicit override: taken verbatim, with the
+/// `[agent_identity]` map never consulted.
+#[test]
+fn an_explicit_integration_overrides_the_kind_claim() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (config, _root) = write_plugin(&tmp, true);
+    let ws = workspace(&tmp);
+
+    let resolved = phux_plugin::resolve_launch_for_kind(&config, Some("rooted"), "codex", &[], &ws)
+        .expect("the explicit id wins");
+    assert_eq!(resolved.integration_id, "rooted");
+}
+
+/// A kind nothing claims falls back to the integration spelled like the kind
+/// — the pre-`agent_identity` default, and the reason the caller must hand
+/// this the *canonical* kind rather than the string a user typed: the
+/// fallback id is that string, verbatim.
+#[test]
+fn an_unclaimed_kind_falls_back_to_the_kind_as_given() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (config, _root) = write_plugin(&tmp, true);
+    let ws = workspace(&tmp);
+
+    // `rooted.toml` declares no `[agent_identity]`, so nothing claims the
+    // kind and the id spelled like it still resolves.
+    let resolved = phux_plugin::resolve_launch_for_kind(&config, None, "rooted", &[], &ws)
+        .expect("the id-spelled-like-the-kind default still resolves");
+    assert_eq!(resolved.integration_id, "rooted");
+
+    // Uncanonicalized input is looked up exactly as handed over. Canonicalizing
+    // a detection kind needs the manifests, which live above this crate, so the
+    // CLI resolves `--kind CLAUDE` to `claude` before calling
+    // (`an_unclaimed_kind_falls_back_to_the_canonical_kind_not_the_typed_one`).
+    let err = phux_plugin::resolve_launch_for_kind(&config, None, " CLAUDE ", &[], &ws)
+        .expect_err("no template is named ' CLAUDE '");
+    match err {
+        phux_plugin::KindLaunchError::Resolve { integration_id, .. } => {
+            assert_eq!(integration_id, " CLAUDE ");
+        }
+        phux_plugin::KindLaunchError::Ambiguous { claimants, .. } => {
+            panic!("expected a resolution failure, got claimants {claimants:?}")
+        }
+    }
+}
+
+/// Two enabled templates claiming one kind is refused by name rather than
+/// picked between.
+#[test]
+fn two_claimants_for_one_kind_are_refused_naming_both() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (config, plugin_root) = write_plugin(&tmp, true);
+    let ws = workspace(&tmp);
+    std::fs::write(
+        plugin_root.join("integrations").join("codex-fork.toml"),
+        r#"
+id = "codex-fork"
+
+[agent_identity]
+kind = "codex"
+
+[launch]
+command = ["sh", "-c", "true"]
+"#,
+    )
+    .expect("write a second claimant");
+
+    let err = phux_plugin::resolve_launch_for_kind(&config, None, "codex", &[], &ws)
+        .expect_err("two claimants must not be picked between");
+    match err {
+        phux_plugin::KindLaunchError::Ambiguous { kind, claimants } => {
+            assert_eq!(kind, "codex");
+            assert_eq!(claimants, vec!["codex".to_owned(), "codex-fork".to_owned()]);
+        }
+        phux_plugin::KindLaunchError::Resolve { integration_id, .. } => {
+            panic!("expected an ambiguity, got a resolution of {integration_id:?}")
+        }
+    }
+
+    // The explicit override still cuts through it.
+    let resolved = phux_plugin::resolve_launch_for_kind(&config, Some("codex"), "codex", &[], &ws)
+        .expect("an explicit id cannot be vetoed by an ambiguous claim set");
+    assert_eq!(resolved.integration_id, "codex");
+}

@@ -77,12 +77,73 @@ use tokio_tungstenite::tungstenite::Message;
 /// rationale (the hub link dials with backoff under full-parallel nextest).
 const STEP_DEADLINE: Duration = Duration::from_secs(15);
 
+/// Draw a loopback port that is free *right now*.
+///
+/// The listener is dropped immediately, so this is a lease and not a
+/// reservation: it is only sound for a port this test is about to bind
+/// itself, where losing the race fails loudly with a bind error. A registry
+/// entry that is supposed to stay dead must use [`DeadEndpoint`] instead —
+/// see the type's comment for the flake that taught us the difference.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port()
+}
+
+/// A satellite endpoint that is dead and *stays* dead for the whole test.
+///
+/// [`free_port`] hands the port straight back to the ephemeral pool, so a
+/// "dead" registry entry built from one is only dead until someone else
+/// binds the number. Two things can do that here. A neighbouring test
+/// process in the full-parallel pool can take it — and this repository's
+/// satellites are exactly what would answer. Or this very test can: nothing
+/// awaits between `spawn_satellite` and the next `free_port()`, so the
+/// spawned task has not run and the live port is still unbound when the
+/// dead one is drawn, leaving the kernel free to hand back the same number.
+///
+/// Either way the hub dials a real satellite and the "dead" host
+/// contributes real panes. That is the phux-vbnr failure exactly: the
+/// aggregate came back holding `Satellite { host: "down", id: 1 }` with the
+/// live satellite's pane id and its 80x24 shape, 0.092s in, with no
+/// unreachable backoff — one satellite reached under two names.
+///
+/// So the port is held for the test's lifetime by a listener this harness
+/// owns, which accepts every connection and immediately drops it. Nothing
+/// else can bind it, and the hub's dial still fails — at the WebSocket
+/// handshake instead of at `connect`, which is the same observable: the
+/// link never reaches Connected, and relayed commands resolve
+/// `SatelliteUnreachable` with the host-derived diagnostic the assertions
+/// look for.
+struct DeadEndpoint {
+    port: u16,
+    accept: tokio::task::JoinHandle<()>,
+}
+
+impl DeadEndpoint {
+    /// Bind and hold a loopback port that will never speak the protocol.
+    async fn reserve() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept = tokio::task::spawn_local(async move {
+            while let Ok((conn, _)) = listener.accept().await {
+                drop(conn);
+            }
+        });
+        Self { port, accept }
+    }
+
+    /// The reserved port, held until this value is dropped.
+    const fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl Drop for DeadEndpoint {
+    fn drop(&mut self) {
+        self.accept.abort();
+    }
 }
 
 fn satellite_entry(name: &str, port: u16) -> SatelliteConfigEntry {
@@ -663,16 +724,18 @@ fn non_hub_server_refuses_satellite_spawn() {
 fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
+        // Two registry entries: "sat" is live, "down" is a port held dead
+        // for the whole test — the degradation half of phux-v45.5. The dead
+        // one is reserved *first* so the live draw below cannot collide with
+        // it (phux-vbnr).
+        let down = DeadEndpoint::reserve().await;
         let ws_port = free_port();
         let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
-        // Two registry entries: "sat" is live, "down" points at a port
-        // nothing listens on — the degradation half of phux-v45.5.
-        let dead_port = free_port();
         let (hub_shutdown, hub_task) = spawn_hub_with_session(
             tmp.path().join("hub.sock"),
             vec![
                 satellite_entry("sat", ws_port),
-                satellite_entry("down", dead_port),
+                satellite_entry("down", down.port()),
             ],
             Some("hub-session"),
         );
@@ -923,12 +986,13 @@ fn ssh_stub_link_relays_commands_end_to_end() {
 fn down_satellite_fails_fast_with_typed_error() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        // A registry entry pointing at a port nothing listens on: the
-        // link supervisor dials and backs off forever.
-        let dead_port = free_port();
+        // A registry entry pointing at a port held dead for the whole test:
+        // the link supervisor dials and backs off forever. Held rather than
+        // merely drawn, so no neighbour can bind it and answer (phux-vbnr).
+        let dead = DeadEndpoint::reserve().await;
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
-            vec![satellite_entry("sat", dead_port)],
+            vec![satellite_entry("sat", dead.port())],
         );
         let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
 

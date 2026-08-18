@@ -23,7 +23,7 @@ use crate::attach::connection::Connection;
 use crate::attach::focus::FocusHistory;
 use crate::attach::paint::{SidebarReservation, content_rect};
 use crate::attach::pane_state::{AttentionNavigation, PaneSlot};
-use crate::attach::render::TEST_GENERATION;
+use crate::attach::render::ReplicaWalk;
 use crate::layout::Workspace;
 use crate::predict::Overlay;
 use crate::render::overlay::OverlayState;
@@ -386,7 +386,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
         (0..6)
             .filter_map(|col| {
                 slot.renderer
-                    .read_grapheme_string_at(terminal, TEST_GENERATION, row, col)
+                    .read_grapheme_string_at(ReplicaWalk::for_test(terminal), row, col)
                     .expect("read cell")
             })
             .collect()

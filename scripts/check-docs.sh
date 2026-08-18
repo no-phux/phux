@@ -178,6 +178,23 @@ while IFS= read -r f; do
     [[ -n "$f" ]] && FILES+=("$f")
 done < <(collect_files | LC_ALL=C sort -u)
 
+# The ADR corpus proper, sorted: every file under ADR/ whose basename opens
+# with a four-digit number (`NNNN-slug.md`).
+#
+# One definition, because three gates need it and each used to carry its own
+# basename test — so "what counts as an ADR file" had three answers that only
+# happened to agree. Everything else under ADR/ (the README index, companion
+# documents such as a ratification brief) carries no decision and no ADR
+# number: it must not be given a `Status:` line, cannot claim a number, and
+# has no index row. Those files still keep every gate in `collect_files`,
+# which sweeps ADR/ whole.
+adr_files() {
+    if [[ ! -d "$ROOT/ADR" ]]; then
+        return
+    fi
+    find "$ROOT/ADR" -type f -name '[0-9][0-9][0-9][0-9]-*.md' | LC_ALL=C sort
+}
+
 # ---------------------------------------------------------------------------
 # Violation bookkeeping
 # ---------------------------------------------------------------------------
@@ -490,15 +507,10 @@ gate_adr_status() {
     if [[ ! -d "$ROOT/ADR" ]]; then
         return
     fi
+    # `adr_files` is what "an ADR" means here: the README index and companion
+    # documents carry no decision and must not be given a `Status:` line,
+    # since that vocabulary means "the repository has decided".
     while IFS= read -r file; do
-        # Skip anything in ADR/ that is not itself an ADR. An ADR is named
-        # `NNNN-slug.md`; the README index and companion documents (such as a
-        # ratification brief) carry no decision and must not be given a
-        # `Status:` line, since that vocabulary means "the repository has
-        # decided". They still keep every other gate.
-        if [[ ! "$(basename "$file")" =~ ^[0-9]{4}- ]]; then
-            continue
-        fi
         local close
         close="$(frontmatter_close_line "$file" || true)"
         local start=1
@@ -529,7 +541,7 @@ gate_adr_status() {
                     "non-vocabulary status: '$status_line' (allowed: 'Status: Proposed', 'Status: Accepted', 'Status: Accepted (forward-compat)', 'Status: Superseded by ADR-NNNN', 'Status: Deprecated')"
                 ;;
         esac
-    done < <(find "$ROOT/ADR" -type f -name '*.md' | LC_ALL=C sort)
+    done < <(adr_files)
 }
 
 # ---------------------------------------------------------------------------
@@ -550,14 +562,9 @@ gate_adr_number_unique() {
 
     local -A first_seen=()
     while IFS= read -r file; do
-        local base
-        base="$(basename "$file")"
-        if [[ "$base" == "README.md" ]]; then
-            continue
-        fi
-        if [[ ! "$base" =~ ^([0-9]{4})- ]]; then
-            continue
-        fi
+        # `adr_files` yields only `NNNN-slug.md`; this reads the number out of
+        # the name rather than deciding again what counts as an ADR.
+        [[ "$(basename "$file")" =~ ^([0-9]{4})- ]] || continue
         local num="${BASH_REMATCH[1]}"
         if [[ -n "${first_seen[$num]:-}" ]]; then
             violate adr-number-unique "$file" \
@@ -565,7 +572,7 @@ gate_adr_number_unique() {
         else
             first_seen[$num]="$file"
         fi
-    done < <(find "$ROOT/ADR" -type f -name '*.md' | LC_ALL=C sort)
+    done < <(adr_files)
 }
 
 # ---------------------------------------------------------------------------
@@ -599,15 +606,17 @@ gate_adr_index_sync() {
     # Collect index rows: `| [NNNN](./NNNN-slug.md) | ... |`.
     local line num target prev=""
     local -A row_target=()
-    local -A row_count=()
     local row_re='^\|[[:space:]]*\[([0-9]{4})\]\(\./([^)]+)\)'
     while IFS= read -r line; do
         [[ "$line" =~ $row_re ]] || continue
         num="${BASH_REMATCH[1]}"
         target="${BASH_REMATCH[2]}"
 
-        row_count[$num]=$(( ${row_count[$num]:-0} + 1 ))
-        if [[ "${row_count[$num]}" -gt 1 ]]; then
+        # A number already in `row_target` *is* the second-row signal; a
+        # parallel counter said the same thing twice. The first row wins, so
+        # the reverse direction below compares against the row a reader would
+        # follow.
+        if [[ -n "${row_target[$num]:-}" ]]; then
             violate adr-index-sync "$readme" \
                 "index has more than one row for ADR number $num"
         else
@@ -635,6 +644,7 @@ gate_adr_index_sync() {
     local file base
     while IFS= read -r file; do
         base="$(basename "$file")"
+        # Reads the number out of the name; `adr_files` decides membership.
         [[ "$base" =~ ^([0-9]{4})- ]] || continue
         num="${BASH_REMATCH[1]}"
         if [[ -z "${row_target[$num]:-}" ]]; then
@@ -644,7 +654,7 @@ gate_adr_index_sync() {
             violate adr-index-sync "$file" \
                 "index row $num links to ./${row_target[$num]}, not to this file — two files are claiming the same ADR number, or the row was not updated with a rename"
         fi
-    done < <(find "$ROOT/ADR" -type f -name '*.md' | LC_ALL=C sort)
+    done < <(adr_files)
 }
 
 # ---------------------------------------------------------------------------

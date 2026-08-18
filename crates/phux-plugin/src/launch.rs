@@ -203,46 +203,63 @@ pub fn resolve_launch(
     extra_args: &[String],
     workspace_cwd: &Path,
 ) -> Result<ResolvedLaunch, LaunchError> {
+    resolve_loaded(
+        load_templates(config_path)?,
+        integration_id,
+        extra_args,
+        workspace_cwd,
+    )
+}
+
+/// [`resolve_launch`] over an already-walked plugin tree.
+fn resolve_loaded(
+    loaded: Vec<LoadedTemplate>,
+    integration_id: &str,
+    extra_args: &[String],
+    workspace_cwd: &Path,
+) -> Result<ResolvedLaunch, LaunchError> {
     let mut available: Vec<String> = Vec::new();
     let mut matched_owner: Option<String> = None;
     let mut resolved: Option<ResolvedLaunch> = None;
-    for plugin in enabled_plugins(config_path)? {
-        for path in template_paths(&plugin.plugin_root)? {
-            let template = match integration::load_integration_template(&path) {
-                Ok(template) => template,
-                Err(source) => {
-                    // Surface the error only when this is the file the
-                    // caller asked for (by filename stem); a broken sibling
-                    // template must not block launching a healthy one.
-                    if path.file_stem().and_then(|s| s.to_str()) == Some(integration_id) {
-                        return Err(LaunchError::Template { path, source });
-                    }
-                    continue;
+    for entry in loaded {
+        let template = match entry.template {
+            Ok(template) => template,
+            Err(source) => {
+                // Surface the error only when this is the file the
+                // caller asked for (by filename stem); a broken sibling
+                // template must not block launching a healthy one.
+                if entry.path.file_stem().and_then(|s| s.to_str()) == Some(integration_id) {
+                    return Err(LaunchError::Template {
+                        path: entry.path,
+                        source,
+                    });
                 }
-            };
-            if template.launch.is_some() {
-                available.push(template.id.clone());
-            }
-            if template.id != integration_id {
                 continue;
             }
-            if let Some(first) = &matched_owner {
-                return Err(LaunchError::DuplicateIntegrationId {
-                    id: integration_id.to_owned(),
-                    first: first.clone(),
-                    second: plugin.plugin_id.clone(),
-                });
-            }
-            matched_owner = Some(plugin.plugin_id.clone());
-            if let Some(launch) = template.launch.clone() {
-                resolved = Some(build_resolved(
-                    &plugin,
-                    &template,
-                    &launch,
-                    extra_args,
-                    workspace_cwd,
-                ));
-            }
+        };
+        if template.launch.is_some() {
+            available.push(template.id.clone());
+        }
+        if template.id != integration_id {
+            continue;
+        }
+        if let Some(first) = &matched_owner {
+            return Err(LaunchError::DuplicateIntegrationId {
+                id: integration_id.to_owned(),
+                first: first.clone(),
+                second: entry.plugin_id,
+            });
+        }
+        matched_owner = Some(entry.plugin_id.clone());
+        if let Some(launch) = template.launch.clone() {
+            resolved = Some(build_resolved(
+                &entry.plugin_id,
+                &entry.plugin_root,
+                &template,
+                &launch,
+                extra_args,
+                workspace_cwd,
+            ));
         }
     }
     if let Some(resolved) = resolved {
@@ -261,6 +278,148 @@ pub fn resolve_launch(
     })
 }
 
+/// Resolve the integration a `--kind` starts, and build its argv, from one
+/// walk of the enabled plugin tree.
+///
+/// The integration id and the detection kind are different namespaces: a
+/// template's own `kind` is a category (`terminal-agent`); the detection slug
+/// lives in its `[agent_identity]` block. With no explicit id, the
+/// integration is therefore the unique enabled one whose `[agent_identity]
+/// kind` claims `kind` (`--kind claude` resolves `claude-code` with no second
+/// flag); two claimants are refused by name rather than picked between, and
+/// no claimant falls back to the id spelled like the kind, which is the
+/// pre-`agent_identity` default.
+///
+/// One entry point rather than [`list_launchable`] followed by
+/// [`resolve_launch`], because that pair walked the whole tree twice — config
+/// read and parse, every enabled plugin's manifest, every `integrations/`
+/// directory, and every template file, twice — on exactly the default path
+/// this resolution exists to serve.
+///
+/// # Errors
+///
+/// Returns [`KindLaunchError::Ambiguous`] when more than one enabled
+/// integration claims `kind`, and [`KindLaunchError::Resolve`] for every
+/// failure [`resolve_launch`] reports, naming the id that was resolved.
+pub fn resolve_launch_for_kind(
+    config_path: &Path,
+    explicit_id: Option<&str>,
+    kind: &str,
+    extra_args: &[String],
+    workspace_cwd: &Path,
+) -> Result<ResolvedLaunch, KindLaunchError> {
+    // A tree that cannot be walked is reported against the id the caller
+    // asked for, or the one the kind would have fallen back to — the same
+    // diagnosis the pre-single-walk code produced one step later.
+    let loaded = match load_templates(config_path) {
+        Ok(loaded) => loaded,
+        Err(source) => {
+            return Err(KindLaunchError::Resolve {
+                integration_id: explicit_id.unwrap_or(kind).to_owned(),
+                source,
+            });
+        }
+    };
+    let integration_id = match explicit_id {
+        Some(explicit) => explicit.to_owned(),
+        None => match integration_for_kind(kind, &launchable(&loaded)) {
+            KindClaim::Unique(id) => id,
+            KindClaim::Unclaimed => kind.to_owned(),
+            KindClaim::Ambiguous(claimants) => {
+                return Err(KindLaunchError::Ambiguous {
+                    kind: kind.to_owned(),
+                    claimants,
+                });
+            }
+        },
+    };
+    resolve_loaded(loaded, &integration_id, extra_args, workspace_cwd).map_err(|source| {
+        KindLaunchError::Resolve {
+            integration_id,
+            source,
+        }
+    })
+}
+
+/// Failure resolving a launch from a detection kind.
+///
+/// Exhaustive on purpose, unlike [`LaunchError`]: its one consumer maps every
+/// variant onto a refusal with its own code and remedy, so a variant added
+/// without a mapping should be a compile error there rather than a silent
+/// fall-through to a generic message.
+#[derive(Debug, thiserror::Error)]
+pub enum KindLaunchError {
+    /// More than one enabled integration claims the kind — a default this
+    /// refuses to guess between.
+    #[error("kind {kind:?} is claimed by more than one enabled integration: {}", claimants.join(", "))]
+    Ambiguous {
+        /// The requested detection kind.
+        kind: String,
+        /// Sorted, deduped ids of every claimant.
+        claimants: Vec<String>,
+    },
+    /// The integration id was decided, and resolving it failed.
+    #[error("could not resolve integration {integration_id:?}: {source}")]
+    Resolve {
+        /// The id that was resolved (explicit, claimed, or the kind itself).
+        integration_id: String,
+        /// The underlying resolution failure.
+        source: LaunchError,
+    },
+}
+
+/// How the enabled launchable integrations map onto one requested kind.
+#[derive(Debug, PartialEq, Eq)]
+pub enum KindClaim {
+    /// Exactly one enabled integration's `[agent_identity] kind` matches.
+    Unique(String),
+    /// No enabled integration claims the kind.
+    Unclaimed,
+    /// More than one enabled integration claims it (ids sorted, deduped).
+    Ambiguous(Vec<String>),
+}
+
+/// Do two kind slugs name the same kind?
+///
+/// The whole tolerance, in one place: surrounding whitespace and ASCII case
+/// are insignificant. Every comparison of a requested kind against a declared
+/// one goes through here — the `[agent_identity]` claim match below and the
+/// CLI's readiness verdict — so "these two stay in step" is a fact the
+/// compiler keeps rather than a comment two functions promise each other.
+#[must_use]
+pub fn kind_matches(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
+}
+
+/// Match a detection kind against each launchable integration's
+/// `[agent_identity] kind`.
+///
+/// A template's top-level `kind` (a category such as `terminal-agent`)
+/// deliberately never matches. Identical ids are collapsed before counting:
+/// one id shipped by two plugins is [`resolve_launch`]'s
+/// [`LaunchError::DuplicateIntegrationId`] failure, not an ambiguity between
+/// two genuine choices a refusal could name.
+#[must_use]
+pub fn integration_for_kind(kind: &str, launchable: &[LaunchableIntegration]) -> KindClaim {
+    let mut claims: Vec<String> = launchable
+        .iter()
+        .filter(|item| {
+            item.agent_identity
+                .as_ref()
+                .and_then(|identity| identity.kind.as_deref())
+                .is_some_and(|claimed| kind_matches(claimed, kind))
+        })
+        .map(|item| item.integration_id.clone())
+        .collect();
+    claims.sort_unstable();
+    claims.dedup();
+    match claims.len() {
+        0 => KindClaim::Unclaimed,
+        1 => KindClaim::Unique(claims.remove(0)),
+        _ => KindClaim::Ambiguous(claims),
+    }
+}
+
 /// Enumerate every launchable integration (one with a `[launch]` command)
 /// shipped by an enabled plugin, in config order then sorted filename
 /// order.
@@ -271,50 +430,80 @@ pub fn resolve_launch(
 /// loaded, or a plugin's `integrations/` directory cannot be read. An
 /// individual template that fails to parse is skipped.
 pub fn list_launchable(config_path: &Path) -> Result<Vec<LaunchableIntegration>, LaunchError> {
-    let mut out = Vec::new();
-    for plugin in enabled_plugins(config_path)? {
-        for path in template_paths(&plugin.plugin_root)? {
-            let Ok(template) = integration::load_integration_template(&path) else {
-                continue;
-            };
-            if template.launch.is_none() {
-                continue;
-            }
-            out.push(LaunchableIntegration {
-                plugin_id: plugin.plugin_id.clone(),
-                integration_id: template.id,
-                display_name: template.display_name,
-                kind: template.kind,
-                agent_identity: template.agent_identity,
-            });
-        }
-    }
-    Ok(out)
+    Ok(launchable(&load_templates(config_path)?))
+}
+
+/// [`list_launchable`] over an already-walked plugin tree.
+fn launchable(loaded: &[LoadedTemplate]) -> Vec<LaunchableIntegration> {
+    loaded
+        .iter()
+        .filter_map(|entry| {
+            let template = entry.template.as_ref().ok()?;
+            template.launch.as_ref()?;
+            Some(LaunchableIntegration {
+                plugin_id: entry.plugin_id.clone(),
+                integration_id: template.id.clone(),
+                display_name: template.display_name.clone(),
+                kind: template.kind.clone(),
+                agent_identity: template.agent_identity.clone(),
+            })
+        })
+        .collect()
 }
 
 fn build_resolved(
-    plugin: &EnabledPlugin,
+    plugin_id: &str,
+    plugin_root: &Path,
     template: &IntegrationTemplate,
     launch: &IntegrationLaunch,
     extra_args: &[String],
     workspace_cwd: &Path,
 ) -> ResolvedLaunch {
-    let argv = integration::expand_launch_argv(&launch.command, &plugin.plugin_root, extra_args);
+    let argv = integration::expand_launch_argv(&launch.command, plugin_root, extra_args);
     let cwd = match launch.working_directory {
-        LaunchWorkingDirectory::PluginRoot => plugin.plugin_root.clone(),
+        LaunchWorkingDirectory::PluginRoot => plugin_root.to_path_buf(),
         LaunchWorkingDirectory::Workspace => workspace_cwd.to_path_buf(),
     };
     ResolvedLaunch {
-        plugin_id: plugin.plugin_id.clone(),
+        plugin_id: plugin_id.to_owned(),
         integration_id: template.id.clone(),
         display_name: template.display_name.clone(),
         argv,
         cwd,
         working_directory: launch.working_directory,
-        plugin_root: plugin.plugin_root.clone(),
+        plugin_root: plugin_root.to_path_buf(),
         session_identity: template.session_identity.clone(),
         agent_identity: template.agent_identity.clone(),
     }
+}
+
+/// One integration template as it was found on disk.
+struct LoadedTemplate {
+    plugin_id: String,
+    plugin_root: PathBuf,
+    path: PathBuf,
+    /// The parse outcome, kept rather than discarded at the walk: listing
+    /// skips a broken template, while resolution surfaces its error when it
+    /// is the file the caller named. One walk has to serve both.
+    template: Result<IntegrationTemplate, IntegrationError>,
+}
+
+/// Walk every enabled plugin's `integrations/` directory once, parsing each
+/// template exactly once — config order, then sorted filename order.
+fn load_templates(config_path: &Path) -> Result<Vec<LoadedTemplate>, LaunchError> {
+    let mut out = Vec::new();
+    for plugin in enabled_plugins(config_path)? {
+        for path in template_paths(&plugin.plugin_root)? {
+            let template = integration::load_integration_template(&path);
+            out.push(LoadedTemplate {
+                plugin_id: plugin.plugin_id.clone(),
+                plugin_root: plugin.plugin_root.clone(),
+                path,
+                template,
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn enabled_plugins(config_path: &Path) -> Result<Vec<EnabledPlugin>, LaunchError> {
@@ -365,4 +554,105 @@ fn template_paths(plugin_root: &Path) -> Result<Vec<PathBuf>, LaunchError> {
         .collect();
     paths.sort();
     Ok(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KindClaim, LaunchableIntegration, integration_for_kind, kind_matches};
+
+    /// A launchable integration as [`super::list_launchable`] surfaces it:
+    /// the category `kind` is always `terminal-agent`, and `agent_kind` (when
+    /// given) rides the `[agent_identity]` block.
+    fn launchable(id: &str, agent_kind: Option<&str>) -> LaunchableIntegration {
+        LaunchableIntegration {
+            plugin_id: "example.agent-tools".to_owned(),
+            integration_id: id.to_owned(),
+            display_name: None,
+            kind: Some("terminal-agent".to_owned()),
+            agent_identity: agent_kind.map(|kind| {
+                phux_config::integration::IntegrationAgentIdentity {
+                    name: None,
+                    kind: Some(kind.to_owned()),
+                }
+            }),
+        }
+    }
+
+    /// The one tolerance rule, shared with the CLI's readiness verdict so the
+    /// two can never disagree about whether a kind matches.
+    #[test]
+    fn kind_matching_ignores_surrounding_space_and_ascii_case() {
+        assert!(kind_matches("claude", "claude"));
+        assert!(kind_matches(" CLAUDE ", "claude"));
+        assert!(kind_matches("claude", "\tClaude\n"));
+        assert!(!kind_matches("claude", "claude-code"));
+        assert!(!kind_matches("", "claude"));
+    }
+
+    /// The map this resolution exists for: `--kind claude` finds
+    /// `claude-code` through its `[agent_identity] kind`. The category `kind`
+    /// (`terminal-agent`, on every template) never matches.
+    #[test]
+    fn a_unique_agent_identity_claim_resolves_the_integration() {
+        let launchables = [
+            launchable("claude-code", Some("claude")),
+            launchable("codex", Some("codex")),
+            launchable("generic-shell-agent", Some("generic")),
+        ];
+        assert_eq!(
+            integration_for_kind("claude", &launchables),
+            KindClaim::Unique("claude-code".to_owned())
+        );
+        assert_eq!(
+            integration_for_kind(" CLAUDE ", &launchables),
+            KindClaim::Unique("claude-code".to_owned())
+        );
+        // `terminal-agent` is every template's category, never a claim.
+        assert_eq!(
+            integration_for_kind("terminal-agent", &launchables),
+            KindClaim::Unclaimed
+        );
+    }
+
+    /// Two enabled integrations claiming one kind is an ambiguity naming
+    /// both, rather than a pick — the claimants ride the answer so the
+    /// caller's refusal can print them.
+    #[test]
+    fn an_ambiguous_kind_claim_names_every_claimant() {
+        let launchables = [
+            launchable("claude-fork", Some("claude")),
+            launchable("claude-code", Some("claude")),
+            launchable("codex", Some("codex")),
+        ];
+        assert_eq!(
+            integration_for_kind("claude", &launchables),
+            KindClaim::Ambiguous(vec!["claude-code".to_owned(), "claude-fork".to_owned()])
+        );
+        // One id shipped twice is `resolve_launch`'s DuplicateIntegrationId
+        // failure, not an ambiguity between two genuine choices.
+        let duplicated = [
+            launchable("claude-code", Some("claude")),
+            launchable("claude-code", Some("claude")),
+        ];
+        assert_eq!(
+            integration_for_kind("claude", &duplicated),
+            KindClaim::Unique("claude-code".to_owned())
+        );
+    }
+
+    /// A template with no `[agent_identity]` block claims nothing, and an
+    /// empty listing claims nothing — both leave the caller on the
+    /// id-spelled-like-the-kind fallback.
+    #[test]
+    fn a_kind_no_template_claims_is_unclaimed() {
+        let launchables = [
+            launchable("claude-code", None),
+            launchable("codex", Some("codex")),
+        ];
+        assert_eq!(
+            integration_for_kind("claude", &launchables),
+            KindClaim::Unclaimed
+        );
+        assert_eq!(integration_for_kind("claude", &[]), KindClaim::Unclaimed);
+    }
 }

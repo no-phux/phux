@@ -51,7 +51,9 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, TYPE_HELLO_OK, ViewportInfo};
+use phux_protocol::wire::frame::{
+    AttachTarget, DetachReason, FrameKind, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
+};
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -444,4 +446,40 @@ pub async fn expect_eof_within(stream: &mut UnixStream, deadline: Duration) -> R
             deadline.as_millis(),
         )),
     }
+}
+
+/// Assert the SPEC §14 fatal-close shape on a UDS connection: the peer that
+/// broke the protocol is sent `DETACHED { reason: PROTOCOL_ERROR }`, and the
+/// server then closes the transport.
+///
+/// The `ERROR` frame that precedes it stays with the caller — its code and
+/// message name the *specific* violation and differ per test. What every
+/// fatal-close path owes identically is this tail, so it is asserted once
+/// here rather than re-derived per test binary.
+pub async fn expect_protocol_error_close(stream: &mut UnixStream, deadline: Duration) {
+    let (type_byte, detached) = recv_typed(stream).await;
+    assert_eq!(
+        type_byte, TYPE_DETACHED,
+        "ERROR must be followed by DETACHED (got type 0x{type_byte:02x})",
+    );
+    assert_protocol_error_detach(&detached);
+    expect_eof_within(stream, deadline)
+        .await
+        .expect("server must close the transport after ERROR + DETACHED");
+}
+
+/// The frame half of [`expect_protocol_error_close`], for transports whose
+/// close is not a byte-stream EOF — a WebSocket peer is closed with a Close
+/// message, so that test supplies its own ending and shares this assertion.
+pub fn assert_protocol_error_detach(frame: &FrameKind) {
+    assert!(
+        matches!(
+            frame,
+            FrameKind::Detached {
+                reason: Some(DetachReason::ProtocolError),
+                ..
+            }
+        ),
+        "a protocol violation must close with DETACHED {{ reason: PROTOCOL_ERROR }}, got {frame:?}",
+    );
 }

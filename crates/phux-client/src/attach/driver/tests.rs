@@ -22,8 +22,8 @@ use crate::attach::paint::{
     paint_full_frame,
 };
 use crate::attach::pane_state::{AttachKernel, PaneSlot};
+use crate::attach::render::ReplicaWalk;
 use crate::attach::render::SelectionRect;
-use crate::attach::render::TEST_GENERATION;
 use crate::attach::server_frame::FrameOutcome;
 use crate::layout::Workspace;
 use crate::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
@@ -1315,8 +1315,7 @@ fn shipped_frame_rows(view: (u16, u16), windows: &[WindowInfo]) -> Vec<String> {
     probe
         .renderer
         .render_at_cells(
-            &probe.terminal,
-            TEST_GENERATION,
+            ReplicaWalk::for_test(&probe.terminal),
             &mut frame,
             (0, 0),
             (cols, rows),
@@ -1419,8 +1418,7 @@ fn replay_rows(bytes: &[u8]) -> Vec<String> {
     probe
         .renderer
         .render_at_cells(
-            &probe.terminal,
-            TEST_GENERATION,
+            ReplicaWalk::for_test(&probe.terminal),
             &mut frame,
             (0, 0),
             (cols, rows),

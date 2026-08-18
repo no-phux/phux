@@ -1407,7 +1407,11 @@ where
                     // out this close path.
                     if let Some(framing) = framing_violation(&err) {
                         warn!(?client_id, error = %framing, "client framing violation; closing");
-                        let message = format!("frame violates SPEC §5 framing: {framing}");
+                        // One definition of the peer-visible text, next to the
+                        // type that describes the violation: the hub's link
+                        // supervisor owes the same §5 goodbye on its satellite
+                        // links and builds it from the same place.
+                        let message = framing.wire_message();
                         abort_output_pumps(&mut output_pumps, client_id, "framing violation")
                             .await;
                         detach_and_release_consumer_state(&state, client_id);

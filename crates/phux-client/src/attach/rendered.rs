@@ -79,18 +79,15 @@ pub(super) fn compose_full_frame_cells(
         let Some(slot) = panes.get_mut(id) else {
             continue;
         };
-        let Some((terminal, generation)) = super::pane_state::published_replica(kernel, id) else {
+        let Some(walk) = super::pane_state::published_replica(kernel, id) else {
             continue;
         };
         // A render error on one pane shouldn't sink the whole introspection
         // query; leave that pane's cells blank and move on.
-        let Ok(cursor) = slot.renderer.render_at_cells(
-            terminal,
-            generation,
-            &mut frame,
-            (rect.x, rect.y),
-            (rect.w, rect.h),
-        ) else {
+        let Ok(cursor) =
+            slot.renderer
+                .render_at_cells(walk, &mut frame, (rect.x, rect.y), (rect.w, rect.h))
+        else {
             continue;
         };
         if Some(id) == focused_pane {

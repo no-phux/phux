@@ -433,7 +433,12 @@ fn open_server_log(path: &Path) -> std::io::Result<std::fs::File> {
 /// Environment variable that gives an auto-spawned daemon an idle backstop.
 ///
 /// Seconds, in the same `1..=86_400` range `--exit-after-idle` accepts.
-const AUTO_SPAWN_IDLE_ENV: &str = "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE";
+///
+/// Re-exported from the crate root (and public for that reason alone): the
+/// integration harness re-arms this after `env_clear()` wipes the justfile's
+/// export, and a harness that spelled the name itself would keep passing
+/// through a rename here while silently leaking daemons (phux-8y3o).
+pub const AUTO_SPAWN_IDLE_ENV: &str = "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE";
 
 /// The upper bound `--exit-after-idle` accepts, mirrored here so an
 /// out-of-range value is rejected by the parent with a message about the

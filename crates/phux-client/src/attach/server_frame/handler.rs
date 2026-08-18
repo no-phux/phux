@@ -308,12 +308,12 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
             // whether the aggregate attach barrier permits paint damage.
             // A pre-barrier OSC title must update chrome caches even though
             // its visible repaint remains suppressed until ATTACH_READY.
-            let (terminal, generation) = published_replica(engine_kernel, &terminal_id)
-                .ok_or_else(|| {
-                    AttachError::Protocol(format!(
-                        "TERMINAL_OUTPUT targeted unpublished {terminal_id:?}"
-                    ))
-                })?;
+            let walk = published_replica(engine_kernel, &terminal_id).ok_or_else(|| {
+                AttachError::Protocol(format!(
+                    "TERMINAL_OUTPUT targeted unpublished {terminal_id:?}"
+                ))
+            })?;
+            let terminal = walk.terminal;
             let bar = status_bar.as_ref().map(|p| p.position());
             let content = content_rect(viewport_dims, bar, sidebar);
             let initial_dims = workspace
@@ -425,7 +425,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
                             // plus combining marks) reconcile against the
                             // whole painted cluster (phux-9gw.1.6).
                             s.renderer
-                                .read_grapheme_string_at(terminal, generation, r, c)
+                                .read_grapheme_string_at(walk, r, c)
                                 .ok()
                                 .flatten()
                         })
@@ -496,8 +496,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
                         // Mirror >= rect degrades to the prior `render_at`.
                         let mirror = crate::attach::paint::mirror_dims(terminal, rect);
                         let _ = slot.renderer.render_at_letterboxed(
-                            terminal,
-                            generation,
+                            walk,
                             out,
                             (rect.x, rect.y),
                             (rect.w, rect.h),

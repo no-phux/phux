@@ -25,11 +25,10 @@ use phux_client_core::session::SessionKernel;
 #[cfg(test)]
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::ids::{ClientId, TerminalId};
-use phux_protocol::render_pool::TerminalGeneration;
 use phux_protocol::wire::frame::TerminalLifecycle;
 
 use super::outcome::AttachError;
-use super::render::TerminalRenderer;
+use super::render::{ReplicaWalk, TerminalRenderer};
 use crate::predict::PredictionState;
 
 /// Fallback per-cell pixel size for client-side libghostty mirrors.
@@ -51,22 +50,27 @@ pub(super) fn published_terminal<'a>(
     kernel.published_engine(terminal_id)?.terminal()
 }
 
-/// The published replica `Terminal` for one pane plus the generation token
-/// the pane's renderer must walk it under.
+/// The published replica `Terminal` for one pane, paired with the generation
+/// token the pane's renderer must walk it under.
 ///
 /// Any path that hands the terminal to a [`TerminalRenderer`] walk fetches
 /// through this funnel: the kernel REPLACES the published `Terminal` when a
 /// replica generation is republished, and the renderer's pooled render state
 /// discards its cache exactly when this token changes — even at unchanged
-/// geometry (`phux-994s`). Paths that only inspect the terminal (modes,
-/// title, input routing) may keep using [`published_terminal`].
+/// geometry (`phux-994s`). Returning the two halves as one [`ReplicaWalk`] is
+/// what keeps them from drifting apart on the way to the renderer. Paths that
+/// only inspect the terminal (modes, title, input routing) may keep using
+/// [`published_terminal`].
 pub(super) fn published_replica<'a>(
     kernel: &'a AttachKernel,
     terminal_id: &TerminalId,
-) -> Option<(&'a GhosttyTerminal<'static, 'static>, TerminalGeneration)> {
+) -> Option<ReplicaWalk<'a, 'static, 'static>> {
     let replica = kernel.published(terminal_id)?;
     let terminal = replica.engine().terminal()?;
-    Some((terminal, replica.key().generation_token()))
+    Some(ReplicaWalk {
+        terminal,
+        generation: replica.key().generation_token(),
+    })
 }
 
 /// Driver-owned state for client-local attention navigation (phux-oih5.16).
@@ -434,7 +438,7 @@ pub(super) fn clear_attention_on_input(
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-    use crate::attach::render::TEST_GENERATION;
+    use crate::attach::render::ReplicaWalk;
 
     #[test]
     fn pane_slot_initializes_nonzero_cell_pixels_for_live_kitty_render() {
@@ -444,7 +448,7 @@ mod tests {
 
         let mut out = Vec::new();
         slot.renderer
-            .render(&slot.terminal, TEST_GENERATION, &mut out)
+            .render(ReplicaWalk::for_test(&slot.terminal), &mut out)
             .expect("render");
         let replay = String::from_utf8_lossy(&out);
         assert!(
@@ -478,11 +482,12 @@ mod tests {
         let (mut kernel, mut effects, mut panes) = published_test_state(&[(&id, 10, 2, b"AA")]);
         let slot = panes.get_mut(&id).expect("slot");
 
-        let (terminal, generation_1) = published_replica(&kernel, &id).expect("generation 1");
+        let walk_1 = published_replica(&kernel, &id).expect("generation 1");
+        let generation_1 = walk_1.generation;
         let mut first = Vec::new();
         let _ = slot
             .renderer
-            .render_at(terminal, generation_1, &mut first, (0, 0), (10, 2))
+            .render_at(walk_1, &mut first, (0, 0), (10, 2))
             .expect("paint generation 1");
         assert!(
             String::from_utf8_lossy(&first).contains("AA"),
@@ -531,7 +536,8 @@ mod tests {
             )
             .expect("republish READY");
 
-        let (terminal, generation_2) = published_replica(&kernel, &id).expect("generation 2");
+        let walk_2 = published_replica(&kernel, &id).expect("generation 2");
+        let generation_2 = walk_2.generation;
         assert_ne!(
             generation_1, generation_2,
             "a republish must change the walk-identity token"
@@ -542,12 +548,12 @@ mod tests {
         // state before the paint path gets there — the ordering that made
         // the pre-token coupling dangerous.
         let mut thief = libghostty_vt::RenderState::new().expect("thief state");
-        let _ = thief.update(terminal).expect("thief update");
+        let _ = thief.update(walk_2.terminal).expect("thief update");
 
         let mut second = Vec::new();
         let _ = slot
             .renderer
-            .render_at(terminal, generation_2, &mut second, (0, 0), (10, 2))
+            .render_at(walk_2, &mut second, (0, 0), (10, 2))
             .expect("paint generation 2");
         let painted = String::from_utf8_lossy(&second);
         assert!(

@@ -67,6 +67,11 @@ mod skill;
 #[cfg(test)]
 mod help_inventory;
 
+/// The environment variable an auto-spawned daemon reads its idle backstop
+/// from, so the integration harness can arm it by name rather than by a
+/// literal of its own (see `AutoSpawnedServer::IDLE_BACKSTOP`).
+pub use commands::server::AUTO_SPAWN_IDLE_ENV;
+
 /// phux — a libghostty-backed terminal multiplexer and control plane.
 #[derive(Debug, Parser)]
 #[command(

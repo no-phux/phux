@@ -103,14 +103,13 @@ pub(super) fn paint_focused_pane<W: Write>(
         .copied()
         .unwrap_or(content);
     let slot = panes.get_mut(focused)?;
-    let (terminal, generation) = published_replica(kernel, focused)?;
+    let walk = published_replica(kernel, focused)?;
     // The mirror grid size is server-authoritative (set only at the
     // snapshot / resize-ack handler); the layout rect clips and positions
     // the paint but never resizes the pane's libghostty Terminal.
-    let mirror = mirror_dims(terminal, rect);
+    let mirror = mirror_dims(walk.terminal, rect);
     let _ = slot.renderer.render_at_letterboxed(
-        terminal,
-        generation,
+        walk,
         out,
         (rect.x, rect.y),
         (rect.w, rect.h),
@@ -212,15 +211,12 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         if Some(id) == focused_pane {
             continue;
         }
-        if let (Some(slot), Some((terminal, generation))) =
-            (panes.get_mut(id), published_replica(kernel, id))
-        {
+        if let (Some(slot), Some(walk)) = (panes.get_mut(id), published_replica(kernel, id)) {
             // Force a full redraw: the ED2 above cleared the screen, so
             // unchanged pane content must still be emitted.
-            let mirror = mirror_dims(terminal, *rect);
+            let mirror = mirror_dims(walk.terminal, *rect);
             let _ = slot.renderer.render_at_letterboxed(
-                terminal,
-                generation,
+                walk,
                 out,
                 (rect.x, rect.y),
                 (rect.w, rect.h),

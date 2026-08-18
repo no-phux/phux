@@ -782,16 +782,13 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
         if let InputEvent::Key(key_event) = &ev
             && predict.is_enabled()
             && let Some(fid) = ctx.workspace.active_window().and_then(|w| w.focus.as_ref())
-            && let Some((terminal, generation)) = published_replica(ctx.engine_kernel, fid)
+            && let Some(walk) = published_replica(ctx.engine_kernel, fid)
             && let Some(slot) = panes.get_mut(fid)
         {
             use crate::predict::PredictionOutcome;
-            predict.set_alt_screen(terminal_in_alt_screen(terminal));
+            predict.set_alt_screen(terminal_in_alt_screen(walk.terminal));
             let outcome = predict.predict_key_with_grid_at(key_event, predict_now_ms(), |r, c| {
-                slot.renderer
-                    .read_grapheme_at(terminal, generation, r, c)
-                    .ok()
-                    .flatten()
+                slot.renderer.read_grapheme_at(walk, r, c).ok().flatten()
             });
             if matches!(outcome, PredictionOutcome::Predicted) {
                 predicted_any = true;

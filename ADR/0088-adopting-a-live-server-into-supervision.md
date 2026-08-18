@@ -84,8 +84,12 @@ user stopped on purpose and contradict ADR-0080.
 directory names the armed unit. An unloaded unit and a unit whose supervised
 server was deliberately stopped are indistinguishable on disk and to `launchctl
 print`; recording the state that was entered removes the guess and gives `phux
-service status` something true to say. `uninstall` revokes it, and a marker
-whose unit has vanished is swept on sight.
+service status` something true to say. `uninstall` revokes it, and the marker is
+swept on sight in two cases: when the unit it names has vanished (the adoption
+can never complete), and when the hand-over it describes is already done —
+whether this process completed it or `status` observed the init system running
+the unit, which is how a marker that outlived a login is retired rather than
+repeated.
 
 **A flag, not a verb.** ADR-0083 took the opposite route for `reconcile`
 because it resolves nothing and conflicts with every install flag. `--adopt`

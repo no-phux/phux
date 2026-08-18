@@ -33,8 +33,11 @@ default:
 #
 # CAVEAT (phux-8y3o): this export cannot survive a lane that `env_clear()`s
 # the processes it spawns — the variable is wiped before it reaches the
-# auto-spawning parent. Such a lane must re-set it inside its own hermetic
-# environment; `first_five_minutes_e2e` does exactly that.
+# auto-spawning parent. The rule for such a lane is not carried here any
+# more: it belongs to the type that defines the hazard, as
+# `AutoSpawnedServer::IDLE_BACKSTOP` in `crates/phux/tests/common/mod.rs`,
+# which names the server's own constant. A hermetic harness re-arms from
+# there rather than from a literal of its own.
 AUTO_SPAWN_BACKSTOP := "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600"
 
 # Scaffold a commented starter config into a worktree-local XDG dir

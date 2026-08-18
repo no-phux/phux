@@ -81,7 +81,7 @@
 #![allow(clippy::panic, reason = "tests")]
 
 use libghostty_vt::{Terminal as GhosttyTerminal, TerminalOptions};
-use phux_client::attach::render::TerminalRenderer;
+use phux_client::attach::render::{ReplicaWalk, TerminalRenderer};
 use phux_core::screen::{
     CellColor, CellInfo, CellStyle, RenderedFrame, SCHEMA_VERSION, ScreenState, SemanticContent,
 };
@@ -362,10 +362,15 @@ fn client_frame(case: &Case) -> RenderedFrame {
     //
     // The walk-identity token (phux-994s) is a fixed constant here: this
     // fixture builds one terminal per case and walks it once, so there is no
-    // replica generation to track. Production threads the live token from
-    // `attach::pane_state::published_replica`.
+    // replica generation to track. Production pairs terminal and token in a
+    // `ReplicaWalk` from `attach::pane_state::published_replica`.
     frame.cursor = renderer
-        .render_at_cells(&term, 1, &mut frame, (0, 0), (case.cols, case.rows))
+        .render_at_cells(
+            ReplicaWalk::for_test(&term),
+            &mut frame,
+            (0, 0),
+            (case.cols, case.rows),
+        )
         .expect("render_at_cells");
     frame
 }

@@ -320,4 +320,54 @@ fn adopt_installs_over_a_live_server_without_stopping_it() {
         "an adopt install must not print the ordinary install banner, which reads as \
          'your running server is supervised now'.\nstdout: {stdout}"
     );
+
+    // (4) The armed state is scoped to the socket the unit was armed against.
+    //
+    // `phux doctor` reports armed supervision (ADR-0088, phux-8514), and its
+    // reader had dropped the socket guard `complete_pending_adoption` keeps —
+    // so a marker armed for *this* socket would have warned on every other
+    // instance diagnosed from the same home, describing a server that is not
+    // the one the rest of the run is about. Both directions are asserted,
+    // because a guard that says "no" to everything would also pass the first.
+    let elsewhere = home.path().join("unrelated.sock");
+    let unrelated = sandboxed(home.path())
+        .args(["doctor", "--json", "--socket"])
+        .arg(&elsewhere)
+        .output()
+        .expect("run phux doctor --json against an unrelated socket");
+    assert!(
+        !armed_supervision_reported(&unrelated.stdout),
+        "an adoption armed for {} must not be reported while diagnosing {}.\nstdout: {}",
+        socket.display(),
+        elsewhere.display(),
+        String::from_utf8_lossy(&unrelated.stdout)
+    );
+
+    let diagnosed = sandboxed(home.path())
+        .args(["doctor", "--json", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("run phux doctor --json against the adopted socket");
+    assert!(
+        armed_supervision_reported(&diagnosed.stdout),
+        "the instance the unit was armed for must still be told that supervision is \
+         armed but not active.\nstdout: {}",
+        String::from_utf8_lossy(&diagnosed.stdout)
+    );
+}
+
+/// Does a `phux doctor --json` document carry the armed-supervision warning?
+fn armed_supervision_reported(stdout: &[u8]) -> bool {
+    let doc: serde_json::Value =
+        serde_json::from_slice(stdout).expect("phux doctor --json emits one JSON document");
+    doc["checks"]
+        .as_array()
+        .expect("the document lists checks")
+        .iter()
+        .any(|check| {
+            check["name"] == "server-health"
+                && check["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("supervision is armed"))
+        })
 }

@@ -17,18 +17,19 @@ use std::time::Duration;
 ///
 /// Not load-bearing: the assertions are that ATTACHED and TERMINAL_SNAPSHOT
 /// both arrive and that the snapshot carries a real grid — never how fast.
-/// This file does not use `phux_server_testkit`, so it cannot borrow the shared
-/// `WIRE_RECV_TIMEOUT`; the value matches it deliberately. The 5s it replaces
+/// Aliases the testkit's shared deadline rather than naming its own number, so
+/// this file cannot drift away from the UDS tests. The 5s it replaces
 /// was generous on an idle laptop and a measurement of the scheduler on a
 /// saturated one (phux-br1f). A server that never attaches still fails.
-const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(15);
+const HANDSHAKE_DEADLINE: Duration = phux_server_testkit::WIRE_RECV_TIMEOUT;
 
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
-use phux_protocol::wire::frame::{AttachTarget, DetachReason, ErrorCode, FrameKind, ViewportInfo};
+use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
+use phux_server_testkit::assert_protocol_error_detach;
 use tempfile::TempDir;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
@@ -225,13 +226,9 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
         let Some(Ok(Message::Binary(detached))) = bad_ws.next().await else {
             panic!("server must explain the fatal close");
         };
-        assert!(matches!(
-            FrameKind::decode(&detached).unwrap().0,
-            FrameKind::Detached {
-                reason: Some(DetachReason::ProtocolError),
-                ..
-            }
-        ));
+        // The §14 fatal-close frame is the same on every transport; only the
+        // close below is WebSocket-shaped (a Close message, not a stream EOF).
+        assert_protocol_error_detach(&FrameKind::decode(&detached).unwrap().0);
         let closed = tokio::time::timeout(HANDSHAKE_DEADLINE, bad_ws.next())
             .await
             .expect("server closes websocket");

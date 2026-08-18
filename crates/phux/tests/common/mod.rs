@@ -77,6 +77,23 @@ pub struct AutoSpawnedServer {
 }
 
 impl AutoSpawnedServer {
+    /// The environment pair that bounds a daemon this type could not reap.
+    ///
+    /// It lives here, on the type whose existence *is* the hazard —
+    /// constructing one means an auto-spawned daemon can outlive the harness
+    /// (a runner killed outright, a panic before the PID was captured) —
+    /// rather than
+    /// in whichever harness happens to build a `Command`. The justfile's e2e
+    /// recipe exports the same backstop, but every hermetic harness calls
+    /// `env_clear()`, which wipes it before it can reach the daemon; that is
+    /// exactly how this lane leaked immortal servers (phux-8y3o). Any harness
+    /// that clears the environment re-arms it from here.
+    ///
+    /// The key is the server's own constant, not a second spelling of it, so
+    /// a rename cannot leave the backstop silently disarmed.
+    pub const IDLE_BACKSTOP: (&'static str, &'static str) =
+        (phux::AUTO_SPAWN_IDLE_ENV, SERVER_IDLE_LIMIT_SECS);
+
     pub fn new(phux: impl Into<PathBuf>, socket: PathBuf) -> Self {
         Self {
             phux: phux.into(),
@@ -235,4 +252,29 @@ pub fn strip_terminal_controls(bytes: &[u8]) -> String {
         }
     }
     String::from_utf8_lossy(&printable).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AutoSpawnedServer;
+
+    /// The backstop has to be the variable the server actually reads. Pinning
+    /// the spelling here closes the string-drift hole the two hand-written
+    /// copies used to leave open: a harness arming `PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE`
+    /// by literal would keep passing after the server renamed it, and the
+    /// only symptom would be a daemon nobody reaped.
+    #[test]
+    fn the_idle_backstop_names_the_variable_the_server_reads() {
+        let (key, value) = AutoSpawnedServer::IDLE_BACKSTOP;
+        assert_eq!(key, phux::AUTO_SPAWN_IDLE_ENV);
+        // The justfile's `AUTO_SPAWN_BACKSTOP` and docs/reference spell it
+        // out, so a rename is a documentation change too, not a silent one.
+        assert_eq!(key, "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE");
+        assert!(
+            value
+                .parse::<u64>()
+                .is_ok_and(|secs| (1..=86_400).contains(&secs)),
+            "the backstop must be in the range the server accepts: {value}"
+        );
+    }
 }

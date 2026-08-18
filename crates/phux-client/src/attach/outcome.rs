@@ -15,6 +15,7 @@
 use std::io;
 
 use phux_protocol::wire::frame::DetachReason;
+use phux_protocol::wire::framing::FramingError;
 
 /// Errors the attach loop can surface to its caller.
 ///
@@ -57,6 +58,22 @@ pub enum AttachError {
     /// or a valid frame we don't expect at this point in the lifecycle.
     #[error("protocol error: {0}")]
     Protocol(String),
+
+    /// The server broke `docs/spec/proto.md` §5 framing: a length outside
+    /// `1..=MAX_FRAME_LEN`, or a message whose size disagrees with the length
+    /// it declares.
+    ///
+    /// Split out of [`Self::Protocol`] as a *typed* variant on purpose. §5
+    /// obliges the receiving peer — either peer, per the spec text — to answer
+    /// with `ERROR { code: FRAME_TOO_LARGE }` before closing. The client does
+    /// not yet: its readers do not hold the paired write half at the decode
+    /// seam, so emission stays deliberately deferred. Keeping the
+    /// [`FramingError`] instead of flattening it to a string at the detection
+    /// point means the eventual emitter needs the write half and nothing else
+    /// — no re-plumbing of two call sites and this enum. The rendered message
+    /// is unchanged from the string form it replaces.
+    #[error("protocol error: server sent a malformed frame: {0}")]
+    Framing(#[from] FramingError),
 
     /// Could not put the outer terminal into the expected state.
     #[error("terminal control error: {0}")]

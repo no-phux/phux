@@ -26,7 +26,7 @@
 //! | A datagram that must hold exactly one frame | [`check_frame`] |
 //!
 //! These primitives validate *framing* only. Decoding the body into a
-//! [`FrameKind`](super::frame::FrameKind) stays with
+//! [`FrameKind`] stays with
 //! [`Decoder::read_frame`](super::decode::Decoder::read_frame), which
 //! re-checks the same bound because it is also reachable on buffers that never
 //! passed through a transport reader.
@@ -34,7 +34,7 @@
 use bytes::BytesMut;
 use thiserror::Error;
 
-use super::frame::MAX_FRAME_LEN;
+use super::frame::{ErrorCode, FrameKind, MAX_FRAME_LEN};
 
 /// Bytes in the wire length prefix: a big-endian `u32`, per
 /// `docs/spec/proto.md` §5.
@@ -77,12 +77,45 @@ pub enum FramingError {
     },
 }
 
+impl FramingError {
+    /// The peer-visible text §5 obliges the receiving peer to put in its
+    /// `ERROR { code: FRAME_TOO_LARGE }` before closing.
+    ///
+    /// One definition of the wording, next to the type that describes the
+    /// violation: every phux peer role owes the *same* message for the same
+    /// §5 obligation — the server's per-client loop and the hub's satellite
+    /// links both send it — and only the transport differs. Prefer
+    /// [`frame_too_large_error`] where a whole frame is wanted; this is for
+    /// callers that already hold the code and need only the text.
+    #[must_use]
+    pub fn wire_message(self) -> String {
+        format!("frame violates SPEC §5 framing: {self}")
+    }
+}
+
 impl From<FramingError> for std::io::Error {
     /// Framing violations are malformed peer input, not local faults, so they
     /// surface as [`std::io::ErrorKind::InvalidData`] with the framing error
     /// retained as the source.
     fn from(err: FramingError) -> Self {
         Self::new(std::io::ErrorKind::InvalidData, err)
+    }
+}
+
+/// Build the `ERROR { code: FRAME_TOO_LARGE }` frame §5 obliges a peer to send
+/// before closing a transport whose peer broke framing.
+///
+/// The frame is the shared part of that obligation; how it reaches the wire is
+/// not (the server enqueues it on a client mailbox, the hub encodes it straight
+/// onto the condemned link). Constructing it here keeps one wording, one code,
+/// and one `request_id` decision — a framing violation is never
+/// COMMAND-correlated, so the id is always `None`.
+#[must_use]
+pub fn frame_too_large_error(violation: FramingError) -> FrameKind {
+    FrameKind::Error {
+        request_id: None,
+        code: ErrorCode::FrameTooLarge,
+        message: violation.wire_message(),
     }
 }
 
@@ -183,6 +216,26 @@ mod tests {
 
     /// A one-byte body is the smallest legal frame: just the type byte.
     const MIN_FRAME: [u8; 5] = [0, 0, 0, 1, 0x01];
+
+    /// Both peer roles that owe the §5 goodbye build it here, so this pins the
+    /// shape once for all of them: code `FRAME_TOO_LARGE`, no `request_id`, and
+    /// a message that names the offending length.
+    #[test]
+    fn frame_too_large_error_carries_the_code_and_names_the_violation() {
+        let violation = FramingError::LengthOutOfRange { length: 0 };
+        let frame = frame_too_large_error(violation);
+        assert!(
+            matches!(
+                &frame,
+                FrameKind::Error {
+                    request_id: None,
+                    code: ErrorCode::FrameTooLarge,
+                    message,
+                } if *message == violation.wire_message() && message.contains('0')
+            ),
+            "expected a FRAME_TOO_LARGE error naming the violation, got {frame:?}",
+        );
+    }
 
     #[test]
     fn decode_length_accepts_the_spec_bounds() {

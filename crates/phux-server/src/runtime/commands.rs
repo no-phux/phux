@@ -13,7 +13,8 @@ use tracing::{debug, error, info, trace, warn};
 
 use super::input_lane::InputLaneHandle;
 use super::{
-    AttachPrepared, spawn_agent_state_drain, spawn_pane_event_drain, spawn_terminal_exit_watcher,
+    AttachPrepared, broadcast_event, spawn_agent_state_drain, spawn_pane_event_drain,
+    spawn_terminal_exit_watcher,
 };
 use crate::agent_asked::{AskedPayload, AskedSource};
 use crate::state::{ClientId, Outbound, SharedState, TerminalInput};
@@ -33,6 +34,34 @@ use crate::terminal_actor::{
 /// layout-owning consumer that DOES know the tile should send it (phux-a5xj)
 /// rather than let the pane bootstrap here and be reflowed afterwards.
 pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = (80, 24);
+
+/// Announce a freshly-seeded session's **first** pane on the event stream
+/// (phux-8uly, [SPEC](../../../../docs/spec/L1.md) §7.1).
+///
+/// `handle_spawn_terminal` already broadcasts `pane_spawned` for every pane
+/// it adds to an *existing* session, but a session's seed pane is created
+/// by the helpers below instead and used to announce nothing. That left a
+/// hole in push coverage of the session lifecycle — death is carried by
+/// `pane_closed` and rename by `METADATA_CHANGED`, while creation was
+/// silent — so a server-wide follower (ADR-0089's fleet-inbox roster, the
+/// planned `phux agent wait --any`) could not observe a session that
+/// appeared after it subscribed until the new pane happened to emit
+/// something else.
+///
+/// Deliberately identical to the spawn path's emission: same helper, same
+/// pane scope, same event shape, so a subscriber cannot tell a seeded
+/// pane's announcement from a spawned one's. Fanout is best-effort and
+/// resolves subscribers at emit time, so this is called once the pane's
+/// actor is live and its wire id is interned.
+///
+/// Both seed helpers call this, covering the attach `CreateIfMissing` path
+/// and the headless [`phux_protocol::wire::frame::SESSION_CREATE_KEY`]
+/// path. Neither helper is reachable from `handle_spawn_terminal` (which
+/// seeds through `spawn_pane_with_pty_and_colors`), so no pane is announced
+/// twice.
+fn announce_seed_pane(state: &SharedState, wire_terminal_id: &phux_protocol::ids::TerminalId) {
+    broadcast_event(state, Some(wire_terminal_id), &AgentEvent::PaneSpawned);
+}
 
 pub(crate) fn seed_session_with_actor(
     state: &SharedState,
@@ -91,6 +120,7 @@ fn seed_session_with_actor_and_metadata(
         s.intern_terminal_wire(terminal)
     });
     spawn_terminal_exit_watcher(state.clone(), terminal, exit_notify, root_token.clone());
+    announce_seed_pane(state, &wire_terminal_id);
     // docs/consumers/tui.md §9 (phux-r82.1): the pane's actor is live.
     crate::hooks::fire_hook(
         state,
@@ -216,6 +246,7 @@ fn seed_session_with_pty_and_colors_and_metadata(
     spawn_pane_event_drain(state.clone(), wire_terminal_id.clone(), event_rx);
     spawn_agent_state_drain(state.clone(), wire_terminal_id.clone(), agent_rx);
     spawn_terminal_exit_watcher(state.clone(), terminal, exit_notify, root_token.clone());
+    announce_seed_pane(state, &wire_terminal_id);
     // docs/consumers/tui.md §9 (phux-r82.1): the pane's actor is live and
     // its PTY child spawned.
     crate::hooks::fire_hook(

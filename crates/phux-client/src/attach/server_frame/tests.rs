@@ -18,7 +18,7 @@ use phux_protocol::wire::info::{
 
 use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::attach::pane_state::PaneSlot;
-use crate::attach::render::TEST_GENERATION;
+use crate::attach::render::ReplicaWalk;
 use crate::layout::{LayoutState, Workspace};
 use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 
@@ -1529,7 +1529,7 @@ fn output_before_snapshot_uses_current_viewport_width() {
     let slot = panes.get_mut(&pane).expect("slot allocated");
     let cell = slot
         .renderer
-        .read_grapheme_at(terminal, TEST_GENERATION, 0, 99)
+        .read_grapheme_at(ReplicaWalk::for_test(terminal), 0, 99)
         .expect("read cell");
     assert_eq!(cell, Some('X'));
 }
@@ -2148,7 +2148,7 @@ fn output_for_inactive_window_pane_warms_mirror_but_does_not_paint() {
     let slot = panes.get_mut(&other_pane).expect("pane 2 slot");
     let cell = slot
         .renderer
-        .read_grapheme_at(terminal, TEST_GENERATION, 0, 0)
+        .read_grapheme_at(ReplicaWalk::for_test(terminal), 0, 0)
         .expect("read cell");
     assert_eq!(cell, Some('o'), "pane 2 mirror should hold the output");
 }

@@ -69,9 +69,9 @@ impl ReplicaKey {
     /// treats as the generation identity (`GenerationId`), losslessly: both
     /// ids are non-zero `u64`s, so distinct generations always produce
     /// distinct tokens and no hashing is involved. A frontend hands this to
-    /// `phux_protocol::render_pool::RenderPool::begin_generation` so a
-    /// pooled render cache is discarded when the published `Terminal` is
-    /// replaced at unchanged geometry (`phux-994s`).
+    /// `phux_protocol::render_pool::RenderPool::begin` alongside the terminal
+    /// it walks, so a pooled render cache is discarded when the published
+    /// `Terminal` is replaced at unchanged geometry (`phux-994s`).
     #[must_use]
     pub fn generation_token(&self) -> u128 {
         u128::from(self.stream_id.get()) << 64 | u128::from(self.bootstrap_id.get())

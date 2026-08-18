@@ -111,7 +111,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
     // Not a single `Check`: several server-health conditions can hold at
     // once, and per phux-67wg they co-occur more than they don't. See
     // `check_server_health`'s doc comment.
-    checks.extend(check_server_health());
+    checks.extend(check_server_health(&socket_path));
     checks.extend([
         check_plugins(),
         check_agent_shim(),
@@ -221,7 +221,7 @@ fn check_instance() -> Check {
 /// unthrottled restarts are exactly what produces a crash-loop, so the two
 /// conditions co-occur precisely when hearing about only one is least
 /// useful.
-fn check_server_health() -> Vec<Check> {
+fn check_server_health(socket_path: &std::path::Path) -> Vec<Check> {
     let unit = legacy_service_unit_path().filter(|path| path.exists());
     let legacy_unit = unit
         .as_deref()
@@ -232,7 +232,11 @@ fn check_server_health() -> Vec<Check> {
 
     // Supervision armed by `--adopt` but not yet active (ADR-0088): the unit
     // is written and deliberately unloaded while the incumbent server runs.
-    let armed_unit = super::service::armed_adoption_unit();
+    // Scoped to the socket being diagnosed — a marker armed against another
+    // profile or another `--socket` override is not this instance's state,
+    // and reporting it here would describe a server that is not the one the
+    // rest of this run is about.
+    let armed_unit = super::service::armed_adoption_unit(socket_path);
 
     // Version skew: a package manager replaced the binary but nothing
     // restarted the server, so it is still serving the old build (phux-zomb.7).
@@ -324,11 +328,10 @@ fn server_health_checks(
                  deliberately unloaded while the current server runs",
                 unit.display()
             ),
-            "this is `phux service install --adopt` working as designed: the running \
-             server keeps its panes and stays unsupervised, so a crash before the \
-             hand-over is not caught by anything. Supervision begins at the next \
-             login, or at the first `phux` command after that server exits; \
-             `phux service uninstall` cancels it",
+            format!(
+                "this is `phux service install --adopt` working as designed: {}",
+                super::service::ARMED_SUPERVISION_EXPLANATION
+            ),
         ));
     }
 
@@ -1354,6 +1357,13 @@ mod tests {
         assert!(
             hint.contains("service uninstall"),
             "the way out must be named: {hint}"
+        );
+        // The explanation itself has one home (phux-8514 wrote it twice, in
+        // two crates' worth of wording that had already drifted). Doctor
+        // frames it; it does not restate it.
+        assert!(
+            hint.contains(super::super::service::ARMED_SUPERVISION_EXPLANATION),
+            "the hint must carry the shared explanation verbatim, not a second copy: {hint}"
         );
     }
 

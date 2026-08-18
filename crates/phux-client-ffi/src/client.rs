@@ -62,6 +62,14 @@ pub(crate) struct Limits {
     clippy::redundant_pub_crate,
     reason = "the private module's render cache is shared with the crate-root C exports"
 )]
+// phux-u8zm: this is a private fourth copy of the pooled libghostty render
+// trio (`RenderState` + `RowIterator` + `CellIterator`) that ADR-0086 moved
+// into `phux_protocol::render_pool::RenderPool`. It is deliberately NOT
+// migrated: `RenderPool` lives behind phux-protocol's `server` feature, and
+// this crate depends on phux-protocol WITHOUT it — turning it on would pull
+// `png` and the full libghostty type surface into an FFI crate whose feature
+// hygiene excludes them. Migrating needs that feature-graph decision first;
+// it is tracked in phux-u8zm, not here.
 pub(crate) struct RenderCache {
     state: RenderState<'static>,
     rows: RowIterator<'static>,

@@ -259,10 +259,7 @@ impl ServerState {
         if unchanged {
             return Vec::new();
         }
-        let subscribers = self.metadata.subscribers_for(scope, key);
-        let delivered =
-            self.clients
-                .broadcast_metadata_changed(&subscribers, scope, key, Some(&value));
+        let delivered = self.metadata_broadcast(scope, key, &value);
         // Commit the write last; `MetadataSetOutcome` is now redundant
         // here but kept on the lower-level API for direct callers.
         let _ = self.metadata.set(scope, key, value);
@@ -276,9 +273,7 @@ impl ServerState {
         if !existed {
             return Vec::new();
         }
-        let subscribers = self.metadata.subscribers_for(scope, key);
-        self.clients
-            .broadcast_metadata_changed(&subscribers, scope, key, None)
+        self.broadcast_metadata_change(scope, key, None)
     }
 
     /// Broadcast-only counterpart of [`Self::metadata_set`]: enqueue a
@@ -300,9 +295,24 @@ impl ServerState {
     /// [`Self::metadata_set`] does, so callers can assert fanout shape.
     #[must_use]
     pub fn metadata_broadcast(&self, scope: &Scope, key: &str, value: &[u8]) -> Vec<ClientId> {
+        self.broadcast_metadata_change(scope, key, Some(value))
+    }
+
+    /// The one fanout: resolve the subscribers of `(scope, key)` and enqueue
+    /// `MetadataChanged` to each. `None` is the delete tombstone.
+    ///
+    /// Every caller above goes through here — SET, DELETE, and the
+    /// broadcast-only path — so "who hears about a change" has a single
+    /// definition and the returned set means the same thing for all three.
+    fn broadcast_metadata_change(
+        &self,
+        scope: &Scope,
+        key: &str,
+        value: Option<&[u8]>,
+    ) -> Vec<ClientId> {
         let subscribers = self.metadata.subscribers_for(scope, key);
         self.clients
-            .broadcast_metadata_changed(&subscribers, scope, key, Some(value))
+            .broadcast_metadata_changed(&subscribers, scope, key, value)
     }
 
     /// Publish ownership of a one-shot session-create result.

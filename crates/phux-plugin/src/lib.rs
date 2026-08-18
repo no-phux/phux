@@ -11,7 +11,8 @@ use serde::Serialize;
 use tokio::process::Command;
 
 pub use launch::{
-    LaunchError, LaunchableIntegration, ResolvedLaunch, list_launchable, resolve_launch,
+    KindClaim, KindLaunchError, LaunchError, LaunchableIntegration, ResolvedLaunch,
+    integration_for_kind, kind_matches, list_launchable, resolve_launch, resolve_launch_for_kind,
 };
 
 /// One child-process execution request: argv plus cwd, extra environment,

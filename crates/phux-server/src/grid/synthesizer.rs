@@ -700,7 +700,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
     ) -> Result<(), SynthesisError> {
-        let RenderWalk { snapshot, rows, .. } = self.pool.begin(terminal)?;
+        let RenderWalk { snapshot, rows, .. } = self.pool.begin(terminal, 0)?;
         let rows_n = snapshot.rows()?;
         // Walk rows and clear each dirty bit. The row-level clear is
         // separate from the snapshot-level clear — see render.h's "Dirty
@@ -750,7 +750,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             snapshot,
             rows,
             cells,
-        } = self.pool.begin(terminal)?;
+        } = self.pool.begin(terminal, 0)?;
         let cols = snapshot.cols()?;
         let rows_n = snapshot.rows()?;
 
@@ -923,7 +923,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             snapshot,
             rows,
             cells,
-        } = self.pool.begin(terminal)?;
+        } = self.pool.begin(terminal, 0)?;
         let cols = snapshot.cols()?;
         let rows_n = snapshot.rows()?;
 
