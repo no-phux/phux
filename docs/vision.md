@@ -83,6 +83,14 @@ The research note (now archived) captures the algorithm composition:
 
 ## Two consumer surfaces, both on the arc
 
+Before those surfaces diverge further, one authority boundary is explicit:
+durable work identity and evidence belong to a Phux coordinator, while clients
+own presentation. Objective, Run, WorkSession, Artifact, and Signal are not TUI
+layout vocabulary and are not inferred independently by each client. The
+proposed contract and its delivery order live in
+[ADR-0092](../ADR/0092-durable-work-coordinator-authority.md). Nothing in the
+current release claims that durable-work surface already ships.
+
 ### The reference TUI
 
 The shape users expect from a multiplexer. Sessions, windows, panes,
