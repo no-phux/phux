@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.23.0](https://github.com/phall1/phux/compare/v0.22.0...v0.23.0) (2026-08-22)
+
+
+### Features
+
+* **cli:** add `phux --remote user@host` one-shot remote attach ([f27ca1e](https://github.com/phall1/phux/commit/f27ca1e24e12c42ec330d65478f4fd2ec2c6934a))
+
 ## [0.22.0](https://github.com/phall1/phux/compare/v0.21.0...v0.22.0) (2026-08-19)
 
 
