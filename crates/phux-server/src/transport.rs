@@ -47,6 +47,22 @@ use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 use phux_protocol::wire::framing::{self, LENGTH_PREFIX_LEN as LENGTH_PREFIX};
 pub(crate) const WS_REJECTION_WARN_INTERVAL: Duration = Duration::from_secs(60);
 
+/// How long a peer has to finish the TLS handshake and the WebSocket upgrade
+/// before the connection is refused.
+///
+/// The accept loop in [`crate::runtime::client`] awaits `accept()` to
+/// completion before it can accept anyone else, so an un-timed handshake makes
+/// a single stalled peer a permanent denial of service on the whole listener:
+/// the kernel keeps completing TCP handshakes, so later clients connect and
+/// then wait forever for bytes userspace will never send. A peer that connects
+/// and simply never speaks costs nothing to create, which makes this reachable
+/// by accident (a sleeping phone whose RST never arrives, a stray port probe)
+/// as well as on purpose.
+///
+/// This mirrors `phux-relay`'s `PREAMBLE_DEADLINE`: a legitimate client starts
+/// its handshake immediately, so the bound only fires on stalled peers.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+
 /// Read side of a client connection: yields one complete encoded frame (length
 /// prefix included) per call, or `None` at end-of-stream.
 pub(crate) trait FrameReader {
@@ -410,11 +426,16 @@ impl Incoming for WsListener {
         // upgrade request is already encrypted when we read it. The underlying
         // TLS error is deliberately discarded: certificate and handshake
         // details are not part of the default-log privacy surface.
+        // Bounded by `HANDSHAKE_DEADLINE`: a peer that stalls mid-handshake
+        // must not hold the accept loop, and so the whole listener, forever.
+        // A timeout is reported as the same stage as a handshake failure —
+        // both are "this peer never completed TLS", and neither reveals
+        // anything about the certificate or the peer beyond its source IP.
         let stream = match &self.tls {
             Some(acceptor) => ServerStream::Tls(Box::new(
-                acceptor
-                    .accept(tcp)
+                tokio::time::timeout(HANDSHAKE_DEADLINE, acceptor.accept(tcp))
                     .await
+                    .map_err(|_| ws_accept_error(WsAcceptStage::TlsHandshake, source_ip))?
                     .map_err(|_| ws_accept_error(WsAcceptStage::TlsHandshake, source_ip))?,
             )),
             None => ServerStream::Plain(tcp),
@@ -432,23 +453,28 @@ impl Incoming for WsListener {
                     std::cell::RefCell<Option<crate::auth::AuthenticatedCredential>>,
                 > = std::rc::Rc::new(std::cell::RefCell::new(None));
                 let sink = captured.clone();
-                let ws = tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, resp| {
-                    authorize_request(req, &store).map_or_else(
-                        || Err(unauthorized_response()),
-                        |credential| {
-                            *sink.borrow_mut() = Some(credential);
-                            Ok(resp)
-                        },
-                    )
-                })
+                let ws = tokio::time::timeout(
+                    HANDSHAKE_DEADLINE,
+                    tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, resp| {
+                        authorize_request(req, &store).map_or_else(
+                            || Err(unauthorized_response()),
+                            |credential| {
+                                *sink.borrow_mut() = Some(credential);
+                                Ok(resp)
+                            },
+                        )
+                    }),
+                )
                 .await
+                .map_err(|_| ws_accept_error(WsAcceptStage::Upgrade, source_ip))?
                 .map_err(|error| classify_ws_upgrade_error(&error, source_ip))?;
                 let id = captured.borrow_mut().take();
                 (ws, id)
             }
             None => (
-                tokio_tungstenite::accept_async(stream)
+                tokio::time::timeout(HANDSHAKE_DEADLINE, tokio_tungstenite::accept_async(stream))
                     .await
+                    .map_err(|_| ws_accept_error(WsAcceptStage::Upgrade, source_ip))?
                     .map_err(|_| ws_accept_error(WsAcceptStage::Upgrade, source_ip))?,
                 None,
             ),
@@ -762,6 +788,58 @@ mod tests {
         let (got, ()) = tokio::join!(server, client);
         let err = got.expect_err("a message longer than the frame it declares is malformed");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// A peer that connects and then never speaks must not hold the listener.
+    ///
+    /// `Incoming::accept` runs the upgrade inline and the shared accept loop
+    /// awaits it to completion, so before `HANDSHAKE_DEADLINE` a single silent
+    /// TCP peer parked the loop forever: the kernel kept completing TCP
+    /// handshakes, so every later client connected and then waited for bytes
+    /// userspace would never send. Observed in the wild as a server whose
+    /// `wss://` and QUIC listeners both went dead while still accepting TCP.
+    ///
+    /// The clock is paused: tokio auto-advances it while the silent peer keeps
+    /// the runtime idle, so this pins the behavior without waiting out the real
+    /// deadline.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_peer_does_not_wedge_the_listener() {
+        let (listener, addr, token_hex, _tokens) = token_listener().await;
+
+        // Connects, completes the TCP handshake, and sends nothing — ever.
+        let _silent = TcpStream::connect(addr).await.unwrap();
+
+        let Err(err) = listener.accept().await else {
+            panic!("a peer that never speaks must be timed out, not awaited forever");
+        };
+        let rejection = err
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<WsPeerRejection>())
+            .expect("timeout is reported as a typed peer rejection");
+        assert_eq!(rejection.stage, WsAcceptStage::Upgrade);
+
+        // The listener is still live: a well-behaved client connecting after
+        // the stall is served normally.
+        let frame: Vec<u8> = vec![0, 0, 0, 3, 0xde, 0xad, 0xbe];
+        let server = async {
+            let (mut reader, _writer, _peer) = listener.accept().await.unwrap();
+            reader.read_frame().await
+        };
+        let client = async {
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            let (mut ws, _resp) =
+                tokio_tungstenite::client_async(bearer_request(addr, &token_hex), tcp)
+                    .await
+                    .expect("valid token must upgrade after a stalled peer");
+            ws.send(Message::Binary(frame.clone())).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        let (got, ()) = tokio::join!(server, client);
+        assert_eq!(
+            got.unwrap().unwrap().as_ref(),
+            frame.as_slice(),
+            "listener still serves clients after a silent peer is reaped"
+        );
     }
 
     async fn refused_handshake(

@@ -57,6 +57,21 @@ const KEEP_ALIVE: Duration = Duration::from_secs(10);
 /// QUIC application close code for a connection refused at the auth preamble.
 const AUTH_FAILED_CODE: u32 = 0x01;
 
+/// How long one admission step — handshake, first bidi stream, auth preamble —
+/// may take before the connection is abandoned and the loop moves on.
+///
+/// [`IDLE_TIMEOUT`] does not cover this: it reaps an established connection
+/// that goes quiet, but each `await` below happens *before* the connection is
+/// admitted, and the accept loop is sequential. Un-timed, a peer that opens a
+/// handshake and then says nothing parks the loop indefinitely, which stops
+/// this listener accepting anyone else. Because the whole remote surface is
+/// served by one accept path, a single unanswered UDP datagram to the QUIC
+/// port takes wss down with it.
+///
+/// A real consumer completes each step immediately, so the bound only fires
+/// on stalled peers. Mirrors `phux-relay`'s `PREAMBLE_DEADLINE`.
+const ADMISSION_DEADLINE: Duration = Duration::from_secs(10);
+
 /// A QUIC listener: a quinn [`Endpoint`](quinn::Endpoint) bound to a UDP
 /// socket, optionally token-authenticated for routable consumers.
 pub(crate) struct QuicListener {
@@ -197,10 +212,14 @@ impl Incoming for QuicListener {
             })?;
             let remote = incoming.remote_address();
 
-            let conn = match incoming.await {
-                Ok(conn) => conn,
-                Err(err) => {
+            let conn = match tokio::time::timeout(ADMISSION_DEADLINE, incoming).await {
+                Ok(Ok(conn)) => conn,
+                Ok(Err(err)) => {
                     debug!(%remote, error = %err, "quic handshake failed");
+                    continue;
+                }
+                Err(_) => {
+                    debug!(%remote, "quic handshake timed out");
                     continue;
                 }
             };
@@ -208,18 +227,33 @@ impl Incoming for QuicListener {
             // The consumer opens one bidi stream and immediately writes its
             // first bytes (token preamble, then frames), so `accept_bi`
             // resolves promptly.
-            let (send, mut recv) = match conn.accept_bi().await {
-                Ok(pair) => pair,
-                Err(err) => {
-                    debug!(%remote, error = %err, "quic stream accept failed");
-                    continue;
-                }
-            };
+            let (send, mut recv) =
+                match tokio::time::timeout(ADMISSION_DEADLINE, conn.accept_bi()).await {
+                    Ok(Ok(pair)) => pair,
+                    Ok(Err(err)) => {
+                        debug!(%remote, error = %err, "quic stream accept failed");
+                        continue;
+                    }
+                    Err(_) => {
+                        debug!(%remote, "quic stream accept timed out");
+                        conn.close(AUTH_FAILED_CODE.into(), b"stream timeout");
+                        continue;
+                    }
+                };
 
             let credential = match &self.tokens {
                 Some(store) => {
-                    let Some(credential) = authorize_preamble(&mut recv, store).await else {
-                        warn!(%remote, "quic consumer refused: missing or invalid token");
+                    let preamble = tokio::time::timeout(
+                        ADMISSION_DEADLINE,
+                        authorize_preamble(&mut recv, store),
+                    )
+                    .await;
+                    let Ok(Some(credential)) = preamble else {
+                        if preamble.is_err() {
+                            debug!(%remote, "quic auth preamble timed out");
+                        } else {
+                            warn!(%remote, "quic consumer refused: missing or invalid token");
+                        }
                         conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
                         continue;
                     };
