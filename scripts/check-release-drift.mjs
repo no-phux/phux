@@ -36,6 +36,42 @@ const now = Date.now();
 const graceMs = graceMinutes * 60_000;
 const failures = [];
 
+function grantsContentsWrite(workflow) {
+  let inTopPermissions = false;
+  let inDrift = false;
+  let inDriftPermissions = false;
+  let topWrite = false;
+  let driftOverride = false;
+  let driftWrite = false;
+
+  for (const line of workflow.split("\n")) {
+    if (/^permissions:\s*$/.test(line)) {
+      inTopPermissions = true;
+      continue;
+    }
+    if (inTopPermissions && /^[^\s#]/.test(line)) inTopPermissions = false;
+    if (inTopPermissions && /^  contents:\s*write(?:\s*#.*)?$/.test(line)) topWrite = true;
+
+    if (/^  drift:\s*$/.test(line)) {
+      inDrift = true;
+      continue;
+    }
+    if (inDrift && /^  [^\s#]/.test(line)) {
+      inDrift = false;
+      inDriftPermissions = false;
+    }
+    if (inDrift && /^    permissions:\s*$/.test(line)) {
+      driftOverride = true;
+      inDriftPermissions = true;
+      continue;
+    }
+    if (inDriftPermissions && /^    [^\s#]/.test(line)) inDriftPermissions = false;
+    if (inDriftPermissions && /^      contents:\s*write(?:\s*#.*)?$/.test(line)) driftWrite = true;
+  }
+
+  return topWrite && (!driftOverride || driftWrite);
+}
+
 // A token without push access is not shown draft releases at all — the REST
 // API simply omits them. Two of the four checks below are about drafts, so
 // under such a token they cannot fail: an empty draft list is indistinguishable
@@ -43,16 +79,28 @@ const failures = [];
 // of stuck releases.
 //
 // That is the precise failure mode this whole script exists to catch, so it
-// refuses to run blind rather than passing quietly. The first CI run of
-// release-drift.yml hit exactly this: `contents: read` hid both stuck drafts,
-// and only the manifest-versus-tag check noticed anything was wrong.
-const canSeeDrafts = gh(["api", `repos/${repo}`, "--jq", "{push: .permissions.push}"])[0]?.push;
-assert.ok(
-  canSeeDrafts,
-  `the token for ${repo} lacks push access, so the GitHub API will not list draft releases. ` +
-    "Two of this check's four assertions are about drafts and would pass vacuously. " +
-    "Grant `contents: write` (read-only for this job's purposes — see release-drift.yml).",
-);
+// refuses to run blind rather than passing quietly. A GITHUB_TOKEN is a GitHub
+// App installation token, though, and the repository API's user-oriented
+// `.permissions.push` field is false even when the workflow grants
+// `contents: write`. In Actions, validate the checked-out workflow declaration;
+// outside Actions, retain the live user-token check.
+if (process.env.GITHUB_ACTIONS === "true") {
+  const workflowPath = process.env.PHUX_DRIFT_WORKFLOW ?? join(root, ".github/workflows/release-drift.yml");
+  const workflow = await readFile(workflowPath, "utf8");
+  assert.ok(
+    grantsContentsWrite(workflow),
+    "release-drift.yml does not grant effective contents: write to jobs.drift, " +
+      "so draft releases may be hidden.",
+  );
+} else {
+  const canSeeDrafts = gh(["api", `repos/${repo}`, "--jq", "{push: .permissions.push}"])[0]?.push;
+  assert.ok(
+    canSeeDrafts,
+    `the token for ${repo} lacks push access, so the GitHub API will not list draft releases. ` +
+      "Two of this check's four assertions are about drafts and would pass vacuously. " +
+      "Grant `contents: write` (read-only for this job's purposes — see release-drift.yml).",
+  );
+}
 
 const releases = gh([
   "api",
