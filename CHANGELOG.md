@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.23.1](https://github.com/phall1/phux/compare/v0.23.0...v0.23.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **client:** tolerate interleaved COMMAND_RESULT and TERMINAL_MOVED ([72c4ef0](https://github.com/phall1/phux/commit/72c4ef0c0c26ddb40e28dba2a40e973be85022cc))
+* **server:** bound the wss/QUIC handshake so a stalled peer cannot wedge the listener ([de18f3a](https://github.com/phall1/phux/commit/de18f3a0018aeebffc4a0b8923ac30ed9c69bd0c))
+
 ## [0.23.0](https://github.com/phall1/phux/compare/v0.22.0...v0.23.0) (2026-08-22)
 
 
