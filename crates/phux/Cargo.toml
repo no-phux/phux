@@ -33,6 +33,12 @@ phux-server.workspace = true
 phux-client.workspace = true
 phux-config.workspace = true
 phux-plugin.workspace = true
+# `phux doctor` dials its own routable listener to prove packets actually
+# reach the server, rather than only that a socket is bound. Reusing the
+# dial stack a real client uses is the whole point: a bespoke probe could
+# pass while the path clients take is blocked. Workspace crate, already in
+# the tree under phux-client; no new third-party dependency enters.
+phux-dial.workspace = true
 # `phux relay` fronts the reference relay: `run` drives its runtime in the
 # foreground and `pair` mints route-bound tunnel tokens (workspace crate;
 # no new third-party dependency enters).

@@ -2139,6 +2139,7 @@ dependencies = [
  "phux-client",
  "phux-config",
  "phux-core",
+ "phux-dial",
  "phux-plugin",
  "phux-protocol",
  "phux-record",

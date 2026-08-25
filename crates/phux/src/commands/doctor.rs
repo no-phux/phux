@@ -18,6 +18,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use phux_server::runtime::default_socket_path;
 
@@ -116,6 +117,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_plugins(),
         check_agent_shim(),
         check_remote_cert(),
+        check_remote_reachable(),
         check_logs(),
     ]);
 
@@ -805,6 +807,151 @@ fn check_logs() -> Check {
 /// documented pairing flow works end to end on a narrow certificate. Calling
 /// that a failure would turn doctor's exit code red on installs where nothing
 /// is broken.
+/// How long the reachability probe waits for the listener to say anything.
+///
+/// Generous relative to a loopback-speed handshake, because the probe rides
+/// whatever overlay the operator uses; short enough that `phux doctor` stays
+/// an interactive command when the answer is "blocked".
+const REMOTE_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// What dialing our own routable listener revealed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reachability {
+    /// The listener answered. A completed handshake and a refusal at the auth
+    /// layer both land here on purpose: either way packets reached phux, which
+    /// is the only thing this check is asking.
+    Answered,
+    /// The connection was refused, so nothing is bound there.
+    NoListener,
+    /// The connection was accepted and then nothing came back. This is the
+    /// shape a host packet filter produces: the kernel completes the TCP
+    /// handshake, so the dial "connects", but the bytes never reach the
+    /// process and the dial hangs until it times out.
+    Silent,
+    /// The address could not be reached at all.
+    Unreachable,
+}
+
+/// Does traffic to the routable listener actually reach the server?
+///
+/// Every other check here reads local state — a bound socket, a parsed
+/// config, a cert on disk — and local state is exactly what stays healthy
+/// when a host firewall is dropping inbound packets. A server can be running,
+/// listening, correctly paired, and completely unreachable, and before this
+/// check `phux doctor` reported that server as entirely fine.
+///
+/// So this one leaves the machine: it dials its own advertised address with
+/// the same stack a real client uses, and reports what came back. Skipped
+/// when there is no overlay address to dial, which is the common local-only
+/// case and not a fault.
+fn check_remote_reachable() -> Check {
+    let advertised = phux_config::overlay::detect();
+    let Some(addr) = advertised.first().copied() else {
+        return Check::pass(
+            "remote-reachable",
+            "no overlay address detected; nothing routable to probe",
+        );
+    };
+    let url = format!(
+        "wss://{}:{}",
+        phux_server::transport::tls::san_name(addr),
+        phux_server::runtime::DEFAULT_WS_PORT
+    );
+    remote_reachable_check(&url, probe_remote_listener(&url))
+}
+
+/// Dial `url` and classify the answer.
+///
+/// Trust is [`CertTrust::SkipVerify`] and no token is sent: this is a
+/// reachability probe, not an auth check. A 401 from the upgrade is a
+/// perfectly good answer — it proves the packets landed.
+fn probe_remote_listener(url: &str) -> Reachability {
+    let Ok(runtime) = cli_runtime() else {
+        return Reachability::Unreachable;
+    };
+    let dial = phux_dial::ws::WsDial {
+        url: url.to_owned(),
+        token: None,
+        trust: phux_dial::CertTrust::SkipVerify,
+        tls_server_name: None,
+    };
+    let probe = async {
+        let Ok(outcome) =
+            tokio::time::timeout(REMOTE_PROBE_TIMEOUT, phux_dial::ws::dial(&dial)).await
+        else {
+            // Nothing came back inside the window. The connection was
+            // accepted and then went nowhere — see [`Reachability::Silent`].
+            return Reachability::Silent;
+        };
+        match outcome {
+            // `Unreachable` is the dial's own "refused / no route / network
+            // down" bucket, and only a refusal proves the address itself is
+            // fine with nothing bound behind it.
+            Err(phux_dial::DialError::Unreachable(err)) => {
+                if err.to_lowercase().contains("refused") {
+                    Reachability::NoListener
+                } else {
+                    Reachability::Unreachable
+                }
+            }
+            // Everything else — a completed handshake, a TLS failure, an
+            // auth refusal — means something answered, which is the only
+            // question this check is asking.
+            Ok(_) | Err(_) => Reachability::Answered,
+        }
+    };
+    runtime.block_on(probe)
+}
+
+/// The pure half of [`check_remote_reachable`], so every verdict is testable
+/// without a tailnet, a listener, or a firewall.
+fn remote_reachable_check(url: &str, reachability: Reachability) -> Check {
+    match reachability {
+        Reachability::Answered => Check::pass(
+            "remote-reachable",
+            format!("{url} answered; remote clients can reach this server"),
+        ),
+        Reachability::Silent => Check::fail(
+            "remote-reachable",
+            format!(
+                "{url} accepted a connection and then answered nothing — the socket is \
+                 bound but traffic is not reaching phux, which is what a host firewall \
+                 looks like from here"
+            ),
+            FIREWALL_REMEDY,
+        ),
+        Reachability::NoListener => Check::warn(
+            "remote-reachable",
+            format!("nothing is listening on {url}"),
+            "expected remote access? run `phux pair` — the listener only auto-binds \
+             once a device credential exists",
+        ),
+        Reachability::Unreachable => Check::warn(
+            "remote-reachable",
+            format!("could not reach {url} from this host"),
+            "if the address belongs to an overlay network, check it is up: `tailscale status`",
+        ),
+    }
+}
+
+/// What to do about a listener that is bound but unreachable.
+///
+/// macOS gets named specifically because it is the case operators cannot
+/// guess: the application firewall drops inbound connections to a binary it
+/// does not recognize, phux ships adhoc-signed so it is never recognized, and
+/// an allowlist entry is keyed to the exact binary path — so upgrading phux
+/// silently breaks remote access even for someone who allowlisted it once.
+#[cfg(target_os = "macos")]
+const FIREWALL_REMEDY: &str = "macOS: the application firewall blocks inbound connections to \
+     unrecognized binaries, and phux is adhoc-signed. Check it with \
+     `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate`. Allowlisting is \
+     per-binary-path, so it breaks again on the next upgrade; turning the firewall off on a \
+     host that lives behind an overlay network is the durable fix";
+
+#[cfg(not(target_os = "macos"))]
+const FIREWALL_REMEDY: &str = "check this host's packet filter for a rule dropping inbound \
+     connections to phux's listener port";
+
 fn check_remote_cert() -> Check {
     let operator_cert = std::env::var_os("PHUX_WS_TLS_CERT").is_some()
         || std::env::var_os("PHUX_WS_TLS_KEY").is_some();
@@ -1011,6 +1158,46 @@ fn report_json(checks: &[Check]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bound-but-unreachable listener is the one failure every other check
+    /// here reports as healthy, so this check has to fail loudly and say what
+    /// to do. The silent case is the whole reason it exists: a host firewall
+    /// lets the kernel finish the TCP handshake and then eats the bytes, so
+    /// the server looks perfect from the inside while no client can reach it.
+    #[test]
+    fn a_bound_but_silent_listener_fails_with_an_actionable_remedy() {
+        let url = "wss://100.64.0.2:8787";
+
+        let check = remote_reachable_check(url, Reachability::Silent);
+        assert_eq!(
+            check.status,
+            Status::Fail,
+            "a listener that answers nothing is a failure, not a warning: \
+             remote access is entirely broken"
+        );
+        let hint = check.hint.expect("a failure must carry a remedy");
+        assert!(
+            hint.contains("firewall") || hint.contains("packet filter"),
+            "the remedy must name the blocker: {hint}"
+        );
+
+        // An answer of any kind proves packets land, which is all this asks —
+        // an auth refusal counts, so a probe that sends no token still passes.
+        assert_eq!(
+            remote_reachable_check(url, Reachability::Answered).status,
+            Status::Pass
+        );
+
+        // Not having paired, and having no overlay, are ordinary states.
+        // Neither may fail the run and strand someone with exit 1.
+        for benign in [Reachability::NoListener, Reachability::Unreachable] {
+            assert_eq!(
+                remote_reachable_check(url, benign).status,
+                Status::Warn,
+                "{benign:?} is a normal local-only state, not a broken install"
+            );
+        }
+    }
 
     /// The `remote-cert` check is the durable surface for a certificate that
     /// cannot be corrected in place (phux-q9a0, ADR-0091), so every branch
