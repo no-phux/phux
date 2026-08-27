@@ -9,6 +9,25 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.23.2](https://github.com/phall1/phux/compare/v0.23.1...v0.23.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* **ci:** validate Actions release-drift token correctly ([#492](https://github.com/phall1/phux/issues/492)) ([4c98d66](https://github.com/phall1/phux/commit/4c98d66455da8cbe4faa489a08c919273712ed0f))
+* **doctor:** fail when the credential store the remote listeners gate on cannot load ([4301932](https://github.com/phall1/phux/commit/43019322e78d73101256eb1f8c593b93c2f71da8))
+* **doctor:** probe the routable listener instead of trusting that it is bound ([b51d683](https://github.com/phall1/phux/commit/b51d6837ac07aa8f45697ab576dbf5435d433396))
+
+
+### Refactors
+
+* **protocol:** split the wire codecs into per-frame decoders ([9dc3b48](https://github.com/phall1/phux/commit/9dc3b4871da501a3425627b99360f944fb37f63f))
+
+
+### Documentation
+
+* rebrand for the no-phux org, drop README gifs ([2c6360d](https://github.com/phall1/phux/commit/2c6360dc1f3158cf6fa6cfa5097a288e2de8167e))
+
 ## [0.23.1](https://github.com/phall1/phux/compare/v0.23.0...v0.23.1) (2026-08-25)
 
 
