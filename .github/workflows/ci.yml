@@ -255,7 +255,9 @@ jobs:
       # `just` is provided by the pinned dev shell, not the hosted runner.
       # Keep this after Nix setup or every PR fails before reaching Rust.
       - name: agent integration gates
-        run: nix develop -c just agent-integrations-check
+        run: |
+          node_bin=$(dirname "$(command -v node)")
+          nix develop -c bash -c 'export PATH="$1:$PATH"; exec just agent-integrations-check' -- "$node_bin"
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         id: rust-cache
