@@ -34,7 +34,7 @@ concurrency:
 jobs:
   commitlint:
     name: commitlint
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       # fetch-depth: 0 so base.sha..head.sha resolves. The default checkout

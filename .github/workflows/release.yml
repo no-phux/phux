@@ -58,7 +58,7 @@ concurrency:
 jobs:
   prepare:
     name: prepare release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
@@ -247,7 +247,7 @@ jobs:
     # the release as a private draft and attach nothing; a manual rerun against
     # the same tag repairs it atomically.
     if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.build.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
     steps:
@@ -280,7 +280,7 @@ jobs:
     name: update homebrew tap
     needs: [prepare, release]
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Pushes Formula/phux.rb to phall1/homebrew-tap via an SSH deploy key
     # (HOMEBREW_TAP_DEPLOY_KEY: a private key whose public half is a
     # write-enabled deploy key on the tap repo). Skipped automatically if the
@@ -359,7 +359,7 @@ jobs:
     name: publish complete release
     needs: [prepare, release, homebrew]
     if: ${{ !cancelled() && needs.release.result == 'success' && needs.homebrew.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
     steps:

@@ -111,7 +111,7 @@ concurrency:
 jobs:
   release-please:
     name: release PR / github release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       release_created: ${{ steps.rp.outputs.release_created }}
       tag_name: ${{ steps.rp.outputs.tag_name }}
@@ -209,7 +209,7 @@ jobs:
     name: sync Cargo.lock on the release PR
     needs: release-please
     if: needs.release-please.outputs.prs_created == 'true' && needs.release-please.outputs.pr_branch != ''
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # release-please cannot update Cargo.lock, and this is not a config mistake:
     #
     #   * Its `rust` strategy is unusable here (see the header of release.yml),

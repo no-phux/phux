@@ -52,7 +52,7 @@ jobs:
     # gives one stable CPU_KEY, so this lane's rust-cache entries share warmth
     # with what ci.yml saves on main pushes instead of scattering across the
     # mixed x64 fleet.
-    runs-on: ubuntu-24.04-arm
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     steps:
       - uses: actions/checkout@v7
       # Covers both cpuinfo dialects: flags/model name/vendor_id on x86,

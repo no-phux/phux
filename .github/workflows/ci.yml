@@ -132,7 +132,7 @@ jobs:
   changes:
     name: classify changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
@@ -209,7 +209,7 @@ jobs:
   # allocator would measure dhat, not phux.
   check:
     name: check
-    runs-on: ubuntu-24.04-arm
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.release_only != 'true'
@@ -349,7 +349,7 @@ jobs:
   # test in this unit pool. See `just e2e` / `just stress`.
   test:
     name: test
-    runs-on: ubuntu-24.04-arm
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.release_only != 'true'
