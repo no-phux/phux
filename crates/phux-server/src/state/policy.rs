@@ -23,6 +23,15 @@ impl ServerState {
         self.clients.set_peer_identity(client_id, identity);
     }
 
+    /// Store transport identity and structured credential attestation.
+    pub fn set_connection_identity(
+        &mut self,
+        client_id: ClientId,
+        identity: crate::auth::ConnectionIdentity,
+    ) {
+        self.clients.set_connection_identity(client_id, identity);
+    }
+
     /// Look up a peer identity by client id.
     #[must_use]
     pub fn peer_identity(
@@ -30,6 +39,15 @@ impl ServerState {
         client_id: ClientId,
     ) -> Option<&phux_protocol::policy::PeerIdentity> {
         self.clients.peer_identity(client_id)
+    }
+
+    /// Look up the structured credential captured at connection establishment.
+    #[must_use]
+    pub fn authenticated_credential(
+        &self,
+        client_id: ClientId,
+    ) -> Option<&crate::auth::AuthenticatedCredential> {
+        self.clients.authenticated_credential(client_id)
     }
 
     /// Remove a peer identity when a client *disconnects* — not when it

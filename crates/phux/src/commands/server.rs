@@ -653,7 +653,7 @@ pub(crate) fn ensure_server(
     // to acquire the lock is never fatal: falling through to an unserialised
     // spawn is exactly the old behaviour, and the server's own bind-time
     // probe still rejects a duplicate.
-    let guard = SpawnLock::acquire(&socket::spawn_lock_path());
+    let guard = SpawnLock::acquire(&socket::spawn_lock_path(socket_path));
 
     // Re-probe under the lock. Whoever held it before us most likely spawned
     // the server we were about to duplicate.
@@ -775,14 +775,21 @@ impl SpawnLock {
         if std::fs::create_dir_all(parent).is_err() {
             return Self(None);
         }
-        let Ok(file) = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path)
-        else {
+        let Ok(file) = rustix::fs::open(
+            path,
+            rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        ) else {
             return Self(None);
         };
+        let file = std::fs::File::from(file);
+        if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+            return Self(None);
+        }
         let deadline = Instant::now() + SPAWN_LOCK_TIMEOUT;
         loop {
             match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
@@ -808,6 +815,24 @@ impl Drop for SpawnLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_lock_refuses_symlinks_and_fifos() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"do not lock").expect("target");
+        let symlink = dir.path().join("symlink.lock");
+        std::os::unix::fs::symlink(&target, &symlink).expect("symlink");
+        assert!(SpawnLock::acquire(&symlink).0.is_none());
+
+        let fifo = dir.path().join("fifo.lock");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo must create the hostile fixture");
+        assert!(SpawnLock::acquire(&fifo).0.is_none());
+    }
 
     fn connector(relay: &str, token: &str) -> phux_config::ConnectorConfigEntry {
         phux_config::ConnectorConfigEntry {

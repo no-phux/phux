@@ -24,6 +24,8 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+#[cfg(feature = "provision")]
+pub mod cert;
 pub mod quic;
 pub mod tls;
 pub mod ws;

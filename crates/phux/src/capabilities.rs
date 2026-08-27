@@ -49,6 +49,7 @@ fn schema_contracts() -> Value {
         { "invocation": "phux host --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux tag --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux pair --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux pair rotate|revoke --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux rec|play --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux logs|doctor|update --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux run --json", "schema_version": null, "kind": "document", "note": "unversioned result" },

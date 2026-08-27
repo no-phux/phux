@@ -35,7 +35,6 @@ use std::time::Duration;
 use bytes::BytesMut;
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::wire::framing;
-use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
 use super::tls::quic_server_config;
@@ -57,6 +56,21 @@ const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
 /// QUIC application close code for a connection refused at the auth preamble.
 const AUTH_FAILED_CODE: u32 = 0x01;
+
+/// How long one admission step — handshake, first bidi stream, auth preamble —
+/// may take before the connection is abandoned and the loop moves on.
+///
+/// [`IDLE_TIMEOUT`] does not cover this: it reaps an established connection
+/// that goes quiet, but each `await` below happens *before* the connection is
+/// admitted, and the accept loop is sequential. Un-timed, a peer that opens a
+/// handshake and then says nothing parks the loop indefinitely, which stops
+/// this listener accepting anyone else. Because the whole remote surface is
+/// served by one accept path, a single unanswered UDP datagram to the QUIC
+/// port takes wss down with it.
+///
+/// A real consumer completes each step immediately, so the bound only fires
+/// on stalled peers. Mirrors `phux-relay`'s `PREAMBLE_DEADLINE`.
+const ADMISSION_DEADLINE: Duration = Duration::from_secs(10);
 
 /// A QUIC listener: a quinn [`Endpoint`](quinn::Endpoint) bound to a UDP
 /// socket, optionally token-authenticated for routable consumers.
@@ -184,7 +198,9 @@ impl Incoming for QuicListener {
     type Reader = QuicReader;
     type Writer = QuicWriter;
 
-    async fn accept(&self) -> io::Result<(QuicReader, QuicWriter, PeerIdentity)> {
+    async fn accept(
+        &self,
+    ) -> io::Result<(QuicReader, QuicWriter, crate::auth::ConnectionIdentity)> {
         // One QUIC endpoint multiplexes many connections; a single bad
         // handshake or refused token must not tear the listener down, so
         // per-connection failures `continue` (logged) and only an endpoint
@@ -196,10 +212,14 @@ impl Incoming for QuicListener {
             })?;
             let remote = incoming.remote_address();
 
-            let conn = match incoming.await {
-                Ok(conn) => conn,
-                Err(err) => {
+            let conn = match tokio::time::timeout(ADMISSION_DEADLINE, incoming).await {
+                Ok(Ok(conn)) => conn,
+                Ok(Err(err)) => {
                     debug!(%remote, error = %err, "quic handshake failed");
+                    continue;
+                }
+                Err(_) => {
+                    debug!(%remote, "quic handshake timed out");
                     continue;
                 }
             };
@@ -207,22 +227,37 @@ impl Incoming for QuicListener {
             // The consumer opens one bidi stream and immediately writes its
             // first bytes (token preamble, then frames), so `accept_bi`
             // resolves promptly.
-            let (send, mut recv) = match conn.accept_bi().await {
-                Ok(pair) => pair,
-                Err(err) => {
-                    debug!(%remote, error = %err, "quic stream accept failed");
-                    continue;
-                }
-            };
+            let (send, mut recv) =
+                match tokio::time::timeout(ADMISSION_DEADLINE, conn.accept_bi()).await {
+                    Ok(Ok(pair)) => pair,
+                    Ok(Err(err)) => {
+                        debug!(%remote, error = %err, "quic stream accept failed");
+                        continue;
+                    }
+                    Err(_) => {
+                        debug!(%remote, "quic stream accept timed out");
+                        conn.close(AUTH_FAILED_CODE.into(), b"stream timeout");
+                        continue;
+                    }
+                };
 
-            let device_id = match &self.tokens {
+            let credential = match &self.tokens {
                 Some(store) => {
-                    let Some(id) = authorize_preamble(&mut recv, store).await else {
-                        warn!(%remote, "quic consumer refused: missing or invalid token");
+                    let preamble = tokio::time::timeout(
+                        ADMISSION_DEADLINE,
+                        authorize_preamble(&mut recv, store),
+                    )
+                    .await;
+                    let Ok(Some(credential)) = preamble else {
+                        if preamble.is_err() {
+                            debug!(%remote, "quic auth preamble timed out");
+                        } else {
+                            warn!(%remote, "quic consumer refused: missing or invalid token");
+                        }
                         conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
                         continue;
                     };
-                    Some(id)
+                    Some(credential)
                 }
                 None => None,
             };
@@ -231,7 +266,7 @@ impl Incoming for QuicListener {
                 uid: 0,
                 pid: None,
                 exe_path: None,
-                mcp_host_key: device_id,
+                mcp_host_key: credential.as_ref().map(|credential| credential.id.clone()),
                 transport: TransportType::Quic,
                 source_addr: Some(remote.ip()),
             };
@@ -239,7 +274,10 @@ impl Incoming for QuicListener {
             return Ok((
                 QuicReader::from_stream(recv),
                 QuicWriter::from_stream(send),
-                peer_identity,
+                crate::auth::ConnectionIdentity {
+                    peer: peer_identity,
+                    credential,
+                },
             ));
         }
     }
@@ -250,15 +288,12 @@ impl Incoming for QuicListener {
 }
 
 /// Read the token preamble (`len: u32 BE` + `len` token bytes) off the stream
-/// and verify it against the store. Returns a non-reversible device id (a short
-/// SHA-256 prefix of the *presented* token, matching the WebSocket path) on
-/// success, or `None` on a missing, oversized, malformed, or unrecognized
-/// token. Deriving the id from the presented token (not the matched stored one)
-/// keeps it off the constant-time comparison and never logs the secret.
+/// and verify it against the store. Returns the stable credential id on
+/// success, or `None` on a missing, oversized, malformed, or unrecognized token.
 pub(crate) async fn authorize_preamble(
     recv: &mut quinn::RecvStream,
     store: &crate::auth::ReloadingTokenStore,
-) -> Option<String> {
+) -> Option<crate::auth::AuthenticatedCredential> {
     let mut len_buf = [0u8; LENGTH_PREFIX];
     if !read_exact_quic(recv, &mut len_buf).await.ok()? {
         return None;
@@ -271,11 +306,7 @@ pub(crate) async fn authorize_preamble(
     if !read_exact_quic(recv, &mut token).await.ok()? {
         return None;
     }
-    if !store.verify(&token) {
-        return None;
-    }
-    let digest = Sha256::digest(&token);
-    Some(hex::encode(&digest[..8]))
+    store.authenticate(&token)
 }
 
 /// Fill `buf` from the QUIC stream. Returns `Ok(true)` when `buf` is filled,
@@ -295,7 +326,6 @@ async fn read_exact_quic(recv: &mut quinn::RecvStream, buf: &mut [u8]) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
     use std::time::Duration;
 
     use super::super::tls::{QUIC_ALPN, ensure_self_signed};
@@ -318,75 +348,27 @@ mod tests {
         tempfile::NamedTempFile,
         Arc<crate::auth::ReloadingTokenStore>,
     ) {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        writeln!(file, "{}", hex::encode(TEST_TOKEN)).unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        crate::auth::write_test_credential(file.path(), &TEST_TOKEN);
         let store = crate::auth::ReloadingTokenStore::load(file.path().to_path_buf()).unwrap();
         (file, Arc::new(store))
     }
 
-    /// Test-only cert verifier: QUIC mandates ALPN + TLS so the handshake is
-    /// still exercised end-to-end, but the self-signed leaf is trusted blindly
-    /// rather than pinned (the dialer's fingerprint-pinning is out of scope for
-    /// the listener under test).
-    #[derive(Debug)]
-    struct SkipServerVerification(Arc<rustls::crypto::CryptoProvider>);
-
-    impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
-        fn verify_server_cert(
-            &self,
-            _end_entity: &rustls::pki_types::CertificateDer<'_>,
-            _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-            _server_name: &rustls::pki_types::ServerName<'_>,
-            _ocsp: &[u8],
-            _now: rustls::pki_types::UnixTime,
-        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-            Ok(rustls::client::danger::ServerCertVerified::assertion())
-        }
-
-        fn verify_tls12_signature(
-            &self,
-            message: &[u8],
-            cert: &rustls::pki_types::CertificateDer<'_>,
-            dss: &rustls::DigitallySignedStruct,
-        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls12_signature(
-                message,
-                cert,
-                dss,
-                &self.0.signature_verification_algorithms,
-            )
-        }
-
-        fn verify_tls13_signature(
-            &self,
-            message: &[u8],
-            cert: &rustls::pki_types::CertificateDer<'_>,
-            dss: &rustls::DigitallySignedStruct,
-        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls13_signature(
-                message,
-                cert,
-                dss,
-                &self.0.signature_verification_algorithms,
-            )
-        }
-
-        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-            self.0.signature_verification_algorithms.supported_schemes()
-        }
-    }
-
     /// A quinn client endpoint that offers the phux ALPN and trusts the
     /// listener's self-signed cert.
+    ///
+    /// QUIC mandates ALPN + TLS, so the handshake is exercised end to end; the
+    /// self-signed leaf is trusted blindly rather than pinned, the dialer's
+    /// fingerprint-pinning being out of scope for the listener under test.
+    /// That policy comes from [`phux_dial::tls::client_config`] — the same
+    /// builder production consumers dial through — rather than from a
+    /// `ServerCertVerifier` hand-rolled here, which is what this test used to
+    /// carry. A test that re-implements the trust policy is a test that can
+    /// quietly disagree with it.
     fn client_endpoint() -> quinn::Endpoint {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let mut crypto = rustls::ClientConfig::builder_with_provider(provider.clone())
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .unwrap()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(SkipServerVerification(provider)))
-            .with_no_client_auth();
-        crypto.alpn_protocols = vec![QUIC_ALPN.to_vec()];
+        let crypto =
+            phux_dial::tls::client_config(&phux_dial::CertTrust::SkipVerify, Some(QUIC_ALPN))
+                .unwrap();
         let client_config = quinn::ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(crypto).unwrap(),
         ));

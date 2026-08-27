@@ -124,6 +124,8 @@ fn connector_bridges_consumers_rejects_bad_auth_and_redials() {
     write_token(&connector_token, &TUNNEL_TOKEN);
     let consumer_tokens = dir.path().join("consumer-tokens");
     write_token(&consumer_tokens, &CONSUMER_TOKEN);
+    phux_server::auth::migrate_legacy_store(&consumer_tokens)
+        .expect("migrate consumer credential store");
 
     // This integration binary owns the process and runs one test, so the
     // process-wide override cannot race another test.

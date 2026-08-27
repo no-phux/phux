@@ -222,7 +222,7 @@ async fn upgrade_handle_no_pty_has_snapshot_but_no_descriptors() {
                 .await
                 .expect("send upgrade request");
             let h = reply_rx.await.expect("upgrade reply");
-            assert_eq!(h.master_fd, None);
+            assert!(h.master_fd.is_none());
             assert_eq!(h.child_pid, None);
             assert_eq!((h.cols, h.rows), (20, 5));
             assert!(

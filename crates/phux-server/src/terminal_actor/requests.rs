@@ -1,6 +1,6 @@
 //! Submodule for terminal actor internals.
 
-use std::os::fd::RawFd;
+use std::os::fd::OwnedFd;
 
 use crate::grid::SnapshotBytes;
 use crate::mailbox::{Outbound, TerminalInput};
@@ -632,11 +632,12 @@ pub struct UpgradeHandleRequest {
 ///
 /// `master_fd` / `child_pid` are `None` for a no-PTY actor (a pane carries no
 /// child); the producer skips such panes since there is nothing to hand off.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PaneUpgradeHandle {
-    /// Raw PTY master descriptor (its `FD_CLOEXEC` is cleared by the
-    /// orchestrator before the re-exec so it survives).
-    pub master_fd: Option<RawFd>,
+    /// Owned duplicate of the PTY master descriptor. The actor creates the
+    /// duplicate while holding the master lock so close/reuse cannot change
+    /// which PTY the orchestrator later makes inheritable.
+    pub master_fd: Option<OwnedFd>,
     /// Child PID on the slave side, re-adopted via `waitpid` after the exec.
     pub child_pid: Option<i32>,
     /// Current grid width in cells.

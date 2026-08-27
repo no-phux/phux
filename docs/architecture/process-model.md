@@ -33,7 +33,7 @@ $XDG_STATE_HOME/phux/               # per-user state dir (telemetry::state_dir)
 ├── server.log                      # THE canonical server log, both spawn paths
 │                                   # (telemetry::server_log_path)
 ├── client-<pid>.log                # per-pid client/TUI logs
-├── remote-tokens                   # remote-consumer token store (ADR-0031)
+├── remote-tokens                   # versioned remote credential store (ADR-0031)
 ├── remote-cert.pem                 # auto-provisioned TLS cert (ADR-0031)
 ├── remote-key.pem                  # auto-provisioned TLS key (ADR-0031)
 ├── service-wrapper.sh              # `phux service install --restore` wrapper

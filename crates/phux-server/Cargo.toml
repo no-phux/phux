@@ -141,7 +141,10 @@ hex = "0.4"
 # (non-loopback) WebSocket listener provisions TLS with zero operator setup —
 # no openssl, no manual PEM (ADR-0031 "seamless"). `ring` backend (not the
 # default aws-lc-rs) keeps the cmake-free build the rest of the crypto stack
-# relies on.
+# relies on. The generating itself is now phux-dial's (`provision` feature,
+# shared with phux-relay); what still needs the crate named here is
+# `TlsError::Rcgen`, which carries `rcgen::Error` in the public error surface.
+# Same version/features phux-dial declares, so it is the same type.
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 # QUIC transport (phux-y8v6, ADR-0007). quinn is the QUIC stack ADR-0007
 # names by name ("a future QUIC impl ... via `quinn`"); it gives connection
@@ -168,7 +171,11 @@ quinn.workspace = true
 # factored out of phux-client; adds no new external dependencies — quinn,
 # rustls, tokio-tungstenite, sha2, and hex are all already in this crate's
 # graph for the listener side.
-phux-dial.workspace = true
+# `provision` additionally makes this crate's self-signed certificate
+# generator phux-dial's (`transport::tls` delegates to `phux_dial::cert`), so
+# phux-relay — which ADR-0051 forbids depending on phux-server — shares one
+# implementation instead of the near-verbatim copy it used to carry.
+phux-dial = { workspace = true, features = ["provision"] }
 # WebTransport listener (phux-0wmf, `webtransport` feature). Browsers cannot
 # open raw QUIC, so the quinn listener above is unreachable from `phux-web`;
 # WebTransport (HTTP/3 CONNECT over QUIC, RFC 9220-adjacent draft) is the one

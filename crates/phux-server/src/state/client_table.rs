@@ -157,7 +157,7 @@ pub(super) struct ClientTable {
     /// client task is spawned — nothing on a live connection can restore it,
     /// so it survives `DETACH` and is cleared only by
     /// `ServerState::forget_connection`.
-    pub(super) peer_identities: HashMap<ClientId, phux_protocol::policy::PeerIdentity>,
+    pub(super) peer_identities: HashMap<ClientId, crate::auth::ConnectionIdentity>,
     /// Nonce-bearing session-create result keys owned by each connection.
     ///
     /// Results are one-shot and connection-scoped even though their transport
@@ -377,6 +377,15 @@ impl ClientTable {
         client: ClientId,
         identity: phux_protocol::policy::PeerIdentity,
     ) {
+        self.peer_identities.insert(client, identity.into());
+    }
+
+    /// Store transport identity and credential attestation for a client.
+    pub(super) fn set_connection_identity(
+        &mut self,
+        client: ClientId,
+        identity: crate::auth::ConnectionIdentity,
+    ) {
         self.peer_identities.insert(client, identity);
     }
 
@@ -386,7 +395,20 @@ impl ClientTable {
         &self,
         client: ClientId,
     ) -> Option<&phux_protocol::policy::PeerIdentity> {
-        self.peer_identities.get(&client)
+        self.peer_identities
+            .get(&client)
+            .map(|identity| &identity.peer)
+    }
+
+    /// Look up the credential captured for this connection.
+    #[must_use]
+    pub(super) fn authenticated_credential(
+        &self,
+        client: ClientId,
+    ) -> Option<&crate::auth::AuthenticatedCredential> {
+        self.peer_identities
+            .get(&client)
+            .and_then(|identity| identity.credential.as_ref())
     }
 
     /// Remove a peer identity when a client disconnects.

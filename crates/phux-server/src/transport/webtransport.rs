@@ -35,7 +35,6 @@ use std::time::Duration;
 use bytes::BytesMut;
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::wire::framing;
-use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 use wtransport::endpoint::{IncomingSession, SessionRequest};
 use wtransport::error::StreamReadExactError;
@@ -112,7 +111,7 @@ impl WtListener {
     async fn establish(
         &self,
         incoming: IncomingSession,
-    ) -> Option<(WtReader, WtWriter, PeerIdentity)> {
+    ) -> Option<(WtReader, WtWriter, crate::auth::ConnectionIdentity)> {
         let request = match incoming.await {
             Ok(request) => request,
             Err(err) => {
@@ -125,14 +124,14 @@ impl WtListener {
         // Token gate BEFORE the session is accepted, mirroring the WebSocket
         // path's reject-at-the-upgrade: an unauthorized consumer sees HTTP
         // 403 and no WebTransport session ever exists.
-        let device_id = match &self.tokens {
+        let credential = match &self.tokens {
             Some(store) => {
-                let Some(id) = authorize_request(&request, store) else {
+                let Some(credential) = authorize_request(&request, store) else {
                     warn!(%remote, "webtransport consumer refused: missing or invalid token");
                     request.forbidden().await;
                     return None;
                 };
-                Some(id)
+                Some(credential)
             }
             None => None,
         };
@@ -159,7 +158,7 @@ impl WtListener {
             uid: 0,
             pid: None,
             exe_path: None,
-            mcp_host_key: device_id,
+            mcp_host_key: credential.as_ref().map(|credential| credential.id.clone()),
             transport: TransportType::WebTransport,
             source_addr: Some(remote.ip()),
         };
@@ -177,7 +176,10 @@ impl WtListener {
                 _connection: connection,
                 send,
             },
-            peer_identity,
+            crate::auth::ConnectionIdentity {
+                peer: peer_identity,
+                credential,
+            },
         ))
     }
 }
@@ -237,7 +239,7 @@ impl Incoming for WtListener {
     type Reader = WtReader;
     type Writer = WtWriter;
 
-    async fn accept(&self) -> io::Result<(WtReader, WtWriter, PeerIdentity)> {
+    async fn accept(&self) -> io::Result<(WtReader, WtWriter, crate::auth::ConnectionIdentity)> {
         // One endpoint multiplexes many sessions; a single bad handshake or
         // refused token must not tear the listener down, so per-session
         // failures loop (logged inside `establish`). This mirrors the QUIC
@@ -261,23 +263,16 @@ impl Incoming for WtListener {
 /// <hex>` header (native consumers, exactly the `wss://` shape) or a
 /// `token=<hex>` query parameter on the `:path` (browsers — the JS
 /// `WebTransport` constructor takes a URL and nothing else). Returns a
-/// non-reversible device id (a short SHA-256 prefix of the *presented*
-/// token, matching the WebSocket and QUIC paths) on success, `None` on a
-/// missing, malformed, or unrecognized token. Deriving the id from the
-/// presented token (not the matched stored one) keeps it off the
-/// constant-time comparison and never logs the secret.
+/// stable credential id on success, `None` on a missing, malformed, or
+/// unrecognized token.
 fn authorize_request(
     request: &SessionRequest,
     store: &crate::auth::ReloadingTokenStore,
-) -> Option<String> {
+) -> Option<crate::auth::AuthenticatedCredential> {
     let token_hex =
         bearer_from_headers(request.headers()).or_else(|| token_from_path(request.path()))?;
     let token = hex::decode(token_hex.trim()).ok()?;
-    if !store.verify(&token) {
-        return None;
-    }
-    let digest = Sha256::digest(&token);
-    Some(hex::encode(&digest[..8]))
+    store.authenticate(&token)
 }
 
 /// The `Bearer` value of an `Authorization` header, matched
@@ -317,7 +312,6 @@ async fn read_exact_wt(recv: &mut RecvStream, buf: &mut [u8]) -> io::Result<bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
     use std::time::Duration;
 
     use super::super::tls::ensure_self_signed;
@@ -344,8 +338,8 @@ mod tests {
         tempfile::NamedTempFile,
         Arc<crate::auth::ReloadingTokenStore>,
     ) {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        writeln!(file, "{}", hex::encode(TEST_TOKEN)).unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        crate::auth::write_test_credential(file.path(), &TEST_TOKEN);
         let store = crate::auth::ReloadingTokenStore::load(file.path().to_path_buf()).unwrap();
         (file, Arc::new(store))
     }

@@ -856,7 +856,7 @@ pub(crate) fn run_reconcile(print: bool) -> ExitCode {
                 &unit_socket_override(manager, &body)
                     .unwrap_or_else(phux_server::runtime::default_socket_path),
             ) == SocketState::Live;
-            report_policy_reach(manager, &unit_path, live);
+            report_policy_reach(manager, &unit_path, live, true);
             ExitCode::SUCCESS
         }
     }
@@ -868,26 +868,45 @@ pub(crate) fn run_reconcile(print: bool) -> ExitCode {
 /// Split out because [`run_reconcile`] and the post-update reconcile print the
 /// same thing, and the one paragraph a user acts on must not have two
 /// wordings that can drift apart.
-fn report_policy_reach(manager: Manager, unit_path: &Path, live: bool) {
+fn report_policy_reach(manager: Manager, unit_path: &Path, live: bool, print: bool) {
+    report_policy_reach_with(manager, unit_path, live, print, run_tool);
+}
+
+fn report_policy_reach_with(
+    manager: Manager,
+    unit_path: &Path,
+    live: bool,
+    print: bool,
+    run_tool: impl FnOnce(&str, &[String]) -> Result<(), String>,
+) {
     match manager {
-        Manager::Systemd => match run_tool(
-            "systemctl",
-            &["--user".to_owned(), "daemon-reload".to_owned()],
-        ) {
-            Ok(()) => outln!(
-                "systemd re-read the unit. The running server kept running, and the corrected\n\
-                 policy governs its next exit."
-            ),
-            Err(err) => {
-                eprintln!("phux service: note: {err}");
-                outln!(
-                    "The file is correct, but systemd is still holding the definition it loaded\n\
-                     earlier. Run `systemctl --user daemon-reload` to pick this up; it stops\n\
-                     nothing."
-                );
+        Manager::Systemd => {
+            let reload = run_tool(
+                "systemctl",
+                &["--user".to_owned(), "daemon-reload".to_owned()],
+            );
+            if !print {
+                return;
             }
-        },
+            match reload {
+                Ok(()) => outln!(
+                    "systemd re-read the unit. The running server kept running, and the corrected\n\
+                 policy governs its next exit."
+                ),
+                Err(err) => {
+                    eprintln!("phux service: note: {err}");
+                    outln!(
+                        "The file is correct, but systemd is still holding the definition it loaded\n\
+                         earlier. Run `systemctl --user daemon-reload` to pick this up; it stops\n\
+                         nothing."
+                    );
+                }
+            }
+        }
         Manager::Launchd => {
+            if !print {
+                return;
+            }
             outln!(
                 "The corrected policy is NOT active yet. launchd has no way to re-read a plist\n\
                  for a job that is already loaded — `bootout` is the only path, and it stops the\n\
@@ -931,9 +950,10 @@ fn report_policy_reach(manager: Manager, unit_path: &Path, live: bool) {
 /// phux-bd30's "have `phux update` do it" waited on phux-l1yx rather than
 /// shipping first.
 ///
-/// Silent unless it changed something, and never fatal: an update that
-/// succeeded must not report failure because a unit could not be tidied.
-pub(crate) fn reconcile_after_update() {
+/// Silent unless it changed something and `print` is true, and never fatal: an
+/// update that succeeded must not report failure because a unit could not be
+/// tidied.
+pub(crate) fn reconcile_after_update(print: bool) {
     let Some(manager) = Manager::host() else {
         return;
     };
@@ -950,18 +970,21 @@ pub(crate) fn reconcile_after_update() {
         return;
     }
 
-    outln!();
-    outln!(
-        "Your service unit predated the corrected restart policy; phux rewrote it in\n\
-         place. Nothing was stopped."
-    );
-    outln!("  unit    {}", unit_path.display());
-    outln!();
-    let live = socket::probe(
-        &unit_socket_override(manager, &body)
-            .unwrap_or_else(phux_server::runtime::default_socket_path),
-    ) == SocketState::Live;
-    report_policy_reach(manager, &unit_path, live);
+    if print {
+        outln!();
+        outln!(
+            "Your service unit predated the corrected restart policy; phux rewrote it in\n\
+             place. Nothing was stopped."
+        );
+        outln!("  unit    {}", unit_path.display());
+        outln!();
+    }
+    let live = print
+        && socket::probe(
+            &unit_socket_override(manager, &body)
+                .unwrap_or_else(phux_server::runtime::default_socket_path),
+        ) == SocketState::Live;
+    report_policy_reach(manager, &unit_path, live, print);
 }
 
 /// Build the plan an install will write, resolving every path and default
@@ -2209,9 +2232,9 @@ mod tests {
         Manager, RESTART_THROTTLE_SECS, Reconcile, SERVICE_MANAGED_ENV, START_LIMIT_BURST,
         ServicePlan, arm_unit, config_home_from, dry_run_text, home_dir_from, launchd_label_for,
         launchd_policy_lines, reconcile_unit, render_launchd_plist, render_systemd_unit,
-        render_unit, render_wrapper_script, resolve_plan, sh_quote, status_report, systemd_escape,
-        systemd_policy_lines, systemd_quote, systemd_unit_for, systemd_unquote,
-        unit_socket_override, unit_supervises, xml_escape, xml_unescape,
+        render_unit, render_wrapper_script, report_policy_reach_with, resolve_plan, sh_quote,
+        status_report, systemd_escape, systemd_policy_lines, systemd_quote, systemd_unit_for,
+        systemd_unquote, unit_socket_override, unit_supervises, xml_escape, xml_unescape,
     };
     use std::path::PathBuf;
 
@@ -2231,6 +2254,27 @@ mod tests {
     /// the exact text phux-8514 leaked to the terminal.
     const LAUNCHCTL_NOT_FOUND_STDERR: &str =
         "Bad request.\nCould not find service \"com.phux.server\" in domain for user gui: 501\n";
+
+    #[test]
+    fn silent_systemd_policy_reconciliation_still_reloads_the_unit() {
+        let called = std::cell::Cell::new(false);
+        report_policy_reach_with(
+            Manager::Systemd,
+            std::path::Path::new("unused"),
+            false,
+            false,
+            |program, args| {
+                called.set(true);
+                assert_eq!(program, "systemctl");
+                assert_eq!(args, ["--user", "daemon-reload"]);
+                Ok(())
+            },
+        );
+        assert!(
+            called.get(),
+            "JSON mode must suppress output, not side effects"
+        );
+    }
 
     /// phux-8514, defect 2: an armed unit is written-but-not-loaded by design
     /// (ADR-0088), so the init system's not-found is the expected

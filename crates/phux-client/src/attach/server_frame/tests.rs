@@ -1033,6 +1033,85 @@ fn duplicate_hello_ok_is_fatal_in_attached_phase() {
     ));
 }
 
+/// A request-correlated reply that reaches the attached dispatcher is inert,
+/// never fatal.
+///
+/// # The regression this fences
+///
+/// `Connection::await_answer` loops until the reply carrying ITS `request_id`
+/// arrives and pushes every other frame onto `interleaved`, which is later
+/// replayed through this dispatcher. A reply whose awaiter has already been
+/// answered — or has gone away — therefore arrives here as ordinary
+/// interleaved traffic.
+///
+/// `COMMAND_RESULT` and `TERMINAL_MOVED` had no arm, so they fell to the
+/// catch-all and killed a healthy attach with
+/// `protocol error: frame is not valid from a server in the attached phase:
+/// CommandResult { request_id: 4, result: Ok }`. `spatial_e2e` caught it:
+/// pressing `C-a o` while the layout was being driven concurrently tore the
+/// client down over a SUCCESS reply it simply had nowhere to put.
+///
+/// This is the same rule the `ERROR` arm already stated for the failure twin
+/// of these frames (phux-ijuj) and the same "no matching pending request"
+/// drop `MetadataValue` already made — the two success replies were the gap.
+///
+/// `docs/spec/L1.md` §5 already required this: "A `COMMAND` is asynchronous:
+/// the server MAY emit other messages ... before `COMMAND_RESULT`. Clients
+/// MUST tolerate that ordering." So this fences conformance, not a new
+/// policy, and no wire change is involved.
+///
+/// The assertions are deliberately paired with a still-fatal frame, so a
+/// future change that makes the dispatcher total over everything (and thus
+/// blind to real protocol violations) fails here rather than silently
+/// widening the contract.
+#[test]
+fn raced_request_correlated_replies_are_inert_not_fatal() {
+    let pane = tid(1);
+
+    for frame in [
+        FrameKind::CommandResult {
+            request_id: 4,
+            result: phux_protocol::wire::frame::CommandResult::Ok,
+        },
+        FrameKind::TerminalMoved {
+            request_id: 7,
+            result: phux_protocol::wire::frame::MoveResult::Ok(pane.clone()),
+        },
+    ] {
+        let mut workspace = Workspace::single(pane.clone());
+        let mut focused = Some(pane.clone());
+        let mut panes = panes_for(&[&pane]);
+        let before = workspace.clone();
+
+        let outcome = try_drive_layout_frame(
+            frame.clone(),
+            None,
+            &mut workspace,
+            &mut focused,
+            &mut panes,
+        )
+        .unwrap_or_else(|err| panic!("{frame:?} must not terminate the attach: {err:?}"));
+
+        // `FrameOutcome` is not `PartialEq` (it is a production type and
+        // nothing else needs the impl), so inertness is asserted on the
+        // fields that would carry an effect: no teardown, no layout or pane
+        // churn, no follow-up emission.
+        assert!(!outcome.exit, "{frame:?} must not end the attach");
+        assert!(outcome.exit_reason.is_none(), "{frame:?}");
+        assert!(!outcome.layout_replaced, "{frame:?}");
+        assert!(!outcome.reflow_panes, "{frame:?}");
+        assert!(!outcome.emit_set_metadata, "{frame:?}");
+        assert!(!outcome.foreign_pane_set_dirty, "{frame:?}");
+        assert!(outcome.attach_panes.is_empty(), "{frame:?}");
+        assert!(outcome.foreign_layout.is_none(), "{frame:?}");
+        assert_eq!(
+            workspace, before,
+            "{frame:?} must not mutate the client's topology"
+        );
+        assert_eq!(focused, Some(pane.clone()), "{frame:?} must not move focus");
+    }
+}
+
 /// ADR-0049: a sibling's layout broadcast contributes topology only. Its
 /// serialized active window and per-window focuses cannot yank this client.
 #[test]

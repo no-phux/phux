@@ -112,7 +112,11 @@ require_fixed scripts/test-install.sh 'installer transaction tests passed'
 
 require_fixed justfile "release-preflight TAG:"
 require_fixed justfile "release-preflight-fast TAG:"
-require_fixed scripts/release-preflight.sh "cargo publish --dry-run --allow-dirty -p phux-protocol"
+require_fixed justfile "cargo build --locked --workspace --release"
+require_fixed justfile "cargo publish --locked --dry-run -p phux-protocol"
+require_fixed justfile "cargo publish --locked -p phux-protocol"
+require_fixed scripts/release-preflight.sh "cargo publish --locked --dry-run --allow-dirty -p phux-protocol"
+require_fixed scripts/check-release-version.sh "cargo metadata --locked --format-version 1 --no-deps"
 
 require_fixed scripts/gen-formula.sh 'bin.install "phux-mcp"'
 require_fixed scripts/gen-formula.sh 'assert_path_exists bin/"phux-mcp"'
@@ -125,7 +129,8 @@ require_fixed scripts/gen-formula.sh 'depends_on arch: :arm64'
 # The generator must not know about targets the release matrix never builds.
 forbid_fixed scripts/gen-formula.sh 'x86_64-apple-darwin'
 
-require_fixed .github/workflows/release.yml 'cargo +1.90.0 build --release --bin phux --bin phux-mcp'
+require_fixed .github/workflows/release.yml 'cargo +1.90.0 build --locked --release --bin phux --bin phux-mcp'
+require_fixed docs/RELEASING.md 'cargo build --locked --release --bin phux --bin phux-mcp'
 require_fixed .github/workflows/release.yml 'cp -f target/release/phux target/release/phux-mcp'
 require_fixed .github/workflows/release.yml 'target: aarch64-apple-darwin'
 require_fixed .github/workflows/release.yml 'target: x86_64-unknown-linux-gnu'
@@ -216,6 +221,8 @@ forbid_fixed .github/workflows/release-please.yml 'token: ${{ secrets.GITHUB_TOK
 
 require_fixed .github/workflows/publish-crate.yml 'workflow_dispatch'
 require_fixed .github/workflows/publish-crate.yml 'environment: crates-io'
+require_fixed .github/workflows/publish-crate.yml 'cargo publish --locked --dry-run -p phux-protocol'
+require_fixed .github/workflows/publish-crate.yml 'cargo publish --locked -p phux-protocol'
 
 # --- Agent integration release lane -------------------------------------------
 #

@@ -1,18 +1,21 @@
 <!--
 audience: humans, contributors, agents
 stability: stable
-last-reviewed: 2026-08-02
+last-reviewed: 2026-08-25
 -->
 
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="phux" width="420">
+<img src="docs/assets/no-phux-mark.svg" alt="phux" width="128">
 
 # phux
 
 **the tmux job, done - a terminal is an object on a wire**
 
-[![CI](https://github.com/phall1/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/phall1/phux/actions/workflows/ci.yml)
+part of [no-phux](https://github.com/orgs/no-phux/repositories) --
+cockpit, mobile, and the rest of the phux ecosystem
+
+[![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 [Install](#install-and-run) |
@@ -25,16 +28,6 @@ last-reviewed: 2026-08-02
 [Docs](#where-to-go-from-here)
 
 </div>
-
-![phux recording a terminal session and rendering it to a GIF, with no external tools](docs/assets/recording-demo.gif)
-
-<div align="center">
-<sub>
-
-Recorded and rendered by the binary it demonstrates -- `phux rec`,
-no asciinema, no ffmpeg. ([Recording](docs/consumers/recording.md))
-
-</sub></div>
 
 phux is a terminal multiplexer, like tmux or screen: your shells live in a
 background server, you split them into panes, you detach, and everything is
@@ -58,6 +51,16 @@ You're in a shell. `Ctrl-A d` detaches, `phux` brings you back, `Ctrl-A ?`
 shows every key. Prebuilt binaries cover macOS arm64, Linux x86_64, and Linux arm64;
 Windows is not supported. Other channels and source builds:
 [INSTALL](./docs/INSTALL.md).
+
+Another machine works the same way, as long as it is reachable:
+
+```sh
+phux --remote me@mini
+```
+
+The first run pairs the host and remembers it; every run after that is a
+direct, encrypted QUIC dial with no ssh in the path. See
+[Remote access](./docs/remote-access.md).
 
 Interactive entry points require terminal stdin and stdout. For redirected
 work, use the headless commands below; they never need a TTY.
@@ -126,17 +129,7 @@ from Ghostty) runs on both ends with two different jobs. The server's copy
 is the source of truth: it's what survives detach and what scripts read.
 The client's copy just renders, fed the exact bytes your program wrote.
 Down the wire go raw VT bytes; back up go structured key, mouse, and paste
-events. Nobody in the middle rewrites anything, so this works:
-
-![a truecolor gradient, curly underlines, and an inline image surviving a detach and reattach, then the same session driven headlessly](docs/assets/demo.gif)
-
-<div align="center">
-<sub>
-
-Truecolor, curly underlines, and an inline image surviving detach and
-reattach -- then the same session driven headlessly.
-
-</sub></div>
+events. Nobody in the middle rewrites anything.
 
 ## Troubleshooting
 

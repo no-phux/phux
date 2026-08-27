@@ -303,7 +303,14 @@ rather than a layer with its own internal architecture worth diagramming:
 - **`phux-dial`** — the shared outbound TLS/QUIC/WebSocket establishment
   layer: fingerprint-pinned TLS 1.3 plus an ADR-0031 bearer token. Both
   `phux-client`'s attach loop and the server's federation hub dial through
-  it, so the security-sensitive connection path exists once.
+  it, so the security-sensitive connection path exists once. Under the
+  `provision` feature it also owns the *other* end of that trust story
+  (`cert.rs`): minting the persisted self-signed pair whose fingerprint the
+  dialer pins, and reading it back. `phux-server` and `phux-relay` both
+  terminate TLS on identical terms and each used to carry a near-verbatim
+  copy; ADR-0051 forbids the relay depending on `phux-server`, so the one
+  implementation lives here, in the crate both already sit on. Each caller
+  keeps its own error vocabulary and maps `cert::CertError` into it.
 - **`phux-relay`** — the reference relay (ADR-0051, ADR-0052): splices an
   inbound consumer connection onto an outbound connector tunnel. Never
   parses phux frames — only the connector's auth preamble.

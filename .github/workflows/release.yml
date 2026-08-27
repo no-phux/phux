@@ -110,6 +110,7 @@ jobs:
     name: build ${{ matrix.target }}
     needs: prepare
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -185,7 +186,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y pkg-config build-essential mold
 
       - name: Build release binaries
-        run: cargo +1.90.0 build --release --bin phux --bin phux-mcp
+        run: cargo +1.90.0 build --locked --release --bin phux --bin phux-mcp
 
       # Runs on EVERY leg, not just macOS. This used to be a grep for
       # "/nix/store" in `otool -L` output behind `if: runner.os == 'macOS'`,

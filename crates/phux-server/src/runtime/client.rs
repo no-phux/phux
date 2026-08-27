@@ -1124,7 +1124,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
             }
             accept = listener.accept() => {
                 match accept {
-                    Ok((reader, writer, peer_identity)) => {
+                    Ok((reader, writer, connection_identity)) => {
                         debug!(transport = listener.kind(), "client connected");
                         // phux-n6rv: count the live connection before the task
                         // exists, so the idle-exit watchdog can never observe a
@@ -1137,7 +1137,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         // Allocate the per-client routing id up-front so the
                         // task can detach itself cleanly on EOF.
                         let client_id = state.with_mut(crate::state::ServerState::new_client_id);
-                        state.with_mut(|s| s.set_peer_identity(client_id, peer_identity));
+                        state.with_mut(|s| s.set_connection_identity(client_id, connection_identity));
                         let task_state = state.clone();
                         let client_token = root_token.child_token();
                         let task_root_token = root_token.clone();

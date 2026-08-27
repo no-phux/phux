@@ -132,6 +132,31 @@ pub enum RelayError {
     },
 }
 
+/// Certificate provisioning lives in [`phux_dial::cert`] (ADR-0051 forbids
+/// reaching into `phux-server` for it), but the relay's error vocabulary is
+/// still the relay's.
+///
+/// Every arm maps onto a variant this enum already had, with the same payload,
+/// so the message an operator reads is byte-for-byte what it was when the
+/// generator was a private copy in [`tls`]. That is the point of mapping
+/// rather than re-exporting: a shared *implementation* must not impose a
+/// shared *error surface* on two crates whose wording legitimately differs
+/// (this crate renders `relay io:`, `phux-server` renders `tls io:`).
+impl From<phux_dial::cert::CertError> for RelayError {
+    fn from(err: phux_dial::cert::CertError) -> Self {
+        use phux_dial::cert::CertError;
+        match err {
+            CertError::Io(err) => Self::Io(err),
+            CertError::Rcgen(err) => Self::Rcgen(err),
+            CertError::Pem(err) => Self::Pem(err),
+            CertError::NoCerts(path) => Self::NoCerts(path),
+            CertError::PartialTlsPair { present, missing } => {
+                Self::PartialTlsPair { present, missing }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

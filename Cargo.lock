@@ -922,7 +922,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1150,9 +1150,9 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "h2"
-version = "0.4.14"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "171fefbc92fe4a4de27e0698d6a5b392d6a0e333506bc49133760b3bcf948733"
+checksum = "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1843,7 +1843,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "phux"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "bytes",
  "chrono",
@@ -2139,6 +2139,7 @@ dependencies = [
  "phux-client",
  "phux-config",
  "phux-core",
+ "phux-dial",
  "phux-plugin",
  "phux-protocol",
  "phux-record",
@@ -2161,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2197,7 +2198,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "ciborium",
  "criterion",
@@ -2214,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -2224,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "chrono",
  "insta",
@@ -2241,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2252,7 +2253,7 @@ dependencies = [
 
 [[package]]
 name = "phux-crash"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "backtrace",
  "libc",
@@ -2263,14 +2264,17 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "futures-util",
  "hex",
+ "phux-dial",
  "phux-protocol",
  "quinn",
+ "rcgen 0.13.2",
  "rustls",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
@@ -2279,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "phux-mcp"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "phux-client",
  "phux-config",
@@ -2293,7 +2297,7 @@ dependencies = [
 
 [[package]]
 name = "phux-plugin"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "phux-config",
  "serde",
@@ -2304,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "bitflags 2.13.0",
  "bytes",
@@ -2320,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "phux-record"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "gif",
  "libghostty-vt",
@@ -2332,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "phux-relay"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "getrandom 0.2.17",
  "hex",
@@ -2341,7 +2345,6 @@ dependencies = [
  "quinn",
  "rcgen 0.13.2",
  "rustls",
- "sha2 0.10.9",
  "subtle",
  "tempfile",
  "thiserror 2.0.18",
@@ -2351,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "allocator-api2 0.4.0",
  "bytes",
@@ -2399,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server-testkit"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -2483,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "portable-pty-adopt"
-version = "0.21.0"
+version = "0.23.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -2977,7 +2980,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3444,7 +3447,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4314,7 +4317,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

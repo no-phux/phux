@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# payload.sh — Beat 1 of the README demo (docs/demo.md).
+# payload.sh — Beat 1 of the product demo (docs/demo.md).
 #
 # Paints the things a byte-reparsing multiplexer degrades: a truecolor
 # gradient, curly underlines, an OSC 8 hyperlink, and a kitty-graphics

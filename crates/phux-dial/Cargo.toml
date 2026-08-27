@@ -36,3 +36,30 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 sha2 = "0.10"
 # Decode the pairing token (hex) into the raw bytes the QUIC preamble carries.
 hex = "0.4"
+# Mints the persisted self-signed certificate whose fingerprint this crate's
+# verifier pins (`cert` module, `provision` feature). Not a new workspace
+# dependency: phux-server and phux-relay each already carried this exact line
+# for the copy of the generator they used to keep privately. Optional so a
+# build that only *dials* -- phux-client -- never pulls a certificate
+# generator it has no use for.
+rcgen = { version = "0.13", default-features = false, features = [
+    "ring",
+    "pem",
+], optional = true }
+
+[features]
+# Server-side certificate provisioning: the `cert` module. Off by default so
+# the dialer stays a dialer for consumers that only pin; enabled by the two
+# crates that terminate TLS (phux-server, phux-relay).
+provision = ["dep:rcgen"]
+
+[dev-dependencies]
+# Provisioning tests write real cert/key pairs to a scratch directory.
+tempfile.workspace = true
+# Self dev-dependency (a cycle cargo permits by design) so `cargo test -p
+# phux-dial` builds the `cert` module and its tests even though `provision` is
+# off by default. Without it the module's tests are silently cfg'd out of a
+# crate-scoped run and only reappear under `--workspace`, where phux-server
+# happens to turn the feature on -- exactly the kind of coverage that looks
+# green while testing nothing.
+phux-dial = { path = ".", features = ["provision"] }

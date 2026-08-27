@@ -1369,19 +1369,38 @@ mod tests {
         let mut s = ServerState::new();
         let (cid, _tx, _rx) = attach_l3_client(&mut s);
         let (l1_cid, _l1_tx, _l1_rx) = attach_l1_only_client(&mut s);
-        for client in [cid, l1_cid] {
-            s.set_peer_identity(
-                client,
-                phux_protocol::policy::PeerIdentity {
-                    uid: 501,
-                    pid: Some(4242),
+        s.set_connection_identity(
+            cid,
+            crate::auth::ConnectionIdentity {
+                peer: phux_protocol::policy::PeerIdentity {
+                    uid: 0,
+                    pid: None,
                     exe_path: None,
-                    mcp_host_key: None,
-                    transport: phux_protocol::policy::TransportType::UnixSocket,
+                    mcp_host_key: Some("credential-id".to_owned()),
+                    transport: phux_protocol::policy::TransportType::WebSocket,
                     source_addr: None,
                 },
-            );
-        }
+                credential: Some(crate::auth::AuthenticatedCredential {
+                    id: "credential-id".to_owned(),
+                    principal: "device:cockpit".to_owned(),
+                    scopes: vec![crate::auth::TERMINAL_CONTROL_SCOPE.to_owned()],
+                    issued_at: chrono::Utc::now(),
+                    expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                    generation: 7,
+                }),
+            },
+        );
+        s.set_peer_identity(
+            l1_cid,
+            phux_protocol::policy::PeerIdentity {
+                uid: 501,
+                pid: Some(4242),
+                exe_path: None,
+                mcp_host_key: None,
+                transport: phux_protocol::policy::TransportType::UnixSocket,
+                source_addr: None,
+            },
+        );
 
         s.detach(cid);
         s.detach(l1_cid);
@@ -1391,6 +1410,14 @@ mod tests {
             "an L1-only peer must not be promoted to L3 by detaching",
         );
         assert_eq!(s.client_layers(cid), LayerSet::all());
+        let credential = s
+            .authenticated_credential(cid)
+            .expect("detach retains connection credential attestation");
+        assert_eq!(credential.id, "credential-id");
+        assert_eq!(credential.principal, "device:cockpit");
+        assert_eq!(credential.scopes, [crate::auth::TERMINAL_CONTROL_SCOPE]);
+        assert_eq!(credential.generation, 7);
+        assert!(credential.expires_at.is_some());
         assert_eq!(
             s.peer_identity(l1_cid).map(|peer| peer.transport),
             Some(phux_protocol::policy::TransportType::UnixSocket),

@@ -113,10 +113,9 @@ material visible. Its decision tree is:
   malformed, unknown, and revoked tokens all use the same pairing-authentication
   text and the same generic HTTP 401 response.
 - A successfully token-authenticated WebSocket admission produces one `INFO`
-  event with only `transport=ws`, `source_ip`, and `device_pseudonym`. The
-  pseudonym is the existing non-reversible 16-hex SHA-256 prefix derived from
-  the presented token; it is useful for correlating reconnects but is not the
-  bearer token.
+  event with only `transport=ws`, `source_ip`, and `credential_id`. The stable,
+  non-secret credential ID correlates reconnects and rotated generations; it is
+  not derived from or equal to the bearer token.
 - Anonymous loopback WebSocket admissions and admissions on other transports
   retain the shared `DEBUG` connection event; they gain no default-visible
   identity event.
@@ -596,9 +595,13 @@ TCP/WebSocket, set it either with `phux server --listen HOST:PORT` or the
   in the WebSocket upgrade; a missing or unrecognized token is refused with HTTP
   401 before any phux frame is read. Plaintext never reaches a routable address.
   Tokens are minted with `phux pair`, which prints the token once alongside the
-  certificate's SHA-256 fingerprint to pin out-of-band. Pairing and revocation
-  both take effect at the next connection attempt, with no restart: the server
-  re-reads the token store whenever the file changes. An already-established
+  certificate's SHA-256 fingerprint to pin out-of-band. The output also names
+  the non-secret credential ID accepted by `phux pair rotate ID` and `phux pair
+  revoke ID`. Pairing, rotation, and revocation take effect at the next
+  connection attempt, with no restart: the server re-reads the token store
+  whenever the file changes. If that changed generation is malformed, fails
+  integrity checks, or cannot settle during bounded retries, new admissions
+  fail closed rather than using cached credentials. An already-established
   session is not re-authorized and survives revocation until it drops.
 
 Native clients can use the same TCP fallback with:
@@ -648,9 +651,30 @@ overrides the token-store path.
   attack surface than local UDS. A routable `--listen` address engages TLS and
   token auth automatically; `PHUX_WS_SECURE=1` only forces that path on loopback.
 - The token is a bearer credential — anyone holding it is the device until the
-  token is revoked. The store is owner-only (`0o600`); the comparison is
-  constant-time; tokens are 256-bit from the OS CSPRNG. A client certificate
-  (mutual TLS) is the stronger v0.2 hardening recorded in ADR-0031.
+  token is revoked. The versioned store must be a regular, non-symlink file
+  owned by the effective user with no group/world permissions (normally
+  `0o600`), including when `PHUX_WS_TOKENS` selects a custom path. Integrity
+  failures deny authentication rather than retaining a stale credential. The
+  store retains only a verifier plus credential id, principal, terminal-only
+  scope, lifecycle
+  timestamps, and rotation generation; bearer secrets are never persisted.
+  Legacy anonymous token lines require the explicit `phux pair
+  --migrate-legacy` conversion; conversion is idempotent and preserves the
+  device pseudonym existing sessions and audit records already use. Store
+  updates are serialized by locking the validated, owner-controlled parent
+  directory before no-follow opening the owner-only regular advisory lock file.
+  The lock path is revalidated against the opened inode after acquisition, so a
+  symlink, unsafe precreated file, or lock-path replacement cannot split
+  cooperating writers across lock inodes. Store changes are committed by synced
+  temporary file plus atomic rename and directory sync. Comparison is
+  constant-time; tokens are 256-bit
+  from the OS CSPRNG. Revocation affects new connections while an established
+  session survives until its transport drops. Rotation defaults to a 300-second
+  overlap, configurable with `--overlap-seconds`; an existing absolute expiry
+  is preserved for the new generation and can shorten the old generation's
+  overlap. An already-expired credential cannot be rotated, and no replacement
+  secret is generated or printed for that rejected operation. A client
+  certificate (mutual TLS) is the stronger v0.2 hardening recorded in ADR-0031.
 - Certificate lifecycle is an operator responsibility, like socket permissions.
   With a self-signed certificate, verifying the `phux pair` fingerprint on the
   device's first connect is what closes the trust-on-first-use MITM window.

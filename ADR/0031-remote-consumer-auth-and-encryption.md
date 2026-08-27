@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-02
+last-reviewed: 2026-08-18
 ---
 
 # 0031 — Remote-consumer authentication and encryption (no SSH tunnel)
@@ -71,17 +71,42 @@ a pairing step.** Concretely:
   in the **WebSocket upgrade request** (`Authorization: Bearer <token>`), where
   TLS already protects it; the server compares it in constant time and **rejects
   the handshake** (HTTP 401) before any phux frame is read. Verified at every
-  connection attempt against the *current* contents of the store: the file is
-  stat'd per attempt and re-read only when its generation changed, so both
-  pairing and revocation take effect at the next connection with no restart
-  (`auth::ReloadingTokenStore`; see ADR-0081). An established session is not
-  re-authorized and survives revocation until it drops. Tokens are per-device
-  and may carry an expiry (`Capability.expires_at`).
+  connection attempt against the *current* contents of the store: the versioned
+  owner-only store records a credential id, SHA-256 verifier (never the bearer
+  secret), principal, scopes, issue/expiry/revocation times, and rotation
+  generation. Ordinary pairing grants only `terminal.control`; it does not
+  implicitly grant ADR-0092 work-plane authority. Every mutation holds an
+  validated owner-controlled parent-directory lock plus an owner-only,
+  no-follow-opened regular lock file across read, modify, temp-file sync,
+  atomic rename, and directory sync. The lock path is checked against the
+  opened inode after acquisition, so precreation or replacement cannot split
+  concurrent CLI/server writers across lock inodes or lose updates.
+  Every load verifies that the path is a regular, non-symlink file owned by the
+  effective user with no group/world permissions; this applies equally to the
+  default path and `PHUX_WS_TOKENS`, and an integrity failure denies admission.
+  The file is stat'd per attempt and re-read only when its generation changed.
+  After an observed generation change, malformed content, integrity failure, or
+  exhaustion of the bounded stable-read retries denies admission against an
+  empty snapshot; it never falls back to credentials from the prior generation.
+  Pairing, rotation, and revocation therefore take effect at the next connection
+  with no restart (`auth::ReloadingTokenStore`; see ADR-0081). An established
+  session is not re-authorized and survives revocation until it drops. Rotation
+  admits old and new generations for an explicit bounded overlap without
+  extending an existing absolute expiry, and refuses an already-expired
+  credential before generating a replacement secret. `phux pair` prints the
+  stable credential ID used by `phux pair rotate ID` and `phux pair revoke ID`.
+  Legacy anonymous token lines require `phux pair --migrate-legacy`; conversion atomically preserves their
+  bearer values as verifier-only generation-one credentials. Migration is
+  idempotent and retains each legacy peer pseudonym (the first eight bytes of
+  SHA-256 over its bearer) as the credential id.
 - **Identity upgrade.** A WebSocket peer that passes TLS + token is no longer
   the anonymous `uid: 0` stamp: its per-device record maps to a `ConsumerId`
   (used in audit + capability scoping), while `PeerIdentity` carries
   `transport: WebSocket` + the already-populated `source_addr` and a
   token-attestation marker (`mcp_host_key` is the existing attestation slot).
+  The accepting transport also retains the complete non-secret credential
+  attestation beside `PeerIdentity` for the connection lifetime, ready for the
+  separate scope-enforcement work without enforcing those scopes here.
 - **No wire-spec change.** The token rides the WebSocket handshake and TLS sits
   below the frame seam, so the phux frame catalog is untouched; this is
   transport + handshake policy, not protocol.

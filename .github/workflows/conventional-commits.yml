@@ -22,18 +22,20 @@ name: conventional-commits
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: commitlint-${{ github.head_ref }}
+  group: commitlint-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   commitlint:
     name: commitlint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # fetch-depth: 0 so base.sha..head.sha resolves. The default checkout
       # of refs/pull/N/merge carries both parents, so this holds for fork
@@ -51,13 +53,14 @@ jobs:
 
       - name: Lint PR commits
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: npx commitlint --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
 
       # The title is passed through the environment, not interpolated into
       # the script, so backticks/quotes in a title cannot inject shell.
       - name: Lint PR title (the squash-merge subject)
+        if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: printf '%s\n' "$PR_TITLE" | npx commitlint --verbose

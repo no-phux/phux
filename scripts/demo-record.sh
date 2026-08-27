@@ -7,7 +7,7 @@
 # no agg, no ffmpeg, no ImageMagick (ADR-0060).
 #
 # Unlike scripts/demo-setup.sh — which stages a session and hands the
-# keyboard back to a human, because Beat 1 of the README demo needs real
+# keyboard back to a human, because Beat 1 of the product demo needs real
 # pixels from a graphics-capable terminal — this one runs end to end with
 # no TTY anywhere. The pane is driven with `phux send-keys` and observed
 # with `phux rec`, both of which are headless by construction. That is

@@ -885,11 +885,24 @@ pub(crate) fn run_attach_rec(
     exit
 }
 
-/// Stderr hint appended when a non-loopback dial got no answer at all —
-/// the failure mode of an overlay network (Tailscale/WireGuard) that is
-/// down on either end. Six-space continuation indent matches the `phux:`
-/// multi-line hint convention above.
-const OVERLAY_REACHABILITY_HINT: &str = "      The server did not answer or its name could not be resolved; credentials were never checked.\n      If the host lives on an overlay network (Tailscale/WireGuard), confirm the overlay is up on both ends.";
+/// Stderr hint appended when a non-loopback dial got no answer at all.
+///
+/// Two very different causes present identically here, so the hint names
+/// both. The first is an overlay network that is down on either end. The
+/// second is a host-side packet filter — on macOS the application firewall
+/// silently drops inbound connections to a binary it does not recognize,
+/// and phux ships adhoc-signed, so it is not recognized unless someone
+/// allowlisted it (see `phux doctor` on the server, which probes for this).
+///
+/// The macOS case is worth naming explicitly because every signal points
+/// the wrong way: the overlay is healthy, ssh to the host works, the server
+/// is running with its listener bound, and the kernel still completes the
+/// TCP handshake — so the dial gets a connection and then silence. Blaming
+/// the overlay sends the operator to debug a network that is fine.
+///
+/// Six-space continuation indent matches the `phux:` multi-line hint
+/// convention above.
+const OVERLAY_REACHABILITY_HINT: &str = "      The server did not answer or its name could not be resolved; credentials were never checked.\n      If the host lives on an overlay network (Tailscale/WireGuard), confirm the overlay is up on both ends.\n      If the overlay is up and ssh to the host works, suspect a firewall on the SERVER host instead:\n      run `phux doctor` there, which probes its own remote listener and names the blocker.";
 
 /// Decide whether a failed attach earns [`OVERLAY_REACHABILITY_HINT`]:
 /// only a reachability failure ([`AttachError::Unreachable`]) on a

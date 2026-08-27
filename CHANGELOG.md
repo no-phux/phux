@@ -9,6 +9,73 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.23.1](https://github.com/phall1/phux/compare/v0.23.0...v0.23.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **client:** tolerate interleaved COMMAND_RESULT and TERMINAL_MOVED ([72c4ef0](https://github.com/phall1/phux/commit/72c4ef0c0c26ddb40e28dba2a40e973be85022cc))
+* **server:** bound the wss/QUIC handshake so a stalled peer cannot wedge the listener ([de18f3a](https://github.com/phall1/phux/commit/de18f3a0018aeebffc4a0b8923ac30ed9c69bd0c))
+
+## [0.23.0](https://github.com/phall1/phux/compare/v0.22.0...v0.23.0) (2026-08-22)
+
+
+### Features
+
+* **cli:** add `phux --remote user@host` one-shot remote attach ([f27ca1e](https://github.com/phall1/phux/commit/f27ca1e24e12c42ec330d65478f4fd2ec2c6934a))
+
+## [0.22.0](https://github.com/phall1/phux/compare/v0.21.0...v0.22.0) (2026-08-19)
+
+
+### Features
+
+* **agent:** resolve --kind to the integration whose agent_identity claims it ([6ffcf52](https://github.com/phall1/phux/commit/6ffcf52e879573de436734ed350e91fa665cce02))
+* **auth:** add structured rotatable credentials ([c470e2e](https://github.com/phall1/phux/commit/c470e2e9b647dccd6cf4aac60b71256e33e116fa))
+* **auth:** complete credential lifecycle controls ([3c45a3f](https://github.com/phall1/phux/commit/3c45a3f7eb665e785d9298a30a50d87c1bedb435))
+* **client-ffi:** expose attached session catalog ([5525713](https://github.com/phall1/phux/commit/5525713dea807231032043ea3a901afb0ee15739))
+
+
+### Bug Fixes
+
+* **auth:** cache missing credential generation ([cd07f0e](https://github.com/phall1/phux/commit/cd07f0e2289d0bfa28ce6123cea70f6a7b40fbdc))
+* **auth:** fail closed on invalid credential reloads ([be85a1e](https://github.com/phall1/phux/commit/be85a1ed01d4c2655e4d3d86b2f6e4a14a3fc1d8))
+* **auth:** harden credential lifecycle ([e78137c](https://github.com/phall1/phux/commit/e78137c48d8f112720af136c75469ace6de7c1b8))
+* **auth:** harden credential store locking ([9b06a60](https://github.com/phall1/phux/commit/9b06a601759d94d73f4d71eb52067f3fbb68e469))
+* **auth:** stabilize credential generation reads ([2fd6d5e](https://github.com/phall1/phux/commit/2fd6d5ea9e39cdcbda9974a169088e58cba62fd5))
+* **ci:** tear down the first-five lane's daemonized server and arm the idle backstop ([2679658](https://github.com/phall1/phux/commit/26796586f673ed59f195e38148fb904f5f6b8693))
+* **client:** close render and watch review gaps ([b02aec7](https://github.com/phall1/phux/commit/b02aec701cdce64529b078117865c33bcf7eee74))
+* **client:** rebuild the pooled RenderState when the replica generation changes, not only on resize ([61167c2](https://github.com/phall1/phux/commit/61167c2845f183ee5c1aa6707d20b649f93c1cbc))
+* **cli:** keep service status in the armed vocabulary instead of leaking launchctl stderr ([04c346c](https://github.com/phall1/phux/commit/04c346c7223defdc77b9ba06298e6bb87d48c569))
+* **deps:** update h2 to 0.4.16 ([e13e5c2](https://github.com/phall1/phux/commit/e13e5c2fd172cb96c0e6ba6c1f4fbe4a7101079c))
+* **lifecycle:** harden spawn lock acquisition ([6228a52](https://github.com/phall1/phux/commit/6228a52ba671d367334213e02a07e04038835eb2))
+* **lifecycle:** preserve update and spawn invariants ([9ff5e1b](https://github.com/phall1/phux/commit/9ff5e1b13dbecbb3d85d073f7b8bf016d596e058))
+* **lifecycle:** reload reconciled systemd units in json mode ([3895273](https://github.com/phall1/phux/commit/389527371b3bca17e63316da93b084a688c568d4))
+* **server:** announce a session's seed pane so server-wide followers see it ([c3e2fd1](https://github.com/phall1/phux/commit/c3e2fd12f1159dc7d29736a1806c0cede59c66dd))
+* **server:** broadcast METADATA_CHANGED when a session is renamed ([51e9619](https://github.com/phall1/phux/commit/51e9619f4942463170e6004786cb28dc487a5c9f))
+* **server:** emit ERROR{FRAME_TOO_LARGE} before closing on a framing violation ([e746408](https://github.com/phall1/phux/commit/e7464082435cfb0c33edd38ab559d8450de65ccd))
+* **server:** make graceful upgrade preparation fail-safe ([b66c433](https://github.com/phall1/phux/commit/b66c43316e03deca01f325a768093fd8c15e51f7))
+* **server:** pin upgrade state and inherited identities ([36015ad](https://github.com/phall1/phux/commit/36015ad1436b30f2e91db965a55fca26d8f39289))
+* **server:** route the ask title sentinel through AskedSource so ADR-0036's ladder arbitrates ([e5a0806](https://github.com/phall1/phux/commit/e5a08062d2e00f5b00f5803a8dd2fededf6f5f6d))
+* **tls:** name the advertised address in the generated certificate ([f3bb7a8](https://github.com/phall1/phux/commit/f3bb7a867ecc3a325f8f01d16158b388aff7f2cf))
+
+
+### Performance
+
+* **client:** tighten attach hot paths ([d55f807](https://github.com/phall1/phux/commit/d55f807c618ec5aec38fa38f7d579bb6707a0531))
+
+
+### Refactors
+
+* **cli:** one supervision predicate, one plugin-tree walk, one hermetic env table ([901ae39](https://github.com/phall1/phux/commit/901ae39b042813d69bee78e72100f4953e9b24cb))
+* **dial:** own the self-signed cert provisioning both relay and server duplicated ([6d9345a](https://github.com/phall1/phux/commit/6d9345af70ed7e9651b0ef57a74bf3b8e7187bca))
+* **protocol:** give RenderPool one entry point and walk clients through a ReplicaWalk ([3ee2414](https://github.com/phall1/phux/commit/3ee24148494d053a0eaafa9ab07917a92a6c2403))
+* **server:** one send-then-condemn path and one FRAME_TOO_LARGE constructor ([98ff18b](https://github.com/phall1/phux/commit/98ff18bbb9b69b729505b268a4f741c185d8d512))
+
+
+### Documentation
+
+* define durable work coordinator authority ([#487](https://github.com/phall1/phux/issues/487)) ([3b418f2](https://github.com/phall1/phux/commit/3b418f24a9aac9f4a73b0bd7a5b98faf29b2d00f))
+
 ## [0.21.0](https://github.com/phall1/phux/compare/v0.20.0...v0.21.0) (2026-08-16)
 
 

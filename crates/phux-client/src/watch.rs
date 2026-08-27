@@ -347,7 +347,9 @@ pub async fn collect_events(
         match timeout {
             // Timeout is a clean stop: drop the future, keep the prefix.
             Some(d) => {
-                let _ = tokio::time::timeout(d, fut).await;
+                if let Ok(result) = tokio::time::timeout(d, fut).await {
+                    result?;
+                }
             }
             None => fut.await?,
         }
@@ -377,6 +379,56 @@ mod tests {
             key: TERMINAL_AGENT_KEY.to_owned(),
             value: Some(json.as_bytes().to_vec()),
         }
+    }
+
+    #[tokio::test]
+    async fn collect_events_propagates_watch_error_before_timeout() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing_socket = dir.path().join("missing.sock");
+
+        let result =
+            collect_events(&missing_socket, None, None, Some(Duration::from_secs(1))).await;
+
+        assert!(
+            matches!(result, Err(AttachError::Io(_))),
+            "an AttachError completed before the deadline must propagate, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_events_returns_prefix_when_timeout_elapses() {
+        let pane = TerminalId::local(7);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = UnixListener::bind(&socket).expect("bind scripted server");
+        let expected = WatchEvent {
+            terminal: Some(pane.clone()),
+            event: AgentEvent::Dirty,
+        };
+        let server = tokio::spawn(async move {
+            ScriptedServer::accept(
+                &listener,
+                ScriptSpec::new()
+                    .push(FrameKind::Event {
+                        terminal: Some(pane),
+                        event: AgentEvent::Dirty,
+                    })
+                    .end(EndOfScript::ServeUntilDetach),
+            )
+            .await
+        });
+
+        let collected = collect_events(
+            &socket,
+            Some(TerminalId::local(7)),
+            None,
+            Some(Duration::from_millis(150)),
+        )
+        .await
+        .expect("elapsed timeout is a clean stop");
+
+        assert_eq!(collected, vec![expected]);
+        server.await.expect("scripted server task");
     }
 
     /// Drive `watch_events` against the shared scripted server, collecting

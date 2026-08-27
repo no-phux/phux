@@ -114,16 +114,18 @@ const fn frame_paint_target(frame: &FrameKind) -> Option<&TerminalId> {
 /// (its `vt_write` still applies). Each pane's LAST frame is therefore never
 /// deferred, so every touched pane settles exactly once and none is left
 /// stale; control frames (`None`) never defer.
-fn coalesce_defer_flags(targets: &[Option<TerminalId>]) -> Vec<bool> {
-    (0..targets.len())
-        .map(|i| {
-            targets[i].as_ref().is_some_and(|pane| {
-                targets[i + 1..]
-                    .iter()
-                    .any(|later| later.as_ref() == Some(pane))
-            })
-        })
-        .collect()
+fn coalesce_defer_flags<T>(
+    items: &[T],
+    target: impl for<'a> Fn(&'a T) -> Option<&'a TerminalId>,
+) -> Vec<bool> {
+    let paint_count = items.iter().filter(|item| target(item).is_some()).count();
+    let mut seen = HashSet::with_capacity(paint_count);
+    let mut deferred = Vec::with_capacity(items.len());
+    for item in items.iter().rev() {
+        deferred.push(target(item).is_some_and(|pane| !seen.insert(pane)));
+    }
+    deferred.reverse();
+    deferred
 }
 
 /// Apply the per-pane last-wins coalescing decision.
@@ -1268,11 +1270,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
                         // every touched pane (focused or not) settles exactly
                         // once on its final frame. No pane is left stale, and
                         // the hot single-pane case collapses to one paint.
-                        let paint_targets: Vec<Option<TerminalId>> = batch
-                            .iter()
-                            .map(|f| frame_paint_target(f).cloned())
-                            .collect();
-                        let defer_flags = coalesce_defer_flags(&paint_targets);
+                        let defer_flags = coalesce_defer_flags(&batch, frame_paint_target);
                         // ADR-0029 §2: the loop-level repaint triggers in this
                         // batch RAISE a level instead of painting inline, and
                         // the accumulator is drained ONCE below. A burst of
@@ -2647,11 +2645,11 @@ mod tests {
         let p = |id| Some(TerminalId::Local { id });
         // Single-pane burst: only the last frame paints.
         assert_eq!(
-            coalesce_defer_flags(&[p(2), p(2), p(2)]),
+            coalesce_defer_flags(&[p(2), p(2), p(2)], Option::as_ref),
             vec![true, true, false]
         );
         // A lone frame never defers (preserves the one-frame-one-paint path).
-        assert_eq!(coalesce_defer_flags(&[p(2)]), vec![false]);
+        assert_eq!(coalesce_defer_flags(&[p(2)], Option::as_ref), vec![false]);
     }
 
     #[test]
@@ -2661,12 +2659,12 @@ mod tests {
         let p = |id| Some(TerminalId::Local { id });
         // A(defer, later A) B(defer, later B) A(last A) B(last B)
         assert_eq!(
-            coalesce_defer_flags(&[p(1), p(2), p(1), p(2)]),
+            coalesce_defer_flags(&[p(1), p(2), p(1), p(2)], Option::as_ref),
             vec![true, true, false, false]
         );
         // Burst ending on a non-focused pane B must still paint A's last frame.
         assert_eq!(
-            coalesce_defer_flags(&[p(1), p(1), p(2)]),
+            coalesce_defer_flags(&[p(1), p(1), p(2)], Option::as_ref),
             vec![true, false, false]
         );
     }
@@ -2690,10 +2688,17 @@ mod tests {
         // counts as a later same-pane paint for the frames before it.
         let p = |id| Some(TerminalId::Local { id });
         assert_eq!(
-            coalesce_defer_flags(&[p(1), None, p(1)]),
+            coalesce_defer_flags(&[p(1), None, p(1)], Option::as_ref),
             vec![true, false, false]
         );
-        assert_eq!(coalesce_defer_flags(&[None, None]), vec![false, false]);
-        assert_eq!(coalesce_defer_flags(&[]), Vec::<bool>::new());
+        assert_eq!(
+            coalesce_defer_flags(&[None, None], Option::as_ref),
+            vec![false, false]
+        );
+        let empty: [Option<TerminalId>; 0] = [];
+        assert_eq!(
+            coalesce_defer_flags(&empty, Option::as_ref),
+            Vec::<bool>::new()
+        );
     }
 }

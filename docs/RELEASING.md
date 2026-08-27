@@ -273,7 +273,7 @@ do not point installers or the tap at it.
 For an emergency host-only artifact, use the same dist layout locally:
 
 ```sh
-cargo build --release --bin phux --bin phux-mcp
+cargo build --locked --release --bin phux --bin phux-mcp
 just dist vX.Y.Z                       # -> dist/phux-vX.Y.Z-<host>.tar.gz (+ .sha256)
 gh release upload vX.Y.Z dist/*        # attach the tarball + checksum
 ```

@@ -164,6 +164,7 @@ pub(crate) mod plugin;
 pub(crate) mod rec;
 pub(crate) mod relay;
 pub(crate) mod remote;
+pub(crate) mod remote_target;
 pub(crate) mod rename;
 pub(crate) mod resize;
 pub(crate) mod run;
@@ -266,7 +267,9 @@ pub(crate) enum Command {
     /// host add`) shadows a local session of the same name: `phux attach
     /// NAME` dials the registered host instead of the local socket.
     /// Pass `--socket` to force the local reading of the name.
-    #[command(group = clap::ArgGroup::new("remote").args(["quic", "ws"]).multiple(false))]
+    // The group id is `remote_transport`, not `remote`: `--remote` is now an
+    // arg on this verb, and clap requires arg and group ids to be disjoint.
+    #[command(group = clap::ArgGroup::new("remote_transport").args(["quic", "ws"]).multiple(false))]
     #[command(visible_alias = "a")]
     Attach {
         /// Session name (matches the name used at creation time).
@@ -295,20 +298,43 @@ pub(crate) enum Command {
         /// minted by `phux pair`. QUIC sends it as the stream's opening
         /// preamble; WebSocket sends it as `Authorization: Bearer`.
         /// Requires `--quic` or `--ws`.
-        #[arg(long, requires = "remote")]
+        #[arg(long, requires = "remote_transport")]
         token: Option<String>,
 
         /// Pin the QUIC server's certificate by its SHA-256 fingerprint (the
         /// value `phux pair` prints). Required to dial any non-loopback
         /// `--quic`/`--ws wss://` address. Requires `--quic` or `--ws`.
-        #[arg(long, value_name = "FP", requires = "remote")]
+        #[arg(long, value_name = "FP", requires = "remote_transport")]
         cert_fingerprint: Option<String>,
 
         /// TLS server name (SNI) to offer the remote listener. QUIC defaults
         /// to `localhost`; WebSocket defaults to the URL host. Requires
         /// `--quic` or `--ws`.
-        #[arg(long, value_name = "NAME", requires = "remote")]
+        #[arg(long, value_name = "NAME", requires = "remote_transport")]
         tls_server_name: Option<String>,
+
+        /// Attach to a phux server on another machine, ssh-style:
+        /// `--remote me@mini`. Resolves to a registered host when there is
+        /// one, otherwise pairs the host first (over a `--code`, or over
+        /// your existing ssh trust) and registers the result, so every
+        /// later attach is a direct QUIC dial with no ssh in the path.
+        ///
+        /// PORT defaults to 8788, the port a server auto-binds on its
+        /// overlay address. The `user@` half names the ssh destination used
+        /// to pair; it is not sent on the wire.
+        #[arg(long, value_name = "[USER@]HOST[:PORT]", conflicts_with_all = ["quic", "ws"])]
+        remote: Option<String>,
+
+        /// Pair `--remote` from a `phux://connect?...` link instead of over
+        /// ssh — the same link `phux pair` prints and `phux pair --qr`
+        /// renders. Quote it: it contains `&`.
+        #[arg(long, value_name = "LINK", requires = "remote")]
+        code: Option<String>,
+
+        /// Never shell out to ssh for `--remote`. An unregistered host is
+        /// refused with its remedies named instead of paired.
+        #[arg(long, requires = "remote")]
+        no_enroll: bool,
 
         /// Tee this attach's composited output to a recording. Declared here
         /// (and on the root command) rather than globally so it only shows up
@@ -1419,23 +1445,22 @@ pub(crate) enum Command {
         action: relay::RelayAction,
     },
 
-    /// Mint a pairing token for a remote consumer.
+    /// Mint, rotate, or revoke a remote-consumer credential.
     ///
-    /// Remote consumers (e.g. the native mobile app) attach over `wss://`
-    /// without an SSH tunnel: TLS encrypts the link and an opaque bearer
-    /// token authenticates the device. This mints one token into the store
-    /// the server reads (`PHUX_WS_TOKENS`) and prints it once alongside the
-    /// server certificate's SHA-256 fingerprint. Pair both into the device:
-    /// the token is the credential, and verifying the fingerprint on first
-    /// connect defeats a man-in-the-middle. Revoke a device by deleting its
-    /// line from the token file. When an overlay network address
-    /// (Tailscale/WireGuard) is detected, it is printed alongside the
-    /// credentials.
+    /// With no subcommand, mint one credential into the server's store and
+    /// print its stable ID, one-time bearer secret, and certificate fingerprint.
+    /// `rotate` replaces the bearer with a bounded overlap; `revoke` denies all
+    /// generations on future connections. These operations update the store
+    /// directly and take effect without restarting the server.
     ///
     /// This never contacts a running server — it only writes the token file.
+    #[command(args_conflicts_with_subcommands = true)]
     Pair {
-        /// Token store to append to. Defaults to `PHUX_WS_TOKENS`.
-        #[arg(long, value_name = "PATH")]
+        #[command(subcommand)]
+        action: Option<pair::PairAction>,
+
+        /// Versioned credential store to update. Defaults to `PHUX_WS_TOKENS`.
+        #[arg(long, global = true, value_name = "PATH")]
         tokens: Option<std::path::PathBuf>,
 
         /// Server certificate PEM, used to print the pairing fingerprint.
@@ -1464,11 +1489,15 @@ pub(crate) enum Command {
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
 
-        /// Emit the pairing material as JSON on stdout instead of the
-        /// human-readable report. This is what `phux host enroll` reads
-        /// over ssh.
-        #[arg(long)]
+        /// Emit the mint, rotation, or revocation result as JSON on stdout.
+        /// `phux host enroll` consumes the mint document over ssh.
+        #[arg(long, global = true)]
         json: bool,
+
+        /// Explicitly convert legacy anonymous token lines before pairing.
+        /// Conversion preserves each bearer secret but stores only its verifier.
+        #[arg(long)]
+        migrate_legacy: bool,
     },
 
     /// Register the machines phux talks to: remotes and satellites.

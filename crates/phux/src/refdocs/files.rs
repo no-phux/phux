@@ -79,7 +79,7 @@ pub(crate) fn page() -> Page {
          ├── onboarding.lock     # serializes first-use moment delivery\n\
          ├── remote-cert.pem     # auto-provisioned remote-consumer certificate\n\
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
-         └── remote-tokens       # pairing-token store (owner-only, 0600)\n\
+         └── remote-tokens       # structured credential store (owner-only, 0600)\n\
          ```\n\n\
          - `server.log` is the canonical server log regardless of how \
            the server was started: the auto-spawn path redirects the \
@@ -117,8 +117,19 @@ pub(crate) fn page() -> Page {
            also means its subjectAltName set is fixed at generation \
            (ADR-0091); `phux doctor` reports whether it names the \
            address phux advertises.\n\
-         - `remote-tokens` is the pairing-token store the server reads \
-           and `phux pair` appends to; `PHUX_WS_TOKENS` moves it.\n\n\
+         - `remote-tokens` is the versioned verifier-only credential store \
+           the server reads and `phux pair`, `phux pair rotate`, and `phux \
+           pair revoke` update under the sibling \
+           `.remote-tokens.lock`. Writers first lock the owner-controlled, \
+           non-group/world-writable parent directory, then no-follow open and \
+           validate the owner-only regular lock file, preventing lock-path \
+           replacement from splitting concurrent writers. Store commits use \
+           a synced temporary file and atomic rename. The store must be a \
+           regular, non-symlink file owned by the effective user with no \
+           group/world permissions; an integrity failure denies \
+           authentication. `PHUX_WS_TOKENS` moves it without weakening those \
+           checks. Legacy anonymous token lines \
+           require the idempotent `phux pair --migrate-legacy` conversion.\n\n\
          ## Design intent (not yet implemented)\n\n\
          A `server.pid` file and a `journal/` directory of per-pane PTY \
          output for crash recovery remain design intent; neither path \

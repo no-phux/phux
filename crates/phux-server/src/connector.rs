@@ -202,7 +202,9 @@ impl Incoming for ConnectorIncoming {
     type Reader = QuicReader;
     type Writer = QuicWriter;
 
-    async fn accept(&self) -> io::Result<(Self::Reader, Self::Writer, PeerIdentity)> {
+    async fn accept(
+        &self,
+    ) -> io::Result<(Self::Reader, Self::Writer, crate::auth::ConnectionIdentity)> {
         loop {
             let (mut send, mut recv) = self
                 .connection
@@ -210,7 +212,8 @@ impl Incoming for ConnectorIncoming {
                 .await
                 .map_err(io::Error::other)?;
             let relay = self.connection.remote_address();
-            let Some(device_id) = authorize_preamble(&mut recv, &self.consumer_tokens).await else {
+            let Some(credential) = authorize_preamble(&mut recv, &self.consumer_tokens).await
+            else {
                 warn!(%relay, "bridged consumer refused: missing or invalid server token");
                 let _ = send.reset(AUTH_FAILED_CODE.into());
                 let _ = recv.stop(AUTH_FAILED_CODE.into());
@@ -219,13 +222,16 @@ impl Incoming for ConnectorIncoming {
             return Ok((
                 QuicReader::from_stream(recv),
                 QuicWriter::from_stream(send),
-                PeerIdentity {
-                    uid: 0,
-                    pid: None,
-                    exe_path: None,
-                    mcp_host_key: Some(device_id),
-                    transport: TransportType::Quic,
-                    source_addr: Some(relay.ip()),
+                crate::auth::ConnectionIdentity {
+                    peer: PeerIdentity {
+                        uid: 0,
+                        pid: None,
+                        exe_path: None,
+                        mcp_host_key: Some(credential.id.clone()),
+                        transport: TransportType::Quic,
+                        source_addr: Some(relay.ip()),
+                    },
+                    credential: Some(credential),
                 },
             ));
         }

@@ -1,4 +1,8 @@
 target/
+# Alternate cargo target dirs (e.g. `cargo doc --target-dir target-doc`), kept
+# out of `target/` to avoid clobbering a build. Same regenerable artifacts,
+# same reason to ignore them -- one had grown to 1.3G untracked.
+target-*/
 # Release tarballs staged by scripts/dist.sh before upload.
 dist/
 result
@@ -15,6 +19,10 @@ flamegraph.svg
 *.db
 .beads-credential-key
 .beads/proxieddb/
+# Local gate lock. `bd gate` creates it and does not always release it: one
+# was found empty and orphaned 11 days after the run that made it, with no
+# gates open. Machine-local either way, never shared.
+.beads.gate.lock
 
 # bv (beads viewer) local config and caches
 .bv/

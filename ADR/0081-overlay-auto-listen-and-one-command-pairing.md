@@ -102,7 +102,7 @@ arguments.
   before. It rejects everything until paired, and is invisible off the
   overlay — but it is a real change in default posture, which is why it is
   recorded here and why the opt-out exists.
-- Revoking a device is still deleting its line from the token store; with no
+- Revoking a device marks its structured credential revoked; with no
   tokens left, the listener returns to refusing everyone.
 - A server started before this change has no auto-listener until it restarts.
   ADR-0080's version-skew handoff covers the common case: attaching with an

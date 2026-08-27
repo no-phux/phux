@@ -63,7 +63,7 @@ bash scripts/check-formula.sh
 
 if [ "$skip_crate_dry_run" -eq 0 ]; then
   echo "==> phux-protocol crates.io package"
-  cargo publish --dry-run --allow-dirty -p phux-protocol
+  cargo publish --locked --dry-run --allow-dirty -p phux-protocol
 else
   echo "==> phux-protocol crates.io package skipped"
 fi

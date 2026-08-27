@@ -1636,6 +1636,8 @@ reports it alongside everything a device needs to dial this host:
 ```json
 {
   "schema_version": 1,
+  "credential_id": "0123456789abcdef0123456789abcdef",
+  "generation": 1,
   "token": "deadbeef...64 hex chars",
   "cert_fingerprint": "AB:CD:...64 hex chars",
   "overlay_addresses": ["100.64.0.2"],
@@ -1657,7 +1659,20 @@ signal to fall back to `ssh://`. `overlay_addresses` is best-effort
 detected overlay address plus a known port) exists to build one from — a
 device then has to be given the address by another channel. The token
 printed in this document is a secret and is only ever emitted once; it is
-not re-derivable from the token store afterwards.
+not re-derivable from the token store afterwards. `credential_id` is the
+non-secret stable ID used with `phux pair rotate` and `phux pair revoke`;
+`generation` starts at one and increments on rotation.
+
+`phux pair rotate CREDENTIAL_ID --json` emits a separate schema-version 1
+operation document with `operation: "rotate"`, `credential_id`, the new
+`generation`, one-time `token`, `overlap_seconds`, and `tokens_path`. `phux
+pair revoke CREDENTIAL_ID --json` emits `operation: "revoke"`,
+`credential_id`, and `tokens_path`; it never emits any bearer token. Rotation
+keeps prior generations valid only for the requested overlap and never beyond
+their existing absolute expiry. An already-expired credential is rejected
+before a replacement token is generated, so failed rotation emits no JSON
+document or secret. Revocation and rotation affect new connections; an
+established session retains its admission until it disconnects.
 
 ## 5. The read-act-wait loop and exit-code mirroring
 

@@ -29,11 +29,20 @@ quinn.workspace = true
 # cert-resolver gate that refuses unknown/absent route names during the
 # handshake (ADR-0052 Decision 1).
 rustls.workspace = true
-# Self-signed relay certificate provisioning, mirroring phux-server's
-# `transport::tls` (same version/features phux-server declares).
+# Self-signed certificate provisioning and the leaf-fingerprint pin, shared
+# with phux-server, which terminates TLS on exactly these terms. ADR-0051
+# forbids the relay depending on phux-server, and phux-dial is the crate both
+# already sit on — it owns the fingerprint format and the verifier that pins
+# it, so it owns the generator too. Promoted from [dev-dependencies], where
+# the integration tests already drove both legs through it: no new graph for
+# the shipped artifact, because `phux relay` runs inside the phux binary,
+# which links phux-dial through phux-client regardless. Replaces this crate's
+# direct `sha2` dependency outright, and all but the type of its `rcgen` one.
+phux-dial = { workspace = true, features = ["provision"] }
+# `RelayError::Rcgen` carries `rcgen::Error` in the public error surface, so
+# the type is still named here even though phux-dial now does the generating.
+# Same version/features phux-dial declares, so it is the same type.
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
-# SHA-256 leaf-certificate fingerprint for the out-of-band pairing pin.
-sha2 = "0.10"
 # Hex encode/decode of route-bound enrollment tokens.
 hex = "0.4"
 # Constant-time token comparison so the route-token store leaks no
@@ -46,8 +55,7 @@ getrandom = { version = "0.2", features = ["std"] }
 
 [dev-dependencies]
 tempfile.workspace = true
-# The integration tests drive both relay legs through the production
-# dialer: consumers via `phux_dial::quic::dial` (pinned fingerprint,
-# bearer preamble), the stub connector via `dial_with_alpn` +
-# `QUIC_RELAY_ALPN`. Workspace-internal; no new external dependency.
-phux-dial.workspace = true
+# The integration tests drive both relay legs through the production dialer:
+# consumers via `phux_dial::quic::dial` (pinned fingerprint, bearer preamble),
+# the stub connector via `dial_with_alpn` + `QUIC_RELAY_ALPN`. phux-dial is now
+# a regular dependency (see above), so it needs no entry here.

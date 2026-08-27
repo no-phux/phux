@@ -620,7 +620,9 @@ async fn collect_watch_items(
         match timeout {
             // Timeout is a clean stop: drop the future, keep the prefix.
             Some(deadline) => {
-                let _ = tokio::time::timeout(deadline, fut).await;
+                if let Ok(result) = tokio::time::timeout(deadline, fut).await {
+                    result?;
+                }
             }
             None => fut.await?,
         }
@@ -887,6 +889,20 @@ mod tests {
     use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope, TERMINAL_TAGS_KEY};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot, TerminalInfo, WindowInfo};
     use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn bounded_watch_propagates_an_error_completed_before_timeout() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing_socket = dir.path().join("missing.sock");
+
+        let result =
+            collect_watch_items(&missing_socket, None, None, Some(Duration::from_secs(1))).await;
+
+        assert!(
+            matches!(result, Err(AttachError::Io(_))),
+            "the MCP collector must not turn a transport error into an empty success: {result:?}"
+        );
+    }
 
     /// The fixture as a server that reached everything it knows about.
     fn whole_fleet() -> StateView {

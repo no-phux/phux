@@ -4,6 +4,7 @@
 //! adapter, CLI verbs, future satellites — can agree with the daemon on one
 //! socket location without pulling in the heavy server crate (phux-93b).
 
+use std::ffi::OsString;
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -34,12 +35,20 @@ pub fn default_socket_path() -> PathBuf {
 /// unlinked and recreated across server generations, and a lock whose inode
 /// changes underneath its holders is not a lock.
 #[must_use]
-pub fn spawn_lock_path() -> PathBuf {
-    let socket = default_socket_path();
+pub fn spawn_lock_path(socket: &Path) -> PathBuf {
+    let lock_name = match socket.file_name() {
+        Some(name) if name == "phux.sock" => OsString::from("spawn.lock"),
+        Some(name) => {
+            let mut lock_name = name.to_os_string();
+            lock_name.push(".spawn.lock");
+            lock_name
+        }
+        None => OsString::from("spawn.lock"),
+    };
     socket
         .parent()
-        .map_or_else(|| PathBuf::from("/tmp/phux.spawn.lock"), Path::to_path_buf)
-        .join("spawn.lock")
+        .map_or_else(|| PathBuf::from("/tmp"), Path::to_path_buf)
+        .join(lock_name)
 }
 
 /// What a probe of a socket path found.
@@ -198,9 +207,22 @@ mod tests {
 
     #[test]
     fn the_spawn_lock_is_a_sibling_of_the_socket() {
-        let lock = spawn_lock_path();
         let socket = default_socket_path();
+        let lock = spawn_lock_path(&socket);
         assert_eq!(lock.parent(), socket.parent());
         assert_ne!(lock, socket, "the lock must not be the socket itself");
+        assert_eq!(lock.file_name().unwrap(), "spawn.lock");
+    }
+
+    #[test]
+    fn custom_sockets_have_distinct_spawn_locks() {
+        let first = Path::new("/tmp/phux/first.sock");
+        let second = Path::new("/tmp/phux/second.sock");
+
+        assert_ne!(spawn_lock_path(first), spawn_lock_path(second));
+        assert_eq!(
+            spawn_lock_path(first),
+            Path::new("/tmp/phux/first.sock.spawn.lock")
+        );
     }
 }

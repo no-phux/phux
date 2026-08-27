@@ -135,7 +135,7 @@ pub use commands::server::AUTO_SPAWN_IDLE_ENV;
           workspace  Inspect worktrees and save/restore session archives\n  \
           worktree   Create, open, list, and remove worktree-bound sessions\n\n\
         FEDERATION\n  \
-          pair       Mint a pairing token for a remote consumer\n  \
+          pair       Mint, rotate, or revoke remote credentials\n  \
           relay      Run a standalone relay, or enroll a route with it\n\n\
         TARGET is a session name, `name:window`, `name:window.pane`, `@id`,\n\
         `#tag`, or `.` (focused). `=` is reserved for the\n\
@@ -177,6 +177,13 @@ struct Cli {
         value_name = "SCOPE"
     )]
     skill: Option<skill::SkillScope>,
+
+    /// Attach to a phux server on another machine, ssh-style:
+    /// `phux --remote me@mini`. Belongs to the naked `phux` attach alone;
+    /// `phux attach --remote` carries its own copy (and the `--code` /
+    /// `--no-enroll` modifiers that go with it).
+    #[arg(long, value_name = "[USER@]HOST[:PORT]")]
+    remote: Option<String>,
 
     /// Print machine-readable capabilities with `--json`, then exit.
     #[arg(long)]
@@ -289,6 +296,91 @@ const fn root_rec_before_verb(cli: &Cli) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// The teaching error for a root `--remote` in front of a verb.
+///
+/// Same scope rule as the root `--rec`, and for the same reason: the root
+/// copy exists so the naked `phux --remote me@mini` reads like `ssh`, and
+/// `phux attach --remote` is where the verb-scoped form (with `--code` and
+/// `--no-enroll`) lives. Silently ignoring the root flag in front of `ls`
+/// would be the worst of the three options.
+const fn root_remote_before_verb(cli: &Cli) -> Option<&'static str> {
+    if cli.command.is_some() && cli.remote.is_some() {
+        Some(
+            "phux: a root `--remote` belongs to the naked `phux` attach alone; \
+             use `phux attach --remote HOST` to name a session, a `--code`, or `--no-enroll`",
+        )
+    } else {
+        None
+    }
+}
+
+/// The parse error for whichever `--remote` this invocation carries, root
+/// or verb-scoped.
+///
+/// Runs ahead of the TTY preflight so a bad target is reported as the usage
+/// error it is, rather than as a missing terminal.
+fn malformed_remote_target(cli: &Cli) -> Option<String> {
+    let raw = match &cli.command {
+        Some(Command::Attach { remote, .. }) => remote.as_deref(),
+        None => cli.remote.as_deref(),
+        _ => None,
+    }?;
+    commands::remote_target::RemoteTarget::parse(raw).err()
+}
+
+/// Whether this invocation pairs the local-UDS `--socket` with the network
+/// `--remote`.
+///
+/// A post-parse check rather than a clap `conflicts_with`, for ADR-0065's
+/// reason: `--socket` is a root global and clap validates conflicts per
+/// parser, so a root-matched `--socket` never meets a sub-matched `--remote`.
+/// It runs BEFORE the interactive TTY preflight because a contradiction
+/// between two flags is a usage error, and reporting it as "requires a
+/// terminal" would name the wrong problem.
+const fn socket_and_remote_collide(cli: &Cli) -> bool {
+    if cli.socket.is_none() {
+        return false;
+    }
+    match &cli.command {
+        Some(Command::Attach { remote, .. }) => remote.is_some(),
+        None => cli.remote.is_some(),
+        _ => false,
+    }
+}
+
+/// Resolve a `--remote` target and attach to it.
+///
+/// One helper for both the root and the verb-scoped spelling, so the two
+/// cannot drift in what a target means.
+fn attach_remote_target(
+    target: &str,
+    session: Option<String>,
+    code: Option<&str>,
+    no_enroll: bool,
+    rec: Option<&commands::rec::RecordSpec>,
+) -> ExitCode {
+    use commands::remote_target::{Bootstrap, RemoteAttach, RemoteTarget};
+
+    let target = match RemoteTarget::parse(target) {
+        Ok(target) => target,
+        Err(err) => {
+            eprintln!("phux: {err}");
+            return ExitCode::from(2);
+        }
+    };
+    commands::remote_target::run(RemoteAttach {
+        target,
+        session,
+        code,
+        bootstrap: if no_enroll {
+            Bootstrap::Never
+        } else {
+            Bootstrap::Auto
+        },
+        rec,
+    })
 }
 
 /// Whether any verb in `cmd`'s subtree declares a long flag named `long`.
@@ -525,6 +617,22 @@ pub fn run() -> ExitCode {
         eprintln!("{message}");
         return ExitCode::from(2);
     }
+    if let Some(message) = root_remote_before_verb(&cli) {
+        eprintln!("{message}");
+        return ExitCode::from(2);
+    }
+    // A malformed `--remote` target is a usage error, so it is reported here
+    // — before the interactive TTY preflight below. Otherwise a typo in a
+    // script would surface as "interactive use requires a terminal", which
+    // names the wrong problem entirely.
+    if let Some(message) = malformed_remote_target(&cli) {
+        eprintln!("phux: {message}");
+        return ExitCode::from(2);
+    }
+    if socket_and_remote_collide(&cli) {
+        eprintln!("phux: --socket dials a local UDS and cannot combine with --remote; drop one");
+        return ExitCode::from(2);
+    }
     if cli.socket.is_some()
         && let Some(verb) = cli.command.as_ref().and_then(commands::socketless_verb)
     {
@@ -593,6 +701,7 @@ pub fn run() -> ExitCode {
     let Cli {
         rec: root_rec,
         skill: _,
+        remote: root_remote,
         capabilities: _,
         socket,
         command,
@@ -606,6 +715,9 @@ pub fn run() -> ExitCode {
             token,
             cert_fingerprint,
             tls_server_name,
+            remote,
+            code,
+            no_enroll,
             rec,
         }) => {
             // `phux attach` owns its own `--rec`; the root copy is reserved
@@ -620,11 +732,22 @@ pub fn run() -> ExitCode {
             // move to a root global (clap validates conflicts per parser, so
             // `phux --socket X attach --quic Y` would slip through), so the
             // refusal is explicit here and covers both flag positions.
+            // The `--remote` half of this rule is enforced post-parse (see
+            // `socket_and_remote_collide`), ahead of the TTY preflight.
             if socket.is_some() && (quic.is_some() || ws.is_some()) {
                 eprintln!(
                     "phux: --socket dials a local UDS and cannot combine with --quic/--ws; drop one"
                 );
                 return ExitCode::from(2);
+            }
+            if let Some(target) = remote {
+                return attach_remote_target(
+                    &target,
+                    session,
+                    code.as_deref(),
+                    no_enroll,
+                    rec_spec,
+                );
             }
             match (quic, ws) {
                 (Some(addr), None) => commands::attach::run_attach_quic(
@@ -918,13 +1041,15 @@ pub fn run() -> ExitCode {
         Some(Command::StdioBridge {}) => commands::stdio_bridge::run_stdio_bridge(socket),
         Some(Command::Relay { action }) => commands::relay::run_relay(action),
         Some(Command::Pair {
+            action,
             tokens,
             cert,
             qr,
             host,
             name,
             json,
-        }) => commands::pair::run_pair(tokens, cert, qr, host, name, json),
+            migrate_legacy,
+        }) => commands::pair::run_pair(action, tokens, cert, qr, host, name, json, migrate_legacy),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell),
         // Returned above, before process-global setup.
         Some(Command::Mcp { .. }) => ExitCode::FAILURE,
@@ -979,6 +1104,10 @@ pub fn run() -> ExitCode {
                 Ok(spec) => spec,
                 Err(code) => return code,
             };
+            if let Some(target) = root_remote {
+                // The `--socket` collision was already refused post-parse.
+                return attach_remote_target(&target, None, None, false, rec_spec.as_ref());
+            }
             commands::attach::run_naked(socket, rec_spec.as_ref())
         }
     }
@@ -1282,6 +1411,54 @@ mod tests {
         assert!(
             Cli::try_parse_from(["phux", "relay", "pair"]).is_err(),
             "--route is required"
+        );
+    }
+
+    #[test]
+    fn pair_credential_lifecycle_actions_parse_with_ids_and_global_options() {
+        let cli = Cli::try_parse_from([
+            "phux",
+            "pair",
+            "rotate",
+            "credential-a",
+            "--overlap-seconds",
+            "30",
+            "--tokens",
+            "/tmp/tokens",
+            "--json",
+        ])
+        .expect("pair rotate parses");
+        let Some(Command::Pair {
+            action:
+                Some(crate::commands::pair::PairAction::Rotate {
+                    credential_id,
+                    overlap_seconds,
+                }),
+            tokens,
+            json,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected pair rotate");
+        };
+        assert_eq!(credential_id, "credential-a");
+        assert_eq!(overlap_seconds, 30);
+        assert_eq!(tokens.as_deref(), Some(std::path::Path::new("/tmp/tokens")));
+        assert!(json);
+
+        assert!(Cli::try_parse_from(["phux", "pair", "revoke", "credential-a"]).is_ok());
+        assert!(Cli::try_parse_from(["phux", "pair", "rotate"]).is_err());
+        assert!(Cli::try_parse_from(["phux", "pair", "--qr", "rotate", "credential-a"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "phux",
+                "pair",
+                "rotate",
+                "credential-a",
+                "--overlap-seconds",
+                "86401",
+            ])
+            .is_err()
         );
     }
 

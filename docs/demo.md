@@ -1,17 +1,18 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-06-10
+last-reviewed: 2026-08-25
 ---
 
-# Recording the README demo
+# Recording the product demo
 
-**TL;DR.** The README demo is the first moving proof on the page: two short
-beats — *modern terminal content survives a detach/reattach*, then *the same
-thing driven headless* — recorded as a GIF at `docs/assets/demo.gif`. Use a
-real screen-recorder for future full-fidelity takes of the first beat
-(asciinema players don't render kitty graphics, which is the whole point);
-asciinema is fine for the second.
+**TL;DR.** The product demo is two short beats — *modern terminal content
+survives a detach/reattach*, then *the same thing driven headless* — recorded
+as a GIF at `docs/assets/demo.gif` for surfaces that embed moving proof (the
+site, release notes). The README no longer embeds GIFs; keep it that way
+unless the launch bar moves. Use a real screen-recorder for future
+full-fidelity takes of the first beat (asciinema players don't render kitty
+graphics, which is the whole point); asciinema is fine for the second.
 
 ---
 
@@ -85,6 +86,6 @@ content is painted at the size you are recording at.
 
 ## Wiring it in
 
-The README already points at `docs/assets/demo.gif`. When replacing the asset
-with a higher-fidelity take, keep the same path and re-run `bash
-scripts/check-docs.sh` plus a real attach smoke.
+The README embeds no GIFs. When you re-record, keep the same asset path
+(`docs/assets/demo.gif`) so the surfaces that do embed it stay valid, and
+re-run `bash scripts/check-docs.sh` plus a real attach smoke.

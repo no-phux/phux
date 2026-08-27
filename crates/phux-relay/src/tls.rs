@@ -12,21 +12,21 @@
 //! are ever exchanged. Connector hellos (which offer the relay ALPN) pass
 //! the gate; their authentication is the stream-0 token preamble.
 //!
-//! Certificate provisioning is modeled on `phux-server`'s
-//! `transport::tls`: a persisted self-signed pair, no-op when both files
-//! exist so the pinned fingerprint stays stable across restarts.
+//! Certificate provisioning is not implemented here. It is
+//! [`phux_dial::cert`]'s — a persisted self-signed pair, no-op when both
+//! files exist so the pinned fingerprint stays stable across restarts. This
+//! module used to carry a near-verbatim copy of `phux-server`'s
+//! `transport::tls`, which its own header admitted; ADR-0051 forbids
+//! depending on `phux-server`, so the one implementation lives in the crate
+//! both sit on. What stays here is the part that is genuinely the relay's:
+//! the dual-ALPN server config and the crate-internal `SniGate` resolver.
 
 use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
-use std::io;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use phux_dial::cert;
 use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use sha2::{Digest, Sha256};
 
 use crate::RelayError;
 use crate::tokens::RouteTokenStore;
@@ -54,60 +54,19 @@ pub fn default_relay_key_path() -> PathBuf {
 /// for free). The certificate is public; the key is written owner-only
 /// (`0o600`). SANs cover loopback names — irrelevant to fingerprint
 /// pinning, but they keep a conventionally-validating client working.
+///
+/// The relay names no advertised address in its SANs: a consumer reaches it
+/// by an *enrolled route name* carried in SNI (ADR-0052), and pins the
+/// fingerprint, so there is no address here to put in a certificate.
 pub fn ensure_self_signed(cert_path: &Path, key_path: &Path) -> Result<(), RelayError> {
-    match (cert_path.exists(), key_path.exists()) {
-        (true, true) => return Ok(()),
-        (false, false) => {}
-        // One survivor: regenerating would silently rotate the pinned
-        // fingerprint out from under every enrolled connector/consumer.
-        // Refuse and make the operator delete the survivor deliberately.
-        (true, false) => {
-            return Err(RelayError::PartialTlsPair {
-                present: cert_path.display().to_string(),
-                missing: key_path.display().to_string(),
-            });
-        }
-        (false, true) => {
-            return Err(RelayError::PartialTlsPair {
-                present: key_path.display().to_string(),
-                missing: cert_path.display().to_string(),
-            });
-        }
-    }
-    let sans = vec![
-        "localhost".to_owned(),
-        "127.0.0.1".to_owned(),
-        "::1".to_owned(),
-    ];
-    let certified = rcgen::generate_simple_self_signed(sans)?;
-    if let Some(parent) = cert_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if let Some(parent) = key_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(cert_path, certified.cert.pem())?;
-    let mut key_file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(key_path)?;
-    io::Write::write_all(&mut key_file, certified.key_pair.serialize_pem().as_bytes())?;
-    Ok(())
+    Ok(cert::ensure_self_signed(cert_path, key_path)?)
 }
 
 /// SHA-256 fingerprint of the leaf certificate, formatted as uppercase
 /// colon-separated hex (`AB:CD:...`) — identical to the shape
 /// `phux pair` prints, so relay pins read the same everywhere.
 pub fn cert_fingerprint(cert_path: &Path) -> Result<String, RelayError> {
-    let certs = load_certs(cert_path)?;
-    let leaf = certs
-        .first()
-        .ok_or_else(|| RelayError::NoCerts(cert_path.display().to_string()))?;
-    let digest = Sha256::digest(leaf.as_ref());
-    let hex: Vec<String> = digest.iter().map(|b| format!("{b:02X}")).collect();
-    Ok(hex.join(":"))
+    Ok(cert::cert_fingerprint(cert_path)?)
 }
 
 /// Build the relay's rustls `ServerConfig`: TLS 1.3 only, no client auth,
@@ -118,8 +77,8 @@ pub(crate) fn server_config(
     key_path: &Path,
     tokens_path: &Path,
 ) -> Result<rustls::ServerConfig, RelayError> {
-    let certs = load_certs(cert_path)?;
-    let key = PrivateKeyDer::from_pem_file(key_path)?;
+    let certs = cert::load_certs(cert_path)?;
+    let key = cert::load_key(key_path)?;
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let signing_key = provider.key_provider.load_private_key(key)?;
     let certified = Arc::new(rustls::sign::CertifiedKey::new(certs, signing_key));
@@ -214,18 +173,10 @@ pub(crate) fn enrolled_routes(tokens_path: &Path) -> BTreeSet<String> {
     }
 }
 
-/// Read the PEM certificate chain.
-fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, RelayError> {
-    let certs = CertificateDer::pem_file_iter(path)?.collect::<Result<Vec<_>, _>>()?;
-    if certs.is_empty() {
-        return Err(RelayError::NoCerts(path.display().to_string()));
-    }
-    Ok(certs)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]

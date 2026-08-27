@@ -31,7 +31,12 @@ pub enum CertTrust {
 ///
 /// `alpn` is transport-specific: QUIC needs `phux-quic/1`; WebSocket leaves it
 /// unset because the RFC 6455 upgrade happens at HTTP level.
-pub(crate) fn client_config(
+///
+/// Public so that anything dialing a phux listener gets *this* verifier rather
+/// than a hand-rolled copy of it — including the listener tests on the server
+/// side, which previously carried their own `ServerCertVerifier`. A test that
+/// re-implements the trust policy is a test that can quietly disagree with it.
+pub fn client_config(
     trust: &CertTrust,
     alpn: Option<&[u8]>,
 ) -> Result<rustls::ClientConfig, DialError> {

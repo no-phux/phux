@@ -340,8 +340,16 @@ impl TerminalActor {
                         }
                     });
                     let pty = self.pty.as_ref();
-                    let master_fd = pty
-                        .and_then(|p| p.master.lock().ok().and_then(|m| m.as_raw_fd()));
+                    let master_fd = pty.and_then(|p| {
+                        let master = p.master.lock().ok()?;
+                        let fd = master.as_raw_fd()?;
+                        // SAFETY: the master guard keeps `fd` open until `dup`
+                        // returns an independently owned descriptor.
+                        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+                        let duplicate = rustix::io::dup(borrowed).ok();
+                        drop(master);
+                        duplicate
+                    });
                     let child_pid = pty
                         .and_then(|p| p.child.process_id())
                         .and_then(|id| i32::try_from(id).ok());

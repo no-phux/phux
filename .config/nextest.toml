@@ -121,6 +121,57 @@ threads-required = 'num-cpus'
 filter = 'package(phux-server) & test(ssh_transport_)'
 threads-required = 'num-cpus'
 
+# The auto-spawn suites in `package(phux)` need it too, and it is the same
+# product-budget-versus-starvation shape the three blocks above describe.
+#
+# These drive the REAL binary through `phux new --socket ...` (via the shared
+# `common::AutoSpawnedServer` helper), which auto-spawns a server and waits
+# `AUTO_SPAWN_SOCKET_TIMEOUT` for it to bind. That 2s is a deliberate product
+# budget — `commands/server.rs` says so: "the server's bind is sub-ms on a
+# healthy system; 2s tolerates a slow-CI host without making a failed spawn
+# feel like a hang." Under an oversubscribed pool a cold process spawn plus
+# socket bind does not fit in it, and the test fails at its FIRST assertion
+# with the CLI's own no-server document:
+#
+#   phux new must start a server.
+#   stderr: {"error":{"code":"no_server", ...}}
+#
+# Measured on this 14-core box, isolated versus inside a full-suite run:
+#
+#   service_reconcile reconcile_corrects_the_policy_without_stopping_server  6.23s -> 21.23s (pass)
+#   service_reconcile reconcile_says_whether_the_new_policy_is_in_force      6.39s -> 10.86s FAIL
+#   stale_socket_recovery a_second_invocation_reuses_the_live_server         6.61s -> 10.12s FAIL
+#   stale_socket_recovery auto_spawn_reaps_a_stale_socket_instead_of_wedging 5.03s -> 12.22s FAIL
+#   stale_socket_recovery sigterm_unlinks_the_socket...                      4.37s -> 17.44s FAIL
+#
+# All of them pass isolated. Nothing here races — the degradation is uniform,
+# and it is process-startup cost, exactly as the `ssh_transport_` block above
+# diagnoses for its own stubs.
+#
+# The filter names every binary that uses `AutoSpawnedServer`, not just the
+# ones observed failing. That distinction is load-bearing: covering only the
+# observed two left `kill_server_e2e` — same helper, same budget — to fail on
+# the very next full run as the pool composition shifted. The property is
+# "drives the CLI auto-spawn path against a shipped 2s budget", so the filter
+# is the set that has that property. (`first_five_minutes_e2e` and
+# `idle_exit_e2e` are `#[ignore]`d into the e2e lane, which is already
+# `--test-threads=1`, so their entry is inert today and correct if they are
+# ever un-ignored.)
+#
+# `threads-required` and not `pty-serial`, for the reason already established
+# twice above: a `max-threads = 1` group only serialises members against EACH
+# OTHER, and the load starving these comes from the whole pool. Lengthening
+# `AUTO_SPAWN_SOCKET_TIMEOUT` is the other obvious move and is the wrong one —
+# it changes shipped behavior to suit a test, and the margin it would need is
+# unbounded in the load.
+[[profile.default.overrides]]
+filter = """package(phux) & (
+    binary(stale_socket_recovery) + binary(service_reconcile)
+  + binary(kill_server_e2e) + binary(service_install_guard)
+  + binary(first_five_minutes_e2e) + binary(idle_exit_e2e)
+)"""
+threads-required = 'num-cpus'
+
 # The `ci` profile is behavior-identical to `default` — nextest consults the
 # selected profile's settings first and falls back to profile.default, so the
 # retry policy and the pty-serial override above still apply. It exists only

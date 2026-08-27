@@ -5,7 +5,7 @@
 //! re-exec'd image.
 
 use std::collections::HashMap;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -43,6 +43,12 @@ pub enum RebuildError {
         kind: &'static str,
         /// The unresolved wire id.
         id: u32,
+    },
+    /// A PTY-backed pane must carry both inherited identities.
+    #[error("pane wire id {wire_id} has only one of master fd and child pid")]
+    InvalidPtyPair {
+        /// Stable pane identity from the handoff blob.
+        wire_id: u32,
     },
 }
 
@@ -159,13 +165,12 @@ impl ServerState {
                     ) else {
                         continue;
                     };
-                    let handoff = handoffs.get(&tid).cloned();
                     panes.push(pane_blob(
                         pane_wire,
                         window_wire,
                         desc,
                         &self.config.term,
-                        handoff,
+                        handoffs.get(&tid),
                     ));
                 }
             }
@@ -247,7 +252,7 @@ fn pane_blob(
     window_wire_id: u32,
     desc: &TerminalDescriptor,
     term: &str,
-    handoff: Option<PaneUpgradeHandle>,
+    handoff: Option<&PaneUpgradeHandle>,
 ) -> PaneBlob {
     let (cols, rows) = handoff.as_ref().map_or(desc.dims, |h| (h.cols, h.rows));
     PaneBlob {
@@ -266,12 +271,14 @@ fn pane_blob(
             .or_else(|| desc.title.clone()),
         term: term.to_owned(),
         child_pid: handoff.as_ref().and_then(|h| h.child_pid),
-        master_fd: handoff.as_ref().and_then(|h| h.master_fd),
+        master_fd: handoff.and_then(|h| h.master_fd.as_ref().map(AsRawFd::as_raw_fd)),
         vt_replay_bytes: handoff
             .as_ref()
             .map(|h| h.vt_replay_bytes.clone())
             .unwrap_or_default(),
-        scrollback_bytes: handoff.map(|h| h.scrollback_bytes).unwrap_or_default(),
+        scrollback_bytes: handoff
+            .map(|h| h.scrollback_bytes.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -366,7 +373,10 @@ impl ServerState {
                     CancellationToken::new(),
                     &seed,
                 )?,
-                _ => TerminalActor::new_with_seed(p.cols, p.rows, &seed)?,
+                (None, None) => TerminalActor::new_with_seed(p.cols, p.rows, &seed)?,
+                _ => {
+                    return Err(RebuildError::InvalidPtyPair { wire_id: p.wire_id });
+                }
             };
 
             // Pre-bind the wire id so `spawn_terminal_actor`'s intern is a

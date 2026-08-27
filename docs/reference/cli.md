@@ -77,7 +77,7 @@ ORGANIZE
   worktree   Create, open, list, and remove worktree-bound sessions
 
 FEDERATION
-  pair       Mint a pairing token for a remote consumer
+  pair       Mint, rotate, or revoke remote credentials
   relay      Run a standalone relay, or enroll a route with it
 
 TARGET is a session name, `name:window`, `name:window.pane`, `@id`,
@@ -116,6 +116,9 @@ Usage: phux [OPTIONS] [COMMAND]
           - agent:    Quick guidance plus agent identity and lifecycle supervision
           - terminal: Quick guidance plus terminal screen and input mechanics
           - full:     The complete guide and command inventory
+
+      --remote <[USER@]HOST[:PORT]>
+          Attach to a phux server on another machine, ssh-style: `phux --remote me@mini`. Belongs to the naked `phux` attach alone; `phux attach --remote` carries its own copy (and the `--code` / `--no-enroll` modifiers that go with it)
 
       --capabilities
           Print machine-readable capabilities with `--json`, then exit
@@ -692,6 +695,17 @@ Options:
 
       --tls-server-name <NAME>
           TLS server name (SNI) to offer the remote listener. QUIC defaults to `localhost`; WebSocket defaults to the URL host. Requires `--quic` or `--ws`
+
+      --remote <[USER@]HOST[:PORT]>
+          Attach to a phux server on another machine, ssh-style: `--remote me@mini`. Resolves to a registered host when there is one, otherwise pairs the host first (over a `--code`, or over your existing ssh trust) and registers the result, so every later attach is a direct QUIC dial with no ssh in the path.
+
+          PORT defaults to 8788, the port a server auto-binds on its overlay address. The `user@` half names the ssh destination used to pair; it is not sent on the wire.
+
+      --code <LINK>
+          Pair `--remote` from a `phux://connect?...` link instead of over ssh — the same link `phux pair` prints and `phux pair --qr` renders. Quote it: it contains `&`
+
+      --no-enroll
+          Never shell out to ssh for `--remote`. An unregistered host is refused with its remedies named instead of paired
 
       --rec <PATH>
           Record this session while it runs and write the result to PATH.
@@ -1470,26 +1484,32 @@ Options:
 ## `phux pair`
 
 ```text
-Mint a pairing token for a remote consumer.
+Mint, rotate, or revoke a remote-consumer credential.
 
-Remote consumers (e.g. the native mobile app) attach over `wss://` without an SSH tunnel: TLS encrypts the link and an opaque bearer token authenticates the device. This mints one token into the store the server reads (`PHUX_WS_TOKENS`) and prints it once alongside the server certificate's SHA-256 fingerprint. Pair both into the device: the token is the credential, and verifying the fingerprint on first connect defeats a man-in-the-middle. Revoke a device by deleting its line from the token file. When an overlay network address (Tailscale/WireGuard) is detected, it is printed alongside the credentials.
+With no subcommand, mint one credential into the server's store and print its stable ID, one-time bearer secret, and certificate fingerprint. `rotate` replaces the bearer with a bounded overlap; `revoke` denies all generations on future connections. These operations update the store directly and take effect without restarting the server.
 
 This never contacts a running server — it only writes the token file.
 
 Usage: phux pair [OPTIONS]
+       phux pair <COMMAND>
+
+Commands:
+  rotate  Replace a credential's bearer secret with a bounded overlap
+  revoke  Revoke every generation of a credential for new connections
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
       --tokens <PATH>
-          Token store to append to. Defaults to `PHUX_WS_TOKENS`
+          Versioned credential store to update. Defaults to `PHUX_WS_TOKENS`
 
       --cert <PATH>
           Server certificate PEM, used to print the pairing fingerprint. Defaults to `PHUX_WS_TLS_CERT`
 
       --qr
           Also render the pairing payload as a scannable QR code. The QR encodes the same `phux://connect` one-tap link printed as text, so a phone can pair by scanning instead of typing. Needs a server address: pass `--host`, or let it fall back to a detected overlay address plus the `PHUX_WS_ADDR` port
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
       --host <HOST:PORT>
           Server address (`host:port`, or a full `ws://`/`wss://` URL) to embed in the connect link so it is fully self-contained. Omitted: derived from the detected overlay address and the `PHUX_WS_ADDR` port when possible; otherwise no link is printed (the device enters the address itself)
@@ -1498,10 +1518,68 @@ Options:
           Human-readable server name to embed in the connect link, shown by the device in its server list. Omitted: the device picks a default
 
       --json
-          Emit the pairing material as JSON on stdout instead of the human-readable report. This is what `phux host enroll` reads over ssh
+          Emit the mint, rotation, or revocation result as JSON on stdout. `phux host enroll` consumes the mint document over ssh
+
+      --migrate-legacy
+          Explicitly convert legacy anonymous token lines before pairing. Conversion preserves each bearer secret but stores only its verifier
 
   -h, --help
           Print help (see a summary with '-h')
+```
+
+## `phux pair revoke`
+
+```text
+Revoke every generation of a credential for new connections
+
+Usage: phux pair revoke [OPTIONS] <CREDENTIAL_ID>
+
+Arguments:
+  <CREDENTIAL_ID>
+          Stable credential ID printed when the credential was minted
+
+Options:
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --tokens <PATH>
+          Versioned credential store to update. Defaults to `PHUX_WS_TOKENS`
+
+      --json
+          Emit the mint, rotation, or revocation result as JSON on stdout. `phux host enroll` consumes the mint document over ssh
+
+  -h, --help
+          Print help
+```
+
+## `phux pair rotate`
+
+```text
+Replace a credential's bearer secret with a bounded overlap
+
+Usage: phux pair rotate [OPTIONS] <CREDENTIAL_ID>
+
+Arguments:
+  <CREDENTIAL_ID>
+          Stable credential ID printed when the credential was minted
+
+Options:
+      --overlap-seconds <SECONDS>
+          Seconds the previous generation remains valid. Its existing absolute expiry still wins when it is sooner; an already-expired credential cannot be rotated
+
+          [default: 300]
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+      --tokens <PATH>
+          Versioned credential store to update. Defaults to `PHUX_WS_TOKENS`
+
+      --json
+          Emit the mint, rotation, or revocation result as JSON on stdout. `phux host enroll` consumes the mint document over ssh
+
+  -h, --help
+          Print help
 ```
 
 ## `phux paste`

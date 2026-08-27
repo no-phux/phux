@@ -1163,6 +1163,47 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
                 ..FrameOutcome::default()
             })
         }
+        // A request-correlated reply that reached the dispatcher instead of
+        // its awaiter. Inert, never terminal — the same rule the `ERROR` arm
+        // above states for the failure twin of these frames, and the same
+        // "no matching pending request" drop the `MetadataValue` arm makes.
+        //
+        // This is conformance, not policy. `docs/spec/L1.md` §5 is explicit:
+        // "A `COMMAND` is asynchronous: the server MAY emit other messages
+        // (including events relevant to the command's effect) before
+        // `COMMAND_RESULT`. Clients MUST tolerate that ordering." A client
+        // that tears itself down on an interleaved `COMMAND_RESULT` does not
+        // tolerate it, so the arm below is what the spec already required.
+        //
+        // How one gets here: `Connection::await_answer` loops until the reply
+        // carrying ITS `request_id` arrives and pushes every other frame onto
+        // `interleaved`, which is replayed through this dispatcher. So a
+        // reply whose awaiter has already been answered — or has gone away —
+        // is delivered here as ordinary interleaved traffic. It is
+        // direction-valid server output, correlated by construction
+        // (`request_id` is a `u32`, not an `Option`), and carries no state
+        // this client has not already applied.
+        //
+        // Before this arm existed, both frames fell to the catch-all below
+        // and killed a healthy attach with a protocol error. That is the
+        // regression `spatial_e2e` caught: `C-a o` while the layout was being
+        // driven concurrently produced `CommandResult { request_id: 4,
+        // result: Ok }` on the dispatcher path, and the client tore itself
+        // down over a SUCCESS reply it simply had nowhere to put.
+        FrameKind::CommandResult { request_id, .. } => {
+            tracing::debug!(
+                request_id,
+                "dropping CommandResult with no matching pending request"
+            );
+            Ok(FrameOutcome::default())
+        }
+        FrameKind::TerminalMoved { request_id, .. } => {
+            tracing::debug!(
+                request_id,
+                "dropping TerminalMoved with no matching pending request"
+            );
+            Ok(FrameOutcome::default())
+        }
         other => Err(AttachError::Protocol(format!(
             "frame is not valid from a server in the attached phase: {other:?}",
         ))),

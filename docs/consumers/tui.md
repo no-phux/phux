@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-08-09
+last-reviewed: 2026-08-22
 ---
 
 # The phux reference TUI
@@ -102,6 +102,21 @@ abbreviated, and trust it over this list on any disagreement:
 ```
 phux                          # attach to default session, autostart server
 phux attach [SESSION]         # attach explicitly; session optional (alias: a)
+phux --remote [USER@]HOST[:PORT]
+                              # attach to a phux server on another machine,
+                              # ssh-style (ADR-0093). Resolves to a registered
+                              # host when there is one; otherwise pairs first
+                              # and registers the result, so every later
+                              # attach is a direct QUIC dial with no ssh in
+                              # the path. PORT defaults to 8788 (the port a
+                              # server auto-binds, ADR-0081). `user@` names
+                              # the ssh destination used to pair -- it is not
+                              # sent on the wire
+phux attach [SESSION] --remote HOST [--code LINK] [--no-enroll]
+                              # the verb-scoped form: name a session, pair
+                              # from a `phux://connect` link instead of over
+                              # ssh (--code, quote it), or refuse to shell out
+                              # to ssh at all (--no-enroll)
 phux attach --quic HOST:PORT [--cert-fingerprint FP] [--token HEX]
                               # attach to a remote server over QUIC (TLS 1.3).
                               # loopback trusts the dev cert; routable hosts

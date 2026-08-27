@@ -137,6 +137,8 @@ phux mcp
 phux move-pane
 phux new
 phux pair
+phux pair revoke
+phux pair rotate
 phux paste
 phux play
 phux plugin

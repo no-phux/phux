@@ -820,20 +820,20 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
                 for line in outcome.lines() {
                     outln!("{line}");
                 }
-                // phux-bd30: a unit written before the ADR-0080 restart policy
-                // stays wrong until something rewrites it, and an update is the
-                // one moment a user is already expecting phux to move parts
-                // around. Safe to do unprompted only because the reconcile is
-                // non-destructive by construction -- it rewrites a file and
-                // stops nothing. Human output only: the `--json` document's
-                // shape is frozen (ADR-0071), and this is a note, not a result.
-                if outcome.action == Action::Installed {
-                    super::service::reconcile_after_update();
-                }
             }
+            reconcile_installed(outcome.action, opts.json, |print| {
+                super::service::reconcile_after_update(print);
+            });
             ExitCode::from(EXIT_SUCCESS)
         }
         Err(err) => err.report(opts.json),
+    }
+}
+
+/// Reconcile every successful install while keeping machine output silent.
+fn reconcile_installed(action: Action, json: bool, reconcile: impl FnOnce(bool)) {
+    if action == Action::Installed {
+        reconcile(!json);
     }
 }
 
@@ -871,7 +871,20 @@ mod tests {
     use super::apply::BACKUP_DIR;
     use super::release::{Artifact, ReleaseSource, Version, host_target};
     use super::source::{Install, InstallSource};
-    use super::{Action, Handoff, Refusal, UpdateEnv, UpdateError, UpdateOpts, execute, plan};
+    use super::{
+        Action, Handoff, Refusal, UpdateEnv, UpdateError, UpdateOpts, execute, plan,
+        reconcile_installed,
+    };
+
+    #[test]
+    fn installed_updates_reconcile_in_human_and_json_modes() {
+        let mut calls = Vec::new();
+        reconcile_installed(Action::Installed, false, |print| calls.push(print));
+        reconcile_installed(Action::Installed, true, |print| calls.push(print));
+        reconcile_installed(Action::Checked, false, |print| calls.push(print));
+
+        assert_eq!(calls, [true, false]);
+    }
 
     /// The triple these tests publish artifacts under.
     ///

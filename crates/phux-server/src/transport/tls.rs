@@ -17,18 +17,23 @@
 //! [`covers_name`] reports whether an already-persisted certificate does —
 //! never repairing it, because widening SANs means a new certificate and a new
 //! fingerprint (ADR-0091).
+//!
+//! Generation and PEM loading themselves are [`phux_dial::cert`]'s: `phux-relay`
+//! terminates TLS on identical terms and used to carry a near-verbatim copy of
+//! them, and ADR-0051 forbids it depending on this crate. What remains here is
+//! what is genuinely the server's — the acceptor and the three listener
+//! configs, plus the ADR-0091 *reporting* surface (`covers_name`,
+//! `uncovered_names`, `advertised_for_bind`), which has no counterpart in the
+//! relay and stays where its callers are.
 
-use std::fs::{self, OpenOptions};
 use std::io;
 use std::net::IpAddr;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use phux_dial::cert;
 use rustls::ServerConfig;
-use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use sha2::{Digest, Sha256};
 use tokio_rustls::TlsAcceptor;
 
 /// Errors from loading TLS material or building the acceptor.
@@ -63,6 +68,28 @@ pub enum TlsError {
     },
 }
 
+/// Provisioning lives in [`phux_dial::cert`] so `phux-relay` can share it
+/// (ADR-0051), but this crate's error vocabulary is still this crate's.
+///
+/// Every arm maps onto a variant [`TlsError`] already had, carrying the same
+/// payload, so the message an operator reads is byte-for-byte what it was
+/// before the move — including `tls io:`, which `phux-relay` renders as
+/// `relay io:` off the identical shared error. Mapping rather than
+/// re-exporting is what keeps those two free to differ.
+impl From<cert::CertError> for TlsError {
+    fn from(err: cert::CertError) -> Self {
+        match err {
+            cert::CertError::Io(err) => Self::Io(err),
+            cert::CertError::Rcgen(err) => Self::Rcgen(err),
+            cert::CertError::Pem(err) => Self::Pem(err),
+            cert::CertError::NoCerts(path) => Self::NoCerts(path),
+            cert::CertError::PartialTlsPair { present, missing } => {
+                Self::PartialTlsPair { present, missing }
+            }
+        }
+    }
+}
+
 /// Default persisted path for the auto-generated remote-consumer certificate:
 /// `<state-dir>/remote-cert.pem`.
 #[must_use]
@@ -77,9 +104,12 @@ pub fn default_key_path() -> PathBuf {
     crate::telemetry::state_dir().join("remote-key.pem")
 }
 
-/// SANs every generated certificate carries, whatever else it names: the
-/// loopback identities the local dev path dials.
-const LOOPBACK_SANS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+/// The SAN vocabulary this module reports against, owned by
+/// [`phux_dial::cert`] alongside the generator that applies it. Imported for
+/// the tests that assert the shape directly; production code reaches it
+/// through [`ensure_self_signed_for`].
+#[cfg(test)]
+use cert::{LOOPBACK_SANS, san_list};
 
 /// Provision a self-signed certificate + key at the given paths if either is
 /// missing, naming only the loopback identities.
@@ -89,7 +119,7 @@ const LOOPBACK_SANS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 /// Prefer [`ensure_self_signed_for`] wherever the routable address *is* known:
 /// SANs can only be chosen when the certificate is minted.
 pub fn ensure_self_signed(cert_path: &Path, key_path: &Path) -> Result<(), TlsError> {
-    ensure_self_signed_for(cert_path, key_path, &[])
+    Ok(cert::ensure_self_signed(cert_path, key_path)?)
 }
 
 /// Provision a self-signed certificate + key at the given paths if either is
@@ -118,59 +148,9 @@ pub fn ensure_self_signed_for(
     key_path: &Path,
     advertised: &[String],
 ) -> Result<(), TlsError> {
-    match (cert_path.exists(), key_path.exists()) {
-        (true, true) => return Ok(()),
-        (false, false) => {}
-        // One survivor: regenerating would silently rotate the fingerprint
-        // pinned on every paired device. Refuse and make the operator
-        // delete the survivor deliberately.
-        (true, false) => {
-            return Err(TlsError::PartialTlsPair {
-                present: cert_path.display().to_string(),
-                missing: key_path.display().to_string(),
-            });
-        }
-        (false, true) => {
-            return Err(TlsError::PartialTlsPair {
-                present: key_path.display().to_string(),
-                missing: cert_path.display().to_string(),
-            });
-        }
-    }
-    let certified = rcgen::generate_simple_self_signed(san_list(advertised))?;
-    if let Some(parent) = cert_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if let Some(parent) = key_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(cert_path, certified.cert.pem())?;
-    let mut key_file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(key_path)?;
-    io::Write::write_all(&mut key_file, certified.key_pair.serialize_pem().as_bytes())?;
-    Ok(())
-}
-
-/// The SAN list for a freshly minted certificate: [`LOOPBACK_SANS`] then the
-/// advertised names, de-duplicated with order preserved.
-///
-/// Empty entries are dropped rather than passed through — rcgen would reject
-/// `""` as a DNS name and fail provisioning outright, and an empty advertised
-/// address is a caller with nothing to say, not an error worth taking the
-/// listener down for.
-fn san_list(advertised: &[String]) -> Vec<String> {
-    let mut sans: Vec<String> = LOOPBACK_SANS.iter().map(|s| (*s).to_owned()).collect();
-    for name in advertised {
-        let name = name.trim();
-        if !name.is_empty() && !sans.iter().any(|existing| existing == name) {
-            sans.push(name.to_owned());
-        }
-    }
-    sans
+    Ok(cert::ensure_self_signed_for(
+        cert_path, key_path, advertised,
+    )?)
 }
 
 /// The SANs a listener bound to `addr` advertises: its own address, when that
@@ -344,32 +324,23 @@ pub(crate) fn webtransport_server_config(
 /// colon-separated hex (`AB:CD:…`) — the conventional shape for an
 /// out-of-band pin shown alongside a pairing token.
 pub fn cert_fingerprint(cert_path: &Path) -> Result<String, TlsError> {
-    let certs = load_certs(cert_path)?;
-    let leaf = certs
-        .first()
-        .ok_or_else(|| TlsError::NoCerts(cert_path.display().to_string()))?;
-    let digest = Sha256::digest(leaf.as_ref());
-    let hex: Vec<String> = digest.iter().map(|b| format!("{b:02X}")).collect();
-    Ok(hex.join(":"))
+    Ok(cert::cert_fingerprint(cert_path)?)
 }
 
 /// Read the PEM certificate chain.
 fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
-    let certs = CertificateDer::pem_file_iter(path)?.collect::<Result<Vec<_>, _>>()?;
-    if certs.is_empty() {
-        return Err(TlsError::NoCerts(path.display().to_string()));
-    }
-    Ok(certs)
+    Ok(cert::load_certs(path)?)
 }
 
 /// Read the first PEM private key (PKCS#8, SEC1, or PKCS#1).
 fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
-    Ok(PrivateKeyDer::from_pem_file(path)?)
+    Ok(cert::load_key(path)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]

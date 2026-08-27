@@ -719,6 +719,9 @@ impl ServerRuntime {
             Some(fd) => Some(resume::read_blob_from_fd(fd)?),
             None => None,
         };
+        if resume_blob.is_some() {
+            upgrade::cleanup_executable_snapshot();
+        }
 
         let listener = if let Some(blob) = &resume_blob {
             let listener = resume::adopt_uds_listener(blob.listener_fd)?;

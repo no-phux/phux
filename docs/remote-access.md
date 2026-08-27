@@ -1,14 +1,16 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-08-02
+last-reviewed: 2026-08-22
 ---
 
 # Remote access over an overlay network
 
-**TL;DR.** Run `phux host enroll HOST` from the client and you are done: it
-drives the whole setup over ssh and registers the result, so `phux attach
-HOST` works with no flags. The manual path — put both ends on a WireGuard-class overlay,
+**TL;DR.** Run `phux --remote user@host` and you are done: it resolves an
+already-registered host, or pairs one first (from a `phux://connect` code, or
+over your existing ssh trust) and remembers it, so every later attach is a
+direct QUIC dial with no ssh in the path. `phux host enroll HOST` is the
+same setup plus a service unit on the far end. The manual path — put both ends on a WireGuard-class overlay,
 mint credentials with phux pair, attach to the overlay address over QUIC or TLS
 WebSocket — is documented below for Tailscale, Headscale, and raw WireGuard,
 plus troubleshooting for routing, auth, and fingerprint failures. A fourth
@@ -37,10 +39,59 @@ model and environment knobs live in
 [operations.md](./operations.md#connecting-from-another-network-overlay-reachability);
 this page owns the step-by-step task.
 
-## The short way: `phux host enroll`
+## The short way: `phux --remote`
 
-If you can already `ssh` to the host, skip everything below and run one
-command from the client:
+One command, and it reads like the one you already type:
+
+```sh
+phux --remote me@mini
+```
+
+The first time, `mini` is not a registered host, so phux pairs it before
+attaching. It walks four rungs, cheapest first
+([ADR-0093](../ADR/0093-remote-target-as-a-resolution-ladder.md)):
+
+1. **A registered host** — a `[[remote]]` entry supplies the endpoint, the
+   certificate pin, and the token, and the dial is a direct QUIC connection.
+   This is the steady state and the only rung that runs once a host is known.
+2. **A pasted connect code** — `--code`, below. No ssh, no shell on the far
+   end.
+3. **A one-time ssh pairing** — runs `phux pair --json` over your existing
+   ssh trust, registers what it mints, and dials. Once per host; rung 1
+   catches everything after.
+4. **A refusal** naming both remedies, when ssh cannot help.
+
+`PORT` defaults to `8788`, the port a server auto-binds on its overlay
+address ([ADR-0081](../ADR/0081-overlay-auto-listen-and-one-command-pairing.md)).
+Pass `[USER@]HOST:PORT` to say otherwise; the port applies to that dial and
+does not rewrite the registry.
+
+The `user@` half is a label, not a wire identity: phux runs one server per
+user and the QUIC preamble carries a bearer token, not a username, so which
+server you reach is decided by the address and port. `user@` names the ssh
+destination for rung 3 and the registry key that remembers the result.
+
+### Pairing without ssh at all
+
+If the host has no ssh you can use — or you would rather not shell into it —
+run `phux pair` there, copy the one-tap link it prints, and hand it over:
+
+```sh
+phux --remote mini --code 'phux://connect?url=wss://100.64.0.2:8787&fp=...&token=...'
+```
+
+That is the same link `phux pair --qr` renders for a phone, so a laptop and a
+phone pair through one artifact. The link is registered under the target's
+name, and later attaches need no code.
+
+`--no-enroll` refuses the ssh rung outright: an unregistered host is reported
+with its remedies named rather than paired.
+
+### The related way: `phux host enroll`
+
+`--remote` pairs a host; it deliberately does **not** install anything there.
+When you want the far end to keep a server running across logout and reboot,
+use the verb whose subject is that host:
 
 ```sh
 phux host enroll mini
@@ -52,10 +103,12 @@ phux host enroll mini
 It confirms phux is installed on `mini`, installs the host's service unit so
 the server survives reboot, mints a pairing token there, reads back the
 certificate fingerprint and the overlay address, writes the token locally
-0600, and registers a `[[remote]]` entry. Afterwards:
+0600, and registers a `[[remote]]` entry. Afterwards both spellings work with
+no flags:
 
 ```sh
 phux attach mini
+phux --remote mini
 ```
 
 No token, no fingerprint, no address typed by hand. This grants nothing ssh
@@ -75,9 +128,10 @@ to do when it cannot reach the host.
 ## Common steps: pair, then listen
 
 Every path below shares the same server-side setup, done once. Pairing order
-does not matter: the server re-reads the token store when it changes, so a
+does not matter: the server re-reads the credential store when it changes, so a
 token minted against an already-running listener works at the next connection
-attempt, and deleting a line revokes that device just as promptly. `phux pair`
+attempt, and credential revocation applies just as promptly. Legacy anonymous
+token lines require a one-time explicit `phux pair --migrate-legacy`. `phux pair`
 never contacts a running server, and it provisions the self-signed certificate
 if none exists yet, so the fingerprint it prints is the one the server will
 present.
@@ -91,6 +145,9 @@ Its output looks like this (the overlay-address block appears only when a
 tailnet or CGNAT-routed address is detected on the host):
 
 ```
+Credential ID (use with `phux pair rotate|revoke`):
+  <credential-id>
+
 Pairing token (a secret — give it to the device once):
   <64-hex token>
 
@@ -105,6 +162,19 @@ Token written to <state-dir>/remote-tokens
 
 Record the token and the fingerprint; every `phux attach` below uses both. The
 fingerprint is SHA-256, 64 hex digits, optionally colon-separated.
+
+Keep the non-secret credential ID for lifecycle operations. Rotation prints a
+new bearer once and keeps the previous generation valid for at most five
+minutes by default; `--overlap-seconds 0` cuts over immediately. An existing
+absolute expiry is preserved and can shorten that overlap. An already-expired
+credential cannot be rotated and produces no replacement token. Revocation
+affects new connections immediately, while already-established sessions
+continue until they disconnect:
+
+```sh
+phux pair rotate <credential-id> --overlap-seconds 300
+phux pair revoke <credential-id>
+```
 
 For a phone or tablet, skip the transcription entirely: when the server
 address is known — pass `--host HOST:PORT` (or a full `ws://`/`wss://` URL),
@@ -296,6 +366,10 @@ Failures fall into a few classes, and the symptom tells you which one you have.
   or was revoked. Mint one with `phux pair`; it is live at the next connection
   attempt, with no restart. The 401 is returned before any phux frame is read,
   so a 401 proves reachability.
+- **Insecure credential store.** The default store and any path selected by
+  `PHUX_WS_TOKENS` must be a regular, non-symlink file owned by the effective
+  user with no group or world permissions. Restore owner-only permissions
+  (normally `chmod 600 <path>`); authentication fails closed until repaired.
 - **Fingerprint mismatch.** The certificate the server presented does not
   match `--cert-fingerprint`. Either the pinned value is stale (the server
   state dir was recreated, regenerating `remote-cert.pem`), an operator

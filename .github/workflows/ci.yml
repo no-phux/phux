@@ -105,6 +105,7 @@ on:
     # ready_for_review in this list, undrafting would raise no event and
     # the PR would sit with skipped checks until the next push.
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
 
 # Cancel superseded runs on the same ref to keep queue times sane.
 concurrency:
@@ -132,6 +133,7 @@ jobs:
     name: classify changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
       release_only: ${{ steps.detect.outputs.release_only }}
@@ -161,6 +163,12 @@ jobs:
                && [ "$(printf '%s\n' "$files" | sort)" = "$(printf '%s\n' "$expected" | sort)" ]; then
               echo "release_only=true" >> "$GITHUB_OUTPUT"
             fi
+            exit 0
+          fi
+
+          # A merge group may contain multiple PRs and has no base_ref. Run the
+          # complete required checks rather than applying a PR-only fast path.
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
             exit 0
           fi
 
@@ -202,6 +210,7 @@ jobs:
   check:
     name: check
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.release_only != 'true'
     env:
@@ -341,6 +350,7 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.release_only != 'true'
     env:

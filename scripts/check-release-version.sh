@@ -51,7 +51,7 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-metadata="$(cargo metadata --format-version 1 --no-deps)"
+metadata="$(cargo metadata --locked --format-version 1 --no-deps)"
 
 # Sanity floor: an empty member list would make every comparison below
 # vacuously pass, turning the gate into a silent no-op -- the same failure

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo-setup.sh — stage the README demo session (docs/demo.md).
+# demo-setup.sh — stage the product demo session (docs/demo.md).
 #
 # Creates a session named "demo" headlessly, then prints the recording
 # runbook. The payload itself (docs/assets/payload.sh) is run from inside
