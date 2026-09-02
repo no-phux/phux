@@ -1,6 +1,6 @@
 //! Submodule for runtime internals.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
@@ -3148,6 +3148,290 @@ pub(crate) fn broadcast_event(
 /// practice.
 const MAX_WRITE_COALESCE: usize = 32;
 
+/// The one generation a client-side terminal may currently receive.
+///
+/// Producers share the outbound mailbox but do not all enqueue from the same
+/// task: live/tombstone frames come through an output pump while native history
+/// replies return through the request task. A reserved mpsc permit guarantees
+/// capacity, not insertion order, so a history reply can otherwise land behind
+/// the tombstone that retired it. The writer is the final common ordering
+/// boundary and suppresses any generation-bound frame that no longer names the
+/// terminal's current live generation.
+#[derive(Clone, Copy, Debug)]
+struct OutboundGeneration {
+    stream_id: phux_protocol::ids::StreamId,
+    bootstrap_id: phux_protocol::ids::BootstrapId,
+    retired: bool,
+}
+
+impl OutboundGeneration {
+    fn same_identity(
+        self,
+        stream_id: phux_protocol::ids::StreamId,
+        bootstrap_id: phux_protocol::ids::BootstrapId,
+    ) -> bool {
+        self.stream_id == stream_id && self.bootstrap_id == bootstrap_id
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum OutboundTerminalState {
+    Generation(OutboundGeneration),
+    Closed,
+}
+
+#[derive(Debug, Default)]
+struct OutboundGenerationFence {
+    terminals: HashMap<phux_protocol::ids::TerminalId, OutboundTerminalState>,
+}
+
+impl OutboundGenerationFence {
+    /// Admit one mailbox item into the wire stream, applying generation
+    /// transitions before the next queued item is considered.
+    fn admits(&mut self, message: &Outbound) -> bool {
+        let Outbound::Frame(frame) = message else {
+            return true;
+        };
+        match frame {
+            FrameKind::BootstrapBegin {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            } => self.admit_begin(terminal_id, *stream_id, *bootstrap_id),
+            FrameKind::BootstrapTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            } => self.admit_tombstone(terminal_id, *stream_id, *bootstrap_id),
+            FrameKind::TerminalClosed { terminal_id, .. } => {
+                self.terminals
+                    .insert(terminal_id.clone(), OutboundTerminalState::Closed);
+                true
+            }
+            _ => generation_of_outbound_frame(frame).is_none_or(
+                |(terminal_id, stream_id, bootstrap_id)| {
+                    self.admit_data(terminal_id, stream_id, bootstrap_id)
+                },
+            ),
+        }
+    }
+
+    fn admit_begin(
+        &mut self,
+        terminal_id: &phux_protocol::ids::TerminalId,
+        stream_id: phux_protocol::ids::StreamId,
+        bootstrap_id: phux_protocol::ids::BootstrapId,
+    ) -> bool {
+        if self.is_closed(terminal_id)
+            || self.current(terminal_id).is_some_and(|current| {
+                current.retired && current.same_identity(stream_id, bootstrap_id)
+            })
+        {
+            return false;
+        }
+        self.terminals.insert(
+            terminal_id.clone(),
+            OutboundTerminalState::Generation(OutboundGeneration {
+                stream_id,
+                bootstrap_id,
+                retired: false,
+            }),
+        );
+        true
+    }
+
+    fn admit_tombstone(
+        &mut self,
+        terminal_id: &phux_protocol::ids::TerminalId,
+        stream_id: phux_protocol::ids::StreamId,
+        bootstrap_id: phux_protocol::ids::BootstrapId,
+    ) -> bool {
+        if self.is_closed(terminal_id)
+            || self
+                .current(terminal_id)
+                .is_some_and(|current| !current.same_identity(stream_id, bootstrap_id))
+        {
+            return false;
+        }
+        self.terminals.insert(
+            terminal_id.clone(),
+            OutboundTerminalState::Generation(OutboundGeneration {
+                stream_id,
+                bootstrap_id,
+                retired: true,
+            }),
+        );
+        true
+    }
+
+    fn admit_data(
+        &self,
+        terminal_id: &phux_protocol::ids::TerminalId,
+        stream_id: phux_protocol::ids::StreamId,
+        bootstrap_id: phux_protocol::ids::BootstrapId,
+    ) -> bool {
+        !self.is_closed(terminal_id)
+            && self.current(terminal_id).is_none_or(|current| {
+                !current.retired && current.same_identity(stream_id, bootstrap_id)
+            })
+    }
+
+    fn current(&self, terminal_id: &phux_protocol::ids::TerminalId) -> Option<OutboundGeneration> {
+        match self.terminals.get(terminal_id) {
+            Some(OutboundTerminalState::Generation(generation)) => Some(*generation),
+            Some(OutboundTerminalState::Closed) | None => None,
+        }
+    }
+
+    fn is_closed(&self, terminal_id: &phux_protocol::ids::TerminalId) -> bool {
+        matches!(
+            self.terminals.get(terminal_id),
+            Some(OutboundTerminalState::Closed)
+        )
+    }
+}
+
+/// Return the generation identity carried by a server-to-client data frame.
+///
+/// BEGIN and the bootstrap tombstone are transitions handled separately by
+/// [`OutboundGenerationFence::admits`]. ACK is client-to-server and therefore
+/// never reaches this writer.
+const fn generation_of_outbound_frame(
+    frame: &FrameKind,
+) -> Option<(
+    &phux_protocol::ids::TerminalId,
+    phux_protocol::ids::StreamId,
+    phux_protocol::ids::BootstrapId,
+)> {
+    match frame {
+        FrameKind::BootstrapChunk {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            ..
+        }
+        | FrameKind::BootstrapReady {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            ..
+        }
+        | FrameKind::HistoryPage {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            ..
+        }
+        | FrameKind::HistoryTombstone {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            ..
+        }
+        | FrameKind::HistoryRejected {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            ..
+        }
+        | FrameKind::TerminalOutput {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            ..
+        } => Some((terminal_id, *stream_id, *bootstrap_id)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod outbound_generation_fence_tests {
+    use bytes::Bytes;
+    use phux_protocol::caps::BootstrapStreamProfile;
+    use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+    use phux_protocol::wire::frame::{FrameKind, HistoryTombstoneReason, TombstoneReason};
+
+    use super::{Outbound, OutboundGenerationFence};
+
+    fn terminal() -> TerminalId {
+        TerminalId::local(1)
+    }
+
+    fn stream() -> StreamId {
+        StreamId::new(2).expect("stream id")
+    }
+
+    fn bootstrap(raw: u64) -> BootstrapId {
+        BootstrapId::new(raw).expect("bootstrap id")
+    }
+
+    fn begin(bootstrap_id: BootstrapId) -> Outbound {
+        Outbound::Frame(FrameKind::BootstrapBegin {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id,
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 80,
+            rows: 24,
+            base_seq: 0,
+        })
+    }
+
+    fn output(bootstrap_id: BootstrapId) -> Outbound {
+        Outbound::Frame(FrameKind::TerminalOutput {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id,
+            seq: 1,
+            bytes: Bytes::from_static(b"output"),
+        })
+    }
+
+    #[test]
+    fn tombstone_fences_late_history_and_output_before_replacement() {
+        let initial = bootstrap(1);
+        let replacement = bootstrap(2);
+        let mut fence = OutboundGenerationFence::default();
+        assert!(fence.admits(&begin(initial)));
+        assert!(fence.admits(&output(initial)));
+        assert!(
+            fence.admits(&Outbound::Frame(FrameKind::BootstrapTombstone {
+                terminal_id: terminal(),
+                stream_id: stream(),
+                bootstrap_id: initial,
+                reason: TombstoneReason::Resize,
+                last_valid_seq: 1,
+            },))
+        );
+
+        assert!(!fence.admits(&Outbound::Frame(FrameKind::HistoryPage {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id: initial,
+            page_seq: 1,
+            cursor: Bytes::from_static(b"old"),
+            next_cursor: None,
+            payload: Bytes::from_static(b"late history"),
+            rows: 1,
+        })));
+        assert!(!fence.admits(&Outbound::Frame(FrameKind::HistoryTombstone {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id: initial,
+            cursor: Bytes::from_static(b"old"),
+            reason: HistoryTombstoneReason::Stale,
+        },)));
+        assert!(!fence.admits(&output(initial)));
+        assert!(!fence.admits(&begin(initial)));
+
+        assert!(fence.admits(&begin(replacement)));
+        assert!(fence.admits(&output(replacement)));
+        assert!(!fence.admits(&output(initial)));
+    }
+}
+
 /// Encode one outbound message onto the end of `batch`, recording its frame
 /// boundary in `ends`.
 ///
@@ -3215,6 +3499,7 @@ const fn compress_policy(frame: &FrameKind, negotiated: Compression) -> Compress
 /// handshake).
 fn drain_ready_into_batch(
     rx: &mut tokio::sync::mpsc::Receiver<Outbound>,
+    generation_fence: &mut OutboundGenerationFence,
     compression: Compression,
     scratch: &mut BytesMut,
     batch: &mut BytesMut,
@@ -3224,6 +3509,9 @@ fn drain_ready_into_batch(
         let Ok(next) = rx.try_recv() else {
             return None;
         };
+        if !generation_fence.admits(&next) {
+            continue;
+        }
         if let Some(message) = encode_into_batch(next, compression, scratch, batch, ends) {
             return Some(message);
         }
@@ -3303,10 +3591,16 @@ pub(crate) async fn writer_task<W: FrameWriter>(
     // message-oriented transport can still write them one message at a time.
     let mut ends: Vec<usize> = Vec::new();
     let mut close_control_open = true;
-    loop {
-        let Some(message) = next_outbound(&mut rx, &mut close, &mut close_control_open).await
-        else {
-            break;
+    let mut generation_fence = OutboundGenerationFence::default();
+    'writer: loop {
+        let message = loop {
+            let Some(message) = next_outbound(&mut rx, &mut close, &mut close_control_open).await
+            else {
+                break 'writer;
+            };
+            if generation_fence.admits(&message) {
+                break message;
+            }
         };
         // Encode this message plus everything already queued behind it into
         // one buffer, then hand the whole batch to the transport. A PTY burst
@@ -3328,8 +3622,14 @@ pub(crate) async fn writer_task<W: FrameWriter>(
         let mut terminal_message =
             encode_into_batch(message, compression, &mut scratch, &mut buf, &mut ends);
         if terminal_message.is_none() {
-            terminal_message =
-                drain_ready_into_batch(&mut rx, compression, &mut scratch, &mut buf, &mut ends);
+            terminal_message = drain_ready_into_batch(
+                &mut rx,
+                &mut generation_fence,
+                compression,
+                &mut scratch,
+                &mut buf,
+                &mut ends,
+            );
         }
         if let Err(err) = writer.write_frames(&buf, &ends).await {
             debug!(?client_id, error = %err, "writer error on frame; client task ending");

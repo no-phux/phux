@@ -22,25 +22,18 @@
 //! strictly after the resize on one ordered stream — then quotes a cursor
 //! with no surviving binding. Every split hits this window.
 //!
-//! # Why the frame choice is the whole fix
+//! # Cursor status versus generation fence
 //!
-//! `ERROR` (0xF0) is connection-scoped: it carries no `terminal_id`, so a
-//! consumer cannot attribute it to a pane, and per `docs/spec/L1.md` a
-//! client in the attached phase treats it as fatal. Answering a routine
-//! per-cursor race with it escalates "this one replica lost its scrollback
-//! lease" into "the session is over".
+//! `ERROR` (0xF0) is connection-scoped and therefore wrong for either race.
+//! While the bootstrap generation is still live, `HISTORY_TOMBSTONE` (0x98)
+//! is the L1 §4.5 response: it names and invalidates only the exact progressive
+//! history lease.
 //!
-//! `HISTORY_TOMBSTONE` (0x98) is the frame L1 §4.5 defines for exactly this:
-//! it names `(terminal_id, stream_id, bootstrap_id, cursor)`, invalidates
-//! only that progressive history lease and its derived cache, and explicitly
-//! does not retire the `BootstrapId` or touch live/raw/input state. Per-
-//! replica degradation instead of connection teardown.
-//!
-//! So the load-bearing assertions below are *positive*: a `HISTORY_TOMBSTONE`
-//! naming the exact stale cursor must arrive, no `FrameKind::Error` may be
-//! received at any point, and the connection must still round-trip an
-//! ordinary command afterwards. Merely observing "no crash" would pass
-//! against a server that silently dropped the request.
+//! Once `BOOTSTRAP_TOMBSTONE` has retired the whole generation, L1 §4.6 is
+//! stricter: no page, output, or cursor status carrying that BootstrapId may
+//! follow. A stale HISTORY request racing behind that tombstone is therefore
+//! consumed without another generation-bound response. The tests below pin
+//! both cases and prove the connection still completes an ordinary command.
 
 #![cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #![allow(clippy::expect_used, reason = "tests")]
@@ -355,6 +348,84 @@ async fn request_history_expecting_tombstone(
     }
 }
 
+/// A request that reaches the server after its whole bootstrap generation was
+/// retired gets no generation-bound response. The bootstrap tombstone already
+/// invalidated the cursor; a later HISTORY_TOMBSTONE would itself target a
+/// retired generation and violate L1 §4.6.
+async fn assert_retired_history_is_silenced_and_connection_usable(
+    stream: &mut UnixStream,
+    generation: &SpawnedGeneration,
+    request_id: u32,
+) {
+    send_frame(
+        stream,
+        &FrameKind::HistoryRequest {
+            terminal_id: generation.terminal_id.clone(),
+            stream_id: generation.stream_id,
+            bootstrap_id: generation.bootstrap_id,
+            cursor: generation.cursor.clone(),
+            max_bytes: 1024 * 1024,
+            max_rows: 512,
+        },
+    )
+    .await;
+    send_frame(
+        stream,
+        &FrameKind::Command {
+            request_id,
+            command: Command::GetState {
+                scope: StateScope::Server,
+            },
+        },
+    )
+    .await;
+
+    loop {
+        match recv_no_error(stream, "post-retirement round trip").await {
+            FrameKind::HistoryPage {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::HistoryTombstone {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::HistoryRejected {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            } if terminal_id == generation.terminal_id
+                && stream_id == generation.stream_id
+                && bootstrap_id == generation.bootstrap_id =>
+            {
+                panic!(
+                    "server emitted history data/status after BOOTSTRAP_TOMBSTONE retired \
+                     ({stream_id:?}, {bootstrap_id:?})",
+                );
+            }
+            FrameKind::CommandResult {
+                request_id: got,
+                result,
+            } if got == request_id => match result {
+                CommandResult::OkWith(CommandValue::State(snapshot)) => {
+                    assert!(
+                        !snapshot.panes.is_empty(),
+                        "the attach must still see its panes after retirement",
+                    );
+                    return;
+                }
+                other => panic!("post-retirement GET_STATE failed: {other:?}"),
+            },
+            _ => {}
+        }
+    }
+}
+
 /// The connection is still usable: an ordinary request/reply completes.
 ///
 /// This is the user-visible claim the whole fix is about. `GET_STATE` is a
@@ -417,10 +488,11 @@ async fn shutdown(
 }
 
 /// phux-rv52: attach, split, resize the split leaf, then quote the cursor the
-/// split's `BOOTSTRAP_READY` handed out. That is the exact frame order a real
-/// TUI produces on `C-a c`, and it must survive.
+/// retired generation's `BOOTSTRAP_READY` handed out. The bootstrap tombstone
+/// is the terminal status for that generation: no later history response may
+/// cross the writer fence, and the connection remains usable.
 #[test]
-fn stale_cursor_after_split_resize_tombstones_instead_of_killing_the_attach() {
+fn stale_cursor_after_split_resize_is_silenced_after_generation_retirement() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
@@ -444,22 +516,10 @@ fn stale_cursor_after_split_resize_tombstones_instead_of_killing_the_attach() {
         await_resize_tombstone(&mut stream, &generation).await;
 
         // The client's HISTORY_REQUEST was built from BOOTSTRAP_READY, so it
-        // still quotes the pre-resize lease. The server has already drained it.
-        let reason = request_history_expecting_tombstone(
-            &mut stream,
-            &generation.terminal_id,
-            generation.stream_id,
-            generation.bootstrap_id,
-            &generation.cursor,
-        )
-        .await;
-        assert_eq!(
-            reason,
-            HistoryTombstoneReason::Stale,
-            "a cursor whose binding a resize drained is Stale",
-        );
-
-        assert_connection_still_usable(&mut stream, 8).await;
+        // still quotes the pre-resize lease. BOOTSTRAP_TOMBSTONE already
+        // retired that whole generation; the server must not follow it with a
+        // cursor status carrying the retired id.
+        assert_retired_history_is_silenced_and_connection_usable(&mut stream, &generation, 8).await;
 
         shutdown(stream, shutdown_tx, server_handle).await;
     });

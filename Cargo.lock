@@ -2373,6 +2373,7 @@ dependencies = [
  "libghostty-vt",
  "memchr",
  "nix 0.29.0",
+ "phux-client-ffi",
  "phux-config",
  "phux-core",
  "phux-dial",

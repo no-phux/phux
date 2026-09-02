@@ -781,7 +781,7 @@ Servers MAY coalesce adjacent bytes while preserving sequence/content order and
 MUST bound every per-client queue. Native raw bytes are never rewritten.
 Compatibility rewriting follows §6.2. A gap, duplicate, wrap, age/byte overflow,
 resize, or relay discontinuity produces `BOOTSTRAP_TOMBSTONE`, not a silent
-drop; no old-generation data follows the tombstone.
+drop; no old-generation data or history status follows the tombstone.
 
 ### 8.2 READY and acknowledgement timing
 
