@@ -42,12 +42,15 @@ either of the two things release.yml itself does *not* own:
 
 - **crates.io.** Publishing `phux-protocol` stays on the separate,
   human-gated `publish-crate.yml` dispatch. dsr has no path to it.
-- **The Homebrew tap and publication.** `release.yml`'s `homebrew` job
-  regenerates and pushes `Formula/phux.rb` to `phall1/homebrew-tap` as part of
-  the normal run, and its final job publishes the completed draft. dsr does
-  neither. If a release is finished entirely through dsr, update the tap first,
-  then publish the draft with `gh release edit vX.Y.Z --draft=false`. The tap
-  update remains a manual follow-up:
+- **Publication and the Homebrew tap.** `release.yml`'s `publish` job flips
+  the completed draft public, and its final `homebrew` job then regenerates and
+  pushes `Formula/phux.rb` to `phall1/homebrew-tap`. dsr does neither. If a
+  release is finished entirely through dsr, publish the draft first with
+  `gh release edit vX.Y.Z --draft=false`, then update the tap — never the other
+  way round, since the tap validates a pushed formula against the public
+  release and a draft is invisible to it. The tap update remains a manual
+  follow-up (or simply wait: the tap's scheduled update workflow picks up the
+  public release within fifteen minutes):
   `bash scripts/gen-formula.sh` (see [`RELEASING.md`](./RELEASING.md#required-secret)
   for what it needs), then push the generated formula to the tap by hand.
 

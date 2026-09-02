@@ -11,7 +11,7 @@ conventional commits on the default branch; release-please keeps an open
 "release PR" that bumps the workspace version and regenerates `CHANGELOG.md`.
 Merging that PR tags `vX.Y.Z`, creates a draft GitHub release, and triggers
 `release.yml` to build and **attach** the `phux and phux-mcp artifacts`,
-refresh the Homebrew tap, and publish the completed release. Publishing
+publish the completed release, and then refresh the Homebrew tap. Publishing
 `phux-protocol` to crates.io stays a separate, deliberate human dispatch.
 OpenCode, Pi, and Claude Code integrations are independent Release Please
 components with their own `*-vX.Y.Z` tags and validated artifact workflows.
@@ -32,15 +32,18 @@ same release.
 | The GitHub **release** and its body/notes | release-please creates them as a draft |
 | Release **assets** (tarballs + `.sha256`) | `release.yml`, via `gh release upload` |
 | Homebrew tap formula | `release.yml` |
-| Draft -> published transition | `release.yml`, after all assets and Homebrew succeed |
+| Draft -> published transition | `release.yml`, after all assets are attached |
 | `phux-protocol` on crates.io | a human, via `publish-crate.yml` |
 | Integration versions | release-please component PRs |
 | Integration validation, assets, and publication | `agent-integration-release.yml` |
 
 `release.yml` never creates a tag, release, or release body. It uploads assets
 onto the draft release-please made and only flips that draft to public after the
-complete target matrix and Homebrew step succeed, so it cannot clobber the
-generated changelog or expose a half-built release.
+complete target matrix succeeds, so it cannot clobber the generated changelog or
+expose a half-built release. The Homebrew push runs *after* that flip: the tap
+validates every push by re-resolving the release through the GitHub API, and a
+draft is invisible to it, so a formula pushed before publish is a guaranteed red
+tap build.
 
 ## Release cockpit
 
@@ -65,7 +68,7 @@ generated changelog or expose a half-built release.
 | Conventional-commit gate | `pull_request` | `commitlint` lints every PR commit and the PR title against `commitlint.config.mjs`; required by main's ruleset so nothing non-conventional reaches the release-please log. |
 | Main CI | push to `main` | Same gates as PR CI and refreshes warm caches; a narrowly identified release-only merge skips the duplicate compile because its exact tree already passed required PR CI. |
 | release-please | push to `main` | Maintains the release PR; on merge, tags `vX.Y.Z`, creates a draft GitHub release, and calls `release.yml`. |
-| Release artifacts | called by release-please (or manual dispatch) | Requires all target builds, attaches tarballs + checksums, updates Homebrew, then publishes the complete release. |
+| Release artifacts | called by release-please (or manual dispatch) | Requires all target builds, attaches tarballs + checksums, publishes the complete release, then updates Homebrew. |
 | Crate publish | manual `publish-crate` workflow | `phux-protocol` package dry-run, then publish when `dry_run=false`. |
 | Agent integration release | component tag or manual dry run | Re-runs locked gates, creates one checksummed artifact, clean-installs npm artifacts, publishes npm with provenance where applicable, and publishes the component draft release. |
 | Stress lane | nightly, manual, or PR label `stress` | Heavy resize/output/lifecycle storms that are useful but too slow for every PR. |
@@ -240,9 +243,12 @@ generated changelog as its body, and calls `release.yml`, which validates the
 tag against Cargo's resolved versions and builds `phux` + `phux-mcp` for
 `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, and
 `aarch64-unknown-linux-gnu`, packages `phux-<tag>-<target>.tar.gz` + `.sha256`,
-uploads them onto that release, and — if the `HOMEBREW_TAP_DEPLOY_KEY` secret is
-set — regenerates and pushes `Formula/phux.rb` to the tap. Only after every
-target, asset, and tap step succeeds does it publish the draft.
+uploads them onto that release, and publishes the draft once every target and
+asset is present. Only then — if the `HOMEBREW_TAP_DEPLOY_KEY` secret is set —
+does it regenerate and push `Formula/phux.rb` to the tap. A failed tap push no
+longer holds the release in draft; the tap's own scheduled update workflow
+re-resolves the public release and lands the same formula within fifteen
+minutes.
 
 **Backfilling an old tag is safe; it will not move the tap backwards.**
 `release.yml` is dispatchable against any existing tag, which is how a release

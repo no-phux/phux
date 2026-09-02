@@ -306,7 +306,7 @@ jobs:
   # Report the release to the Linear `phux` pipeline, which resolves the issues
   # a release carried from the Linear identifiers and PR references in its
   # commit range. Syncing at tag time puts it in Building; the promote below
-  # moves it to Released only after the binaries, tap, and public GitHub release
+  # moves it to Released only after the binaries, public GitHub release, and tap
   # are complete. A failed artifact build leaves a private draft for repair.
   #
   # Both stages live in linear-release.yml rather than inline here, because

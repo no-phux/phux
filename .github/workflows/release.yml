@@ -1,5 +1,5 @@
 # phux release artifacts — build distributable binaries, attach them to an
-# existing draft, refresh Homebrew, then publish the complete release.
+# existing draft, publish the complete release, then refresh Homebrew.
 #
 # Trigger: called by release-please.yml once release-please has pushed the tag
 # and created the GitHub release. Also dispatchable by hand against an existing
@@ -7,8 +7,18 @@
 #
 # This workflow does NOT create tags or release notes. release-please owns the
 # tag and creates the release body as a draft. This workflow attaches assets
-# with `gh release upload`, refreshes Homebrew, and performs only the one-way
-# draft -> published transition after everything succeeds.
+# with `gh release upload`, performs the one-way draft -> published transition
+# once every asset is attached, and only then refreshes Homebrew.
+#
+# The tap push comes LAST, not before publish. phall1/homebrew-tap validates
+# every push by re-resolving the pinned release through the GitHub API with its
+# own token, and a draft is invisible to any token but this repository's. A
+# formula pushed while the release is still a draft is a guaranteed red
+# `Validate tap` run (v0.24.0 was one: `gh: Not Found (HTTP 404)` fifteen
+# seconds before the draft flipped). Publishing first also means a tap push
+# failure can no longer strand a fully built release in draft — the tap's own
+# quarter-hourly update workflow re-resolves the public release and lands the
+# same bytes on its own.
 #
 # It also does NOT publish to crates.io. Publishing is irreversible and nothing
 # here is gated on a human, so phux-protocol goes out only via the manual
@@ -276,15 +286,52 @@ jobs:
           gh release upload "$TAG" "${assets[@]}" --clobber
           echo "attached ${#assets[@]} asset(s) to ${TAG}"
 
-  homebrew:
-    name: update homebrew tap
+  publish:
+    name: publish complete release
     needs: [prepare, release]
     if: ${{ !cancelled() && needs.release.result == 'success' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: write
+    steps:
+      - name: Require every distributable asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          names=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu
+          do
+            base="phux-${TAG}-${target}.tar.gz"
+            grep -Fxq "$base" <<<"$names"
+            grep -Fxq "${base}.sha256" <<<"$names"
+          done
+
+      - name: Publish the complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false
+
+  homebrew:
+    name: update homebrew tap
+    needs: [prepare, publish]
+    # Runs only against a PUBLIC release — see the header for why the order
+    # matters. If this job fails, the release is already out and the tap's own
+    # scheduled update workflow picks it up within fifteen minutes.
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     # Pushes Formula/phux.rb to phall1/homebrew-tap via an SSH deploy key
     # (HOMEBREW_TAP_DEPLOY_KEY: a private key whose public half is a
     # write-enabled deploy key on the tap repo). Skipped automatically if the
-    # secret is unset, so the release still succeeds without it.
+    # secret is unset; the release is already published either way.
     steps:
       - name: Gate on deploy key
         id: gate
@@ -351,43 +398,9 @@ jobs:
           if git diff --cached --quiet; then
             echo "Formula already up to date."
           else
-            git commit -m "phux ${TAG}"
+            git commit -m "Brew formula update for phux ${TAG}"
             git push
           fi
-
-  publish:
-    name: publish complete release
-    needs: [prepare, release, homebrew]
-    if: ${{ !cancelled() && needs.release.result == 'success' && needs.homebrew.result == 'success' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    permissions:
-      contents: write
-    steps:
-      - name: Require every distributable asset
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          set -euo pipefail
-          names=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-          for target in \
-            aarch64-apple-darwin \
-            x86_64-unknown-linux-gnu \
-            aarch64-unknown-linux-gnu
-          do
-            base="phux-${TAG}-${target}.tar.gz"
-            grep -Fxq "$base" <<<"$names"
-            grep -Fxq "${base}.sha256" <<<"$names"
-          done
-
-      - name: Publish the complete release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.prepare.outputs.tag }}
-        run: gh release edit "$TAG" --draft=false
 
 # The `protocol-crate` job that used to live here is gone on purpose.
 #
