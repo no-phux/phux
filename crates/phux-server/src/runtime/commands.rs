@@ -7,6 +7,7 @@ use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, DetachReason, ErrorCode,
     FrameKind, InputMode, StateScope, TerminalLifecycle, TerminalSignal, ViewportInfo,
 };
+use std::collections::HashSet;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
@@ -574,8 +575,15 @@ pub(crate) fn handle_terminal_resize(
 }
 
 /// Perform the attach mutation in one critical section: call
-/// [`crate::state::ServerState::attach`], build the snapshot, collect
-/// the per-pane handles + wire ids to snapshot.
+/// [`crate::state::ServerState::attach`], build the snapshot, and collect
+/// both the pane handles that can bootstrap and snapshot panes that must be
+/// authoritatively closed before `ATTACH_READY`.
+///
+/// The snapshot is a whole-workspace catalog, while only the focused session
+/// participates in this attach generation. Within that session, a registry
+/// pane without an actor handle cannot produce `BOOTSTRAP_*`; returning it in
+/// the fourth tuple slot lets the publisher resolve the client's attach
+/// barrier with `TERMINAL_CLOSED` instead of silently stranding it.
 ///
 /// Pulled out so [`crate::runtime::attach::handle_attach`] stays under clippy's
 /// `too_many_lines` ceiling.
@@ -621,9 +629,32 @@ pub(crate) fn prepare_attach(
             .build_session_snapshot(sid)
             .ok_or_else(|| crate::state::AttachError::UnknownSession(session_name.to_owned()))?;
         let panes_to_snapshot = s.attach_snapshot_panes(sid);
+        let bootstrapped: HashSet<_> = panes_to_snapshot
+            .iter()
+            .map(|pane| pane.wire_terminal_id.clone())
+            .collect();
+        let focused_windows: HashSet<_> = snapshot
+            .windows
+            .iter()
+            .filter(|window| window.session_id == snapshot.focused_session)
+            .map(|window| window.id)
+            .collect();
+        let closed_before_ready = snapshot
+            .panes
+            .iter()
+            .filter(|pane| {
+                focused_windows.contains(&pane.window_id) && !bootstrapped.contains(&pane.id)
+            })
+            .map(|pane| pane.id.clone())
+            .collect();
         let initial_client_id =
             phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
-        Ok((snapshot, initial_client_id, panes_to_snapshot))
+        Ok((
+            snapshot,
+            initial_client_id,
+            panes_to_snapshot,
+            closed_before_ready,
+        ))
     })
 }
 

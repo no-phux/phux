@@ -2357,6 +2357,145 @@ mod tests {
         unsafe { phux_client_free(client) };
     }
 
+    fn three_pane_snapshot(
+        seed: &phux_protocol::TerminalId,
+        horizontal: &phux_protocol::TerminalId,
+        vertical: &phux_protocol::TerminalId,
+    ) -> phux_protocol::wire::info::SessionSnapshot {
+        use phux_protocol::wire::info::{LayoutNode, SplitDir};
+
+        let catalog_session = SessionId::new(1);
+        let working_session = SessionId::new(2);
+        let catalog_window = phux_protocol::WindowId::new(10);
+        let working_window = phux_protocol::WindowId::new(20);
+        let layout = LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            left: Box::new(LayoutNode::Leaf(seed.clone())),
+            right: Box::new(LayoutNode::Split {
+                dir: SplitDir::Vertical,
+                ratio: 0.5,
+                left: Box::new(LayoutNode::Leaf(horizontal.clone())),
+                right: Box::new(LayoutNode::Leaf(vertical.clone())),
+            }),
+        };
+        phux_protocol::wire::info::SessionSnapshot::new(
+            working_session,
+            working_window,
+            seed.clone(),
+        )
+        .with_sessions(vec![
+            phux_protocol::wire::info::SessionInfo::new(catalog_session, "catalog"),
+            phux_protocol::wire::info::SessionInfo::new(working_session, "working"),
+        ])
+        .with_windows(vec![
+            phux_protocol::wire::info::WindowInfo::new(catalog_window, catalog_session, "catalog"),
+            phux_protocol::wire::info::WindowInfo::new(working_window, working_session, "working")
+                .with_active_pane(Some(seed.clone()))
+                .with_layout(Some(layout)),
+        ])
+        .with_panes(vec![
+            phux_protocol::wire::info::TerminalInfo::new(
+                phux_protocol::TerminalId::local(1),
+                catalog_window,
+                80,
+                24,
+            ),
+            phux_protocol::wire::info::TerminalInfo::new(seed.clone(), working_window, 80, 24),
+            phux_protocol::wire::info::TerminalInfo::new(
+                horizontal.clone(),
+                working_window,
+                40,
+                24,
+            ),
+            phux_protocol::wire::info::TerminalInfo::new(vertical.clone(), working_window, 40, 12),
+        ])
+    }
+
+    fn feed_complete_bootstrap(
+        client: *mut PhuxClient,
+        terminal_id: phux_protocol::TerminalId,
+        payload: &'static [u8],
+    ) {
+        let stream_id = phux_protocol::StreamId::new(7).expect("stream");
+        let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
+        for frame in [
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 40,
+                rows: 12,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::copy_from_slice(payload),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+        ] {
+            assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+        }
+    }
+
+    #[test]
+    fn three_pane_attach_resolves_unbootstrapped_seed_by_closure() {
+        let client = boxed_client();
+        unsafe {
+            (*client).inner.protocol_ready = true;
+            (*client).inner.attach_queued = true;
+            (*client).inner.expected_attach_id = Some(7);
+            (*client).inner.selected_profile =
+                Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
+        }
+        let seed = phux_protocol::TerminalId::local(2);
+        let horizontal = phux_protocol::TerminalId::local(3);
+        let vertical = phux_protocol::TerminalId::local(4);
+        let snapshot = three_pane_snapshot(&seed, &horizontal, &vertical);
+        assert_eq!(
+            feed_kind(
+                client,
+                &FrameKind::Attached {
+                    attach_id: 7,
+                    snapshot,
+                    initial_client_id: phux_protocol::ClientId::new(9),
+                },
+            ),
+            PhuxClientResult::Ok,
+        );
+        feed_complete_bootstrap(client, horizontal.clone(), b"horizontal");
+        feed_complete_bootstrap(client, vertical.clone(), b"vertical");
+        assert_eq!(
+            feed_kind(
+                client,
+                &FrameKind::TerminalClosed {
+                    terminal_id: seed.clone(),
+                    exit_status: None,
+                },
+            ),
+            PhuxClientResult::Ok,
+        );
+        assert_eq!(
+            feed_kind(client, &FrameKind::AttachReady { attach_id: 7 }),
+            PhuxClientResult::Ok,
+        );
+        assert!(unsafe { (*client).inner.attached });
+        assert_eq!(unsafe { (*client).inner.sessions.len() }, 2);
+        assert!(!unsafe { (*client).inner.session.active_attach_contains(&seed) });
+        assert!(unsafe { (*client).inner.session.active_attach_contains(&horizontal) });
+        assert!(unsafe { (*client).inner.session.active_attach_contains(&vertical) });
+        unsafe { phux_client_free(client) };
+    }
+
     #[test]
     fn attached_snapshot_exposes_the_server_session_catalog() {
         let client = boxed_client();

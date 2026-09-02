@@ -1026,11 +1026,14 @@ async fn fail_aggregate_attach_prepublication(
 
 /// Tuple bundling everything `handle_attach` needs after it is done
 /// touching [`ServerState`]. Cloned out of the critical section so the
-/// remaining awaits do not hold the state lock.
+/// remaining awaits do not hold the state lock. The final vector names
+/// snapshot participants with no actor handle; publication resolves those
+/// with `TERMINAL_CLOSED` before `ATTACH_READY`.
 pub(crate) type AttachPrepared = (
     phux_protocol::wire::info::SessionSnapshot,
     phux_protocol::ids::ClientId,
     Vec<AttachSnapshotPane>,
+    Vec<phux_protocol::ids::TerminalId>,
 );
 
 /// Resolve `target` to a session name. SPEC §13: `ByName` is the only
@@ -2626,7 +2629,7 @@ async fn apply_client_default_colors(
 struct AttachStaging {
     /// Connection-wide byte and frame ceiling for the whole publication.
     budget: BootstrapStagingBudget,
-    /// Bootstrap frames staged for the atomic publication.
+    /// Bootstrap and authoritative-closure frames staged for atomic publication.
     frames: Vec<FrameKind>,
     /// Actor handles staged so the rollback boundary can detach each producer.
     handles: Vec<crate::terminal_actor::TerminalHandle>,
@@ -2646,6 +2649,27 @@ impl Default for AttachStaging {
             gates: Vec::new(),
             pumps: JoinSet::new(),
         }
+    }
+}
+
+impl AttachStaging {
+    /// Append authoritative closures under the same frame ceiling as bootstraps.
+    fn append_closures(
+        &mut self,
+        terminal_ids: Vec<phux_protocol::ids::TerminalId>,
+    ) -> Result<(), ()> {
+        let mut frames = Vec::new();
+        frames.try_reserve(terminal_ids.len()).map_err(|_| ())?;
+        frames.extend(
+            terminal_ids
+                .into_iter()
+                .map(|terminal_id| FrameKind::TerminalClosed {
+                    terminal_id,
+                    exit_status: None,
+                }),
+        );
+        self.budget
+            .append_accounted(&mut self.frames, &mut frames, 0)
     }
 }
 
@@ -3119,16 +3143,21 @@ impl PaneCaptureContext<'_> {
         Ok(())
     }
 
-    /// Capture every pane in turn. The first failure is the rollback reason.
+    /// Capture every bootstrap-capable pane in turn, then stage authoritative
+    /// closures for snapshot participants that had no actor handle. The first
+    /// failure is the rollback reason.
     async fn capture_panes(
         &self,
         staging: &mut AttachStaging,
         panes: Vec<AttachSnapshotPane>,
+        closed_before_ready: Vec<phux_protocol::ids::TerminalId>,
     ) -> Result<(), String> {
         for pane in panes {
             self.capture_pane(staging, pane).await?;
         }
-        Ok(())
+        staging
+            .append_closures(closed_before_ready)
+            .map_err(|()| "aggregate bootstrap staging budget exceeded".to_owned())
     }
 }
 
@@ -3162,9 +3191,9 @@ impl AttachPublication<'_> {
         false
     }
 
-    /// Queue `ATTACHED`, every staged pane bootstrap, then `ATTACH_READY`.
-    /// `false` once the client's mailbox has closed and the attach is
-    /// abandoned.
+    /// Queue `ATTACHED`, every staged pane bootstrap or authoritative closure,
+    /// then `ATTACH_READY`. `false` once the client's mailbox has closed and
+    /// the attach is abandoned.
     async fn publish(
         &self,
         snapshot: phux_protocol::wire::info::SessionSnapshot,
@@ -3331,16 +3360,17 @@ pub(crate) async fn handle_attach(
 
     let same_session_reattach = is_same_session_reattach(state, client_id, &session_name);
 
-    let Some((snapshot, initial_client_id, panes_to_snapshot)) = prepare_attach_or_refuse(
-        state,
-        client_id,
-        &session_name,
-        out_tx,
-        client_caps,
-        negotiated_profile,
-        bootstrap_limits,
-    )
-    .await
+    let Some((snapshot, initial_client_id, panes_to_snapshot, closed_before_ready)) =
+        prepare_attach_or_refuse(
+            state,
+            client_id,
+            &session_name,
+            out_tx,
+            client_caps,
+            negotiated_profile,
+            bootstrap_limits,
+        )
+        .await
     else {
         return;
     };
@@ -3419,7 +3449,10 @@ pub(crate) async fn handle_attach(
         scrollback: scrollback_req,
         chunk_bytes: aggregate_chunk_bytes,
     };
-    if let Err(reason) = capture.capture_panes(&mut staging, panes_to_snapshot).await {
+    if let Err(reason) = capture
+        .capture_panes(&mut staging, panes_to_snapshot, closed_before_ready)
+        .await
+    {
         fail_prepublication!(reason.as_str());
     }
 
@@ -3810,6 +3843,73 @@ mod tests {
                 history_cursor: None,
             }) if id == &terminal_id && *stream == stream_id && *bootstrap == bootstrap_id
         ));
+    }
+
+    #[test]
+    fn prepare_attach_reports_snapshot_seed_without_an_actor_as_closed() {
+        let state = SharedState::new();
+        let (_catalog_session, _catalog_window, _catalog_pane) =
+            state.with_mut(|server| server.seed_session("catalog"));
+        let (_working_session, working_window, _seed) =
+            state.with_mut(|server| server.seed_session("working"));
+        let (horizontal, vertical) = state.with_mut(|server| {
+            let horizontal = server
+                .registry_mut()
+                .new_terminal(working_window)
+                .expect("horizontal pane");
+            let vertical = server
+                .registry_mut()
+                .new_terminal(working_window)
+                .expect("vertical pane");
+            (horizontal, vertical)
+        });
+        let mut actors = Vec::new();
+        for terminal in <[_; 2]>::from((horizontal, vertical)) {
+            let token = CancellationToken::new();
+            let bundle = crate::terminal_actor::TerminalActor::build_with_token(
+                80,
+                24,
+                None,
+                phux_config::ScrollbackLimits::default(),
+                token.clone(),
+            )
+            .expect("test terminal actor");
+            state.with_mut(|server| {
+                server.register_terminal_handle(terminal, bundle.handle.clone(), token);
+            });
+            actors.push(bundle.actor);
+        }
+        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+        let (out_tx, _out_rx) = tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
+
+        let (snapshot, _initial_client_id, bootstrapped, closed) = prepare_attach(
+            &state,
+            client_id,
+            "working",
+            &out_tx,
+            ClientCapabilities::default(),
+            BootstrapProfile::SynthesizedVtRaw,
+            BootstrapLimits::default(),
+        )
+        .expect("prepare attach");
+
+        let bootstrapped: std::collections::HashSet<_> = bootstrapped
+            .iter()
+            .map(|pane| pane.wire_terminal_id.clone())
+            .collect();
+        let seed = snapshot
+            .panes
+            .iter()
+            .find(|pane| pane.id == snapshot.focused_pane)
+            .expect("seed remains in ATTACHED catalog")
+            .id
+            .clone();
+        assert_eq!(snapshot.sessions.len(), 2, "whole session catalog survives");
+        assert_eq!(snapshot.panes.len(), 4, "ATTACHED keeps every catalog pane");
+        assert_eq!(bootstrapped.len(), 2);
+        assert!(!bootstrapped.contains(&seed));
+        assert_eq!(closed, vec![seed]);
+        drop(actors);
     }
 
     #[test]
