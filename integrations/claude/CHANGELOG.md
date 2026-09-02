@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/no-phux/phux/compare/claude-plugin-v0.2.1...claude-plugin-v0.3.0) (2026-09-02)
+
+
+### Features
+
+* **client-ffi:** expose attached session catalog ([#494](https://github.com/no-phux/phux/issues/494)) ([72538c7](https://github.com/no-phux/phux/commit/72538c74ebbed494bedeadeff51fa41ebfc6533f))
+
+
+### Bug Fixes
+
+* **integrations:** publish npm packages through OIDC ([#496](https://github.com/no-phux/phux/issues/496)) ([6c02514](https://github.com/no-phux/phux/commit/6c02514560de4669bbf9b449036c3fe78873a856))
+
 ## [0.2.1](https://github.com/phall1/phux/compare/claude-plugin-v0.2.0...claude-plugin-v0.2.1) (2026-08-14)
 
 

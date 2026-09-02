@@ -9,6 +9,53 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.24.0](https://github.com/no-phux/phux/compare/v0.23.3...v0.24.0) (2026-09-02)
+
+
+### Features
+
+* **client:** rebuild the pane chrome around shared rules, titles, and a semantic palette ([b1b6c4b](https://github.com/no-phux/phux/commit/b1b6c4b6a4152482deee6204811791397a2bdd8c))
+* **config:** add defaults.history-bytes and document the scrollback pair ([6c204ff](https://github.com/no-phux/phux/commit/6c204ffd576c17cef182dc508f0a6cbb81b479b6))
+* **server:** resolve untouched Last to configured seed ([#499](https://github.com/no-phux/phux/issues/499)) ([3fcebac](https://github.com/no-phux/phux/commit/3fcebac31b38fa90c13090f42d088ae9c50c7135))
+
+
+### Bug Fixes
+
+* **client:** exempt input replies from pacing and stop dropping big frames ([16ca0fe](https://github.com/no-phux/phux/commit/16ca0fe42c016e49833b12cb4a819a2ffbc11728))
+* **client:** keep chrome inside its own columns, above the contrast floor, and off the viewport ([1f2f608](https://github.com/no-phux/phux/commit/1f2f608c6ff4d1e6e4a295d066dd6ec5c11b8023))
+* **client:** key the paint grace to a pane, size it to the link, pool by capacity ([674e5ae](https://github.com/no-phux/phux/commit/674e5ae774089dad2529c476646b4f7ba112464c))
+* **client:** measure every chrome width in columns, and keep untrusted labels inert ([776027d](https://github.com/no-phux/phux/commit/776027d4d781b5dc4ad9b7c6586051a0c1e063e6))
+* **client:** stop a short row read from silently shifting a painted row ([7bbbb9e](https://github.com/no-phux/phux/commit/7bbbb9ee624ac40e4425ad2e9adcc063f8601d3d))
+* **client:** stop an EOF'd terminal spinning the attach loop ([d591000](https://github.com/no-phux/phux/commit/d591000b8529e7282b0c798401092217a6a986fc))
+* **ffi:** scope attach barrier to focused session ([c477371](https://github.com/no-phux/phux/commit/c477371de4c231cfc0d8902737e6cfb967c0bd7a))
+* **homebrew:** generate the formula against the no-phux org ([c5cdde3](https://github.com/no-phux/phux/commit/c5cdde32a8f10c28fbab45f5f57a89ee3bb3f90a))
+* **integrations:** publish npm packages through OIDC ([#496](https://github.com/no-phux/phux/issues/496)) ([6c02514](https://github.com/no-phux/phux/commit/6c02514560de4669bbf9b449036c3fe78873a856))
+* **release:** record 0.23.3 in the release-please manifest ([1e16d01](https://github.com/no-phux/phux/commit/1e16d013cfd8fe7d56fcba65a3c0bf00a59bbc0f))
+* **remote:** stop predictive echo failing open, and gate it on real latency ([345d663](https://github.com/no-phux/phux/commit/345d663d1bf2876c96060a8477b0b3b8ba26a9b1))
+* **server:** bound every wait in pane teardown, and reap what it abandons ([67c8018](https://github.com/no-phux/phux/commit/67c8018f9ac1a25b59d934bf2ea3398b35570def))
+* **server:** bound the gap fence and stop it starving its own resync ([f855836](https://github.com/no-phux/phux/commit/f855836965170b063323985de0630aa8e45d37d6))
+* **server:** fence the ATTACH_TERMINAL pump on a broadcast gap too ([ef02c1b](https://github.com/no-phux/phux/commit/ef02c1b377b3824ecc457d71adc618f83dc19ac2))
+* **server:** make a lagged WebSocket consumer converge instead of dying ([c90e2f3](https://github.com/no-phux/phux/commit/c90e2f33cfece36c9566d6949a3ef15d8f5b078f))
+* **server:** resolve unbootstrapped attach panes ([#498](https://github.com/no-phux/phux/issues/498)) ([0531189](https://github.com/no-phux/phux/commit/0531189bf77db5a93f98e897219d6d7ced2cd491))
+* **server:** stop pane teardown wedging the runtime and losing the flush ([ed1b5f8](https://github.com/no-phux/phux/commit/ed1b5f8674c99a1e7e425255a8ac5ade48687429))
+
+
+### Performance
+
+* **client:** make the cell-emission loop allocation-free and atomic ([5e473f7](https://github.com/no-phux/phux/commit/5e473f7914c34d54472f3811aa066f2b86b9260e))
+* **client:** pace, cache and composite the attach paint path ([bfa380f](https://github.com/no-phux/phux/commit/bfa380f4bf6767e299e4fee9fc94bdfc478983ba))
+* **client:** read a pane row's cells in one crossing, not five per cell ([8a49759](https://github.com/no-phux/phux/commit/8a49759dae2c0190a064f82b4d0bf14a662256fd))
+* **client:** read the outer terminal on readiness, not a pool thread ([92d667f](https://github.com/no-phux/phux/commit/92d667f92de6b355cd96f556dee3b7240f0abecd))
+* **remote:** make a QUIC attach echo and paint like a local one ([cad0a43](https://github.com/no-phux/phux/commit/cad0a43ea21155f6e9b441b6efd2e9dd38338841))
+* **server:** cut idle wakeups and per-chunk scan cost on the PTY hot path ([479c30d](https://github.com/no-phux/phux/commit/479c30d4c050e0e89eff61a590f88d588c1bf3de))
+* **server:** size the native bootstrap scratch to one record, not the budget ([840cf79](https://github.com/no-phux/phux/commit/840cf79bb7877a87eac1b4d8922a5bb72017b881))
+
+
+### Documentation
+
+* **ci:** record that the release App must be installed on the owning org ([bddc66a](https://github.com/no-phux/phux/commit/bddc66a59d1a27c99bc6cfaa61030751ba76b41d))
+* **releasing:** describe the OIDC npm lane instead of the removed secret ([51f9dc5](https://github.com/no-phux/phux/commit/51f9dc536641af25730ce7b6b3945444d64fa083))
+
 ## [0.23.3](https://github.com/phall1/phux/compare/v0.23.2...v0.23.3) (2026-08-28)
 
 
