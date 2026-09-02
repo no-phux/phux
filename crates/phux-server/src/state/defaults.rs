@@ -2,7 +2,24 @@ use portable_pty::CommandBuilder;
 
 use super::ServerState;
 
+/// Server-owned identity for the session seeded at startup.
+///
+/// Kept in boot configuration rather than inferred from registry order so an
+/// untouched `AttachTarget::Last` resolves the configured seed even when other
+/// sessions exist. Resolution still verifies that the named session is live.
 impl ServerState {
+    /// Mirror [`crate::runtime::ServerConfig::pre_seeded_session`] into state.
+    pub(crate) fn set_pre_seeded_session(&mut self, name: Option<String>) {
+        self.config.pre_seeded_session = name;
+    }
+
+    /// Read the configured seed name used as `AttachTarget::Last`'s no-touch
+    /// fallback. `None` means this server was not configured with a seed.
+    #[must_use]
+    pub(crate) fn pre_seeded_session(&self) -> Option<&str> {
+        self.config.pre_seeded_session.as_deref()
+    }
+
     /// Configure the PTY mode and seed command used by
     /// `crate::runtime::handle_attach`'s
     /// `AttachTarget::CreateIfMissing` branch (phux-k61.3).

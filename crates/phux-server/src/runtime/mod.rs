@@ -990,6 +990,10 @@ async fn adopt_or_bind_listener(
 /// spawn site — the seed session, attach-time `CreateIfMissing`,
 /// `SPAWN_TERMINAL` — resolves them from one place.
 fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &SharedState) {
+    // `AttachTarget::Last` must resolve an untouched server from this
+    // server-owned seed identity, not from a client-side config guess. The
+    // resolver verifies the named session still exists and never creates it.
+    state.with_mut(|s| s.set_pre_seeded_session(cfg.pre_seeded_session.clone()));
     // Mirror the PTY *mode* so `handle_attach`'s
     // `AttachTarget::CreateIfMissing` branch (phux-k61.3) spawns new
     // sessions' seed panes with PTYs when the server runs with them.

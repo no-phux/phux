@@ -1069,9 +1069,27 @@ pub(crate) type AttachPrepared = (
     Vec<phux_protocol::ids::TerminalId>,
 );
 
-/// Resolve `target` to a session name. SPEC §13: `ByName` is the only
-/// fully-implemented mode in byc.8; the others fail with
-/// `SessionNotFound` until follow-up tickets land.
+/// Resolve `Last` without conflating an untouched server with stale touch
+/// history. A configured seed is a fallback only in the former case.
+fn resolve_last_session_name(state: &crate::state::ServerState) -> Option<String> {
+    match state.most_recently_touched_session() {
+        Some(sid) => state
+            .registry()
+            .session(sid)
+            .map(|session| session.name.clone()),
+        None if state.has_session_touch_history() => None,
+        None => state
+            .pre_seeded_session()
+            .and_then(|name| state.session_by_name(name))
+            .map(|session| session.name.clone()),
+    }
+}
+
+/// Resolve `target` to a live session name.
+///
+/// `Last` preserves touch-order authority once any activity exists. Before
+/// the first touch it falls back to the server's configured pre-seeded
+/// session, if that session is still live; neither path creates a session.
 pub(crate) async fn resolve_attach_target(
     state: &SharedState,
     target: AttachTarget,
@@ -1098,29 +1116,18 @@ pub(crate) async fn resolve_attach_target(
             resolved
         }
         AttachTarget::Last => {
-            // Resolve against the global per-server "last touched
-            // session" order (see ServerState::touch_session). If a
-            // prior touch exists and that session is still live in the
-            // registry, return its name; otherwise treat as "not found"
-            // — matches SPEC §13's allowance that "implementations
-            // without prior-attach memory MAY return SESSION_NOT_FOUND".
-            // We follow the same code path when the prior session has
-            // been killed since the last touch.
-            //
-            // TODO(error-codes): introduce ErrorCode::NoLastSession
-            // (and a sibling variant for "last session killed") so
-            // clients can distinguish "no history" from "history is
-            // stale" without parsing the message string. Additive
-            // ErrorCode work is intentionally out of scope here.
-            let resolved = state.with(|s| {
-                s.most_recently_touched_session()
-                    .and_then(|sid| s.registry().session(sid).map(|sess| sess.name.clone()))
-            });
+            // A real touch remains authoritative, including the existing
+            // stale-touch failure behavior when that session has since died.
+            // Only a server with no touch history may select its configured
+            // pre-seeded session. That identity comes from ServerConfig and
+            // is mirrored before seeding, so native clients can send `Last`
+            // without loading or reproducing the server's config template.
+            let resolved = state.with(resolve_last_session_name);
             if resolved.is_none() {
                 send_error(
                     out_tx,
                     ErrorCode::SessionNotFound,
-                    "no prior session activity: AttachTarget::Last has nothing to resolve",
+                    "AttachTarget::Last has no live session to resolve",
                 )
                 .await;
             }

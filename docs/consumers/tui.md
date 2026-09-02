@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-08-22
+last-reviewed: 2026-09-02
 ---
 
 # The phux reference TUI
@@ -83,11 +83,13 @@ remnant awaiting removal (bead phux-0bmc closed as resolved-by-rename).
 phux is a single binary with subcommands. The naked invocation —
 `phux` — is the common case: attach to the user's server, lazily
 spawning it if it isn't running. With no arguments it auto-spawns a server
-if the socket is missing, then attaches via `AttachTarget::Last` with a
-fallback to `AttachTarget::ByName("default")` when the server has no
-prior-attach memory. Auto-spawn (the client forks itself as `phux server`
-if the socket is missing, polls 25 ms / 2 s) covers both the naked and the
-explicit-attach paths.
+if the socket is missing, then starts each attach or reconnect attempt with
+`AttachTarget::Last`. The server resolves prior activity first and otherwise
+selects its configured live seed. A refusal from an older server gets at most
+one lookup-only `ByName` retry for the configured default; the client never
+translates `Last` into a creating attach. Auto-spawn (the client forks itself
+as `phux server` if the socket is missing, polls 25 ms / 2 s) covers both the
+naked and explicit-attach paths.
 
 ### 1.1 The shipped verbs
 

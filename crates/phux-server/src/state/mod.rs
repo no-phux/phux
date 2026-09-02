@@ -1045,9 +1045,14 @@ mod tests {
             s.most_recently_touched_session().is_none(),
             "fresh state has no prior activity memory",
         );
+        assert!(
+            !s.has_session_touch_history(),
+            "fresh state has no stale activity memory either",
+        );
         let (sid, _wid, _pid) = s.seed_session("default");
         s.touch_session(sid);
         assert_eq!(s.most_recently_touched_session(), Some(sid));
+        assert!(s.has_session_touch_history());
 
         // Later touches win, regardless of attach order.
         let (sid2, _w, _p) = s.seed_session("other");

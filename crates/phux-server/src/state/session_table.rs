@@ -143,6 +143,14 @@ impl SessionTable {
             .map(|(sid, _)| *sid)
     }
 
+    /// Whether any session has ever been touched, including sessions that are
+    /// no longer live. This distinguishes a genuinely untouched server from
+    /// stale touch history when resolving `AttachTarget::Last`.
+    #[must_use]
+    pub(super) fn has_touch_history(&self) -> bool {
+        !self.last_touched.is_empty()
+    }
+
     /// Mark `session` as touched by attach/input/focus activity.
     pub(super) fn touch(&mut self, session: SessionId) {
         let touched_at = self.next_touch_timestamp;

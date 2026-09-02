@@ -33,6 +33,13 @@ impl ServerState {
         self.sessions.most_recently_touched()
     }
 
+    /// Whether this server has any session-touch history, even if every
+    /// touched session has since gone away.
+    #[must_use]
+    pub(crate) fn has_session_touch_history(&self) -> bool {
+        self.sessions.has_touch_history()
+    }
+
     /// Mark `session` as touched by attach/input/focus activity.
     pub fn touch_session(&mut self, session: SessionId) {
         self.sessions.touch(session);

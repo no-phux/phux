@@ -1,17 +1,16 @@
 //! Wire-level integration tests for `AttachTarget::Last`.
 //!
-//! These tests exercise the SPEC §13 "most-recently-focused session"
-//! resolution end-to-end:
+//! These tests exercise the L1 §8 server-resolved `Last` semantics
+//! end-to-end:
 //!
 //! 1. `last_resolves_to_prior_attach`: ATTACH by name → success;
 //!    then on a fresh connection, ATTACH with `Last` resolves to the
 //!    same session and returns `ATTACHED`.
-//! 2. `last_with_no_prior_returns_error`: ATTACH with `Last` against a
-//!    fresh server (no prior attach) returns `ERROR { SessionNotFound }`.
-//!    Per SPEC §13: "Implementations without prior-attach memory MAY
-//!    return `SESSION_NOT_FOUND`" — we follow that allowance (until a
-//!    dedicated `NoLastSession` `ErrorCode` lands; see the
-//!    `TODO(error-codes)` in `runtime::resolve_attach_target`).
+//! 2. `last_without_prior_touch_resolves_configured_seed`: a fresh
+//!    server resolves `Last` to its configured seed, including a custom
+//!    name.
+//! 3. `last_with_no_live_session_returns_error`: a seedless server
+//!    returns `ERROR { SessionNotFound }`; `Last` never creates.
 //!
 //! Sibling of `byc_6_1_attach_snapshot.rs`; intentionally a separate
 //! binary so 6.1's snapshot assertions stay isolated.
@@ -216,14 +215,32 @@ fn last_resolves_to_most_recently_focused_not_last_attached() {
 }
 
 #[test]
-fn last_with_no_prior_returns_error() {
+fn last_without_prior_touch_resolves_configured_seed() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        // Pre-seed a session so the registry isn't empty — we want to
-        // prove that `Last` errors specifically because no client has
-        // attached yet, not because no session exists.
-        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some("default"));
+        // This is the already-rendered result of a custom
+        // `defaults.session-name-template`. The server config owns the
+        // identity; the attaching client sends only `Last`.
+        let configured_seed = "phux-custom-project";
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), Some(configured_seed));
+
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut stream, &attach_last()).await;
+        drain_successful_attach(&mut stream, configured_seed).await;
+
+        drop(stream);
+        shutdown_tx.send(()).ok();
+        server_handle.await.unwrap().unwrap();
+    });
+}
+
+#[test]
+fn last_with_no_live_session_returns_error() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown_tx, server_handle) = spawn_server(socket_path.clone(), None);
 
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         send_frame(&mut stream, &attach_last()).await;
@@ -243,21 +260,42 @@ fn last_with_no_prior_returns_error() {
                     request_id.is_none(),
                     "ATTACH errors must not carry a request_id",
                 );
-                // TODO(error-codes): expect a dedicated
-                // ErrorCode::NoLastSession once it lands; for now we
-                // pin SPEC §13's "MAY return SESSION_NOT_FOUND" path.
                 assert_eq!(
                     code,
                     ErrorCode::SessionNotFound,
-                    "AttachTarget::Last with no prior must currently surface SessionNotFound",
+                    "AttachTarget::Last with no live session must surface SessionNotFound",
                 );
                 assert!(
-                    message.to_lowercase().contains("prior")
-                        || message.to_lowercase().contains("last"),
-                    "error message must hint at the 'no last session' diagnosis, got: {message:?}",
+                    message.to_lowercase().contains("no live session"),
+                    "error must diagnose the missing live session, got: {message:?}",
                 );
             }
             other => panic!("expected FrameKind::Error, got {other:?}"),
+        }
+
+        // The refused lookup must leave the registry empty: `Last` carries no
+        // creation authority, even when no session is available.
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 9,
+                command: Command::GetState {
+                    scope: StateScope::Server,
+                },
+            },
+        )
+        .await;
+        let (type_byte, frame) = recv_typed(&mut stream).await;
+        assert_eq!(type_byte, TYPE_COMMAND_RESULT);
+        match frame {
+            FrameKind::CommandResult {
+                request_id: 9,
+                result: CommandResult::OkWith(CommandValue::State(snapshot)),
+            } => assert!(
+                snapshot.sessions.is_empty(),
+                "a refused Last attach must not create a fallback session",
+            ),
+            other => panic!("expected empty GET_STATE result, got {other:?}"),
         }
 
         drop(stream);

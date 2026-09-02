@@ -2589,6 +2589,51 @@ mod tests {
     }
 
     #[test]
+    fn last_attach_queues_one_server_resolved_request_without_create_fallback() {
+        let client = boxed_client();
+        unsafe { (*client).inner.protocol_ready = true };
+        let options = PhuxAttachOptions {
+            size: mem::size_of::<PhuxAttachOptions>(),
+            version: ABI_VERSION,
+            attach_id: 7,
+            target_kind: 0,
+            session_id: 0,
+            name: PhuxBytes::default(),
+            cols: 80,
+            rows: 24,
+            has_pixel_size: false,
+            pixel_width: 0,
+            pixel_height: 0,
+            request_scrollback: true,
+            scrollback_limit_lines: 1_000,
+        };
+
+        assert_eq!(
+            unsafe { phux_client_queue_attach(client, &raw const options) },
+            PhuxClientResult::Ok,
+        );
+        let client_ref = unsafe { &*client };
+        assert_eq!(
+            client_ref.inner.outgoing.len(),
+            1,
+            "the bridge must not queue a client-derived fallback attempt",
+        );
+        let (decoded, remaining) =
+            FrameKind::decode(&client_ref.inner.outgoing[0]).expect("ATTACH decodes");
+        assert!(remaining.is_empty());
+        assert!(matches!(
+            decoded,
+            FrameKind::Attach {
+                attach_id: 7,
+                target: AttachTarget::Last,
+                ..
+            }
+        ));
+
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
     fn outbound_text_limit_rejects_overflow_and_accepts_boundary() {
         let too_large = vec![b'a'; crate::error::MAX_OUTBOUND_BYTES + 1];
         let rejected = boxed_client();

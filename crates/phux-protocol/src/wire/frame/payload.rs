@@ -13,8 +13,10 @@ use crate::ids::{GroupId, SessionId, TerminalId};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AttachTarget {
-    /// Most-recently-attached session known to the server. Implementations
-    /// without prior-attach memory MAY return `SESSION_NOT_FOUND`.
+    /// Most-recently-touched live session known to the server. Before any
+    /// touch, resolves to the server's configured live seed. Returns
+    /// `SESSION_NOT_FOUND` when neither resolution yields a live session;
+    /// never creates.
     Last,
     /// Look up a session by its human-readable name.
     ByName(String),

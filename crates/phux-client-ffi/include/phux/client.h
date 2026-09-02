@@ -364,6 +364,14 @@ typedef struct PhuxClientCallbacks {
     PhuxClientFailureCallback on_failure;
 } PhuxClientCallbacks;
 
+/**
+ * Session selector for phux_client_queue_attach.
+ *
+ * PHUX_ATTACH_LAST is resolved entirely by the server: prior touched activity
+ * wins, otherwise the server may select its configured live seed. It never
+ * creates a session. Creation requires the explicit
+ * PHUX_ATTACH_CREATE_IF_MISSING selector.
+ */
 typedef enum PhuxAttachTargetKind {
     PHUX_ATTACH_LAST = 0,
     PHUX_ATTACH_BY_NAME = 1,

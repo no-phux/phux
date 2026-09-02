@@ -131,6 +131,14 @@ pub(super) struct ServerConfig {
     /// default shell ([`Self::shell`]: `defaults.shell`, `$SHELL`, or
     /// `/bin/sh`).
     pub(super) attach_create_seed_command: Option<CommandBuilder>,
+    /// Name configured for the server's pre-seeded session, if any.
+    ///
+    /// This is the server-owned fallback for `AttachTarget::Last` before
+    /// any session has been touched. It is mirrored from
+    /// [`crate::runtime::ServerConfig::pre_seeded_session`] before the
+    /// session tree is seeded, and is consulted only while a live session
+    /// still has this name. It never authorizes creation.
+    pub(super) pre_seeded_session: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -146,6 +154,7 @@ impl Default for ServerConfig {
             policy_engine: std::sync::Arc::new(crate::policy::PermissivePolicy::INSTANCE),
             attach_create_seeds_pty: false,
             attach_create_seed_command: None,
+            pre_seeded_session: None,
         }
     }
 }

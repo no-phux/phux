@@ -70,25 +70,13 @@ fn finalize_recording(rec: Option<&RecordSpec>) {
 /// Per docs/consumers/tui.md §1, `phux` with no arguments is the common case: attach
 /// to the user's server, lazily spawning it if it isn't running.
 ///
-/// Resolution cascade:
+/// Resolution:
 ///
 /// 1. If the socket is missing, fork-exec ourselves as `phux server`
-///    (which pre-seeds the [`DEFAULT_SESSION_NAME`] session) and wait
-///    for the socket to accept. Reuses [`ensure_server`], which also
-///    reaps a socket left behind by a server that died uncleanly.
-/// 2. Attempt `ATTACH { target: Last }`. On a server with prior session
-///    activity this resolves to the most-recently-focused session,
-///    matching docs/consumers/tui.md §1's "attach to default session" intent.
-/// 3. If `Last` is refused with no prior-attach memory (a freshly spawned
-///    server, or one whose sessions were all reaped), fall back to
-///    `ATTACH { target: CreateIfMissing(DEFAULT_SESSION_NAME) }`, which
-///    attaches to the default session or creates it first. This is what
-///    makes the auto-spawn path robust: if the server's seed pane exited
-///    before we connected (the server stays alive but empty, phux-60s
-///    "serve before self-exit"), this step repopulates it instead of
-///    surfacing a dead-end "no session" error.
-///
-/// The shared cascade lives in [`attach_default_with_fallback`].
+///    with the configured default session name and wait for the socket.
+/// 2. Send `ATTACH { target: Last }`. The server resolves prior activity
+///    first and otherwise selects its configured live seed. A legacy-server
+///    refusal permits one lookup-only `ByName` retry; attach never creates.
 pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> ExitCode {
     // No build banner on any attach path (phux-i0e8.10.1): the TUI
     // raises the alt screen almost immediately, wiping the line before a
@@ -108,11 +96,8 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
         return code;
     }
 
-    // phux-4li.1: name the auto-created default session from
-    // `defaults.session-name-template` (e.g. `phux-${cwd-basename}`)
-    // instead of the bare `DEFAULT_SESSION_NAME`. The same resolved name
-    // feeds the auto-spawn seed AND the CreateIfMissing fallback so both
-    // paths agree on which session to attach to.
+    // Resolve the auto-spawn seed from `defaults.session-name-template`.
+    // After startup the server owns this identity; ATTACH sends only `Last`.
     let default_name = resolved_default_session_name();
 
     if let Err(err) = ensure_server(
@@ -193,11 +178,22 @@ pub(crate) fn configured_spawn_on_attach() -> Option<String> {
     config_loader::load().ok()?.defaults.spawn_on_attach
 }
 
+/// Build the sole attach target for an optional session selector.
+///
+/// An omitted name remains `Last`; the server owns default-seed resolution.
+/// This path never upgrades an attach into `CreateIfMissing`.
+fn requested_attach_target(session: Option<String>) -> AttachTarget {
+    session.map_or(AttachTarget::Last, AttachTarget::ByName)
+}
+
+/// Build the compatibility fallback for a server that cannot resolve an
+/// untouched `Last`. The fallback can only look up an existing session.
+fn default_lookup_target(default_name: &str) -> AttachTarget {
+    AttachTarget::ByName(default_name.to_owned())
+}
+
 /// Drive one attach attempt against `socket_path` with `target`, picking
-/// the predict-enabled entry point iff the user opted in. Pulled out
-/// because [`run_naked`] needs to call attach twice (once for `Last`,
-/// once for `ByName` fallback) and the predict/no-predict split would
-/// otherwise duplicate four lines twice.
+/// the predict-enabled entry point iff the user opted in.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -241,15 +237,13 @@ pub(crate) async fn run_attach_once_rec(
     }
 }
 
-/// Attach to the user's default session with the naked-`phux` fallback
-/// cascade: try `Last`; if the server has no prior-attach memory, fall
-/// back to `CreateIfMissing(default)`.
+/// Attach to the user's default session while remaining compatible with
+/// servers that predate server-side no-touch `Last` resolution.
 ///
-/// The `CreateIfMissing` step is what makes the cascade robust to an
-/// *empty* server — e.g. one whose auto-spawned seed pane exited before
-/// any client attached. The server stays alive (phux-60s only self-exits
-/// after it has served a client), and this step creates a fresh default
-/// session and attaches, rather than dead-ending on "session not found".
+/// A current server resolves the first `Last` request and this function
+/// returns immediately. If an older server refuses it, make exactly one
+/// lookup-only retry by name. The retry never uses `CreateIfMissing`, so an
+/// empty server still returns `SessionNotFound`.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -273,14 +267,11 @@ pub(crate) async fn attach_default_with_fallback(
         Ok(end) => Ok(end),
         Err(AttachError::Refused(message)) => {
             eprintln!(
-                "phux: no prior-attach session (server said: {message}); creating `{default_name}`"
+                "phux: server could not resolve the last session ({message}); trying existing `{default_name}`"
             );
-            // The notice rides the fallback attempt too: whichever attempt
-            // actually attaches is the one whose TUI should announce the
-            // reconnect.
             run_attach_once_rec(
                 dial,
-                default_create_target(default_name),
+                default_lookup_target(default_name),
                 predict_cfg,
                 rec.map(Rc::clone),
                 initial_notice,
@@ -288,16 +279,6 @@ pub(crate) async fn attach_default_with_fallback(
             .await
         }
         Err(err) => Err(err),
-    }
-}
-
-fn default_create_target(default_name: &str) -> AttachTarget {
-    AttachTarget::CreateIfMissing {
-        name: default_name.to_owned(),
-        command: None,
-        // Seed the pane in the client's cwd so tools whose persistence is
-        // keyed by project directory, such as `claude --resume`, find it.
-        cwd: client_cwd(),
     }
 }
 
@@ -401,9 +382,8 @@ impl ReconnectPolicy {
 /// file is gone (a clean shutdown unlinks it) or never accepts again, the two
 /// distinct failure reports are printed HERE (both naming `phux doctor`) and
 /// `Err(Disconnected)` is returned — call sites must NOT print a second remedy
-/// block for it. `default_name = Some` drives the naked-`phux` `Last` +
-/// `CreateIfMissing` cascade each attempt; `None` re-attaches `target`
-/// directly.
+/// block for it. `default_name = Some` enables one lookup-only `ByName`
+/// compatibility retry after a refused `Last`; `None` sends `target` once.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -779,12 +759,9 @@ pub(crate) fn run_attach_rec(
     if let Err(code) = super::ensure_socket_path_fits(&socket_path) {
         return code;
     }
-    // Resolve the session name to pass through to auto-spawn before we
-    // move `session` into the AttachTarget. With no explicit name this
-    // path behaves like naked `phux`, so it resolves the same
-    // `session-name-template` (phux-4li.1) rather than the bare
-    // DEFAULT_SESSION_NAME — keeping the auto-spawn seed and the
-    // create-and-attach fallback on one agreed name.
+    // Resolve only the auto-spawn seed before moving `session` into the wire
+    // target. With no explicit name this uses the configured template; after
+    // startup the server owns that seed identity and resolves `Last`.
     let default_name = resolved_default_session_name();
     let session_for_spawn = session.clone().unwrap_or_else(|| default_name.clone());
     // phux-07y: only the no-name (naked-`phux`-equivalent) case seeds with
@@ -795,7 +772,7 @@ pub(crate) fn run_attach_rec(
     } else {
         None
     };
-    let target = session.map_or(AttachTarget::Last, AttachTarget::ByName);
+    let target = requested_attach_target(session);
 
     // Best-effort: if nothing is accepting, fork-exec ourselves into a
     // detached server. Failures here are non-fatal — the subsequent
@@ -829,10 +806,8 @@ pub(crate) fn run_attach_rec(
     // are non-fatal — we log and fall back to defaults so a syntax
     // error in config.toml doesn't lock the user out of their server.
     //
-    // No explicit name → behave like naked `phux`: try `Last`, then
-    // create-and-attach the default session. This is robust to an empty
-    // server (e.g. one whose auto-spawned seed pane exited before we
-    // connected). An explicit name attaches to that session only.
+    // A no-name attach uses the server-resolved `Last` path first. One
+    // lookup-only name retry keeps older servers compatible without creating.
     let dial = Dial::uds(&socket_path);
     let predict_cfg = predictive_config_for(&dial);
     let result = match target {
@@ -985,8 +960,9 @@ fn resolve_quic_target(
 /// * a target resolving to a **routable** address with no fingerprint is
 ///   refused, rather than silently trusting whatever certificate answers.
 ///
-/// With no session name this runs the same `Last` → `CreateIfMissing` cascade
-/// the naked path does; an explicit name attaches to that session only.
+/// With no session name this starts each reconnect iteration with `Last` and
+/// leaves default-seed resolution to the remote server. A refusal permits one
+/// lookup-only compatibility retry; an explicit name attaches only to it.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "clap hands over the owned HOST:PORT value; a &str signature would only push the borrow into lib.rs's dispatch"
@@ -1051,10 +1027,9 @@ pub(crate) fn run_attach_quic(
     let predict_cfg = predictive_config_for(&dial);
 
     let default_name = resolved_default_session_name();
-    let (attach_target, default) = session.map_or_else(
-        || (AttachTarget::Last, Some(default_name.as_str())),
-        |name| (AttachTarget::ByName(name), None),
-    );
+    let use_default = session.is_none();
+    let attach_target = requested_attach_target(session);
+    let default = use_default.then_some(default_name.as_str());
 
     let result = rt.block_on(attach_with_reconnect(
         &dial,
@@ -1136,10 +1111,9 @@ pub(crate) fn run_attach_ws(
     let predict_cfg = predictive_config_for(&dial);
 
     let default_name = resolved_default_session_name();
-    let (target, default) = session.map_or_else(
-        || (AttachTarget::Last, Some(default_name.as_str())),
-        |name| (AttachTarget::ByName(name), None),
-    );
+    let use_default = session.is_none();
+    let target = requested_attach_target(session);
+    let default = use_default.then_some(default_name.as_str());
 
     let result = rt.block_on(attach_with_reconnect(
         &dial,
@@ -1391,6 +1365,19 @@ mod tests {
         })
     }
 
+    #[test]
+    fn unnamed_attach_and_fallback_preserve_lookup_only_authority() {
+        assert_eq!(requested_attach_target(None), AttachTarget::Last);
+        assert_eq!(
+            default_lookup_target("configured"),
+            AttachTarget::ByName("configured".to_owned()),
+        );
+        assert_eq!(
+            requested_attach_target(Some("explicit".to_owned())),
+            AttachTarget::ByName("explicit".to_owned()),
+        );
+    }
+
     /// phux-i0e8.2.2: the one-line ending explanation both CLI callers
     /// (`phux attach`, `phux new`) print after teardown. A detach says
     /// nothing; a last-pane death names the exit shape; the process exit
@@ -1451,24 +1438,6 @@ mod tests {
                 .explanation()
                 .as_deref(),
             Some("phux: session ended: the last pane killed (signal or unknown)"),
-        );
-    }
-
-    #[test]
-    fn default_create_target_carries_client_cwd() {
-        let expected = std::env::current_dir()
-            .expect("test cwd")
-            .to_string_lossy()
-            .into_owned();
-        let target = default_create_target("default");
-
-        assert_eq!(
-            target,
-            AttachTarget::CreateIfMissing {
-                name: "default".to_owned(),
-                command: None,
-                cwd: Some(expected),
-            }
         );
     }
 
