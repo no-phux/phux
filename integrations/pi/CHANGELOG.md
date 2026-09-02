@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/no-phux/phux/compare/pi-extension-v0.2.1...pi-extension-v0.2.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **integrations:** publish npm packages through OIDC ([#496](https://github.com/no-phux/phux/issues/496)) ([6c02514](https://github.com/no-phux/phux/commit/6c025145))
+
 ## [0.2.1](https://github.com/phall1/phux/compare/pi-extension-v0.2.0...pi-extension-v0.2.1) (2026-08-27)
 
 

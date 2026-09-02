@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/no-phux/phux/compare/opencode-plugin-v0.2.0...opencode-plugin-v0.2.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **integrations:** publish npm packages through OIDC ([#496](https://github.com/no-phux/phux/issues/496)) ([6c02514](https://github.com/no-phux/phux/commit/6c025145))
+
 ## [0.2.0](https://github.com/phall1/phux/compare/opencode-plugin-v0.1.0...opencode-plugin-v0.2.0) (2026-08-14)
 
 
