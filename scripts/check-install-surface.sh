@@ -249,9 +249,14 @@ forbid_fixed .github/workflows/agent-integration-release.yml 'npm pack --json'
 forbid_fixed .github/workflows/agent-integration-release.yml 'npm publish --dry-run "release/'
 forbid_fixed .github/workflows/agent-integration-release.yml 'echo "tarball=${tarballs[0]}"'
 
-# Missing npm credentials must fail at step one with a legible message, not four
-# minutes later inside npm as a git error.
-require_fixed .github/workflows/agent-integration-release.yml 'Require npm credentials for a real npm publish'
+# npm trusted publishing removes the long-lived credential entirely. npm accepts
+# OIDC from GitHub-hosted runners only, and requires package repository.url to
+# match the workflow repository exactly. Pin all three parts so this cannot drift
+# back to a secret or a Blacksmith/self-hosted publish job.
+require_fixed .github/workflows/agent-integration-release.yml 'runs-on: ubuntu-latest'
+require_fixed .github/workflows/agent-integration-release.yml 'expected_repository="https://github.com/${GITHUB_REPOSITORY}.git"'
+require_fixed .github/workflows/agent-integration-release.yml 'npm publish --provenance --access public "$TARBALL"'
+forbid_fixed .github/workflows/agent-integration-release.yml 'NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}'
 
 # `-type f -name a -o -name b` binds as `(-type f -a -name a) -o (-name b)`,
 # silently dropping the type filter from the second branch.
