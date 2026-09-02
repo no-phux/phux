@@ -6,7 +6,7 @@
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/phall1/phux.git",
+    "url": "https://github.com/no-phux/phux.git",
     "directory": "integrations/opencode"
   },
   "files": [

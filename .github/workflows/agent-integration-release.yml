@@ -39,9 +39,14 @@
 #
 #   4. Nothing checked that npm credentials existed. With NPM_TOKEN unset the
 #      lane ran all the way to the publish step before failing, and the failure
-#      surfaced as an unrelated-looking git error. The prepare job now fails
-#      closed with a legible message, in the same spirit as release-please.yml's
-#      "Require the release App" step.
+#      surfaced as an unrelated-looking git error. The first releases were
+#      bootstrapped interactively; subsequent publishes use npm trusted
+#      publishing, so no long-lived npm credential exists to go missing.
+#
+# npm trusted publishing accepts GitHub-hosted runners only. Build/test stays on
+# Blacksmith, but the small publish job MUST stay on ubuntu-latest so npm accepts
+# its OIDC assertion. The package repository URLs must also exactly match this
+# repository; npm validates them during the token exchange.
 #
 # `find` note: the artifact globs are parenthesised. `-type f -name a -o -name b`
 # binds as `(-type f -a -name a) -o (-name b)`, which silently drops the type
@@ -125,7 +130,13 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "refs/tags/${tag}")"
           package_version="$(node -p "require('./${directory}/package.json').version")"
           package_name="$(node -p "require('./${directory}/package.json').name")"
+          package_repository="$(node -p "require('./${directory}/package.json').repository.url")"
+          expected_repository="https://github.com/${GITHUB_REPOSITORY}.git"
           test "$package_version" = "$version"
+          if [[ "$package_repository" != "$expected_repository" ]]; then
+            echo "::error::${package_name} repository.url must be ${expected_repository} for npm trusted publishing, found ${package_repository}"
+            exit 1
+          fi
           node scripts/check-agent-integration-versions.mjs
 
           {
@@ -137,21 +148,6 @@ jobs:
             echo "publish_npm=$publish_npm"
             echo "dry_run=$dry_run"
           } >> "$GITHUB_OUTPUT"
-
-      # Fail closed, at step one, rather than 3 minutes and two jobs later in
-      # the middle of `npm publish` — where a missing token surfaces as an
-      # unrelated-looking git error and leaves the release stuck in draft.
-      - name: Require npm credentials for a real npm publish
-        if: steps.release.outputs.publish_npm == 'true' && steps.release.outputs.dry_run == 'false'
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
-        run: |
-          set -euo pipefail
-          if [ -z "${NPM_TOKEN}" ]; then
-            echo "::error::NPM_TOKEN (repo secret) must be set to publish ${PACKAGE_NAME} to npm. Create an npm automation token with publish rights on the @phux scope and add it as the NPM_TOKEN repository secret. Re-run this workflow (workflow_dispatch, dry_run=false) against this tag once it is set; the lane is idempotent. Until then the component release stays a draft on purpose — publishing the GitHub release without the npm artifact would advertise a version nobody can install."
-            exit 1
-          fi
 
   package:
     name: Test and package exact artifact
@@ -232,7 +228,10 @@ jobs:
   publish:
     name: Publish validated component
     needs: [prepare, package]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # npm trusted publishing rejects GitHub self-hosted runners. Blacksmith is
+    # deliberately retained for the expensive gates above; only this small OIDC
+    # exchange and publication job needs a GitHub-hosted runner.
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
@@ -288,7 +287,6 @@ jobs:
           TARBALL: ${{ steps.artifact.outputs.tarball }}
           PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
           VERSION: ${{ needs.prepare.outputs.version }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           npm install --global npm@11.5.1
