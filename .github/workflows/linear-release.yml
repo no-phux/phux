@@ -77,11 +77,42 @@ jobs:
             *) echo "::error::stage must be 'building' or 'released', got '${STAGE}'"; exit 1 ;;
           esac
 
+      # Full history of the default branch, NOT `ref: <tag>`. On Blacksmith
+      # every fetch is served from a transparent git mirror, and a tag that
+      # release-please created through the API seconds ago is not in it yet:
+      # v0.24.0's `building` report died in checkout with "A branch or tag with
+      # the name 'v0.24.0' could not be found" thirty seconds after the tag was
+      # created, and the `released` update then had nothing to update. The tag
+      # is fetched below, straight from github.com and past the mirror.
       - uses: actions/checkout@v7
         with:
           # The CLI scans the whole commit range, so shallow will not do.
           fetch-depth: 0
-          ref: ${{ inputs.tag }}
+
+      - name: Fetch the release tag from GitHub, bypassing the runner git mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # System and global git config are where the mirror's url rewrite
+          # lives; disabling both plus naming github.com explicitly means this
+          # fetch cannot be answered from a stale cache. A brief retry covers
+          # GitHub's own propagation of a ref created moments ago.
+          for attempt in 1 2 3 4 5 6; do
+            if GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+               git fetch --no-tags "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" \
+                 "+refs/tags/${TAG}:refs/tags/${TAG}"; then
+              break
+            fi
+            if [ "$attempt" = 6 ]; then
+              echo "::error::tag ${TAG} not found on github.com after ${attempt} attempts"
+              exit 1
+            fi
+            sleep 10
+          done
+          git checkout --quiet "refs/tags/${TAG}"
+          echo "checked out ${TAG} at $(git rev-parse HEAD)"
 
       - name: Capture the GitHub release body as the Linear release notes
         if: inputs.stage == 'building'
