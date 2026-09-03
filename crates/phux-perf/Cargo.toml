@@ -23,7 +23,11 @@ serde_json.workspace = true
 # context switches). Same crate and version phux-server already pins for its
 # own syscalls; `resource` is the only feature this crate needs, and it keeps
 # the call safe.
+# Native only: the wasm kernel build (clients/phux-web) has no getrusage and
+# reports `process: null`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 nix = { version = "0.29", default-features = false, features = ["resource"] }
+
 # `pthread_set_qos_class_self_np` for `sched::promote_current_thread` on
 # macOS; `nix` exposes no binding for it. Already in the graph through
 # `nix`, `phux-crash`, and `portable-pty-adopt`; not a new dependency.

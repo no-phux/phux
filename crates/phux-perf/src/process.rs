@@ -21,8 +21,17 @@ pub struct ProcessStats {
 }
 
 impl ProcessStats {
+    /// Read the current figures; `None` if `getrusage` fails or the target
+    /// has no such call (wasm).
+    #[must_use]
+    #[cfg(target_arch = "wasm32")]
+    pub const fn capture() -> Option<Self> {
+        None
+    }
+
     /// Read the current figures; `None` if `getrusage` fails.
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn capture() -> Option<Self> {
         let ru = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF).ok()?;
         let to_us = |tv: nix::sys::time::TimeVal| -> u64 {
@@ -74,6 +83,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn capture_reports_a_live_process() {
         let s = ProcessStats::capture().unwrap_or_default();
         assert!(

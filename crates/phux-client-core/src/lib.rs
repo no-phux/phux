@@ -28,5 +28,6 @@ pub mod engine;
 pub mod history;
 pub mod layout;
 pub mod multi_pane;
+pub mod perf;
 pub mod predict;
 pub mod session;

@@ -37,7 +37,7 @@ mod sched;
 mod throttle;
 
 pub use counter::{Counter, Gauge};
-pub use histogram::{BUCKETS, Histogram, HistogramSnapshot};
+pub use histogram::{BUCKETS, Histogram, HistogramSnapshot, Timer};
 pub use process::ProcessStats;
 pub use render::render_report;
 pub use report::{
@@ -74,7 +74,16 @@ pub fn reset(table: &[Metric]) {
     }
 }
 
+/// Wall-clock milliseconds since the Unix epoch; `0` if the clock is before
+/// it or the target has no wall clock (wasm).
+#[cfg(target_arch = "wasm32")]
+#[must_use]
+pub const fn unix_ms_now() -> u64 {
+    0
+}
+
 /// Wall-clock milliseconds since the Unix epoch; `0` if the clock is before it.
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn unix_ms_now() -> u64 {
     std::time::SystemTime::now()

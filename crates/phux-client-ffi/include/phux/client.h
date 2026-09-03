@@ -640,6 +640,15 @@ PhuxClientResult phux_client_selection_set(PhuxClient *client, const PhuxTermina
 PhuxClientResult phux_client_selection_clear(PhuxClient *client, const PhuxTerminalId *terminal_id);
 PhuxClientResult phux_client_selection_text(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxBytes *out_text);
 /**
+ * Snapshots the kernel's always-on performance telemetry as a JSON
+ * PerfReport (ADR-0096): frames applied and their bytes, engine apply time,
+ * and the echo round trip from a key or paste leaving phux_client_send_* to
+ * the first output frame for that terminal. The returned bytes are borrowed
+ * from the client and stay valid until the next phux_client_perf_json call.
+ * Returns PHUX_CLIENT_INVALID_ARGUMENT for a null argument.
+ */
+PhuxClientResult phux_client_perf_json(PhuxClient *client, PhuxBytes *out_json);
+/**
  * Every returned anchor handle is transferred to the caller and remains valid
  * until explicitly released or its terminal generation is replaced. Before
  * the next mutable client call invalidates this borrowed array, callers must

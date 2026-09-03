@@ -24,6 +24,9 @@ native-engine = ["dep:libghostty-vt"]
 # Engine-specific server conversions remain disabled so the default core stays
 # native/wasm portable.
 phux-protocol.workspace = true
+# Kernel-side performance telemetry (`perf` module); wasm-safe, no clock on
+# wasm32, always on.
+phux-perf.workspace = true
 # phux-9gw.1.4: width-aware UTF-8 prediction. The predict layer must know
 # how many terminal cells a Unicode scalar consumes before queueing a
 # prediction. `unicode-width` is the canonical zero-dep crate (Unicode 16).

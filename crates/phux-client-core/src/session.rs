@@ -836,6 +836,8 @@ pub struct SessionKernel<E: EngineAdapter> {
     attach: Option<AttachState>,
     engine_effects: EngineEffectBuffer,
     history_config: HistoryCacheConfig,
+    /// Per-terminal echo arming for `crate::perf::ECHO_RTT`.
+    perf_echo: crate::perf::EchoProbe,
 }
 impl<E: EngineAdapter> std::fmt::Debug for SessionKernel<E> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -875,6 +877,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             attach: None,
             engine_effects: EngineEffectBuffer::new(),
             history_config,
+            perf_echo: crate::perf::EchoProbe::default(),
         }
     }
 
@@ -1170,7 +1173,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 bootstrap_id,
                 seq,
                 payload,
-            } => self.terminal_output(terminal_id, stream_id, bootstrap_id, seq, payload, effects),
+            } => {
+                crate::perf::OUTPUT_FRAMES.incr();
+                crate::perf::OUTPUT_BYTES.add_len(payload.len());
+                self.perf_echo.observe(terminal_id);
+                let _timed = crate::perf::apply_timer();
+                self.terminal_output(terminal_id, stream_id, bootstrap_id, seq, payload, effects)
+            }
             KernelInput::Tombstone {
                 terminal_id,
                 stream_id,
@@ -2257,6 +2266,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     }
 
     fn terminal_closed(&mut self, terminal_id: &TerminalId, effects: &mut EffectBuffer) {
+        self.perf_echo.forget(terminal_id);
         let damage_blocked = self.attach_blocks(terminal_id);
         let had_published = self
             .terminals
@@ -2285,6 +2295,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
                         terminal_id: terminal_id.clone(),
                         reason,
                     });
+                }
+                // A key or paste is something the program answers; mouse and
+                // focus are not, and would pair with unrelated output.
+                if matches!(event, InputEvent::Key(_) | InputEvent::Paste(_)) {
+                    self.perf_echo.arm(terminal_id);
                 }
                 effects.push(KernelEffect::Send(KernelSend::Input {
                     terminal_id: terminal_id.clone(),

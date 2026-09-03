@@ -112,6 +112,10 @@ pub(crate) struct Client {
     pub effect_views: Vec<PhuxClientEffect>,
     pub render: HashMap<TerminalId, RenderCache>,
     pub selection_buf: Vec<u8>,
+    /// Backing store for `phux_client_perf_json`; valid until the next call.
+    pub perf_buf: Vec<u8>,
+    /// When this client was created; the kernel report's uptime.
+    pub created_at: std::time::Instant,
     pub document_revisions: HashMap<TerminalId, u64>,
     pub next_document_revision: u64,
     pub search_results: Vec<PhuxSearchResult>,
@@ -156,6 +160,8 @@ impl Client {
             effect_views: Vec::new(),
             render: HashMap::new(),
             selection_buf: Vec::new(),
+            perf_buf: Vec::new(),
+            created_at: std::time::Instant::now(),
             document_revisions: HashMap::new(),
             next_document_revision: 1,
             search_results: Vec::new(),
@@ -896,6 +902,13 @@ impl Client {
             .map_err(BridgeError::ghostty)?;
         self.selections.remove(terminal_id);
         Ok(())
+    }
+
+    /// Snapshot the kernel's performance telemetry as JSON into `perf_buf`.
+    pub(crate) fn perf_json(&mut self) {
+        self.perf_buf = phux_client_core::perf::report(self.created_at.elapsed())
+            .to_json()
+            .into_bytes();
     }
 
     pub(crate) fn selection_text(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {

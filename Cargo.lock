@@ -2207,6 +2207,7 @@ dependencies = [
  "criterion",
  "insta",
  "libghostty-vt",
+ "phux-perf",
  "phux-protocol",
  "proptest",
  "serde",

@@ -1966,6 +1966,33 @@ pub unsafe extern "C" fn phux_client_selection_text(
     })
 }
 
+/// Snapshot the kernel's performance telemetry (ADR-0096) as a JSON `PerfReport`.
+///
+/// Frames applied and their bytes, engine apply time, and the echo round trip
+/// from a key or paste leaving `phux_client_send_*` to the first output frame
+/// for that terminal. Always on; counters since the client was created. The
+/// bytes are borrowed from the client and valid until the next
+/// `phux_client_perf_json` call.
+///
+/// # Safety
+///
+/// `client` must be a live handle from `phux_client_new`; `out_json` must be
+/// a valid, writable pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_perf_json(
+    client: *mut PhuxClient,
+    out_json: *mut PhuxBytes,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        let out =
+            unsafe { out_json.as_mut() }.ok_or_else(|| BridgeError::invalid("out_json is null"))?;
+        *out = PhuxBytes::default();
+        client.perf_json();
+        *out = bytes_out(&client.perf_buf);
+        Ok(())
+    })
+}
+
 /// Searches the terminal document and returns borrowed results.
 ///
 /// # Safety
