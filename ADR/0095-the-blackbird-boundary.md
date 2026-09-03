@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-09-02
 ---
 
-# 0094 — Blackbird is a peer ledger, not a phux client
+# 0095 — Blackbird is a peer ledger, not a phux client
 
 **TL;DR.** phux and Blackbird do not connect. Blackbird holds no phux workload
 key, provisions no phux key registry, and reads no `phux agent probe` output;
