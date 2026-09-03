@@ -1,5 +1,5 @@
 {
-  ".": "0.24.1",
+  ".": "0.25.0",
   "integrations/opencode": "0.2.1",
   "integrations/pi": "0.2.2",
   "integrations/claude": "0.3.0"
