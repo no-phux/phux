@@ -9,6 +9,19 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.26.0](https://github.com/no-phux/phux/compare/v0.25.0...v0.26.0) (2026-09-03)
+
+
+### Features
+
+* **client-core:** kernel-side perf telemetry with an FFI JSON getter ([#511](https://github.com/no-phux/phux/issues/511)) ([28e1b6d](https://github.com/no-phux/phux/commit/28e1b6db4aaaad0c9d87a87df8214b89b8e87cef))
+* **client:** replay acknowledged paste input across remote reconnects (ADR-0053) ([#486](https://github.com/no-phux/phux/issues/486)) ([eff20e4](https://github.com/no-phux/phux/commit/eff20e49115ac7b0496e2dabbc988a9f4582ce3e))
+
+
+### Bug Fixes
+
+* **perf:** report process CPU since the telemetry epoch, not since the pid ([#510](https://github.com/no-phux/phux/issues/510)) ([f5ef1a2](https://github.com/no-phux/phux/commit/f5ef1a291e4a46b3aa30fd584251cd85d85f9854))
+
 ## [0.25.0](https://github.com/no-phux/phux/compare/v0.24.1...v0.25.0) (2026-09-03)
 
 
