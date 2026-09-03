@@ -246,7 +246,7 @@ trace-attach session="default" level="phux=debug":
     echo "[trace] quick peek at the slowest renders:"
     jq -rc 'select(.fields.message=="close" and (.span.name|test("render|handle_server_frame|synthesize|tick_emit"))) | [.fields["time.busy"], .span.name, (.span.changed_row_count//.span.out_bytes//"")] | @tsv' "$log" 2>/dev/null | sort -h | tail -15 || true
 
-# Live performance telemetry of the running server (ADR-0095). One row per
+# Live performance telemetry of the running server (ADR-0096). One row per
 # hot-path metric, one interval per second; Ctrl-C to stop. Same as
 # `phux perf --watch 1` on the installed binary, built from this tree.
 perf interval="1":

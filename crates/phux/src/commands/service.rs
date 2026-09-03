@@ -308,7 +308,7 @@ fn launchd_policy_lines() -> Vec<String> {
         "  </dict>".to_owned(),
         "  <key>ThrottleInterval</key>".to_owned(),
         format!("  <integer>{RESTART_THROTTLE_SECS}</integer>"),
-        // Scheduling class (ADR-0095; ADR-0055 amendment). Owned here, not
+        // Scheduling class (ADR-0096; ADR-0055 amendment). Owned here, not
         // in the generator, so `phux service reconcile` moves an installed
         // `Background` unit to `Interactive` instead of leaving it throttled.
         "  <key>ProcessType</key>".to_owned(),
@@ -357,7 +357,7 @@ const SYSTEMD_POLICY_KEYS: [&str; 4] = [
 /// ADR-0055 until 2026-09-02, which asked launchd to throttle exactly the
 /// process whose echo latency the user feels; under CPU contention from
 /// builds and agents that showed up as 15-60 ms keystroke tails with the
-/// server itself near idle (ADR-0095, ADR-0055 amendment).
+/// server itself near idle (ADR-0096, ADR-0055 amendment).
 pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
     use std::fmt::Write as _;
 

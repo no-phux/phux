@@ -433,7 +433,7 @@ pub(crate) fn run_server(
 
     // The current-thread runtime runs every actor, pump, and client writer
     // on this thread, so this is the one call that puts the whole server's
-    // keystroke path into the interactive scheduling class (ADR-0095).
+    // keystroke path into the interactive scheduling class (ADR-0096).
     phux_server::perf::mark_started();
     report_shutdown(rt.block_on(async move { server.run_async(shutdown_signal()).await }))
 }
