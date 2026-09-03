@@ -9,6 +9,28 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.24.1](https://github.com/no-phux/phux/compare/v0.24.0...v0.24.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **client:** answer the GET_PERF feature probe from the negotiated HELLO ([#507](https://github.com/no-phux/phux/issues/507)) ([4708232](https://github.com/no-phux/phux/commit/4708232c2bca98ac48200c72a01f1ff33590d2f9))
+* **ffi:** preserve newer grid on stale tombstone ([#504](https://github.com/no-phux/phux/issues/504)) ([7ac821a](https://github.com/no-phux/phux/commit/7ac821ad8c430289ad689a9756d498ad72f6034e))
+* **linear:** fetch the release tag past the runner git mirror ([#502](https://github.com/no-phux/phux/issues/502)) ([ab628a1](https://github.com/no-phux/phux/commit/ab628a1516e427bb2cd0b0685fc79fbbf1ef2eed))
+* **release:** publish the draft before pushing the formula to the tap ([#501](https://github.com/no-phux/phux/issues/501)) ([b712ca3](https://github.com/no-phux/phux/commit/b712ca3cd0f56df4ee6f3415636a10b7c86baefa))
+* **server:** fence retired generation output ([#503](https://github.com/no-phux/phux/issues/503)) ([7b1c118](https://github.com/no-phux/phux/commit/7b1c118f92a22d865e3d348baffc28163db75b40))
+
+
+### Performance
+
+* always-on telemetry and interactive scheduling for the keystroke path ([#506](https://github.com/no-phux/phux/issues/506)) ([561d778](https://github.com/no-phux/phux/commit/561d778dab725d02f600806771ec57aadadc3c1c))
+
+
+### Documentation
+
+* record the Blackbird boundary as ADR-0094 ([71aa388](https://github.com/no-phux/phux/commit/71aa388429451c2b0725204cc1d192e317b733c0))
+* renumber Blackbird boundary ADR ([#505](https://github.com/no-phux/phux/issues/505)) ([52fe328](https://github.com/no-phux/phux/commit/52fe3280898a0341e12049f2301b5b727ce749a1))
+
 ## [0.24.0](https://github.com/no-phux/phux/compare/v0.23.3...v0.24.0) (2026-09-02)
 
 
