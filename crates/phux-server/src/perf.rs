@@ -112,6 +112,12 @@ pub static CLIENTS: Gauge = Gauge::new();
 pub static PANES: Gauge = Gauge::new();
 /// Sessions.
 pub static SESSIONS: Gauge = Gauge::new();
+/// `1` when the runtime thread was promoted to user-interactive scheduling.
+///
+/// Set from `phux_perf::promote_current_thread`; `0` when the OS declined or
+/// has no such class. A `0` on macOS means keystroke echo competes evenly
+/// with every batch job on the box.
+pub static SCHED_INTERACTIVE: Gauge = Gauge::new();
 
 /// The table `GET_PERF` reports, in render order.
 pub static TABLE: &[Metric] = &[
@@ -144,6 +150,7 @@ pub static TABLE: &[Metric] = &[
     Metric::gauge("proc.clients", Unit::Count, &CLIENTS),
     Metric::gauge("proc.panes", Unit::Count, &PANES),
     Metric::gauge("proc.sessions", Unit::Count, &SESSIONS),
+    Metric::gauge("proc.sched_interactive", Unit::Count, &SCHED_INTERACTIVE),
 ];
 
 /// Server-side echo samples longer than this are a program that did not
@@ -161,9 +168,24 @@ fn started() -> Instant {
     *STARTED.get_or_init(Instant::now)
 }
 
-/// Pin the uptime epoch. Call once at server start; harmless to call again.
+/// Pin the uptime epoch and promote the calling thread to interactive scheduling.
+///
+/// The calling thread is the runtime thread every actor, pump, and writer
+/// task runs on. Call once at server start; harmless to repeat.
 pub fn mark_started() {
     let _ = started();
+    SCHED_INTERACTIVE.set(u64::from(phux_perf::promote_current_thread()));
+}
+
+/// Promote a helper thread that carries keystrokes or their echo.
+///
+/// The PTY reader and writer, the input lane, and the ack waiter all call
+/// this first thing; the result is only logged because a refusal is not an
+/// error.
+pub fn promote_helper_thread(name: &str) {
+    if !phux_perf::promote_current_thread() {
+        tracing::debug!(thread = name, "interactive scheduling not granted");
+    }
 }
 
 /// Take a report. The gauges are the caller's to refresh first (they are

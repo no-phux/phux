@@ -1,4 +1,5 @@
-//! In-process performance telemetry for phux.
+//! In-process performance telemetry for phux, and the thread scheduling
+//! policy that keeps the measured path responsive ([`promote_current_thread`]).
 //!
 //! Every metric here is a plain `static`: a [`Histogram`], [`Counter`], or
 //! [`Gauge`] built from relaxed atomics, so recording a sample on the PTY
@@ -23,13 +24,16 @@
 //! `docs/operations.md` §"Performance observability" for the metric catalog
 //! and what each number should look like on a healthy machine.
 
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`: the one `unsafe` in this crate is the pthread QoS
+// call in `sched`, scoped by an `allow` with a `SAFETY` note.
+#![deny(unsafe_code)]
 
 mod counter;
 mod histogram;
 mod process;
 mod render;
 mod report;
+mod sched;
 mod throttle;
 
 pub use counter::{Counter, Gauge};
@@ -39,6 +43,7 @@ pub use render::render_report;
 pub use report::{
     Metric, MetricSnapshot, MetricSource, MetricValue, PerfReport, SCHEMA_VERSION, Unit,
 };
+pub use sched::promote_current_thread;
 pub use throttle::Throttle;
 
 /// Snapshot every metric in `table` into a report tagged with `role`.

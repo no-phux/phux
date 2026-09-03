@@ -823,6 +823,7 @@ fn spawn_input_lane_with_completion_timeout(
     let join = std::thread::Builder::new()
         .name("phux-input-lane".to_owned())
         .spawn(move || {
+            crate::perf::promote_helper_thread("phux-input-lane");
             let mut encoders = std::collections::HashMap::new();
             let mut tickets = TicketSource::default();
             // `blocking_recv` parks the thread with no tokio runtime on it.

@@ -431,6 +431,10 @@ pub(crate) fn run_server(
     // alongside `server.run_async`.
     rt.spawn(phux_server::telemetry::run_log_rotation_task());
 
+    // The current-thread runtime runs every actor, pump, and client writer
+    // on this thread, so this is the one call that puts the whole server's
+    // keystroke path into the interactive scheduling class (ADR-0095).
+    phux_server::perf::mark_started();
     report_shutdown(rt.block_on(async move { server.run_async(shutdown_signal()).await }))
 }
 

@@ -50,6 +50,9 @@ pub static STDOUT_DROPS: Counter = Counter::new();
 pub static PACER_REPLIES: Counter = Counter::new();
 /// Frames the pacer held for the next frame interval.
 pub static PACER_WAITS: Counter = Counter::new();
+/// `1` when the attach loop's thread was promoted to user-interactive
+/// scheduling, `0` otherwise.
+pub static SCHED_INTERACTIVE: phux_perf::Gauge = phux_perf::Gauge::new();
 
 /// The client's metric table, in render order.
 pub static TABLE: &[Metric] = &[
@@ -67,6 +70,7 @@ pub static TABLE: &[Metric] = &[
     Metric::counter("stdout.drops", Unit::Count, &STDOUT_DROPS),
     Metric::counter("pacer.replies", Unit::Count, &PACER_REPLIES),
     Metric::counter("pacer.waits", Unit::Count, &PACER_WAITS),
+    Metric::gauge("proc.sched_interactive", Unit::Count, &SCHED_INTERACTIVE),
 ];
 
 /// Rate limit for the stdout-drop warning.
@@ -78,9 +82,11 @@ fn started() -> Instant {
     *STARTED.get_or_init(Instant::now)
 }
 
-/// Pin the uptime epoch; call when the attach loop starts.
+/// Pin the uptime epoch and promote the calling thread (the attach loop's
+/// runtime thread) to interactive scheduling; call when the attach starts.
 pub fn mark_started() {
     let _ = started();
+    SCHED_INTERACTIVE.set(u64::from(phux_perf::promote_current_thread()));
 }
 
 /// Snapshot the client table.

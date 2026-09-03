@@ -346,8 +346,13 @@ const SYSTEMD_POLICY_KEYS: [&str; 4] = [
 ///
 /// `RunAtLoad` starts the server when the agent is bootstrapped (login, and
 /// boot when the host auto-logs-in); `KeepAlive` restarts it on any exit.
-/// `ProcessType` is `Background` so the scheduler does not treat a server
-/// with no attached client as an idle GUI app.
+/// `ProcessType` is `Interactive`: the server is the keystroke path between
+/// the user and every pane, so it belongs in the same scheduling class as
+/// the terminal emulator in front of it. It shipped as `Background` from
+/// ADR-0055 until 2026-09-02, which asked launchd to throttle exactly the
+/// process whose echo latency the user feels; under CPU contention from
+/// builds and agents that showed up as 15-60 ms keystroke tails with the
+/// server itself near idle (ADR-0095, ADR-0055 amendment).
 pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
     use std::fmt::Write as _;
 
@@ -381,7 +386,7 @@ pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
     for line in launchd_policy_lines() {
         let _ = writeln!(out, "{line}");
     }
-    out.push_str("  <key>ProcessType</key>\n  <string>Background</string>\n");
+    out.push_str("  <key>ProcessType</key>\n  <string>Interactive</string>\n");
 
     let env = plan.environment();
     if !env.is_empty() {
@@ -2451,7 +2456,7 @@ mod tests {
   <key>KeepAlive</key>
   <true/>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PHUX_QUIC_ADDR</key>

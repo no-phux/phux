@@ -975,6 +975,7 @@ fn start_pty_bridge(
     let reader_thread = std::thread::Builder::new()
         .name("phux-pty-reader".to_owned())
         .spawn(move || {
+            crate::perf::promote_helper_thread("phux-pty-reader");
             // Heap, not stack: the buffer is `PTY_READ_CHUNK` wide and lives
             // for the whole thread.
             let mut buf = vec![0_u8; PTY_READ_CHUNK];
@@ -1013,6 +1014,7 @@ fn start_pty_bridge(
     let writer_thread = std::thread::Builder::new()
         .name("phux-pty-writer".to_owned())
         .spawn(move || {
+            crate::perf::promote_helper_thread("phux-pty-writer");
             // `take_writer` hands back portable-pty's `UnixMasterWriter`,
             // whose `Drop` writes `\n` followed by the pane's VEOF into the
             // master. On a clean shutdown that is the intended courtesy: the

@@ -407,7 +407,10 @@ impl CompletionWaiter {
         let (tx, rx) = std::sync::mpsc::channel();
         let join = std::thread::Builder::new()
             .name("phux-input-ack".to_owned())
-            .spawn(move || run_waiter(&rx, &cache))?;
+            .spawn(move || {
+                crate::perf::promote_helper_thread("phux-input-ack");
+                run_waiter(&rx, &cache);
+            })?;
         Ok(Self {
             handle: CompletionWaiterHandle { tx },
             join: Some(join),

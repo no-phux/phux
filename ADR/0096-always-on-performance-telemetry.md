@@ -72,7 +72,14 @@ actually complaining about were gone.
 ## Consequences
 
 Positive: `phux perf --watch 1` beside a laggy session shows which stage
-moved, in that interval, on the binary the user is running. `pty.read.size`
+moved, in that interval, on the binary the user is running. Its first run
+paid for it: `pty.queue_wait` reported chunks sitting up to 11 ms between
+the reader thread and an idle actor, which pointed at scheduling rather than
+work. Under a full-CPU hog the keystroke echo p99 was 14.8 ms; promoting the
+hot threads to `QOS_CLASS_USER_INTERACTIVE` (`phux_perf::promote_current_thread`,
+reported as `proc.sched_interactive`) brought it to 2.1 ms with the server
+still using 0.3% of a core, and exposed that the launchd unit had been
+declaring `ProcessType Background` (ADR-0055 amendment). `pty.read.size`
 makes the macOS 1024-byte PTY read cap visible as a distribution rather than
 folklore. A regression in echo p99 is a number in a log line after every
 session, not a bench re-run.
