@@ -294,13 +294,17 @@ pub async fn probe_hello(conn: &mut Connection) -> Result<(u16, u16, u16), Attac
 /// server advertised in `HELLO_OK`.
 ///
 /// Lets a caller honour a "MUST observe the feature bit before sending"
-/// rule. `None` when the connection was already negotiated by the attach
-/// path, whose caller already holds the features.
+/// rule. A connection that already negotiated (every `Connection::connect`
+/// does) answers from the kept `HELLO_OK`; only a raw transport that has not
+/// said `HELLO` yet performs the exchange here.
 pub async fn probe_hello_features(
     conn: &mut Connection,
 ) -> Result<Option<phux_protocol::caps::ServerFeatureSet>, AttachError> {
-    if conn.negotiated_bootstrap().is_some() {
-        return Ok(None);
+    // `Connection::connect` already negotiated HELLO and kept the features;
+    // answering `None` here made `phux perf` skip its feature-bit check on
+    // every ordinary connection and get dropped by a pre-GET_PERF server.
+    if let Some(negotiated) = conn.negotiated_bootstrap() {
+        return Ok(Some(negotiated.server_features));
     }
     conn.send(&FrameKind::Hello {
         client_name: format!("phux-cli/{}", env!("CARGO_PKG_VERSION")),
