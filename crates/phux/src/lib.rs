@@ -99,6 +99,7 @@ pub use commands::server::AUTO_SPAWN_IDLE_ENV;
         INSPECT\n  \
           ls         List sessions\n  \
           status     Report the running server: pid, uptime, version, clients, logs\n  \
+          perf       Show the server's performance telemetry, live or as a snapshot\n  \
           snapshot   Capture a pane's screen as JSON or a boxed view\n  \
           watch      Stream a pane's live events (bell, title, output, lifecycle)\n  \
           rec        Record a pane to an asciinema cast, a GIF, or an APNG\n  \
@@ -874,6 +875,14 @@ fn dispatch(
         ),
         Some(Command::Ls { json }) => commands::ls::run_ls(json.json, socket),
         Some(Command::Status { json }) => commands::status::run_status(json.json, socket),
+        Some(Command::Perf { json, watch, reset }) => commands::perf::run_perf(
+            commands::perf::PerfOptions {
+                json: json.json,
+                watch,
+                reset,
+            },
+            socket,
+        ),
         Some(Command::New {
             name,
             session,

@@ -1481,6 +1481,8 @@ fn command_simple_variants_round_trip() {
             terminal_id: TerminalId::local(7),
             state: ReportedAgentState::Done,
         },
+        Command::GetPerf { reset: false },
+        Command::GetPerf { reset: true },
     ] {
         assert_round_trip(&FrameKind::Command {
             request_id: 7,

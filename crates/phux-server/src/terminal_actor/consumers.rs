@@ -425,6 +425,7 @@ impl TerminalActor {
         let Some(sample) = rtt_sample else {
             return false;
         };
+        crate::perf::CONSUMER_ACK_RTT.record_duration(sample);
         consumer.rtt.observe(sample);
         trace!(
             ?client_id,

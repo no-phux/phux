@@ -577,6 +577,7 @@ binary, so nothing is invisible to you.
 |---|---|
 | `phux ls` | list sessions. Does not start a server; exits non-zero if none is running |
 | `phux status` | the running server: pid, uptime, protocol, clients, log paths |
+| `phux perf` | the server's always-on performance telemetry: latency histograms per stage, throughput, CPU, RSS; `--watch 1` for live per-second intervals, `--json` for the raw report |
 | `phux snapshot` | side-effect-free screen read, as JSON or a boxed view |
 | `phux watch` | stream live pane events, one per line; `--until EVENT` and `--timeout` bound it |
 | `phux wait` | block until a screen condition holds |

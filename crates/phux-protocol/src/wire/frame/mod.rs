@@ -622,6 +622,8 @@ pub(crate) const COMMAND_TAG_PUT_FILE: u8 = 0x15;
 pub(crate) const COMMAND_TAG_SHUTDOWN: u8 = 0x16;
 /// Wire tag for [`Command::ReportAgentState`].
 pub(crate) const COMMAND_TAG_REPORT_AGENT_STATE: u8 = 0x17;
+/// Wire tag for [`Command::GetPerf`]. Appended after `REPORT_AGENT_STATE`.
+pub(crate) const COMMAND_TAG_GET_PERF: u8 = 0x18;
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
 // mirror the four `INPUT_*` frame atoms (`docs/spec/input.md`).

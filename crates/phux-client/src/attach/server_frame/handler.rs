@@ -142,10 +142,12 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
     overlay_active: bool,
     defer_paint: bool,
 ) -> Result<FrameOutcome, AttachError> {
-    let apply_span =
-        matches!(frame, FrameKind::TerminalOutput { .. }).then(|| tracing::debug_span!("vt_apply"));
+    let is_output = matches!(frame, FrameKind::TerminalOutput { .. });
+    let apply_span = is_output.then(|| tracing::debug_span!("vt_apply"));
     let apply_guard = apply_span.as_ref().map(tracing::Span::enter);
+    let apply_timer = is_output.then(|| crate::perf::VT_APPLY.timer());
     let kernel_route = route_engine_frame(&frame, engine_kernel, kernel_effects);
+    drop(apply_timer);
     drop(apply_guard);
     if let Some(verdict) = kernel_route_verdict(&kernel_route, &frame) {
         return verdict;

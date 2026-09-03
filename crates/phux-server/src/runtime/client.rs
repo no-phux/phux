@@ -63,6 +63,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::Shutdown,
         ServerFeature::SpawnInitialSize,
         ServerFeature::ReportAgentState,
+        ServerFeature::GetPerf,
     ])
 }
 
@@ -2063,6 +2064,7 @@ where
                     history_page_limit = selection.limits.max_history_page_bytes(),
                     "ATTACH with immutable bootstrap selection",
                 );
+                let attach_started = std::time::Instant::now();
                 handle_attach(
                     &state,
                     client_id,
@@ -2080,6 +2082,7 @@ where
                     &token,
                 )
                 .await;
+                crate::perf::ATTACH_HANDLE.record_elapsed(attach_started);
             }
             FrameKind::Detach => {
                 detach_on_request(
@@ -2316,6 +2319,7 @@ where
                 let Some(selection) = negotiated.as_ref() else {
                     continue;
                 };
+                let command_started = std::time::Instant::now();
                 handle_command(
                     &state,
                     client_id,
@@ -2330,6 +2334,7 @@ where
                     &root_token,
                 )
                 .await;
+                crate::perf::CMD_HANDLE.record_elapsed(command_started);
             }
             other => {
                 warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
@@ -3631,6 +3636,8 @@ pub(crate) async fn writer_task<W: FrameWriter>(
                 &mut ends,
             );
         }
+        let write_started = std::time::Instant::now();
+        let batch_len = buf.len();
         if let Err(err) = writer.write_frames(&buf, &ends).await {
             debug!(?client_id, error = %err, "writer error on frame; client task ending");
             let _ = writer.close().await;
@@ -3649,6 +3656,9 @@ pub(crate) async fn writer_task<W: FrameWriter>(
             let _ = writer.close().await;
             return;
         }
+        crate::perf::WIRE_WRITE.record_elapsed(write_started);
+        crate::perf::WIRE_WRITE_BYTES.record_len(batch_len);
+        crate::perf::WIRE_BYTES_OUT.add_len(batch_len);
     }
     if let Err(err) = writer.close().await {
         debug!(?client_id, error = %err, "writer close failed");

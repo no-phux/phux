@@ -335,6 +335,7 @@ ServerFeature = bitset (u32) {
     SHUTDOWN           = 0x00000100, // SHUTDOWN (L1.md §5.1)
     SPAWN_INITIAL_SIZE = 0x00000200, // SPAWN_TERMINAL.initial_size (L1.md §3.1)
     REPORT_AGENT_STATE = 0x00000400, // REPORT_AGENT_STATE (L1.md §5.1; ADR-0085)
+    GET_PERF           = 0x00000800, // GET_PERF (L1.md §5.1; ADR-0096)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -397,8 +398,8 @@ above the negotiated bound before allocating it; opaque cursors are at most
 optional `features: u32`. A one-byte legacy value therefore decodes with an
 empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_TERMINAL = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
-`SPAWN_INITIAL_SIZE = 0x200`, and `REPORT_AGENT_STATE = 0x400`; unknown feature
-bits are ignored. A client MUST use the corresponding frame only when its
+`SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`, and
+`GET_PERF = 0x800`; unknown feature bits are ignored. A client MUST use the corresponding frame only when its
 feature is advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
 `INPUT_TERMINAL_REPLY`.

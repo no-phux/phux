@@ -99,6 +99,57 @@ Logs are both an operator surface and a leak surface; [ADR-0028](../ADR/0028-run
 
 Both fmt layers emit span-close timing (`FmtSpan::CLOSE`), so any `#[instrument]` span reports elapsed duration at close.
 
+### Performance observability
+
+Every hop on the hot path records into an always-on, lock-free histogram or
+counter that lives in the binary (ADR-0096; the primitives are the
+`phux-perf` crate). There is nothing to enable. The numbers a session was
+keeping while it felt slow are the numbers you read afterwards.
+
+```sh
+phux perf              # lifetime table since the server started
+phux perf --watch 1    # one interval per second: rates and per-second percentiles
+phux perf --reset      # snapshot, then zero, so the next call is an interval
+phux perf --json       # the raw PerfReport (schema_version inside)
+```
+
+The table is grouped by pipeline stage, top to bottom in the order bytes
+move. The columns are `count` / `rate/s` for counters and `p50` `p90` `p99`
+`max` for histograms; latencies are microseconds, sizes bytes.
+
+| Group | What it measures | Healthy on a laptop over the local socket |
+|---|---|---|
+| `pty.read.size` | bytes per `read(2)` from a PTY. macOS caps this at 1024, so a burst is a spike of exactly-1024 reads | p99 at 1024 under a flood is the OS, not phux |
+| `pty.reader.blocked` | reader thread parked because the actor's queue was full | 0; anything else means the actor is behind the child |
+| `pty.queue_wait` | reader-to-actor queue delay | p99 under 1 ms |
+| `pty.burst.bytes` / `pty.burst.chunks` | how many reads the actor coalesced into one parse and one frame | chunks above 1 under a flood is coalescing working |
+| `pty.vt_apply` | libghostty parse time per burst | p99 under 2 ms at 16 KiB |
+| `echo.server` | input handed to the PTY writer until the next output from that pane; includes the child's own reaction | p50 under 1 ms for a shell prompt |
+| `input.pty_write` | `write(2)` plus flush on the writer thread | p99 under 200 us |
+| `tick.emit` / `tick.synth` / `tick.out_bytes` | state-sync fan-out: whole tick, per-consumer diff, per-consumer frame size | tick p99 under 5 ms; grows with consumers x rows |
+| `consumer.mailbox_full` | ticks that skipped a consumer whose outbound queue was full | 0; a steady rate is a client that cannot drain |
+| `consumer.ack_rtt` | emit to `FRAME_ACK` round trip per state-sync client | tracks the link: sub-ms local, tens of ms over QUIC |
+| `pump.frames` / `pump.bytes` / `pump.frame.bytes` | raw broadcast fan-out volume and per-frame size | frame size near `pty.burst.bytes` |
+| `pump.lagged` / `pump.gap_resync` | broadcast receivers that fell more than 256 frames behind, and the resyncs that cost | 0 |
+| `wire.write` / `wire.write.bytes` / `wire.bytes_out` | coalesced socket writes per client | p99 under 500 us on UDS |
+| `cmd.handle` / `attach.handle` | control-plane latency | attach p99 under 100 ms with a warm history |
+| `proc.*` | clients, panes, sessions (gauges) and, in the header, CPU split, peak RSS, context switches | idle CPU under 1 percent with agents running in panes |
+
+The client keeps its own table. When an attach ends it writes one
+`session perf:` line to its log (`phux logs --client`) with the echo round
+trip (keystroke out to first output frame back for that pane), `vt_apply`
+and `paint.full` percentiles, frame counts, pacer waits, and stdout drops.
+`PHUX_RENDER_PROF=1` still emits the per-second `render_prof` line, now with
+`echo_p50_us` / `echo_p99_us` beside the counters. Degradations that used to
+log at debug — a full consumer mailbox, a dropped stdout backlog, a broadcast
+lag — now warn at most once per ten seconds with a `suppressed` count, so
+they are visible at the default filter without flooding it.
+
+For a reproducible number rather than a live one, `just perf-echo` runs the
+byte-level echo probe against an isolated server at a chosen size with a
+flooding sibling pane, and `just profile` records a CPU profile of the
+`profiling` build (symbols kept) with samply.
+
 ### Environment knobs
 
 | Variable | Effect |

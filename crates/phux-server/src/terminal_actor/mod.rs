@@ -654,6 +654,9 @@ pub struct TerminalActor {
     /// so probing them here could miss a write a sibling handler already
     /// consumed. A self-owned flag cannot be clobbered that way.
     terminal_dirty_since_tick: bool,
+    /// When input bytes were last handed to the PTY writer, consumed by the
+    /// next output burst to sample `echo.server` (`crate::perf`).
+    last_input_at: std::cell::Cell<Option<std::time::Instant>>,
     /// Actor-global raw PTY sequence; never resets across bootstrap generations.
     raw_seq: u64,
     color_query_scanner: ColorQueryScanner,

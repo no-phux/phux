@@ -1098,7 +1098,10 @@ async fn input_interleaves_with_a_large_pty_output_burst() {
             let chunk = Bytes::from(vec![b'x'; CHUNK_LEN]);
             for _ in 0..CHUNK_COUNT {
                 pty_evt_tx
-                    .try_send(PtyEvent::Bytes(chunk.clone()))
+                    .try_send(PtyEvent::Bytes {
+                        chunk: chunk.clone(),
+                        read_at: std::time::Instant::now(),
+                    })
                     .expect("queue burst");
             }
             // Queue ONE input event. With bracketed-paste mode 2004
@@ -1321,7 +1324,10 @@ async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes(
             let mut raw_rx = handle.output.subscribe();
             for _ in 0..CHUNKS {
                 pty_tx
-                    .try_send(PtyEvent::Bytes(Bytes::from(vec![b'x'; CHUNK_BYTES])))
+                    .try_send(PtyEvent::Bytes {
+                        chunk: Bytes::from(vec![b'x'; CHUNK_BYTES]),
+                        read_at: std::time::Instant::now(),
+                    })
                     .expect("queue sustained PTY output");
             }
             let (reply, replied) = oneshot::channel();
@@ -1439,11 +1445,14 @@ async fn combined_native_pty_ingress_never_parks_on_a_silent_source() {
         .await
         .expect("ready native request");
     pty_tx
-        .try_send(PtyEvent::Bytes(Bytes::from_static(b"x")))
+        .try_send(PtyEvent::Bytes {
+            chunk: Bytes::from_static(b"x"),
+            read_at: std::time::Instant::now(),
+        })
         .expect("ready PTY event");
     assert!(matches!(
         recv_native_or_pty(&mut native, Some(&mut pty), false).await,
-        NativeOrPty::Pty(Some(PtyEvent::Bytes(bytes))) if bytes.as_ref() == b"x"
+        NativeOrPty::Pty(Some(PtyEvent::Bytes { chunk: bytes, .. })) if bytes.as_ref() == b"x"
     ));
     assert!(matches!(
         recv_native_or_pty(&mut native, Some(&mut pty), true).await,

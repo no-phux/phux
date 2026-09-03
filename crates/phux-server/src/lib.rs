@@ -31,6 +31,7 @@ pub mod input;
 pub mod mailbox;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod native_state;
+pub mod perf;
 pub mod policy;
 pub(crate) mod proc_query;
 pub mod runtime;

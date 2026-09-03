@@ -258,6 +258,7 @@ impl TerminalActor {
             // A pane may carry initial content (PTY banner, restored
             // scrollback); start dirty so the first tick always emits.
             terminal_dirty_since_tick: true,
+            last_input_at: std::cell::Cell::new(None),
             raw_seq: 0,
             color_query_scanner: ColorQueryScanner::default(),
             key_enc: RefCell::new(key_enc),

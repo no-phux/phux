@@ -47,6 +47,7 @@ pub mod ask;
 pub mod attach;
 pub mod explain;
 pub mod layout_ops;
+pub mod perf;
 pub mod record;
 pub mod render;
 pub mod resize;

@@ -18,6 +18,11 @@ impl Counter {
         self.0.fetch_add(n, Relaxed);
     }
 
+    /// Add a length or count held as `usize`.
+    pub fn add_len(&self, n: usize) {
+        self.add(u64::try_from(n).unwrap_or(u64::MAX));
+    }
+
     /// Add one.
     pub fn incr(&self) {
         self.add(1);

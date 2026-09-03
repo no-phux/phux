@@ -31,6 +31,8 @@ phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 phux-server.workspace = true
 phux-client.workspace = true
+# In-process performance telemetry: `phux perf` renders a `PerfReport`.
+phux-perf.workspace = true
 phux-config.workspace = true
 phux-plugin.workspace = true
 # `phux doctor` dials its own routable listener to prove packets actually

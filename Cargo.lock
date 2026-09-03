@@ -2140,6 +2140,7 @@ dependencies = [
  "phux-config",
  "phux-core",
  "phux-dial",
+ "phux-perf",
  "phux-plugin",
  "phux-protocol",
  "phux-record",
@@ -2173,6 +2174,7 @@ dependencies = [
  "phux-core",
  "phux-crash",
  "phux-dial",
+ "phux-perf",
  "phux-plugin",
  "phux-protocol",
  "phux-record",
@@ -2298,6 +2300,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-perf"
+version = "0.24.0"
+dependencies = [
+ "nix 0.29.0",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "phux-plugin"
 version = "0.24.0"
 dependencies = [
@@ -2377,6 +2388,7 @@ dependencies = [
  "phux-config",
  "phux-core",
  "phux-dial",
+ "phux-perf",
  "phux-plugin",
  "phux-protocol",
  "phux-relay",

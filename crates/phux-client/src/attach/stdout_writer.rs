@@ -225,10 +225,14 @@ impl Write for StdoutSink {
                 q.chunks.clear();
                 q.bytes = 0;
                 self.needs_resync.store(true, Ordering::Release);
-                tracing::debug!(
-                    dropped_bytes = chunk.len(),
-                    "stdout backlog over cap; dropping queued diffs and resyncing",
-                );
+                crate::perf::STDOUT_DROPS.incr();
+                if let Some(suppressed) = crate::perf::STDOUT_DROP_WARN.admit() {
+                    tracing::warn!(
+                        dropped_bytes = chunk.len(),
+                        suppressed,
+                        "stdout backlog over cap; dropping queued diffs and resyncing (the outer terminal is not keeping up)",
+                    );
+                }
                 // The dropped chunk's allocation is still useful; keep it
                 // rather than freeing it on the very path where the sink is
                 // under the most pressure.

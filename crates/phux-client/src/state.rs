@@ -216,6 +216,33 @@ pub async fn get_state_on(conn: &mut Connection) -> Result<StateView, AttachErro
     }
 }
 
+/// `GET_PERF` on an already-negotiated connection.
+///
+/// Returns the server's in-process performance telemetry as a
+/// [`phux_perf::PerfReport`]. `reset` zeroes the server's metrics after the
+/// snapshot so the next call reads as an interval. A server that predates
+/// the command answers with an error, surfaced as [`AttachError::Refused`].
+pub async fn get_perf_on(
+    conn: &mut Connection,
+    reset: bool,
+) -> Result<phux_perf::PerfReport, AttachError> {
+    const REQUEST_ID: u32 = 0;
+    let (result, _interleaved) = conn
+        .request(REQUEST_ID, Command::GetPerf { reset })
+        .await?
+        .into_parts();
+    match result {
+        CommandResult::OkWith(CommandValue::Json(json)) => phux_perf::PerfReport::from_json(&json)
+            .map_err(|err| {
+                AttachError::Protocol(format!("GET_PERF returned unparseable JSON: {err}"))
+            }),
+        CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
+        other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
+            "GET_PERF", &other,
+        ))),
+    }
+}
+
 /// Send `HELLO` on `conn` and return the protocol version triple the server
 /// selected in `HELLO_OK`.
 ///

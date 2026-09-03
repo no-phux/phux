@@ -333,6 +333,14 @@ rather than a layer with its own internal architecture worth diagramming:
   handler writes the DECSET resets and restores the saved termios from an
   alternate signal stack before re-raising, so a crash does not strand the
   user in raw mode inside the alt screen.
+- **`phux-perf`** — in-process performance telemetry primitives
+  (ADR-0096): a lock-free log-linear histogram, counters, gauges, a
+  rate-limited warning throttle, `getrusage` process statistics, and the
+  `PerfReport` that `GET_PERF` carries as JSON and `phux perf` renders.
+  Every hot-path crate declares its metrics as `static`s in a `perf`
+  module and lists them in a table; recording is one relaxed atomic add.
+  Depends on nothing in the workspace, so it sits under server, client,
+  and CLI alike.
 - **`phux-server-testkit`** — shared scaffolding for `phux-server`'s wire
   integration tests, factored out of a `tests/common` module that used to
   be recompiled once per test binary.

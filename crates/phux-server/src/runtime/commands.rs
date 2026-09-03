@@ -688,6 +688,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::ReleaseInput { .. } => "release_input",
         Command::SignalTerminal { .. } => "signal_terminal",
         Command::PutFile { .. } => "put_file",
+        Command::GetPerf { .. } => "get_perf",
         _ => "other",
     }
 }
@@ -821,6 +822,7 @@ pub(crate) async fn handle_command(
             handle_detach_terminal(state, client_id, &terminal_id)
         }
         Command::GetState { scope } => handle_get_state_federated(state, &scope, out_tx).await,
+        Command::GetPerf { reset } => handle_get_perf(state, reset),
         Command::GetScreen {
             terminal_id,
             request_scrollback,
@@ -1853,6 +1855,7 @@ impl AttachTerminalPumpCtx {
         stream: &mut AttachTerminalPumpStream,
         dropped: u64,
     ) -> PumpStep {
+        crate::perf::PUMP_LAGGED.incr();
         if stream.generation.fence_for_gap() {
             debug!(
                 terminal_id = ?self.wire_terminal_id,
@@ -2936,6 +2939,31 @@ pub(crate) fn create_named_session(
 /// and client-side selector resolution read its `sessions` list and ignore
 /// the focused-* fields. An empty server yields an empty session list with
 /// sentinel focus ids (the wire requires the focus fields to be present).
+/// `GET_PERF`: snapshot the server's in-process telemetry (`crate::perf`) as
+/// a JSON `phux_perf::PerfReport`. The registry-derived gauges are refreshed
+/// first so the report is self-contained; `reset` zeroes every metric after
+/// the snapshot so the next report covers only the interval since.
+pub(crate) fn handle_get_perf(state: &SharedState, reset: bool) -> CommandResult {
+    let (sessions, panes) =
+        state.with_mut(|s| (s.registry().session_count(), s.registry().terminal_count()));
+    let clients = match handle_get_state(state, &StateScope::Server) {
+        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot
+            .sessions
+            .iter()
+            .map(|s| u64::from(s.attached_client_count))
+            .sum::<u64>(),
+        _ => 0,
+    };
+    crate::perf::SESSIONS.set(u64::try_from(sessions).unwrap_or(u64::MAX));
+    crate::perf::PANES.set(u64::try_from(panes).unwrap_or(u64::MAX));
+    crate::perf::CLIENTS.set(clients);
+    let report = crate::perf::report();
+    if reset {
+        crate::perf::reset();
+    }
+    CommandResult::OkWith(CommandValue::Json(report.to_json()))
+}
+
 pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> CommandResult {
     match scope {
         StateScope::Server => {

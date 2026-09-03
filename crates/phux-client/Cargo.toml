@@ -92,6 +92,8 @@ tokio = { workspace = true, features = ["io-std"] }
 # Frame encode/decode produces and consumes `BytesMut`; the attach loop owns
 # these buffers across its read and write halves.
 bytes.workspace = true
+# In-process performance telemetry (echo RTT, paint timings, `phux perf`).
+phux-perf.workspace = true
 # Raw-mode + alt-screen toggling on the outer terminal needs safe `termios(3)`
 # access. `rustix` is a pure-Rust wrapper that keeps phux-client's
 # `#![forbid(unsafe_code)]` intact — preferred over a direct `libc` dep

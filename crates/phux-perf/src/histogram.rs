@@ -100,6 +100,11 @@ impl Histogram {
         self.max.fetch_max(v, Relaxed);
     }
 
+    /// Record a length or count held as `usize`.
+    pub fn record_len(&self, n: usize) {
+        self.record(u64::try_from(n).unwrap_or(u64::MAX));
+    }
+
     /// Record a duration in microseconds.
     pub fn record_duration(&self, d: std::time::Duration) {
         self.record(crate::duration_us(d));
@@ -108,6 +113,17 @@ impl Histogram {
     /// Record the microseconds elapsed since `start`.
     pub fn record_elapsed(&self, start: Instant) {
         self.record_duration(start.elapsed());
+    }
+
+    /// A guard that records the microseconds it lived for when dropped, for
+    /// timing a whole function body without threading a start through every
+    /// return.
+    #[must_use]
+    pub fn timer(&'static self) -> Timer {
+        Timer {
+            histogram: self,
+            started: Instant::now(),
+        }
     }
 
     /// Samples recorded so far.
@@ -161,6 +177,19 @@ impl Histogram {
 impl Default for Histogram {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Records elapsed microseconds into a histogram on drop.
+#[derive(Debug)]
+pub struct Timer {
+    histogram: &'static Histogram,
+    started: Instant,
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        self.histogram.record_elapsed(self.started);
     }
 }
 

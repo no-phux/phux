@@ -29,6 +29,8 @@ enum PtyTurn {
 struct PtyBurst {
     /// The chunks to write to the `Terminal` and broadcast as one frame.
     payload: Bytes,
+    /// Reader chunks folded into `payload` (`pty.burst.chunks`).
+    chunks: u64,
     /// A queued EOF was observed while draining; handle it after the flush.
     saw_eof: bool,
     /// `true` when the drain stopped because the next chunk would cross the
@@ -559,12 +561,28 @@ impl TerminalActor {
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
     )]
     async fn service_pty_event(&mut self, evt: Option<PtyEvent>) -> PtyTurn {
-        let Some(PtyEvent::Bytes(first)) = evt else {
+        let Some(PtyEvent::Bytes {
+            chunk: first,
+            read_at,
+        }) = evt
+        else {
             // `Some(PtyEvent::Eof)` or a dropped sender (`None`).
             self.handle_pty_eof();
             return PtyTurn::Continue;
         };
+        crate::perf::PTY_QUEUE_WAIT.record_elapsed(read_at);
+        // Server-side echo: the first output after an input handoff on this
+        // pane. Anything slower than the ceiling is a program that did not
+        // echo, not a slow server.
+        if let Some(input_at) = self.last_input_at.take() {
+            let since_input = input_at.elapsed();
+            if since_input < crate::perf::ECHO_SAMPLE_CEILING {
+                crate::perf::ECHO_SERVER.record_duration(since_input);
+            }
+        }
         let burst = self.coalesce_pty_burst(first);
+        crate::perf::PTY_BURST_BYTES.record_len(burst.payload.len());
+        crate::perf::PTY_BURST_CHUNKS.record(burst.chunks);
         // Debug level deliberately (was trace): this is
         // the pump's only witness line, and the lost-echo
         // forensics (phux-dacb follow-up) need it inside
@@ -586,7 +604,9 @@ impl TerminalActor {
         #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
         let deferred = false;
         if !deferred {
+            let apply_started = std::time::Instant::now();
             self.ingest_pty_payload(&burst.payload);
+            crate::perf::PTY_VT_APPLY.record_elapsed(apply_started);
         }
         let _ = self.output_tx.send(PaneOutput::Live {
             seq,
@@ -622,6 +642,7 @@ impl TerminalActor {
         let mut coalesced: Vec<u8> = Vec::new();
         let mut saw_eof = false;
         let mut hit_byte_cap = false;
+        let mut chunks: u64 = 1;
         for _ in 0..MAX_PTY_COALESCE {
             // Length so far: the lone `first` chunk before
             // any coalescing, else the join buffer. Stop
@@ -639,12 +660,13 @@ impl TerminalActor {
                 break;
             }
             match self.pty_rx.as_mut().map(mpsc::Receiver::try_recv) {
-                Some(Ok(PtyEvent::Bytes(more))) => {
+                Some(Ok(PtyEvent::Bytes { chunk: more, .. })) => {
                     if coalesced.is_empty() {
                         coalesced.reserve(first.len() + more.len());
                         coalesced.extend_from_slice(&first);
                     }
                     coalesced.extend_from_slice(&more);
+                    chunks += 1;
                 }
                 // A queued EOF: flush the coalesced bytes
                 // first, then handle EOF below.
@@ -671,6 +693,7 @@ impl TerminalActor {
         };
         PtyBurst {
             payload,
+            chunks,
             saw_eof,
             hit_byte_cap,
         }
@@ -955,6 +978,9 @@ impl TerminalActor {
         if !mutated && !self.consumer_states.values().any(must_walk_when_clean) {
             return;
         }
+        // Timed from here so gated-off and idle ticks, which are the common
+        // case and nearly free, do not swamp the histogram.
+        let tick_started = std::time::Instant::now();
 
         // Borrow the terminal + shared synthesizer once per tick. The
         // synthesizer's `RenderState`/iterators are reused across
@@ -1010,6 +1036,7 @@ impl TerminalActor {
         // B bytes" without re-deriving it from the per-consumer trace lines.
         tick_span.record("emitted", emitted);
         tick_span.record("total_out_bytes", total_out_bytes);
+        crate::perf::TICK_EMIT.record_elapsed(tick_started);
         for client_id in closed {
             self.consumer_states.remove(&client_id);
         }
@@ -1072,11 +1099,15 @@ impl TerminalActor {
                 // retry must not depend on a fresh write. At debug so a
                 // stall is visible at the recommended `phux=debug` level.
                 state.behind = true;
-                debug!(
-                    ?client_id,
-                    wire_terminal_id = state.wire_terminal_id,
-                    "state-sync tick: consumer mailbox full; skipping (reference held, retries next tick)",
-                );
+                crate::perf::CONSUMER_MAILBOX_FULL.incr();
+                if let Some(suppressed) = crate::perf::MAILBOX_FULL_WARN.admit() {
+                    warn!(
+                        ?client_id,
+                        wire_terminal_id = state.wire_terminal_id,
+                        suppressed,
+                        "state-sync tick: consumer mailbox full; skipping (reference held, retries next tick)",
+                    );
+                }
                 return TickOutcome::Skipped;
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => {
@@ -1085,6 +1116,7 @@ impl TerminalActor {
                 // mailbox, runtime.rs) so `unregister_consumer` never ran.
                 // Self-heal: reap the entry now so we stop re-rendering a
                 // dead consumer every tick (phux-ddg).
+                crate::perf::CONSUMER_REAPED.incr();
                 debug!(
                     ?client_id,
                     wire_terminal_id = state.wire_terminal_id,
@@ -1108,6 +1140,7 @@ impl TerminalActor {
             wire_terminal_id = state.wire_terminal_id,
         )
         .entered();
+        let synth_started = std::time::Instant::now();
         let bytes = consumer_delta(
             synth,
             render,
@@ -1115,6 +1148,7 @@ impl TerminalActor {
             &state.acked_reference,
             &mut state.reference,
         );
+        crate::perf::TICK_SYNTH.record_elapsed(synth_started);
         if bytes.is_empty() {
             // Byte-identical to this consumer's reference; nothing to
             // send this tick. The reserved permit drops unused. A closed
@@ -1127,6 +1161,7 @@ impl TerminalActor {
         }
         let seq = state.next_seq;
         let out_bytes = bytes.len();
+        crate::perf::TICK_OUT_BYTES.record_len(out_bytes);
         // Wrapping_add for paranoia; `u64` will not realistically
         // roll over at 33 Hz, but the existing `runtime.rs` pump
         // uses the same idiom and we match it.

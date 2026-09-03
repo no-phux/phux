@@ -246,6 +246,23 @@ trace-attach session="default" level="phux=debug":
     echo "[trace] quick peek at the slowest renders:"
     jq -rc 'select(.fields.message=="close" and (.span.name|test("render|handle_server_frame|synthesize|tick_emit"))) | [.fields["time.busy"], .span.name, (.span.changed_row_count//.span.out_bytes//"")] | @tsv' "$log" 2>/dev/null | sort -h | tail -15 || true
 
+# Live performance telemetry of the running server (ADR-0095). One row per
+# hot-path metric, one interval per second; Ctrl-C to stop. Same as
+# `phux perf --watch 1` on the installed binary, built from this tree.
+perf interval="1":
+    cargo run -q -p phux -- perf --watch {{interval}}
+
+# Reproducible echo latency: an isolated release server, a probe pane and a
+# flooding sibling pane (`full` repaints the whole screen at 30 fps,
+# `spinner` one line at 10 Hz, `none` for a quiet baseline), keystroke echo
+# measured at the pty byte level. Raw JSON and CPU samples land under the
+# printed artifacts directory. Never touches a running server.
+#   just perf-echo                  # 188x48, full flood
+#   just perf-echo none 120 40      # quiet baseline at 120x40
+perf-echo flood="full" cols="188" rows="48" iters="60":
+    cargo build --release -p phux
+    bash scripts/bench/tui-load.sh target/release/phux "{{flood}}-{{cols}}x{{rows}}" {{flood}} {{cols}} {{rows}} {{iters}}
+
 # Smoke-test the examples/agents/ scripts against a throwaway server, so
 # they cannot rot silently against CLI changes (phux-wiv). Builds `phux`
 # once, pins SHELL=/bin/sh for a banner-free seed pane (no p10k/direnv

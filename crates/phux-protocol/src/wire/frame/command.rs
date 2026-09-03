@@ -546,6 +546,17 @@ pub enum Command {
         /// Immediate lifecycle evidence.
         state: ReportedAgentState,
     },
+    /// Read the server's in-process performance telemetry: every latency
+    /// histogram, throughput counter, and gauge the server keeps, plus its
+    /// `getrusage` figures, as one `COMMAND_RESULT { OkWith(Json(report)) }`.
+    /// The JSON is a `phux_perf::PerfReport` (`schema_version` inside);
+    /// metric names are diagnostic and not part of the wire contract.
+    /// Gated on the `GET_PERF` server feature bit.
+    GetPerf {
+        /// Zero every metric after snapshotting it, so the next report
+        /// covers only what happened since.
+        reset: bool,
+    },
 }
 
 /// Acknowledgement for one [`Command::PutFile`] chunk.

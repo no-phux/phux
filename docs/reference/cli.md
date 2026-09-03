@@ -37,6 +37,7 @@ ATTACH / SERVE
 INSPECT
   ls         List sessions
   status     Report the running server: pid, uptime, version, clients, logs
+  perf       Show the server's performance telemetry, live or as a snapshot
   snapshot   Capture a pane's screen as JSON or a boxed view
   watch      Stream a pane's live events (bell, title, output, lifecycle)
   rec        Record a pane to an asciinema cast, a GIF, or an APNG
@@ -1609,6 +1610,32 @@ Arguments:
 Options:
       --untrusted
           Mark the payload untrusted: the server classifies it and the pane's untrusted-paste policy (reject by default) may silently drop an unsafe payload — e.g. anything multiline. Without this flag the paste is trusted and forwarded verbatim
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux perf`
+
+```text
+Show the server's performance telemetry.
+
+Reads the always-on latency histograms, throughput counters, and process figures the server keeps about itself (`GET_PERF`) and prints them as a table grouped by pipeline stage: `pty.*` (child output arriving), `echo.server` (input to first output on the same pane), `tick.*` and `pump.*` (fan-out to clients), `wire.*` (socket writes), `cmd.*` / `attach.*` (control plane), and `consumer.*` (per-client backpressure). Without `--watch` the numbers cover the server's lifetime; with `--watch SECS` the verb polls and prints each interval on its own, so counters become rates and a stall shows up in the second it happened. Does not start a server.
+
+Usage: phux perf [OPTIONS]
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --watch <SECS>
+          Poll every SECS seconds and print each interval as a delta
+
+      --reset
+          Zero the server's metrics after each snapshot
 
       --socket <PATH>
           Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)

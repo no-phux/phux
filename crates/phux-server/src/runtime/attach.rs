@@ -569,6 +569,9 @@ impl OutputPumpContext {
         if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
             return ControlFlow::Break(Some(PumpFault::OutboundClosed));
         }
+        crate::perf::PUMP_FRAMES.incr();
+        crate::perf::PUMP_BYTES.add_len(bytes.len());
+        crate::perf::PUMP_FRAME_BYTES.record_len(bytes.len());
         generation.note_forwarded(seq);
         ControlFlow::Continue(())
     }
@@ -808,6 +811,7 @@ impl OutputPumpContext {
         generation: &mut PumpGeneration,
         dropped: u64,
     ) -> ControlFlow<Option<PumpFault>> {
+        crate::perf::PUMP_LAGGED.incr();
         if generation.fence_for_gap() {
             debug!(
                 terminal_id = ?self.wire_terminal_id,
@@ -824,6 +828,7 @@ impl OutputPumpContext {
             );
         }
         generation.note_resync_requested();
+        crate::perf::PUMP_GAP_RESYNC.incr();
         if enqueue_output_resync(&self.resize).await {
             return ControlFlow::Continue(());
         }

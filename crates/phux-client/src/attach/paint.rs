@@ -477,6 +477,7 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         panes = panes.len()
     )
     .entered();
+    let _timed = crate::perf::PAINT_FULL.timer();
     let bar = status_bar.as_ref().map(|p| p.position());
     let ContentLayout {
         rect: content,
@@ -632,6 +633,7 @@ pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
         rows = viewport_dims.1,
     )
     .entered();
+    let _timed = crate::perf::PAINT_CHROME.timer();
     let bar = status_bar.as_ref().map(|p| p.position());
     let ContentLayout {
         rect: content,

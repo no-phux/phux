@@ -122,6 +122,8 @@ nix = { version = "0.29", default-features = false, features = [
 # Promoting it to a direct dependency only names what we already build.
 regex = "1"
 bytes.workspace = true
+# In-process performance telemetry (`GET_PERF`, `phux perf`).
+phux-perf.workspace = true
 # `futures-util` brings `FuturesUnordered` + `StreamExt`, which `handle_attach`
 # uses to fan out per-pane `SnapshotRequest`s concurrently so attach latency
 # scales with the slowest pane's reply time, not their sum. Already in the

@@ -912,6 +912,8 @@ pub const SHUTDOWN: u32 = 0x0000_0100;
 pub const SPAWN_INITIAL_SIZE: u32 = 0x0000_0200;
 /// Wire bit advertising hook-sourced agent-state evidence.
 pub const REPORT_AGENT_STATE: u32 = 0x0000_0400;
+/// Wire bit advertising the `GET_PERF` telemetry snapshot command.
+pub const GET_PERF: u32 = 0x0000_0800;
 
 /// An additive server-owned protocol feature.
 #[repr(u32)]
@@ -944,6 +946,9 @@ pub enum ServerFeature {
     SpawnInitialSize = SPAWN_INITIAL_SIZE,
     /// The server accepts `REPORT_AGENT_STATE` hook evidence.
     ReportAgentState = REPORT_AGENT_STATE,
+    /// The server answers `GET_PERF` with its in-process performance
+    /// telemetry as a JSON `COMMAND_RESULT`.
+    GetPerf = GET_PERF,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -957,7 +962,8 @@ impl ServerFeatureSet {
         | (ServerFeature::TerminalReply as u32)
         | (ServerFeature::Shutdown as u32)
         | (ServerFeature::SpawnInitialSize as u32)
-        | (ServerFeature::ReportAgentState as u32);
+        | (ServerFeature::ReportAgentState as u32)
+        | (ServerFeature::GetPerf as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1621,6 +1627,16 @@ mod tests {
         assert!(!caps.profiles.contains(BootstrapProfileKind::NativeState));
         assert_eq!(caps.native_codecs.as_wire(), 0);
         assert_eq!(caps.native_features.as_wire(), 0);
+    }
+
+    #[test]
+    fn get_perf_feature_bit_is_stable_and_known() {
+        assert_eq!(GET_PERF, 0x0000_0800);
+        assert_eq!(ServerFeature::GetPerf as u32, GET_PERF);
+        let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
+        assert!(set.contains(ServerFeature::GetPerf));
+        assert_eq!(set.as_wire(), GET_PERF);
+        assert!(ServerFeatureSet::from_wire(GET_PERF).contains(ServerFeature::GetPerf));
     }
 
     #[test]

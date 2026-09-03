@@ -308,6 +308,7 @@ impl PaintPacer {
         // the sample drops it and the grace stays at 20ms forever. That is
         // the whole failure this measurement exists to prevent.
         if !sampled {
+            crate::perf::ECHO_RTT.record_duration(elapsed);
             self.note_reply_latency(elapsed);
             if let Some(mark) = self.last_input.as_mut() {
                 mark.sampled = true;

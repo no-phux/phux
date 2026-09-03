@@ -17,24 +17,24 @@ use super::codec::encode_optional_u32;
 use super::{
     AgentEvent, COMMAND_RESULT_TAG_ERROR, COMMAND_RESULT_TAG_OK, COMMAND_RESULT_TAG_OK_WITH,
     COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPLY_INPUT, COMMAND_TAG_ATTACH_TERMINAL,
-    COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_TERMINAL, COMMAND_TAG_GET_SCREEN,
-    COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_TERMINAL,
-    COMMAND_TAG_KILL_TERMINALS, COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT,
-    COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT,
-    COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS,
-    COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD,
-    COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_STATE,
-    COMMAND_VALUE_TAG_TERMINAL_ID, Command, CommandResult, CommandValue, ControlAction,
-    EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED,
-    EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_PANE_CLOSED,
-    EVENT_TAG_PANE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode,
-    FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE,
-    INPUT_EVENT_TAG_PASTE, InputMode, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
-    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState, STATE_SCOPE_TAG_SERVER,
-    StateScope, TerminalEventType, TerminalLifecycle, TerminalSignal, decode_focus_event,
-    decode_key_event, decode_mouse_event, decode_optional_u32, decode_paste_event,
-    decode_terminal_id, encode_focus_event, encode_key_event, encode_mouse_event,
-    encode_paste_event, encode_terminal_id,
+    COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_TERMINAL, COMMAND_TAG_GET_PERF,
+    COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE,
+    COMMAND_TAG_KILL_TERMINAL, COMMAND_TAG_KILL_TERMINALS, COMMAND_TAG_PUT_FILE,
+    COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
+    COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
+    COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS, COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES,
+    COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON,
+    COMMAND_VALUE_TAG_STATE, COMMAND_VALUE_TAG_TERMINAL_ID, Command, CommandResult, CommandValue,
+    ControlAction, EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED,
+    EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_IDLE,
+    EVENT_TAG_PANE_CLOSED, EVENT_TAG_PANE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL,
+    EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
+    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, InputMode, MAX_APPLY_INPUT_COMMAND_BODY,
+    MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState,
+    STATE_SCOPE_TAG_SERVER, StateScope, TerminalEventType, TerminalLifecycle, TerminalSignal,
+    decode_focus_event, decode_key_event, decode_mouse_event, decode_optional_u32,
+    decode_paste_event, decode_terminal_id, encode_focus_event, encode_key_event,
+    encode_mouse_event, encode_paste_event, encode_terminal_id,
 };
 
 // -----------------------------------------------------------------------------
@@ -153,6 +153,10 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         }
         Command::Shutdown => {
             enc.write_u8(COMMAND_TAG_SHUTDOWN);
+        }
+        Command::GetPerf { reset } => {
+            enc.write_u8(COMMAND_TAG_GET_PERF);
+            enc.write_u8(u8::from(*reset));
         }
         Command::AcquireInput {
             terminal_id,
@@ -376,7 +380,7 @@ fn decode_agent_report_command(
 
 /// Decode the commands whose subject is the session or the server rather than
 /// one Terminal: `GET_STATE`, `KILL_TERMINALS` (§5.2), `DETACH_CLIENTS`,
-/// `UPGRADE`, `SHUTDOWN`.
+/// `UPGRADE`, `SHUTDOWN`, `GET_PERF`.
 ///
 /// Returns `Ok(None)` — without reading from `dec` — when `tag` belongs to
 /// another family.
@@ -389,6 +393,9 @@ fn decode_session_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Comma
         COMMAND_TAG_DETACH_CLIENTS => decode_detach_clients_command(dec)?,
         COMMAND_TAG_UPGRADE => Command::Upgrade,
         COMMAND_TAG_SHUTDOWN => Command::Shutdown,
+        COMMAND_TAG_GET_PERF => Command::GetPerf {
+            reset: dec.read_u8()? != 0,
+        },
         _ => return Ok(None),
     };
     Ok(Some(command))

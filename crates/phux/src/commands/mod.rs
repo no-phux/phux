@@ -159,6 +159,7 @@ pub(crate) mod new;
 pub(crate) mod pair;
 pub(crate) mod partial;
 pub(crate) mod paste;
+pub(crate) mod perf;
 pub(crate) mod play;
 pub(crate) mod plugin;
 pub(crate) mod rec;
@@ -475,6 +476,29 @@ pub(crate) enum Command {
     Status {
         #[command(flatten)]
         json: JsonOpt,
+    },
+
+    /// Show the server's performance telemetry.
+    ///
+    /// Reads the always-on latency histograms, throughput counters, and
+    /// process figures the server keeps about itself (`GET_PERF`) and
+    /// prints them as a table grouped by pipeline stage: `pty.*` (child
+    /// output arriving), `echo.server` (input to first output on the same
+    /// pane), `tick.*` and `pump.*` (fan-out to clients), `wire.*` (socket
+    /// writes), `cmd.*` / `attach.*` (control plane), and `consumer.*`
+    /// (per-client backpressure). Without `--watch` the numbers cover the
+    /// server's lifetime; with `--watch SECS` the verb polls and prints
+    /// each interval on its own, so counters become rates and a stall
+    /// shows up in the second it happened. Does not start a server.
+    Perf {
+        #[command(flatten)]
+        json: JsonOpt,
+        /// Poll every SECS seconds and print each interval as a delta.
+        #[arg(long, value_name = "SECS")]
+        watch: Option<f64>,
+        /// Zero the server's metrics after each snapshot.
+        #[arg(long)]
+        reset: bool,
     },
 
     /// Create a new session and attach to it.

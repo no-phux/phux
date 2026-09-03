@@ -140,6 +140,7 @@ phux pair
 phux pair revoke
 phux pair rotate
 phux paste
+phux perf
 phux play
 phux plugin
 phux plugin disable

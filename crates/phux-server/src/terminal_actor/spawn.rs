@@ -368,8 +368,10 @@ fn service_write_request(
         }
         return WriterLoopControl::Continue;
     }
+    let write_started = std::time::Instant::now();
     let outcome =
         write_all_resilient(writer, &request.bytes).and_then(|()| flush_resilient(writer));
+    crate::perf::INPUT_PTY_WRITE.record_elapsed(write_started);
     match outcome {
         Ok(()) => {
             debug!(len, "pty write flushed");
@@ -458,8 +460,14 @@ pub(crate) enum PtyEvent {
     /// `Bytes`, not `Vec<u8>`: the chunk is broadcast to every attached
     /// consumer as a refcounted payload, so handing the actor a `Bytes`
     /// removes the `Vec -> Bytes` conversion the broadcast path used to make
-    /// on every chunk.
-    Bytes(bytes::Bytes),
+    /// on every chunk. `read_at` is when `read(2)` returned, so the actor can
+    /// measure how long the chunk sat in this queue (`pty.queue_wait`).
+    Bytes {
+        /// The bytes read.
+        chunk: bytes::Bytes,
+        /// When the read completed.
+        read_at: std::time::Instant,
+    },
     /// The PTY hit EOF or errored. Either way: the child is going away.
     Eof,
 }
@@ -920,11 +928,18 @@ fn drain_master_with_budget<R: Read>(reader: &mut R, buf: &mut [u8], budget: std
 /// the child stalls on `write(2)`.
 ///
 /// Returns `Break` when the receive half is gone and the reader must exit.
-fn send_pty_chunk(tx: &mpsc::Sender<PtyEvent>, chunk: bytes::Bytes) -> std::ops::ControlFlow<()> {
+fn send_pty_chunk(
+    tx: &mpsc::Sender<PtyEvent>,
+    chunk: bytes::Bytes,
+    read_at: std::time::Instant,
+) -> std::ops::ControlFlow<()> {
     use tokio::sync::mpsc::error::TrySendError;
-    match tx.try_send(PtyEvent::Bytes(chunk)) {
+    match tx.try_send(PtyEvent::Bytes { chunk, read_at }) {
         Ok(()) => std::ops::ControlFlow::Continue(()),
         Err(TrySendError::Full(event)) => {
+            // The actor is behind the child: the only place this shows up
+            // besides the child stalling is this counter.
+            crate::perf::PTY_READER_BLOCKED.incr();
             if tx.blocking_send(event).is_err() {
                 return std::ops::ControlFlow::Break(());
             }
@@ -970,12 +985,15 @@ fn start_pty_bridge(
                         break;
                     }
                     Ok(n) => {
+                        let read_at = std::time::Instant::now();
+                        crate::perf::PTY_READ_SIZE.record_len(n);
+                        crate::perf::PTY_READ_BYTES.add_len(n);
                         debug!(n, "pty read");
                         // One exact-size allocation per read, as before, but
                         // now already in the refcounted shape the broadcast
                         // path wants.
                         let chunk = bytes::Bytes::copy_from_slice(&buf[..n]);
-                        if send_pty_chunk(&pty_tx_to_actor, chunk).is_break() {
+                        if send_pty_chunk(&pty_tx_to_actor, chunk, read_at).is_break() {
                             // The actor is gone. Keep reading anyway — see
                             // `drain_master_to_eof`.
                             drain_master_to_eof(&mut reader, &mut buf);
@@ -1631,7 +1649,7 @@ mod canonical_guard_tests {
             .expect("must not hang")
             .expect("pty output channel open");
         match got {
-            PtyEvent::Bytes(bytes) => {
+            PtyEvent::Bytes { chunk: bytes, .. } => {
                 assert!(bytes.windows(5).any(|w| w == b"hello"));
             }
             PtyEvent::Eof => panic!("pane closed unexpectedly"),
@@ -1696,7 +1714,7 @@ mod canonical_guard_tests {
                 .expect("must not hang")
                 .expect("pty output channel open");
             match chunk {
-                PtyEvent::Bytes(bytes) => received.extend_from_slice(&bytes),
+                PtyEvent::Bytes { chunk: bytes, .. } => received.extend_from_slice(&bytes),
                 PtyEvent::Eof => panic!("pty closed before full delivery"),
             }
         }

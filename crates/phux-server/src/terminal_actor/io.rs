@@ -157,7 +157,11 @@ impl TerminalActor {
             return;
         };
         match tx.try_send(request) {
-            Ok(()) => debug!(len, "input queued to PTY writer"),
+            Ok(()) => {
+                crate::perf::INPUT_EVENTS.incr();
+                self.last_input_at.set(Some(std::time::Instant::now()));
+                debug!(len, "input queued to PTY writer");
+            }
             // Dropping input is fire-and-forget per SPEC L1 §9, but it
             // is not a debug-level event: the bytes are gone, nothing
             // downstream reports it, and the caller is still acked `Ok`.

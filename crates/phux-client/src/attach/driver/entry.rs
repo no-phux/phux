@@ -331,6 +331,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // Attach-handshake timing (info): HELLO -> ATTACH -> ATTACHED. The
     // span's CLOSE duration is the end-to-end attach latency a trace reader
     // wants for "why was the first paint slow." Lifecycle-rate, so info.
+    crate::perf::mark_started();
     let handshake_span = tracing::info_span!("attach_handshake", ?target);
     let (mut conn, attached, output_mode) = handshake(dial, target, probe_default_colors)
         .instrument(handshake_span)
@@ -441,6 +442,9 @@ async fn attach_session<W: crate::attach::RenderSink>(
             } => {
                 // Lifecycle transition (info): the attach loop is exiting.
                 tracing::info!(?end, "attach loop: DETACHED; exiting");
+                // The session's own numbers, one line, always: what a user
+                // pastes into a report about a laggy session.
+                tracing::info!("{}", crate::perf::summary_line());
                 // The session ended (user detach, server `DETACHED`, or a
                 // detach-intended disconnect). Restore the terminal and
                 // exit now rather than returning up the stack: a returning
