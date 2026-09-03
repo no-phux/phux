@@ -1182,7 +1182,8 @@ fn forget_terminal(client: &mut Client, terminal_id: &phux_protocol::TerminalId)
     client.invalidate_terminal_handles(terminal_id);
 }
 
-/// Records a bootstrap stream the server invalidated and drops its state.
+/// Records a bootstrap stream the server invalidated and drops presentation
+/// state only when that stream is the currently published generation.
 fn apply_bootstrap_tombstone(
     client: &mut Client,
     stream: StreamRef<'_>,
@@ -1190,6 +1191,13 @@ fn apply_bootstrap_tombstone(
     last_valid_seq: u64,
 ) -> Result<(), BridgeError> {
     client.ensure_participant(stream.terminal_id)?;
+    let retires_published = client
+        .session
+        .published(stream.terminal_id)
+        .is_some_and(|published| {
+            let key = published.key();
+            key.stream_id == stream.stream_id && key.bootstrap_id == stream.bootstrap_id
+        });
     apply_kernel_input(
         client,
         KernelInput::Tombstone {
@@ -1200,7 +1208,9 @@ fn apply_bootstrap_tombstone(
             last_valid_seq,
         },
     )?;
-    forget_terminal(client, stream.terminal_id);
+    if retires_published {
+        forget_terminal(client, stream.terminal_id);
+    }
     Ok(())
 }
 
@@ -2275,6 +2285,120 @@ mod tests {
         );
         assert!(frame.data.is_null());
         assert_eq!(frame.len, 0);
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn stale_tombstone_preserves_newer_grid_revision() {
+        let terminal_id = phux_protocol::TerminalId::local(7);
+        let c_terminal_id = PhuxTerminalId {
+            kind: 0,
+            id: 7,
+            host: PhuxBytes::default(),
+        };
+        let stream_id = phux_protocol::StreamId::new(1).expect("stream");
+        let first_bootstrap = phux_protocol::BootstrapId::new(1).expect("bootstrap");
+        let second_bootstrap = phux_protocol::BootstrapId::new(2).expect("bootstrap");
+        let session_id = SessionId::new(1);
+        let window_id = phux_protocol::WindowId::new(1);
+        let snapshot = phux_protocol::wire::info::SessionSnapshot::new(
+            session_id,
+            window_id,
+            terminal_id.clone(),
+        )
+        .with_sessions(vec![phux_protocol::wire::info::SessionInfo::new(
+            session_id, "working",
+        )])
+        .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
+            window_id, session_id, "working",
+        )])
+        .with_panes(vec![phux_protocol::wire::info::TerminalInfo::new(
+            terminal_id.clone(),
+            window_id,
+            80,
+            24,
+        )]);
+        let client = boxed_client();
+        unsafe {
+            (*client).inner.protocol_ready = true;
+            (*client).inner.attach_queued = true;
+            (*client).inner.expected_attach_id = Some(7);
+            (*client).inner.selected_profile =
+                Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
+        }
+        assert_eq!(
+            feed_kind(
+                client,
+                &FrameKind::Attached {
+                    attach_id: 7,
+                    snapshot,
+                    initial_client_id: phux_protocol::ClientId::new(9),
+                },
+            ),
+            PhuxClientResult::Ok
+        );
+        for bootstrap_id in [first_bootstrap, second_bootstrap] {
+            for frame in [
+                FrameKind::BootstrapBegin {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+                    cols: 80,
+                    rows: 24,
+                    base_seq: 0,
+                },
+                FrameKind::BootstrapChunk {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq: 0,
+                    payload: bytes::Bytes::from_static(b"$ "),
+                },
+                FrameKind::BootstrapReady {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    history_cursor: None,
+                },
+            ] {
+                assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+            }
+        }
+        assert_eq!(
+            feed_kind(client, &FrameKind::AttachReady { attach_id: 7 }),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            feed_kind(
+                client,
+                &FrameKind::BootstrapTombstone {
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id: first_bootstrap,
+                    reason: phux_protocol::wire::frame::TombstoneReason::OutboundGap,
+                    last_valid_seq: 0,
+                },
+            ),
+            PhuxClientResult::Ok
+        );
+
+        let mut view = PhuxTerminalGridView::default();
+        assert_eq!(
+            unsafe { phux_client_terminal_grid(client, &raw const c_terminal_id, &raw mut view,) },
+            PhuxClientResult::Ok
+        );
+        assert_eq!(view.stream_id, stream_id.get());
+        assert_eq!(view.bootstrap_id, second_bootstrap.get());
+        if view.top_anchor.opaque_id != 0 {
+            assert_eq!(
+                unsafe {
+                    phux_client_anchor_release(client, &raw const c_terminal_id, view.top_anchor)
+                },
+                PhuxClientResult::Ok
+            );
+        }
         unsafe { phux_client_free(client) };
     }
 
