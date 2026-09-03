@@ -308,6 +308,11 @@ fn launchd_policy_lines() -> Vec<String> {
         "  </dict>".to_owned(),
         "  <key>ThrottleInterval</key>".to_owned(),
         format!("  <integer>{RESTART_THROTTLE_SECS}</integer>"),
+        // Scheduling class (ADR-0095; ADR-0055 amendment). Owned here, not
+        // in the generator, so `phux service reconcile` moves an installed
+        // `Background` unit to `Interactive` instead of leaving it throttled.
+        "  <key>ProcessType</key>".to_owned(),
+        "  <string>Interactive</string>".to_owned(),
     ]
 }
 
@@ -386,7 +391,6 @@ pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
     for line in launchd_policy_lines() {
         let _ = writeln!(out, "{line}");
     }
-    out.push_str("  <key>ProcessType</key>\n  <string>Interactive</string>\n");
 
     let env = plan.environment();
     if !env.is_empty() {
@@ -609,13 +613,15 @@ fn reconcile_launchd(body: &str) -> Reconcile {
         let line = lines[index];
         let trimmed = line.trim();
         if depth == 1
-            && (trimmed == "<key>KeepAlive</key>" || trimmed == "<key>ThrottleInterval</key>")
+            && (trimmed == "<key>KeepAlive</key>"
+                || trimmed == "<key>ThrottleInterval</key>"
+                || trimmed == "<key>ProcessType</key>")
         {
             // The value element is balanced, so skipping it leaves `depth`
             // exactly where it was.
             let Some(end) = plist_value_end(&lines, index + 1) else {
                 return Reconcile::Unrecognized(
-                    "its KeepAlive/ThrottleInterval value is a shape this cannot rewrite safely",
+                    "its KeepAlive/ThrottleInterval/ProcessType value is a shape this cannot rewrite safely",
                 );
             };
             let _ = anchor.get_or_insert(kept.len());
@@ -2456,7 +2462,7 @@ mod tests {
   <key>KeepAlive</key>
   <true/>
   <key>ProcessType</key>
-  <string>Interactive</string>
+  <string>Background</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PHUX_QUIC_ADDR</key>
@@ -3038,10 +3044,41 @@ WantedBy=default.target
             body.contains("<key>RunAtLoad</key>\n  <true/>"),
             "RunAtLoad's own <true/> was consumed:\n{body}"
         );
-        // Two lines out (the key and its value), seven in.
+        // Four lines out (KeepAlive and ProcessType, key and value each),
+        // the policy block in.
         assert_eq!(
             body.lines().count(),
-            LEGACY_PLIST.lines().count() - 2 + launchd_policy_lines().len()
+            LEGACY_PLIST.lines().count() - 4 + launchd_policy_lines().len()
+        );
+    }
+
+    /// A unit installed before 2026-09-02 declares `ProcessType Background`,
+    /// which throttles the server (ADR-0055 amendment). Reconciling must move
+    /// it to `Interactive` rather than leave the installed value in place.
+    #[test]
+    fn reconciling_a_background_launchd_plist_moves_it_to_interactive() {
+        assert!(
+            LEGACY_PLIST.contains("<string>Background</string>"),
+            "fixture lost its point"
+        );
+        let body = patched(reconcile_unit(Manager::Launchd, LEGACY_PLIST));
+        assert!(
+            !body.contains("Background"),
+            "the throttling ProcessType survived reconciliation:\n{body}"
+        );
+        assert_eq!(
+            body.matches("<key>ProcessType</key>").count(),
+            1,
+            "ProcessType must appear exactly once:\n{body}"
+        );
+        assert!(
+            body.contains("<key>ProcessType</key>\n  <string>Interactive</string>"),
+            "Interactive ProcessType missing:\n{body}"
+        );
+        // Reconciling the result again changes nothing.
+        assert!(
+            matches!(reconcile_unit(Manager::Launchd, &body), Reconcile::Current),
+            "a reconciled unit must reconcile to itself"
         );
     }
 

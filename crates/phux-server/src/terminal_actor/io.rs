@@ -77,6 +77,15 @@ impl TerminalActor {
     /// Returns `Ok(None)` when the event was deliberately dropped
     /// (e.g., focus events while DEC 1004 is off; rejected untrusted
     /// pastes). Returns `Err` on encoder failure; the caller logs and
+    /// Was this pane's PTY silent long enough that the next output can be
+    /// attributed to the input being handed off? A pane already streaming
+    /// (a build, a `tail -f`) would pair the input with an unrelated chunk.
+    fn pane_quiet_for_echo(&self) -> bool {
+        self.last_output_at
+            .get()
+            .is_none_or(|at| at.elapsed() >= crate::perf::ECHO_QUIET_WINDOW)
+    }
+
     /// continues — a single bad input must not kill the actor.
     pub(super) fn encode_input(
         &self,
@@ -124,7 +133,10 @@ impl TerminalActor {
                     debug!(?input, "input encoded to zero bytes; nothing to write");
                     return;
                 }
-                self.service_encoded_input(EncodedInputRequest::legacy(bytes));
+                self.service_encoded_input(EncodedInputRequest::legacy_probe(
+                    bytes,
+                    super::echo_probe_for(input),
+                ));
             }
             Ok(None) => {
                 debug!(?input, "input gated/dropped by encoder");
@@ -148,6 +160,7 @@ impl TerminalActor {
         if request.bytes.is_empty() && request.completion.is_none() {
             return;
         }
+        let echo_probe = request.echo_probe;
         let len = request.bytes.len();
         let Some(tx) = self.pty_tx.as_ref() else {
             debug!("no PTY; encoded input discarded");
@@ -159,7 +172,9 @@ impl TerminalActor {
         match tx.try_send(request) {
             Ok(()) => {
                 crate::perf::INPUT_EVENTS.incr();
-                self.last_input_at.set(Some(std::time::Instant::now()));
+                if echo_probe && self.pane_quiet_for_echo() {
+                    self.last_input_at.set(Some(std::time::Instant::now()));
+                }
                 debug!(len, "input queued to PTY writer");
             }
             // Dropping input is fire-and-forget per SPEC L1 §9, but it

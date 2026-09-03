@@ -87,12 +87,14 @@ impl Metric {
         }
     }
 
-    /// Zero the source.
+    /// Zero the source. Gauges are last-value readings, not accumulations,
+    /// so a reset leaves them alone: zeroing `proc.sched_interactive` would
+    /// turn a granted promotion into a reported refusal.
     pub fn reset(&self) {
         match self.source {
             MetricSource::Histogram(h) => h.reset(),
             MetricSource::Counter(c) => c.reset(),
-            MetricSource::Gauge(g) => g.reset(),
+            MetricSource::Gauge(_) => {}
         }
     }
 }
@@ -267,6 +269,10 @@ mod tests {
         crate::reset(RESET_TABLE);
         assert_eq!(RH.count(), 0);
         assert_eq!(RC.get(), 0);
-        assert_eq!(RG.get(), 0);
+        assert_eq!(
+            RG.get(),
+            1,
+            "a gauge is a reading, not a total; reset leaves it"
+        );
     }
 }

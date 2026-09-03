@@ -124,7 +124,7 @@ move. The columns are `count` / `rate/s` for counters and `p50` `p90` `p99`
 | `pty.queue_wait` | reader-to-actor queue delay | p99 under 1 ms |
 | `pty.burst.bytes` / `pty.burst.chunks` | how many reads the actor coalesced into one parse and one frame | chunks above 1 under a flood is coalescing working |
 | `pty.vt_apply` | libghostty parse time per burst | p99 under 2 ms at 16 KiB |
-| `echo.server` | input handed to the PTY writer until the next output from that pane; includes the child's own reaction | p50 under 1 ms for a shell prompt |
+| `echo.server` | key or paste handed to the PTY writer until the next output from that pane, sampled only when the pane was quiet for the previous 100 ms; includes the child's own reaction | p50 under 1 ms for a shell prompt |
 | `input.pty_write` | `write(2)` plus flush on the writer thread | p99 under 200 us |
 | `tick.emit` / `tick.synth` / `tick.out_bytes` | state-sync fan-out: whole tick, per-consumer diff, per-consumer frame size | tick p99 under 5 ms; grows with consumers x rows |
 | `consumer.mailbox_full` | ticks that skipped a consumer whose outbound queue was full | 0; a steady rate is a client that cannot drain |
@@ -141,9 +141,10 @@ trip (keystroke out to first output frame back for that pane), `vt_apply`
 and `paint.full` percentiles, frame counts, pacer waits, and stdout drops.
 `PHUX_RENDER_PROF=1` still emits the per-second `render_prof` line, now with
 `echo_p50_us` / `echo_p99_us` beside the counters. Degradations that used to
-log at debug — a full consumer mailbox, a dropped stdout backlog, a broadcast
-lag — now warn at most once per ten seconds with a `suppressed` count, so
-they are visible at the default filter without flooding it.
+log at debug — a full consumer mailbox, a dropped stdout backlog — now warn
+at most once per ten seconds with a `suppressed` count, so they are visible
+at the default filter without flooding it; a broadcast lag already warned
+and now also counts (`pump.lagged`).
 
 For a reproducible number rather than a live one, `just perf-echo` runs the
 byte-level echo probe against an isolated server at a chosen size with a
@@ -493,6 +494,25 @@ service uninstall` cancels it.
 Over a socket with nothing listening, `--adopt` is an ordinary install.
 The flag means "never stop a running server to install", so it is always
 safe to pass.
+
+### Scheduling class
+
+The server is the keystroke path between the user and every pane, so it
+runs in the interactive scheduling class, not the batch one. On macOS every
+thread that carries input or its echo — the runtime thread, each PTY reader
+and writer, the input lane, the client's attach loop and stdout writer —
+requests `QOS_CLASS_USER_INTERACTIVE` for itself at start (no privilege
+needed), and the launchd unit `phux service install` writes declares
+`ProcessType` `Interactive`. `phux perf` reports the result as
+`proc.sched_interactive` (`1` granted, `0` not). Until 2026-09-02 the unit
+said `Background`, which asked launchd to throttle exactly this process;
+under a full-CPU load (a cargo build, a fleet of agents) that turned a 0.5 ms
+keystroke echo p99 into 15-60 ms with the server itself using well under one
+percent of a core. `phux service reconcile` (run automatically after an
+update) rewrites an installed `Background` unit to `Interactive`; the change
+takes effect when launchd next starts the server. Linux has no unprivileged
+equivalent (lowering `nice` needs `CAP_SYS_NICE`), so the request is a no-op
+there and the gauge reads `0`.
 
 ## Service-managed pane environment
 

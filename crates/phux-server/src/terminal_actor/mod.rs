@@ -657,6 +657,9 @@ pub struct TerminalActor {
     /// When input bytes were last handed to the PTY writer, consumed by the
     /// next output burst to sample `echo.server` (`crate::perf`).
     last_input_at: std::cell::Cell<Option<std::time::Instant>>,
+    /// When this pane last produced output; gates `echo.server` arming to a
+    /// pane that was quiet (`crate::perf::ECHO_QUIET_WINDOW`).
+    last_output_at: std::cell::Cell<Option<std::time::Instant>>,
     /// Actor-global raw PTY sequence; never resets across bootstrap generations.
     raw_seq: u64,
     color_query_scanner: ColorQueryScanner,

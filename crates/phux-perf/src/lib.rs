@@ -19,7 +19,7 @@
 //!
 //! The histogram is a fixed 504-bucket log-linear layout (exact below 32,
 //! then eight sub-buckets per octave up to `u64::MAX`), so a percentile is
-//! accurate to within one eighth of an octave, about nine percent, which is
+//! reported as a bucket bound at most 12.5% above the true value, which is
 //! more than enough to tell a 700 µs echo from a 17 ms one. See
 //! `docs/operations.md` §"Performance observability" for the metric catalog
 //! and what each number should look like on a healthy machine.
@@ -63,9 +63,11 @@ pub fn snapshot(role: &str, table: &[Metric], uptime: std::time::Duration) -> Pe
     }
 }
 
-/// Zero every metric in `table`. Racy by design: a sample recorded during
-/// the reset lands in either the old or the new epoch, which is fine for a
-/// diagnostic counter and is why nothing here takes a lock.
+/// Zero every histogram and counter in `table`; gauges keep their reading.
+///
+/// Racy by design: a sample recorded during the reset lands in either the
+/// old or the new epoch, which is fine for a diagnostic counter and is why
+/// nothing here takes a lock.
 pub fn reset(table: &[Metric]) {
     for metric in table {
         metric.reset();

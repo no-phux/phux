@@ -47,24 +47,42 @@ pub(crate) fn run_perf(opts: PerfOptions, socket: Option<PathBuf>) -> ExitCode {
 
 async fn run(opts: PerfOptions, socket_path: &Path) -> Result<(), AttachError> {
     let mut conn = Connection::connect(socket_path).await?;
-    phux_client::state::probe_hello(&mut conn).await?;
+    // L1.md §5.1: a client MUST observe the GET_PERF feature bit before
+    // sending the command; an older server would treat tag 0x18 as a decode
+    // error and drop the connection, which reads as a crash, not an answer.
+    if let Some(features) = phux_client::state::probe_hello_features(&mut conn).await?
+        && !features.contains(phux_protocol::caps::ServerFeature::GetPerf)
+    {
+        return Err(AttachError::Refused(
+            "this server predates GET_PERF (phux 0.24.0 or older); upgrade it with `phux upgrade` and try again"
+                .to_owned(),
+        ));
+    }
     let Some(every) = opts.watch else {
         let report = phux_client::state::get_perf_on(&mut conn, opts.reset).await?;
         print_report(opts.json, &report, None);
         return Ok(());
     };
-    let every = Duration::from_secs_f64(every.max(0.0)).max(MIN_WATCH);
+    let Some(every) = Duration::try_from_secs_f64(every)
+        .ok()
+        .map(|d| d.max(MIN_WATCH))
+    else {
+        return Err(AttachError::Refused(format!(
+            "--watch {every} is not a usable interval; give a finite number of seconds"
+        )));
+    };
     let mut prev = phux_client::state::get_perf_on(&mut conn, opts.reset).await?;
     loop {
         tokio::time::sleep(every).await;
         let cur = phux_client::state::get_perf_on(&mut conn, opts.reset).await?;
-        // With --reset the server already handed us an interval; otherwise
-        // fold the two lifetime reports into one.
-        let interval = if opts.reset {
-            cur.clone()
-        } else {
-            cur.delta(&prev)
-        };
+        // The header (interval length, CPU consumed) is always the delta of
+        // the two reports. With --reset the server already zeroed the
+        // metrics after `prev`, so `cur`'s metrics are the interval as-is;
+        // otherwise fold the two lifetime tables into one.
+        let mut interval = cur.delta(&prev);
+        if opts.reset {
+            interval.metrics.clone_from(&cur.metrics);
+        }
         if !opts.json {
             // Home and clear between samples so the table reads like `top`.
             out!("\x1b[H\x1b[2J");

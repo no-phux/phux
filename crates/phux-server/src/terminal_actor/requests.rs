@@ -341,6 +341,11 @@ impl std::fmt::Debug for WriteCompletionSink {
 pub(crate) struct EncodedInputRequest {
     /// Fully encoded PTY bytes.
     pub(crate) bytes: Bytes,
+    /// Whether this request may arm the `echo.server` sample: true for a key
+    /// or paste (something a program answers), false for mouse, focus, and
+    /// opaque replies, which would otherwise be paired with the next
+    /// unrelated output.
+    pub(crate) echo_probe: bool,
     /// See [`WriteCompletion`] and [`WriteCompletionSink`]. Dropping the sink
     /// reports indeterminate delivery.
     pub(crate) completion: Option<WriteCompletionSink>,
@@ -348,8 +353,15 @@ pub(crate) struct EncodedInputRequest {
 
 impl EncodedInputRequest {
     pub(crate) fn legacy(bytes: Vec<u8>) -> Self {
+        Self::legacy_probe(bytes, true)
+    }
+
+    /// [`Self::legacy`] with the echo-probe flag chosen by the caller, which
+    /// is the one that still knows what kind of input the bytes encode.
+    pub(crate) fn legacy_probe(bytes: Vec<u8>, echo_probe: bool) -> Self {
         Self {
             bytes: bytes.into(),
+            echo_probe,
             completion: None,
         }
     }
@@ -357,6 +369,7 @@ impl EncodedInputRequest {
     pub(crate) const fn opaque(bytes: Bytes) -> Self {
         Self {
             bytes,
+            echo_probe: false,
             completion: None,
         }
     }
@@ -364,9 +377,16 @@ impl EncodedInputRequest {
     pub(crate) fn acknowledged(bytes: Vec<u8>, completion: WriteCompletionSink) -> Self {
         Self {
             bytes: Bytes::from(bytes),
+            echo_probe: true,
             completion: Some(completion),
         }
     }
+}
+
+/// Does this input kind arm the `echo.server` sample? Keys and pastes are
+/// answered by the program; mouse and focus events usually are not.
+pub(crate) const fn echo_probe_for(input: &TerminalInput) -> bool {
+    matches!(input, TerminalInput::Key(_) | TerminalInput::Paste(_))
 }
 
 /// Default capacity of the per-pane output broadcast channel.

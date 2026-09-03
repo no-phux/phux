@@ -580,6 +580,7 @@ impl TerminalActor {
                 crate::perf::ECHO_SERVER.record_duration(since_input);
             }
         }
+        self.last_output_at.set(Some(std::time::Instant::now()));
         let burst = self.coalesce_pty_burst(first);
         crate::perf::PTY_BURST_BYTES.record_len(burst.payload.len());
         crate::perf::PTY_BURST_CHUNKS.record(burst.chunks);

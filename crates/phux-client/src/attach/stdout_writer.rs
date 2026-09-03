@@ -306,7 +306,12 @@ fn spawn_writer_into<W: Write + Send + 'static>(inner: W) -> (StdoutSink, Writer
     let writer_shared = Arc::clone(&shared);
     let join = std::thread::Builder::new()
         .name("phux-stdout".to_owned())
-        .spawn(move || writer_loop(&writer_shared, inner))
+        .spawn(move || {
+            // The glass is the end of the echo path; keep the thread that
+            // writes it in the interactive class with the loop that feeds it.
+            let _ = phux_perf::promote_current_thread();
+            writer_loop(&writer_shared, inner);
+        })
         .expect("spawn phux-stdout writer thread");
     let sink = StdoutSink {
         shared: Arc::clone(&shared),

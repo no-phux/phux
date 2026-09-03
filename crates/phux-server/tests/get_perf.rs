@@ -126,7 +126,12 @@ fn get_perf_reports_hot_path_metrics_and_resets_on_request() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let report = loop {
             let report = get_perf(&mut stream, 1, false).await;
-            if counter(&report, "pty.read.bytes") > 0 || std::time::Instant::now() > deadline {
+            // The reader thread counts bytes before the actor applies them
+            // and before the pump writes the frame to us, so wait for the
+            // stage furthest downstream that the assertions below need.
+            let settled = histogram_count(&report, "pty.vt_apply") > 0
+                && histogram_count(&report, "wire.write") > 0;
+            if settled || std::time::Instant::now() > deadline {
                 break report;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;

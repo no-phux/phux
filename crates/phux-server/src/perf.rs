@@ -38,11 +38,13 @@ pub static PTY_VT_APPLY: Histogram = Histogram::new();
 
 // --- echo: input in, output out, same pane --------------------------------
 
-/// Microseconds from handing input bytes to the PTY writer until the next
+/// Microseconds from handing a key or paste to the PTY writer until the next
 /// output burst arrived from that pane.
 ///
-/// Includes the child's own reaction time, so it is an upper bound on the
-/// server's share; samples over two seconds are discarded as "the program
+/// Armed only when the pane was quiet for [`ECHO_QUIET_WINDOW`] beforehand
+/// (a streaming pane would pair the input with an unrelated chunk). Includes
+/// the child's own reaction time, so it is an upper bound on the server's
+/// share; samples over [`ECHO_SAMPLE_CEILING`] are discarded as "the program
 /// did not echo".
 pub static ECHO_SERVER: Histogram = Histogram::new();
 
@@ -156,6 +158,11 @@ pub static TABLE: &[Metric] = &[
 /// Server-side echo samples longer than this are a program that did not
 /// echo, not a slow server, and are dropped rather than skewing the tail.
 pub const ECHO_SAMPLE_CEILING: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A key or paste arms `echo.server` only if the pane produced no output for
+/// this long beforehand, so a streaming pane does not pair the input with
+/// the next unrelated chunk.
+pub const ECHO_QUIET_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Rate limit shared by the degradation warnings this module owns.
 pub const WARN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);

@@ -2,9 +2,11 @@
 //!
 //! Values below 32 get their own bucket; from 32 upward each power-of-two
 //! octave is split into eight sub-buckets by the three bits after the
-//! leading one. That is 32 + 59 * 8 = 504 buckets covering all of `u64`,
-//! with a worst-case relative error of one eighth of an octave (about 9%)
-//! on any reported percentile. Recording is a single relaxed `fetch_add`
+//! leading one. That is 32 + 59 * 8 = 504 buckets covering all of `u64`.
+//! Buckets are linear within an octave, so the widest relative bucket is
+//! the first of each octave at one eighth of its lower bound: a reported
+//! percentile (a bucket's upper bound) is at most 12.5% above the true
+//! value. Recording is a single relaxed `fetch_add`
 //! per bucket plus the running count / sum / min / max, so it is safe to
 //! call from any thread on a hot path.
 
@@ -160,15 +162,19 @@ impl Histogram {
             })
             .collect();
         let count = self.count.load(Relaxed);
+        let max = self.max.load(Relaxed);
+        // A reset racing this read can leave `min` at its sentinel while
+        // `count` is already non-zero; clamp so it never renders as hours.
+        let min = if count == 0 {
+            0
+        } else {
+            self.min.load(Relaxed).min(max)
+        };
         HistogramSnapshot {
             count,
             sum: self.sum.load(Relaxed),
-            min: if count == 0 {
-                0
-            } else {
-                self.min.load(Relaxed)
-            },
-            max: self.max.load(Relaxed),
+            min,
+            max,
             buckets,
         }
     }
@@ -347,13 +353,14 @@ mod tests {
     }
 
     #[test]
-    fn relative_error_stays_under_one_eighth_octave() {
-        for v in [40_u64, 100, 777, 5000, 123_456, 9_999_999] {
+    fn relative_error_stays_within_one_eighth_of_the_lower_bound() {
+        for v in [32_u64, 40, 100, 777, 5000, 123_456, 9_999_999, 1 << 40] {
             let idx = bucket_index(v);
             let width = bucket_upper(idx) - bucket_lower(idx) + 1;
-            // width / lower <= 1/8 for every log-linear bucket
+            // (upper - lower + 1) / lower <= 1/8 for every log-linear bucket:
+            // the reported bound is at most 12.5% above the true value.
             assert!(
-                width * 8 <= bucket_lower(idx) + width,
+                width * 8 <= bucket_lower(idx),
                 "bucket {idx} too wide for {v}"
             );
         }

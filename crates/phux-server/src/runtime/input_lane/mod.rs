@@ -479,13 +479,14 @@ fn handoff_encoded(
     pane: phux_core::ids::TerminalId,
     handle: &TerminalHandle,
     bytes: Option<Vec<u8>>,
+    echo_probe: bool,
 ) -> Result<bool, CommandResult> {
     let Some(bytes) = bytes else {
         return Ok(true);
     };
     match handle
         .encoded_input
-        .try_send(EncodedInputRequest::legacy(bytes))
+        .try_send(EncodedInputRequest::legacy_probe(bytes, echo_probe))
     {
         Ok(()) => Ok(true),
         Err(mpsc::error::TrySendError::Full(_)) => {
@@ -536,7 +537,12 @@ fn process_attached(
             {
                 return Ok(false);
             }
-            handoff_encoded(current.pane, &current.handle, bytes)
+            handoff_encoded(
+                current.pane,
+                &current.handle,
+                bytes,
+                crate::terminal_actor::echo_probe_for(input),
+            )
         })
         .and_then(Result::ok)
         .unwrap_or(false);
@@ -573,7 +579,12 @@ fn process_headless(
         {
             return Ok(false);
         }
-        handoff_encoded(current.pane, &current.handle, bytes)
+        handoff_encoded(
+            current.pane,
+            &current.handle,
+            bytes,
+            crate::terminal_actor::echo_probe_for(&input),
+        )
     }) {
         Ok(Ok(_)) => CommandResult::Ok,
         Ok(Err(result)) | Err(result) => result,

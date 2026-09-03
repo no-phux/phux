@@ -290,6 +290,35 @@ pub async fn probe_hello(conn: &mut Connection) -> Result<(u16, u16, u16), Attac
     }
 }
 
+/// Send `HELLO` on a raw connection and return the `ServerFeatureSet` the
+/// server advertised in `HELLO_OK`.
+///
+/// Lets a caller honour a "MUST observe the feature bit before sending"
+/// rule. `None` when the connection was already negotiated by the attach
+/// path, whose caller already holds the features.
+pub async fn probe_hello_features(
+    conn: &mut Connection,
+) -> Result<Option<phux_protocol::caps::ServerFeatureSet>, AttachError> {
+    if conn.negotiated_bootstrap().is_some() {
+        return Ok(None);
+    }
+    conn.send(&FrameKind::Hello {
+        client_name: format!("phux-cli/{}", env!("CARGO_PKG_VERSION")),
+        protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+        protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+        protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+        client_caps: ClientCapabilities::default(),
+    })
+    .await?;
+    match conn.recv().await? {
+        FrameKind::HelloOk { server_caps, .. } => Ok(Some(server_caps.features)),
+        FrameKind::Error { message, .. } => Err(AttachError::Refused(message)),
+        _ => Err(AttachError::Protocol(crate::explain::unexpected_reply(
+            "HELLO",
+        ))),
+    }
+}
+
 /// The uncorrelated `ERROR` messages among frames the server interleaved
 /// ahead of a `COMMAND_RESULT`.
 ///

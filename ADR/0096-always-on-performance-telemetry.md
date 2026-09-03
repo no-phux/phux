@@ -42,8 +42,8 @@ actually complaining about were gone.
 ## Decision
 
 1. **A `phux-perf` crate owns the primitives.** A 504-bucket log-linear
-   `Histogram` (exact below 32, eight sub-buckets per octave, under 9 percent
-   percentile error), a `Counter`, a `Gauge`, a `Throttle` for rate-limited
+   `Histogram` (exact below 32, eight sub-buckets per octave, a reported
+   percentile at most 12.5 percent above the true value), a `Counter`, a `Gauge`, a `Throttle` for rate-limited
    warnings, `getrusage` process statistics, and a `PerfReport` that
    serialises to JSON and folds two reports into an interval. Recording is
    one relaxed `fetch_add`; nothing allocates, locks, or formats on the hot
@@ -61,9 +61,10 @@ actually complaining about were gone.
    draft under the existing `0.8.0` because §6.1's `major.minor` admission
    test would otherwise lock out every deployed 0.8 client.
 4. **Degradation is a rate-limited `warn!`, not a `debug!`.** A full consumer
-   mailbox, a dropped stdout backlog, and a broadcast lag each warn at most
-   once per interval with a suppressed count, so the log carries the fact
-   and the magnitude at the default filter without carrying the volume.
+   mailbox and a dropped stdout backlog each warn at most once per interval
+   with a suppressed count, so the log carries the fact and the magnitude at
+   the default filter without carrying the volume. A broadcast lag already
+   warned; it now also counts.
 5. **The client reports itself.** `echo.rtt` is sampled where the paint
    pacer already observes replies; paint and apply durations use a drop
    timer; the attach loop logs one `session perf:` line on exit. The
