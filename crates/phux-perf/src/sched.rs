@@ -18,6 +18,13 @@
 /// thread, the PTY reader and writer threads, the input lane, the client's
 /// runtime thread and its stdout writer.
 #[must_use]
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        clippy::missing_const_for_fn,
+        reason = "a no-op on this target; an FFI call on macOS"
+    )
+)]
 pub fn promote_current_thread() -> bool {
     imp::promote_current_thread()
 }
@@ -43,7 +50,7 @@ mod imp {
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
-    pub(super) fn promote_current_thread() -> bool {
+    pub(super) const fn promote_current_thread() -> bool {
         false
     }
 }
