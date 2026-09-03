@@ -77,9 +77,11 @@ pub static TABLE: &[Metric] = &[
 pub static STDOUT_DROP_WARN: phux_perf::Throttle =
     phux_perf::Throttle::new(std::time::Duration::from_secs(10));
 
-fn started() -> Instant {
-    static STARTED: OnceLock<Instant> = OnceLock::new();
-    *STARTED.get_or_init(Instant::now)
+/// Uptime epoch and the rusage reading taken with it, so the process section
+/// covers the same span as the uptime (see the server's `perf::started`).
+fn started() -> &'static (Instant, Option<phux_perf::ProcessStats>) {
+    static STARTED: OnceLock<(Instant, Option<phux_perf::ProcessStats>)> = OnceLock::new();
+    STARTED.get_or_init(|| (Instant::now(), phux_perf::ProcessStats::capture()))
 }
 
 /// Pin the uptime epoch and promote the calling thread (the attach loop's
@@ -92,7 +94,8 @@ pub fn mark_started() {
 /// Snapshot the client table.
 #[must_use]
 pub fn report() -> PerfReport {
-    phux_perf::snapshot("client", TABLE, started().elapsed())
+    let (epoch, baseline) = started();
+    phux_perf::snapshot_since("client", TABLE, epoch.elapsed(), baseline.as_ref())
 }
 
 /// One line for the client log when an attach ends: the echo and paint

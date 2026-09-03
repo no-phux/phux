@@ -170,9 +170,13 @@ pub const WARN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10
 /// Warn throttle for a consumer whose mailbox is full.
 pub static MAILBOX_FULL_WARN: phux_perf::Throttle = phux_perf::Throttle::new(WARN_INTERVAL);
 
-fn started() -> Instant {
-    static STARTED: OnceLock<Instant> = OnceLock::new();
-    *STARTED.get_or_init(Instant::now)
+/// Uptime epoch and the rusage reading taken with it. Pinned together so the
+/// report's process section covers the same span as its uptime: after a
+/// `phux upgrade` re-exec the pid, and its cumulative rusage, survive while
+/// the epoch restarts.
+fn started() -> &'static (Instant, Option<phux_perf::ProcessStats>) {
+    static STARTED: OnceLock<(Instant, Option<phux_perf::ProcessStats>)> = OnceLock::new();
+    STARTED.get_or_init(|| (Instant::now(), phux_perf::ProcessStats::capture()))
 }
 
 /// Pin the uptime epoch and promote the calling thread to interactive scheduling.
@@ -199,7 +203,8 @@ pub fn promote_helper_thread(name: &str) {
 /// derived from registry state this module cannot see).
 #[must_use]
 pub fn report() -> PerfReport {
-    phux_perf::snapshot("server", TABLE, started().elapsed())
+    let (epoch, baseline) = started();
+    phux_perf::snapshot_since("server", TABLE, epoch.elapsed(), baseline.as_ref())
 }
 
 /// Zero every metric after a `GET_PERF { reset: true }`.
