@@ -4,7 +4,7 @@
 # update the live model but never arm the shipping debounced state write.
 test: TypeScript topology changes use the shipping debounce and file effect
 build: test -Dtypescript-spike=true -Dplatform=null
-red: 2026-09-04 at 3d26c23
+red: 2026-09-04 at a3691dc
 diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
 --- a/typescript-spike/src/native_extension.zig
 +++ b/typescript-spike/src/native_extension.zig
