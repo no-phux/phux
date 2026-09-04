@@ -47,7 +47,11 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     const framed = protocol.encodeSnapshotHeader(sequence, revision);
     @memcpy(out[0..framed.len], &framed);
 
-    const workspace = model.wsConst();
+    // The fixed header is always the main window. `active_window` is carried
+    // separately for focused targeting; using wsConst() here silently paired
+    // the secondary tab count with runs[0], corrupting the snapshot whenever
+    // a secondary window owned focus and the two windows had different runs.
+    const workspace = &model.primary;
     out[18] = @intCast(model.active_window);
     out[19] = @intFromEnum(model.tab_placement);
     out[20] = @intCast(workspace.tab_count);

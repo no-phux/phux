@@ -553,8 +553,14 @@ const PointerHost = struct {
     fn event(context: *anyopaque, runtime: *native_sdk.Runtime, value: native_sdk.Event) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
         defer self.syncSelectionAutoscrollTimer(runtime) catch {};
+        const engine = bridge.engine;
+        const before_window = if (engine) |current| current.model.active_window else 0;
+        const before_sequence = if (engine) |current| current.sequence else 0;
         routeNativeInput(value);
         try self.inner.event(runtime, value);
+        if (engine) |current| {
+            if (current.commitWindowAdoption(before_window, before_sequence)) bridge.announce(current);
+        }
     }
     fn stop(context: *anyopaque, runtime: *native_sdk.Runtime) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
@@ -1415,4 +1421,74 @@ test "a new window opens a second workspace with its own shell and closes whole 
     try std.testing.expect(!engine.model.windowOpen(1));
     try std.testing.expect(!rig.app_state.model.window1Open);
     try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.windows(frame).len);
+}
+
+fn compiledViewHasLabel(model: *const core.Model, window_index: usize, label: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const node = if (window_index == 0)
+        mainView(&ui, model)
+    else
+        windowView(&ui, model, "phux-window-1");
+    const tree = try ui.finalizeWithTokens(node, cockpit.projection.cockpitTokens(bridge.engine.?.model));
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const layout_tree = try canvas.layoutWidgetTreeWithTokens(
+        tree.root,
+        native_sdk.geometry.RectF.init(0, 0, 1100, 640),
+        cockpit.projection.cockpitTokens(bridge.engine.?.model),
+        nodes,
+    );
+    for (layout_tree.nodes) |entry| {
+        if (std.mem.eql(u8, entry.widget.semantics.label, label)) return true;
+    }
+    return false;
+}
+
+// GUARD: ts-secondary-snapshot-primary
+test "a focused secondary snapshot keeps main and secondary projections distinct" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+
+    // Open the second window, then make a main-window mutation so both the
+    // engine and core agree that main is active before the platform command.
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    try rig.dispatch(.new_terminal);
+    try rig.settle(2, "READY");
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    try std.testing.expectEqual(@as(i64, 0), rig.app_state.model.activeWindow);
+
+    // This is the stable process-local window id the native host records; it
+    // never enters TypeScript. The command's projection slot does.
+    engine.model.wsAt(1).?.window_id = 42;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .native_command = .{
+        .name = "tabs.palette",
+        .window_id = 42,
+    } });
+    try rig.settle(3, "READY");
+
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.activeWindow);
+    try std.testing.expectEqual(@as(usize, 2), rig.app_state.model.tabs.len);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.window1Tabs.len);
+}
+
+// GUARD: ts-secondary-overlay-scope
+test "a secondary-window switcher is scoped to the focused window" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.activeWindow);
+
+    try rig.dispatch(.palette_open);
+    try std.testing.expect(rig.app_state.model.paletteOpen);
+    try std.testing.expect(!rig.app_state.model.mainPaletteOpen);
+    try std.testing.expect(rig.app_state.model.window1PaletteOpen);
+    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Find terminal"));
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 1, "Find terminal"));
 }

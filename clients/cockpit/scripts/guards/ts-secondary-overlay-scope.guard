@@ -1,0 +1,13 @@
+# GUARD ts-secondary-overlay-scope
+#
+# A global paletteOpen binding paints the same modal into every platform
+# window. The main markup must consume its active-window-scoped projection.
+test: a secondary-window switcher is scoped to the focused window
+build: test -Dtypescript-spike=true -Dplatform=null
+red: 2026-09-04 at 78d857e
+diff --git a/typescript-spike/src/app.native b/typescript-spike/src/app.native
+--- a/typescript-spike/src/app.native
++++ b/typescript-spike/src/app.native
+@@ -58,1 +58,1 @@
+-  <if test="{mainPaletteOpen}">
++  <if test="{paletteOpen}">

@@ -552,6 +552,18 @@ pub const Engine = struct {
         }
     }
 
+    /// A platform event may adopt a window before the core handles it. Native
+    /// commands already advance the ordered seam inside that same dispatch;
+    /// core-only commands (the switcher) do not, so finish the adoption here
+    /// exactly once after the inner app has run.
+    pub fn commitWindowAdoption(self: *Engine, before_window: usize, before_sequence: u64) bool {
+        if (self.model.active_window == before_window or self.sequence != before_sequence) return false;
+        self.sequence +%= 1;
+        self.revision +%= 1;
+        self.intent_refused = false;
+        return true;
+    }
+
     // ------------------------------------------------------------ shells
 
     /// Spawn a shell for every registered pane that does not have one, the

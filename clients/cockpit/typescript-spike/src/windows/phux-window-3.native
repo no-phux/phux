@@ -1,2 +1,2 @@
 <import src="components/cockpit-window.native"/>
-<use template="cockpit-window" tabs="{window3Tabs}" width="{window3TabWidth}" more="{window3HasOverflow}" cue="{window3OverflowLabel}" paletteopen="{paletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" settingsopen="{settingsOpen}" themes="{themes}" configexists="{configExists}" confignotice="{configNotice}" />
+<use template="cockpit-window" tabs="{window3Tabs}" width="{window3TabWidth}" more="{window3HasOverflow}" cue="{window3OverflowLabel}" paletteopen="{window3PaletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" settingsopen="{window3SettingsOpen}" themes="{themes}" configexists="{configExists}" confignotice="{configNotice}" />

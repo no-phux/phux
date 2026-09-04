@@ -55,7 +55,7 @@
     </row>
   </else>
 
-  <if test="{paletteOpen}">
+  <if test="{mainPaletteOpen}">
     <row main="center" cross="start" padding="24">
       <panel width="520" padding="16">
         <column gap="12">
@@ -86,7 +86,7 @@
     </row>
   </if>
 
-  <if test="{settingsOpen}">
+  <if test="{mainSettingsOpen}">
     <row main="end">
       <panel width="400" padding="12">
         <column gap="8">

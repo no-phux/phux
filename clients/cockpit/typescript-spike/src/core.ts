@@ -68,13 +68,18 @@ export interface Model {
   readonly overflowLabel: Uint8Array;
   readonly selectedTab: number;
   readonly tabPlacement: TabPlacement;
+  /// Native projection slot for the platform window that owns modal chrome.
+  /// Platform ids never cross the seam; the snapshot carries only 0..4.
+  readonly activeWindow: number;
   readonly paletteOpen: boolean;
+  readonly mainPaletteOpen: boolean;
   readonly paletteQuery: Uint8Array;
   readonly paletteAnchor: number;
   readonly paletteFocus: number;
   readonly paletteRows: readonly SwitcherRow[];
   readonly paletteCursor: number;
   readonly settingsOpen: boolean;
+  readonly mainSettingsOpen: boolean;
   readonly themes: readonly ThemeRow[];
   readonly settingsCursor: number;
   readonly configExists: boolean;
@@ -86,21 +91,29 @@ export interface Model {
   readonly window1TabWidth: number;
   readonly window1HasOverflow: boolean;
   readonly window1OverflowLabel: Uint8Array;
+  readonly window1PaletteOpen: boolean;
+  readonly window1SettingsOpen: boolean;
   readonly window2Open: boolean;
   readonly window2Tabs: readonly Tab[];
   readonly window2TabWidth: number;
   readonly window2HasOverflow: boolean;
   readonly window2OverflowLabel: Uint8Array;
+  readonly window2PaletteOpen: boolean;
+  readonly window2SettingsOpen: boolean;
   readonly window3Open: boolean;
   readonly window3Tabs: readonly Tab[];
   readonly window3TabWidth: number;
   readonly window3HasOverflow: boolean;
   readonly window3OverflowLabel: Uint8Array;
+  readonly window3PaletteOpen: boolean;
+  readonly window3SettingsOpen: boolean;
   readonly window4Open: boolean;
   readonly window4Tabs: readonly Tab[];
   readonly window4TabWidth: number;
   readonly window4HasOverflow: boolean;
   readonly window4OverflowLabel: Uint8Array;
+  readonly window4PaletteOpen: boolean;
+  readonly window4SettingsOpen: boolean;
   readonly engineConnected: boolean;
   readonly engineSequence: WireU64;
   readonly engineRevision: WireU64;
@@ -145,6 +158,9 @@ export type Msg =
 
 export const viewUnbound = [
   "selectedTab",
+  "activeWindow",
+  "paletteOpen",
+  "settingsOpen",
   "select_active_tab",
   "window_closed",
   "paletteAnchor",
@@ -248,10 +264,10 @@ const NO_ROWS: readonly SwitcherRow[] = [];
 const NO_TABS: readonly Tab[] = [];
 const NO_THEMES: readonly ThemeRow[] = [];
 
-/// The switcher rows for a needle: every tab whose strip position or title
-/// contains it, the shipping palette's rule minus the working directory,
-/// which the snapshot does not carry yet. The cursor is clamped into the
-/// filtered list so an Enter always lands on a row that is showing.
+/// The switcher rows for a needle: every tab whose strip position, title or
+/// working directory contains it, matching the shipping palette's rule. The
+/// cursor is clamped into the filtered list so Enter always lands on a row
+/// that is showing.
 function switcherRows(tabs: readonly Tab[], needle: Uint8Array, cursor: number): readonly SwitcherRow[] {
   const rows: SwitcherRow[] = [];
   for (let index = 0; index < tabs.length; index += 1) {
@@ -282,6 +298,26 @@ function withSwitcher(model: Model, query: Uint8Array, anchor: number, focus: nu
   const rows = switcherRows(model.tabs, query, cursor);
   const clamped = rows.length === 0 ? 0 : cursor >= 0 && cursor < rows.length && cursor <= 255 ? Math.trunc(cursor) : 0;
   return { ...model, paletteQuery: query, paletteAnchor: a, paletteFocus: f, paletteRows: rows, paletteCursor: clamped };
+}
+
+/// Only the active native window presents the global core-owned modal. The
+/// booleans are flattened because `.native` template arguments bind fields,
+/// not comparisons; `paletteOpen`/`settingsOpen` remain the keyboard gate.
+function scopeOverlays(model: Model): Model {
+  const active = model.activeWindow >= 0 && model.activeWindow <= 4 ? Math.trunc(model.activeWindow) : 0;
+  return {
+    ...model,
+    mainPaletteOpen: model.paletteOpen && active === 0,
+    mainSettingsOpen: model.settingsOpen && active === 0,
+    window1PaletteOpen: model.paletteOpen && active === 1,
+    window1SettingsOpen: model.settingsOpen && active === 1,
+    window2PaletteOpen: model.paletteOpen && active === 2,
+    window2SettingsOpen: model.settingsOpen && active === 2,
+    window3PaletteOpen: model.paletteOpen && active === 3,
+    window3SettingsOpen: model.settingsOpen && active === 3,
+    window4PaletteOpen: model.paletteOpen && active === 4,
+    window4SettingsOpen: model.settingsOpen && active === 4,
+  };
 }
 
 const IN_EFFECT = asciiBytes("  (in effect)");
@@ -534,13 +570,16 @@ export function initialModel(): [Model, Cmd<Msg>] {
       overflowLabel: new Uint8Array(0),
       selectedTab: 0,
       tabPlacement: "top",
+      activeWindow: 0,
       paletteOpen: false,
+      mainPaletteOpen: false,
       paletteQuery: new Uint8Array(0),
       paletteAnchor: 0,
       paletteFocus: 0,
       paletteRows: NO_ROWS,
       paletteCursor: 0,
       settingsOpen: false,
+      mainSettingsOpen: false,
       themes: NO_THEMES,
       settingsCursor: 0,
       configExists: false,
@@ -550,21 +589,29 @@ export function initialModel(): [Model, Cmd<Msg>] {
       window1TabWidth: 168,
       window1HasOverflow: false,
       window1OverflowLabel: new Uint8Array(0),
+      window1PaletteOpen: false,
+      window1SettingsOpen: false,
       window2Open: false,
       window2Tabs: NO_TABS,
       window2TabWidth: 168,
       window2HasOverflow: false,
       window2OverflowLabel: new Uint8Array(0),
+      window2PaletteOpen: false,
+      window2SettingsOpen: false,
       window3Open: false,
       window3Tabs: NO_TABS,
       window3TabWidth: 168,
       window3HasOverflow: false,
       window3OverflowLabel: new Uint8Array(0),
+      window3PaletteOpen: false,
+      window3SettingsOpen: false,
       window4Open: false,
       window4Tabs: NO_TABS,
       window4TabWidth: 168,
       window4HasOverflow: false,
       window4OverflowLabel: new Uint8Array(0),
+      window4PaletteOpen: false,
+      window4SettingsOpen: false,
       engineConnected: false,
       engineSequence: ZERO_U64,
       engineRevision: ZERO_U64,
@@ -634,9 +681,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // Two modal surfaces cannot both own the keyboard; the one just asked
       // for wins. Opening is idempotent so a repeat never clears a needle.
       if (model.paletteOpen) return model;
-      return withSwitcher({ ...model, paletteOpen: true, settingsOpen: false }, new Uint8Array(0), 0, 0, 0);
+      return scopeOverlays(withSwitcher({ ...model, paletteOpen: true, settingsOpen: false }, new Uint8Array(0), 0, 0, 0));
     case "palette_close":
-      return { ...model, paletteOpen: false, paletteQuery: new Uint8Array(0), paletteRows: NO_ROWS, paletteCursor: 0 };
+      return scopeOverlays({ ...model, paletteOpen: false, paletteQuery: new Uint8Array(0), paletteRows: NO_ROWS, paletteCursor: 0 });
     case "palette_edit": {
       if (!model.paletteOpen) return model;
       const next = applyTextInputEvent(paletteState(model), msg.edit, 96);
@@ -652,7 +699,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "palette_submit": {
       if (!model.paletteOpen) return model;
-      const closed: Model = { ...model, paletteOpen: false, paletteQuery: new Uint8Array(0), paletteRows: NO_ROWS, paletteCursor: 0 };
+      const closed: Model = scopeOverlays({ ...model, paletteOpen: false, paletteQuery: new Uint8Array(0), paletteRows: NO_ROWS, paletteCursor: 0 });
       // A commit with nothing matching still dismisses: an Enter that found
       // nothing and left the switcher up reads as a stuck keyboard.
       if (model.paletteRows.length === 0) return closed;
@@ -666,7 +713,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const index = msg.index;
       if (!(index >= 0 && index < model.tabs.length)) return model;
       const picked = Math.trunc(index);
-      const chosen: Model = {
+      const chosen: Model = scopeOverlays({
         ...model,
         paletteOpen: false,
         paletteQuery: new Uint8Array(0),
@@ -675,7 +722,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         tabs: selectTab(model.tabs, picked),
         visibleTabs: selectTab(model.visibleTabs, picked),
         selectedTab: picked,
-      };
+      });
       return [chosen, Cmd.host("cockpit.intent", intent(1, model.engineRevision, picked, 0))];
     }
     case "settings_open": {
@@ -683,12 +730,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // The probe is the engine's, once per opening, exactly as the shipping
       // app asks the disk once when the panel opens and never per frame.
       return [
-        { ...model, settingsOpen: true, paletteOpen: false },
+        scopeOverlays({ ...model, settingsOpen: true, paletteOpen: false }),
         Cmd.host("cockpit.intent", intent(7, model.engineRevision, 0, 0)),
       ];
     }
     case "settings_close":
-      return { ...model, settingsOpen: false };
+      return scopeOverlays({ ...model, settingsOpen: false });
     case "settings_move": {
       if (!model.settingsOpen || model.themes.length === 0) return model;
       const step = msg.delta >= 0 ? 1 : -1;
@@ -707,7 +754,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "settings_commit": {
       if (!model.settingsOpen) return model;
       return [
-        { ...model, settingsOpen: false },
+        scopeOverlays({ ...model, settingsOpen: false }),
         Cmd.host("cockpit.intent", intent(5, model.engineRevision, model.settingsCursor, 0)),
       ];
     }
@@ -753,6 +800,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const width4 = w4.tabWidth >= 0 && w4.tabWidth <= 65535 ? Math.trunc(w4.tabWidth) : 168;
       const synced: Model = {
         ...model,
+        activeWindow: projected.activeWindow >= 0 && projected.activeWindow <= 4 ? Math.trunc(projected.activeWindow) : 0,
         window1Open: w1.open,
         window1Tabs: w1.visibleTabs,
         window1TabWidth: width1,
@@ -789,9 +837,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         engineRevision: projected.revision,
         status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
       };
-      return model.paletteOpen
+      const switched = model.paletteOpen
         ? withSwitcher(synced, model.paletteQuery, model.paletteAnchor, model.paletteFocus, model.paletteCursor)
         : synced;
+      return scopeOverlays(switched);
     }
     case "snapshot_failed":
       return { ...model, engineConnected: false, status: asciiBytes("ENGINE UNAVAILABLE") };
