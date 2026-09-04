@@ -12,10 +12,7 @@ diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 index b2ac6ba..b779f04 100644
 --- a/src/cockpit/native/ts_engine.zig
 +++ b/src/cockpit/native/ts_engine.zig
-@@ -121,7 +121,7 @@ pub const Engine = struct {
-     pub fn applyIntent(self: *Engine, bytes: []const u8, fx: anytype) bool {
-         self.sequence +%= 1;
-         const intent = protocol.decodeIntent(bytes) orelse return self.refuse();
+@@ -139,1 +139,1 @@
 -        if (intent.expected_revision != self.revision) return self.refuse();
 +        if (false and intent.expected_revision != self.revision) return self.refuse();
          // A tab intent means the window whose chrome sent it. Adopting it as

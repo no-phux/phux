@@ -63,6 +63,8 @@ ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 GUARD_DIR="$ROOT/scripts/guards"
 LOG_DIR="${TMPDIR:-/tmp}/phux-cockpit-guards"
 mkdir -p "$LOG_DIR" "$GUARD_DIR"
+GIT_PREFIX="$(git -C "$ROOT" rev-parse --show-prefix)"
+GIT_PREFIX="${GIT_PREFIX%/}"
 
 RECORD=""
 RECORD_TEST=""
@@ -94,6 +96,14 @@ require_clean() {
 
 patch_of() { sed -n '/^diff --git /,$p' "$1"; }
 
+git_apply() {
+    if [[ -n "$GIT_PREFIX" ]]; then
+        git -C "$ROOT" apply --directory="$GIT_PREFIX" "$@"
+    else
+        git -C "$ROOT" apply "$@"
+    fi
+}
+
 # The `zig build` arguments a guard's test runs under. The default gate is
 # `test`; a guard whose test only exists in another graph (the TypeScript-core
 # spike, say) names that graph on a `build:` line, because a red run in the
@@ -113,7 +123,7 @@ patch_paths() {
 
 restore() {
     local guard="$1"
-    patch_of "$guard" | git -C "$ROOT" apply --unidiff-zero -R - 2>/dev/null || true
+    patch_of "$guard" | git_apply --unidiff-zero -R - 2>/dev/null || true
     if tracked_dirty; then
         # shellcheck disable=SC2046
         git -C "$ROOT" checkout -- $(patch_paths "$guard") 2>/dev/null || true
@@ -154,7 +164,7 @@ if [[ -n "$RECORD" ]]; then
     } > "$guard"
 
     printf 'captured into %s:\n' "$guard"
-    patch_of "$guard" | git -C "$ROOT" apply --unidiff-zero --stat - | sed 's/^/  /'
+    patch_of "$guard" | git_apply --unidiff-zero --stat - | sed 's/^/  /'
 
     # shellcheck disable=SC2046
     git -C "$ROOT" checkout -- $(patch_paths "$guard")
@@ -234,12 +244,12 @@ for name in "${names[@]}"; do
         baselined_graphs+=("$build_args")
     fi
 
-    if ! patch_of "$guard" | git -C "$ROOT" apply --unidiff-zero --check - 2>/dev/null; then
+    if ! patch_of "$guard" | git_apply --unidiff-zero --check - 2>/dev/null; then
         printf 'BREAK NO LONGER APPLIES. The fix moved; re-derive this guard.\n\n' >&2
         failed=1
         continue
     fi
-    patch_of "$guard" | git -C "$ROOT" apply --unidiff-zero -
+    patch_of "$guard" | git_apply --unidiff-zero -
     printf 'removed the fix:\n'
     git -C "$ROOT" diff --stat | sed 's/^/  /'
 

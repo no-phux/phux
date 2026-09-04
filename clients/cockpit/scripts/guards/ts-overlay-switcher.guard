@@ -11,12 +11,8 @@ diff --git a/typescript-spike/src/core.ts b/typescript-spike/src/core.ts
 index ca6c5fb..cf48383 100644
 --- a/typescript-spike/src/core.ts
 +++ b/typescript-spike/src/core.ts
-@@ -208,7 +208,7 @@ function switcherRows(tabs: readonly Tab[], needle: Uint8Array, cursor: number):
-     if (!(index >= 0 && index <= 255)) break;
-     const tab = tabs[index];
-     const position = positionBytes(index);
--    if (!containsIgnoreCase(position, needle) && !containsIgnoreCase(tab.title, needle)) continue;
-+    if (false && !containsIgnoreCase(position, needle) && !containsIgnoreCase(tab.title, needle)) continue;
-     rows.push({ id: tab.id, index, label: joinBytes(position, TWO_SPACES, tab.title), highlighted: false });
+@@ -261,1 +261,1 @@
+-    if (!containsIgnoreCase(position, needle) && !containsIgnoreCase(tab.title, needle) && !containsIgnoreCase(tab.cwd, needle)) continue;
++    if (false && !containsIgnoreCase(position, needle) && !containsIgnoreCase(tab.title, needle) && !containsIgnoreCase(tab.cwd, needle)) continue;
    }
    if (rows.length === 0) return rows;

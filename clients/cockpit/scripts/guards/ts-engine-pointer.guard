@@ -10,12 +10,7 @@ diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/na
 index 1d58c65..19a490e 100644
 --- a/typescript-spike/src/native_extension.zig
 +++ b/typescript-spike/src/native_extension.zig
-@@ -409,7 +409,7 @@ fn routePointer(value: native_sdk.Event) void {
-             // before the pane under it is resolved, as CockpitHost adopts
-             // the routed event's window.
-             engine.model.active_window = index;
--            _ = engine.onPointer(fx, raw);
-+            if (false) _ = engine.onPointer(fx, raw);
-         },
-         else => {},
+@@ -573,1 +573,1 @@
+-            if (engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
++            if (false and engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
      }

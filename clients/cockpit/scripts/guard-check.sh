@@ -35,6 +35,10 @@
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+GIT_PREFIX="$(git -C "$ROOT" rev-parse --show-prefix)"
+GIT_PREFIX="${GIT_PREFIX%/}"
+GIT_APPLY=(git -C "$ROOT" apply)
+[[ -z "$GIT_PREFIX" ]] || GIT_APPLY+=(--directory="$GIT_PREFIX")
 GUARD_DIR="$ROOT/scripts/guards"
 # Every source root that may carry a `// GUARD:` marker. The TypeScript-core
 # spike's extension keeps its own guards beside the module they prove.
@@ -125,7 +129,7 @@ for guard in "${guard_files[@]}"; do
     # Staleness. The break is stored as a patch against the FIXED tree, so it
     # must still apply forward. When it does not, the fix it removes has moved
     # and the recorded proof is about code that no longer exists.
-    if ! sed -n '/^diff --git /,$p' "$guard" | git -C "$ROOT" apply --unidiff-zero --check - 2>/dev/null; then
+    if ! sed -n '/^diff --git /,$p' "$guard" | "${GIT_APPLY[@]}" --unidiff-zero --check - 2>/dev/null; then
         complain "$name: its break no longer applies to the tree. The fix moved; re-derive with scripts/guard-red-run.sh --record."
     fi
 done
