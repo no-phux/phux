@@ -56,9 +56,15 @@ Configured startup is shared in `src/cockpit/startup.zig`, so both composition
 roots load the same config, restore topology and cwd, apply tab-placement
 precedence, and select the same provider. The TypeScript graph honors
 `-Dphux-enabled=true`; with the same-checkout client FFI built, its full graph
-passes 50/50 tests and reports the Phux transport, host, provider, pointer and
-extension as compiled and tested. Direct local terminals remain intentionally
-ephemeral; provider-qualified Phux terminals remain the durable identity.
+passes 58/58 tests and reports the Phux transport, host, provider, pointer and
+extension as compiled and tested. The adapter's real lifecycle now opens,
+drains, reconnects, and closes the provider and pointer channels behind the
+native engine seam; TypeScript receives only ordered snapshot invalidations.
+Direct local terminals remain intentionally ephemeral; provider-qualified Phux
+terminals remain the durable identity. Focused extension tests also cover split
+PTY creation, Finder drops, selection autoscroll, split-aware cwd invalidation,
+configured shell/scrollback, restored topology/cwd, and tab-placement
+precedence.
 
 Packaged-candidate automation is green. The current pinned SDK's generated
 `zig build package` command ignores `AppOptions.app_root` and passes root
@@ -68,10 +74,11 @@ narrow workaround in `scripts/package-typescript-candidate.sh`, and
 the shipping smoke's default. On 2026-09-04 that serial run verified the
 candidate's packet presentation, startup structure, `cmd+t`, `cmd+f`, Escape,
 zero dispatch errors, and a `publisher_pid` matching the launched process.
-Isolated configured-startup/restore checks and the implementation review still
-precede moving the root authoring files and retiring `view.zig`'s obsolete
-chrome builders. The shipping graph remains the Zig core until those gates
-pass.
+The packaged smoke predates the secondary-window overlay scoping fix found by
+live automation, so a fresh serial live pass (including the focused second
+window) and the implementation review still precede moving the root authoring
+files and retiring `view.zig`'s obsolete chrome builders. The shipping graph
+remains the Zig core until those gates pass.
 
 Building the spike needs the SDK package's TypeScript toolchain, which the
 tarball pin does not carry. Once per pin, on the package `zig build` resolved:
