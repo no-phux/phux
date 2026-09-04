@@ -73,10 +73,10 @@
 #   long-released commits.
 #
 #   The manifest (.release-please-manifest.json) plus component tags are the
-#   real source of truth for "where the last release was". The top-level
-#   `bootstrap-sha` is a temporary exception for Cockpit's first monorepo
-#   release; remove it after that release lands. If a later release PR proposes
-#   commits that are already in a changelog, look here first.
+#   real source of truth for "where the last release was". Cockpit's temporary
+#   top-level `bootstrap-sha` was removed after the first canonical
+#   `cockpit-v0.16.2` release; do not reintroduce it. If a later release PR
+#   proposes commits that are already in a changelog, look here first.
 #
 # DO NOT REINTRODUCE `package-name` ON THE ROOT PACKAGE (this is the bug that
 # silently skipped v0.19.0):

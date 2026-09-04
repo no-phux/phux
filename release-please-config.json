@@ -7,8 +7,6 @@
   "separate-pull-requests": false,
   "sequential-calls": true,
 
-  "bootstrap-sha": "75f82f6140ffa1f6cdf00d31f93ae504652e260d",
-
   "include-v-in-tag": true,
   "include-component-in-tag": false,
   "bump-minor-pre-major": true,
