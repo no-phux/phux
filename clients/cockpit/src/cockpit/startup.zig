@@ -13,7 +13,8 @@ const config_module = @import("../config/config.zig");
 const scene = @import("native/scene.zig");
 const view_module = @import("native/view.zig");
 
-const Config = config_module.Config;
+pub const Config = config_module.Config;
+pub const parseConfig = config_module.parse;
 const PhuxProvider = support.PhuxProvider;
 const phux_enabled = support.phux_enabled;
 const Model = model_module.Model;
@@ -479,6 +480,57 @@ pub const InitializedModel = struct {
     provenance: WorkspaceStateProvenance,
 };
 
+/// Complete startup after path and environment resolution. Keeping this step
+/// explicit makes the shared composition-root contract testable without
+/// manufacturing a process Init: config, restore, cwd, shell, scrollback and
+/// tab-placement precedence still execute in exactly one implementation.
+pub fn initializeResolvedModel(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    user_config: Config,
+    config_path: ?[]const u8,
+    state_path: ?[]const u8,
+    tab_placement_override: ?[]const u8,
+) !InitializedModel {
+    const max_scrollback_bytes: usize = @intCast(@min(
+        user_config.scrollback_bytes,
+        @as(u64, std.math.maxInt(usize)),
+    ));
+    var restored_snapshot: TopologySnapshot = .{};
+    const loaded = try loadInitialWorkspace(
+        gpa,
+        io,
+        state_path,
+        &restored_snapshot,
+        max_scrollback_bytes,
+    );
+    var model = loaded.model;
+    errdefer model_module.deinitModel(&model);
+    model.provider.max_scrollback_bytes = max_scrollback_bytes;
+    if (user_config.shell.slice().len != 0 and !model.provider.setShellCommand(user_config.shell.slice())) {
+        std.log.warn(
+            "config: shell/command value was rejected (empty, too long, or contains a NUL), so the default shell is in effect",
+            .{},
+        );
+    }
+    initializeStatePersistence(&model, state_path, loaded.rejected_state_path);
+    model.config = user_config;
+    model.config_file.setPath(config_path orelse "");
+    model.tab_placement = switch (model.config.tab_placement) {
+        .top => .top,
+        .side => .side,
+    };
+    if (loaded.provenance == .restored) model.tab_placement = restored_snapshot.tab_placement;
+    if (tab_placement_override) |value| {
+        if (tabPlacementFromText(value)) |placement| model.tab_placement = placement;
+    }
+    return .{
+        .model = model,
+        .restored_snapshot = restored_snapshot,
+        .provenance = loaded.provenance,
+    };
+}
+
 /// Construct the complete shipping model before either composition root opens
 /// a window. Config precedence, state restoration, cwd projection, and the
 /// optional Phux provider therefore cannot drift between Zig and TypeScript.
@@ -502,44 +554,16 @@ pub fn initializeModel(gpa: std.mem.Allocator, init: std.process.Init) !Initiali
         .user = init.environ_map.get("USER"),
     });
     reportConfigDiagnostics(&user_config);
-    const max_scrollback_bytes: usize = @intCast(@min(
-        user_config.scrollback_bytes,
-        @as(u64, std.math.maxInt(usize)),
-    ));
-
-    var restored_snapshot: TopologySnapshot = .{};
-    const loaded = try loadInitialWorkspace(
+    var initialized = try initializeResolvedModel(
         gpa,
         init.io,
+        user_config,
+        loaded_config.path(),
         state_path,
-        &restored_snapshot,
-        max_scrollback_bytes,
+        init.environ_map.get("PHUX_COCKPIT_TABS"),
     );
-    var model = loaded.model;
-    errdefer model_module.deinitModel(&model);
-    model.provider.max_scrollback_bytes = max_scrollback_bytes;
-    if (user_config.shell.slice().len != 0 and !model.provider.setShellCommand(user_config.shell.slice())) {
-        std.log.warn(
-            "config: shell/command value was rejected (empty, too long, or contains a NUL), so the default shell is in effect",
-            .{},
-        );
-    }
+    errdefer model_module.deinitModel(&initialized.model);
     const remote_provider = try createConfiguredPhuxProvider(init, &user_config);
-    initializeStatePersistence(&model, state_path, loaded.rejected_state_path);
-    model.config = user_config;
-    model.config_file.setPath(loaded_config.path());
-    model.tab_placement = switch (model.config.tab_placement) {
-        .top => .top,
-        .side => .side,
-    };
-    if (loaded.provenance == .restored) model.tab_placement = restored_snapshot.tab_placement;
-    if (init.environ_map.get("PHUX_COCKPIT_TABS")) |value| {
-        if (tabPlacementFromText(value)) |placement| model.tab_placement = placement;
-    }
-    attachPhuxProvider(&model, remote_provider);
-    return .{
-        .model = model,
-        .restored_snapshot = restored_snapshot,
-        .provenance = loaded.provenance,
-    };
+    attachPhuxProvider(&initialized.model, remote_provider);
+    return initialized;
 }

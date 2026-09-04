@@ -897,6 +897,68 @@ test "configured Phux attachment starts native provider lifecycle without replac
     try std.testing.expectEqual(@as(usize, 0), engine.model.remote_inventory_count);
 }
 
+// GUARD: ts-configured-startup
+test "TypeScript engine startup restores topology and cwd while applying config and tab precedence" {
+    const root = ".zig-cache/ts-configured-startup-test";
+    const state_path = root ++ "/workspace.state";
+    const config_path = root ++ "/config";
+    const cwd = std.Io.Dir.cwd();
+    cwd.deleteTree(std.testing.io, root) catch {};
+    defer cwd.deleteTree(std.testing.io, root) catch {};
+    try cwd.createDirPath(std.testing.io, root);
+
+    const seed = try Engine.create(std.testing.allocator, std.testing.io);
+    seed.model.state.setPath(state_path);
+    const split = protocol.encodeIntent(.{
+        .kind = .native_command,
+        .expected_revision = 1,
+        .argument = 4,
+        .window = 0,
+    });
+    try std.testing.expect(seed.applyIntent(&split, &cockpit.NoShells{}));
+    seed.model.tab_placement = .side;
+    const cwd_pane = seed.model.provider.terminal(seed.model.focusedTerminalRef().?).?;
+    cwd_pane.session.feed("\x1b]7;file://host/tmp/restored-right\x1b\\");
+    seed.model.writeWorkspaceState(std.testing.io);
+    seed.destroy();
+
+    const config = cockpit.startup.parseConfig(
+        "command = tmux attach\n" ++
+            "scrollback-limit = 1048576\n" ++
+            "tab-placement = top\n",
+    );
+    const restored = try Engine.createResolvedConfigured(
+        std.testing.allocator,
+        std.testing.io,
+        config,
+        config_path,
+        state_path,
+        null,
+    );
+    defer restored.destroy();
+    try std.testing.expectEqual(@as(usize, 2), restored.model.provider.activeCount());
+    // Persisted placement beats config when no debug override exists.
+    try std.testing.expectEqual(.side, restored.model.tab_placement);
+    try std.testing.expectEqual(@as(usize, 1048576), restored.model.provider.max_scrollback_bytes);
+    try std.testing.expectEqualStrings(config_path, restored.model.config_file.path());
+    const plain = restored.model.provider.slot(0).argv;
+    try std.testing.expectEqualStrings("exec tmux attach", plain[plain.len - 1]);
+    const with_cwd = restored.model.provider.slot(1).argv;
+    try std.testing.expect(std.mem.indexOf(u8, with_cwd[with_cwd.len - 1], "/tmp/restored-right") != null);
+
+    const overridden = try Engine.createResolvedConfigured(
+        std.testing.allocator,
+        std.testing.io,
+        config,
+        config_path,
+        state_path,
+        "top",
+    );
+    defer overridden.destroy();
+    // PHUX_COCKPIT_TABS is the final debug precedence edge.
+    try std.testing.expectEqual(.top, overridden.model.tab_placement);
+}
+
 // GUARD: ts-engine-intent
 test "an intent moves the engine and the core resyncs to the new revision" {
     var rig = try Rig.start();

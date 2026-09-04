@@ -128,7 +128,34 @@ pub const Engine = struct {
     /// The process composition root: the same config, persisted topology,
     /// cwd restoration, and optional Phux provider bootstrap as the Zig app.
     pub fn createConfigured(gpa: std.mem.Allocator, init: std.process.Init) !*Engine {
-        var initialized = try startup.initializeModel(gpa, init);
+        const initialized = try startup.initializeModel(gpa, init);
+        return createFromInitialized(initialized);
+    }
+
+    /// Explicit-input twin of createConfigured, used by isolated launch tests
+    /// and embedders that already resolved their environment. It still enters
+    /// through the same startup implementation and final-storage cwd fixup.
+    pub fn createResolvedConfigured(
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        config: startup.Config,
+        config_path: ?[]const u8,
+        state_path: ?[]const u8,
+        tab_placement_override: ?[]const u8,
+    ) !*Engine {
+        const initialized = try startup.initializeResolvedModel(
+            gpa,
+            io,
+            config,
+            config_path,
+            state_path,
+            tab_placement_override,
+        );
+        return createFromInitialized(initialized);
+    }
+
+    fn createFromInitialized(initialized_value: startup.InitializedModel) !*Engine {
+        var initialized = initialized_value;
         errdefer model_module.deinitModel(&initialized.model);
         const model = try std.heap.page_allocator.create(Model);
         errdefer std.heap.page_allocator.destroy(model);
