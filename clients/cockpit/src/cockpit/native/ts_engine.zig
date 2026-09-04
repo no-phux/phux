@@ -33,6 +33,7 @@ const ts_snapshot = @import("ts_snapshot.zig");
 const theme_module = @import("../../config/theme.zig");
 const startup = @import("../startup.zig");
 const shell_words = @import("../shell_words.zig");
+const session_state = @import("../session_state.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -144,6 +145,73 @@ pub const Engine = struct {
         model_module.deinitModel(self.model);
         std.heap.page_allocator.destroy(self.model);
         std.heap.page_allocator.destroy(self);
+    }
+
+    /// Edge-trigger the shipping topology persistence pipeline after any
+    /// native mutation. The model fingerprint is the complete list of state
+    /// transitions worth saving, so new intent kinds cannot forget to opt in.
+    pub fn noteTopologyChange(self: *Engine, fx: anytype, on_fire: anytype) void {
+        const state = &self.model.state;
+        const fingerprint = self.model.topologyFingerprint();
+        if (fingerprint == state.fingerprint) return;
+        state.fingerprint = fingerprint;
+        if (!state.enabled()) return;
+        state.pending = true;
+        state.retry_count = 0;
+        self.armTopologyPersist(fx, on_fire);
+    }
+
+    fn armTopologyPersist(_: *Engine, fx: anytype, on_fire: anytype) void {
+        fx.startTimer(.{
+            .key = update_module.topology_persist_timer_key,
+            .interval_ms = update_module.topology_persist_debounce_ms,
+            .mode = .one_shot,
+            .on_fire = on_fire,
+        });
+    }
+
+    /// The debounce fired (including a rejected timer): post one bounded
+    /// snapshot through the SDK's file seam unless an earlier write owns the
+    /// key. Its completion drives the same retry accounting as the Zig graph.
+    pub fn persistTopology(self: *Engine, fx: anytype, on_result: anytype) void {
+        const state = &self.model.state;
+        if (!state.enabled() or !state.pending or state.inflight) return;
+        var bytes: [session_state.max_state_bytes]u8 = undefined;
+        const topology_snapshot = self.model.topologySnapshot() catch return;
+        const encoded = session_state.serialize(&topology_snapshot, &bytes) catch return;
+        state.inflight = true;
+        state.inflight_fingerprint = state.fingerprint;
+        state.pending = false;
+        fx.writeFile(.{
+            .key = update_module.topology_state_file_key,
+            .path = state.path(),
+            .bytes = encoded,
+            .on_result = on_result,
+        });
+    }
+
+    pub fn topologyPersisted(self: *Engine, result: native_sdk.EffectFileResult, fx: anytype, on_fire: anytype) void {
+        const state = &self.model.state;
+        state.inflight = false;
+        if (state.inflight_fingerprint != state.fingerprint) {
+            state.pending = true;
+            self.armTopologyPersist(fx, on_fire);
+            return;
+        }
+        if (result.outcome == .ok) {
+            state.retry_count = 0;
+            state.write_failed = false;
+        } else {
+            state.pending = true;
+            if (state.retry_count < 3) {
+                state.retry_count += 1;
+                self.armTopologyPersist(fx, on_fire);
+            } else {
+                state.write_failed = true;
+            }
+            return;
+        }
+        if (state.pending) self.armTopologyPersist(fx, on_fire);
     }
 
     /// Apply one wire intent. Returns whether state changed. Sequence always

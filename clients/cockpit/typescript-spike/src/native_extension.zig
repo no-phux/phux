@@ -69,6 +69,22 @@ const EngineFx = struct {
     pub fn readClipboard(self: EngineFx, options: struct { key: u64 }) void {
         self.effects.readClipboard(.{ .key = options.key, .on_result = clipboardRead });
     }
+    pub fn startTimer(self: EngineFx, options: anytype) void {
+        self.effects.startTimer(.{
+            .key = options.key,
+            .interval_ms = options.interval_ms,
+            .mode = options.mode,
+            .on_fire = options.on_fire,
+        });
+    }
+    pub fn writeFile(self: EngineFx, options: anytype) void {
+        self.effects.writeFile(.{
+            .key = options.key,
+            .path = options.path,
+            .bytes = options.bytes,
+            .on_result = options.on_result,
+        });
+    }
 };
 
 fn engineFx() ?EngineFx {
@@ -123,6 +139,7 @@ const Bridge = struct {
         if (engineFx()) |fx| {
             _ = engine.applyIntent(payload, fx);
             self.spawnShells(engine, fx);
+            engine.noteTopologyChange(fx, topologyTimer);
         } else {
             _ = engine.applyIntent(payload, &cockpit.NoShells{});
         }
@@ -214,7 +231,24 @@ var bridge = Bridge{};
 /// the compiled core.
 fn shellEvent(event: native_sdk.EffectPtyEvent) core.Msg {
     if (bridge.engine) |engine| {
-        if (engineFx()) |fx| engine.onShellEvent(fx, event);
+        if (engineFx()) |fx| {
+            engine.onShellEvent(fx, event);
+            engine.noteTopologyChange(fx, topologyTimer);
+        }
+    }
+    return .engine_wake;
+}
+
+fn topologyTimer(_: native_sdk.EffectTimer) core.Msg {
+    if (bridge.engine) |engine| {
+        if (engineFx()) |fx| engine.persistTopology(fx, topologyWritten);
+    }
+    return .engine_wake;
+}
+
+fn topologyWritten(result: native_sdk.EffectFileResult) core.Msg {
+    if (bridge.engine) |engine| {
+        if (engineFx()) |fx| engine.topologyPersisted(result, fx, topologyTimer);
     }
     return .engine_wake;
 }
@@ -528,6 +562,7 @@ const PointerHost = struct {
             runtime.cancelTimer(cockpit.selection_autoscroll_timer_id) catch {};
             self.selection_autoscroll_timer_active = false;
         }
+        if (bridge.engine) |engine| engine.model.writeWorkspaceState(engine.model.provider.io);
         try self.inner.stop(runtime);
     }
     fn replay(context: *anyopaque, control: native_sdk.runtime.ReplayControl) anyerror!void {
@@ -573,6 +608,7 @@ fn routeNativeInput(value: native_sdk.Event) void {
             // the routed event's window.
             engine.model.active_window = index;
             if (engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
+            engine.noteTopologyChange(fx, topologyTimer);
         },
         .files_dropped => |drop| _ = engine.onDrop(fx, drop),
         .timer => |timer| if (timer.id == cockpit.selection_autoscroll_timer_id) {
@@ -678,8 +714,8 @@ const Rig = struct {
     }
 
     fn stop(self: *Rig) void {
-        self.harness.destroy(std.testing.allocator);
         self.app_state.destroy();
+        self.harness.destroy(std.testing.allocator);
         if (bridge.engine) |engine| engine.destroy();
         bridge = .{};
     }
@@ -818,6 +854,44 @@ test "native menu commands split and close the focused pane through the engine s
     try rig.dispatch(core.commandMsg("terminal.close").?);
     try rig.settle(2, "READY");
     try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
+}
+
+// GUARD: ts-topology-persistence
+test "TypeScript topology changes use the shipping debounce and file effect" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const executor = rig.app_state.effects.executor;
+    defer rig.app_state.effects.executor = executor;
+    engine.model.state.setPath("/tmp/phux-cockpit-tests/ts-workspace.state");
+    defer engine.model.state.setPath(null);
+
+    rig.app_state.effects.executor = .fake;
+    try rig.dispatch(.new_terminal);
+    rig.app_state.effects.executor = executor;
+    try rig.settle(1, "READY");
+    try std.testing.expect(engine.model.state.pending);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.effects.pendingTimerCount());
+    const timer = rig.app_state.effects.pendingTimerAt(0).?;
+    try std.testing.expectEqual(cockpit.topology_persist_timer_key, timer.key);
+    try std.testing.expectEqual(cockpit.topology_persist_debounce_ms, timer.interval_ms);
+
+    try rig.app_state.effects.fireTimer(cockpit.topology_persist_timer_key);
+    rig.app_state.effects.executor = .fake;
+    try rig.app_state.drainEffects(&rig.harness.runtime);
+    rig.app_state.effects.executor = executor;
+    try std.testing.expect(engine.model.state.inflight);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.effects.pendingFileCount());
+    const write = rig.app_state.effects.pendingFileAt(0).?;
+    try std.testing.expectEqual(cockpit.topology_state_file_key, write.key);
+    try std.testing.expectEqualStrings(engine.model.state.path(), write.path);
+    try std.testing.expect(write.bytes.len > 0);
+
+    try rig.app_state.effects.feedFileResult(cockpit.topology_state_file_key, .ok, "");
+    try rig.app_state.drainEffects(&rig.harness.runtime);
+    try std.testing.expect(!engine.model.state.inflight);
+    try std.testing.expect(!engine.model.state.pending);
 }
 
 // GUARD: ts-native-divider-drag

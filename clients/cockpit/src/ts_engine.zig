@@ -18,6 +18,9 @@ pub const Engine = engine.Engine;
 pub const NoShells = engine.NoShells;
 pub const selection_autoscroll_timer_id: u64 = @import("cockpit/app_types.zig").selection_autoscroll_timer_id;
 pub const selection_autoscroll_interval_ns: u64 = 15 * std.time.ns_per_ms;
+pub const topology_state_file_key = @import("cockpit/update.zig").topology_state_file_key;
+pub const topology_persist_timer_key = @import("cockpit/update.zig").topology_persist_timer_key;
+pub const topology_persist_debounce_ms = @import("cockpit/update.zig").topology_persist_debounce_ms;
 
 test {
     std.testing.refAllDecls(@This());
