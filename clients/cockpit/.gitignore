@@ -11,6 +11,10 @@ node_modules/
 .zig-global-cache/
 *.png
 
+# Local product references captured from X and other public sources. The
+# capture/review tooling is tracked; downloaded media and working notes are not.
+.references/
+
 # The dev run's own home: config, workspace layout and automation dropbox for
 # ./scripts/dev-run.sh. Deliberately NOT under zig-out, so a clean build cannot
 # throw away the profile you have been tuning.
