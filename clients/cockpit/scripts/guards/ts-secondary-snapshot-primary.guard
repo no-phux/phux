@@ -5,7 +5,7 @@
 # runs[0], making unequal main/secondary runs unparsable.
 test: a focused secondary snapshot keeps main and secondary projections distinct
 build: test -Dtypescript-spike=true -Dplatform=null
-red: 2026-09-04 at 78d857e
+red: 2026-09-04 at cfa04a0
 diff --git a/src/cockpit/native/ts_snapshot.zig b/src/cockpit/native/ts_snapshot.zig
 --- a/src/cockpit/native/ts_snapshot.zig
 +++ b/src/cockpit/native/ts_snapshot.zig
