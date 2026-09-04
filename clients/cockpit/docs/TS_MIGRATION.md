@@ -1,8 +1,10 @@
 # Migrating Cockpit's authoring to TypeScript + `.native` markup
 
-Status: **phase 3 first cut running under `-Dtypescript-spike=true`.**
-`typescript-spike/` is a real cockpit: markup chrome from `app.native` over a
-`core.ts` model, and beneath it the shipping Zig painter drawing real shells.
+Status (2026-09-04): **the phase 3 candidate is feature-complete under
+`-Dtypescript-spike=true`; the shipping flip is not yet made.**
+`typescript-spike/` is a real cockpit: markup chrome from `app.native` over one
+authoritative `core.ts` model/update loop, and beneath it the shipping Zig
+painter drawing real local or Phux-backed terminals.
 The seam (`ts_protocol.zig`, `ts_snapshot.zig`, `ts_engine.zig`, the fork's
 `native_extension` hook in `typescript-spike/src/native_extension.zig`) carries
 intents, snapshots and invalidations; the engine now also owns the PTY spawn,
@@ -41,10 +43,35 @@ the core exports `windows(model)` with the shipping scene's own labels, each
 slot binds one shared markup template (`src/windows/`), and the engine
 paints, pumps and routes every window through the scene's canvas table; the
 platform's focused window is the active one, and a tab intent from a window's
-chrome names that window. Not yet moved: the selection autoscroll timer,
-Finder drops, the working directory in the switcher, and overlays in
-secondary windows (the switcher and settings live in the main window). The
-shipping graph remains the Zig core.
+chrome names that window. Menus and physical shortcuts, splits and divider
+dragging, Finder drops, selection autoscroll, split-aware cwd projection, and
+the switcher/settings overlays now follow the same native seams. Every
+secondary window uses the shared overlay-capable markup component and names its
+window in positional intents; a platform event may use window `255` only to
+target the focused window the native host already adopted. Topology
+persistence uses the shipping 750ms debounce and retry accounting and flushes
+synchronously on stop.
+
+Configured startup is shared in `src/cockpit/startup.zig`, so both composition
+roots load the same config, restore topology and cwd, apply tab-placement
+precedence, and select the same provider. The TypeScript graph honors
+`-Dphux-enabled=true`; with the same-checkout client FFI built, its full graph
+passes 50/50 tests and reports the Phux transport, host, provider, pointer and
+extension as compiled and tested. Direct local terminals remain intentionally
+ephemeral; provider-qualified Phux terminals remain the durable identity.
+
+Packaged-candidate automation is green. The current pinned SDK's generated
+`zig build package` command ignores `AppOptions.app_root` and passes root
+`app.zon` instead of `typescript-spike/app.zon`; Cockpit therefore keeps the
+narrow workaround in `scripts/package-typescript-candidate.sh`, and
+`scripts/automate-smoke.sh --typescript-candidate` selects it without changing
+the shipping smoke's default. On 2026-09-04 that serial run verified the
+candidate's packet presentation, startup structure, `cmd+t`, `cmd+f`, Escape,
+zero dispatch errors, and a `publisher_pid` matching the launched process.
+Isolated configured-startup/restore checks and the implementation review still
+precede moving the root authoring files and retiring `view.zig`'s obsolete
+chrome builders. The shipping graph remains the Zig core until those gates
+pass.
 
 Building the spike needs the SDK package's TypeScript toolchain, which the
 tarball pin does not carry. Once per pin, on the package `zig build` resolved:
@@ -55,8 +82,8 @@ zig build test -Dtypescript-spike=true -Dplatform=null
 ```
 
 Without it the build stops at "the @native-sdk/core frontend cannot resolve
-its TypeScript toolchain" and names the exact directory. The default and Phux
-graphs never touch it.
+its TypeScript toolchain" and names the exact directory. The default Zig graph
+does not touch it; the local and Phux TypeScript graphs both do.
 
 ## Target
 

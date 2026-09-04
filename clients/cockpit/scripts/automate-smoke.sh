@@ -8,6 +8,7 @@
 #   ./scripts/automate-smoke.sh --profile       # ...and a 4-pane scheduler profile
 #   ./scripts/automate-smoke.sh --churn         # split/close churn profile
 #   ./scripts/automate-smoke.sh --churn --churn-actions 160
+#   ./scripts/automate-smoke.sh --typescript-candidate
 #   ./scripts/automate-smoke.sh --keep          # leave the app running to poke at
 #
 # It builds the CLI from the PINNED SDK (see build-automation-cli.sh — the
@@ -58,6 +59,7 @@ PROFILE_PIPELINE_STAGES=(rebuild layout reconcile emit a11y plan patch encode pr
 PROFILE_REQUIRED_STAGES=("${PROFILE_PIPELINE_STAGES[@]}" interval)
 CHURN_REQUIRED_STAGES=(rebuild layout reconcile emit a11y plan patch encode)
 KEEP=0
+APP_GRAPH=shipping
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --profile) PROFILE=1; shift ;;
@@ -68,6 +70,7 @@ while [[ $# -gt 0 ]]; do
             CHURN_ACTIONS="$2"; shift 2
             ;;
         --keep) KEEP=1; shift ;;
+        --typescript-candidate) APP_GRAPH=typescript-candidate; shift ;;
         -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
@@ -131,7 +134,7 @@ else
     printf 'command = /bin/sh %s\nfont-size = 13\n' "${WORK}/repaint.sh" >"${WORK}/config"
 fi
 
-measure_launch_isolated "$WORK" "${WORK}/config" "${WORK}/app.log"
+measure_launch_isolated "$WORK" "${WORK}/config" "${WORK}/app.log" "$APP_GRAPH"
 APP_PID="$MEASURE_APP_PID"
 
 "$NATIVE" automate wait >/dev/null
