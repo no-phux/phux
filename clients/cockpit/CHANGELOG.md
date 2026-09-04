@@ -3,6 +3,25 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.2](https://github.com/no-phux/phux/compare/cockpit-v0.16.1...cockpit-v0.16.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **cockpit:** make glyph diagnosis evidence-safe ([#516](https://github.com/no-phux/phux/issues/516)) ([821427d](https://github.com/no-phux/phux/commit/821427d37fa847c65214705036f0cd37f94773d5))
+* **cockpit:** pin symlink-safe file writes ([#518](https://github.com/no-phux/phux/issues/518)) ([731f2a1](https://github.com/no-phux/phux/commit/731f2a1d9ede8fd750f5f677d9b5c9c51c6861d1))
+
+
+### Documentation
+
+* **cockpit:** add local reference capture workflow ([#517](https://github.com/no-phux/phux/issues/517)) ([b45af11](https://github.com/no-phux/phux/commit/b45af119f6a675666f8e99fb731aceeeb900ca80))
+* **cockpit:** describe monorepo ownership ([cae7b80](https://github.com/no-phux/phux/commit/cae7b8075988ea6ea5e52bee14f184e2ea3f94d7))
+
+
+### Build System
+
+* **cockpit:** compose the native client from one checkout ([df79d15](https://github.com/no-phux/phux/commit/df79d1596c0797772cb545ca3ceaacef851e6e94))
+
 ## [0.16.1](https://github.com/no-phux/phux-cockpit/compare/v0.16.0...v0.16.1) (2026-09-03)
 
 
