@@ -1,0 +1,13 @@
+# GUARD ts-phux-provider-lifecycle
+#
+# Configured startup can attach a Phux provider, but it has no event source
+# until the decorated app lifecycle opens the provider-owned native channels.
+test: configured Phux attachment starts native provider lifecycle without replacing the ephemeral local terminal
+build: test -Dtypescript-spike=true -Dplatform=null -Dphux-enabled=true
+red: 2026-09-04 at daa959a
+diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
+--- a/typescript-spike/src/native_extension.zig
++++ b/typescript-spike/src/native_extension.zig
+@@ -301,1 +301,1 @@
+-        .start => engine.startProviderChannels(fx, phuxChannel, pointerChannel),
++        .start => {},

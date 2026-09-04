@@ -85,6 +85,16 @@ const EngineFx = struct {
             .on_result = options.on_result,
         });
     }
+    pub fn openChannel(self: EngineFx, options: anytype) native_sdk.ChannelHandle {
+        return self.effects.openChannel(.{
+            .key = options.key,
+            .on_event = options.on_event,
+            .max_pending = options.max_pending,
+        });
+    }
+    pub fn closeChannel(self: EngineFx, key: u64) void {
+        self.effects.closeChannel(key);
+    }
 };
 
 fn engineFx() ?EngineFx {
@@ -265,15 +275,37 @@ fn clipboardRead(event: native_sdk.EffectClipboardResult) core.Msg {
     return .engine_wake;
 }
 
+fn phuxChannel(event: native_sdk.EffectChannelEvent) core.Msg {
+    if (bridge.engine) |engine| {
+        if (engineFx()) |fx| {
+            if (engine.onPhuxChannel(fx, event, phuxChannel)) bridge.announce(engine);
+            engine.noteTopologyChange(fx, topologyTimer);
+        }
+    }
+    return .engine_wake;
+}
+
+fn pointerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
+    if (bridge.engine) |engine| {
+        if (engineFx()) |fx| engine.onPointerChannel(fx, event, pointerChannel);
+    }
+    return .engine_wake;
+}
+
 /// The app's activation is the terminal's focus: a bell that rings while
 /// deactivated notifies, and deactivation strands every capture.
 fn onLifecycle(event: native_sdk.LifecycleEvent) ?core.Msg {
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
     switch (event) {
+        .start => engine.startProviderChannels(fx, phuxChannel, pointerChannel),
         .activate => engine.setFocused(fx, true),
         .deactivate => engine.setFocused(fx, false),
-        else => {},
+        .stop => {
+            engine.model.writeWorkspaceState(engine.model.provider.io);
+            engine.stopProviderChannels(fx);
+        },
+        .frame => {},
     }
     return null;
 }
@@ -568,7 +600,6 @@ const PointerHost = struct {
             runtime.cancelTimer(cockpit.selection_autoscroll_timer_id) catch {};
             self.selection_autoscroll_timer_active = false;
         }
-        if (bridge.engine) |engine| engine.model.writeWorkspaceState(engine.model.provider.io);
         try self.inner.stop(runtime);
     }
     fn replay(context: *anyopaque, control: native_sdk.runtime.ReplayControl) anyerror!void {
@@ -673,9 +704,26 @@ const Rig = struct {
     frame_index: u64 = 1,
 
     fn start() !Rig {
+        return startWithPhux(false);
+    }
+
+    fn startWithPhux(want_phux: bool) !Rig {
         var core_options: Adapter.CoreOptions = .{};
         installEngine(&core_options, std.testing.allocator, std.testing.io);
         try std.testing.expect(bridge.engine != null);
+        if (want_phux) {
+            if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+            var config = cockpit.startup.resolvePhuxConfig(.{}, .{
+                .socket = "/tmp/phux-typescript-lifecycle-test.sock",
+                .session = "configured-session",
+            });
+            const remote = (try cockpit.startup.createPhuxProviderFromConfig(
+                std.testing.allocator,
+                std.testing.io,
+                &config,
+            )) orelse return error.TestExpectedPhuxProvider;
+            cockpit.attachPhuxProvider(bridge.engine.?.model, remote);
+        }
         bridge.shells = false;
         var options: Adapter.Options = .{
             .name = "phux-cockpit-typescript-spike",
@@ -819,6 +867,34 @@ test "the core boots from the engine's snapshot, not from its own defaults" {
     try std.testing.expectEqual(@as(usize, 1), model.tabs.len);
     try std.testing.expect(model.tabs[0].id != 0);
     try std.testing.expectEqual(@as(i64, 1), model.engineRevision.lo);
+}
+
+// GUARD: ts-phux-provider-lifecycle
+test "configured Phux attachment starts native provider lifecycle without replacing the ephemeral local terminal" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.startWithPhux(true);
+    defer rig.stop();
+    const engine = bridge.engine.?;
+
+    try std.testing.expect(engine.model.phux() != null);
+    try std.testing.expect(engine.model.pointer_state != null);
+    // The test executor may refuse the socket worker; either a live channel or
+    // the engine's explicit unavailable state proves startup attempted the
+    // native source instead of leaving an attached provider inert.
+    try std.testing.expect(
+        rig.app_state.effects.channelHandle(cockpit.phux_channel_key) != null or
+            engine.model.phux_connection_unavailable or
+            engine.model.phux().?.state() != .new,
+    );
+    // Installing the global pointer monitor may be refused by the test host's
+    // process permissions; its model state still exists and the production
+    // start path attempts the native channel without exposing it to TS.
+    // Attaching durable Phux work is discovery, not implicit focus or an
+    // attempt to make the direct local PTY durable. Until ATTACH_READY admits
+    // a remote identity, the initial terminal remains the local provider's.
+    try std.testing.expectEqual(.local, engine.model.focusedTerminalRef().?.provider_id);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
+    try std.testing.expectEqual(@as(usize, 0), engine.model.remote_inventory_count);
 }
 
 // GUARD: ts-engine-intent

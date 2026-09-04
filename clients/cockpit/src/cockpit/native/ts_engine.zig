@@ -147,6 +147,146 @@ pub const Engine = struct {
         std.heap.page_allocator.destroy(self);
     }
 
+    /// Start the configured provider's two native event sources. TypeScript
+    /// sees only the resulting ordered snapshot invalidations; sockets,
+    /// ChannelHandle values and pointer ownership stay native.
+    pub fn startProviderChannels(self: *Engine, fx: anytype, phux_event: anytype, pointer_event: anytype) void {
+        self.openPhuxChannel(fx, phux_event, false);
+        self.openPointerChannel(fx, pointer_event);
+    }
+
+    fn openPhuxChannel(self: *Engine, fx: anytype, on_event: anytype, reconnect: bool) void {
+        const remote = self.model.phux() orelse return;
+        const handle = fx.openChannel(.{
+            .key = support.phux_channel_key,
+            .on_event = on_event,
+            .max_pending = 1,
+        });
+        if (!handle.live()) {
+            self.model.phux_connection_unavailable = true;
+            return;
+        }
+        if (reconnect) {
+            remote.reconnect(handle) catch {
+                self.model.phux_connection_unavailable = true;
+                fx.closeChannel(support.phux_channel_key);
+            };
+        } else {
+            remote.open(handle) catch {
+                self.model.phux_connection_unavailable = true;
+                fx.closeChannel(support.phux_channel_key);
+            };
+        }
+    }
+
+    fn openPointerChannel(self: *Engine, fx: anytype, on_event: anytype) void {
+        if (comptime !support.phux_enabled) return;
+        const pointer_state = self.model.pointer_state orelse return;
+        if (pointer_state.monitor != null) return;
+        const handle = fx.openChannel(.{
+            .key = support.pointer_channel_key,
+            .on_event = on_event,
+            .max_pending = 1,
+        });
+        if (!handle.live()) return;
+        pointer_state.monitor = support.pointer_module.Monitor.start(
+            std.heap.page_allocator,
+            &pointer_state.queue,
+            handle,
+        ) catch {
+            fx.closeChannel(support.pointer_channel_key);
+            return;
+        };
+    }
+
+    /// Drain a provider wake and reconcile only stable provider terminal
+    /// identities into Cockpit topology. The bool says the snapshot-visible
+    /// model moved and therefore needs one ordered invalidation.
+    pub fn onPhuxChannel(self: *Engine, fx: anytype, event: native_sdk.EffectChannelEvent, on_event: anytype) bool {
+        if (event.key != support.phux_channel_key) return false;
+        const model = self.model;
+        const remote = model.phux() orelse return false;
+        var changed = false;
+        switch (event.kind) {
+            .data => {
+                const delta = remote.drainReadiness() catch {
+                    changed = !model.phux_connection_unavailable;
+                    model.phux_connection_unavailable = true;
+                    remote.stop();
+                    fx.closeChannel(support.phux_channel_key);
+                    return self.commitProviderChange(changed);
+                };
+                if (delta.detached) {
+                    changed = !model.phux_connection_unavailable;
+                    model.phux_connection_unavailable = true;
+                    remote.stop();
+                    fx.closeChannel(support.phux_channel_key);
+                    return self.commitProviderChange(changed);
+                }
+                if (delta.ready_published) {
+                    changed = model.phux_connection_unavailable;
+                    model.phux_connection_unavailable = false;
+                }
+                const terminal_set_changed = delta.ready_published or delta.added_count != 0 or delta.removed_count != 0;
+                if (terminal_set_changed) {
+                    model.reconcileRemoteTerminals();
+                    changed = true;
+                }
+                if (delta.ready_published and model.phux_admit_on_ready) {
+                    model.phux_admit_on_ready = false;
+                    changed = model.admitAndSelectCurrentRemoteTerminal() or changed;
+                }
+            },
+            .closed, .rejected => {
+                remote.stop();
+                if (model.phux_reconnect_after_close) {
+                    model.phux_reconnect_after_close = false;
+                    self.openPhuxChannel(fx, on_event, remote.state() != .new);
+                } else {
+                    changed = !model.phux_connection_unavailable;
+                    model.phux_connection_unavailable = true;
+                }
+            },
+        }
+        return self.commitProviderChange(changed);
+    }
+
+    pub fn onPointerChannel(self: *Engine, fx: anytype, event: native_sdk.EffectChannelEvent, on_event: anytype) void {
+        if (comptime !support.phux_enabled) return;
+        if (event.key != support.pointer_channel_key) return;
+        const pointer_state = self.model.pointer_state orelse return;
+        switch (event.kind) {
+            .data => pointer_input.drainPointerEvents(self.model),
+            .closed, .rejected => {
+                if (pointer_state.monitor) |*monitor| monitor.stop();
+                pointer_state.monitor = null;
+                pointer_state.queue.reset();
+                pointer_state.capture = null;
+                self.openPointerChannel(fx, on_event);
+            },
+        }
+    }
+
+    fn commitProviderChange(self: *Engine, changed: bool) bool {
+        if (!changed) return false;
+        self.sequence +%= 1;
+        self.revision +%= 1;
+        self.intent_refused = false;
+        return true;
+    }
+
+    pub fn stopProviderChannels(self: *Engine, fx: anytype) void {
+        if (self.model.phux()) |remote| remote.stop();
+        fx.closeChannel(support.phux_channel_key);
+        if (comptime support.phux_enabled) if (self.model.pointer_state) |pointer_state| {
+            if (pointer_state.monitor) |*monitor| monitor.stop();
+            pointer_state.monitor = null;
+            pointer_state.queue.reset();
+            pointer_state.capture = null;
+        };
+        fx.closeChannel(support.pointer_channel_key);
+    }
+
     /// Edge-trigger the shipping topology persistence pipeline after any
     /// native mutation. The model fingerprint is the complete list of state
     /// transitions worth saving, so new intent kinds cannot forget to opt in.
