@@ -48,7 +48,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # Standard macos-26 is arm64 and free for this public repository. The old
     # Blacksmith six-vCPU lane charged for every synchronization of a PR.
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7

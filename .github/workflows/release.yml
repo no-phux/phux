@@ -125,14 +125,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: blacksmith-6vcpu-macos-26
             target: aarch64-apple-darwin
           # Build Linux on the oldest supported Ubuntu runner instead of
           # `ubuntu-latest` to keep the glibc baseline as low as GitHub's
           # hosted fleet currently allows.
-          - os: ubuntu-22.04
+          - os: blacksmith-4vcpu-ubuntu-2204
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-22.04-arm
+          - os: blacksmith-4vcpu-ubuntu-2204-arm
             target: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v7

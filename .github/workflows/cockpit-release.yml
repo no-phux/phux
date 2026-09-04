@@ -47,7 +47,7 @@ jobs:
     name: Package arm64 macOS release
     # Standard macos-26 is an arm64 GitHub-hosted runner and is free for this
     # public repository. Release signing does not require a larger paid runner.
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 45
     env:
       RELEASE_TAG: ${{ inputs.tag }}

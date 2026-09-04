@@ -42,7 +42,7 @@ concurrency:
 jobs:
   build:
     name: Cockpit vs SDK branch head
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     # 45 minutes, matching ci.yml. Measured against the run that is a superset
     # of every step below except packaging:
     # The standalone repository's measured cold job total was 12m23s:

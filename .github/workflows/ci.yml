@@ -138,7 +138,7 @@ jobs:
     name: classify changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # Git diff and two shell classifiers need no paid build machine.
-    runs-on: ubuntu-slim
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
