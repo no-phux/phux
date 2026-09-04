@@ -37,10 +37,11 @@ fi
 # Watched red with MEASURE_SAMPLE_CAP raised to 1024: the test accepted the
 # impossible 129-sample floor and reported the wrong populations.
 
-good_profile='frame_profile host_draw_n=310 host_draw_p50_us=4 host_draw_p90_us=8 rebuild_n=180 rebuild_p50_us=2 rebuild_p90_us=3'
+good_profile='frame_profile host_draw_n=310 host_draw_p50_us=4 host_draw_p90_us=8 host_draw_max_us=11 rebuild_n=180 rebuild_p50_us=2 rebuild_p90_us=3 rebuild_max_us=5'
 if output="$(measure_print_frame_profile test basis derive "$good_profile")"; then
     if [[ "$output" == *'MEASURED-BASIS test '* \
         && "$output" == *'rebuild_p90_us=3'* \
+        && "$output" == *'host_draw_max_us=11'* \
         && "$output" == *'host_draw_population_n=128'* \
         && "$output" == *'rebuild_population_n=128'* ]]; then
         ok
@@ -80,6 +81,20 @@ elif grep -q 'absent sample count is <missing>' "${WORK}/absent.err"; then
     ok
 else
     bad 'absent topology-stage refusal did not name the stage'
+fi
+
+scheduler_profile='frame_profile rebuild_n=128 rebuild_p50_us=2 rebuild_p90_us=3 rebuild_max_us=5 host_draw_n=256 host_draw_p50_us=4 host_draw_p90_us=8 host_draw_max_us=13 interval_n=256 interval_p50_us=16968 interval_p90_us=36222 interval_max_us=50000'
+if scheduler="$(measure_print_scheduler_comparison "$scheduler_profile" rebuild host_draw)"; then
+    if [[ "$scheduler" == *'scheduler_stage_p90_sum_us=11'* \
+        && "$scheduler" == *'scheduler_interval_p50_us=16968'* \
+        && "$scheduler" == *'scheduler_interval_p90_us=36222'* \
+        && "$scheduler" == *'scheduler_interval_max_us=50000'* ]]; then
+        ok
+    else
+        bad 'scheduler comparison did not separate stage and interval timing'
+    fi
+else
+    bad 'fully populated scheduler profile was refused'
 fi
 
 # Replace only external mechanics. The function under test must still compose

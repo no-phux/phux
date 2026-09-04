@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Drive the real app through the SDK's automation harness and assert on what
-# actually changes. This is the repeatable version of a session that was
+# Drive the real bundled app through the SDK's automation harness and assert on
+# what actually changes. This is the repeatable version of a session that was
 # otherwise twenty manual steps.
 #
 #   ./scripts/automate-smoke.sh                 # structure + driven interaction
-#   ./scripts/automate-smoke.sh --profile       # ...and a 4-pane frame profile
+#   ./scripts/automate-smoke.sh --fullscreen    # ...and a real OS fullscreen round-trip
+#   ./scripts/automate-smoke.sh --profile       # ...and a 4-pane scheduler profile
 #   ./scripts/automate-smoke.sh --churn         # split/close churn profile
 #   ./scripts/automate-smoke.sh --churn --churn-actions 160
 #   ./scripts/automate-smoke.sh --keep          # leave the app running to poke at
@@ -36,26 +37,31 @@
 #   new tab            role=tab name="Terminal N
 #   rendered pane      role=textbox name="Terminal        (SELECTED tab only)
 #   scrollback search  role=group name="Scrollback search
-# measures: real-bundle structure, interaction, steady repaint, and split/close churn
+# measures: real-bundle structure, interaction, fullscreen, scheduler cadence, steady repaint, and split/close churn
 #
-# SERIAL ONLY (phux-cockpit-2ml.10). The automation dropbox is per-user, not
-# per-process, so a second live bundle steals the channel and this script would
-# assert cleanly against someone else's binary. scripts/lib/app-instance.sh
-# refuses that instead, and keeps refusing it mid-run - the instance swap that
-# bead was filed for happened in the MIDDLE of a sequence that started clean.
+# SERIAL ONLY (phux-cockpit-2ml.10). The identity-staged measurement bundles
+# deliberately reuse dev-run's `phux-cockpit-dev` process identity, so two live
+# measurement runs would make PID activation ambiguous even though each has a
+# private dropbox. scripts/lib/app-instance.sh refuses that state and keeps
+# checking the exact process and publisher PID between driven steps; the swap
+# that filed the bead happened in the MIDDLE of a sequence that started clean.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 . "${ROOT}/scripts/lib/measure.sh"
 WORK="${TMPDIR:-/tmp}/phux-cockpit-smoke.$$"
 PROFILE=0
+FULLSCREEN=0
 CHURN=0
 CHURN_ACTIONS=160
+PROFILE_PIPELINE_STAGES=(rebuild layout reconcile emit a11y plan patch encode present host_decode host_draw)
+PROFILE_REQUIRED_STAGES=("${PROFILE_PIPELINE_STAGES[@]}" interval)
 CHURN_REQUIRED_STAGES=(rebuild layout reconcile emit a11y plan patch encode)
 KEEP=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --profile) PROFILE=1; shift ;;
+        --fullscreen) FULLSCREEN=1; shift ;;
         --churn) CHURN=1; shift ;;
         --churn-actions)
             [[ $# -ge 2 ]] || { printf -- '--churn-actions needs a value\n' >&2; exit 2; }
@@ -67,8 +73,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$PROFILE" == 1 && "$CHURN" == 1 ]]; then
-    printf 'choose either --profile or --churn; each profile needs independent counters\n' >&2
+if (( PROFILE + FULLSCREEN + CHURN > 1 )); then
+    printf 'choose one of --fullscreen, --profile, or --churn; each needs an independent run\n' >&2
     exit 2
 fi
 if [[ ! "$CHURN_ACTIONS" =~ ^[0-9]+$ ]] \
@@ -188,35 +194,45 @@ pane_count() {
 # the churn negative control: the previous count must be observable before the
 # key, and the different expected count must become observable afterwards.
 expect_pane_transition() {
-    local what="$1" before="$2" after="$3" key="$4" deadline observed
+    local what="$1" before="$2" after="$3" key="$4"
+    local observed tab marker
+    app_instance_assert || return 1
     observed="$(pane_count)"
     if [[ "$observed" != "$before" ]]; then
         printf 'REFUSING TO DRIVE: %s expected %s panes before the action, got %s.\n' \
             "$what" "$before" "$observed" >&2
         return 1
     fi
-    if ! "$NATIVE" automate widget-key phux-cockpit-canvas "$key" \
-        >/dev/null 2>"${WORK}/action.err"; then
-        cat "${WORK}/action.err" >&2
+    tab="$(app_instance_snapshot \
+        | grep -o 'role=textbox name="Terminal [0-9][0-9]*' \
+        | head -1 \
+        | grep -o '[0-9][0-9]*$' || true)"
+    if [[ ! "$tab" =~ ^[0-9]+$ ]]; then
+        printf 'REFUSING TO DRIVE: could not derive the selected tab from its pane labels.\n' >&2
         return 1
     fi
-    deadline=$((SECONDS + 5))
-    while :; do
-        observed="$(pane_count)"
-        if [[ "$observed" == "$after" ]]; then
-            # The snapshot transition can publish before the resulting frame's
-            # effect work drains. Without one frame of breathing room, the
-            # continuously repainting PTYs can starve the automation queue.
-            sleep 0.1
-            return 0
-        fi
-        if [[ "$SECONDS" -ge "$deadline" ]]; then
-            printf 'FAILED: %s did not change pane count %s -> %s (got %s).\n' \
-                "$what" "$before" "$after" "$observed" >&2
-            return 1
-        fi
-        sleep 0.05
-    done
+
+    if (( after > before )); then
+        marker="role=textbox name=\"Terminal ${tab}\\.${after}"
+        "$NATIVE" automate assert --absent "$marker" >/dev/null
+    else
+        marker="role=textbox name=\"Terminal ${tab}\\.${before}"
+        "$NATIVE" automate assert "$marker" >/dev/null
+    fi
+    "$NATIVE" automate widget-key phux-cockpit-canvas "$key" >/dev/null
+    if (( after > before )); then
+        "$NATIVE" automate assert --timeout-ms 5000 "$marker" >/dev/null
+    else
+        "$NATIVE" automate assert --timeout-ms 5000 --absent "$marker" >/dev/null
+    fi
+    app_instance_assert || return 1
+    observed="$(pane_count)"
+    if [[ "$observed" != "$after" ]]; then
+        printf 'FAILED: %s reached its movable marker but pane count is %s, not %s.\n' \
+            "$what" "$observed" "$after" >&2
+        return 1
+    fi
+    printf '  ok: %s (%s -> %s panes)\n' "$what" "$before" "$after"
 }
 
 wait_for_profile_floor() {
@@ -238,6 +254,90 @@ wait_for_profile_floor() {
     done
 }
 
+# AXFullScreen is the OS's state for the real NSWindow. The automation
+# snapshot has no fullscreen bit, and its CPU reference screenshot does not
+# photograph the window, so neither can stand in for this PID-addressed query.
+ax_fullscreen_state() {
+    osascript -e "tell application \"System Events\" to tell (first process whose unix id is ${APP_INSTANCE_PID}) to get value of attribute \"AXFullScreen\" of window 1" 2>/dev/null
+}
+
+wait_for_ax_fullscreen() {
+    local wanted="$1"
+    local deadline=$((SECONDS + 15)) observed=""
+    while :; do
+        app_instance_assert || return 1
+        observed="$(ax_fullscreen_state || true)"
+        [[ "$observed" == "$wanted" ]] && return 0
+        if [[ "$SECONDS" -ge "$deadline" ]]; then
+            printf 'FAILED: pid %s AXFullScreen did not become %s (last value: %s).\n' \
+                "$APP_INSTANCE_PID" "$wanted" "${observed:-unavailable}" >&2
+            return 1
+        fi
+        # Native's polling assertion cannot query AppKit accessibility
+        # attributes. This poll is intentionally only for that missing OS bit.
+        sleep 0.1
+    done
+}
+
+snapshot_window_size() {
+    app_instance_snapshot \
+        | grep '^window @w1 ' \
+        | head -1 \
+        | grep -o '[0-9][0-9]*x[0-9][0-9]*' \
+        | head -1
+}
+
+if [[ "$FULLSCREEN" == "1" ]]; then
+    printf 'driving the bundled window through fullscreen...\n'
+    app_instance_activate
+    "$NATIVE" automate assert --timeout-ms 5000 'window @w1.*focused=true' >/dev/null
+    app_instance_assert
+
+    initial_fullscreen="$(ax_fullscreen_state || true)"
+    initial_size="$(snapshot_window_size || true)"
+    if [[ "$initial_fullscreen" != "false" ]]; then
+        printf 'REFUSING TO DRIVE: pid %s started with AXFullScreen=%s, not false.\n' \
+            "$APP_INSTANCE_PID" "${initial_fullscreen:-unavailable}" >&2
+        exit 1
+    fi
+    if [[ ! "$initial_size" =~ ^[0-9]+x[0-9]+$ ]]; then
+        printf 'REFUSING TO DRIVE: the bound snapshot has no readable main-window size.\n' >&2
+        exit 1
+    fi
+
+    "$NATIVE" automate widget-key phux-cockpit-canvas ctrl+cmd+f >/dev/null
+    wait_for_ax_fullscreen true
+    "$NATIVE" automate assert --timeout-ms 15000 --absent \
+        "window @w1.* ${initial_size}" >/dev/null
+    "$NATIVE" automate assert --timeout-ms 5000 'window @w1.*focused=true' >/dev/null
+    app_instance_assert
+    fullscreen_size="$(snapshot_window_size || true)"
+    if [[ ! "$fullscreen_size" =~ ^[0-9]+x[0-9]+$ || "$fullscreen_size" == "$initial_size" ]]; then
+        printf 'REFUSING TO REPORT: AXFullScreen became true without a measurable window-size transition.\n' >&2
+        exit 1
+    fi
+    printf '  ok: AXFullScreen false -> true (%s -> %s)\n' "$initial_size" "$fullscreen_size"
+
+    "$NATIVE" automate widget-key phux-cockpit-canvas ctrl+cmd+f >/dev/null
+    wait_for_ax_fullscreen false
+    "$NATIVE" automate assert --timeout-ms 15000 \
+        "window @w1.* ${initial_size}" >/dev/null
+    app_instance_assert
+    restored_size="$(snapshot_window_size || true)"
+    if [[ "$restored_size" != "$initial_size" ]]; then
+        printf 'REFUSING TO REPORT: AXFullScreen became false but size restored to %s, not %s.\n' \
+            "${restored_size:-unavailable}" "$initial_size" >&2
+        exit 1
+    fi
+    printf '  ok: AXFullScreen true -> false (%s -> %s)\n' "$fullscreen_size" "$restored_size"
+
+    measure_basis fullscreen_transition \
+        "identity-staged bundle=${WORK}/Phux Cockpit (measure).app; publisher_pid=${APP_INSTANCE_PID}; frontmost pid and AXFullScreen queried by unix id; no screenshot" \
+        './scripts/automate-smoke.sh --fullscreen'
+    printf 'OBSERVED fullscreen_transition publisher_pid=%s focused=true ax_fullscreen=false->true->false window_size=%s->%s->%s\n' \
+        "$APP_INSTANCE_PID" "$initial_size" "$fullscreen_size" "$restored_size"
+fi
+
 if [[ "$PROFILE" == "1" ]]; then
     # jw4's recorded condition is FOUR panes under interaction, not an idle
     # prompt. Split to four before reading anything, or the percentiles
@@ -256,11 +356,12 @@ if [[ "$PROFILE" == "1" ]]; then
 
     "$NATIVE" automate profile on >/dev/null 2>&1
 
-    profile_snapshot="$(wait_for_profile_floor "$MEASURE_SAMPLE_FLOOR" host_draw)"
+    profile_snapshot="$(wait_for_profile_floor "$MEASURE_SAMPLE_FLOOR" "${PROFILE_REQUIRED_STAGES[@]}")"
     printf '\n--- frame profile (4 panes, continuous repaint) ---\n'
     measure_print_frame_profile steady_repaint \
-        '4 panes, 45-row continuous repaint, font-size 13' \
+        "4 panes, 45-row continuous repaint, font-size 13; full 128-sample rolling populations for ${PROFILE_REQUIRED_STAGES[*]}" \
         './scripts/automate-smoke.sh --profile' "$profile_snapshot"
+    measure_print_scheduler_comparison "$profile_snapshot" "${PROFILE_PIPELINE_STAGES[@]}"
 fi
 
 if [[ "$CHURN" == "1" ]]; then

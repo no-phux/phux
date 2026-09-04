@@ -117,13 +117,66 @@ measure_print_frame_profile() {
                 population=$((count < MEASURE_SAMPLE_CAP ? count : MEASURE_SAMPLE_CAP))
                 printf '%s\n%s_population_n=%s\n' "$token" "$label" "$population"
                 ;;
-            *_p50_us=*|*_p90_us=*)
+            *_p50_us=*|*_p90_us=*|*_max_us=*)
                 label="${token%%_p[59]0_us=*}"
+                label="${label%%_max_us=*}"
                 [[ "$allowed" == *"|${label}|"* ]] && printf '%s\n' "$token"
                 ;;
         esac
     done
     return 0
+}
+
+# Put the delivery cadence beside the deliberately conservative sum of every
+# named stage's p90. `present` contains the macOS host decode/draw call, so the
+# sum double-counts nested work on purpose; an interval p90 that still exceeds
+# it cannot be explained by the measured synchronous stages. This is an
+# arithmetic comparison of independently sampled percentiles, not a synthetic
+# whole-frame percentile.
+measure_print_scheduler_comparison() {
+    local snapshot="$1"
+    shift
+    local -a pipeline_stages=("$@")
+    local profile stage token value
+    local stage_p90_sum=0 interval_p50="" interval_p90="" interval_max=""
+
+    measure_require_profile_stages \
+        "$snapshot" "$MEASURE_SAMPLE_FLOOR" "${pipeline_stages[@]}" interval || return 1
+    profile="$(printf '%s\n' "$snapshot" | grep -o 'frame_profile.*' | head -1)"
+
+    for stage in "${pipeline_stages[@]}"; do
+        value=""
+        for token in $profile; do
+            case "$token" in
+                "${stage}_p90_us="*) value="${token##*=}"; break ;;
+            esac
+        done
+        if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+            printf 'REFUSING TO COMPARE: %s has no numeric p90 in frame_profile.\n' \
+                "$stage" >&2
+            return 1
+        fi
+        stage_p90_sum=$((stage_p90_sum + value))
+    done
+
+    for token in $profile; do
+        case "$token" in
+            interval_p50_us=*) interval_p50="${token##*=}" ;;
+            interval_p90_us=*) interval_p90="${token##*=}" ;;
+            interval_max_us=*) interval_max="${token##*=}" ;;
+        esac
+    done
+    if [[ ! "$interval_p50" =~ ^[0-9]+$ \
+        || ! "$interval_p90" =~ ^[0-9]+$ \
+        || ! "$interval_max" =~ ^[0-9]+$ ]]; then
+        printf 'REFUSING TO COMPARE: frame_profile has incomplete interval percentiles.\n' >&2
+        return 1
+    fi
+
+    printf 'scheduler_stage_p90_sum_us=%s\n' "$stage_p90_sum"
+    printf 'scheduler_interval_p50_us=%s\n' "$interval_p50"
+    printf 'scheduler_interval_p90_us=%s\n' "$interval_p90"
+    printf 'scheduler_interval_max_us=%s\n' "$interval_max"
 }
 
 measure_raster_comparison_basis() {
