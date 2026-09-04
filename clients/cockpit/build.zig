@@ -54,8 +54,8 @@ fn addProviderContractModules(
 /// fronts a real Cockpit engine, and a Zig module may only import files
 /// below its own root, so the engine is handed to each extension instance
 /// (exe, app tests, extension tests) as a module rooted at `src/ts_engine.zig`
-/// carrying the same imports the Zig app root gets — minus the Phux provider,
-/// which this graph never builds.
+/// carrying the same imports the Zig app root gets, including the production
+/// Phux provider when selected.
 /// The SDK package's TypeScript frontend needs its compiler (`scriptc`) under
 /// packages/core/node_modules, and the tarball pin does not carry it: every
 /// pin bump used to stop at "cannot resolve its TypeScript toolchain" until
@@ -84,7 +84,13 @@ fn ensureTsToolchain(b: *std.Build, dependency: *std.Build.Dependency) void {
     std.debug.print("typescript-spike: npm ci failed in {s}:\n{s}\n", .{ core_dir, result.stderr });
 }
 
-fn addTsEngineModules(b: *std.Build, artifacts: native_sdk.AppArtifacts, measure: bool) void {
+fn addTsEngineModules(
+    b: *std.Build,
+    artifacts: native_sdk.AppArtifacts,
+    measure: bool,
+    phux_enabled: bool,
+    ffi: ?PhuxFfi,
+) void {
     const extension_tests = artifacts.extension_tests orelse
         @panic("native-sdk app graph did not expose the extension test artifact");
     const roots = [_]*std.Build.Module{
@@ -107,7 +113,7 @@ fn addTsEngineModules(b: *std.Build, artifacts: native_sdk.AppArtifacts, measure
         });
         contract.addImport("native_sdk", sdk_module);
         const phux_options = b.addOptions();
-        phux_options.addOption(bool, "enabled", false);
+        phux_options.addOption(bool, "enabled", phux_enabled);
         const test_options = b.addOptions();
         test_options.addOption(bool, "measure", measure);
         const ghostty = b.dependency("ghostty", .{
@@ -127,6 +133,10 @@ fn addTsEngineModules(b: *std.Build, artifacts: native_sdk.AppArtifacts, measure
         engine.addImport("phux_options", phux_options.createModule());
         engine.addImport("test_options", test_options.createModule());
         engine.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
+        if (phux_enabled) {
+            const modules = createPhuxModules(b, target, optimize, sdk_module, contract, ffi.?);
+            attachPhuxModules(b, engine, modules);
+        }
         root.addImport("cockpit_engine", engine);
     }
 }
@@ -328,20 +338,24 @@ fn addPhuxModules(
             ffi,
         );
 
-        root.addImport("phux_provider", modules.provider);
-        root.addImport("phux_pointer", modules.pointer);
-        root.addCSourceFile(.{
-            .file = b.path("src/providers/phux/pointer_macos.m"),
-            .flags = &.{ "-fobjc-arc", "-fblocks" },
-        });
-        if (b.sysroot) |sysroot| {
-            root.addFrameworkPath(.{
-                .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }),
-            });
-        }
-        root.linkFramework("AppKit", .{});
-        root.linkSystemLibrary("c", .{});
+        attachPhuxModules(b, root, modules);
     }
+}
+
+fn attachPhuxModules(b: *std.Build, root: *std.Build.Module, modules: PhuxModules) void {
+    root.addImport("phux_provider", modules.provider);
+    root.addImport("phux_pointer", modules.pointer);
+    root.addCSourceFile(.{
+        .file = b.path("src/providers/phux/pointer_macos.m"),
+        .flags = &.{ "-fobjc-arc", "-fblocks" },
+    });
+    if (b.sysroot) |sysroot| {
+        root.addFrameworkPath(.{
+            .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }),
+        });
+    }
+    root.linkFramework("AppKit", .{});
+    root.linkSystemLibrary("c", .{});
 }
 
 /// Names of the phux modules whose own tests the `test` step runs, in the
@@ -594,31 +608,6 @@ pub fn build(b: *std.Build) void {
         "typescript-spike",
         "Build the isolated TypeScript + Native markup Cockpit artifact",
     ) orelse false;
-    // Before the SDK's own configure-time check inside addAppArtifacts,
-    // which exits the build when the compiler is missing: the installer has
-    // to have had its turn first, or it never gets one (CI proved that).
-    if (typescript_spike) ensureTsToolchain(b, dependency);
-    const artifacts = if (typescript_spike)
-        native_sdk.addAppArtifacts(b, dependency, .{
-            .name = "phux-cockpit-typescript-spike",
-            .app_root = "typescript-spike",
-            .native_extension = "src/native_extension.zig",
-        })
-    else
-        native_sdk.addAppArtifacts(b, dependency, .{ .name = "phux-cockpit" });
-    const app_module = artifacts.exe.root_module;
-    if (app_module.resolved_target.?.result.os.tag != .macos)
-        @panic("phux-cockpit supports macOS only");
-    if (typescript_spike) {
-        const measure_spike = b.option(
-            bool,
-            "measure",
-            "Print MEASURED diagnostics from tests (see src/tests/measured.zig)",
-        ) orelse false;
-        addTsEngineModules(b, artifacts, measure_spike);
-        return;
-    }
-
     const phux_enabled = b.option(
         bool,
         "phux-enabled",
@@ -639,12 +628,10 @@ pub fn build(b: *std.Build) void {
         "measure",
         "Print MEASURED diagnostics from tests (see src/tests/measured.zig)",
     ) orelse false;
-
     const ffi = resolvePhuxFfi(b, opt_include, opt_lib);
 
-    // -Dphux-enabled=true is a promise that the app graph will contain the real
-    // provider. Refuse to build a local-terminal app under that flag: silently
-    // downgrading is exactly the lie this build is meant to stop telling.
+    // -Dphux-enabled=true is a promise that the selected app graph contains
+    // the real provider. Never silently downgrade either composition root.
     if (phux_enabled and ffi == null) {
         std.log.err(
             \\-Dphux-enabled=true, but the phux client FFI was not found.
@@ -657,6 +644,31 @@ pub fn build(b: *std.Build) void {
             \\  cargo build --locked --profile ffi-release -p phux-client-ffi
         , .{ rootPath(b, "../..") });
         std.process.exit(1);
+    }
+    // Before the SDK's own configure-time check inside addAppArtifacts,
+    // which exits the build when the compiler is missing: the installer has
+    // to have had its turn first, or it never gets one (CI proved that).
+    if (typescript_spike) ensureTsToolchain(b, dependency);
+    const artifacts = if (typescript_spike)
+        native_sdk.addAppArtifacts(b, dependency, .{
+            .name = "phux-cockpit-typescript-spike",
+            .app_root = "typescript-spike",
+            .native_extension = "src/native_extension.zig",
+        })
+    else
+        native_sdk.addAppArtifacts(b, dependency, .{ .name = "phux-cockpit" });
+    const app_module = artifacts.exe.root_module;
+    if (app_module.resolved_target.?.result.os.tag != .macos)
+        @panic("phux-cockpit supports macOS only");
+    if (typescript_spike) {
+        addTsEngineModules(b, artifacts, measure, phux_enabled, ffi);
+        if (b.top_level_steps.get("test")) |top_level| {
+            const test_step = &top_level.step;
+            if (ffi) |found| addPhuxGraphTests(b, artifacts, test_step, found);
+            addGuardCheck(b, test_step);
+            addTestVerdict(b, test_step, buildVerdict(b, phux_enabled, ffi));
+        }
+        return;
     }
 
     const phux_options = b.addOptions();
