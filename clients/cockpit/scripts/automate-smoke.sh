@@ -387,4 +387,28 @@ if [[ "$CHURN" == "1" ]]; then
         "./scripts/automate-smoke.sh --churn --churn-actions ${CHURN_ACTIONS}" "$profile_snapshot"
 fi
 
+if [[ "$APP_GRAPH" == "typescript-candidate" ]]; then
+    printf 'verifying focused secondary-window overlays...\n'
+    expect_change 'cmd+n opens a secondary window' 'window @w2' \
+        "$NATIVE" automate widget-key phux-cockpit-canvas cmd+n
+    "$NATIVE" automate assert --absent 'role=textbox name="Find terminal"' >/dev/null
+    "$NATIVE" automate widget-key phux-cockpit-canvas-1 cmd+shift+p >/dev/null
+    deadline=$((SECONDS + 5))
+    while :; do
+        snapshot="$(app_instance_snapshot)"
+        switcher_count="$(grep -c 'role=textbox name="Find terminal"' <<<"$snapshot" || true)"
+        if [[ "$switcher_count" == 1 ]] \
+            && grep -q '@w2/phux-cockpit-canvas-1.*role=textbox name="Find terminal"' <<<"$snapshot"; then
+            break
+        fi
+        if [[ "$SECONDS" -ge "$deadline" ]]; then
+            printf 'FAILED: focused secondary switcher appeared %s times or in the wrong window.\n' "$switcher_count" >&2
+            exit 1
+        fi
+        sleep 0.1
+    done
+    app_instance_assert
+    printf '  ok: secondary switcher appears once, in focused window @w2\n'
+fi
+
 printf '\nsmoke: ok\n'
