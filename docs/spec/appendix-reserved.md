@@ -19,8 +19,10 @@ Implementers extending the protocol pick from these ranges via PR.
 
 For implementers extending the protocol:
 
-- Message IDs `0x04..=0x0F` and `0x84..=0x8F` remain open for connection
-  lifecycle; `ATTACH_READY = 0x83` is allocated.
+- `WORKLOAD_RESPONSE = 0x04` and `WORKLOAD_CHALLENGE = 0x84` are allocated
+  to the endpoint-neutral `phux-workload/v1` profile
+  ([workload-auth.md](./workload-auth.md)); `0x05..=0x0F` and
+  `0x85..=0x8F` remain open for connection lifecycle.
 - `0x14` is allocated, `0x15` is retired, `HISTORY_REQUEST = 0x16` and
   `INPUT_TERMINAL_REPLY = 0x17` are allocated, and `0x18..=0x1F` remain open.
   `0x91` is permanently retired.
@@ -88,7 +90,8 @@ this document.
 proposal and is never reused. `CODEC_UNAVAILABLE = 6` is allocated by ADR-0070.
 
 `DetachReason` ([proto.md §7.2](./proto.md)) allocates sequentially from `0`
-— `0..=4` are taken — with `255` permanently reserved for `INTERNAL_ERROR`.
+— `0..=7` are taken, with workload-auth values `5..=7` still spec-only — and
+`255` is permanently reserved for `INTERNAL_ERROR`.
 It differs from the enums above in how an unallocated value decodes: a
 consumer MUST read one it does not recognise as an *unstated* reason rather
 than as a decode error, because `DETACHED` is the termination signal and

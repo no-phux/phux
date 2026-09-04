@@ -73,6 +73,15 @@ to re-file this bead. `tests/policy_deny.rs` pins both halves of the
 contract — a denying engine gets `PermissionDenied` on the wire, and the
 default still admits a local client.
 
+## Fulfilled by ADR-0098
+
+[ADR-0098](./0098-workload-proof-and-closed-scope-authority.md) adopts the
+six-verb terminal scope taxonomy this ADR intentionally declined to guess.
+It retains this HELLO admission seam, replaces the permissive default with
+closed `local`/`paired` policy, retains the effective grant on the connection,
+and adds one total pre-routing classifier rather than restoring the deleted
+per-handler vocabulary.
+
 ## Why
 
 - **The two halves have opposite costs.** The vocabulary is cheap now and

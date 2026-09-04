@@ -91,6 +91,16 @@ Date: 2026-05-25
 > phux-v45.4 frame relay runs over ssh links exactly as over QUIC/WSS —
 > the bridged stream carries the identical length-prefixed framing.
 
+> **Security amendment 2026-09-03
+> ([ADR-0098](./0098-workload-proof-and-closed-scope-authority.md)):**
+> SSH authentication is no longer sufficient to mint terminal authority after
+> the closed `local`/`paired` policy cutover. `local` admits owner UDS only;
+> `paired` requires a `phux-workload/v1` binding, and SSH-stdio exposes no
+> independently verifiable TLS exporter or peer-process binding. SSH-stdio is
+> therefore unavailable in both modes until a later workload profile defines a
+> closed cryptographic `SSH_SESSION` binding. Implementations MUST NOT retain an
+> unnamed SSH-auth-suffices fallback.
+
 ## Context
 
 Two requests have arrived for what look like distinct features but

@@ -41,7 +41,7 @@ are hand-curated from each ADR's body.
 | [0004](./0004-libghostty-vt-as-grid.md) | libghostty-vt is the canonical grid | Accepted |
 | [0005](./0005-relationship-to-zmx-and-zmosh.md) | Relationship to zmx and zmosh | Accepted |
 | [0006](./0006-input-mirrors-libghostty.md) | Input event types re-export libghostty-vt's atoms | Accepted (amended by [0024](./0024-wire-owns-input-atoms.md)) |
-| [0007](./0007-mosh-class-transport-and-satellites.md) | Mosh-class transport semantics and satellite forward-compat | Accepted (forward-compat) |
+| [0007](./0007-mosh-class-transport-and-satellites.md) | Mosh-class transport semantics and satellite forward-compat | Accepted (forward-compat; SSH-auth-suffices policy superseded by [0098](./0098-workload-proof-and-closed-scope-authority.md)) |
 | [0008](./0008-use-libghostty-types-directly.md) | Use libghostty-vt's types directly; stop reimplementing them | Accepted (amended by [0024](./0024-wire-owns-input-atoms.md)) |
 | [0009](./0009-phux-vs-mux-positioning.md) | phux vs coder/mux: positioning | Accepted |
 | [0010](./0010-frontend-agnostic-tmux-cc-reserved.md) | phux is TUI-first, non-TUI not precluded; tmux control mode reserved as compat option | Accepted (forward-compat) |
@@ -131,6 +131,7 @@ are hand-curated from each ADR's body.
 | [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md) | Per-pane scrollback is bounded in bytes, by phux, explicitly | Accepted (`defaults.history-limit` is only libghostty's line limit and the engine's own 10_000-byte constructor default was what actually bound retention, so phux sets the byte bound itself and exposes it as `defaults.history-bytes`, default 2 MiB, capped at 64 MiB by `config check`; retention trades directly against attach latency because the native bootstrap materialises every retained page at READY) |
 | [0095](./0095-the-blackbird-boundary.md) | Blackbird is a peer ledger, not a phux client | Accepted (the two daemons do not connect: the seam is one optional field in the [0040](./0040-agent-identity-metadata.md) record written by the [0067](./0067-cache-preserving-agent-fleet-context.md) integrations, and the "required by Blackbird ADR-0005" justification is deleted because that document was never written and its architecture is archived) |
 | [0096](./0096-always-on-performance-telemetry.md) | Performance telemetry is always on, in-process, and one command away | Accepted |
+| [0098](./0098-workload-proof-and-closed-scope-authority.md) | Workload proof and closed-scope authority | Accepted (forward-compat; mutual Ed25519 proof over a persistent authority fingerprint, fresh server incarnation, and channel binding; canonical endpoint-owned scopes are intersected with the live registry and enforced before dispatch; explicitly amends [0031](./0031-remote-consumer-auth-and-encryption.md)) |
 
 ## When to write an ADR
 

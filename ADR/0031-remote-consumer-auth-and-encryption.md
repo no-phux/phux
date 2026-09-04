@@ -114,6 +114,21 @@ a pairing step.** Concretely:
   bind always takes the TLS+token path. There is no configuration in which
   remote traffic crosses the wire in clear.
 
+## Amendment by ADR-0098
+
+[ADR-0098](./0098-workload-proof-and-closed-scope-authority.md) supersedes the
+claim that Phux defines no in-band authentication. TLS and the bearer gate
+remain transport confidentiality, server identity, and admission for WSS.
+Under `paired` policy they are necessary but insufficient: every stateful
+transport, including UDS, also completes the channel-bound
+`phux-workload/v1` proof and receives closed per-operation scopes.
+
+There is no bearer-only policy mode after ADR-0098's cutover. Existing bearer
+credentials remain an outer WSS admission gate only inside `paired`; they never
+mint terminal authority and their former survive-until-drop rule is superseded.
+The public-key registry is live truth: revocation, expiry, or a scope-ceiling
+reduction terminates affected connections immediately.
+
 ## Why
 
 - **Smallest trust-boundary move that is actually safe.** TLS 1.3 gives
