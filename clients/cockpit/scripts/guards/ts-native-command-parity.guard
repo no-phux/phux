@@ -1,0 +1,20 @@
+# GUARD ts-native-command-parity
+#
+# Removing native command decoding makes a registered split shortcut reach the
+# seam but get refused instead of changing pane topology.
+test: native menu commands split and close the focused pane through the engine seam
+build: test -Dtypescript-spike=true -Dplatform=null
+red: 2026-09-04 at 280c1614
+diff --git a/src/cockpit/native/ts_protocol.zig b/src/cockpit/native/ts_protocol.zig
+index 50b67834..ecb67381 100644
+--- a/src/cockpit/native/ts_protocol.zig
++++ b/src/cockpit/native/ts_protocol.zig
+@@ -74,7 +74,7 @@ pub fn decodeNativeCommand(raw: u8) ?NativeCommand {
+         1 => .previous_tab,
+         2 => .next_tab,
+         3 => .close_focused_pane,
+-        4 => .split_right,
++        4 => null,
+         5 => .split_down,
+         6 => .previous_pane,
+         7 => .next_pane,
