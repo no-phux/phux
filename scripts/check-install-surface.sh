@@ -129,7 +129,14 @@ require_fixed scripts/gen-formula.sh 'depends_on arch: :arm64'
 # The generator must not know about targets the release matrix never builds.
 forbid_fixed scripts/gen-formula.sh 'x86_64-apple-darwin'
 
-require_fixed .github/workflows/release.yml 'cargo +1.90.0 build --locked --release --bin phux --bin phux-mcp'
+# The release compiler comes from rust-toolchain.toml, never a hardcoded
+# version: a bump that edits only the toml must move every release lane with
+# it, and a hardcoded channel in a workflow rots exactly like a version in a
+# README (it did: the toml and two workflows carried separate pins).
+require_fixed .github/workflows/release.yml 'cargo build --locked --release --bin phux --bin phux-mcp'
+forbid_fixed .github/workflows/release.yml 'cargo +1.90.0'
+forbid_fixed .github/workflows/release.yml 'toolchain install 1.'
+require_fixed .github/workflows/release.yml 'rust-toolchain.toml'
 require_fixed docs/RELEASING.md 'cargo build --locked --release --bin phux --bin phux-mcp'
 require_fixed .github/workflows/release.yml 'cp -f target/release/phux target/release/phux-mcp'
 require_fixed .github/workflows/release.yml 'target: aarch64-apple-darwin'
@@ -178,8 +185,12 @@ forbid_fixed .github/workflows/release.yml 'cargo publish'
 
 require_fixed .github/workflows/release-please.yml 'googleapis/release-please-action'
 require_fixed .github/workflows/release-please.yml 'uses: ./.github/workflows/release.yml'
-# release-please cannot update Cargo.lock; cargo re-resolves it on the PR branch.
-require_fixed .github/workflows/release-please.yml 'cargo +1.90.0 update --workspace'
+# release-please cannot update Cargo.lock; cargo re-resolves it on the PR
+# branch, against the toolchain rust-toolchain.toml pins — never a hardcoded
+# channel (see the release.yml guard above for why).
+require_fixed .github/workflows/release-please.yml 'cargo update --workspace'
+forbid_fixed .github/workflows/release-please.yml 'cargo +1.90.0'
+forbid_fixed .github/workflows/release-please.yml 'toolchain install .'
 
 # `release-type: rust` is fatally broken on this repo: its CargoToml updater
 # throws on our virtual workspace root (no [package] section) and on every
@@ -255,7 +266,10 @@ forbid_fixed .github/workflows/agent-integration-release.yml 'echo "tarball=${ta
 # back to a secret or a Blacksmith/self-hosted publish job.
 require_fixed .github/workflows/agent-integration-release.yml 'runs-on: ubuntu-latest'
 require_fixed .github/workflows/agent-integration-release.yml 'expected_repository="https://github.com/${GITHUB_REPOSITORY}.git"'
-require_fixed .github/workflows/agent-integration-release.yml 'npm publish --provenance --access public "$TARBALL"'
+# Provenance and public access are release contracts (npm trusted publishing
+# attaches the repository's OIDC identity). Trailing flags (e.g. --no-audit,
+# see .npmrc) are tolerated; their absence is not.
+require_fixed .github/workflows/agent-integration-release.yml 'npm publish --provenance --access public'
 forbid_fixed .github/workflows/agent-integration-release.yml 'NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}'
 
 # `-type f -name a -o -name b` binds as `(-type f -a -name a) -o (-name b)`,

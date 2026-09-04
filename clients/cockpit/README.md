@@ -351,14 +351,15 @@ actually looking at.
 - Internet access on the first source build to fetch pinned dependencies
 
 native-sdk is pinned to
-[`phall1/native@71bbce51`](https://github.com/phall1/native/commit/71bbce511187b9e071d3ca8cbf3b1b19138577da),
+[`phall1/native@34cc9d55`](https://github.com/phall1/native/commit/34cc9d5571599d5ea4feafc9260f36575e67e77b),
 the fork's upstream-v0.9.5 Cockpit lineage: terminal interaction, viewport, and
 font seams, the packed `cell_grid` canvas command with its AppKit decoder and
-wire format v6, macOS glyph smoothing, per-window `ChromeContext` on
-`build_window` and `web_panes`, `fx.openUrl`, the `native_extension` hook that
-keeps the TypeScript-core graph's engine native, axis-aware native split
-dividers, scoped post-present display-list refresh batching, and symlink-safe
-whole-file writes that retain file-access confinement.
+wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,
+per-window `ChromeContext` on `build_window` and `web_panes`, `fx.openUrl`, the
+`native_extension` hook that keeps the TypeScript-core graph's engine native,
+axis-aware native split dividers, scoped post-present display-list refresh
+batching, and symlink-safe whole-file writes that retain file-access
+confinement.
 The pin is a tarball SHA rather than a branch, so a push to the fork can never
 break a checkout of Cockpit — see [docs/SDK_PIN.md](docs/SDK_PIN.md) for how the
 fork and this repo stay in contract, and what to run before moving the pin.

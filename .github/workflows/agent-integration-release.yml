@@ -92,7 +92,7 @@ jobs:
       publish_npm: ${{ steps.release.outputs.publish_npm }}
       dry_run: ${{ steps.release.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
@@ -154,12 +154,12 @@ jobs:
     needs: prepare
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -167,6 +167,13 @@ jobs:
 
       - name: Install and run component gates
         working-directory: ${{ needs.prepare.outputs.directory }}
+        env:
+          # npm stops project-config discovery at the nearest package.json, so
+          # the repo-root .npmrc is invisible from here; the env vars are the
+          # switch that reaches every npm call the gate scripts spawn (see
+          # .npmrc: the live audit endpoint 503s must not fail a release).
+          npm_config_audit: "false"
+          npm_config_fund: "false"
         run: |
           npm install --global npm@11.5.1
           npm ci
@@ -215,10 +222,12 @@ jobs:
           test_dir="$(mktemp -d)"
           cd "$test_dir"
           npm init --yes >/dev/null
-          npm install --ignore-scripts --package-lock=false "$GITHUB_WORKSPACE/release/$TARBALL"
+          # Temp dir outside the repo tree: no project .npmrc applies, so the
+          # flags are explicit here (see .npmrc for why audit is off).
+          npm install --ignore-scripts --no-audit --no-fund --package-lock=false "$GITHUB_WORKSPACE/release/$TARBALL"
           npm ls --depth=0 "${PACKAGE_NAME}@${VERSION}"
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ needs.prepare.outputs.component }}-${{ needs.prepare.outputs.tag }}
           path: release/*
@@ -228,9 +237,12 @@ jobs:
   publish:
     name: Publish validated component
     needs: [prepare, package]
-    # npm trusted publishing rejects GitHub self-hosted runners. Blacksmith is
+    # npm trusted publishing accepts GitHub-hosted runners only. Blacksmith is
     # deliberately retained for the expensive gates above; only this small OIDC
-    # exchange and publication job needs a GitHub-hosted runner.
+    # exchange and publication job needs a GitHub-hosted runner. This job is
+    # exempt from the Blacksmith migration on purpose — if a future sweep
+    # relabels it, npm rejects the OIDC assertion at publish time and the
+    # release strand-check (release-drift) is what fires.
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -242,12 +254,12 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ needs.prepare.outputs.component }}-${{ needs.prepare.outputs.tag }}
           path: release
 
-      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -279,7 +291,7 @@ jobs:
         if: needs.prepare.outputs.publish_npm == 'true' && needs.prepare.outputs.dry_run == 'true'
         env:
           TARBALL: ${{ steps.artifact.outputs.tarball }}
-        run: npm publish --dry-run "$TARBALL"
+        run: npm publish --dry-run --no-audit "$TARBALL"
 
       - name: Publish exact npm artifact with provenance
         if: needs.prepare.outputs.publish_npm == 'true' && needs.prepare.outputs.dry_run == 'false'
@@ -302,7 +314,7 @@ jobs:
             fi
             echo "${PACKAGE_NAME}@${VERSION} already published with matching shasum; nothing to do."
           else
-            npm publish --provenance --access public "$TARBALL"
+            npm publish --provenance --access public --no-audit "$TARBALL"
           fi
 
       - name: Attach assets and publish component release

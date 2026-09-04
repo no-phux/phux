@@ -35,7 +35,8 @@
 # needed its own warm cache entry, and the 10 GB LRU evicted the cold ones.
 # (GitHub's LARGER runners are org-only — Team/Enterprise — and cannot be
 # attached to a personal account at any price; this is the biggest free
-# upgrade available.) The cheap `changes` gate stays on ubuntu-latest.
+# upgrade available.) The cheap `changes` gate runs on the smallest
+# Blacksmith x64 label.
 # macOS can be added to a matrix later when a contributor needs it (the
 # devshell already supports darwin systems via eachDefaultSystem).
 #
@@ -50,9 +51,11 @@
 #     such an artifact onto a leaner runner aborts with SIGILL at load time.
 #     Keying on /proc/cpuinfo keeps native artifacts pinned to matching
 #     hardware. `flake.lock` is in the key too — it governs the nix-provided
-#     zig that builds the blob. `rust-cache` adds the job id automatically,
-#     so `check` and `test` keep separate caches (different profiles, must
-#     not clobber).
+#     zig that builds the blob. rust-cache separates the lanes by an explicit
+#     `shared-key` per cargo profile (check vs test — different profiles must
+#     not clobber); the whole setup block lives in the
+#     `.github/actions/setup-rust-lane` composite so ci's lanes and the
+#     stress lane cannot drift apart.
 #
 # Cache RETENTION: `save-if` restricts Rust artifact cache writes to pushes
 # on `main`. GitHub's Actions cache is a hard 10 GB/repo with LRU eviction;
@@ -89,6 +92,13 @@
 # remain in this workflow but are skipped before runner allocation, so their
 # required contexts resolve without compiling the Rust workspace. Any unknown
 # root path or shared FFI/protocol/Cargo input fails closed into full Phux CI.
+#
+# Workflow-only fast path: a PR whose every changed file is CI infrastructure
+# (`.github/workflows/*.yml`, the composite action manifests, actionlint.yaml)
+# runs only the compile-free `workflow-gate` job. Dependabot's grouped action
+# bumps are exactly this shape — before this gate they paid the full compile
+# for a pin change. cockpit-ci.yml runs the same classifier so its macOS job
+# skips on the same PRs. See ADR-0099.
 #
 # OBSERVABILITY (ADR-0082): each cargo phase runs under scripts/ci/timed.sh,
 # and a trailing `lane signal` step renders the phase timings, cache
@@ -138,14 +148,16 @@ jobs:
     name: classify changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # Git diff and two shell classifiers need no paid build machine.
-    runs-on: ubuntu-slim
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.detect.outputs.docs_only }}
       phux_needed: ${{ steps.detect.outputs.phux_needed }}
       release_only: ${{ steps.detect.outputs.release_only }}
+      workflow_only: ${{ steps.detect.outputs.workflow_only }}
+      cockpit_needed: ${{ steps.detect.outputs.cockpit_needed }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - id: detect
@@ -186,6 +198,34 @@ jobs:
 
           printf '%s\n' "$files" | bash scripts/ci/classify-changes.sh >> "$GITHUB_OUTPUT"
 
+  # Workflow-only fast path: actionlint, the SHA-pin check, the change
+  # classifier truth table, and the release-orchestration/drift assertions,
+  # on the pinned devshell — NO Rust compile, NO zig blob, NO rust-cache.
+  # Dependabot's grouped action bumps touch nothing but workflow files and
+  # used to pay for the full compile lanes before failing on an unrelated
+  # step; now they cost minutes instead of a quarter hour. The composite
+  # action manifests are deliberately in scope: a bumped action changes
+  # runtime steps, not compilation, and the next code PR exercises the lanes
+  # against it. Anything outside the workflow set fails closed into full CI.
+  workflow-gate:
+    name: workflow gate
+    needs: changes
+    if: needs.changes.outputs.workflow_only == 'true'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: phux
+          # Read-only: no auth token, so nothing here can push to Cachix even
+          # in principle — the gate only needs the devshell's actionlint,
+          # just, and node. Fork PRs therefore work identically.
+          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
+      - name: workflow checks
+        run: nix develop -c just workflow-check
+
   # Lint + docs + license lane. clippy and rustdoc each compile the workspace
   # (check / doc profiles); running them in one job — and one `nix develop` —
   # shares the dependency build (including the zig blob) instead of paying for
@@ -211,17 +251,9 @@ jobs:
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.release_only != 'true' && needs.changes.outputs.phux_needed == 'true'
-    env:
-      # sccache experiment (see the caching header): wrap rustc so unchanged
-      # workspace crates hit the GHA cache across commits. `nix develop` is
-      # impure and inherits these; the sccache binary installed below stays
-      # on the host PATH inside the devshell.
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      CARGO_INCREMENTAL: "0"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -231,37 +263,17 @@ jobs:
             integrations/claude/package-lock.json
       - name: Record setup-node path
         run: echo "SETUP_NODE_BIN=$(dirname "$(command -v node)")" >> "$GITHUB_ENV"
-      # Runner disk headroom (phux-a5g7): the restore stack (nix store via
-      # cachix + rust-cache + sccache) sits near the hosted runner's free
-      # space; run 29443995632 died with ENOSPC before its first cargo
-      # step. Dropping the preinstalled toolchains this workflow never
-      # touches (dotnet, Android, GHC) frees ~25 GB for ~30s of rm.
-      - name: runner disk headroom
-        run: |
-          df -h / | tail -1
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
-          df -h / | tail -1
-      # Covers both cpuinfo dialects: flags/model name/vendor_id on x86,
-      # Features/CPU implementer/CPU part on aarch64 (which has none of the
-      # x86 field names — without these the arm key would hash empty input).
-      - name: CPU fingerprint
-        run: echo "CPU_KEY=$(grep -E '^(flags|model name|vendor_id|Features|CPU implementer|CPU part)' /proc/cpuinfo | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: cachix/cachix-action@v17
+      # Disk headroom, CPU fingerprint, Nix + Cachix, sccache, and rust-cache
+      # all live in the shared composite; see .github/actions/setup-rust-lane.
+      - uses: ./.github/actions/setup-rust-lane
+        id: setup
         with:
-          name: phux
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          rust-cache-shared-key: check
       # `just` is provided by the pinned dev shell, not the hosted runner.
       # Keep this after Nix setup or every PR fails before reaching Rust.
       - name: agent integration gates
         run: nix develop -c bash -c 'export PATH="$1:$PATH"; exec just agent-integrations-check' -- "$SETUP_NODE_BIN"
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
-        id: rust-cache
-        with:
-          key: ${{ env.CPU_KEY }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'flake.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: rust checks (fmt + clippy + doc + deny)
         if: needs.changes.outputs.docs_only != 'true'
         run: |
@@ -322,7 +334,7 @@ jobs:
       - name: lane signal
         if: always()
         env:
-          PHUX_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          PHUX_CACHE_HIT: ${{ steps.setup.outputs.rust-cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: bash scripts/ci/summarize-job.sh
 
@@ -357,42 +369,17 @@ jobs:
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.release_only != 'true' && needs.changes.outputs.phux_needed == 'true'
-    env:
-      # sccache experiment — same rationale as the check job (see the
-      # caching header). This is the lane where the 8m54s workspace
-      # compile lives.
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      CARGO_INCREMENTAL: "0"
     steps:
-      - uses: actions/checkout@v7
-      # Runner disk headroom (phux-a5g7): the restore stack (nix store via
-      # cachix + rust-cache + sccache) sits near the hosted runner's free
-      # space; run 29443995632 died with ENOSPC before its first cargo
-      # step. Dropping the preinstalled toolchains this workflow never
-      # touches (dotnet, Android, GHC) frees ~25 GB for ~30s of rm.
-      - name: runner disk headroom
-        run: |
-          df -h / | tail -1
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
-          df -h / | tail -1
-      # Covers both cpuinfo dialects: flags/model name/vendor_id on x86,
-      # Features/CPU implementer/CPU part on aarch64 (which has none of the
-      # x86 field names — without these the arm key would hash empty input).
-      - name: CPU fingerprint
-        run: echo "CPU_KEY=$(grep -E '^(flags|model name|vendor_id|Features|CPU implementer|CPU part)' /proc/cpuinfo | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: cachix/cachix-action@v17
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Disk headroom, CPU fingerprint, Nix + Cachix, sccache, and rust-cache
+      # all live in the shared composite; see .github/actions/setup-rust-lane.
+      # This is the lane where the 8m54s workspace compile lives, so it gets
+      # its own rust-cache profile key (test, not check).
+      - uses: ./.github/actions/setup-rust-lane
+        id: setup
         with:
-          name: phux
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: Swatinem/rust-cache@v2
-        id: rust-cache
-        with:
-          key: ${{ env.CPU_KEY }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'flake.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          rust-cache-shared-key: test
       # NEXTEST_PROFILE=ci on the unit pool only: behavior-identical to the
       # default profile (see .config/nextest.toml), it just adds the junit
       # report the `lane signal` step turns into a slowest-tests table. The
@@ -425,7 +412,57 @@ jobs:
       - name: lane signal
         if: always()
         env:
-          PHUX_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          PHUX_CACHE_HIT: ${{ steps.setup.outputs.rust-cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh
+
+  # Aggregation gate: ONE required context with an explicit skip policy,
+  # instead of requiring each lane's raw context.
+  #
+  # The fast paths above work by SKIPPING lanes (docs-only PRs skip the
+  # compile steps; cockpit-only PRs skip check and test entirely; drafts skip
+  # everything). Branch protection that requires the raw `check`/`test`
+  # contexts couples the merge contract to however GitHub happens to score a
+  # skipped job, and every new gate condition becomes a ruleset change. This
+  # job converts the lane results into a single deliberate verdict:
+  #
+  #   success — lane ran and passed
+  #   skipped — lane was gated off by the classifier; a PASS by policy
+  #   failure / cancelled — a red lane that ran; FAIL
+  #
+  # Require the `ci` context in the ruleset and leave `check`/`test`
+  # unrequired-but-reported; the per-lane signals stay visible on every PR
+  # while the merge contract lives in exactly one place. `if: always()` is
+  # load-bearing: without it a failed lane would skip this job and GitHub
+  # would score the aggregate as skipped-green instead of red.
+  ci:
+    name: ci
+    needs: [changes, check, test, workflow-gate]
+    # always(): a red lane must not skip this job into a green-by-skip. The
+    # draft exclusion keeps drafts quiet without weakening the gate — a draft
+    # cannot merge, and ready_for_review re-runs the full graph.
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - name: aggregate lane results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const needs = JSON.parse(process.env.RESULTS);
+            let bad = false;
+            for (const [job, { result }] of Object.entries(needs)) {
+              // The classifier is the gate every skip decision flows from, so
+              // it may never be skipped/failed itself: a crashed `changes`
+              // job must read as red, not as "lanes gated off".
+              const ok = job === "changes"
+                ? result === "success"
+                : result === "success" || result === "skipped";
+              console.log(`${ok ? "pass" : "FAIL"} ${job}: ${result}`);
+              if (!ok) bad = true;
+            }
+            process.exit(bad ? 1 : 0);
+          '

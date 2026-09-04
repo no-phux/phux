@@ -73,7 +73,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -125,17 +125,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: blacksmith-6vcpu-macos-26
             target: aarch64-apple-darwin
           # Build Linux on the oldest supported Ubuntu runner instead of
           # `ubuntu-latest` to keep the glibc baseline as low as GitHub's
           # hosted fleet currently allows.
-          - os: ubuntu-22.04
+          - os: blacksmith-4vcpu-ubuntu-2204
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-22.04-arm
+          - os: blacksmith-4vcpu-ubuntu-2204-arm
             target: aarch64-unknown-linux-gnu
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Check out release tag
         shell: bash
@@ -189,14 +189,33 @@ jobs:
           "${zig_dir}/zig" version
 
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.90.0 --profile default
+        run: |
+          set -euo pipefail
+          # rust-toolchain.toml (checked out at the tag) is the single source
+          # of truth for the release compiler — never hardcode a version here.
+          # Minimal profile: the build needs rustc/cargo/std, not the
+          # rustfmt/clippy/wasm components the devshell pin carries.
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal
+
+      # Cache the crate REGISTRY only, never target/: release binaries stay
+      # from-scratch and deterministic, while dependency downloads — the
+      # content-identical, cacheable part — are not re-fetched by every
+      # matrix leg and every backfill re-run. cache-targets: false keeps the
+      # entry small, so releases never pressure ci.yml's warm entries in the
+      # shared 10 GB Actions cache.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: release-deps
+          cache-targets: "false"
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config build-essential mold
 
       - name: Build release binaries
-        run: cargo +1.90.0 build --locked --release --bin phux --bin phux-mcp
+        run: cargo build --locked --release --bin phux --bin phux-mcp
 
       # Runs on EVERY leg, not just macOS. This used to be a grep for
       # "/nix/store" in `otool -L` output behind `if: runner.os == 'macOS'`,
@@ -242,7 +261,7 @@ jobs:
           echo "${sha}  ${stage}.tar.gz" > "${stage}.tar.gz.sha256"
           echo "artifact=${stage}.tar.gz" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.target }}
           path: |
@@ -261,7 +280,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
           merge-multiple: true
@@ -347,9 +366,9 @@ jobs:
 
       - name: Checkout phux (for the generator script)
         if: steps.gate.outputs.enabled == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: steps.gate.outputs.enabled == 'true'
         with:
           path: dist
@@ -357,7 +376,7 @@ jobs:
 
       - name: Checkout tap
         if: steps.gate.outputs.enabled == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: phall1/homebrew-tap
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}

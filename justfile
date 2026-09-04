@@ -339,10 +339,12 @@ shellcheck:
       examples/agents/orchestrate-placed-fleet examples/agents/tests/*.sh \
       examples/plugins/*/scripts/*.sh
 
-# GitHub workflow syntax and the fail-closed CI path-routing truth table.
+# GitHub workflow + composite-action syntax, the fail-closed CI path-routing
+# truth table, and the SHA-pin policy for action references.
 workflow-check:
     actionlint .github/workflows/*.yml
     bash scripts/ci/check-classify-changes.sh
+    bash scripts/check-action-pins.sh
     node scripts/check-release-orchestration.mjs
     node scripts/check-release-drift-policy.mjs
 
@@ -492,6 +494,12 @@ milestone-check:
 agent-integrations-check:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Incidental install-time audits are off (npm's advisory endpoints have
+    # 503'd mid-lane and installs don't need them; npm stops project-config
+    # discovery at the nearest package.json, so env vars — not a root .npmrc
+    # — are what reach every spawned npm call). The explicit `npm audit`
+    # gates stay on, wrapped in scripts/npm-audit-gate.mjs for outage retry.
+    export npm_config_audit=false npm_config_fund=false
     node scripts/check-agent-integration-versions.mjs
     for package in integrations/opencode integrations/pi integrations/claude; do
       npm --prefix "$package" ci

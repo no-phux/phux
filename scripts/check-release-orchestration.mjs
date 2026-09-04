@@ -8,20 +8,18 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (path) => readFile(join(root, path), "utf8");
 
-const [configText, manifestText, historyTipText, workflow, cockpitVersionText] = await Promise.all([
+const [configText, manifestText, workflow, cockpitVersionText] = await Promise.all([
   read("release-please-config.json"),
   read(".release-please-manifest.json"),
-  read(".github/cockpit-history-tip"),
   read(".github/workflows/release-please.yml"),
   read("clients/cockpit/version.txt"),
 ]);
 const config = JSON.parse(configText);
 const manifest = JSON.parse(manifestText);
-const historyTip = historyTipText.trim();
 const cockpitVersion = cockpitVersionText.trim();
 const cockpit = config.packages?.["clients/cockpit"];
 
-assert.equal(config["bootstrap-sha"], historyTip, "bootstrap-sha must equal the final filtered Cockpit tip");
+assert.equal(config["bootstrap-sha"], undefined, "bootstrap-sha must stay removed after the first canonical release");
 assert.equal(config["force-tag-creation"], true, "draft releases require release-please-owned tags");
 assert.equal(config.draft, true, "artifact workflows require private draft releases");
 assert.equal(cockpit?.component, "cockpit");

@@ -84,7 +84,7 @@ jobs:
       # the name 'v0.24.0' could not be found" thirty seconds after the tag was
       # created, and the `released` update then had nothing to update. The tag
       # is fetched below, straight from github.com and past the mirror.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # The CLI scans the whole commit range, so shallow will not do.
           fetch-depth: 0
@@ -124,7 +124,7 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
             > release-notes.md || : > release-notes.md
 
-      - uses: linear/linear-release-action@v0.15.1
+      - uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
         if: inputs.stage == 'building'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
@@ -134,7 +134,7 @@ jobs:
           links: |
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
 
-      - uses: linear/linear-release-action@v0.15.1
+      - uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
         if: inputs.stage == 'released'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}

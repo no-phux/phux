@@ -47,12 +47,12 @@ jobs:
     name: Package arm64 macOS release
     # Standard macos-26 is an arm64 GitHub-hosted runner and is free for this
     # public repository. Release signing does not require a larger paid runner.
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 45
     env:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -74,6 +74,23 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
+
+      # A release tag is normally cut on a main commit cockpit-ci just built,
+      # so these hit the exact entries cockpit-ci saved: the FFI build reuses
+      # the shared macOS `cockpit-ffi` cache, and the Zig caches key on the
+      # release manifest the same way. Replays against an older tag fall back
+      # to the prefix and still skip the toolchain/stdlib compile.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: cockpit-ffi
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/zig
+            clients/cockpit/.zig-cache
+          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
+          restore-keys: |
+            cockpit-zig-0.16.0-${{ runner.os }}-
 
       - name: Build the pinned Phux client FFI
         run: cargo build --locked --profile ffi-release -p phux-client-ffi
@@ -293,7 +310,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: phall1/homebrew-tap
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}

@@ -54,23 +54,17 @@ jobs:
     # mixed x64 fleet.
     runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     steps:
-      - uses: actions/checkout@v7
-      # Covers both cpuinfo dialects: flags/model name/vendor_id on x86,
-      # Features/CPU implementer/CPU part on aarch64 (which has none of the
-      # x86 field names — without these the arm key would hash empty input).
-      - name: CPU fingerprint
-        run: echo "CPU_KEY=$(grep -E '^(flags|model name|vendor_id|Features|CPU implementer|CPU part)' /proc/cpuinfo | sort -u | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: cachix/cachix-action@v17
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Shared lane setup (disk headroom, CPU fingerprint, Nix + Cachix,
+      # sccache, rust-cache): .github/actions/setup-rust-lane. This lane
+      # builds the nextest test profile, so it shares ci.yml's `test`
+      # rust-cache key — the nightly run reuses what main's CI saved instead
+      # of maintaining a third copy.
+      - uses: ./.github/actions/setup-rust-lane
+        id: setup
         with:
-          name: phux
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
-      - uses: Swatinem/rust-cache@v2
-        id: rust-cache
-        with:
-          key: ${{ env.CPU_KEY }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'flake.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          rust-cache-shared-key: test
       # Timed + junit-instrumented like ci.yml's lanes (ADR-0082): the storms
       # are exactly where per-test wall times matter, since CPU starvation on
       # the 2-core runner is this suite's known failure mode.
@@ -83,6 +77,6 @@ jobs:
       - name: lane signal
         if: always()
         env:
-          PHUX_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          PHUX_CACHE_HIT: ${{ steps.setup.outputs.rust-cache-hit }}
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh

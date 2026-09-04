@@ -9,9 +9,10 @@
 # changelog (docs/RELEASING.md), so a malformed message silently drops the
 # change from the release notes or skips a version bump.
 #
-# The `commitlint` context is intended to be required alongside `check` and
-# `test`. A 2026-09-03 live-ruleset audit found it missing, so the cutover
-# checklist requires correcting that repository setting. Release PRs opened by
+# The `commitlint` context is intended to be required alongside ci.yml's
+# aggregate `ci` context (which folds `check`/`test` and their skip policy
+# into one verdict). A 2026-09-03 live-ruleset audit found it missing, so
+# the cutover checklist requires correcting that repository setting. Release PRs opened by
 # the release App get this check like any other PR: App-raised events trigger
 # workflows normally (unlike GITHUB_TOKEN ones — see release-please.yml).
 #
@@ -41,7 +42,7 @@ jobs:
       # fetch-depth: 0 so base.sha..head.sha resolves. The default checkout
       # of refs/pull/N/merge carries both parents, so this holds for fork
       # PRs too.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 

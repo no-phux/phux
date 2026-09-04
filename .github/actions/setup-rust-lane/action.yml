@@ -1,0 +1,90 @@
+# Shared setup for the Linux Rust compile lanes (ci.yml check/test, stress).
+#
+# This block was copy-pasted across three jobs, and the copies had already
+# drifted once (the stress lane carried no sccache while the ci lanes did).
+# One definition keeps the cache-key policy, the disk-headroom trim, and the
+# CPU fingerprint identical everywhere they run.
+#
+# Steps, in order:
+#   1. Drop preinstalled hosted-runner toolchains this repo never uses; the
+#      restore stack (nix store + rust-cache + sccache) otherwise sits near
+#      the runner's free-space floor and has died ENOSPC before (phux-a5g7).
+#   2. Fingerprint the CPU into CPU_KEY: libghostty-vt's build.rs lets zig
+#      auto-detect the host CPU, so a rust-cache entry restored onto leaner
+#      hardware can SIGILL. Covers both cpuinfo dialects (x86 flags / aarch64
+#      Features). On Blacksmith's homogeneous fleets this is stable, but the
+#      key stays cheap insurance against a fleet change.
+#   3. Nix + Cachix: the pinned devshell (rustc, zig, nextest, deny).
+#   4. sccache (optional): wraps rustc so unchanged workspace crates hit the
+#      GHA cache across commits; CARGO_INCREMENTAL=0 because sccache cannot
+#      cache incremental artifacts.
+#   5. rust-cache: compiled workspace + the zig .a, saved only from main so
+#      PR writes cannot thrash the shared 10 GB LRU and evict the warm base.
+name: setup-rust-lane
+description: Shared Linux Rust-lane setup — disk headroom, CPU fingerprint, Nix + Cachix, sccache, rust-cache.
+
+inputs:
+  cachix-auth-token:
+    description: Cachix auth token (secrets are not implicitly visible to composite actions).
+    required: true
+  sccache:
+    description: "Wrap rustc in sccache with the GHA backend for this lane."
+    required: false
+    default: "true"
+  rust-cache-shared-key:
+    description: rust-cache shared key segment; keep one per cargo profile (check, test) so lanes never clobber each other.
+    required: true
+
+outputs:
+  rust-cache-hit:
+    description: rust-cache cache-hit output, for the lane signal step.
+    value: ${{ steps.rust-cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: runner disk headroom
+      shell: bash
+      run: |
+        df -h / | tail -1
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+        df -h / | tail -1
+
+    - name: CPU fingerprint + rust-cache key
+      shell: bash
+      run: |
+        set -euo pipefail
+        cpu_key="$(grep -E '^(flags|model name|vendor_id|Features|CPU implementer|CPU part)' /proc/cpuinfo | sort -u | sha256sum | cut -c1-16)"
+        # Concatenated-content hash, equivalent to the workflows' old
+        # hashFiles(Cargo.lock, rust-toolchain.toml, flake.lock) key inputs.
+        files_key="$(cat Cargo.lock rust-toolchain.toml flake.lock | sha256sum | cut -c1-16)"
+        echo "CPU_KEY=${cpu_key}" >> "$GITHUB_ENV"
+        echo "RUST_CACHE_KEY=${cpu_key}-${files_key}" >> "$GITHUB_ENV"
+
+    - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+    - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: phux
+        authToken: ${{ inputs.cachix-auth-token }}
+        pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
+
+    - name: enable sccache
+      if: inputs.sccache == 'true'
+      shell: bash
+      run: |
+        {
+          echo "RUSTC_WRAPPER=sccache"
+          echo "SCCACHE_GHA_ENABLED=true"
+          echo "CARGO_INCREMENTAL=0"
+        } >> "$GITHUB_ENV"
+
+    - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      if: inputs.sccache == 'true'
+
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      id: rust-cache
+      with:
+        shared-key: ${{ inputs.rust-cache-shared-key }}
+        key: ${{ env.RUST_CACHE_KEY }}
+        save-if: ${{ github.ref == 'refs/heads/main' }}

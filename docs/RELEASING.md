@@ -383,7 +383,7 @@ has a uniform baseline and is unaffected. Pinning Linux CPU baselines through
 Cockpit is a Release Please component, not part of the Rust workspace version.
 A Cockpit conventional commit updates the shared draft release PR only under
 `clients/cockpit` plus the root release manifest. Mark that PR ready, wait for
-`cockpit-ci`, `check`, `test`, and `commitlint`, then merge it. Release Please
+`cockpit-ci`, `ci` (the aggregate of `check`/`test`), and `commitlint`, then merge it. Release Please
 creates `cockpit-vX.Y.Z` and a private draft; `cockpit-release.yml` re-tests the
 exact tag, creates the arm64 ZIP and DMG, verifies the downloaded copies and
 their `SHA256SUMS`, updates and remotely verifies `Casks/phux-cockpit.rb`,
@@ -450,12 +450,12 @@ using the ruleset bypass.
    status, publication, and Homebrew cask. Then archive the old repository or
    leave it read-only as the pre-monorepo release record.
 
-`release-please-config.json` carries a top-level `bootstrap-sha` at the final
-filtered standalone tip so the first Cockpit release includes only
-post-cutover work rather than relisting 199 historical commits. Release Please
-only accepts this setting at the top level. Remove it in the first follow-up
-after a successful canonical Cockpit release; the new `cockpit-v*` tag is the
-permanent baseline after that.
+The first canonical Cockpit release temporarily used a top-level
+`bootstrap-sha` at the final filtered standalone tip so it included only
+post-cutover work rather than relisting 199 historical commits. That exception
+was removed after `cockpit-v0.16.2` published successfully; canonical
+`cockpit-v*` tags are now the permanent baseline. Do not reintroduce the
+bootstrap setting.
 
 There is no history-removing rollback. Before the fast-forward, stop and fix the
 branch. After it, fix forward or land an ordinary forward revert of the visible

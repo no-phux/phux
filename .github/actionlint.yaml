@@ -9,10 +9,17 @@
 # v3.2.0. Drop these ignores once a newer actionlint ships a refreshed
 # snapshot (re-run `actionlint .github/workflows/*.yml` without them to
 # check).
+# Every Blacksmith runner label used under .github/workflows/ must be listed
+# here or actionlint reports it as unknown. Keep sorted; the label names are
+# Blacksmith's fleet names, not GitHub's.
 self-hosted-runner:
   labels:
+    - blacksmith-2vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2204
+    - blacksmith-4vcpu-ubuntu-2204-arm
     - blacksmith-4vcpu-ubuntu-2404
     - blacksmith-4vcpu-ubuntu-2404-arm
+    - blacksmith-6vcpu-macos-26
 
 paths:
   .github/workflows/ci.yml:

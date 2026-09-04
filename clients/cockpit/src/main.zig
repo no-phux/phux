@@ -488,6 +488,7 @@ test {
     _ = @import("tests/cell_attribute_tests.zig");
     _ = @import("tests/minimum_contrast_tests.zig");
     _ = @import("tests/provider_identity_tests.zig");
+    _ = @import("tests/credential_store_tests.zig");
     _ = @import("tests/terminal_keyboard_tests.zig");
     _ = @import("tests/clipboard_tests.zig");
     _ = @import("tests/outbound_io_tests.zig");

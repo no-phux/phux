@@ -16,7 +16,7 @@
   "scripts": {
     "check": "node --check test/package.test.mjs && claude plugin validate . --strict",
     "test": "node --test test/*.test.mjs",
-    "gates": "npm run check && npm test && npm audit --audit-level=high"
+    "gates": "npm run check && npm test && node ../../scripts/npm-audit-gate.mjs --audit-level=high"
   },
   "devDependencies": {
     "@anthropic-ai/claude-code": "2.1.232"

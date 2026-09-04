@@ -1,7 +1,7 @@
 .{
     .name = .phux_cockpit,
     .fingerprint = 0xa47a656ea288c810,
-    .version = "0.16.1", // x-release-please-version
+    .version = "0.16.2", // x-release-please-version
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // Native v0.8.1 plus Cockpit's terminal fixes, plus the render work
@@ -164,8 +164,8 @@
         //   confinement through verified parent handles, and stream special
         //   files through the exact no-follow-opened handle.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/71bbce511187b9e071d3ca8cbf3b1b19138577da.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQuqdsgJPbC6HFzLKzGhOB2EWgKfiNTcSOjK9WCMO",
+            .url = "https://github.com/phall1/native/archive/34cc9d5571599d5ea4feafc9260f36575e67e77b.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQtnzsgIuEmiEAXvRSAEqy20vbrYoBQ6yNRTlyJIj",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream

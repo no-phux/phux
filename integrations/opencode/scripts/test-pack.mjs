@@ -11,7 +11,11 @@ const temporaryRoot = await mkdtemp(join(tmpdir(), "phux-opencode-pack-"));
 try {
   const packed = JSON.parse(execFileSync(
     "npm",
-    ["pack", "--json", "--ignore-scripts", "--pack-destination", temporaryRoot],
+    // --no-audit: npm pack consults the live advisory endpoint; a transient
+    // 503 there must not fail pack verification (see .npmrc). The npm_config_*
+    // env set by `just agent-integrations-check` already covers this when
+    // driven through just; the flag keeps the script safe standalone.
+    ["pack", "--json", "--ignore-scripts", "--no-audit", "--pack-destination", temporaryRoot],
     { cwd: packageRoot, encoding: "utf8" },
   ));
   assert.equal(packed.length, 1);
@@ -26,9 +30,12 @@ try {
 
   const tarball = join(temporaryRoot, manifest.filename);
   const consumerRoot = join(temporaryRoot, "consumer");
+  // --no-audit: the advisory bulk endpoint has returned 503s (observed
+  // 2026-09-04) and a transient registry audit outage must not fail a CI
+  // pack-verification lane. Dependency hygiene is cargo-deny's contract.
   execFileSync(
     "npm",
-    ["install", "--ignore-scripts", "--omit=dev", "--prefix", consumerRoot, tarball],
+    ["install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund", "--prefix", consumerRoot, tarball],
     { stdio: "pipe" },
   );
 

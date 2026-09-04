@@ -9,6 +9,25 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.26.1](https://github.com/no-phux/phux/compare/v0.26.0...v0.26.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **cockpit:** make glyph diagnosis evidence-safe ([#516](https://github.com/no-phux/phux/issues/516)) ([821427d](https://github.com/no-phux/phux/commit/821427d37fa847c65214705036f0cd37f94773d5))
+* **release:** derive the drift check's repo slug from the remote ([1dc5dea](https://github.com/no-phux/phux/commit/1dc5dea549156c3e751bf40094e5c6e1448cc98b))
+
+
+### Documentation
+
+* **auth:** specify workload proof and scopes ([#514](https://github.com/no-phux/phux/issues/514)) ([9548c67](https://github.com/no-phux/phux/commit/9548c673e9fa623add1f97493e81fef4d74d831d))
+* **cockpit:** describe monorepo ownership ([cae7b80](https://github.com/no-phux/phux/commit/cae7b8075988ea6ea5e52bee14f184e2ea3f94d7))
+
+
+### Build System
+
+* **cockpit:** compose the native client from one checkout ([df79d15](https://github.com/no-phux/phux/commit/df79d1596c0797772cb545ca3ceaacef851e6e94))
+
 ## [0.26.0](https://github.com/no-phux/phux/compare/v0.25.0...v0.26.0) (2026-09-03)
 
 

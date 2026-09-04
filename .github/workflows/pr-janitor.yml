@@ -1,0 +1,62 @@
+# pr-janitor — stop paying for CI on PRs that no longer exist.
+#
+# Merging or closing a PR does NOT cancel its in-flight workflow runs:
+# GitHub leaves every queued/running job for the PR's head SHA burning
+# runners until it finishes or is superseded by another push. On a merge
+# that is pure waste — the result is moot the moment the merge lands — and
+# on an abandoned PR it can idle for the full job timeout.
+#
+# The `closed` event carries no run state, so this job finds the PR's live
+# runs through the API and cancels them. Matching is by head SHA, not head
+# branch: fork PRs have no branch in this repository, and the SHA identifies
+# exactly the tree the PR last proposed. Push-triggered runs for the merged
+# commit on `main` share neither SHA nor event, so the new main-branch CI is
+# never touched.
+#
+# This is intentionally a separate workflow rather than a job bolted onto
+# ci.yml: the `closed` event must fire even for draft or docs-only PRs that
+# never ran ci.yml's `changes` gate, and a workflow that only ever cancels
+# other runs should not share a concurrency group with anything it cancels.
+
+name: pr-janitor
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  # Cancelling workflow runs requires actions:write. This job runs no
+  # repository code — it never checks out — so the token's blast radius is
+  # the cancel endpoint and nothing else.
+  actions: write
+
+jobs:
+  cancel:
+    name: cancel stale runs for the closed PR
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - name: Cancel queued and in-progress runs for this PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cancelled=0
+          for status in queued waiting in_progress pending; do
+            # The head SHA is interpolated rather than passed through jq's
+            # env because gh's gojq build does not expose it; it is a
+            # server-generated 40-char hex string, not user input.
+            ids="$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&status=${status}&per_page=100" \
+              --jq ".workflow_runs[] | select(.head_sha == \"${HEAD_SHA}\" and (.id | tostring) != \"${RUN_ID}\") | .id")"
+            for id in ${ids}; do
+              echo "cancelling run ${id} (status=${status})"
+              # A run can complete between listing and cancelling; a 409
+              # there is the desired end state, not a failure.
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/cancel" || true
+              cancelled=$((cancelled + 1))
+            done
+          done
+          echo "cancelled ${cancelled} run(s) for ${HEAD_SHA}"

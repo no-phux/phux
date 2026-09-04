@@ -44,7 +44,7 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "build:test": "npm run clean && tsc -p tsconfig.test.json",
     "test": "npm run test:unit && npm run pack:check && npm run smoke:load",
-    "gates": "npm run typecheck && npm test && npm audit --audit-level=high",
+    "gates": "npm run typecheck && npm test && node ../../scripts/npm-audit-gate.mjs --audit-level=high",
     "test:unit": "npm run build:test && node --test dist/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pack:check": "npm run build && node scripts/test-pack.mjs",

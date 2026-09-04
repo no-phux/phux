@@ -50,6 +50,65 @@ fn addProviderContractModules(
     }
 }
 
+fn addSecurityModules(
+    b: *std.Build,
+    artifacts: native_sdk.AppArtifacts,
+) void {
+    const roots = [_]*std.Build.Module{
+        artifacts.exe.root_module,
+        artifacts.tests.root_module,
+    };
+    for (roots, 0..) |root, index| {
+        if (index == 1 and root == artifacts.exe.root_module) continue;
+        const target = root.resolved_target.?;
+        const optimize = root.optimize.?;
+        const credential_store = b.createModule(.{
+            .root_source_file = b.path("src/security/credential_store.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const provider_identity = b.createModule(.{
+            .root_source_file = b.path("src/security/provider_identity.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const credential_trust = b.createModule(.{
+            .root_source_file = b.path("src/security/trust.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        root.addImport("credential_store", credential_store);
+        root.addImport("provider_identity", provider_identity);
+        root.addImport("credential_trust", credential_trust);
+
+        if (target.result.os.tag == .macos) {
+            const macos_keychain = b.createModule(.{
+                .root_source_file = b.path("src/security/macos_keychain.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            macos_keychain.addImport("credential_store", credential_store);
+            if (b.sysroot) |sysroot| {
+                macos_keychain.addFrameworkPath(.{
+                    .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }),
+                });
+            }
+            macos_keychain.linkFramework("Security", .{});
+            macos_keychain.linkFramework("CoreFoundation", .{});
+            root.addImport("macos_keychain", macos_keychain);
+            if (root == artifacts.tests.root_module) {
+                if (b.top_level_steps.get("test")) |top_level| {
+                    const tests = b.addTest(.{
+                        .name = "macos-keychain-tests",
+                        .root_module = macos_keychain,
+                    });
+                    top_level.step.dependOn(&b.addRunArtifact(tests).step);
+                }
+            }
+        }
+    }
+}
+
 /// The TypeScript-core graph: the runner extension under `typescript-spike/`
 /// fronts a real Cockpit engine, and a Zig module may only import files
 /// below its own root, so the engine is handed to each extension instance
@@ -680,6 +739,7 @@ pub fn build(b: *std.Build) void {
     addImportToArtifacts(artifacts, "test_options", test_options.createModule());
 
     addProviderContractModules(b, artifacts);
+    addSecurityModules(b, artifacts);
     if (phux_enabled) addPhuxModules(b, artifacts, ffi.?);
 
     const ghostty = b.dependency("ghostty", .{

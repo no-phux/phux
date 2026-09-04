@@ -46,11 +46,11 @@ jobs:
     # repo settings and scope CARGO_REGISTRY_TOKEN to it.
     environment: crates-io
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.tag }}
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: cachix/cachix-action@v17
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: phux
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}

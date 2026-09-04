@@ -40,18 +40,59 @@ permissions:
 
 concurrency:
   group: cockpit-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Supersede a PR's stale runs, but never cancel a main run: on main every
+  # commit is a distinct integration point, and cancelling the previous one
+  # would let a broken commit hide behind its successor's green.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Cheap gate before the 45-minute macOS job. The trigger `paths` above stop
+  # unrelated PRs from starting this workflow at all; this classifier refines
+  # that: a run whose cockpit-relevant changes are ONLY workflow files
+  # (Dependabot's grouped action bumps match several of these paths) skips
+  # the build — the root ci.yml workflow gate verifies those. Fail-closed:
+  # unknown/empty diffs request the build.
+  changes:
+    name: classify changes
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    outputs:
+      cockpit_needed: ${{ steps.detect.outputs.cockpit_needed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - id: detect
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # Mirror ci.yml's push classification: a release merge commit has
+            # an exact tree; a vanished `before` (branch reset) falls back to
+            # the merge commit's own files.
+            before='${{ github.event.before }}'
+            if [[ "$before" =~ ^0+$ ]] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+              files=$(git diff-tree --no-commit-id --name-only -r HEAD)
+            else
+              files=$(git diff --name-only "$before" HEAD)
+            fi
+          else
+            git fetch --quiet origin "${{ github.base_ref }}"
+            base=$(git merge-base HEAD "origin/${{ github.base_ref }}")
+            files=$(git diff --name-only "$base" HEAD)
+          fi
+          printf '%s\n' "$files" | bash scripts/ci/classify-changes.sh >> "$GITHUB_OUTPUT"
+
   test:
     name: Zig 0.16 macOS
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    # Standard macos-26 is arm64 and free for this public repository. The old
-    # Blacksmith six-vCPU lane charged for every synchronization of a PR.
-    runs-on: macos-26
+    if: needs.changes.outputs.cockpit_needed == 'true'
+    needs: changes
+    # Blacksmith's macOS fleet is Apple-silicon-only and homogeneous, so the
+    # caches below key on runner.os alone without a CPU fingerprint.
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -59,11 +100,37 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: clients/cockpit/package-lock.json
+
+      # The same-checkout phux-client-ffi build is ~4.5 minutes cold.
+      # rust-cache keys on Cargo.lock itself; the shared key keeps this
+      # macOS ffi-release cache disjoint from ci.yml's Linux check/test
+      # profiles. Save only from main pushes — GitHub's Actions cache is a
+      # hard 10 GB per repo with LRU eviction, and PR saves would thrash the
+      # warm base (same policy as ci.yml's lanes).
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: cockpit-ffi
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Zig compilation dominates the rest of the job (the materialized SDK
+      # source plus two build graphs and a production build). Restore on every
+      # run; save only from main, mirroring the rust-cache policy. Keyed on
+      # the build manifest and Zig version so an SDK pin bump starts a fresh
+      # entry with the prefix as fallback.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: zig-cache
+        with:
+          path: |
+            ~/.cache/zig
+            clients/cockpit/.zig-cache
+          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
+          restore-keys: |
+            cockpit-zig-0.16.0-${{ runner.os }}-
 
       - name: Check release, SDK, and measurement contracts
         working-directory: clients/cockpit
@@ -114,3 +181,14 @@ jobs:
             --app "clients/cockpit/zig-out/release/Phux Cockpit.app" \
             --cycles 3 \
             --artifacts clients/cockpit/zig-out/soak-ci
+
+      # Save last so a failed build never poisons the cache with a partial
+      # compile, only from main so PRs never write (see above), and only on
+      # a miss — cache/save errors when the key already exists.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.ref == 'refs/heads/main' && steps.zig-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cache/zig
+            clients/cockpit/.zig-cache
+          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}

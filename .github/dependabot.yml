@@ -1,0 +1,14 @@
+# Dependabot keeps the SHA-pinned actions current. scripts/check-action-pins.sh
+# forbids floating tags, so without an automated bumper the pins would calcify.
+# One grouped weekly PR keeps the noise to a single reviewable unit; the pin
+# check and actionlint run on that PR like any other.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
