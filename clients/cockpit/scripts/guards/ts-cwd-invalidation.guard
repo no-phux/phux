@@ -5,7 +5,7 @@
 # cwd filtering stale until an unrelated intent happens to resync it.
 test: the switcher receives the focused split pane's cwd without polling terminal bytes
 build: test -Dtypescript-spike=true -Dplatform=null
-red: 2026-09-04 at efe7dea
+red: 2026-09-04 at 99f42d9
 diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
 --- a/typescript-spike/src/native_extension.zig
 +++ b/typescript-spike/src/native_extension.zig
