@@ -28,21 +28,21 @@
 // ----------------------------------
 // `native automate screenshot` renders through the SDK's deterministic CPU
 // reference renderer, which fills glyph outlines with its own std-only
-// TrueType rasterizer and never calls CoreText. Every defect that lives in the
-// real rasterizer is therefore invisible to every automated screenshot, by
-// construction. phux-cockpit-aht - all terminal text ~35% too thin, because
-// macOS font smoothing is off by default on a transparent backing - survived
-// three diagnoses partly for that reason.
+// TrueType rasterizer and never calls CoreText. Every defect that lives in
+// the real rasterizer is therefore invisible to every automated screenshot,
+// by construction. phux-cockpit-aht — all terminal text ~35% too thin — is
+// the worked example, but its first smoothing diagnosis was wrong: the
+// shipped "before" commit omitted the smoothing calls while this bitmap
+// context already defaulted to smoothing enabled.
 //
 // THE BASIS
 // ---------
 // The row is inked over an OPAQUE terminal background (the cells carry
 // `has_background` and #090b0f), so the raster is opaque and luminance is a
 // direct read of glyph coverage: luma = 0.2126R + 0.7152G + 0.0722B on the
-// image's own bytes, no colour conversion. `solid` counts luma > 127 and `lit`
-// counts luma > 32 - the same two thresholds scripts/measure-glyph-smoothing.m
-// and scripts/measure-png-ink.m report.
-
+// image's own bytes, no colour conversion. `solid` counts luma > 127 and
+// `lit` counts luma > 32 — the same two thresholds scripts/measure-png-ink.m
+// reports.
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
 

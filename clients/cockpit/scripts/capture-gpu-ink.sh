@@ -58,8 +58,53 @@ if [[ -d "${OUT}/shots" ]] && [[ -n "$(find "${OUT}/shots" -type f -name '*.png'
 fi
 mkdir -p "${OUT}/shots"
 
-if [[ ! -x "${BUNDLE}/Contents/MacOS/phux-cockpit" ]]; then
-    printf 'error: no app binary at %s\n' "${BUNDLE}/Contents/MacOS/phux-cockpit" >&2
+plist_value() {
+    /usr/bin/plutil -extract "$2" raw -o - "$1/Contents/Info.plist" 2>/dev/null
+}
+
+resolve_realpath() {
+    local path="$1" depth="$2" dir target
+    (( depth < 32 )) || return 1
+    if [[ -L "$path" ]]; then
+        target="$(readlink "$path")" || return 1
+        dir="$(CDPATH='' cd -- "$(dirname "$path")" && pwd -P)" || return 1
+        [[ "$target" == /* ]] || target="${dir}/${target}"
+        resolve_realpath "$target" "$((depth + 1))"
+        return
+    fi
+    [[ -e "$path" ]] || return 1
+    dir="$(CDPATH='' cd -- "$(dirname "$path")" && pwd -P)" || return 1
+    printf '%s/%s' "$dir" "$(basename "$path")"
+}
+
+bundle_executable_path() {
+    local bundle="$1" executable bundle_real macos_real resolved
+    executable="$(plist_value "$bundle" CFBundleExecutable)" || return 1
+    case "$executable" in
+        ""|.|..|*/*)
+            printf 'error: unsafe CFBundleExecutable=%s\n' "$executable" >&2
+            return 1
+            ;;
+    esac
+    bundle_real="$(CDPATH='' cd -- "$bundle" && pwd -P)" || return 1
+    macos_real="$(CDPATH='' cd -- "${bundle_real}/Contents/MacOS" && pwd -P)" || return 1
+    resolved="$(resolve_realpath "${macos_real}/${executable}" 0)" || return 1
+    case "$resolved" in
+        "${macos_real}"/*) ;;
+        *)
+            printf 'error: executable resolves outside Contents/MacOS: %s\n' "$resolved" >&2
+            return 1
+            ;;
+    esac
+    [[ -f "$resolved" && -x "$resolved" ]] || return 1
+    printf '%s' "$resolved"
+}
+
+APP_EXECUTABLE="$(plist_value "$BUNDLE" CFBundleExecutable || true)"
+APP_PATH="$(bundle_executable_path "$BUNDLE" || true)"
+if [[ -z "$APP_PATH" ]]; then
+    printf 'error: no safe executable for bundle %s (CFBundleExecutable=%s)\n' \
+        "$BUNDLE" "${APP_EXECUTABLE:-<missing>}" >&2
     printf '       run: zig build package -Dautomation=true\n' >&2
     exit 2
 fi
@@ -101,7 +146,7 @@ NATIVE_SDK_GPU_SHOT_DIR="${OUT}/shots" \
 NATIVE_SDK_GPU_SHOT_EVERY=1 \
 PHUX_COCKPIT_CONFIG="${OUT}/config" \
 PHUX_COCKPIT_STATE="${OUT}/workspace.state" \
-    "${BUNDLE}/Contents/MacOS/phux-cockpit" >"${OUT}/app.log" 2>&1 &
+    "$APP_PATH" >"${OUT}/app.log" 2>&1 &
 APP_PID=$!
 printf 'launched pid=%s out=%s\n' "$APP_PID" "$OUT"
 

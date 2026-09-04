@@ -12,12 +12,14 @@
 # ----------------
 # `native automate screenshot` is rendered by the SDK's deterministic CPU
 # reference renderer, which fills glyph outlines with a bundled std-only
-# TrueType rasterizer and never calls CoreText. So a defect in the REAL macOS
-# rasterizer cannot appear in a reference screenshot - not rarely, never.
-# phux-cockpit-aht (all terminal text ~35% too thin, because macOS font
-# smoothing is off by default on a transparent CGBitmapContext backing) is the
-# worked example: three diagnoses, several days, and every automated screenshot
-# said the text was fine.
+# TrueType rasterizer and never calls CoreText. A defect in the REAL macOS
+# rasterizer therefore cannot appear in a reference screenshot.
+#
+# phux-cockpit-aht (the report that all terminal text looked ~35% too thin) is
+# the worked example. The original smoothing diagnosis was wrong: the calls
+# were absent in the shipped "before" commit, and that CGBitmapContext already
+# defaulted to smoothing enabled. This check measures the host path directly;
+# it does not credit smoothing for a change that moved zero pixels.
 #
 # scripts/measure-host-raster.m closes that gap by #including the pinned SDK's
 # own appkit_host.m and rasterizing a terminal row through the host's real

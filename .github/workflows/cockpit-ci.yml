@@ -73,6 +73,7 @@ jobs:
           ./scripts/check-sdk-pin.sh
           ./scripts/lib/zon_test.sh
           ./scripts/lib/measure_test.sh
+          ./scripts/glyph-visibility-diagnose_test.sh
           ./scripts/verify-phux-ffi.py --phux-tree ../..
 
       - name: Materialize the pinned SDK source

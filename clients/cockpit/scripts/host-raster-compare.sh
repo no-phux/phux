@@ -9,6 +9,9 @@
 #
 #   ./scripts/host-raster-compare.sh e8bd84886      # shipped-then vs pinned-now
 #
+# To separate an old installed app from a current dev app before comparing
+# raster output, use `scripts/glyph-visibility-diagnose.sh`.
+#
 # WHY THIS EXISTS
 # ---------------
 # scripts/host-raster-check.sh measures ONE rasterizer. That is enough to catch
@@ -16,10 +19,11 @@
 # that actually matters when a render fix is proposed: does the shipping build
 # change?
 #
-# phux-cockpit-aht is the worked example, and it cost four rounds. The SDK was
-# missing `CGContextSetShouldSmoothFonts`. Someone added it, measured the fixed
-# SDK against a copy with the calls set explicitly to `false`, saw solid
-# 4179 vs 3081 - a real 26.3% - and shipped it as the faint-text fix.
+# phux-cockpit-aht is the worked example, and it cost four rounds. The
+# historical diagnosis said the SDK was missing `CGContextSetShouldSmoothFonts`.
+# Someone added it, measured the fixed SDK against a copy with the calls set
+# explicitly to `false`, saw solid 4179 vs 3081 - a real 26.3% - and shipped it
+# as the faint-text fix.
 #
 # But no build was ever in the `false` state. The state before the fix was the
 # calls being ABSENT, and absent is not false: on this CGBitmapContext the

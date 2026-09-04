@@ -13,15 +13,22 @@
 // than measurement, and each was wrong. Re-run this before believing anything
 // about glyph weight, including the numbers recorded on that issue.
 //
+// The current pinned SDK explicitly requests smoothing in appkit_host.m. The
+// no-smoothing rows below are COUNTERFACTUAL controls: they show that this
+// knob can move pixels on this host, not that any shipped Cockpit binary ever
+// had smoothing disabled. Compare real SDK commits with
+// scripts/host-raster-compare.sh before claiming a visual fix.
+//
 // The SDK rasterizes every text-bearing command into a CGBitmapContext created
 // with kCGImageAlphaPremultipliedLast (a TRANSPARENT backing), sets
-// CGContextSetShouldAntialias(true), and never calls
-// CGContextSetShouldSmoothFonts. This measures what that costs, if anything.
+// CGContextSetShouldAntialias(true), and (in the current pin) explicitly asks
+// for font smoothing. This measures what each toggle costs, if anything.
 //
-// Three configurations, same font, same size, same string:
-//   A. transparent + antialias only        <- what the SDK does today
-//   B. transparent + shouldSmoothFonts     <- the one-line "fix" as-is
-//   C. opaque bg   + shouldSmoothFonts     <- smoothing's documented requirement
+// Four configurations, same font, same size, same string:
+//   A. transparent + antialias + no smoothing   <- counterfactual control
+//   B. transparent + antialias + smoothing      <- current host intent
+//   C. opaque bg   + antialias + smoothing      <- smoothing on a ground
+//   D. opaque bg   + antialias + no smoothing   <- counterfactual control
 //
 // Reported per config: mean coverage over the drawn band and the count of
 // pixels above half coverage. Thicker stems => higher mean, more solid pixels.
@@ -102,7 +109,7 @@ int main(int argc, const char **argv) {
         printf("%-34s %10s %10s %10s\n", "configuration", "mean", "solid>127", "lit>8");
 
         Stats a = run(font, text, 320, 20, scale, 0, 0);
-        printf("%-34s %10.4f %10ld %10ld\n", "A transparent, no smoothing (SDK)", a.mean, a.solid, a.lit);
+        printf("%-34s %10.4f %10ld %10ld\n", "A transparent, no smoothing (control)", a.mean, a.solid, a.lit);
         Stats b = run(font, text, 320, 20, scale, 1, 0);
         printf("%-34s %10.4f %10ld %10ld\n", "B transparent, smoothing on", b.mean, b.solid, b.lit);
         Stats c = run(font, text, 320, 20, scale, 1, 1);
