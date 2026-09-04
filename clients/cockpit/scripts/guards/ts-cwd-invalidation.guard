@@ -1,0 +1,14 @@
+# GUARD ts-cwd-invalidation
+#
+# Shell bytes stay native, but an OSC 7 change represented in the bounded
+# snapshot must invalidate the core once. Dropping this edge leaves switcher
+# cwd filtering stale until an unrelated intent happens to resync it.
+test: the switcher receives the focused split pane's cwd without polling terminal bytes
+build: test -Dtypescript-spike=true -Dplatform=null
+red: 2026-09-04 at efe7dea
+diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
+--- a/typescript-spike/src/native_extension.zig
++++ b/typescript-spike/src/native_extension.zig
+@@ -235,1 +235,1 @@
+-            if (engine.onShellEvent(fx, event)) bridge.announce(engine);
++            _ = engine.onShellEvent(fx, event);

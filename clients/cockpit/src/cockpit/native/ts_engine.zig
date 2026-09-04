@@ -584,12 +584,27 @@ pub const Engine = struct {
         }
     }
 
-    /// One pty event, applied the way `update.zig`'s `.shell` arm applies it
-    /// minus the bell, pointer-protocol and selection bookkeeping that belong
-    /// to chrome this graph does not paint natively yet. `event.bytes` is
-    /// drain scratch: the emulator is fed inside this call.
-    pub fn onShellEvent(self: *Engine, fx: anytype, event: native_sdk.EffectPtyEvent) void {
-        const pane = terminal_runtime.paneForKey(self.model, event.key) orelse return;
+    fn paneChromeFingerprint(self: *const Engine, pane: *const model_module.Pane) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        std.hash.autoHash(&hasher, pane.phase);
+        std.hash.autoHash(&hasher, pane.exit_code);
+        std.hash.autoHash(&hasher, pane.exit_signal);
+        std.hash.autoHash(&hasher, pane.exit_reason);
+        var title_room: [ts_snapshot.max_title_bytes]u8 = undefined;
+        const title = projection.terminalTitleInto(self.model, pane.id, &title_room);
+        hasher.update(title);
+        hasher.update(pane.pwd());
+        std.hash.autoHash(&hasher, projection.terminalNeedsAttention(self.model, pane.id));
+        return hasher.final();
+    }
+
+    /// One pty event, applied the way `update.zig`'s `.shell` arm applies it.
+    /// The return is edge-triggered only for state represented in the core's
+    /// snapshot (phase/title/cwd/attention); ordinary terminal output still
+    /// wakes native painting without forcing a snapshot on every byte batch.
+    pub fn onShellEvent(self: *Engine, fx: anytype, event: native_sdk.EffectPtyEvent) bool {
+        const pane = terminal_runtime.paneForKey(self.model, event.key) orelse return false;
+        const chrome_before = self.paneChromeFingerprint(pane);
         switch (event.kind) {
             .output => {
                 pane.phase = .live;
@@ -621,6 +636,11 @@ pub const Engine = struct {
             // the shipping app marks the arm unreachable for the same reason.
             .write => {},
         }
+        if (chrome_before == self.paneChromeFingerprint(pane)) return false;
+        self.sequence +%= 1;
+        self.revision +%= 1;
+        self.intent_refused = false;
+        return true;
     }
 
     // ------------------------------------------------------------- input

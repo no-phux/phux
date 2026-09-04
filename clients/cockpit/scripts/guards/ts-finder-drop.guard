@@ -1,0 +1,13 @@
+# GUARD ts-finder-drop
+#
+# FileDropEvent remains native and must reach the engine's quoted bracketed
+# paste path. Removing the host route silently discards Finder drops.
+test: Finder drops stay native and enter the focused pane as bracketed paste
+build: test -Dtypescript-spike=true -Dplatform=null
+red: 2026-09-04 at efe7dea
+diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
+--- a/typescript-spike/src/native_extension.zig
++++ b/typescript-spike/src/native_extension.zig
+@@ -619,1 +619,1 @@
+-        .files_dropped => |drop| _ = engine.onDrop(fx, drop),
++        .files_dropped => {},

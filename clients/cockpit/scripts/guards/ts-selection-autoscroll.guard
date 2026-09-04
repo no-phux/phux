@@ -1,0 +1,13 @@
+# GUARD ts-selection-autoscroll
+#
+# The runtime timer is the only edge that advances an out-of-frame selection;
+# leaving it armed but not routed makes edge dragging look alive and never move.
+test: selection edge drag autoscrolls through the TypeScript host timer
+build: test -Dtypescript-spike=true -Dplatform=null
+red: 2026-09-04 at efe7dea
+diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
+--- a/typescript-spike/src/native_extension.zig
++++ b/typescript-spike/src/native_extension.zig
+@@ -621,1 +621,1 @@
+-            engine.selectionAutoscroll(fx);
++            // deliberately broken for the red proof

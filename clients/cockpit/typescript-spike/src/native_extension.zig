@@ -232,7 +232,7 @@ var bridge = Bridge{};
 fn shellEvent(event: native_sdk.EffectPtyEvent) core.Msg {
     if (bridge.engine) |engine| {
         if (engineFx()) |fx| {
-            engine.onShellEvent(fx, event);
+            if (engine.onShellEvent(fx, event)) bridge.announce(engine);
             engine.noteTopologyChange(fx, topologyTimer);
         }
     }
@@ -1071,6 +1071,14 @@ test "every registered pane gets exactly one shell request and a closed tab kill
     try std.testing.expectEqual(second_key, fx.last_killed);
     engine.spawnShells(&fx, shellEvent);
     try std.testing.expectEqual(@as(usize, 2), fx.spawned);
+
+    // A split creates a real provider pane, not only a visual branch. The
+    // next idempotent spawn pass must start exactly that pane's PTY.
+    const split = protocol.encodeIntent(.{ .kind = .native_command, .expected_revision = 3, .argument = 4, .window = 0 });
+    try std.testing.expect(engine.applyIntent(&split, &fx));
+    engine.spawnShells(&fx, shellEvent);
+    try std.testing.expectEqual(@as(usize, 3), fx.spawned);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.provider.activeCount());
 }
 
 // MEASURED: the cost of the route docs/DECISIONS.md chose by reuse. A full
@@ -1244,6 +1252,30 @@ test "the switcher filters the engine's tabs by position or title and selects th
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.selectedTab);
 }
 
+// GUARD: ts-cwd-invalidation
+test "the switcher receives the focused split pane's cwd without polling terminal bytes" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    const wake = shellEvent(.{
+        .key = pane.pty_key,
+        .kind = .output,
+        .bytes = "\x1b]7;file://host/tmp/right-pane\x1b\\",
+    });
+    try rig.dispatch(wake);
+    try rig.settle(2, "READY");
+    try std.testing.expectEqualStrings("/tmp/right-pane", rig.app_state.model.tabs[0].cwd);
+
+    try rig.dispatch(.palette_open);
+    try rig.dispatch(.{ .palette_edit = .{ .insert_text = "right-pane" } });
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.paletteRows.len);
+}
+
 // GUARD: ts-overlay-settings
 test "the settings surface shows the engine's theme catalog and saves through the seam" {
     var rig = try Rig.start();
@@ -1319,10 +1351,10 @@ test "a bell while the app is deactivated notifies once, on its rising edge" {
     const key = pane.pty_key;
 
     engine.setFocused(&fx, false);
-    engine.onShellEvent(&fx, .{ .key = key, .kind = .output, .bytes = "more\x07" });
+    _ = engine.onShellEvent(&fx, .{ .key = key, .kind = .output, .bytes = "more\x07" });
     try std.testing.expectEqual(@as(usize, 1), fx.notifications);
     // A standing bell does not ring again until it is acknowledged.
-    engine.onShellEvent(&fx, .{ .key = key, .kind = .output, .bytes = "\x07" });
+    _ = engine.onShellEvent(&fx, .{ .key = key, .kind = .output, .bytes = "\x07" });
     try std.testing.expectEqual(@as(usize, 1), fx.notifications);
 
     // A focused app hears its own bell and is not notified.
@@ -1331,7 +1363,7 @@ test "a bell while the app is deactivated notifies once, on its rising edge" {
     var quiet = Recorder{};
     const front = attended.model.provider.terminal(attended.model.focusedTerminalRef().?).?;
     attended.setFocused(&quiet, true);
-    attended.onShellEvent(&quiet, .{ .key = front.pty_key, .kind = .output, .bytes = "\x07" });
+    _ = attended.onShellEvent(&quiet, .{ .key = front.pty_key, .kind = .output, .bytes = "\x07" });
     try std.testing.expectEqual(@as(usize, 0), quiet.notifications);
 }
 
@@ -1386,6 +1418,82 @@ test "a drag across the grid through the raw surface input selects text" {
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{ .window_id = 1, .label = canvas_label, .kind = .pointer_drag, .x = frame.x + 160, .y = y, .timestamp_ns = 2 } });
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{ .window_id = 1, .label = canvas_label, .kind = .pointer_up, .x = frame.x + 160, .y = y, .timestamp_ns = 3 } });
     try std.testing.expect(pane.session.selectionActive());
+}
+
+// GUARD: ts-finder-drop
+test "Finder drops stay native and enter the focused pane as bracketed paste" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.session.feed("\x1b[?2004h");
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+
+    routeNativeInput(.{ .files_dropped = .{
+        .view_label = canvas_label,
+        .paths = &.{ "/tmp/a b.txt", "/tmp/second" },
+    } });
+
+    const queued = pane.outbound_buffer[0..pane.outbound_len];
+    try std.testing.expect(std.mem.startsWith(u8, queued, "\x1b[200~"));
+    try std.testing.expect(std.mem.indexOf(u8, queued, "'/tmp/a b.txt' '/tmp/second' ") != null);
+    try std.testing.expect(std.mem.endsWith(u8, queued, "\x1b[201~"));
+}
+
+// GUARD: ts-selection-autoscroll
+test "selection edge drag autoscrolls through the TypeScript host timer" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.session.reset();
+    var lines: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&lines);
+    for (0..80) |index| try writer.print("row {d}\r\n", .{index});
+    pane.session.feed(writer.buffered());
+    pane.session.refreshScreenText();
+    try rig.resize(native_sdk.geometry.SizeF.init(1100, 640));
+    const frame = cockpit.engine.pointerFrame(engine) orelse return error.TestExpectedFrame;
+    const start = native_sdk.geometry.PointF.init(frame.x + 24, frame.y + 24);
+    const above = native_sdk.geometry.PointF.init(start.x, frame.y - 8);
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .x = start.x,
+        .y = start.y,
+        .timestamp_ns = 1,
+    } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_drag,
+        .x = above.x,
+        .y = above.y,
+        .timestamp_ns = 2,
+    } });
+    try std.testing.expect(pointer_host.selection_autoscroll_timer_active);
+    const timer = rig.harness.null_platform.startedTimer(cockpit.selection_autoscroll_timer_id) orelse return error.TestExpectedTimer;
+    try std.testing.expect(timer.active and timer.repeats);
+    try std.testing.expectEqual(cockpit.selection_autoscroll_interval_ns, timer.interval_ns);
+    const before = pane.session.scrollbar().offset;
+    const fired = rig.harness.null_platform.fireTimer(cockpit.selection_autoscroll_timer_id, 20 * std.time.ns_per_ms) orelse return error.TestExpectedTimer;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, fired);
+    try std.testing.expect(before > 0);
+    try std.testing.expectEqual(before - 1, pane.session.scrollbar().offset);
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_up,
+        .x = above.x,
+        .y = above.y,
+        .timestamp_ns = 3,
+    } });
+    try std.testing.expect(!pointer_host.selection_autoscroll_timer_active);
 }
 
 // GUARD: ts-engine-windows
