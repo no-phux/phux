@@ -65,6 +65,17 @@ pub const NoShells = struct {
 /// open search needle.
 const PasteTarget = enum { pane, search_needle };
 
+pub const PointerOutcome = enum { ignored, consumed, geometry_changed };
+
+const SplitDrag = struct {
+    window_id: platform.WindowId,
+    pointer_id: u64,
+    window_index: usize,
+    node: layout.NodeId,
+    orientation: layout.Orientation,
+    bounds: geometry.RectF,
+};
+
 /// Snapshot flag bit reserved for the engine: the last intent was refused
 /// because it named a revision the engine had already moved past (or could
 /// not be decoded at all). Bits 0..6 belong to `ts_snapshot.snapshotFlags`.
@@ -95,6 +106,7 @@ pub const Engine = struct {
     last_down_ns: u64 = 0,
     last_down_point: geometry.PointF = .{},
     last_click_count: u8 = 0,
+    split_drag: ?SplitDrag = null,
 
     /// The model is multi-MB and lives on the heap for the process lifetime;
     /// `gpa` sizes the emulator sessions the provider mints, `io` is what the
@@ -701,7 +713,7 @@ pub const Engine = struct {
     /// the pointer went, a hover or wheel goes to the pane under the point.
     /// Returns whether a terminal took it; chrome is never under a pane's
     /// frame, and the caller keeps overlays out.
-    pub fn onPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent) bool {
+    pub fn onPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent) PointerOutcome {
         const model = self.model;
         const phase: canvas.WidgetPointerPhase = switch (raw.kind) {
             .pointer_down => .down,
@@ -710,9 +722,12 @@ pub const Engine = struct {
             .pointer_move => .hover,
             .pointer_drag => .move,
             .scroll => .wheel,
-            else => return false,
+            else => return .ignored,
         };
         const point = geometry.PointF.init(raw.x, raw.y);
+        if (self.routeSplitDrag(raw, point)) |changed| {
+            return if (changed) .geometry_changed else .consumed;
+        }
         if (phase == .down) {
             if (pointer_input.pointerCaptureFor(model, raw.window_id, raw.pointer_id)) |previous| {
                 pointer_input.handleTerminalPointer(model, fx, .{
@@ -740,12 +755,12 @@ pub const Engine = struct {
             generation = owned.generation;
             frame = pointer_input.paneFrameForTerminal(model, support.localRef(owned.terminal_id)) orelse owned.frame;
         } else {
-            if (phase == .move or phase == .up or phase == .cancel) return false;
-            const ref = pointer_input.terminalRefAtPoint(model, raw.x, raw.y) orelse return false;
-            const pane = model.provider.terminal(ref) orelse return false;
-            terminal_id = provider_contract.localId(ref) orelse return false;
+            if (phase == .move or phase == .up or phase == .cancel) return .ignored;
+            const ref = pointer_input.terminalRefAtPoint(model, raw.x, raw.y) orelse return .ignored;
+            const pane = model.provider.terminal(ref) orelse return .ignored;
+            terminal_id = provider_contract.localId(ref) orelse return .ignored;
             generation = pane.session_generation;
-            frame = pointer_input.paneFrameForTerminal(model, ref) orelse return false;
+            frame = pointer_input.paneFrameForTerminal(model, ref) orelse return .ignored;
         }
         pointer_input.handleTerminalPointer(model, fx, .{
             .window_id = raw.window_id,
@@ -765,7 +780,78 @@ pub const Engine = struct {
                 .super = raw.modifiers.command,
             },
         });
-        return true;
+        return .consumed;
+    }
+
+    /// Divider identity and pointer capture stay native. The interaction tree
+    /// and painter both consume the same branch fractions, while a drag never
+    /// exports a layout.NodeId or platform window id through the TS seam.
+    fn routeSplitDrag(self: *Engine, raw: platform.GpuSurfaceInputEvent, point: geometry.PointF) ?bool {
+        if (self.split_drag) |drag| {
+            if (drag.window_id != raw.window_id or drag.pointer_id != raw.pointer_id) return null;
+            switch (raw.kind) {
+                .pointer_drag, .pointer_move => {
+                    const available = switch (drag.orientation) {
+                        .horizontal => @max(1, drag.bounds.width - projection.split_divider_width),
+                        .vertical => @max(1, drag.bounds.height - projection.split_divider_width),
+                    };
+                    const offset = switch (drag.orientation) {
+                        .horizontal => point.x - drag.bounds.x,
+                        .vertical => point.y - drag.bounds.y,
+                    };
+                    const workspace = self.model.wsAt(drag.window_index) orelse {
+                        self.split_drag = null;
+                        return false;
+                    };
+                    const tree = workspace.selectedTree() orelse {
+                        self.split_drag = null;
+                        return false;
+                    };
+                    const before = tree.node(drag.node).fraction;
+                    tree.setFraction(drag.node, offset / available);
+                    const changed = tree.node(drag.node).fraction != before;
+                    if (changed) {
+                        self.sequence +%= 1;
+                        self.revision +%= 1;
+                        self.intent_refused = false;
+                    }
+                    return changed;
+                },
+                .pointer_up, .pointer_cancel => {
+                    self.split_drag = null;
+                    return false;
+                },
+                else => return false,
+            }
+        }
+        if (raw.kind != .pointer_down) return null;
+        const window_index = windowIndexForCanvas(raw.label) orelse return null;
+        const workspace = self.model.wsAt(window_index) orelse return null;
+        const tree = workspace.selectedTree() orelse return null;
+        const chrome = projection.workspaceChromeIn(self.model, workspace, workspace.surface_size);
+        var dividers: [layout.max_panes - 1]layout.Divider = undefined;
+        const count = tree.dividers(
+            chrome.content,
+            projection.split_divider_width,
+            projection.split_pane_min_width,
+            projection.split_pane_min_height,
+            &dividers,
+        );
+        for (dividers[0..count]) |divider| {
+            if (point.x < divider.rect.x or point.x > divider.rect.x + divider.rect.width or
+                point.y < divider.rect.y or point.y > divider.rect.y + divider.rect.height) continue;
+            self.model.active_window = window_index;
+            self.split_drag = .{
+                .window_id = raw.window_id,
+                .pointer_id = raw.pointer_id,
+                .window_index = window_index,
+                .node = divider.node,
+                .orientation = divider.orientation,
+                .bounds = divider.bounds,
+            };
+            return false;
+        }
+        return null;
     }
 
     /// Finder drops stay wholly native: quote the selected paths, resolve the

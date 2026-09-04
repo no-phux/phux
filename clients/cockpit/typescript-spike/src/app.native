@@ -9,6 +9,7 @@
               size="sm"
               icon="terminal"
               width="{tabWidth}"
+              role="tab"
               selected="{tab.selected}"
               on-toggle="select_tab:{tab.index}"
             >{tab.title}</toggle-button>
@@ -65,7 +66,7 @@
           </row>
           <input
             text="{paletteQuery}"
-            placeholder="Terminal number or title"
+            placeholder="Terminal number, title, or directory"
             autofocus="true"
             on-input="palette_edit"
             on-submit="palette_submit"

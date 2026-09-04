@@ -138,9 +138,9 @@ if [[ -n "$RECORD" ]]; then
     [[ -e "$guard" ]] && die "$guard already exists. Delete it to re-derive."
 
     if [[ ${#positional[@]} -gt 0 ]]; then
-        diff_text="$(git -C "$ROOT" diff -- "${positional[@]}")"
+        diff_text="$(git -C "$ROOT" diff --relative -- "${positional[@]}")"
     else
-        diff_text="$(git -C "$ROOT" diff)"
+        diff_text="$(git -C "$ROOT" diff --relative)"
     fi
     [[ -n "$diff_text" ]] || die "the capture is empty. Staged changes are not captured, by design."
 

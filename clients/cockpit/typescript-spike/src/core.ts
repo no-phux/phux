@@ -109,6 +109,7 @@ export interface Model {
 
 export type Msg =
   | { readonly kind: "select_tab"; readonly index: number }
+  | { readonly kind: "select_active_tab"; readonly index: number }
   | { readonly kind: "select_slot"; readonly slot: number }
   | { readonly kind: "new_terminal" }
   | { readonly kind: "new_window" }
@@ -144,6 +145,7 @@ export type Msg =
 
 export const viewUnbound = [
   "selectedTab",
+  "select_active_tab",
   "window_closed",
   "paletteAnchor",
   "paletteFocus",
@@ -466,11 +468,11 @@ export function commandMsg(name: string): Msg | null {
   if (name === "cockpit.window.closed.2") return { kind: "window_closed", window: 2 };
   if (name === "cockpit.window.closed.3") return { kind: "window_closed", window: 3 };
   if (name === "cockpit.window.closed.4") return { kind: "window_closed", window: 4 };
-  if (name === "surface.1") return { kind: "select_tab", index: 0 };
-  if (name === "surface.2") return { kind: "select_tab", index: 1 };
-  if (name === "surface.3") return { kind: "select_tab", index: 2 };
-  if (name === "surface.4") return { kind: "select_tab", index: 3 };
-  if (name === "surface.5") return { kind: "select_tab", index: 4 };
+  if (name === "surface.1") return { kind: "select_active_tab", index: 0 };
+  if (name === "surface.2") return { kind: "select_active_tab", index: 1 };
+  if (name === "surface.3") return { kind: "select_active_tab", index: 2 };
+  if (name === "surface.4") return { kind: "select_active_tab", index: 3 };
+  if (name === "surface.5") return { kind: "select_active_tab", index: 4 };
   if (name === "terminal.new") return { kind: "new_terminal" };
   if (name === "window.new") return { kind: "new_window" };
   if (name === "tabs.palette") return { kind: "palette_open" };
@@ -595,6 +597,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         },
         Cmd.host("cockpit.intent", intent(1, model.engineRevision, msg.index, 0)),
       ];
+    case "select_active_tab":
+      return [model, Cmd.host("cockpit.intent", intent(1, model.engineRevision, msg.index, 255))];
     case "select_slot": {
       // A tab pressed in a secondary window's chrome: the intent names that
       // window so it cannot land on whichever window is active.

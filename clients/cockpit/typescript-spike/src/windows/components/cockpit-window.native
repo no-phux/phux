@@ -9,6 +9,7 @@
               size="sm"
               icon="terminal"
               width="{width}"
+              role="tab"
               selected="{tab.selected}"
               on-toggle="select_slot:{tab.slot}"
             >{tab.title}</toggle-button>

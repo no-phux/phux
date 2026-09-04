@@ -262,8 +262,31 @@ fn overlayKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     return null;
 }
 
+/// `native automate widget-key` enters through the canvas fallback rather
+/// than the platform shortcut registrar. Map the product chords to the same
+/// core messages as menus/real shortcuts so the driven and physical paths are
+/// indistinguishable after this boundary.
+fn primaryChord(event: canvas.WidgetKeyboardEvent) ?core.Msg {
+    if (event.phase == .key_up or !event.modifiers.hasCommandModifier()) return null;
+    const key = event.key;
+    const shift = event.modifiers.shift;
+    const control = event.modifiers.control;
+    const alt = event.modifiers.alt;
+    if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "t")) return core.commandMsg("terminal.new");
+    if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "n")) return core.commandMsg("window.new");
+    if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "w")) return core.commandMsg("terminal.close");
+    if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "d")) return core.commandMsg("pane.split-right");
+    if (!control and !alt and shift and std.ascii.eqlIgnoreCase(key, "d")) return core.commandMsg("pane.split-down");
+    if (!control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "f")) return core.commandMsg("terminal.find");
+    if (!control and !alt and !shift and std.mem.eql(u8, key, ",")) return core.commandMsg("settings.open");
+    if (!control and !alt and shift and std.ascii.eqlIgnoreCase(key, "p")) return core.commandMsg("tabs.palette");
+    if (control and !alt and !shift and std.ascii.eqlIgnoreCase(key, "f")) return core.commandMsg("window.fullscreen");
+    return null;
+}
+
 fn onKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     if (overlay_open) return overlayKey(event);
+    if (primaryChord(event)) |msg| return msg;
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
     engine.onKey(fx, event);
@@ -276,6 +299,115 @@ fn onText(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     const fx = engineFx() orelse return null;
     engine.onText(fx, event);
     return null;
+}
+
+fn emptyInteraction(ui: *Adapter.Ui) Adapter.Ui.Node {
+    return ui.el(.stack, .{ .grow = 1, .semantics = .{ .hidden = true } }, .{});
+}
+
+fn paneInteraction(
+    ui: *Adapter.Ui,
+    engine: *const Engine,
+    workspace: anytype,
+    node: cockpit.layout.NodeId,
+) Adapter.Ui.Node {
+    const current = workspace.selectedTreeConst() orelse return emptyInteraction(ui);
+    const entry = current.node(node);
+    switch (entry.kind) {
+        .free => return emptyInteraction(ui),
+        .leaf => {
+            const terminal = entry.terminal orelse return emptyInteraction(ui);
+            var title_room: [cockpit.snapshot.max_title_bytes]u8 = undefined;
+            const title = cockpit.projection.terminalTitleInto(engine.model, terminal, &title_room);
+            const screen = if (engine.model.provider.terminalConst(terminal)) |pane|
+                pane.session.screenText()
+            else if (engine.model.remotePresentation(terminal)) |presentation|
+                presentation.grid.screen_text
+            else
+                "";
+            return ui.el(.stack, .{
+                .grow = 1,
+                .min_width = cockpit.projection.split_pane_min_width,
+                .min_height = cockpit.projection.split_pane_min_height,
+                .opacity = 0,
+                .text = screen,
+                .semantics = .{
+                    .role = .textbox,
+                    .label = ui.fmt("{s}", .{title}),
+                    .focusable = true,
+                },
+            }, .{});
+        },
+        .branch => {
+            const first = paneInteraction(ui, engine, workspace, entry.first);
+            const second = paneInteraction(ui, engine, workspace, entry.second);
+            return ui.split(.{
+                .grow = 1,
+                .min_width = cockpit.projection.split_pane_min_width,
+                .min_height = cockpit.projection.split_pane_min_height,
+                .gap = cockpit.projection.split_divider_width,
+                .split_axis = switch (entry.orientation) {
+                    .horizontal => .horizontal,
+                    .vertical => .vertical,
+                },
+                .value = entry.fraction,
+                .opacity = 0,
+                .semantics = .{ .label = "Terminal split" },
+            }, .{ first, second });
+        },
+    }
+}
+
+/// Transparent native interaction leaves occupy exactly the rectangles the
+/// authoritative projection gives the grid painter. Compiled `.native`
+/// markup owns all visible chrome; this layer contributes pane semantics and
+/// split topology over the app-owned libghostty surfaces beneath it.
+fn terminalInteraction(ui: *Adapter.Ui, engine: *const Engine, window_index: usize) Adapter.Ui.Node {
+    const workspace = engine.model.wsAtConst(window_index) orelse return emptyInteraction(ui);
+    const chrome = cockpit.projection.workspaceChromeIn(engine.model, workspace, workspace.surface_size);
+    const panes = if (workspace.selectedTreeConst()) |tree|
+        paneInteraction(ui, engine, workspace, tree.root)
+    else
+        emptyInteraction(ui);
+    const content = ui.row(.{ .height = chrome.content.height }, .{
+        ui.el(.stack, .{ .width = chrome.content.x, .semantics = .{ .hidden = true } }, .{}),
+        ui.el(.stack, .{ .width = chrome.content.width, .height = chrome.content.height }, .{panes}),
+        ui.el(.stack, .{ .grow = 1, .semantics = .{ .hidden = true } }, .{}),
+    });
+    const search = if (chrome.search.height > 0)
+        ui.el(.stack, .{
+            .height = chrome.search.height,
+            .opacity = 0,
+            .semantics = .{ .role = .group, .label = "Scrollback search" },
+        }, .{})
+    else
+        ui.el(.stack, .{ .height = 0, .semantics = .{ .hidden = true } }, .{});
+    return ui.column(.{ .grow = 1 }, .{
+        ui.el(.stack, .{ .height = chrome.search.y, .semantics = .{ .hidden = true } }, .{}),
+        search,
+        content,
+        ui.el(.stack, .{ .grow = 1, .semantics = .{ .hidden = true } }, .{}),
+    });
+}
+
+fn composeView(ui: *Adapter.Ui, model: *const core.Model, markup: Adapter.Ui.Node, window_index: usize) Adapter.Ui.Node {
+    const engine = bridge.engine orelse return markup;
+    if (model.paletteOpen or model.settingsOpen) return markup;
+    return ui.el(.stack, .{ .grow = 1 }, .{
+        terminalInteraction(ui, engine, window_index),
+        markup,
+    });
+}
+
+fn mainView(ui: *Adapter.Ui, model: *const core.Model) Adapter.Ui.Node {
+    return composeView(ui, model, CompiledChrome.build(ui, model), 0);
+}
+
+fn windowView(ui: *Adapter.Ui, model: *const core.Model, label: []const u8) Adapter.Ui.Node {
+    if (std.mem.eql(u8, label, "phux-window-1")) return composeView(ui, model, WindowView1.build(ui, model), 1);
+    if (std.mem.eql(u8, label, "phux-window-2")) return composeView(ui, model, WindowView2.build(ui, model), 2);
+    if (std.mem.eql(u8, label, "phux-window-3")) return composeView(ui, model, WindowView3.build(ui, model), 3);
+    return composeView(ui, model, WindowView4.build(ui, model), 4);
 }
 
 /// Set by the paint pass, which sees the committed core model: the only
@@ -325,6 +457,9 @@ pub fn configureCoreOptions(options: *Adapter.CoreOptions, init: std.process.Ini
 }
 
 fn configureOptionsValue(options: *Adapter.Options) void {
+    options.view = mainView;
+    options.markup = null;
+    options.window_view = windowView;
     options.chrome = .{
         .prefix_commands = cockpit.projection.chrome_command_envelope,
         .variable_prefix = true,
@@ -338,8 +473,9 @@ fn configureOptionsValue(options: *Adapter.Options) void {
     options.on_lifecycle = onLifecycle;
 }
 
-pub fn configureOptions(options: *Adapter.Options, _: std.process.Init) void {
+pub fn configureOptions(options: *Adapter.Options, init: std.process.Init) void {
     configureOptionsValue(options);
+    options.fragment_watch = .{ .fragments = &compiled_fragments, .io = init.io };
 }
 
 /// Wraps the adapter's app to see the raw surface input before it: the
@@ -434,7 +570,7 @@ fn routeNativeInput(value: native_sdk.Event) void {
             // before the pane under it is resolved, as CockpitHost adopts
             // the routed event's window.
             engine.model.active_window = index;
-            _ = engine.onPointer(fx, raw);
+            if (engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
         },
         .files_dropped => |drop| _ = engine.onDrop(fx, drop),
         .timer => |timer| if (timer.id == cockpit.selection_autoscroll_timer_id) {
@@ -682,6 +818,57 @@ test "native menu commands split and close the focused pane through the engine s
     try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
 }
 
+// GUARD: ts-native-divider-drag
+test "native divider drag updates engine geometry without crossing the TypeScript seam" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const workspace = engine.model.ws();
+    const tree = workspace.selectedTree().?;
+    const chrome = cockpit.projection.workspaceChromeIn(engine.model, workspace, workspace.surface_size);
+    var dividers: [cockpit.layout.max_panes - 1]cockpit.layout.Divider = undefined;
+    const count = tree.dividers(
+        chrome.content,
+        cockpit.projection.split_divider_width,
+        cockpit.projection.split_pane_min_width,
+        cockpit.projection.split_pane_min_height,
+        &dividers,
+    );
+    try std.testing.expectEqual(@as(usize, 1), count);
+    const divider = dividers[0];
+    const y = divider.rect.y + divider.rect.height / 2;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .pointer_id = 7,
+        .x = divider.rect.x + divider.rect.width / 2,
+        .y = y,
+    } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_drag,
+        .pointer_id = 7,
+        .x = divider.bounds.x + (divider.bounds.width - cockpit.projection.split_divider_width) * 0.7,
+        .y = y,
+    } });
+    try rig.settle(2, "READY");
+    try std.testing.expectApproxEqAbs(@as(f32, 0.7), tree.node(divider.node).fraction, 0.001);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_up,
+        .pointer_id = 7,
+        .x = divider.rect.x,
+        .y = y,
+    } });
+}
+
 // GUARD: ts-engine-fence
 test "a stale intent is refused, announced, and surfaced instead of applied" {
     var rig = try Rig.start();
@@ -859,9 +1046,17 @@ test "MEASURED: the chrome-prefix paint of a full grid on the engine model" {
 // same toolkit audit the Zig ladder answers to. A finding is a real defect
 // (overlap, a target under the WCAG floor, a widget off its grid), printed
 // the way the Zig audit prints it. The engine's grids are painted beneath
-// this tree and are not widgets; their geometry is the shipping painter's.
+// the composite tree; its transparent pane leaves carry accessibility and
+// consume the exact geometry the shipping painter uses.
 
 const CompiledChrome = canvas.CompiledMarkupView(core.Model, core.Msg, @embedFile("app.native"));
+const compiled_fragments = [_]canvas.MarkupFragment{
+    CompiledChrome.fragment("src/app.native"),
+    WindowView1.fragment("src/windows/phux-window-1.native"),
+    WindowView2.fragment("src/windows/phux-window-2.native"),
+    WindowView3.fragment("src/windows/phux-window-3.native"),
+    WindowView4.fragment("src/windows/phux-window-4.native"),
+};
 
 const parity_sizes = [_]native_sdk.geometry.SizeF{
     native_sdk.geometry.SizeF.init(900, 420),
@@ -895,7 +1090,7 @@ fn auditChromeAt(model: *const core.Model, size: native_sdk.geometry.SizeF, dens
 
     var tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
     tokens.density = density;
-    const node = CompiledChrome.build(&ui, model);
+    const node = mainView(&ui, model);
     const tree = try ui.finalizeWithTokens(node, tokens);
 
     const nodes = try std.testing.allocator.alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);

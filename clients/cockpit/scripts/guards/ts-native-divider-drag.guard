@@ -1,0 +1,14 @@
+# GUARD ts-native-divider-drag
+#
+# Without the native divider route, drag input over a split gap falls through
+# without changing the authoritative tree fraction or announcing a revision.
+test: native divider drag updates engine geometry without crossing the TypeScript seam
+build: test -Dtypescript-spike=true -Dplatform=null
+red: 2026-09-04 at 4bf8417c
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -728,3 +728,0 @@
+-        if (self.routeSplitDrag(raw, point)) |changed| {
+-            return if (changed) .geometry_changed else .consumed;
+-        }
