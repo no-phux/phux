@@ -5,7 +5,7 @@
 # tab match every needle, so a typed "3" still shows all three rows and the
 # highlighted first row is tab 1, not tab 3.
 test: the switcher filters the engine's tabs by position or title and selects through the seam
-red: 2026-09-02 at d7dc724
+red: 2026-09-04 at 479be58
 build: test -Dtypescript-spike=true -Dplatform=null
 diff --git a/typescript-spike/src/core.ts b/typescript-spike/src/core.ts
 index ca6c5fb..cf48383 100644

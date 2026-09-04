@@ -6,7 +6,7 @@
 # test holds two tabs, because against one the last-tab rule refuses the close
 # for its own reason and the fence is never exercised.
 test: a stale intent is refused, announced, and surfaced instead of applied
-red: 2026-09-02 at d7dc724
+red: 2026-09-04 at 479be58
 build: test -Dtypescript-spike=true -Dplatform=null
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 index b2ac6ba..b779f04 100644
