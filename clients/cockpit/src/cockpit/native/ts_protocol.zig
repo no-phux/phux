@@ -35,7 +35,70 @@ pub const IntentKind = enum(u8) {
     close_window = 9,
     /// Make window `window` the active one, as the OS focus did.
     focus_window = 10,
+    /// Execute one command from the shared native menu/shortcut vocabulary.
+    /// `argument` is a `NativeCommand`; `window` is the window that produced
+    /// the platform event, already reduced to a process-local projection slot.
+    native_command = 11,
 };
+
+pub const NativeCommand = enum(u8) {
+    previous_tab = 1,
+    next_tab = 2,
+    close_focused_pane = 3,
+    split_right = 4,
+    split_down = 5,
+    previous_pane = 6,
+    next_pane = 7,
+    move_tab_left = 8,
+    move_tab_right = 9,
+    select_all = 10,
+    copy = 11,
+    paste = 12,
+    clear = 13,
+    find = 14,
+    find_next = 15,
+    find_previous = 16,
+    font_larger = 17,
+    font_smaller = 18,
+    font_reset = 19,
+    focus_left = 20,
+    focus_right = 21,
+    focus_up = 22,
+    focus_down = 23,
+    fullscreen = 24,
+    minimize = 25,
+};
+
+pub fn decodeNativeCommand(raw: u8) ?NativeCommand {
+    return switch (raw) {
+        1 => .previous_tab,
+        2 => .next_tab,
+        3 => .close_focused_pane,
+        4 => .split_right,
+        5 => .split_down,
+        6 => .previous_pane,
+        7 => .next_pane,
+        8 => .move_tab_left,
+        9 => .move_tab_right,
+        10 => .select_all,
+        11 => .copy,
+        12 => .paste,
+        13 => .clear,
+        14 => .find,
+        15 => .find_next,
+        16 => .find_previous,
+        17 => .font_larger,
+        18 => .font_smaller,
+        19 => .font_reset,
+        20 => .focus_left,
+        21 => .focus_right,
+        22 => .focus_up,
+        23 => .focus_down,
+        24 => .fullscreen,
+        25 => .minimize,
+        else => null,
+    };
+}
 
 pub const invalidation_len: usize = 18;
 pub const snapshot_header_len: usize = invalidation_len;
@@ -105,6 +168,7 @@ pub fn decodeIntent(bytes: []const u8) ?Intent {
         8 => .new_window,
         9 => .close_window,
         10 => .focus_window,
+        11 => .native_command,
         else => return null,
     };
     return .{

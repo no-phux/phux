@@ -1,4 +1,4 @@
-<template name="cockpit-window" args="tabs width more cue">
+<template name="cockpit-window" args="tabs width more cue paletteopen palettequery paletterows settingsopen themes configexists confignotice">
   <stack>
     <column>
       <row height="50" padding="4" gap="4" cross="center" background="surface">
@@ -21,5 +21,40 @@
       </row>
       <spacer grow="1" />
     </column>
+    <if test="{paletteopen}">
+      <row main="center" cross="start" padding="24">
+        <panel width="520" padding="16">
+          <column gap="12">
+            <row cross="center" gap="8">
+              <icon name="search" width="16" height="16" />
+              <text grow="1">Switch terminal</text>
+              <button size="sm" variant="ghost" icon="x" label="Close switcher" on-press="palette_close" />
+            </row>
+            <input text="{palettequery}" placeholder="Terminal number, title, or directory" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Find terminal" />
+            <list gap="2" label="Terminals">
+              <for each="paletterows" key="id" as="row">
+                <list-item icon="terminal" selected="{row.highlighted}" on-press="palette_pick:{row.index}">{row.label}</list-item>
+              </for>
+            </list>
+          </column>
+        </panel>
+      </row>
+    </if>
+    <if test="{settingsopen}">
+      <row main="end">
+        <panel width="400" padding="12">
+          <column gap="8">
+            <row cross="center"><text grow="1">Settings</text><button size="sm" variant="ghost" icon="x" label="Close settings" on-press="settings_close" /></row>
+            <text foreground="text_muted">Theme</text>
+            <list gap="0" label="Themes">
+              <for each="themes" key="index" as="theme"><list-item height="24" selected="{theme.highlighted}" on-press="settings_pick:{theme.index}">{theme.label}</list-item></for>
+            </list>
+            <row cross="center" gap="8"><text grow="1" foreground="text_muted">Configuration</text><if test="{configexists}"><button size="sm" variant="ghost" on-press="settings_reveal">Show in Finder</button></if></row>
+            <text wrap="true" foreground="text_muted">{confignotice}</text>
+            <row gap="8" cross="center"><button size="sm" variant="ghost" on-press="toggle_tab_placement">Move tab strip</button><spacer grow="1" /><button size="sm" variant="ghost" on-press="settings_close">Cancel</button><button size="sm" on-press="settings_commit">Save</button></row>
+          </column>
+        </panel>
+      </row>
+    </if>
   </stack>
 </template>

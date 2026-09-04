@@ -19,6 +19,7 @@ export interface SnapshotTab {
   readonly id: number;
   readonly index: number;
   readonly title: Uint8Array;
+  readonly cwd: Uint8Array;
   readonly selected: boolean;
   readonly attention: boolean;
 }
@@ -106,21 +107,24 @@ function readTabs(bytes: Uint8Array, start: number, count: number, selected: num
   let at = start;
   for (let index = 0; index < count; index += 1) {
     if (!(index >= 0 && index <= 255)) return null;
-    if (at + 6 > bytes.length) return null;
+    if (at + 7 > bytes.length) return null;
     const rawId = readU32(bytes, at);
     const titleLength = bytes[at + 5];
+    const cwdLength = bytes[at + 6];
     if (!(rawId >= 1 && rawId <= 4294967295)) return null;
     const id = Math.trunc(rawId);
     if (!(titleLength >= 0 && titleLength <= 255)) return null;
-    if (at + 6 + titleLength > bytes.length) return null;
+    if (!(cwdLength >= 0 && cwdLength <= 255)) return null;
+    if (at + 7 + titleLength + cwdLength > bytes.length) return null;
     tabs.push({
       id,
       index,
-      title: bytes.subarray(at + 6, at + 6 + titleLength),
+      title: bytes.subarray(at + 7, at + 7 + titleLength),
+      cwd: bytes.subarray(at + 7 + titleLength, at + 7 + titleLength + cwdLength),
       selected: index === selected,
       attention: bytes[at + 4] !== 0,
     });
-    at += 6 + titleLength;
+    at += 7 + titleLength + cwdLength;
   }
   return { tabs, at };
 }

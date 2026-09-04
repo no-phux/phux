@@ -13,6 +13,8 @@ pub const projection = @import("cockpit/native/workspace_projection.zig");
 pub const measured = @import("tests/measured.zig");
 pub const Engine = engine.Engine;
 pub const NoShells = engine.NoShells;
+pub const selection_autoscroll_timer_id: u64 = @import("cockpit/app_types.zig").selection_autoscroll_timer_id;
+pub const selection_autoscroll_interval_ns: u64 = 15 * std.time.ns_per_ms;
 
 test {
     std.testing.refAllDecls(@This());

@@ -16,6 +16,7 @@ export interface Tab {
   readonly index: number;
   readonly slot: number;
   readonly title: Uint8Array;
+  readonly cwd: Uint8Array;
   readonly selected: boolean;
   readonly attention: boolean;
 }
@@ -126,6 +127,7 @@ export type Msg =
   | { readonly kind: "settings_pick"; readonly index: number }
   | { readonly kind: "settings_commit" }
   | { readonly kind: "settings_reveal" }
+  | { readonly kind: "native_command"; readonly command: number }
   // Posted by the native engine for every shell event it consumed: no bytes
   // ride along, the core only learns that the grids beneath it moved.
   | { readonly kind: "engine_wake" }
@@ -156,6 +158,7 @@ export const viewUnbound = [
   "engine_wake",
   "snapshot_loaded",
   "snapshot_failed",
+  "native_command",
 ] as const;
 
 const ZERO_U64: WireU64 = { hi: 0, lo: 0 };
@@ -253,7 +256,7 @@ function switcherRows(tabs: readonly Tab[], needle: Uint8Array, cursor: number):
     if (!(index >= 0 && index <= 255)) break;
     const tab = tabs[index];
     const position = positionBytes(index);
-    if (!containsIgnoreCase(position, needle) && !containsIgnoreCase(tab.title, needle)) continue;
+    if (!containsIgnoreCase(position, needle) && !containsIgnoreCase(tab.title, needle) && !containsIgnoreCase(tab.cwd, needle)) continue;
     rows.push({ id: tab.id, index, label: joinBytes(position, TWO_SPACES, tab.title), highlighted: false });
   }
   if (rows.length === 0) return rows;
@@ -316,7 +319,7 @@ function configNotice(enabled: boolean, probed: boolean, exists: boolean, writab
   return joinBytes(asciiBytes("Active configuration file: "), path, NO_BYTES);
 }
 
-function stampSlots(tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly selected: boolean; readonly attention: boolean }[], window: number): readonly Tab[] {
+function stampSlots(tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly cwd: Uint8Array; readonly selected: boolean; readonly attention: boolean }[], window: number): readonly Tab[] {
   const out: Tab[] = [];
   const w = window >= 0 && window <= 4 ? Math.trunc(window) : 0;
   for (let i = 0; i < tabs.length; i += 1) {
@@ -326,7 +329,7 @@ function stampSlots(tabs: readonly { readonly id: number; readonly index: number
     if (!(rawIndex >= 0 && rawIndex <= 31) || !(rawId >= 1 && rawId <= 4294967295)) continue;
     const index = Math.trunc(rawIndex);
     const id = Math.trunc(rawId);
-    out.push({ id, index, slot: w * 32 + index, title: t.title, selected: t.selected, attention: t.attention });
+    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention });
   }
   return out;
 }
@@ -347,7 +350,7 @@ function closedWindow(index: number): WindowState {
   return { ...CLOSED_WINDOW, index: at };
 }
 
-function windowState(index: number, section: { readonly selectedTab: number; readonly runStart: number; readonly runCount: number; readonly tabWidth: number; readonly tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly selected: boolean; readonly attention: boolean }[] } | null): WindowState {
+function windowState(index: number, section: { readonly selectedTab: number; readonly runStart: number; readonly runCount: number; readonly tabWidth: number; readonly tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly cwd: Uint8Array; readonly selected: boolean; readonly attention: boolean }[] } | null): WindowState {
   if (section === null) return closedWindow(index);
   const at = index >= 0 && index <= 4 ? Math.trunc(index) : 0;
   const tabs = stampSlots(section.tabs, at);
@@ -463,10 +466,45 @@ export function commandMsg(name: string): Msg | null {
   if (name === "cockpit.window.closed.2") return { kind: "window_closed", window: 2 };
   if (name === "cockpit.window.closed.3") return { kind: "window_closed", window: 3 };
   if (name === "cockpit.window.closed.4") return { kind: "window_closed", window: 4 };
+  if (name === "surface.1") return { kind: "select_tab", index: 0 };
+  if (name === "surface.2") return { kind: "select_tab", index: 1 };
+  if (name === "surface.3") return { kind: "select_tab", index: 2 };
+  if (name === "surface.4") return { kind: "select_tab", index: 3 };
+  if (name === "surface.5") return { kind: "select_tab", index: 4 };
+  if (name === "terminal.new") return { kind: "new_terminal" };
+  if (name === "window.new") return { kind: "new_window" };
+  if (name === "tabs.palette") return { kind: "palette_open" };
+  if (name === "settings.open") return { kind: "settings_open" };
+  if (name === "tabs.toggle-placement") return { kind: "toggle_tab_placement" };
+  if (name === "tab.previous") return { kind: "native_command", command: 1 };
+  if (name === "tab.next") return { kind: "native_command", command: 2 };
+  if (name === "terminal.close") return { kind: "native_command", command: 3 };
+  if (name === "pane.split-right") return { kind: "native_command", command: 4 };
+  if (name === "pane.split-down") return { kind: "native_command", command: 5 };
+  if (name === "pane.previous") return { kind: "native_command", command: 6 };
+  if (name === "pane.next") return { kind: "native_command", command: 7 };
+  if (name === "tab.move-left") return { kind: "native_command", command: 8 };
+  if (name === "tab.move-right") return { kind: "native_command", command: 9 };
+  if (name === "terminal.select-all") return { kind: "native_command", command: 10 };
+  if (name === "terminal.copy") return { kind: "native_command", command: 11 };
+  if (name === "terminal.paste") return { kind: "native_command", command: 12 };
+  if (name === "terminal.clear") return { kind: "native_command", command: 13 };
+  if (name === "terminal.find") return { kind: "native_command", command: 14 };
+  if (name === "terminal.find-next") return { kind: "native_command", command: 15 };
+  if (name === "terminal.find-previous") return { kind: "native_command", command: 16 };
+  if (name === "view.font-larger") return { kind: "native_command", command: 17 };
+  if (name === "view.font-smaller") return { kind: "native_command", command: 18 };
+  if (name === "view.font-reset") return { kind: "native_command", command: 19 };
+  if (name === "pane.focus-left") return { kind: "native_command", command: 20 };
+  if (name === "pane.focus-right") return { kind: "native_command", command: 21 };
+  if (name === "pane.focus-up") return { kind: "native_command", command: 22 };
+  if (name === "pane.focus-down") return { kind: "native_command", command: 23 };
+  if (name === "window.fullscreen") return { kind: "native_command", command: 24 };
+  if (name === "window.minimize") return { kind: "native_command", command: 25 };
   return null;
 }
 
-function findSection(sections: readonly { readonly index: number; readonly selectedTab: number; readonly runStart: number; readonly runCount: number; readonly tabWidth: number; readonly tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly selected: boolean; readonly attention: boolean }[] }[], index: number) {
+function findSection(sections: readonly { readonly index: number; readonly selectedTab: number; readonly runStart: number; readonly runCount: number; readonly tabWidth: number; readonly tabs: readonly { readonly id: number; readonly index: number; readonly title: Uint8Array; readonly cwd: Uint8Array; readonly selected: boolean; readonly attention: boolean }[] }[], index: number) {
   for (let i = 0; i < sections.length; i += 1) {
     if (sections[i].index === index) return sections[i];
   }
@@ -487,8 +525,8 @@ function sliceRun(tabs: readonly Tab[], runStart: number, runCount: number): rea
 export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
-      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), selected: true, attention: false }],
-      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), selected: true, attention: false }],
+      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false }],
+      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false }],
       tabWidth: 168,
       hasOverflow: false,
       overflowLabel: new Uint8Array(0),
@@ -672,6 +710,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "settings_reveal":
       if (!model.settingsOpen || !model.configExists) return model;
       return [model, Cmd.host("cockpit.intent", intent(6, model.engineRevision, 0, 0))];
+    case "native_command":
+      return [model, Cmd.host("cockpit.intent", intent(11, model.engineRevision, msg.command, 255))];
     case "engine_wake":
       return { ...model };
     case "snapshot_loaded": {

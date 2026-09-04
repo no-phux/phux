@@ -57,6 +57,12 @@ const EngineFx = struct {
     pub fn openUrl(self: EngineFx, url: []const u8) void {
         self.effects.openUrl(url);
     }
+    pub fn toggleFullscreenWindow(self: EngineFx, label: []const u8) void {
+        self.effects.toggleFullscreenWindow(label);
+    }
+    pub fn minimizeWindow(self: EngineFx, label: []const u8) void {
+        self.effects.minimizeWindow(label);
+    }
     pub fn writeClipboard(self: EngineFx, options: struct { key: u64, text: []const u8 }) void {
         self.effects.writeClipboard(.{ .key = options.key, .text = options.text, .on_result = clipboardWritten });
     }
@@ -344,6 +350,7 @@ pub fn configureOptions(options: *Adapter.Options, _: std.process.Init) void {
 /// inner app afterwards.
 const PointerHost = struct {
     inner: native_sdk.App = undefined,
+    selection_autoscroll_timer_active: bool = false,
 
     fn wrap(self: *PointerHost, inner: native_sdk.App) native_sdk.App {
         self.inner = inner;
@@ -373,23 +380,41 @@ const PointerHost = struct {
     }
     fn event(context: *anyopaque, runtime: *native_sdk.Runtime, value: native_sdk.Event) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
-        routePointer(value);
+        defer self.syncSelectionAutoscrollTimer(runtime) catch {};
+        routeNativeInput(value);
         try self.inner.event(runtime, value);
     }
     fn stop(context: *anyopaque, runtime: *native_sdk.Runtime) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
+        if (self.selection_autoscroll_timer_active) {
+            runtime.cancelTimer(cockpit.selection_autoscroll_timer_id) catch {};
+            self.selection_autoscroll_timer_active = false;
+        }
         try self.inner.stop(runtime);
     }
     fn replay(context: *anyopaque, control: native_sdk.runtime.ReplayControl) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
         try self.inner.replayControl(control);
     }
+
+    fn syncSelectionAutoscrollTimer(self: *PointerHost, runtime: *native_sdk.Runtime) !void {
+        const engine = bridge.engine orelse return;
+        const needed = engine.selectionAutoscrollActive();
+        if (needed == self.selection_autoscroll_timer_active) return;
+        if (needed) {
+            try runtime.startTimer(cockpit.selection_autoscroll_timer_id, cockpit.selection_autoscroll_interval_ns, true);
+        } else {
+            try runtime.cancelTimer(cockpit.selection_autoscroll_timer_id);
+        }
+        self.selection_autoscroll_timer_active = needed;
+    }
 };
 
-fn routePointer(value: native_sdk.Event) void {
+fn routeNativeInput(value: native_sdk.Event) void {
     const engine = bridge.engine orelse return;
     const fx = engineFx() orelse return;
     switch (value) {
+        .command => |command| engine.adoptFocusedWindow(command.window_id),
         // A routed key names the window it was typed in: adopt it before the
         // key fallback resolves the focused pane, as CockpitHost adopts a
         // routed event's window. The raw echo is left to the pointer kinds.
@@ -410,6 +435,10 @@ fn routePointer(value: native_sdk.Event) void {
             // the routed event's window.
             engine.model.active_window = index;
             _ = engine.onPointer(fx, raw);
+        },
+        .files_dropped => |drop| _ = engine.onDrop(fx, drop),
+        .timer => |timer| if (timer.id == cockpit.selection_autoscroll_timer_id) {
+            engine.selectionAutoscroll(fx);
         },
         else => {},
     }
@@ -633,6 +662,26 @@ test "an intent moves the engine and the core resyncs to the new revision" {
     try std.testing.expect(model.tabs[0].id != model.tabs[1].id);
 }
 
+// GUARD: ts-native-command-parity
+test "native menu commands split and close the focused pane through the engine seam" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+
+    try std.testing.expect(core.commandMsg("terminal.new") != null);
+    try std.testing.expect(core.commandMsg("terminal.find") != null);
+    try std.testing.expect(core.commandMsg("window.fullscreen") != null);
+
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    try std.testing.expectEqual(@as(usize, 2), engine.model.provider.activeCount());
+
+    try rig.dispatch(core.commandMsg("terminal.close").?);
+    try rig.settle(2, "READY");
+    try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
+}
+
 // GUARD: ts-engine-fence
 test "a stale intent is refused, announced, and surfaced instead of applied" {
     var rig = try Rig.start();
@@ -718,6 +767,8 @@ test "every registered pane gets exactly one shell request and a closed tab kill
         pub fn writeClipboard(_: *@This(), _: anytype) void {}
         pub fn readClipboard(_: *@This(), _: anytype) void {}
         pub fn openUrl(_: *@This(), _: []const u8) void {}
+        pub fn toggleFullscreenWindow(_: *@This(), _: []const u8) void {}
+        pub fn minimizeWindow(_: *@This(), _: []const u8) void {}
         pub fn ptySpawn(self: *@This(), _: anytype) void {
             self.spawned += 1;
         }

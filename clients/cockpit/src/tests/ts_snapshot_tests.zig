@@ -27,7 +27,8 @@ test "TypeScript snapshot contains stable tab identities and bounded titles" {
 
     const first_id = std.mem.readInt(u32, snapshot[28..32], .little);
     const first_title_len: usize = snapshot[33];
-    const second_at = 34 + first_title_len;
+    const first_cwd_len: usize = snapshot[34];
+    const second_at = 35 + first_title_len + first_cwd_len;
     const second_id = std.mem.readInt(u32, snapshot[second_at..][0..4], .little);
     try testing.expect(first_id != 0);
     try testing.expect(second_id != 0);

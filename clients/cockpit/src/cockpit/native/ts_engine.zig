@@ -31,6 +31,7 @@ const view = @import("view.zig");
 const protocol = @import("ts_protocol.zig");
 const ts_snapshot = @import("ts_snapshot.zig");
 const theme_module = @import("../../config/theme.zig");
+const shell_words = @import("../shell_words.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -55,6 +56,8 @@ pub const NoShells = struct {
     pub fn writeClipboard(_: *const NoShells, _: anytype) void {}
     pub fn readClipboard(_: *const NoShells, _: anytype) void {}
     pub fn openUrl(_: *const NoShells, _: []const u8) void {}
+    pub fn toggleFullscreenWindow(_: *const NoShells, _: []const u8) void {}
+    pub fn minimizeWindow(_: *const NoShells, _: []const u8) void {}
 };
 
 /// Where a clipboard read is going once it lands, mirroring update.zig's
@@ -124,8 +127,14 @@ pub const Engine = struct {
         if (intent.expected_revision != self.revision) return self.refuse();
         // A tab intent means the window whose chrome sent it. Adopting it as
         // active first is what CockpitHost does with a routed event's window.
-        if (intent.window != 0 and !self.model.windowOpen(intent.window)) return self.refuse();
-        self.model.active_window = if (intent.window == 0) 0 else intent.window;
+        // 255 means "the platform event's already-adopted focused window".
+        // Markup intents carry an explicit 0..4 slot; native command mapping
+        // has no window field, so the extension adopts CommandEvent.window_id
+        // before the compiled core dispatches this intent.
+        if (intent.window != 255) {
+            if (intent.window != 0 and !self.model.windowOpen(intent.window)) return self.refuse();
+            self.model.active_window = intent.window;
+        }
         const changed = switch (intent.kind) {
             .select_tab => self.model.selectTab(intent.argument),
             .new_terminal => self.newTerminal(),
@@ -137,6 +146,7 @@ pub const Engine = struct {
             .new_window => self.newWindow(),
             .close_window => self.closeWindow(intent.window, fx),
             .focus_window => self.focusWindow(intent.window),
+            .native_command => self.nativeCommand(intent.argument, fx),
         };
         if (!changed) return self.refuse();
         self.intent_refused = false;
@@ -283,6 +293,145 @@ pub const Engine = struct {
         if (!model.windowOpen(index)) return false;
         if (model.active_window == index) return false;
         model.active_window = index;
+        return true;
+    }
+
+    /// Commands registered by the manifest remain native operations over the
+    /// same engine model. TypeScript maps names to this compact enum, but no
+    /// terminal bytes, pane nodes, or platform ids cross the seam.
+    fn nativeCommand(self: *Engine, raw: u8, fx: anytype) bool {
+        const command = protocol.decodeNativeCommand(raw) orelse return false;
+        const model = self.model;
+        switch (command) {
+            .previous_tab, .next_tab => {
+                const workspace = model.ws();
+                if (workspace.tab_count < 2) return false;
+                const delta: i32 = if (command == .next_tab) 1 else -1;
+                const count: i32 = @intCast(workspace.tab_count);
+                const selected: i32 = @intCast(workspace.selected_tab);
+                workspace.selected_tab = @intCast(@mod(selected + delta, count));
+            },
+            .close_focused_pane => return self.closeFocusedPane(fx),
+            .split_right => return self.splitFocusedPane(.horizontal),
+            .split_down => return self.splitFocusedPane(.vertical),
+            .previous_pane, .next_pane => {
+                const tree = model.selectedTree() orelse return false;
+                const next = tree.cycleFocus(if (command == .next_pane) 1 else -1) orelse return false;
+                if (next == tree.focus) return false;
+                tree.focus = next;
+            },
+            .move_tab_left, .move_tab_right => {
+                const workspace = model.wsConst();
+                const terminal = workspace.tabTerminal(workspace.selected_tab) orelse return false;
+                if (!model.moveTerminal(terminal, if (command == .move_tab_right) 1 else -1)) return false;
+            },
+            .select_all => {
+                const pane = self.focusedPane() orelse return false;
+                if (!pane.session.selectAllHistory()) return false;
+                pane.selecting = false;
+            },
+            .copy => {
+                const pane = self.focusedPane() orelse return false;
+                if (!pane.selecting and !pane.session.selectionActive()) return false;
+                self.copySelection(fx, pane);
+            },
+            .paste => {
+                const pane = self.focusedPane() orelse return false;
+                self.requestPaste(fx, pane, .pane);
+            },
+            .clear => {
+                const pane = self.focusedPane() orelse return false;
+                pane.selecting = false;
+                pane.session.clearSelection();
+                terminal_runtime.feedOutput(pane, fx, "\x1b[H\x1b[2J\x1b[3J");
+                pane.session.scrollToBottom();
+                pane.session.refreshScreenText();
+                terminal_runtime.moveResponsesToOutbound(pane, fx);
+            },
+            .find => {
+                const pane = self.focusedPane() orelse return false;
+                if (pane.selecting) {
+                    pane.selecting = false;
+                    pane.session.clearSelection();
+                }
+                pane.session.searchOpen();
+            },
+            .find_next, .find_previous => {
+                const pane = self.focusedPane() orelse return false;
+                _ = pane.session.searchStep(command == .find_next);
+            },
+            .font_larger => return model.stepFontSize(1),
+            .font_smaller => return model.stepFontSize(-1),
+            .font_reset => return model.resetFontSize(),
+            .focus_left, .focus_right, .focus_up, .focus_down => {
+                const tree = model.selectedTree() orelse return false;
+                const workspace = model.wsConst();
+                const chrome = projection.workspaceChromeIn(model, workspace, workspace.surface_size);
+                const direction: layout.Direction = switch (command) {
+                    .focus_left => .left,
+                    .focus_right => .right,
+                    .focus_up => .up,
+                    .focus_down => .down,
+                    else => unreachable,
+                };
+                const next = tree.focusDirection(
+                    chrome.content,
+                    projection.split_divider_width,
+                    projection.split_pane_min_width,
+                    projection.split_pane_min_height,
+                    direction,
+                ) orelse return false;
+                if (next == tree.focus) return false;
+                tree.focus = next;
+            },
+            .fullscreen => fx.toggleFullscreenWindow(scene.windowLabelFor(model.active_window)),
+            .minimize => fx.minimizeWindow(scene.windowLabelFor(model.active_window)),
+        }
+        pointer_input.endAllCaptures(model, fx);
+        return true;
+    }
+
+    fn splitFocusedPane(self: *Engine, orientation: layout.Orientation) bool {
+        const model = self.model;
+        const tree = model.selectedTree() orelse return false;
+        const target = tree.focus;
+        if (target == layout.none or tree.node(target).kind != .leaf) return false;
+        const origin = tree.focusedTerminal();
+        const pane = model.provider.createTerminal() catch {
+            model.terminal_limit_refused = true;
+            return false;
+        };
+        if (model.config.inherit_working_directory) {
+            if (origin) |source_ref| if (model.provider.terminalConst(source_ref)) |source| {
+                const cwd = source.pwd();
+                if (cwd.len > 0) if (model.provider.slotIndex(pane.id)) |slot| {
+                    pane.argv = local.paneArgvIn(cwd, &model.cwd_argv[slot]);
+                };
+            };
+        }
+        _ = tree.split(target, orientation, pane.id) catch {
+            _ = model.provider.destroyTerminal(pane.id);
+            return false;
+        };
+        model.terminal_limit_refused = false;
+        return true;
+    }
+
+    fn closeFocusedPane(self: *Engine, fx: anytype) bool {
+        const model = self.model;
+        const workspace = model.ws();
+        const tree = workspace.selectedTree() orelse return false;
+        const terminal = tree.focusedTerminal() orelse return false;
+        const pane = model.provider.terminal(terminal) orelse return false;
+        const pty_key = pane.pty_key;
+        const had_live_pty = pane.phase == .starting or pane.phase == .live;
+        _ = tree.closeTerminal(terminal) orelse return false;
+        _ = model.provider.destroyTerminal(terminal);
+        if (had_live_pty) fx.ptyKill(pty_key);
+        if (tree.isEmpty()) workspace.dropTab(workspace.selected_tab);
+        model.terminal_limit_refused = false;
+        workspace.tab_limit_refused = false;
+        pointer_input.endAllCaptures(model, fx);
         return true;
     }
 
@@ -617,6 +766,36 @@ pub const Engine = struct {
             },
         });
         return true;
+    }
+
+    /// Finder drops stay wholly native: quote the selected paths, resolve the
+    /// pane under the drop point, and use the same bracketed-paste path as
+    /// cmd+V. Paths and pane identities never enter the compiled core.
+    pub fn onDrop(self: *Engine, fx: anytype, drop: platform.FileDropEvent) bool {
+        if (drop.paths.len == 0) return false;
+        const model = self.model;
+        if (windowIndexForCanvas(drop.view_label)) |window_index| {
+            if (model.windowOpen(window_index)) model.active_window = window_index;
+        }
+        const terminal = if (drop.point) |point|
+            pointer_input.terminalRefAtPoint(model, point.x, point.y) orelse model.focusedTerminalRef() orelse return false
+        else
+            model.focusedTerminalRef() orelse return false;
+        const pane = model.provider.terminal(terminal) orelse return false;
+        if (!pane.acceptsInput()) return false;
+        var quoted: [shell_words.max_quoted_bytes]u8 = undefined;
+        const text = shell_words.quotePaths(drop.paths, &quoted) orelse return false;
+        if (model.selectedTree()) |tree| _ = tree.focusTerminal(terminal);
+        update_module.pasteClipboardText(model, pane, fx, text);
+        return true;
+    }
+
+    pub fn selectionAutoscrollActive(self: *const Engine) bool {
+        return pointer_input.modelHasSelectionAutoscroll(self.model);
+    }
+
+    pub fn selectionAutoscroll(self: *Engine, fx: anytype) void {
+        pointer_input.handleSelectionAutoscroll(self.model, fx);
     }
 
     const double_click_window_ns: u64 = 400 * std.time.ns_per_ms;

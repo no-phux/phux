@@ -14,6 +14,7 @@ const Model = model_module.Model;
 /// to the run and shows a cue for the rest.
 pub const header_len: usize = protocol.snapshot_header_len + 10;
 pub const max_title_bytes: usize = 128;
+pub const max_cwd_bytes: usize = 128;
 pub const max_bytes: usize = 4096;
 
 pub const Error = error{BufferTooSmall};
@@ -98,13 +99,17 @@ fn encodeTabs(model: *const Model, workspace: *const model_module.Workspace, out
         var title_buffer: [max_title_bytes]u8 = undefined;
         const title = projection.terminalTitleInto(model, terminal, &title_buffer);
         const bounded = title[0..@min(title.len, max_title_bytes)];
-        const needed = 6 + bounded.len;
+        const cwd_all = if (model.provider.terminalConst(terminal)) |pane| pane.pwd() else "";
+        const cwd = cwd_all[0..@min(cwd_all.len, max_cwd_bytes)];
+        const needed = 7 + bounded.len + cwd.len;
         if (written + needed > out.len) return error.BufferTooSmall;
 
         std.mem.writeInt(u32, out[written..][0..4], workspace.tabId(index) orelse 0, .little);
         out[written + 4] = if (projection.terminalNeedsAttention(model, terminal)) 1 else 0;
         out[written + 5] = @intCast(bounded.len);
-        @memcpy(out[written + 6 ..][0..bounded.len], bounded);
+        out[written + 6] = @intCast(cwd.len);
+        @memcpy(out[written + 7 ..][0..bounded.len], bounded);
+        @memcpy(out[written + 7 + bounded.len ..][0..cwd.len], cwd);
         written += needed;
     }
     return written;
