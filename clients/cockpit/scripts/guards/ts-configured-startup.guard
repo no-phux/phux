@@ -11,4 +11,4 @@ diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 +++ b/src/cockpit/native/ts_engine.zig
 @@ -152,1 +152,1 @@
 -            tab_placement_override,
-+            @as(?[]const u8, null),
++            if (tab_placement_override != null) @as(?[]const u8, null) else null,
