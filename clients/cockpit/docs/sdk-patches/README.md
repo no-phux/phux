@@ -19,6 +19,26 @@ git -C .zig-cache/pinned-sdk-patched apply ../../docs/sdk-patches/<name>.patch
 
 ---
 
+## symlink-safe-file-write.patch
+
+Landed in `phall1/native@71bbce51` and pinned by Cockpit. The patch preserves
+the reviewed `e577c644` and `584ffb64` raw-file write fixes on the current
+upstream-v0.9.5 Cockpit lineage.
+
+Whole-file writes now open or create the requested parent before writing, so
+an existing symlinked parent remains usable and missing descendants below it
+can be created. The final path component is retained and replaced atomically
+instead of following a symlink into its target. Unprivileged writes still
+authorize the fully resolved target and use the verified opened parent
+capability, while writes to FIFOs and other special files inspect and stream
+through the exact no-follow-opened handle.
+
+The patch includes the regression matrix for existing and partially missing
+symlinked parents, absolute and trailing-separator paths, unbound and confined
+final symlinks, and opened FIFO handle identity.
+
+---
+
 ## raise-pty-ceiling.patch
 
 Landed in `phall1/native@87917c45` and pinned by Cockpit. The patch remains as

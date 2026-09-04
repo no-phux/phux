@@ -159,9 +159,13 @@
         //   only around the installing main-canvas event: display-list work and
         //   presentation stay synchronous, while AppKit accessibility
         //   publication moves to the responding frame's post-present flush.
+        // - Whole-file writes open or create the requested parent before
+        //   touching the destination, preserve final symlink entries, retain
+        //   confinement through verified parent handles, and stream special
+        //   files through the exact no-follow-opened handle.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/df0c15cbd15fe30af923001468fb61f99ee22264.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQk1ysgKPZuZ_NZe_37dNOpfYCqlAj2qQ7atEav3o",
+            .url = "https://github.com/phall1/native/archive/71bbce511187b9e071d3ca8cbf3b1b19138577da.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQuqdsgJPbC6HFzLKzGhOB2EWgKfiNTcSOjK9WCMO",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream
