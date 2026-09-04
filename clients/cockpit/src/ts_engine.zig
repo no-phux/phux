@@ -11,6 +11,7 @@ pub const snapshot = @import("cockpit/native/ts_snapshot.zig");
 pub const projection = @import("cockpit/native/workspace_projection.zig");
 pub const layout = @import("cockpit/layout.zig");
 pub const scene = @import("cockpit/native/scene.zig");
+pub const startup = @import("cockpit/startup.zig");
 /// -Dmeasure=true gated diagnostics, the same channel the Zig graph's tests use.
 pub const measured = @import("tests/measured.zig");
 pub const Engine = engine.Engine;

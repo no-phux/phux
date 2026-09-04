@@ -453,7 +453,9 @@ fn installEngine(options: *Adapter.CoreOptions, gpa: std.mem.Allocator, io: std.
 }
 
 pub fn configureCoreOptions(options: *Adapter.CoreOptions, init: std.process.Init) void {
-    installEngine(options, std.heap.page_allocator, init.io);
+    bridge = .{};
+    bridge.engine = Engine.createConfigured(std.heap.page_allocator, init) catch null;
+    options.host_calls = bridge.binding();
 }
 
 fn configureOptionsValue(options: *Adapter.Options) void {

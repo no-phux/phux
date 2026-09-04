@@ -31,6 +31,7 @@ const view = @import("view.zig");
 const protocol = @import("ts_protocol.zig");
 const ts_snapshot = @import("ts_snapshot.zig");
 const theme_module = @import("../../config/theme.zig");
+const startup = @import("../startup.zig");
 const shell_words = @import("../shell_words.zig");
 
 const canvas = native_sdk.canvas;
@@ -118,6 +119,22 @@ pub const Engine = struct {
         const model = try std.heap.page_allocator.create(Model);
         errdefer std.heap.page_allocator.destroy(model);
         model.* = try model_module.initialModelWithIo(gpa, io, session);
+        const engine = try std.heap.page_allocator.create(Engine);
+        engine.* = .{ .model = model };
+        return engine;
+    }
+
+    /// The process composition root: the same config, persisted topology,
+    /// cwd restoration, and optional Phux provider bootstrap as the Zig app.
+    pub fn createConfigured(gpa: std.mem.Allocator, init: std.process.Init) !*Engine {
+        var initialized = try startup.initializeModel(gpa, init);
+        errdefer model_module.deinitModel(&initialized.model);
+        const model = try std.heap.page_allocator.create(Model);
+        errdefer std.heap.page_allocator.destroy(model);
+        model.* = initialized.model;
+        if (initialized.provenance == .restored) {
+            model_module.applyRestoredWorkingDirectories(model, &initialized.restored_snapshot);
+        }
         const engine = try std.heap.page_allocator.create(Engine);
         engine.* = .{ .model = model };
         return engine;
