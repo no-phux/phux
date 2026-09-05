@@ -3,6 +3,20 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0](https://github.com/no-phux/phux/compare/cockpit-v0.16.2...cockpit-v0.17.0) (2026-09-05)
+
+
+### Features
+
+* **cockpit:** add secure credential foundation ([#524](https://github.com/no-phux/phux/issues/524)) ([1d78d71](https://github.com/no-phux/phux/commit/1d78d71324ce0e8611e1d147e6584903e318562f))
+* **cockpit:** complete TypeScript cutover parity ([#528](https://github.com/no-phux/phux/issues/528)) ([dd9b6f6](https://github.com/no-phux/phux/commit/dd9b6f6745a9371bc779e6a24d105a5f88e7fb79))
+* **cockpit:** ship the TypeScript app graph ([#534](https://github.com/no-phux/phux/issues/534)) ([243b7bc](https://github.com/no-phux/phux/commit/243b7bcd5cfc2c5343bc0d1d2829f39c0d67aeaa))
+
+
+### Performance
+
+* **cockpit:** pin optimized Native cell grid ([#525](https://github.com/no-phux/phux/issues/525)) ([7d3688f](https://github.com/no-phux/phux/commit/7d3688f32ede8f5e4d3dc3ec002e590a5155ca10))
+
 ## [0.16.2](https://github.com/no-phux/phux/compare/cockpit-v0.16.1...cockpit-v0.16.2) (2026-09-04)
 
 

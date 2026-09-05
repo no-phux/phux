@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/no-phux/phux/compare/pi-extension-v0.2.2...pi-extension-v0.2.3) (2026-09-05)
+
+
+### Bug Fixes
+
+* **ci:** retry the npm audit gates on registry outage instead of failing ([87e2257](https://github.com/no-phux/phux/commit/87e22571c5e1a9b6196691bda8198189d07d49d7))
+
 ## [0.2.2](https://github.com/no-phux/phux/compare/pi-extension-v0.2.1...pi-extension-v0.2.2) (2026-09-02)
 
 
