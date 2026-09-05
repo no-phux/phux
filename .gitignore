@@ -23,6 +23,8 @@ flamegraph.svg
 # was found empty and orphaned 11 days after the run that made it, with no
 # gates open. Machine-local either way, never shared.
 .beads.gate.lock
+# Local import-cache stamp (source size + mtime), never meant to be tracked.
+.beads/.auto-import-issues.jsonl
 
 # bv (beads viewer) local config and caches
 .bv/

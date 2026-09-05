@@ -212,12 +212,40 @@ impl Incoming for ConnectorIncoming {
                 .await
                 .map_err(io::Error::other)?;
             let relay = self.connection.remote_address();
-            let Some(credential) = authorize_preamble(&mut recv, &self.consumer_tokens).await
-            else {
-                warn!(%relay, "bridged consumer refused: missing or invalid server token");
-                let _ = send.reset(AUTH_FAILED_CODE.into());
-                let _ = recv.stop(AUTH_FAILED_CODE.into());
-                continue;
+            // Only the preamble is bounded, deliberately. `accept_bi` above is
+            // the idle wait for the *next* bridged consumer on this
+            // connection, so timing it would log a refusal every few seconds
+            // on a healthy but quiet tunnel. Reading the preamble, by
+            // contrast, is driven by a consumer the relay has already
+            // blind-spliced through after its own deadline, so a consumer that
+            // sends nothing would pin this loop and starve every later one.
+            //
+            // A timeout joins the refusal path rather than returning `Err`:
+            // `accept_errors_are_fatal` is `true` here, so an error would tear
+            // down the relay leg and force a redial over one bad consumer.
+            let authorized = tokio::time::timeout(
+                crate::transport::HANDSHAKE_DEADLINE,
+                authorize_preamble(&mut recv, &self.consumer_tokens),
+            )
+            .await;
+            let credential = match authorized {
+                Ok(Some(credential)) => credential,
+                Ok(None) => {
+                    warn!(%relay, "bridged consumer refused: missing or invalid server token");
+                    let _ = send.reset(AUTH_FAILED_CODE.into());
+                    let _ = recv.stop(AUTH_FAILED_CODE.into());
+                    continue;
+                }
+                Err(_) => {
+                    warn!(
+                        %relay,
+                        seconds = crate::transport::HANDSHAKE_DEADLINE.as_secs(),
+                        "bridged consumer abandoned: no token preamble within the deadline"
+                    );
+                    let _ = send.reset(AUTH_FAILED_CODE.into());
+                    let _ = recv.stop(AUTH_FAILED_CODE.into());
+                    continue;
+                }
             };
             return Ok((
                 QuicReader::from_stream(recv),

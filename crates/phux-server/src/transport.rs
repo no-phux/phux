@@ -61,7 +61,7 @@ pub(crate) const WS_REJECTION_WARN_INTERVAL: Duration = Duration::from_secs(60);
 ///
 /// This mirrors `phux-relay`'s `PREAMBLE_DEADLINE`: a legitimate client starts
 /// its handshake immediately, so the bound only fires on stalled peers.
-const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+pub(crate) const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Read side of a client connection: yields one complete encoded frame (length
 /// prefix included) per call, or `None` at end-of-stream.

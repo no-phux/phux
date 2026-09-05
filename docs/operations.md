@@ -172,7 +172,7 @@ points its log capture at it. Both resolve the path through
 
 The **client default log path** (when `PHUX_LOG` is unset) is `$XDG_STATE_HOME/phux/client-<pid>.log` (falls back to `$HOME/.local/state/phux/`). The pid scope keeps concurrent clients from interleaving. Level defaults to `phux=info,warn`, so crashes and warnings are always captured without flooding the file.
 
-The non-blocking file writer offloads I/O to a background thread; its `WorkerGuard` is held for the lifetime of `main` and flushes on exit.
+The non-blocking file writer offloads I/O to a background thread; its `WorkerGuard` is held for the lifetime of `main` and flushes when it is dropped on a normal exit. An `abort` skips that Drop, which is why the panic hook writes its crash record synchronously as well (see "Crash capture").
 
 ### Sensitive data in logs
 
@@ -216,6 +216,12 @@ log. `PeerIdentity` is never logged wholesale.
 Panics are durable on both sides. The **client** panic hook logs the panic message plus a captured `std::backtrace::Backtrace` to its file sink *before* it restores the terminal (survives even though the default hook's stderr backtrace would vanish into the dead alt screen). The **server** panic hook logs task/actor panics with their backtrace through `tracing`, so a daemonized server's crash lands in the log file. Both honor `RUST_BACKTRACE` for trace verbosity.
 
 The server hook is armed by the **long-running daemons only** — `phux server` and `phux relay run` install it on entry, not `telemetry::init`. A one-shot CLI verb shares that subscriber but keeps the default panic hook: when it was armed process-wide, a CLI that died reported itself as a `server panic`, sending triage after a server that never faltered. Nothing in a one-shot verb needs a durable crash record, because the operator is reading its stderr as it happens.
+
+The server hook's `tracing` event goes into the non-blocking appender's queue, and the release profile is `panic = "abort"` — no unwind, so the `WorkerGuard`'s flush-on-Drop never runs and a queued record would die in the worker's buffer. The hook therefore also appends the same facts to `PHUX_LOG` **synchronously** (mode `0o600`, like every other sink) before returning. Under unwind the queued copy may land too, so a debug build can show the panic twice. Release builds keep symbols and line tables (`[profile.release]` sets `debug = "line-tables-only"`, `strip = "none"`), so the logged backtrace resolves to function names and source lines rather than bare addresses.
+
+### Blast radius of a panic
+
+Worth stating plainly, because the mitigations are narrower than the architecture suggests. There is **one server process per user** ([ADR-0003](../ADR/0003-server-process-model.md)) on **one current-thread runtime** ([ADR-0014](../ADR/0014-server-terminal-pane-actor.md)), and the release profile aborts on panic. So a panic anywhere in the daemon ends every session, window, and pane for that user at once; it is not contained to the pane actor that raised it. [ADR-0032](../ADR/0032-graceful-server-upgrade.md)'s `execve` + fd-adoption machinery preserves sessions across a *planned* restart and has no equivalent for an unplanned death — the crash record is what the operator gets. `panic = "abort"` is a deliberate choice (no half-unwound actor state, smaller binary, no landing pads); it is recorded here so nobody reads "durable panics" as "contained panics".
 
 ### Reading a trace to localize lag
 
