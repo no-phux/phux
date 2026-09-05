@@ -9,6 +9,31 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.27.0](https://github.com/no-phux/phux/compare/v0.26.1...v0.27.0) (2026-09-05)
+
+
+### Features
+
+* **cockpit:** complete TypeScript cutover parity ([#528](https://github.com/no-phux/phux/issues/528)) ([dd9b6f6](https://github.com/no-phux/phux/commit/dd9b6f6745a9371bc779e6a24d105a5f88e7fb79))
+* **cockpit:** ship the TypeScript app graph ([#534](https://github.com/no-phux/phux/issues/534)) ([243b7bc](https://github.com/no-phux/phux/commit/243b7bcd5cfc2c5343bc0d1d2829f39c0d67aeaa))
+
+
+### Bug Fixes
+
+* **ci:** align the install-surface contracts with the derived-toolchain release lanes ([9f1b5ec](https://github.com/no-phux/phux/commit/9f1b5ec3625fe3c8d18ffe3e4b056228f648a6c9))
+* **ci:** register the Blacksmith runner labels actionlint enforces ([d0fffb8](https://github.com/no-phux/phux/commit/d0fffb883209c8b56f15a7b17e89ac8df37e4833))
+* **ci:** retry the npm audit gates on registry outage instead of failing ([87e2257](https://github.com/no-phux/phux/commit/87e22571c5e1a9b6196691bda8198189d07d49d7))
+* **ci:** root .npmrc disables the live npm audit endpoint everywhere ([4b2a249](https://github.com/no-phux/phux/commit/4b2a24959e1f777f8679510f4699a55082cf94ca))
+* **ci:** stop npm's audit endpoint from failing the agent-integration gate ([8c7b544](https://github.com/no-phux/phux/commit/8c7b544333425e3539cd39137193f60434c9de37))
+* **client-core:** ignore stale history tombstones after cursor advances ([97dcae4](https://github.com/no-phux/phux/commit/97dcae4b75dac912b7e198380d5002e9480be7fb))
+* **client:** preserve drag copy across scrollback ([#532](https://github.com/no-phux/phux/issues/532)) ([888efb2](https://github.com/no-phux/phux/commit/888efb2b8bbc15196d6dd52ab76534daa57f7d08))
+* **client:** reflow restored windows during attach ([#533](https://github.com/no-phux/phux/issues/533)) ([343d1af](https://github.com/no-phux/phux/commit/343d1af0cf40084a94d08d831cf8bf07b92ba273))
+
+
+### Build System
+
+* **deps:** bump the actions group across 1 directory with 5 updates ([#522](https://github.com/no-phux/phux/issues/522)) ([01e21f0](https://github.com/no-phux/phux/commit/01e21f0b5f52c449e7ca67ef5fbc55473dd628fc))
+
 ## [0.26.1](https://github.com/no-phux/phux/compare/v0.26.0...v0.26.1) (2026-09-04)
 
 

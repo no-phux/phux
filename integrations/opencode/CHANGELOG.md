@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.2](https://github.com/no-phux/phux/compare/opencode-plugin-v0.2.1...opencode-plugin-v0.2.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* **ci:** align the install-surface contracts with the derived-toolchain release lanes ([9f1b5ec](https://github.com/no-phux/phux/commit/9f1b5ec3625fe3c8d18ffe3e4b056228f648a6c9))
+* **ci:** retry the npm audit gates on registry outage instead of failing ([87e2257](https://github.com/no-phux/phux/commit/87e22571c5e1a9b6196691bda8198189d07d49d7))
+* **ci:** stop npm's audit endpoint from failing the agent-integration gate ([8c7b544](https://github.com/no-phux/phux/commit/8c7b544333425e3539cd39137193f60434c9de37))
+
 ## [0.2.1](https://github.com/no-phux/phux/compare/opencode-plugin-v0.2.0...opencode-plugin-v0.2.1) (2026-09-02)
 
 
