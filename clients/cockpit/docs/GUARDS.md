@@ -102,8 +102,8 @@ Being honest about the gap is the point of writing it down.
 #
 test: <the exact zig test name>
 build: <zig build arguments>     <- optional; the graph the test lives in,
-                                    e.g. "test -Dtypescript-spike=true
-                                    -Dplatform=null". Absent means "test".
+                                    e.g. "test -Dplatform=null". Absent means
+                                    "test".
 red: <date> at <commit>          <- written ONLY by guard-red-run.sh
 diff --git ...                   <- the break, as a git patch
 ```

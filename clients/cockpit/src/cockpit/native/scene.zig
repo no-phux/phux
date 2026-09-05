@@ -95,7 +95,7 @@ pub const cockpit_shortcuts = [_]native_sdk.Shortcut{
 /// never reached a terminal pane anyway, which is exactly why three
 /// `onCommand` entries had no way to fire.
 ///
-/// Every item's `command` is a name `view.onCommand` already answers, so the
+/// Every item's `command` is a name the TypeScript core already answers, so the
 /// menu adds a surface, never a second code path. The key equivalents mirror
 /// the registered shortcuts on purpose: the model's shortcut latch keys on the
 /// physical key, so one edge executes once regardless of which channel
@@ -180,7 +180,7 @@ pub const cockpit_menus = [_]native_sdk.Menu{
 /// The menu-bar extra's INSTALL-time shell: the parts macOS reads once, when
 /// the `NSStatusItem` is created. Everything that moves — the title, the tone,
 /// the list of terminals — is derived from the model on every rebuild by
-/// `view.statusItem`, the way `web_panes` derives a webview's URL.
+/// the former native status-item projection.
 ///
 /// It exists because a terminal is the app you are LEAST likely to have in
 /// front of you: a long build, an agent working through a task, a server
@@ -232,7 +232,7 @@ pub const main_window_label = "main";
 /// strip, its dividers, and empty terminal rectangles. `ChromeOptions.
 /// build_window` closed that: `rebuildWindowSlot` now takes the same
 /// `installChromeDisplayList` path with the slot's own canvas label, so a
-/// secondary window's terminals paint. See `view.buildChromeWindow`.
+/// secondary window's terminals paint. See `terminal_painter.paintWindowIndex`.
 pub const max_windows: usize = model_module.max_windows;
 pub const max_secondary_windows: usize = model_module.max_secondary_windows;
 

@@ -1,8 +1,6 @@
-//! Module root for the TypeScript-core build graph. The extension module
-//! that fronts the compiled core lives under `typescript-spike/`, and a Zig
-//! module may only import files below its own root, so the engine is
-//! exposed to it as a module rooted here (`cockpit_engine` in build.zig)
-//! rather than by relative path.
+//! Module root for the shipping TypeScript-core graph. A Zig module may only
+//! import files below its own root, so the native engine is exposed to the
+//! root extension as `cockpit_engine` rather than through relative paths.
 const std = @import("std");
 
 pub const engine = @import("cockpit/native/ts_engine.zig");

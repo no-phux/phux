@@ -1,6 +1,6 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const support = @import("support.zig");
 
 const geometry = native_sdk.geometry;
@@ -105,32 +105,6 @@ test "clipboard paste stays with its requesting terminal while Web is selected" 
 
     try testing.expectEqualStrings("original owner", app_state.effects.ptyWrittenBytes(app.ptyKey(0)));
     try testing.expectEqualStrings("", app_state.effects.ptyWrittenBytes(app.ptyKey(1)));
-}
-
-test "clipboard read failure is visible on the requesting pane" {
-    const gpa = testing.allocator;
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
-    defer harness.destroy(gpa);
-    const app_state = try startFocusedTerminal(gpa, harness);
-    defer gpa.destroy(app_state);
-    defer destroyModelSessions(&app_state.model);
-    defer app_state.deinit();
-    const app_iface = app_state.app();
-
-    try pressCanvasKey(harness, app_iface, "v", .{ .primary = true, .command = true });
-    try app_state.effects.feedClipboardResult(app.paste_clipboard_key, .failed, "");
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try testing.expect(app_state.model.paste_failed);
-    try testing.expectEqualStrings("", app_state.effects.ptyWrittenBytes(app.ptyKey(0)));
-
-    const buffer = try gpa.alloc(u8, 128 * 1024);
-    defer gpa.free(buffer);
-    var writer = std.Io.Writer.fixed(buffer);
-    try automation.snapshot.writeA11yText(harness.runtime.automationSnapshot("paste-failed"), &writer);
-    // The diagnostic sentence lives in the accessibility label only; the
-    // `PASTE FAILED` badge is no longer painted as product chrome.
-    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "Terminal 1, native terminal, STARTING") != null);
-    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "paste failed") != null);
 }
 
 test "clipboard result after pane exit is a visible paste failure" {

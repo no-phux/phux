@@ -18,99 +18,8 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
 
-fn addImportToArtifacts(
-    artifacts: native_sdk.AppArtifacts,
-    name: []const u8,
-    module: *std.Build.Module,
-) void {
-    artifacts.exe.root_module.addImport(name, module);
-    if (artifacts.tests.root_module != artifacts.exe.root_module)
-        artifacts.tests.root_module.addImport(name, module);
-}
-
-fn addProviderContractModules(
-    b: *std.Build,
-    artifacts: native_sdk.AppArtifacts,
-) void {
-    const roots = [_]*std.Build.Module{
-        artifacts.exe.root_module,
-        artifacts.tests.root_module,
-    };
-    for (roots, 0..) |root, index| {
-        if (index == 1 and root == artifacts.exe.root_module) continue;
-        const contract = b.createModule(.{
-            .root_source_file = b.path("src/providers/contract.zig"),
-            .target = root.resolved_target.?,
-            .optimize = root.optimize.?,
-        });
-        const sdk_module = root.import_table.get("native_sdk") orelse
-            @panic("native-sdk app graph did not expose its root module");
-        contract.addImport("native_sdk", sdk_module);
-        root.addImport("provider_contract", contract);
-    }
-}
-
-fn addSecurityModules(
-    b: *std.Build,
-    artifacts: native_sdk.AppArtifacts,
-) void {
-    const roots = [_]*std.Build.Module{
-        artifacts.exe.root_module,
-        artifacts.tests.root_module,
-    };
-    for (roots, 0..) |root, index| {
-        if (index == 1 and root == artifacts.exe.root_module) continue;
-        const target = root.resolved_target.?;
-        const optimize = root.optimize.?;
-        const credential_store = b.createModule(.{
-            .root_source_file = b.path("src/security/credential_store.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        const provider_identity = b.createModule(.{
-            .root_source_file = b.path("src/security/provider_identity.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        const credential_trust = b.createModule(.{
-            .root_source_file = b.path("src/security/trust.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        root.addImport("credential_store", credential_store);
-        root.addImport("provider_identity", provider_identity);
-        root.addImport("credential_trust", credential_trust);
-
-        if (target.result.os.tag == .macos) {
-            const macos_keychain = b.createModule(.{
-                .root_source_file = b.path("src/security/macos_keychain.zig"),
-                .target = target,
-                .optimize = optimize,
-            });
-            macos_keychain.addImport("credential_store", credential_store);
-            if (b.sysroot) |sysroot| {
-                macos_keychain.addFrameworkPath(.{
-                    .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }),
-                });
-            }
-            macos_keychain.linkFramework("Security", .{});
-            macos_keychain.linkFramework("CoreFoundation", .{});
-            root.addImport("macos_keychain", macos_keychain);
-            if (root == artifacts.tests.root_module) {
-                if (b.top_level_steps.get("test")) |top_level| {
-                    const tests = b.addTest(.{
-                        .name = "macos-keychain-tests",
-                        .root_module = macos_keychain,
-                    });
-                    top_level.step.dependOn(&b.addRunArtifact(tests).step);
-                }
-            }
-        }
-    }
-}
-
-/// The TypeScript-core graph: the runner extension under `typescript-spike/`
-/// fronts a real Cockpit engine, and a Zig module may only import files
+/// The TypeScript-core graph: the root runner extension fronts a real Cockpit
+/// engine, and a Zig module may only import files
 /// below its own root, so the engine is handed to each extension instance
 /// (exe, app tests, extension tests) as a module rooted at `src/ts_engine.zig`
 /// carrying the same imports the Zig app root gets, including the production
@@ -119,8 +28,7 @@ fn addSecurityModules(
 /// packages/core/node_modules, and the tarball pin does not carry it: every
 /// pin bump used to stop at "cannot resolve its TypeScript toolchain" until
 /// someone ran `npm ci` in a cache directory by hand. Install it once, at
-/// configure time, for the package this build actually resolved. The default
-/// and Phux graphs never reach this.
+/// configure time, for the package this build actually resolved.
 fn ensureTsToolchain(b: *std.Build, dependency: *std.Build.Dependency) void {
     const root = dependency.builder.build_root.path orelse return;
     const core_dir = b.pathJoin(&.{ root, "packages", "core" });
@@ -128,19 +36,19 @@ fn ensureTsToolchain(b: *std.Build, dependency: *std.Build.Dependency) void {
     if (std.Io.Dir.cwd().access(b.graph.io, probe, .{})) |_| {
         return;
     } else |_| {}
-    std.debug.print("typescript-spike: installing the SDK package's TypeScript toolchain once in {s}\n", .{core_dir});
+    std.debug.print("typescript-core: installing the SDK package's TypeScript toolchain once in {s}\n", .{core_dir});
     const result = std.process.run(b.allocator, b.graph.io, .{
         .argv = &.{ "npm", "ci", "--include=dev" },
         .cwd = .{ .path = core_dir },
     }) catch |err| {
-        std.debug.print("typescript-spike: could not run npm ci in {s}: {s}. Install Node 24+ and run it by hand.\n", .{ core_dir, @errorName(err) });
+        std.debug.print("typescript-core: could not run npm ci in {s}: {s}. Install Node 24+ and run it by hand.\n", .{ core_dir, @errorName(err) });
         return;
     };
     switch (result.term) {
         .exited => |code| if (code == 0) return,
         else => {},
     }
-    std.debug.print("typescript-spike: npm ci failed in {s}:\n{s}\n", .{ core_dir, result.stderr });
+    std.debug.print("typescript-core: npm ci failed in {s}:\n{s}\n", .{ core_dir, result.stderr });
 }
 
 fn addTsEngineModules(
@@ -198,6 +106,94 @@ fn addTsEngineModules(
         }
         root.addImport("cockpit_engine", engine);
     }
+}
+
+/// Keep the native engine's broad pre-cutover regression suite while the
+/// shipped app has exactly one coordinator (`src/core.ts`). The facade has no
+/// `main` and cannot become an app graph; it only exposes native seams to tests.
+fn addNativeRegressionTests(
+    b: *std.Build,
+    artifacts: native_sdk.AppArtifacts,
+    test_step: *std.Build.Step,
+    measure: bool,
+    phux_enabled: bool,
+    ffi: ?PhuxFfi,
+) void {
+    const app_test_root = artifacts.tests.root_module;
+    const target = app_test_root.resolved_target.?;
+    const optimize = app_test_root.optimize.?;
+    const sdk_module = app_test_root.import_table.get("native_sdk") orelse
+        @panic("native-sdk app graph did not expose its root module");
+    const root = b.createModule(.{
+        .root_source_file = b.path("src/native_test_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    root.addImport("native_sdk", sdk_module);
+
+    const contract = b.createModule(.{
+        .root_source_file = b.path("src/providers/contract.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    contract.addImport("native_sdk", sdk_module);
+    root.addImport("provider_contract", contract);
+
+    const phux_options = b.addOptions();
+    phux_options.addOption(bool, "enabled", phux_enabled);
+    root.addImport("phux_options", phux_options.createModule());
+    const test_options = b.addOptions();
+    test_options.addOption(bool, "measure", measure);
+    root.addImport("test_options", test_options.createModule());
+
+    const ghostty = b.dependency("ghostty", .{
+        .target = target,
+        .optimize = optimize,
+        .simd = false,
+        .@"emit-xcframework" = false,
+        .@"emit-macos-app" = false,
+    });
+    root.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
+    if (phux_enabled) {
+        const modules = createPhuxModules(b, target, optimize, sdk_module, contract, ffi.?);
+        attachPhuxModules(b, root, modules);
+    }
+
+    const credential_store = b.createModule(.{
+        .root_source_file = b.path("src/security/credential_store.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const provider_identity = b.createModule(.{
+        .root_source_file = b.path("src/security/provider_identity.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const credential_trust = b.createModule(.{
+        .root_source_file = b.path("src/security/trust.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    root.addImport("credential_store", credential_store);
+    root.addImport("provider_identity", provider_identity);
+    root.addImport("credential_trust", credential_trust);
+    if (target.result.os.tag == .macos) {
+        const macos_keychain = b.createModule(.{
+            .root_source_file = b.path("src/security/macos_keychain.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        macos_keychain.addImport("credential_store", credential_store);
+        if (b.sysroot) |sysroot| macos_keychain.addFrameworkPath(.{
+            .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }),
+        });
+        macos_keychain.linkFramework("Security", .{});
+        macos_keychain.linkFramework("CoreFoundation", .{});
+        root.addImport("macos_keychain", macos_keychain);
+    }
+
+    const tests = b.addTest(.{ .name = "cockpit-native-engine-regressions", .root_module = root });
+    test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
 // ---------------------------------------------------------------- phux FFI
@@ -370,35 +366,6 @@ fn createPhuxModules(
         .provider = provider_module,
         .pointer = pointer_module,
     };
-}
-
-fn addPhuxModules(
-    b: *std.Build,
-    artifacts: native_sdk.AppArtifacts,
-    ffi: PhuxFfi,
-) void {
-    const roots = [_]*std.Build.Module{
-        artifacts.exe.root_module,
-        artifacts.tests.root_module,
-    };
-    for (roots, 0..) |root, index| {
-        if (index == 1 and root == artifacts.exe.root_module) continue;
-        const sdk_module = root.import_table.get("native_sdk") orelse
-            @panic("native-sdk app graph did not expose its root module");
-        const provider_contract = root.import_table.get("provider_contract") orelse
-            @panic("cockpit graph did not expose its provider contract module");
-
-        const modules = createPhuxModules(
-            b,
-            root.resolved_target.?,
-            root.optimize.?,
-            sdk_module,
-            provider_contract,
-            ffi,
-        );
-
-        attachPhuxModules(b, root, modules);
-    }
 }
 
 fn attachPhuxModules(b: *std.Build, root: *std.Build.Module, modules: PhuxModules) void {
@@ -632,23 +599,23 @@ fn buildVerdict(
         });
     }
     return b.fmt(
-            \\{s}
-            \\zig build test: PASS, INCOMPLETE
-            \\  source root:   {s}
-            \\  global cache:  {s}
-            \\  phux provider: NOT COMPILED. src/providers/phux/ was not in this
-            \\                 build at all, so a change to it is NOT verified by
-            \\                 this run, however green it looks.
-            \\  reason:        the phux client FFI was not found. Looked for
-            \\                 phux/client.h and libphux_client_ffi.a under, in order:
-            \\                   -Dphux-client-ffi-include-dir / -Dphux-client-ffi-lib-dir
-            \\                   $PHUX_CLIENT_FFI_INCLUDE_DIR / $PHUX_CLIENT_FFI_LIB_DIR
-            \\                   {s}
-            \\  to include it: cargo build --locked --profile ffi-release \
-            \\                   -p phux-client-ffi --manifest-path ../../Cargo.toml
-            \\                 then re-run zig build test
-            \\  app graph:     local terminal provider (-Dphux-enabled defaults to false)
-            \\{s}
+        \\{s}
+        \\zig build test: PASS, INCOMPLETE
+        \\  source root:   {s}
+        \\  global cache:  {s}
+        \\  phux provider: NOT COMPILED. src/providers/phux/ was not in this
+        \\                 build at all, so a change to it is NOT verified by
+        \\                 this run, however green it looks.
+        \\  reason:        the phux client FFI was not found. Looked for
+        \\                 phux/client.h and libphux_client_ffi.a under, in order:
+        \\                   -Dphux-client-ffi-include-dir / -Dphux-client-ffi-lib-dir
+        \\                   $PHUX_CLIENT_FFI_INCLUDE_DIR / $PHUX_CLIENT_FFI_LIB_DIR
+        \\                   {s}
+        \\  to include it: cargo build --locked --profile ffi-release \
+        \\                   -p phux-client-ffi --manifest-path ../../Cargo.toml
+        \\                 then re-run zig build test
+        \\  app graph:     local terminal provider (-Dphux-enabled defaults to false)
+        \\{s}
     , .{
         rule,
         source_root,
@@ -662,11 +629,6 @@ fn buildVerdict(
 
 pub fn build(b: *std.Build) void {
     const dependency = b.dependency("native_sdk", .{});
-    const typescript_spike = b.option(
-        bool,
-        "typescript-spike",
-        "Build the isolated TypeScript + Native markup Cockpit artifact",
-    ) orelse false;
     const phux_enabled = b.option(
         bool,
         "phux-enabled",
@@ -701,59 +663,25 @@ pub fn build(b: *std.Build) void {
             \\or set PHUX_CLIENT_FFI_INCLUDE_DIR and PHUX_CLIENT_FFI_LIB_DIR,
             \\or build the FFI from the Phux monorepo root at {s} with:
             \\  cargo build --locked --profile ffi-release -p phux-client-ffi
-        , .{ rootPath(b, "../..") });
+        , .{rootPath(b, "../..")});
         std.process.exit(1);
     }
     // Before the SDK's own configure-time check inside addAppArtifacts,
     // which exits the build when the compiler is missing: the installer has
     // to have had its turn first, or it never gets one (CI proved that).
-    if (typescript_spike) ensureTsToolchain(b, dependency);
-    const artifacts = if (typescript_spike)
-        native_sdk.addAppArtifacts(b, dependency, .{
-            .name = "phux-cockpit-typescript-spike",
-            .app_root = "typescript-spike",
-            .native_extension = "src/native_extension.zig",
-        })
-    else
-        native_sdk.addAppArtifacts(b, dependency, .{ .name = "phux-cockpit" });
+    ensureTsToolchain(b, dependency);
+    const artifacts = native_sdk.addAppArtifacts(b, dependency, .{
+        .name = "phux-cockpit",
+        .native_extension = "src/native_extension.zig",
+    });
     const app_module = artifacts.exe.root_module;
     if (app_module.resolved_target.?.result.os.tag != .macos)
         @panic("phux-cockpit supports macOS only");
-    if (typescript_spike) {
-        addTsEngineModules(b, artifacts, measure, phux_enabled, ffi);
-        if (b.top_level_steps.get("test")) |top_level| {
-            const test_step = &top_level.step;
-            if (ffi) |found| addPhuxGraphTests(b, artifacts, test_step, found);
-            addGuardCheck(b, test_step);
-            addTestVerdict(b, test_step, buildVerdict(b, phux_enabled, ffi));
-        }
-        return;
-    }
-
-    const phux_options = b.addOptions();
-    phux_options.addOption(bool, "enabled", phux_enabled);
-    addImportToArtifacts(artifacts, "phux_options", phux_options.createModule());
-
-    const test_options = b.addOptions();
-    test_options.addOption(bool, "measure", measure);
-    addImportToArtifacts(artifacts, "test_options", test_options.createModule());
-
-    addProviderContractModules(b, artifacts);
-    addSecurityModules(b, artifacts);
-    if (phux_enabled) addPhuxModules(b, artifacts, ffi.?);
-
-    const ghostty = b.dependency("ghostty", .{
-        .target = app_module.resolved_target.?,
-        .optimize = app_module.optimize.?,
-        .simd = false,
-        .@"emit-xcframework" = false,
-        .@"emit-macos-app" = false,
-    });
-    const vt = ghostty.module("ghostty-vt");
-    addImportToArtifacts(artifacts, "ghostty-vt", vt);
+    addTsEngineModules(b, artifacts, measure, phux_enabled, ffi);
 
     if (b.top_level_steps.get("test")) |top_level| {
         const test_step = &top_level.step;
+        addNativeRegressionTests(b, artifacts, test_step, measure, phux_enabled, ffi);
         if (ffi) |found| addPhuxGraphTests(b, artifacts, test_step, found);
         addGuardCheck(b, test_step);
         addTestVerdict(b, test_step, buildVerdict(b, phux_enabled, ffi));

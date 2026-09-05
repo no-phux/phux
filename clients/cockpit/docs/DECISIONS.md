@@ -275,7 +275,7 @@ The earlier removal of the underline was not wrong about its own evidence: an
 accent rule under a rounded pill *is* clipped by the pill's radius. The bar is
 inset a full gap on each side now, which clears a 6pt corner entirely.
 
-`src/tests/chrome_register_tests.zig` asserts both halves — that the two fills
+The `ts-chrome-parity` extension test asserts both halves — that the two fills
 are under 1.5:1, so nobody "fixes" this by lightening a surface, and that the
 accent clears 3:1 on every ground it lands on. Full derivation and sources in
 [docs/DESIGN_SYSTEM.md](DESIGN_SYSTEM.md).
@@ -286,9 +286,9 @@ accent clears 3:1 on every ground it lands on. Full derivation and sources in
 
 **Decided 2026-09-02, by reuse rather than measurement; reopen with a number.**
 
-The TypeScript-core graph paints its grids exactly as the shipping app does:
-`Options.chrome.build` runs the same `view.buildChrome` on the engine's model,
-as a variable-length command prefix under the markup widget tree. The
+The shipping TypeScript graph paints grids through
+`terminal_painter.paintWindowIndex` on the engine's model, as a variable-length
+command prefix under the markup widget tree. The
 alternative in `docs/TS_MIGRATION.md` (a `media-surface` leaf fed by a native
 RGBA producer) was not built.
 
@@ -303,7 +303,7 @@ the rail 184pt on both sides of the seam by construction
 
 The baseline, measured 2026-09-02 on this machine by the extension's
 `MEASURED: the chrome-prefix paint of a full grid on the engine model` test
-(`zig build test -Dtypescript-spike=true -Dplatform=null -Dmeasure=true
+(`zig build test -Dplatform=null -Dmeasure=true
 -Doptimize=ReleaseFast`): a full 80x24 grid at 1100x640, scale 2, paints as
 29 commands in 42 us per paint (472 us in the Debug test build). A surface leaf
 would have to rasterize the same grid, upload it, and composite it in less
@@ -313,3 +313,17 @@ the incremental cell-patch path. That is the number to beat.
 What would reopen it: a measured leaf route under that figure, or a chrome
 layout the fixed geometry cannot express.
 
+## The bounded cwd snapshot field stays on protocol version 1
+
+**Decided 2026-09-04.**
+
+The cwd bytes added to each bounded snapshot-tab record do not bump the
+TypeScript/native seam above version 1. The encoder and decoder are statically
+linked into one Cockpit binary; packets are neither persisted nor exchanged
+with an independently deployed peer, and the decoder rejects malformed or
+trailing framing. Version 1 therefore names the current lockstep internal seam,
+not a compatibility promise to an older producer.
+
+Reopen this when a packet can outlive the process or cross a separately
+versioned deployment boundary. That change requires a version bump and an
+explicit compatibility policy.

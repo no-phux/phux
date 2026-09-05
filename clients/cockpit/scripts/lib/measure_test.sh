@@ -129,14 +129,6 @@ if [[ "$NATIVE" == "${WORK}/home/native-in-measure-home" ]]; then ok; else bad '
 if grep -q 'exec env -C' "$NATIVE"; then ok; else bad 'CLI wrapper does not enter isolated dropbox cwd'; fi
 if [[ "$MEASURE_DROPBOX" == "${WORK}/home/.zig-cache/native-sdk-automation" ]]; then ok; else bad 'launcher did not expose exact dropbox'; fi
 
-# The candidate route must select its own package helper and bundle without
-# changing the existing shipping default above.
-measure_package_typescript_candidate() { printf '%s\n' "$1" >"${WORK}/candidate-cli"; }
-NATIVE=/bin/echo
-measure_launch_isolated "${WORK}/home" "${WORK}/home/config" "${WORK}/home/app.log" typescript-candidate
-if [[ "$(cat "${WORK}/candidate-cli")" == /bin/echo ]]; then ok; else bad 'candidate package did not use the pinned CLI'; fi
-if grep -q 'phux-cockpit-typescript-spike.app' "${WORK}/stage.args"; then ok; else bad 'candidate bundle was not identity-staged'; fi
-
 retained="$(measure_print_retained_run 4242 "$NATIVE" "$MEASURE_DROPBOX")"
 if [[ "$retained" == *"retained automation command: ${NATIVE} automate snapshot"* \
     && "$retained" == *"retained automation dropbox: ${MEASURE_DROPBOX}"* ]]; then

@@ -456,7 +456,7 @@ comes from.
 ## 11. What proves it
 
 - **`zig build test`** — the register, the ratios and the contrast floors are
-  pinned by tests in `src/tests/chrome_register_tests.zig`. A regression test
+  pinned by the `ts-chrome-parity` extension test. A regression test
   here must fail without its fix; a floor that has only ever been seen to pass
   is not evidence.
 - **The SDK's layout audit** (`canvas.auditWidgetLayout`) is wired in as a gate.

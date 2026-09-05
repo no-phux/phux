@@ -193,36 +193,22 @@ measure_raster_worktree_source() {
 }
 
 # Package, identity-stage, and launch from HOME. The app and CLI both use HOME
-# as cwd, giving this run a private automation dropbox. The optional fourth
-# argument selects the staged TypeScript candidate without changing the
-# shipping default. Sets MEASURE_APP_PID and replaces NATIVE with a cwd-pinned
-# wrapper for subsequent automation calls.
-measure_package_typescript_candidate() {
-    NATIVE="$1" "${MEASURE_ROOT}/scripts/package-typescript-candidate.sh" --automation >/dev/null
-}
-
+# as cwd, giving this run a private automation dropbox. Sets MEASURE_APP_PID
+# and replaces NATIVE with a cwd-pinned wrapper for subsequent automation calls.
 measure_launch_isolated() {
     local home="$1" config="$2" log="$3"
-    local graph="${4:-shipping}"
+    local phux="${4:-0}"
     local source_app staged_app executable native_real wrapper
     staged_app="${home}/Phux Cockpit (measure).app"
     native_real="${NATIVE:?set NATIVE to the automation CLI before launching}"
 
     printf 'packaging with automation...\n'
-    case "$graph" in
-        shipping)
-            source_app="${MEASURE_ROOT}/zig-out/package/phux-cockpit.app"
-            ( cd "$MEASURE_ROOT" && zig build package -Dautomation=true >/dev/null )
-            ;;
-        typescript-candidate)
-            source_app="${MEASURE_ROOT}/zig-out/package/phux-cockpit-typescript-spike.app"
-            measure_package_typescript_candidate "$native_real"
-            ;;
-        *)
-            printf 'unknown measurement app graph: %s\n' "$graph" >&2
-            return 2
-            ;;
-    esac
+    source_app="${MEASURE_ROOT}/zig-out/package/phux-cockpit.app"
+    if [[ "$phux" == 1 ]]; then
+        ( cd "$MEASURE_ROOT" && zig build package -Dautomation=true -Dphux-enabled=true >/dev/null )
+    else
+        ( cd "$MEASURE_ROOT" && zig build package -Dautomation=true >/dev/null )
+    fi
     executable="$(dev_app_stage "$source_app" "$staged_app")"
 
     # dev_app_stage gives measurements a process identity distinct from the

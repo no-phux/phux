@@ -40,11 +40,11 @@ repo can take is able to see the difference — see docs/RENDER_FIDELITY.md. A
 branch-head change or pin bump that thins every glyph in the terminal passes
 the other three checks.
 
-CI covers **both** build graphs — the default local-terminal graph and the
+CI covers **both provider variants** of the shipping TypeScript graph — the default local-terminal variant and the
 production Phux provider under `-Dphux-enabled=true`. That matters, because
 `-Dphux-enabled` defaults to false, so a plain `zig build test` never compiles
 `src/providers/phux` at all and a signature change there goes unverified. The
-SDK-head workflow covers both graphs too, and additionally builds the real macOS
+SDK-head workflow covers both variants too, and additionally builds the real macOS
 executable on each, since `zig build test` compiles the test root rather than
 the AppKit binary.
 
@@ -92,7 +92,7 @@ untracked source is dirty.
 ./scripts/host-raster-check.sh --min-solid 4000
 ```
 
-**4. Test BOTH graphs.** Running only the first proves nothing about the
+**4. Test BOTH provider variants.** Running only the first proves nothing about the
 provider, because `-Dphux-enabled` defaults to false.
 
 ```sh
@@ -109,7 +109,7 @@ else:
 zig build test -Dplatform=null > /tmp/t.log 2>&1; echo "exit=$?"
 ```
 
-**5. Build the executable on both graphs.** The tests compile the test root, not
+**5. Build the executable with both providers.** The tests compile the test root, not
 the AppKit binary, and the platform layer is where an SDK signature change
 lands.
 

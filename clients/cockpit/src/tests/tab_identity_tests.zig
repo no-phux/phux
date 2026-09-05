@@ -1,5 +1,5 @@
 const std = @import("std");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 
 const testing = std.testing;
 

@@ -3,7 +3,7 @@
 # Without the native divider route, drag input over a split gap falls through
 # without changing the authoritative tree fraction or announcing a revision.
 test: native divider drag updates engine geometry without crossing the TypeScript seam
-build: test -Dtypescript-spike=true -Dplatform=null
+build: test -Dplatform=null
 red: 2026-09-04 at 1e19dc6
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 --- a/src/cockpit/native/ts_engine.zig

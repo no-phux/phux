@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const grid = @import("../terminal/grid.zig");
 const vt = @import("ghostty-vt");
 const support = @import("support.zig");

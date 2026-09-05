@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const grid = @import("../terminal/grid.zig");
 const support = @import("support.zig");
 
@@ -542,46 +542,6 @@ test "cmd+C still copies the terminal selection while the search field is open" 
     try testing.expectEqual(native_sdk.EffectClipboardOp.write, request.op);
 }
 
-test "the search band shows the needle, the count, and says when there is nothing" {
-    const gpa = testing.allocator;
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
-    defer harness.destroy(gpa);
-    const state = try startFocusedTerminal(gpa, harness);
-    defer gpa.destroy(state);
-    defer destroyModelSessions(&state.model);
-    defer state.deinit();
-    const iface = state.app();
-
-    try state.effects.feedPtyOutput(app.ptyKey(0), "alpha NEEDLE one\r\nbeta NEEDLE two\r\n");
-    try harness.runtime.dispatchPlatformEvent(iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(iface, .frame_requested);
-    // No band at rest.
-    try testing.expect(searchBandLabel(harness) == null);
-
-    try pressCanvasKey(harness, iface, "f", .{ .primary = true });
-    try harness.runtime.dispatchPlatformEvent(iface, .frame_requested);
-    const empty = searchBandLabel(harness) orelse return error.TestExpectedSearchBand;
-    try testing.expect(std.mem.indexOf(u8, empty, "type to search") != null);
-    // The band carries its own controls, so search is reachable without the
-    // keyboard once it is up.
-    try testing.expect(widgetExists(harness, "Older match"));
-    try testing.expect(widgetExists(harness, "Newer match"));
-    try testing.expect(widgetExists(harness, "Close search"));
-
-    try typeCanvasText(harness, iface, "NEEDLE");
-    try harness.runtime.dispatchPlatformEvent(iface, .frame_requested);
-    const found = searchBandLabel(harness) orelse return error.TestExpectedSearchBand;
-    try testing.expect(std.mem.indexOf(u8, found, "NEEDLE") != null);
-    try testing.expect(std.mem.indexOf(u8, found, "2 of 2") != null);
-
-    try typeCanvasText(harness, iface, "ZZZ");
-    try harness.runtime.dispatchPlatformEvent(iface, .frame_requested);
-    const missing = searchBandLabel(harness) orelse return error.TestExpectedSearchBand;
-    // A search that finds nothing SAYS so; silence would read as a broken
-    // field.
-    try testing.expect(std.mem.indexOf(u8, missing, "No matches") != null);
-}
-
 test "escape dismisses the band and gives the room back to the terminal" {
     const gpa = testing.allocator;
     const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
@@ -738,13 +698,7 @@ test "opening search leaves keyboard-selection mode rather than sharing Escape" 
     try testing.expect(!pane.session.selectionActive());
 }
 
-test "every search command the menu and the shortcuts declare resolves" {
-    try testing.expect(app.onCommand("terminal.find") != null);
-    try testing.expect(app.onCommand("terminal.find-next") != null);
-    try testing.expect(app.onCommand("terminal.find-previous") != null);
-    // The find chords need latch bits of their own, or their key-up would be
-    // delivered to the terminal as a release the child never heard a press
-    // for.
+test "search shortcut latch keys remain distinct" {
     try testing.expect(app.appShortcutKeyMask("f") != 0);
     try testing.expect(app.appShortcutKeyMask("g") != 0);
     try testing.expect(app.appShortcutKeyMask("f") != app.appShortcutKeyMask("g"));

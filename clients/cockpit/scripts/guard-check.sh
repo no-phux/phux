@@ -40,9 +40,9 @@ GIT_PREFIX="${GIT_PREFIX%/}"
 GIT_APPLY=(git -C "$ROOT" apply)
 [[ -z "$GIT_PREFIX" ]] || GIT_APPLY+=(--directory="$GIT_PREFIX")
 GUARD_DIR="$ROOT/scripts/guards"
-# Every source root that may carry a `// GUARD:` marker. The TypeScript-core
-# spike's extension keeps its own guards beside the module they prove.
-SCAN_ROOTS=("$ROOT/src" "$ROOT/typescript-spike/src")
+# Every source root that may carry a `// GUARD:` marker. Shipping TypeScript,
+# markup, extension, and native engine sources all live under root `src/`.
+SCAN_ROOTS=("$ROOT/src")
 
 # The guard currently being re-derived, if any, named by guard-red-run.sh.
 #
@@ -99,7 +99,7 @@ for guard in "${guard_files[@]}"; do
     # -F: Zig test names are prose and contain regex metacharacters.
     hit="$(grep -rFn "test \"$test_name\" {" "${SCAN_ROOTS[@]}" || true)"
     if [[ -z "$hit" ]]; then
-        complain "$name: names test \"$test_name\", which no longer exists under src/ or typescript-spike/src/."
+        complain "$name: names test \"$test_name\", which no longer exists under src/."
         continue
     fi
     if [[ "$(printf '%s\n' "$hit" | wc -l)" -ne 1 ]]; then

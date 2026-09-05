@@ -3,10 +3,10 @@
 # Without the post-intent fingerprint edge, TypeScript topology mutations
 # update the live model but never arm the shipping debounced state write.
 test: TypeScript topology changes use the shipping debounce and file effect
-build: test -Dtypescript-spike=true -Dplatform=null
+build: test -Dplatform=null
 red: 2026-09-04 at a3691dc
-diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
---- a/typescript-spike/src/native_extension.zig
-+++ b/typescript-spike/src/native_extension.zig
+diff --git a/src/native_extension.zig b/src/native_extension.zig
+--- a/src/native_extension.zig
++++ b/src/native_extension.zig
 @@ -142,1 +142,0 @@
 -            engine.noteTopologyChange(fx, topologyTimer);

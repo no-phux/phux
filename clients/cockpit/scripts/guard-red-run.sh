@@ -21,7 +21,7 @@
 #       --test "the zig test name" [PATH...]        capture the break sitting
 #                                                   in the working tree, then
 #                                                   prove it
-#   ... --build "test -Dtypescript-spike=true -Dplatform=null"
+#   ... --build "test -Dplatform=null"
 #                                                   for a test that only exists
 #                                                   in another build graph
 #

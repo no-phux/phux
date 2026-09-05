@@ -1,20 +1,19 @@
 # Migrating Cockpit's authoring to TypeScript + `.native` markup
 
-Status (2026-09-04): **the phase 3 candidate is feature-complete under
-`-Dtypescript-spike=true`; the shipping flip is not yet made.**
-`typescript-spike/` is a real cockpit: markup chrome from `app.native` over one
-authoritative `core.ts` model/update loop, and beneath it the shipping Zig
-painter drawing real local or Phux-backed terminals.
+Status (2026-09-04): **shipped.** Root `src/core.ts` and `src/app.native` are
+Cockpit's only app coordinator and visible-chrome authoring path. Beneath them,
+`src/cockpit/native/terminal_painter.zig` draws real local or Phux-backed
+terminals through the unchanged native engine.
 The seam (`ts_protocol.zig`, `ts_snapshot.zig`, `ts_engine.zig`, the fork's
-`native_extension` hook in `typescript-spike/src/native_extension.zig`) carries
+`native_extension` hook in `src/native_extension.zig`) carries
 intents, snapshots and invalidations; the engine now also owns the PTY spawn,
 output, key encoding, committed text and the resize pump, through the same
 `terminal_runtime.zig` the shipping app uses (made generic over the effects
 type). No terminal byte enters the compiled core: shell events are consumed in
 the pty event constructor and the core receives a void `engine_wake`. Guards
 under the extension prove boot, resync, the revision fence, key routing and
-shell ownership red-then-green (`zig build test -Dtypescript-spike=true
--Dplatform=null`). The phase 2 parity harness exists: `ts-chrome-parity` solves the
+shell ownership red-then-green (`zig build test -Dplatform=null`). The phase 2
+parity harness remains authoritative: `ts-chrome-parity` solves the
 compiled `app.native` at every declared window size and density, in every
 chrome state the core can reach, and runs the toolkit's layout audit on it,
 driving the real core through the rig so there is one rule. It found two
@@ -66,41 +65,45 @@ PTY creation, Finder drops, selection autoscroll, split-aware cwd invalidation,
 configured shell/scrollback, restored topology/cwd, and tab-placement
 precedence.
 
-Packaged-candidate automation is green. The current pinned SDK's generated
-`zig build package` command ignores `AppOptions.app_root` and passes root
-`app.zon` instead of `typescript-spike/app.zon`; Cockpit therefore keeps the
-narrow workaround in `scripts/package-typescript-candidate.sh`, and
-`scripts/automate-smoke.sh --typescript-candidate` selects it without changing
-the shipping smoke's default. On 2026-09-04 that serial run verified the
-candidate's packet presentation, startup structure, `cmd+t`, `cmd+f`, Escape,
-zero dispatch errors, and a `publisher_pid` matching the launched process.
-The packaged smoke predates the secondary-window overlay scoping fix found by
-live automation, so a fresh serial live pass (including the focused second
-window) and the implementation review still precede moving the root authoring
-files and retiring `view.zig`'s obsolete chrome builders. The shipping graph
-remains the Zig core until those gates pass.
+Packaged automation is green on the shipping root with both the direct-local
+and real-Phux provider variants. The isolated runs verify packet presentation,
+startup structure, `cmd+t`, `cmd+f`, Escape, zero dispatch errors, a matching
+`publisher_pid`, and exactly one switcher in the focused secondary window. The
+Phux run additionally waits for a provider-backed terminal to be admitted from
+inventory, then proves `cmd+t` adds exactly one local tab without assuming
+provider titles use local `Terminal N` numbering. Root ownership removes the
+pinned SDK packaging workaround: `zig build package` now consumes production
+`app.zon` directly, and `scripts/automate-smoke.sh` always drives the shipping
+TypeScript graph.
 
-Building the spike needs the SDK package's TypeScript toolchain, which the
+The snapshot's bounded cwd field does **not** bump protocol version 1. This is
+an internal, statically linked seam: encoder and decoder ship in one binary,
+there is no persisted packet or independently deployable peer, and the decoder
+rejects trailing or malformed framing. Version 1 identifies the current
+lockstep Cockpit seam; it will bump only if compatibility across independent
+producers and consumers becomes a requirement.
+
+Building Cockpit needs the SDK package's TypeScript toolchain, which the
 tarball pin does not carry. Once per pin, on the package `zig build` resolved:
 
 ```sh
 cd zig-pkg/native_sdk-*/packages/core && npm ci --include=dev
-zig build test -Dtypescript-spike=true -Dplatform=null
+zig build test -Dplatform=null
 ```
 
 Without it the build stops at "the @native-sdk/core frontend cannot resolve
-its TypeScript toolchain" and names the exact directory. The default Zig graph
-does not touch it; the local and Phux TypeScript graphs both do.
+its TypeScript toolchain" and names the exact directory. `build.zig` installs
+that package-local toolchain once per SDK pin when necessary. Node 24+ is the
+supported host.
 
 ## Target
 
 The Native SDK's primary authoring path is a TypeScript app core (`src/core.ts`:
 `Model`, `Msg`, `update`, `subscriptions`) plus declarative markup
 (`src/app.native`). It compiles ahead-of-time to native code — no JS runtime in
-the binary. Cockpit currently uses the explicit Zig-core alternative end to end:
-`src/cockpit/` owns the model/update loop, `src/cockpit/native/view.zig` builds
-the widget tree, and the terminal engine paints through app-owned canvas
-commands.
+the binary. Cockpit now uses that path end to end for app coordination and
+visible chrome. Native modules own terminal/provider correctness and paint an
+app-owned canvas prefix beneath the declarative tree.
 
 The goal is to move what the SDK's TS tier is good at (declarative chrome,
 bindings, derived values, the automation-checked markup contract) onto that
@@ -109,38 +112,34 @@ tier split is binary: an app graph is EITHER a Zig core OR a TS core. There is
 no second app loop, so this is a swap of the core staged behind proven seams —
 not a file-by-file port. Rendering CAN compose: a custom Zig view may call
 `canvas.CompiledMarkupView(...).build` and place the native terminal subtree
-beside/under that node. That is the intended final shape: one TS model/update
+beside/under that node. That is the shipped shape: one TS model/update
 loop, `.native` chrome, and one app-owned Zig terminal module.
 
 ## What moves, what stays
 
 Grounded in a survey of `src/cockpit/native/` (2026-08-24):
 
-**Movable to `.native` markup + TS core** (direct widget equivalents exist):
-tab strip / side rail triggers (`view.zig:458`, `:598`), new-tab button and
-overflow cues (`:663`, `:708`), status badges and limit notices (`:363`,
-`:1619`–`:1685`), config notice band (`:1133`), palette overlay rows
-(`:1189`), settings surface (`:1508`), horizontal splits (already SDK `.split`
-widgets, `:977`), tooltips, context menus, menus/shortcuts/status-item tables
-(already declarative data in `scene.zig`).
+**Moved to `.native` markup + TS core:** tab strip / side rail triggers,
+new-tab and overflow controls, status and config notices, switcher and settings
+overlays, split controls, tooltips, context menus, menus and shortcuts. Their
+former `view.zig` implementations retired with the Zig composition root.
 
 **Stays native regardless** (no markup equivalent, or correctness lives beside
 emulator state):
-- Terminal cell grids and all custom-painted chrome in `paintWindow`
-  (`view.zig:1992`): dim scrims, focus edges, OSC 8 preview band, hand-managed
-  command-id namespaces and per-pane budgets.
+- Terminal cell grids and emulator-adjacent painting in
+  `terminal_painter.zig`: dim scrims, focus edges, OSC 8 preview band,
+  hand-managed command-id namespaces and per-pane budgets.
 - `grid.Session` + libghostty-vt, key encoding (`terminal_runtime.zig:198` —
   kitty-protocol encoding depends on live emulator modes), the lossless
   outbound ring and its back-pressure invariants (`:80`–`:146`), the resize
   pump (needs the measured cell box only the native painter writes,
-  `workspace_projection.zig:1439`), providers, and `CockpitHost` event routing.
-- The deliberately-drawn search/palette needles (`view.zig:1003`): a keystroke
-  aimed at a hosted text-entry child can never be intercepted the way the
-  modal search needs.
+  `workspace_projection.zig:1439`), providers, and extension event routing.
+- Native terminal search and input fallback while markup textboxes own modal
+  keyboard focus.
 - The single-geometry law: `resolvePanesIn` / `workspaceChromeIn` remain THE
   source for painter rects, hit-test rects, and PTY sizing. Markup layout must
-  consume these derivations, not re-derive them, or `chrome_register_tests.zig`
-  has nothing left to audit.
+  consume these derivations, not re-derive them; `ts-chrome-parity` audits the
+  solved markup tree against that projection.
 
 ## The seams (must exist and be tested BEFORE any swap)
 
@@ -168,7 +167,7 @@ emulator state):
      patch path for those cells, and accessibility must come from a parallel
      surface. Only wins if it removes more native paint code than it costs.
 
-## Phases
+## Completed phases
 
 0. **Toolchain proof (spike).** Install `@native-sdk/cli`; build and drive one
    fork example (`examples/gpu-components`) through `native dev` /
@@ -178,17 +177,16 @@ emulator state):
 1. **Seam contracts.** Land (2) above behind tests, in the Zig app, using the
    channel pattern that already exists. No product change. Guards prove the
    4096-byte chunking and ordering invariants.
-2. **Parity harness.** Before any UI moves, define what
-   `chrome_register_tests.zig` becomes for markup trees (the toolkit audits
-   solved trees — verify `native check`'s markup audit covers the register
-   ladder at every declared window size, or keep a Zig-side audit consuming
-   the compiled view).
+2. **Parity harness.** `ts-chrome-parity` drives the real compiled core and
+   audits solved markup trees against the register ladder at every declared
+   window size and reachable chrome state.
 3. **Swap, window by window.** Main-window chrome to `app.native` + TS core;
    secondary windows follow (`#351` exposes model-declared windows to TS).
    Each swap keeps the automation smoke green and ships behind no flag — the
    binary either is the cockpit or is not merged.
-4. **Delete the old path.** `view.zig` chrome builders and their tests retire
-   only when the last window is swapped. Engine files stay.
+4. **Delete the old path.** Completed with the root shipping flip: `view.zig`,
+   the Zig composition root, and their chrome-only tests retired. Native engine
+   and terminal tests remain behind the test-only facade.
 
 ## Non-goals
 
@@ -196,5 +194,5 @@ emulator state):
   bidirectional streams, no PTY ioctl).
 - A web/WebView frontend. The TS path compiles to native; nothing here adopts
   a browser runtime.
-- Faking parity: until phase 3's swaps ship, the Zig-core app remains the
-  product. No dual-maintenance limbo longer than one swap.
+- Faking parity. The swap shipped only after the TypeScript graph passed the
+  parity and packaged automation gates; there is no dual-maintained app graph.

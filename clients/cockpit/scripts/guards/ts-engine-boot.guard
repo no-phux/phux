@@ -6,11 +6,11 @@
 # an engine that does not serialize state looks like from the core.
 test: the core boots from the engine's snapshot, not from its own defaults
 red: 2026-09-02 at d7dc724
-build: test -Dtypescript-spike=true -Dplatform=null
-diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
+build: test -Dplatform=null
+diff --git a/src/native_extension.zig b/src/native_extension.zig
 index b094b92..b6c0665 100644
---- a/typescript-spike/src/native_extension.zig
-+++ b/typescript-spike/src/native_extension.zig
+--- a/src/native_extension.zig
++++ b/src/native_extension.zig
 @@ -86,7 +86,7 @@ const Bridge = struct {
          const self: *Bridge = @ptrCast(@alignCast(context));
          self.pending = true;

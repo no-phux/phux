@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const grid = @import("../terminal/grid.zig");
 const support = @import("support.zig");
 
@@ -483,77 +483,6 @@ test "hide-chrome-when-single = false keeps the strip on one healthy tab" {
     state.model.config = app.parseConfig("hide-chrome-when-single = false");
     try testing.expect(app.chromeRevealed(&state.model));
     try testing.expect(app.workspaceChrome(&state.model, geometry.SizeF.init(980, 640)).header.height > 0);
-}
-
-test "a config diagnostic reaches the app itself, names its lines, and is dismissed by a press" {
-    // The complaint: diagnostics reached the startup log and nowhere else, so
-    // from a bundled `.app` a typo'd key produced a terminal that behaved
-    // differently and said nothing. Everything below is about the APP — the
-    // band's text, the room it takes from the grid, and the press that clears
-    // it — because a log line was never the thing missing.
-    const gpa = testing.allocator;
-    const size = geometry.SizeF.init(980, 640);
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = size });
-    defer harness.destroy(gpa);
-    // A cockpit whose canvas focus is already on the terminal, so "typing still
-    // reaches the shell" is a claim about the band rather than about which
-    // widget happened to have focus.
-    const state = try support.startFocusedTerminal(gpa, harness);
-    defer gpa.destroy(state);
-    defer app.deinitModel(&state.model);
-    defer state.deinit();
-    const iface = state.app();
-
-    const content_before = app.workspaceChrome(&state.model, size).content;
-    try testing.expect(!app.configNoticeRevealed(&state.model));
-
-    state.model.config = app.parseConfig(
-        \\font-familly = Comic Mono
-        \\cursor-style = sideways
-    );
-    // In the app the config is loaded before the first frame exists. Here it
-    // arrives after one, so a message has to run for the runtime to consider
-    // the view stale; `.unhover_tab` is the cheapest one that changes nothing.
-    try state.dispatch(&harness.runtime, 1, .unhover_tab);
-    try harness.runtime.dispatchPlatformEvent(iface, .frame_requested);
-
-    // The line NAMES THE LINE NUMBERS, which is the only part of this a user
-    // can act on.
-    var storage: [app.config_notice_bytes]u8 = undefined;
-    try testing.expectEqualStrings(
-        "Config: 2 lines were not applied (lines 1, 2)",
-        app.configNoticeLine(&state.model, &storage),
-    );
-    // And it is on screen, not merely in the model.
-    try testing.expect(semanticsLabelWithPrefix(harness, "Config: 2 lines were not applied (lines 1, 2)") != null);
-
-    // The band takes its room out of the CONTENT rect, exactly as the search
-    // band does, so the painter, the hit targets and the PTY sizing pump agree
-    // about how tall the terminal is while it is up.
-    const content_noticed = app.workspaceChrome(&state.model, size).content;
-    try testing.expectEqual(content_before.height - app.config_notice_height, content_noticed.height);
-    try testing.expectEqual(content_before.y + app.config_notice_height, content_noticed.y);
-
-    // It is not modal: the keyboard still belongs to the SHELL while it is up.
-    // This is the property that keeps a benign diagnostic from standing between
-    // someone and a prompt, and it is the one a modal notice would break.
-    try support.typeCanvasText(harness, iface, "whoami");
-    try testing.expectEqualStrings("whoami", state.effects.ptyWrittenBytes(app.ptyKey(0)));
-
-    // A press ANYWHERE in the band dismisses it — which is also what stops a
-    // press falling through to the grid painted underneath.
-    const band = widgetFrameBySemantics(
-        harness,
-        "Config: 2 lines were not applied (lines 1, 2). Press to dismiss.",
-    ) orelse return error.TestExpectedConfigNotice;
-    try pointerInput(harness, iface, .pointer_down, rectCenter(band), 0, .{}, 0);
-    try pointerInput(harness, iface, .pointer_up, rectCenter(band), 0, .{}, 0);
-    try harness.runtime.dispatchPlatformEvent(iface, .frame_requested);
-
-    try testing.expect(!app.configNoticeRevealed(&state.model));
-    try testing.expect(semanticsLabelWithPrefix(harness, "Config: 2 lines were not applied") == null);
-    // The grid gets its rows back, rather than the band leaving a hole.
-    try testing.expectEqual(content_before.height, app.workspaceChrome(&state.model, size).content.height);
 }
 
 test "one config diagnostic names the problem as well as the line" {

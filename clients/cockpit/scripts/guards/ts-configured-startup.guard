@@ -4,7 +4,7 @@
 # config, then restored placement, then the PHUX_COCKPIT_TABS debug override.
 # Dropping the final argument makes the candidate ignore that last edge.
 test: TypeScript engine startup restores topology and cwd while applying config and tab precedence
-build: test -Dtypescript-spike=true -Dplatform=null
+build: test -Dplatform=null
 red: 2026-09-04 at be22549
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 --- a/src/cockpit/native/ts_engine.zig

@@ -49,10 +49,10 @@ Every band, control, icon and gutter in the chrome traces to the Geist theme
 pack's own token ladder or to the 4pt grid — a band is one default-register
 control tall (40) and hosts small-register controls (32) with 4pt shoulders.
 Read [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md) before adding a number to
-`view.zig` or `workspace_projection.zig`;
-`src/tests/chrome_register_tests.zig` is what will stop you if you skip it, and
-it runs the toolkit's layout audit over the real widget tree in every state the
-chrome has, at every window size this app declares.
+`src/app.native` or `workspace_projection.zig`; the `ts-chrome-parity` test in
+`src/native_extension.zig` stops drift by running the toolkit's layout audit
+over the real markup tree in every reachable chrome state and declared window
+size.
 
 The terminal GRID is not on that grid and cannot be: no integer number of rows
 ever lands on a 4pt multiple. Snap the container, float the rows inside it, and
@@ -174,7 +174,8 @@ zig build test \
 ```
 
 From the repository root, `just cockpit-test` builds the FFI from the same
-checkout and runs both Cockpit test graphs.
+checkout and runs the shipping TypeScript graph plus retained native engine
+regressions.
 
 `-Dphux-enabled=true` additionally swaps the *app* graph onto the phux
 provider. It is not needed just to compile and test `src/providers/phux/` —
@@ -185,13 +186,15 @@ and the reasoning.
 
 ## The Map
 
-A Zig macOS app on the Native SDK fork
+An ahead-of-time TypeScript + `.native` macOS app on the Native SDK fork
 [`phall1/native`](https://github.com/phall1/native), pinned in `build.zig.zon`
 by tarball sha. Cockpit is that fork's only real consumer, so breakage arrives
 all at once at a pin bump; [docs/SDK_PIN.md](docs/SDK_PIN.md) has the checklist.
 
-- `src/cockpit/` — model, update, topology, layout, session state.
-  `src/cockpit/native/` is the host/scene/view boundary.
+- `src/core.ts`, `src/app.native`, `src/windows/` — the one app coordinator and
+  declarative chrome.
+- `src/cockpit/` — native engine, topology, layout, session state, providers,
+  and terminal runtime. `src/cockpit/native/` is the projection/paint boundary.
 - `src/providers/` — `contract.zig` holds provider-neutral identity; `local/`
   runs PTYs in-process, `phux/` reaches a remote phux across an FFI ABI.
 - `src/terminal/` — one `libghostty-vt` session per terminal, projected into a

@@ -347,6 +347,7 @@ actually looking at.
 ## Requirements
 
 - Apple silicon Mac running macOS 11 or later
+- Node.js 24 or later for the ahead-of-time TypeScript compiler
 - Zig 0.16.0 and Xcode Command Line Tools for source builds
 - Internet access on the first source build to fetch pinned dependencies
 
@@ -366,6 +367,13 @@ fork and this repo stay in contract, and what to run before moving the pin.
 libghostty-vt is pinned
 to Ghostty commit `7aa9591746ffa4d2eee458960c76554352832595`, the existing
 Zig 0.16-compatible checkpoint.
+
+Cockpit ships one ahead-of-time TypeScript coordinator in `src/core.ts` and
+one declarative chrome tree rooted at `src/app.native`. Native Zig remains
+behind `src/native_extension.zig` for PTYs, providers, geometry, packed-cell
+painting, input, accessibility, persistence, lifecycle, and failure recovery.
+`workspace_projection.zig` is the single geometry authority; the obsolete Zig
+widget-tree builder has been removed.
 
 ## Phux FFI provenance
 

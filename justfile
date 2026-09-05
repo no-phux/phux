@@ -63,14 +63,14 @@ build-release:
 cockpit-build: cockpit-ffi
     cd clients/cockpit && ./scripts/zig-build.sh -Dphux-enabled=true --summary all
 
-# Run both Cockpit graphs plus the repository and release contract checks.
+# Run the shipping TypeScript graph, native engine regressions, and repository
+# and release contract checks.
 cockpit-test: cockpit-ffi
     cd clients/cockpit && ./scripts/check-release-version.sh
     cd clients/cockpit && ./scripts/check-sdk-pin.sh
     cd clients/cockpit && ./scripts/lib/zon_test.sh
     cd clients/cockpit && ./scripts/lib/measure_test.sh
     cd clients/cockpit && ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all
-    cd clients/cockpit && ./scripts/zig-build.sh test -Dtypescript-spike=true -Dplatform=null --summary all
 
 # Build Cockpit's stable C ABI dependency from the enclosing Phux workspace.
 cockpit-ffi:

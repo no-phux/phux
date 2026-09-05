@@ -141,7 +141,7 @@
         // - `AppOptions.native_extension`, an app-owned Zig module the
         //   generated core.ts runner calls to compose `host_calls`, the
         //   view/markup options and the final `native_sdk.App`. Cockpit's
-        //   `typescript-spike/src/native_extension.zig` reserves the
+        //   root `src/native_extension.zig` reserves the
         //   `cockpit.` command namespace through the generalized
         //   `HostCallMux` and keeps a real engine behind it.
         // - `AppArtifacts.extension`, `.test_extension` and

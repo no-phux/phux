@@ -4,7 +4,7 @@
 # instead of the shell. The break drops the open, so "bet" goes to the ring.
 test: cmd+F opens the scrollback search, typing feeds the needle, Escape closes it
 red: 2026-09-02 at d7dc724
-build: test -Dtypescript-spike=true -Dplatform=null
+build: test -Dplatform=null
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 index c5489f5..b71299d 100644
 --- a/src/cockpit/native/ts_engine.zig

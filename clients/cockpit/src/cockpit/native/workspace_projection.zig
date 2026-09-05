@@ -274,7 +274,7 @@ fn saveFailureNoticeVisible(model: *const Model) bool {
 /// The width of the status the band's trailing slot will carry — zero when
 /// there is none.
 ///
-/// This is the SAME decision `view.viewWindow` makes when it builds that node,
+/// This is the SAME decision the `.native` chrome makes for that window,
 /// and it has to stay that way: the tab run's width is what is left after this
 /// is held back, so a disagreement here is a `+` button drawn on top of the
 /// badge. Which is exactly what shipped — the old single constant held back
@@ -421,7 +421,7 @@ pub const webkit_parking_extent = scene.webkit_parking_extent;
 const widget_command_reserve: usize = canvas.terminal_grid.widget_command_reserve;
 pub const chrome_command_envelope: usize = native_sdk.runtime.max_canvas_commands_per_view - widget_command_reserve;
 
-pub fn cockpitTokens(_: *const Model) canvas.DesignTokens {
+pub fn baseTokens() canvas.DesignTokens {
     var tokens = canvas.DesignTokens.themeWithOverrides(
         .{ .color_scheme = .dark, .pack = .geist },
         canvas.accentOverrides(canvas.Color.rgb8(190, 242, 100), .dark),
@@ -445,6 +445,10 @@ pub fn cockpitTokens(_: *const Model) canvas.DesignTokens {
     tokens.typography.mono_italic_font_id = scene.terminal_italic_font_id;
     tokens.typography.mono_bold_italic_font_id = scene.terminal_bold_italic_font_id;
     return tokens;
+}
+
+pub fn cockpitTokens(_: *const Model) canvas.DesignTokens {
+    return baseTokens();
 }
 
 /// The tokens the TERMINAL GRIDS paint with — deliberately not the chrome's.
@@ -1480,14 +1484,14 @@ pub fn paletteEntryAtCursorIn(model: *const Model, workspace: *const Workspace) 
 /// with it is still the wrong move, for two independent reasons:
 ///
 ///   1. The tween animates the WIDGET layout tree only. The painter
-///      (`view.buildChrome`), the hit targets, and the PTY sizing pump all
+///      (`terminal_painter.paintWindowIndex`), hit targets, and the PTY sizing pump all
 ///      derive their rects from THIS function instead — see `resolvePanes` —
 ///      so an eased widget tree over a stepped `content` would leave the
 ///      three disagreeing for the length of the animation. That is the exact
 ///      failure the comment on `resolvePanes` records, replayed once per tab
 ///      open and close.
 ///   2. Easing the extent HERE instead, so all three stay in lockstep, moves
-///      `content.height` every frame. `view.onFrame` emits a `.viewport` the
+///      `content.height` every frame. The native engine emits a viewport the
 ///      moment the proposed row count changes, and that arm calls
 ///      `fx.ptyResize` — a SIGWINCH. `header_height` is 50pt over a ~17.5pt
 ///      cell, so a single reveal would cost three resizes per pane instead of

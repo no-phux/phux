@@ -35,7 +35,7 @@
 #
 # 3. CONFIG AND STATE. `PHUX_COCKPIT_CONFIG` and `PHUX_COCKPIT_STATE` each name
 #    a FILE and win outright over every search path, for writes as well as reads
-#    (src/main.zig `loadUserConfig`, `resolveStatePath`). Setting both is what
+#    (`cockpit/startup.zig` config and state resolution). Setting both is what
 #    keeps a dev build from restoring -- and then overwriting -- the workspace
 #    the installed app was about to open, and from writing a theme change back
 #    into the config file you actually use. Note that leaving them unset does

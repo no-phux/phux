@@ -413,9 +413,9 @@ on `#090b0f`:
 Deriving command: `./scripts/contrast-floor-check.sh`
 
 It proves the rasterizer's response to the colour the projection chose. The
-other half of that wire — that the app's real chrome build asks for the floor
-at all — is covered by `zig build test`, which drives the runtime through
-`view.zig` and reads the retained scene.
+other half of that wire — that the shipping terminal layer asks for the floor
+at all — is covered by `zig build test`, which drives the TypeScript extension
+through `terminal_painter.zig` and reads the retained scene.
 
 ### And the whole chain, once, on the real app
 

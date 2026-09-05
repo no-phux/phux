@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const native_sdk = @import("native_sdk");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const support = @import("support.zig");
 
 const geometry = native_sdk.geometry;

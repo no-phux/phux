@@ -183,8 +183,14 @@ test "the TypeScript engine invalidation packet is fixed and versioned" {
     const bytes = encodeInvalidation(0x0807_0605_0403_0201, 0x8877_6655_4433_2211);
     try std.testing.expectEqualSlices(u8, &.{
         version, 1,
-        0x01,    0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-        0x11,    0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        0x01,    0x02,
+        0x03,    0x04,
+        0x05,    0x06,
+        0x07,    0x08,
+        0x11,    0x22,
+        0x33,    0x44,
+        0x55,    0x66,
+        0x77,    0x88,
     }, &bytes);
     const decoded = decodeInvalidation(&bytes).?;
     try std.testing.expectEqual(@as(u64, 0x0807_0605_0403_0201), decoded.sequence);
@@ -219,7 +225,10 @@ test "TypeScript intents fence positional arguments with the engine revision" {
     const bytes = encodeIntent(value);
     try std.testing.expectEqualSlices(u8, &.{
         version, 3,
-        0x11,    0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        0x11,    0x22,
+        0x33,    0x44,
+        0x55,    0x66,
+        0x77,    0x88,
         14,      2,
     }, &bytes);
     const decoded = decodeIntent(&bytes).?;

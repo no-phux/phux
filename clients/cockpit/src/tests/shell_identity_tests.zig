@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const session_module = @import("../terminal/session.zig");
 const local = @import("../providers/local/provider.zig");
 const support = @import("support.zig");

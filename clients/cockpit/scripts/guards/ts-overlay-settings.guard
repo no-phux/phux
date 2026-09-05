@@ -5,7 +5,7 @@
 # engine's setTheme so the config keeps its old theme after a Save.
 test: the settings surface shows the engine's theme catalog and saves through the seam
 red: 2026-09-02 at d7dc724
-build: test -Dtypescript-spike=true -Dplatform=null
+build: test -Dplatform=null
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 index 6c09d58..01b3c17 100644
 --- a/src/cockpit/native/ts_engine.zig

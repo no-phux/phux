@@ -6,11 +6,11 @@
 # highlighted first row is tab 1, not tab 3.
 test: the switcher filters the engine's tabs by position or title and selects through the seam
 red: 2026-09-04 at 479be58
-build: test -Dtypescript-spike=true -Dplatform=null
-diff --git a/typescript-spike/src/core.ts b/typescript-spike/src/core.ts
+build: test -Dplatform=null
+diff --git a/src/core.ts b/src/core.ts
 index ca6c5fb..cf48383 100644
---- a/typescript-spike/src/core.ts
-+++ b/typescript-spike/src/core.ts
+--- a/src/core.ts
++++ b/src/core.ts
 @@ -261,1 +261,1 @@
 -    if (!containsIgnoreCase(position, needle) && !containsIgnoreCase(tab.title, needle) && !containsIgnoreCase(tab.cwd, needle)) continue;
 +    if (false && !containsIgnoreCase(position, needle) && !containsIgnoreCase(tab.title, needle) && !containsIgnoreCase(tab.cwd, needle)) continue;

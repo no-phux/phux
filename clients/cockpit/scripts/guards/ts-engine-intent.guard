@@ -6,11 +6,11 @@
 # the intent and never posts the invalidation.
 test: an intent moves the engine and the core resyncs to the new revision
 red: 2026-09-02 at d7dc724
-build: test -Dtypescript-spike=true -Dplatform=null
-diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
+build: test -Dplatform=null
+diff --git a/src/native_extension.zig b/src/native_extension.zig
 index e974fe2..b3757e8 100644
---- a/typescript-spike/src/native_extension.zig
-+++ b/typescript-spike/src/native_extension.zig
+--- a/src/native_extension.zig
++++ b/src/native_extension.zig
 @@ -120,7 +120,7 @@ const Bridge = struct {
          } else {
              _ = engine.applyIntent(payload, &cockpit.NoShells{});

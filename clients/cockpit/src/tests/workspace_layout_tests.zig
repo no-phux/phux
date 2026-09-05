@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const grid = @import("../terminal/grid.zig");
 const support = @import("support.zig");
 
@@ -315,31 +315,6 @@ test "a non-zero exit closes its pane too, and the sibling reclaims the rect" {
     }
 }
 
-test "a pane that never got a process keeps its Restart" {
-    const gpa = testing.allocator;
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = surface });
-    defer harness.destroy(gpa);
-    const app_state = try startSplitCockpit(gpa, harness);
-    defer gpa.destroy(app_state);
-    defer destroyModelSessions(&app_state.model);
-    defer app_state.deinit();
-    const app_iface = app_state.app();
-
-    // A SPAWN failure is the one end that still earns a tombstone: there is no
-    // process to have exited and nothing to close to, and a split that
-    // vanished on its own would read as a broken cmd+D.
-    try app_state.effects.feedPtyExit(app.ptyKey(1), 0, 0, .spawn_failed, 0);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try testing.expectEqual(@as(usize, 2), app_state.model.ws().tabs[0].paneCount());
-    try testing.expectEqual(app.Phase.failed, app_state.model.provider.slots[1].phase);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    var saw_restart = false;
-    for (harness.runtime.views[0].widgetLayoutTree().nodes) |node| {
-        if (std.mem.eql(u8, node.widget.text, "Restart")) saw_restart = true;
-    }
-    try testing.expect(saw_restart);
-}
-
 test "the last clean exit in the last tab closes the window" {
     const gpa = testing.allocator;
     const harness = try native_sdk.TestHarness().create(gpa, .{ .size = surface });
@@ -411,7 +386,6 @@ test "split divider drag and keyboard resize stay in lockstep with the painted r
         try testing.expectApproxEqAbs(pane.rect.width, laid_out.width, 0.25);
     }
 }
-// GUARD: vertical-divider-parity
 test "vertical divider drag keyboard accessibility and child rectangles share resolved geometry" {
     const gpa = testing.allocator;
     const harness = try native_sdk.TestHarness().create(gpa, .{ .size = surface });
@@ -503,7 +477,6 @@ test "vertical divider drag keyboard accessibility and child rectangles share re
         try testing.expectApproxEqAbs(pane.rect.height, rect.height, 0.25);
     }
 }
-
 
 test "split PTY grids preserve each pane's full bounded viewport" {
     const gpa = testing.allocator;

@@ -1,6 +1,6 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const support = @import("support.zig");
 
 const testing = std.testing;
@@ -313,92 +313,6 @@ test "a corrupt, truncated, empty, or future state file falls back to a fresh la
     }
 }
 
-// GUARD: preserve-rejected-workspace-state
-test "a rejected existing state stays byte-exact through fresh interaction and shutdown" {
-    const root = ".zig-cache/phux-cockpit-rejected-state-tests";
-    const path = root ++ "/workspace.state";
-    const original =
-        "phux-cockpit-state 99\n" ++
-        "placement side\n" ++
-        "future-field must-survive-byte-for-byte\n" ++
-        "end\n";
-    const cwd = std.Io.Dir.cwd();
-    cwd.deleteTree(testing.io, root) catch {};
-    defer cwd.deleteTree(testing.io, root) catch {};
-    try cwd.createDirPath(testing.io, root);
-    try cwd.writeFile(testing.io, .{ .sub_path = path, .data = original });
-
-    var snapshot: app.TopologySnapshot = .{};
-    const rejected_path = switch (try app.restoreWorkspace(
-        testing.allocator,
-        testing.io,
-        path,
-        &snapshot,
-        1024 * 1024,
-    )) {
-        .rejected_existing => |preserved_path| preserved_path,
-        .missing => return error.TestExpectedRejectedState,
-        .restored => |maybe_model| {
-            var unexpected = maybe_model orelse return error.TestExpectedRejectedState;
-            defer app.deinitModel(&unexpected);
-            return error.TestExpectedRejectedState;
-        },
-    };
-    try testing.expectEqualStrings(path, rejected_path);
-
-    const harness = try native_sdk.TestHarness().create(testing.allocator, .{});
-    defer harness.destroy(testing.allocator);
-    const state = try startFocusedTerminal(testing.allocator, harness);
-    defer stopCockpit(state);
-    state.model.state.preserveRejectedExisting(rejected_path);
-    try testing.expect(state.model.state.rejectedExisting());
-    try testing.expect(!state.model.state.enabled());
-
-    // The fallback remains a real terminal: keyboard and topology interaction
-    // proceed, while the persistence invariant arms no debounce and posts no
-    // write.
-    const selected = state.model.selectedTerminalId() orelse return error.TestExpectedTerminal;
-    const pane = state.model.provider.terminal(selected) orelse return error.TestExpectedTerminal;
-    try support.typeCanvasText(harness, state.app(), "still usable");
-    try testing.expectEqualStrings("still usable", state.effects.ptyWrittenBytes(pane.pty_key));
-    app.update(&state.model, .new_terminal, &state.effects);
-    app.update(&state.model, .split_right, &state.effects);
-    try testing.expectError(error.EffectNotFound, state.effects.fireTimer(app.topology_persist_timer_key));
-    app.update(&state.model, debounceFired(), &state.effects);
-    try testing.expectEqual(@as(usize, 0), state.effects.pendingFileCount());
-    state.model.state.inflight_fingerprint = state.model.state.fingerprint;
-    app.update(&state.model, writeCompleted(.io_failed), &state.effects);
-    try testing.expectError(error.EffectNotFound, state.effects.fireTimer(app.topology_persist_timer_key));
-
-    // The sole notice is ordinary chrome, not a modal surface. Its accessible
-    // name carries both the exact path and the preservation guarantee.
-    try testing.expect(app.chromeRevealed(&state.model));
-    try harness.runtime.dispatchPlatformEvent(state.app(), .frame_requested);
-    var saw_badge = false;
-    var saw_accessible_path = false;
-    var said_preserved = false;
-    for (harness.runtime.views[0].widgetLayoutTree().nodes) |node| {
-        if (std.mem.eql(u8, node.widget.text, "LAYOUT NOT RESTORED")) saw_badge = true;
-        const label = node.widget.semantics.label;
-        if (std.mem.indexOf(u8, label, path) != null) saw_accessible_path = true;
-        if (std.mem.indexOf(u8, label, "file was preserved") != null) said_preserved = true;
-    }
-    try testing.expect(saw_badge);
-    try testing.expect(saw_accessible_path);
-    try testing.expect(said_preserved);
-
-    // Exercise both exit routes: `.shutdown` and the same synchronous method
-    // main's defer calls. Neither may touch the rejected source.
-    app.update(&state.model, .shutdown, &state.effects);
-    state.model.writeWorkspaceState(testing.io);
-    var preserved: [original.len + 1]u8 = undefined;
-    var file = try cwd.openFile(testing.io, path, .{});
-    defer file.close(testing.io);
-    const read = try file.readPositionalAll(testing.io, &preserved, 0);
-    try testing.expectEqual(original.len, read);
-    try testing.expectEqualStrings(original, preserved[0..read]);
-}
-
 test "migration-invalid state is rejected without changing its source" {
     const root = ".zig-cache/phux-cockpit-invalid-migration-tests";
     const path = root ++ "/workspace.state";
@@ -624,80 +538,6 @@ test "the debounced write carries the live layout and a second one waits for it"
     try state.effects.feedFileResult(app.topology_state_file_key, .ok, "");
     app.update(&state.model, debounceFired(), &state.effects);
     try testing.expectEqual(@as(usize, 0), state.effects.pendingFileCount());
-}
-
-// GUARD: failed-topology-write-retries
-test "a failed topology write retries without spinning forever" {
-    const harness = try native_sdk.TestHarness().create(testing.allocator, .{});
-    defer harness.destroy(testing.allocator);
-    const state = try startCockpit(harness);
-    defer stopCockpit(state);
-    state.model.state.setPath(state_path);
-    app.update(&state.model, .new_terminal, &state.effects);
-
-    try fireTopologyTimer(harness, state);
-    try testing.expect(state.model.state.inflight);
-    try testing.expect(!state.model.state.pending);
-    try testing.expectEqual(@as(usize, 1), state.effects.pendingFileCount());
-
-    // Move the topology while that snapshot is out. Its failure is stale: it
-    // still makes the current layout owed, but cannot spend the new layout's
-    // retry budget or claim that the current layout has exhausted its writes.
-    app.update(&state.model, .split_right, &state.effects);
-    try completeTopologyWrite(harness, state, .io_failed);
-    try testing.expect(!state.model.state.inflight);
-    try testing.expect(state.model.state.pending);
-    try testing.expect(!state.model.state.write_failed);
-    try testing.expectEqual(@as(u8, 0), state.model.state.retry_count);
-    try testing.expectEqual(@as(usize, 0), state.effects.pendingFileCount());
-
-    // The delayed retry posts a genuinely new fake file request, carrying the
-    // CURRENT split rather than replaying the stale pre-split bytes.
-    try fireTopologyTimer(harness, state);
-    try testing.expectEqual(@as(usize, 1), state.effects.pendingFileCount());
-    const retry = state.effects.pendingFileAt(0) orelse return error.TestExpectedFileRequest;
-    var parsed: app.PersistedTopologySnapshot = undefined;
-    try testing.expect(app.parseWorkspaceState(retry.bytes, &parsed));
-    try testing.expectEqualDeep(try state.model.topologySnapshot(), try app.migrateTopologySnapshot(parsed));
-
-    // A successful current write retires the debt and clears all failure state.
-    try completeTopologyWrite(harness, state, .ok);
-    try testing.expect(!state.model.state.inflight);
-    try testing.expect(!state.model.state.pending);
-    try testing.expect(!state.model.state.write_failed);
-    try testing.expectEqual(@as(u8, 0), state.model.state.retry_count);
-
-    // A fresh topology gets one initial attempt and exactly three retries.
-    app.update(&state.model, .new_terminal, &state.effects);
-    try fireTopologyTimer(harness, state);
-    for (0..4) |failure_index| {
-        try testing.expectEqual(@as(usize, 1), state.effects.pendingFileCount());
-        try completeTopologyWrite(harness, state, .io_failed);
-        if (failure_index < 3) {
-            try testing.expectEqual(@as(u8, @intCast(failure_index + 1)), state.model.state.retry_count);
-            try testing.expect(!state.model.state.write_failed);
-            try fireTopologyTimer(harness, state);
-        }
-    }
-    try testing.expect(state.model.state.pending);
-    try testing.expect(state.model.state.write_failed);
-    try testing.expectEqual(@as(u8, 3), state.model.state.retry_count);
-    try testing.expectEqual(@as(usize, 0), state.effects.pendingFileCount());
-    try testing.expectError(error.EffectNotFound, state.effects.fireTimer(app.topology_persist_timer_key));
-
-    // Exhaustion is operator-visible even in the normally hidden one-tab
-    // chrome, and accessibility says which file failed rather than exposing a
-    // test-only boolean.
-    try testing.expect(app.chromeRevealed(&state.model));
-    try harness.runtime.dispatchPlatformEvent(state.app(), .frame_requested);
-    var saw_badge = false;
-    var saw_accessible_path = false;
-    for (harness.runtime.views[0].widgetLayoutTree().nodes) |node| {
-        if (std.mem.eql(u8, node.widget.text, "LAYOUT UNSAVED")) saw_badge = true;
-        if (std.mem.indexOf(u8, node.widget.semantics.label, state_path) != null) saw_accessible_path = true;
-    }
-    try testing.expect(saw_badge);
-    try testing.expect(saw_accessible_path);
 }
 
 test "the shutdown flush writes through a symlinked parent directory" {

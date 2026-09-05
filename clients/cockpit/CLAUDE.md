@@ -13,6 +13,13 @@ PTY path is explicitly ephemeral and never grows a second coordinator. Read
 `docs/PRODUCT_DIRECTION.md` and `docs/DURABLE_WORK_ARCHITECTURE.md` before
 changing identity or orchestration.
 
+The shipped app has one ahead-of-time TypeScript coordinator in `src/core.ts`
+and declarative chrome in `src/app.native`. Zig remains behind
+`src/native_extension.zig` for terminal/provider correctness; terminal cells
+paint through `cockpit/native/terminal_painter.zig`, and
+`workspace_projection.zig` remains the single geometry authority. The
+`ts-chrome-parity` extension test is the chrome layout/accessibility gate.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
 ## Beads Issue Tracker
 
@@ -101,7 +108,7 @@ every invocation including the full phux one. `src/providers/phux/ref.zig` plus 
 
 README.md, "Reading the result of `zig build test`", has the FFI search order.
 From the repository root, `just cockpit-test` builds the same-checkout FFI and
-runs both Cockpit test graphs.
+runs the shipping TypeScript graph plus retained native engine regressions.
 
 ### Running it
 
@@ -140,13 +147,15 @@ person filing render bugs.
 
 ## Architecture Overview
 
-A Zig macOS app on the Native SDK fork
+An ahead-of-time TypeScript + `.native` macOS app on the Native SDK fork
 [`phall1/native`](https://github.com/phall1/native), pinned in `build.zig.zon`
 by tarball sha. Cockpit is that fork's only real consumer, which is why breakage
 arrives all at once at a pin bump — docs/SDK_PIN.md has the pre-bump checklist.
 
-- `src/cockpit/` — model, update, topology, layout, session state.
-  `src/cockpit/native/` is the host/scene/view boundary.
+- `src/core.ts`, `src/app.native`, `src/windows/` — the one app coordinator and
+  declarative chrome.
+- `src/cockpit/` — native engine, topology, layout, session state, providers,
+  and terminal runtime. `src/cockpit/native/` is the projection/paint boundary.
 - `src/providers/` — `contract.zig` holds provider-neutral identity; `local/`
   runs PTYs in-process, `phux/` reaches a remote phux across an FFI ABI.
 - `src/terminal/` — one `libghostty-vt` session per terminal, projected into a

@@ -6,7 +6,7 @@
 # new-window intent is refused as if the window table were full.
 test: a new window opens a second workspace with its own shell and closes whole through the seam
 red: 2026-09-02 at d7dc724
-build: test -Dtypescript-spike=true -Dplatform=null
+build: test -Dplatform=null
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 index b2ac6ba..d0bf9a9 100644
 --- a/src/cockpit/native/ts_engine.zig

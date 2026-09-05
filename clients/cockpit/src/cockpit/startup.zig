@@ -1,6 +1,6 @@
 //! Shared Cockpit startup: config, state restoration, and provider selection.
-//! Both the legacy Zig composition root and the TypeScript native extension
-//! enter through this module so shipping behavior has one implementation.
+//! The shipping TypeScript native extension enters through this module; tests
+//! call the resolved-input variants so startup behavior has one implementation.
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
@@ -11,7 +11,6 @@ const model_module = @import("model.zig");
 const session_state = @import("session_state.zig");
 const config_module = @import("../config/config.zig");
 const scene = @import("native/scene.zig");
-const view_module = @import("native/view.zig");
 
 pub const Config = config_module.Config;
 pub const parseConfig = config_module.parse;
@@ -24,8 +23,13 @@ const TabPlacement = topology.TabPlacement;
 const migrateTopologySnapshot = topology.migrateTopologySnapshot;
 const initialProductionModelWithIo = model_module.initialProductionModelWithIo;
 const attachPhuxProvider = model_module.attachPhuxProvider;
-const tabPlacementFromText = view_module.tabPlacementFromText;
 const app_name = scene.app_name;
+
+pub fn tabPlacementFromText(value: []const u8) ?TabPlacement {
+    if (std.ascii.eqlIgnoreCase(value, "top")) return .top;
+    if (std.ascii.eqlIgnoreCase(value, "side") or std.ascii.eqlIgnoreCase(value, "sidebar")) return .side;
+    return null;
+}
 
 /// Ambient values that can select a local Phux coordinator at startup. Kept
 /// as slices here and copied into `Config` by `resolvePhuxConfig`.

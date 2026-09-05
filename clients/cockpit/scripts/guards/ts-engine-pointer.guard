@@ -5,11 +5,11 @@
 # host from routing it.
 test: a drag across the grid through the raw surface input selects text
 red: 2026-09-04 at 479be58
-build: test -Dtypescript-spike=true -Dplatform=null
-diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
+build: test -Dplatform=null
+diff --git a/src/native_extension.zig b/src/native_extension.zig
 index 1d58c65..19a490e 100644
---- a/typescript-spike/src/native_extension.zig
-+++ b/typescript-spike/src/native_extension.zig
+--- a/src/native_extension.zig
++++ b/src/native_extension.zig
 @@ -573,1 +573,1 @@
 -            if (engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
 +            if (false and engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);

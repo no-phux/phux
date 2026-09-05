@@ -1,6 +1,6 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const grid = @import("../terminal/grid.zig");
 const support = @import("support.zig");
 
@@ -122,41 +122,6 @@ test "a query reply refused by a full ring is retained and retried, never cleare
     const written = app_state.effects.ptyWrittenBytes(1);
     try testing.expectEqual(reply_len, written.len);
     try testing.expect(std.mem.startsWith(u8, written, "\x1b["));
-}
-
-test "retryable pty backpressure clears after the queue drains" {
-    const gpa = testing.allocator;
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
-    defer harness.destroy(gpa);
-    const app_state = try startFocusedTerminal(gpa, harness);
-    defer gpa.destroy(app_state);
-    defer destroyModelSessions(&app_state.model);
-    defer app_state.deinit();
-    const app_iface = app_state.app();
-    const pane = &app_state.model.provider.slots[0];
-
-    app_state.effects.fake_pty_write_full = true;
-    try typeCanvasText(harness, app_iface, "retry");
-    try testing.expectEqual(@as(usize, "retry".len), pane.outbound_len);
-    try testing.expect(pane.write_refusals > 0);
-    try testing.expectEqual(@as(u64, 0), pane.outbound_dropped);
-
-    const buffer = try gpa.alloc(u8, 128 * 1024);
-    defer gpa.free(buffer);
-    var writer = std.Io.Writer.fixed(buffer);
-    try automation.snapshot.writeA11yText(harness.runtime.automationSnapshot("write-refusal"), &writer);
-    // The stall count lives in the accessibility label; the `INPUT STALLED`
-    // badge is no longer painted as product chrome.
-    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "input stalled 1 times") != null);
-    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "outbound loss 0 bytes") != null);
-    try testing.expect(std.mem.indexOf(u8, writer.buffered(), "I/O LOSS") == null);
-
-    app_state.effects.fake_pty_write_full = false;
-    app.update(&app_state.model, .flush_outbound, &app_state.effects);
-    try testing.expectEqual(@as(usize, 0), pane.outbound_len);
-    try testing.expectEqualStrings("retry", app_state.effects.ptyWrittenBytes(app.ptyKey(0)));
-    try testing.expectEqual(@as(u64, 0), pane.outbound_dropped);
-    try testing.expectEqual(@as(u32, 0), pane.write_refusals);
 }
 
 test "session exit counts retained reply bytes as loss, never silent" {

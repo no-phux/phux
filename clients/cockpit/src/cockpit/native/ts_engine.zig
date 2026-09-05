@@ -27,7 +27,7 @@ const provider_contract = @import("provider_contract");
 const local = @import("../../providers/local/provider.zig");
 const scene = @import("scene.zig");
 const projection = @import("workspace_projection.zig");
-const view = @import("view.zig");
+const terminal_painter = @import("terminal_painter.zig");
 const protocol = @import("ts_protocol.zig");
 const ts_snapshot = @import("ts_snapshot.zig");
 const theme_module = @import("../../config/theme.zig");
@@ -1240,14 +1240,14 @@ pub const Engine = struct {
     /// painter, unchanged, on this engine's model. Markup owns the strip or
     /// rail above; the grids take the rest, sized by the same geometry.
     pub fn paint(self: *const Engine, builder: *canvas.Builder, size: geometry.SizeF, tokens: canvas.DesignTokens) anyerror!void {
-        return view.buildChrome(self.model, builder, size, tokens);
+        return terminal_painter.paintWindowIndex(self.model, builder, 0, size, tokens, 0);
     }
 
     /// One window's grids, by its canvas label: the shipping painter's own
     /// per-window entry, unchanged.
     pub fn paintWindow(self: *const Engine, builder: *canvas.Builder, canvas_label: []const u8, window_id: platform.WindowId, size: geometry.SizeF, tokens: canvas.DesignTokens) anyerror!void {
         const index = windowIndexForCanvas(canvas_label) orelse return;
-        return view.paintWindowIndex(self.model, builder, index, size, tokens, window_id);
+        return terminal_painter.paintWindowIndex(self.model, builder, index, size, tokens, window_id);
     }
 
     fn setPlacement(self: *Engine, argument: u8) bool {

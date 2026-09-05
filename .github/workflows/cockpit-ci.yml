@@ -157,13 +157,9 @@ jobs:
       - name: Build the same-checkout Phux client FFI
         run: cargo build --locked --profile ffi-release -p phux-client-ffi
 
-      - name: Test the production provider graph
+      - name: Test the shipping TypeScript and native provider graph
         working-directory: clients/cockpit
         run: ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all
-
-      - name: Test the TypeScript-core graph
-        working-directory: clients/cockpit
-        run: ./scripts/zig-build.sh test -Dtypescript-spike=true -Dplatform=null --summary all
 
       # The null-platform tests do not compile the AppKit executable. Keep one
       # real production build on PRs while reserving archive/DMG work for main.

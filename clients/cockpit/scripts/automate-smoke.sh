@@ -7,8 +7,8 @@
 #   ./scripts/automate-smoke.sh --fullscreen    # ...and a real OS fullscreen round-trip
 #   ./scripts/automate-smoke.sh --profile       # ...and a 4-pane scheduler profile
 #   ./scripts/automate-smoke.sh --churn         # split/close churn profile
+#   ./scripts/automate-smoke.sh --phux          # build/attach the real local Phux provider
 #   ./scripts/automate-smoke.sh --churn --churn-actions 160
-#   ./scripts/automate-smoke.sh --typescript-candidate
 #   ./scripts/automate-smoke.sh --keep          # leave the app running to poke at
 #
 # It builds the CLI from the PINNED SDK (see build-automation-cli.sh — the
@@ -59,7 +59,8 @@ PROFILE_PIPELINE_STAGES=(rebuild layout reconcile emit a11y plan patch encode pr
 PROFILE_REQUIRED_STAGES=("${PROFILE_PIPELINE_STAGES[@]}" interval)
 CHURN_REQUIRED_STAGES=(rebuild layout reconcile emit a11y plan patch encode)
 KEEP=0
-APP_GRAPH=shipping
+PHUX=0
+PHUX_SOCKET=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --profile) PROFILE=1; shift ;;
@@ -70,7 +71,7 @@ while [[ $# -gt 0 ]]; do
             CHURN_ACTIONS="$2"; shift 2
             ;;
         --keep) KEEP=1; shift ;;
-        --typescript-candidate) APP_GRAPH=typescript-candidate; shift ;;
+        --phux) PHUX=1; shift ;;
         -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
@@ -79,6 +80,12 @@ done
 if (( PROFILE + FULLSCREEN + CHURN > 1 )); then
     printf 'choose one of --fullscreen, --profile, or --churn; each needs an independent run\n' >&2
     exit 2
+fi
+
+if [[ "$PHUX" == 1 ]]; then
+    command -v phux >/dev/null || { printf 'phux is required for --phux\n' >&2; exit 1; }
+    PHUX_SOCKET="$(phux status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["socket"])')"
+    [[ "$PHUX_SOCKET" == /* ]] || { printf 'phux status returned no absolute socket\n' >&2; exit 1; }
 fi
 if [[ ! "$CHURN_ACTIONS" =~ ^[0-9]+$ ]] \
     || (( CHURN_ACTIONS < 2 || CHURN_ACTIONS > 1000 || CHURN_ACTIONS % 2 != 0 )); then
@@ -133,12 +140,40 @@ elif [[ "$PROFILE" == 1 ]]; then
 else
     printf 'command = /bin/sh %s\nfont-size = 13\n' "${WORK}/repaint.sh" >"${WORK}/config"
 fi
+if [[ "$PHUX" == 1 ]]; then
+    printf 'phux-socket = %s\nphux-session = default\n' "$PHUX_SOCKET" >>"${WORK}/config"
+fi
 
-measure_launch_isolated "$WORK" "${WORK}/config" "${WORK}/app.log" "$APP_GRAPH"
+measure_launch_isolated "$WORK" "${WORK}/config" "${WORK}/app.log" "$PHUX"
 APP_PID="$MEASURE_APP_PID"
 
 "$NATIVE" automate wait >/dev/null
 app_instance_bind "$NATIVE" "$APP_PID"
+
+tab_count() {
+    app_instance_snapshot | grep -c 'role=tab name=' || true
+}
+
+# A Phux run starts with the ephemeral local terminal, then admits the current
+# provider-backed terminal when readiness arrives. Do not drive the app while
+# that asynchronous attachment is still changing the tab run.
+if [[ "$PHUX" == 1 ]]; then
+    deadline=$((SECONDS + 30))
+    while :; do
+        snapshot="$(app_instance_snapshot)"
+        attached_tabs="$(grep -c 'role=tab name=' <<<"$snapshot" || true)"
+        if [[ "$attached_tabs" == 2 ]] && grep -q 'role=textbox name=' <<<"$snapshot"; then
+            break
+        fi
+        if [[ "$SECONDS" -ge "$deadline" ]]; then
+            printf 'FAILED: real Phux startup did not admit a provider-backed terminal.\n' >&2
+            exit 1
+        fi
+        sleep 0.1
+    done
+    app_instance_assert
+    printf '  ok: Phux inventory admitted exactly one provider terminal (%s tabs total)\n' "$attached_tabs"
+fi
 
 # Assert a pattern is absent, run the action, then assert it is present. The
 # absent half is the negative control: it proves this assertion can tell the
@@ -165,11 +200,13 @@ expect_change() {
 }
 
 # Structural assertions. These read published runtime state.
+terminal_pattern='role=textbox name="Terminal 1'
+[[ "$PHUX" == 1 ]] && terminal_pattern='role=textbox name='
 "$NATIVE" automate assert \
     'ready=true' \
     'window @w1' \
     'kind=gpu_surface' \
-    'role=textbox name="Terminal 1' \
+    "$terminal_pattern" \
     'dispatch_errors=0'
 # The terminal must reach glass through the PACKET path, where the AppKit host
 # rasterizes with CoreText. A fallback to `pixels` silently moves every glyph
@@ -181,8 +218,20 @@ expect_change() {
 printf 'structure: ok\n'
 
 printf 'driving interaction...\n'
-expect_change 'cmd+t opens a second tab' 'role=tab name="Terminal 2' \
-    "$NATIVE" automate widget-key phux-cockpit-canvas cmd+t
+before_tabs="$(tab_count)"
+after_tabs=$((before_tabs + 1))
+"$NATIVE" automate widget-key phux-cockpit-canvas cmd+t >/dev/null
+deadline=$((SECONDS + 5))
+while [[ "$(tab_count)" != "$after_tabs" ]]; do
+    if [[ "$SECONDS" -ge "$deadline" ]]; then
+        printf 'FAILED: cmd+t expected %s tabs after %s, got %s.\n' \
+            "$after_tabs" "$before_tabs" "$(tab_count)" >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+app_instance_assert
+printf '  ok: cmd+t adds exactly one local tab (%s -> %s tabs)\n' "$before_tabs" "$after_tabs"
 expect_change 'cmd+f opens scrollback search' 'role=group name="Scrollback search' \
     "$NATIVE" automate widget-key phux-cockpit-canvas cmd+f
 "$NATIVE" automate widget-key phux-cockpit-canvas escape >/dev/null
@@ -387,28 +436,26 @@ if [[ "$CHURN" == "1" ]]; then
         "./scripts/automate-smoke.sh --churn --churn-actions ${CHURN_ACTIONS}" "$profile_snapshot"
 fi
 
-if [[ "$APP_GRAPH" == "typescript-candidate" ]]; then
-    printf 'verifying focused secondary-window overlays...\n'
-    expect_change 'cmd+n opens a secondary window' 'window @w2' \
-        "$NATIVE" automate widget-key phux-cockpit-canvas cmd+n
-    "$NATIVE" automate assert --absent 'role=textbox name="Find terminal"' >/dev/null
-    "$NATIVE" automate widget-key phux-cockpit-canvas-1 cmd+shift+p >/dev/null
-    deadline=$((SECONDS + 5))
-    while :; do
-        snapshot="$(app_instance_snapshot)"
-        switcher_count="$(grep -c 'role=textbox name="Find terminal"' <<<"$snapshot" || true)"
-        if [[ "$switcher_count" == 1 ]] \
-            && grep -q '@w2/phux-cockpit-canvas-1.*role=textbox name="Find terminal"' <<<"$snapshot"; then
-            break
-        fi
-        if [[ "$SECONDS" -ge "$deadline" ]]; then
-            printf 'FAILED: focused secondary switcher appeared %s times or in the wrong window.\n' "$switcher_count" >&2
-            exit 1
-        fi
-        sleep 0.1
-    done
-    app_instance_assert
-    printf '  ok: secondary switcher appears once, in focused window @w2\n'
-fi
+printf 'verifying focused secondary-window overlays...\n'
+expect_change 'cmd+n opens a secondary window' 'window @w2' \
+    "$NATIVE" automate widget-key phux-cockpit-canvas cmd+n
+"$NATIVE" automate assert --absent 'role=textbox name="Find terminal"' >/dev/null
+"$NATIVE" automate widget-key phux-cockpit-canvas-1 cmd+shift+p >/dev/null
+deadline=$((SECONDS + 5))
+while :; do
+    snapshot="$(app_instance_snapshot)"
+    switcher_count="$(grep -c 'role=textbox name="Find terminal"' <<<"$snapshot" || true)"
+    if [[ "$switcher_count" == 1 ]] \
+        && grep -q '@w2/phux-cockpit-canvas-1.*role=textbox name="Find terminal"' <<<"$snapshot"; then
+        break
+    fi
+    if [[ "$SECONDS" -ge "$deadline" ]]; then
+        printf 'FAILED: focused secondary switcher appeared %s times or in the wrong window.\n' "$switcher_count" >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+app_instance_assert
+printf '  ok: secondary switcher appears once, in focused window @w2\n'
 
 printf '\nsmoke: ok\n'

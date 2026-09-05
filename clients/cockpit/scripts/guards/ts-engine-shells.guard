@@ -5,7 +5,7 @@
 # pane. The break drops the per-slot key check and spawns on every call.
 test: every registered pane gets exactly one shell request and a closed tab kills its own
 red: 2026-09-02 at d7dc724
-build: test -Dtypescript-spike=true -Dplatform=null
+build: test -Dplatform=null
 diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
 index e45e82e..6fa362a 100644
 --- a/src/cockpit/native/ts_engine.zig

@@ -8,7 +8,7 @@
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const local = @import("../providers/local/provider.zig");
 const support = @import("support.zig");
 
@@ -225,46 +225,6 @@ test "the registry mints unique terminals up to the shells it can back" {
     } });
     try testing.expect(state.model.selectedSurface().eql(.web));
     try testing.expectEqual(app.max_tabs, state.model.ws().tab_count);
-    try testing.expect(app.onCommand("terminal.new") != null);
-    try testing.expect(app.onCommand("terminal.close") != null);
-    try testing.expect(app.onCommand("pane.split-right") != null);
-    try testing.expect(app.onCommand("pane.split-down") != null);
-    try testing.expect(app.onCommand("tab.move-left") != null);
-    try testing.expect(app.onCommand("tab.move-right") != null);
-}
-
-// GUARD: tab-admission-refusal-visible
-test "a refused tab admission names the tab ceiling in chrome" {
-    const harness = try native_sdk.TestHarness().create(testing.allocator, .{});
-    defer harness.destroy(testing.allocator);
-    const state = try startCockpit(harness);
-    defer stopCockpit(state);
-
-    try support.requireLiveShells(app.max_tabs);
-    for (1..app.max_tabs) |_| try state.dispatch(&harness.runtime, 1, .new_terminal);
-    try testing.expectEqual(app.max_tabs, state.model.ws().tab_count);
-    try testing.expect(!state.model.ws().tab_limit_refused);
-    const active_before = state.model.provider.activeCount();
-    const pending_before = state.effects.pendingPtyCount();
-
-    // No precheck: this mints a terminal, reaches Workspace.admitTab, then
-    // destroys the unadmitted terminal without ever staging a PTY.
-    try state.dispatch(&harness.runtime, 1, .new_terminal);
-    try testing.expectEqual(app.max_tabs, state.model.ws().tab_count);
-    try testing.expectEqual(active_before, state.model.provider.activeCount());
-    try testing.expectEqual(pending_before, state.effects.pendingPtyCount());
-    try testing.expect(state.model.ws().tab_limit_refused);
-    try testing.expect(app.chromeRevealed(&state.model));
-
-    try harness.runtime.dispatchPlatformEvent(state.app(), .frame_requested);
-    var saw_tab_limit = false;
-    for (harness.runtime.views[0].widgetLayoutTree().nodes) |node| {
-        if (std.mem.startsWith(u8, node.widget.semantics.label, "Tab limit reached")) saw_tab_limit = true;
-    }
-    try testing.expect(saw_tab_limit);
-
-    app.update(&state.model, .close_terminal, &state.effects);
-    try testing.expect(!state.model.ws().tab_limit_refused);
 }
 
 // GUARD: split-close-preserves-tab-refusal

@@ -1,0 +1,29 @@
+# GUARD ts-terminal-fonts
+#
+# The shipping TypeScript runner originally inherited the SDK's default token
+# ids and registered no Cockpit terminal faces. The break below restores that
+# cutover defect: weighted glyphs synthesize and native cell metrics drift.
+test: shipping TypeScript graph registers the terminal family and Cockpit token ids
+red: 2026-09-04 at 9429be0
+build: test -Dplatform=null
+diff --git a/src/native_extension.zig b/src/native_extension.zig
+index c4fe30dd..1ecb6cad 100644
+--- a/src/native_extension.zig
++++ b/src/native_extension.zig
+@@ -528,14 +528,10 @@ fn configureOptionsValue(options: *Adapter.Options) void {
+     options.view = mainView;
+     options.markup = null;
+     options.window_view = windowView;
+-    options.tokens_fn = struct {
+-        fn tokens(_: *const core.Model) canvas.DesignTokens {
+-            return cockpit.projection.baseTokens();
+-        }
+-    }.tokens;
++    options.tokens_fn = null;
+     // Register the complete terminal family before the first frame. The TS
+     // runner has no Zig host phase that can add the weighted faces later.
+-    options.fonts = &cockpit.scene.cockpit_fonts;
++    options.fonts = &.{};
+     options.chrome = .{
+         .prefix_commands = cockpit.projection.chrome_command_envelope,
+         .variable_prefix = true,

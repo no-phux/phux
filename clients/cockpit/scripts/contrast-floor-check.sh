@@ -27,7 +27,7 @@
 # It proves the rasterizer's response to the colour the projection chose. It is
 # NOT a screenshot of the app: it cannot see a layout mistake or a command that
 # was never emitted. `zig build test` covers the projection-to-display-list
-# wire (including the one through view.zig's real chrome build); this covers
+# wire (including the one through terminal_painter.zig); this covers
 # display-list-to-pixels. See docs/RENDER_FIDELITY.md for why no single
 # instrument covers both without the Screen Recording permission.
 #

@@ -528,6 +528,14 @@ fn configureOptionsValue(options: *Adapter.Options) void {
     options.view = mainView;
     options.markup = null;
     options.window_view = windowView;
+    options.tokens_fn = struct {
+        fn tokens(_: *const core.Model) canvas.DesignTokens {
+            return cockpit.projection.baseTokens();
+        }
+    }.tokens;
+    // Register the complete terminal family before the first frame. The TS
+    // runner has no Zig host phase that can add the weighted faces later.
+    options.fonts = &cockpit.scene.cockpit_fonts;
     options.chrome = .{
         .prefix_commands = cockpit.projection.chrome_command_envelope,
         .variable_prefix = true,
@@ -676,6 +684,35 @@ const test_windows = [_]native_sdk.ShellWindow{.{
 }};
 const test_scene: native_sdk.ShellConfig = .{ .windows = &test_windows };
 
+// GUARD: ts-terminal-fonts
+test "shipping TypeScript graph registers the terminal family and Cockpit token ids" {
+    var options: Adapter.Options = .{
+        .name = "phux-cockpit",
+        .scene = test_scene,
+        .canvas_label = canvas_label,
+        .markup = .{ .source = @embedFile("app.native") },
+    };
+    configureOptionsValue(&options);
+    try std.testing.expectEqual(@as(usize, 4), options.fonts.len);
+    const expected = [_]canvas.FontId{
+        cockpit.scene.terminal_font_id,
+        cockpit.scene.terminal_bold_font_id,
+        cockpit.scene.terminal_italic_font_id,
+        cockpit.scene.terminal_bold_italic_font_id,
+    };
+    for (expected, options.fonts) |id, registration| {
+        try std.testing.expectEqual(id, registration.id);
+        try std.testing.expect(registration.ttf.len > 4);
+        try std.testing.expectEqualSlices(u8, &.{ 0, 1, 0, 0 }, registration.ttf[0..4]);
+    }
+    var unused_model: core.Model = undefined;
+    const tokens = options.tokens_fn.?(&unused_model);
+    try std.testing.expectEqual(cockpit.scene.terminal_font_id, tokens.typography.mono_font_id);
+    try std.testing.expectEqual(cockpit.scene.terminal_bold_font_id, tokens.typography.mono_bold_font_id);
+    try std.testing.expectEqual(cockpit.scene.terminal_italic_font_id, tokens.typography.mono_italic_font_id);
+    try std.testing.expectEqual(cockpit.scene.terminal_bold_italic_font_id, tokens.typography.mono_bold_italic_font_id);
+}
+
 /// What the generated runner's src/windows registry does, for the rig: each
 /// declared window label builds its own compiled markup over the core model.
 const window_sources = [_]canvas.ui_markup.SourceFile{
@@ -726,7 +763,7 @@ const Rig = struct {
         }
         bridge.shells = false;
         var options: Adapter.Options = .{
-            .name = "phux-cockpit-typescript-spike",
+            .name = "phux-cockpit",
             .scene = test_scene,
             .canvas_label = canvas_label,
             .markup = .{ .source = @embedFile("app.native") },
@@ -1223,7 +1260,7 @@ test "every registered pane gets exactly one shell request and a closed tab kill
 // 80x24 grid of text painted as the chrome prefix, on the engine's model, the
 // way every frame paints it. Print with:
 //
-//   zig build test -Dtypescript-spike=true -Dplatform=null -Dmeasure=true
+//   zig build test -Dplatform=null -Dmeasure=true
 //
 // The number a media-surface leaf would have to beat is the per-paint time
 // below plus the display-list decode it saves; the leaf route is not built,

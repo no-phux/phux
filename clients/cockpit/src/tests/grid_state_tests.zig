@@ -1,7 +1,7 @@
 const std = @import("std");
 const native_sdk = @import("native_sdk");
 const vt = @import("ghostty-vt");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 const grid = @import("../terminal/grid.zig");
 const support = @import("support.zig");
 
@@ -424,17 +424,19 @@ test "wheel scrolling over the grid scrolls history" {
     try testing.expect(bottom_offset > 0);
 
     // Native tab chrome is outside every terminal hit target.
-    try harness.runtime.dispatchPlatformEvent(app_iface, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = app.canvas_label,
-        .kind = .scroll,
-        .x = 100,
-        // Inside the titlebar inset, above the content area: with one calm
-        // terminal there is no band at all, so the old y=30 would now land
-        // in the grid itself.
-        .y = 4,
-        .delta_y = app_state.model.provider.slots[0].session.measuredCell().?.height * 4,
-    } });
+    try harness.runtime.dispatchPlatformEvent(app_iface, .{
+        .gpu_surface_input = .{
+            .window_id = 1,
+            .label = app.canvas_label,
+            .kind = .scroll,
+            .x = 100,
+            // Inside the titlebar inset, above the content area: with one calm
+            // terminal there is no band at all, so the old y=30 would now land
+            // in the grid itself.
+            .y = 4,
+            .delta_y = app_state.model.provider.slots[0].session.measuredCell().?.height * 4,
+        },
+    });
     try testing.expectEqual(bottom_offset, app_state.model.provider.slots[0].session.scrollbar().offset);
 
     // A trackpad swipe (several fractional deltas accumulating past one

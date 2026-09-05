@@ -1,9 +1,11 @@
-//! Native spatial cockpit composition root.
+//! Test-only facade for native engine regression coverage.
+//! The shipping app coordinator is src/core.ts; this module exposes native
+//! seams to the pre-cutover Zig regression suite without defining an app entry point.
 
 const std = @import("std");
-const runner = @import("runner");
 const native_sdk = @import("native_sdk");
 const grid = @import("terminal/grid.zig");
+const provider_contract = @import("provider_contract");
 
 const support = @import("cockpit/phux_support.zig");
 const local = @import("providers/local/provider.zig");
@@ -18,7 +20,7 @@ const projection = @import("cockpit/native/workspace_projection.zig");
 const pointer = @import("cockpit/pointer_input.zig");
 const update_module = @import("cockpit/update.zig");
 const scene = @import("cockpit/native/scene.zig");
-const view_module = @import("cockpit/native/view.zig");
+const terminal_painter = @import("cockpit/native/terminal_painter.zig");
 const host = @import("cockpit/native/host.zig");
 const ts_snapshot = @import("cockpit/native/ts_snapshot.zig");
 const config_module = @import("config/config.zig");
@@ -146,8 +148,8 @@ pub const RemoteUiState = model_module.RemoteUiState;
 pub const retainSelectionAfterCopy = update_module.retainSelectionAfterCopy;
 pub const remoteFocusTarget = update_module.remoteFocusTarget;
 
-/// The chrome register. See docs/DESIGN_SYSTEM.md, and
-/// `src/tests/chrome_register_tests.zig` for what holds it in place.
+/// Geometry exports retained for native engine tests. Declarative chrome is
+/// audited by `ts-chrome-parity` in `native_extension.zig`.
 pub const chrome_band_height = projection.chrome_band_height;
 pub const chrome_band_inset = projection.chrome_band_inset;
 pub const chrome_control_extent = projection.chrome_control_extent;
@@ -210,12 +212,12 @@ pub const max_painted_title_bytes = projection.max_painted_title_bytes;
 pub const TabLabelIdentity = projection.TabLabelIdentity;
 pub const tabCanClose = projection.tabCanClose;
 pub const tabLabelIdentityIn = projection.tabLabelIdentityIn;
-pub const pane_dim_command_id_base = view_module.pane_dim_command_id_base;
-pub const pane_focus_command_id_base = view_module.pane_focus_command_id_base;
-pub const link_preview_ground_command_id_base = view_module.link_preview_ground_command_id_base;
-pub const link_preview_text_command_id_base = view_module.link_preview_text_command_id_base;
-pub const link_preview_authority_command_id_base = view_module.link_preview_authority_command_id_base;
-pub const linkPreviewCommandReserve = view_module.linkPreviewCommandReserve;
+pub const pane_dim_command_id_base = terminal_painter.pane_dim_command_id_base;
+pub const pane_focus_command_id_base = terminal_painter.pane_focus_command_id_base;
+pub const link_preview_ground_command_id_base = terminal_painter.link_preview_ground_command_id_base;
+pub const link_preview_text_command_id_base = terminal_painter.link_preview_text_command_id_base;
+pub const link_preview_authority_command_id_base = terminal_painter.link_preview_authority_command_id_base;
+pub const linkPreviewCommandReserve = terminal_painter.linkPreviewCommandReserve;
 pub const terminalNeedsAttention = projection.terminalNeedsAttention;
 pub const tabsRideTitlebarIn = projection.tabsRideTitlebarIn;
 pub const paletteRowsIn = projection.paletteRowsIn;
@@ -223,15 +225,6 @@ pub const paletteSelectedTabIn = projection.paletteSelectedTabIn;
 pub const paletteWindowFor = projection.paletteWindowFor;
 pub const PaletteWindow = projection.PaletteWindow;
 pub const palette_max_visible_rows = projection.palette_max_visible_rows;
-pub const palette_width = view_module.palette_width;
-pub const palette_row_height = view_module.palette_row_height;
-pub const palette_padding = view_module.palette_padding;
-pub const palette_top_inset = view_module.palette_top_inset;
-pub const settings_row_height = view_module.settings_row_height;
-pub const settings_padding = view_module.settings_padding;
-pub const settings_margin = view_module.settings_margin;
-pub const field_caret_width = view_module.field_caret_width;
-pub const field_caret_height = view_module.field_caret_height;
 pub const titlebar_tab_leading_reserve = projection.titlebar_tab_leading_reserve;
 pub const titlebar_tab_band_min = projection.titlebar_tab_band_min;
 
@@ -283,28 +276,14 @@ pub const theme_auto_dark = theme_module.auto_dark;
 pub const theme_auto_light = theme_module.auto_light;
 pub const terminalTitleInto = projection.terminalTitleInto;
 pub const max_terminal_title_bytes = projection.max_terminal_title_bytes;
-pub const statusItem = view_module.statusItem;
 pub const cockpit_status_item = scene.cockpit_status_item;
 pub const onDrop = update_module.onDrop;
 pub const ConfigFile = model_module.ConfigFile;
-pub const settings_width = view_module.settings_width;
-pub const settings_panel_label = view_module.settings_panel_label;
-pub const settings_sample_label = view_module.settings_sample_label;
-pub const settings_phux_transport_label = view_module.settings_phux_transport_label;
 pub const paneArgvIn = local.paneArgvIn;
 pub const CwdArgv = local.CwdArgv;
 
-pub const view = view_module.view;
-pub const viewWindow = view_module.viewWindow;
-pub const windowView = view_module.windowView;
-pub const declaredWindows = view_module.windows;
-pub const buildChrome = view_module.buildChrome;
-pub const buildChromeWindow = view_module.buildChromeWindow;
-pub const webPanes = view_module.webPanes;
-pub const onCommand = view_module.onCommand;
-pub const onFrame = view_module.onFrame;
-pub const tabPlacementFromText = view_module.tabPlacementFromText;
-pub const onTimer = view_module.onTimer;
+pub const paintTerminalWindow = terminal_painter.paintWindowIndex;
+pub const tabPlacementFromText = startup.tabPlacementFromText;
 pub const CockpitHost = host.CockpitHost;
 pub const installPostPresentResources = host.installPostPresentResources;
 pub const encodeTsSnapshot = ts_snapshot.encode;
@@ -312,63 +291,6 @@ pub const TsTabRun = ts_snapshot.TabRun;
 pub const ts_snapshot_max_bytes = ts_snapshot.max_bytes;
 pub const selection_autoscroll_timer_id = app_types.selection_autoscroll_timer_id;
 pub const terminal_font_id = scene.terminal_font_id;
-const terminal_bold_font_id = scene.terminal_bold_font_id;
-const terminal_italic_font_id = scene.terminal_italic_font_id;
-const terminal_bold_italic_font_id = scene.terminal_bold_italic_font_id;
-const app_permissions = [_][]const u8{ native_sdk.security.permission_command, native_sdk.security.permission_view };
-
-pub fn appOptions() TerminalApp.Options {
-    return .{
-        .name = app_name,
-        .scene = shell_scene,
-        .canvas_label = canvas_label,
-        .tokens_fn = cockpitTokens,
-        // Register the regular face for the first useful frame. The host adds
-        // the three weighted companions after that present, using the pin's
-        // late-font seam so the next rebuild replaces transient synthesis
-        // without charging four 2.3 MB parses to launch.
-        .fonts = scene.cockpit_fonts[0..1],
-        .init_fx = update_module.initFx,
-        .update_fx = update,
-        .view = view,
-        .on_key = update_module.onKey,
-        .key_release_events = true,
-        .on_text = update_module.onText,
-        .on_wheel = update_module.onWheel,
-        .on_pinch = update_module.onPinch,
-        .on_drop = update_module.onDrop,
-        .on_appearance = update_module.onAppearance,
-        .on_timer = view_module.onTimer,
-        .on_chrome = update_module.onChrome,
-        .on_lifecycle = update_module.onLifecycle,
-        .on_frame = view_module.onFrame,
-        .web_panes = webPanes,
-        // The menu-bar extra: an install-time shell in the scene, and a live
-        // derivation beside `web_panes` and `windows_fn` — same shape, same
-        // cadence, model as the only source of truth.
-        .status_item = scene.cockpit_status_item,
-        .status_item_fn = view_module.statusItem,
-        .on_command = onCommand,
-        // The declared secondary windows, and their trees. Presence in
-        // `windows_fn`'s answer IS visibility, so `Model.closeWindow` closes
-        // a window by no longer naming it.
-        .windows_fn = view_module.windows,
-        .window_view = view_module.windowView,
-        .chrome = .{
-            .prefix_commands = chrome_command_envelope,
-            .variable_prefix = true,
-            // `build` still has to be set (it is the non-optional field), but
-            // `build_window` is what actually runs: it is the only one that
-            // can say WHICH window it is painting, and for an app whose
-            // terminals are chrome commands the difference is a second window
-            // full of live cells versus a second window painting a tab strip
-            // over an empty canvas.
-            .build = view_module.buildChrome,
-            .build_window = view_module.buildChromeWindow,
-        },
-    };
-}
-
 pub const PhuxEnvironment = startup.PhuxEnvironment;
 pub const resolvePhuxConfig = startup.resolvePhuxConfig;
 pub const createPhuxProviderFromConfig = startup.createPhuxProviderFromConfig;
@@ -384,89 +306,234 @@ pub const WorkspaceRestore = startup.WorkspaceRestore;
 pub const restoreWorkspace = startup.restoreWorkspace;
 pub const WorkspaceStateProvenance = startup.WorkspaceStateProvenance;
 
-pub fn main(init: std.process.Init) !void {
-    var initialized = try startup.initializeModel(std.heap.page_allocator, init);
-    var model = initialized.model;
-    defer deinitModel(&model);
-    const app_state = try std.heap.page_allocator.create(CockpitHost);
-    defer std.heap.page_allocator.destroy(app_state);
-    app_state.init(std.heap.page_allocator, model, appOptions());
-    defer app_state.deinit();
-    // The argv can only be written once the model is in the storage it will
-    // live in: it holds SLICES into that model's own `cwd_argv`.
-    if (initialized.provenance == .restored) applyRestoredWorkingDirectories(&app_state.inner.model, &initialized.restored_snapshot);
-    // The runtime's own `.stop` lifecycle already flushes the layout, which is
-    // the path that actually fires on a macOS quit. This is the belt to that
-    // pair of braces, for a host whose run loop returns without a shutdown
-    // event; it runs before `app_state.deinit`, and writing the same bytes
-    // twice costs one file write on exit.
-    defer app_state.inner.model.writeWorkspaceState(init.io);
-    try runner.runWithOptions(app_state.app(), .{
-        .app_name = app_name,
-        .window_title = app_name,
-        .bundle_id = bundle_id,
-        .default_frame = geometry.RectF.init(0, 0, scene.window_width, scene.window_height),
-        .restore_state = false,
-        .js_window_api = false,
-        .shortcuts = &cockpit_shortcuts,
-        .menus = &cockpit_menus,
-        .security = .{
-            .permissions = &app_permissions,
-            .navigation = .{
-                .allowed_origins = &web_origins,
-                .external_links = .{ .action = .deny },
-            },
-        },
-    }, init);
+/// Minimal test host for native engine regressions that exercise the retained
+/// model/update/effects seams through `UiApp`. It deliberately renders no Zig
+/// widget chrome: shipping chrome belongs to `core.ts` + `.native` markup.
+fn testTerminalSurface(ui: *TerminalApp.Ui, model: *const Model, node: layout.NodeId, terminal_ref: TerminalRef) TerminalApp.Ui.Node {
+    const pane = model.provider.terminalConst(terminal_ref);
+    const screen = if (pane) |local_pane| local_pane.session.screenText() else "";
+    const local_id = provider_contract.localId(terminal_ref);
+    if (pane == null or local_id == null) {
+        return ui.el(.stack, .{
+            .global_key = .{ .index = terminal_painter.terminalPaintIndex(model, terminal_ref) },
+            .grow = 1,
+            .min_width = split_pane_min_width,
+            .min_height = split_pane_min_height,
+            .opacity = 0,
+            .text = screen,
+            .on_press = .{ .focus_pane = node },
+            .semantics = .{ .focusable = true, .label = "Terminal" },
+        }, .{});
+    }
+    const local_pane = pane.?;
+    const context_menu = [_]TerminalApp.Ui.ContextMenuItem{
+        .{ .label = "Copy", .msg = .{ .copy_terminal = local_pane.id }, .enabled = local_pane.session.selectionActive() },
+        .{ .label = "Paste", .msg = .{ .paste_terminal = local_pane.id }, .enabled = local_pane.acceptsInput() },
+    };
+    return ui.terminal(.{
+        .global_key = .{ .index = @intCast(@intFromEnum(local_id.?)) },
+        .grow = 1,
+        .min_width = split_pane_min_width,
+        .min_height = split_pane_min_height,
+        .opacity = 0,
+        .text = screen,
+        .on_press = .{ .focus_pane = node },
+        .context_menu = &context_menu,
+        .context_menu_policy = if (pointer.paneReportsMouse(local_pane)) .disabled else .automatic,
+        .semantics = .{ .focusable = true, .label = "Terminal" },
+    });
 }
+
+fn testSplitResizeHandler(comptime node: layout.NodeId) TerminalApp.Ui.ValueMsgFn {
+    return struct {
+        fn make(value: f32) Msg {
+            return .{ .split_resized = .{ .node = node, .value = value } };
+        }
+    }.make;
+}
+
+const test_split_resize_handlers: [layout.max_nodes]TerminalApp.Ui.ValueMsgFn = blk: {
+    var table: [layout.max_nodes]TerminalApp.Ui.ValueMsgFn = undefined;
+    for (0..layout.max_nodes) |index| table[index] = testSplitResizeHandler(@intCast(index));
+    break :blk table;
+};
+
+fn testPaneSubtree(ui: *TerminalApp.Ui, model: *const Model, tree: *const layout.Tree, node: layout.NodeId) TerminalApp.Ui.Node {
+    const entry = tree.node(node);
+    return switch (entry.kind) {
+        .free => ui.el(.stack, .{}, .{}),
+        .leaf => testTerminalSurface(ui, model, node, entry.terminal orelse return ui.el(.stack, .{}, .{})),
+        .branch => ui.split(.{
+            .split_axis = switch (entry.orientation) {
+                .horizontal => .horizontal,
+                .vertical => .vertical,
+            },
+            .grow = 1,
+            .min_width = split_pane_min_width,
+            .min_height = split_pane_min_height,
+            .gap = split_divider_width,
+            .value = entry.fraction,
+            .on_resize = test_split_resize_handlers[node],
+        }, .{
+            testPaneSubtree(ui, model, tree, entry.first),
+            testPaneSubtree(ui, model, tree, entry.second),
+        }),
+    };
+}
+
+fn testView(ui: *TerminalApp.Ui, model: *const Model) TerminalApp.Ui.Node {
+    const ws = model.wsConst();
+    const tree = ws.selectedTreeConst() orelse return ui.el(.stack, .{}, .{});
+    const chrome = projection.workspaceChromeIn(model, ws, ws.surface_size);
+    const inset = projection.windowPadding(model);
+    return ui.column(.{ .grow = 1, .padding = inset }, .{
+        ui.el(.stack, .{ .height = @max(0, chrome.content.y - inset) }, .{}),
+        ui.row(.{ .grow = 1 }, .{
+            ui.el(.stack, .{ .width = @max(0, chrome.content.x - inset) }, .{}),
+            testPaneSubtree(ui, model, tree, tree.root),
+        }),
+    });
+}
+
+fn testOnFrame(model: *const Model, frame: native_sdk.platform.GpuFrame) ?Msg {
+    if (frame.size.width <= 0 or frame.size.height <= 0) return null;
+    const window_index = scene.windowIndexForCanvas(frame.label) orelse return null;
+    const ws = model.wsAtConst(window_index) orelse return null;
+    const frame_scale = if (pointer.validScale(frame.scale_factor)) frame.scale_factor else ws.surface_scale_factor;
+    var pending = false;
+    for (0..max_terminals) |index| {
+        if (model.provider.states[index] != .active) continue;
+        const pane = model.provider.slotConst(index);
+        if (pane.outbound_len > 0 or pane.session.response_len > 0) pending = true;
+    }
+    const proposals = projection.proposedViewportsIn(model, ws, frame.size);
+    for (proposals.slice()) |proposal| {
+        if (!projection.viewportDiffers(model, proposal)) continue;
+        return .{ .viewport = .{
+            .terminal_ref = proposal.terminal,
+            .cols = proposal.cols,
+            .rows = proposal.rows,
+            .size = frame.size,
+            .scale_factor = frame_scale,
+            .window = @intCast(window_index),
+            .window_id = frame.window_id,
+        } };
+    }
+    if (proposals.incomplete) return if (pending) .flush_outbound else null;
+    for (0..max_terminals) |index| {
+        if (model.provider.states[index] != .active) continue;
+        if (model.provider.slotConst(index).session.searchPending()) return .search_tick;
+    }
+    if (ws.surface_size.width != frame.size.width or ws.surface_size.height != frame.size.height or
+        ws.surface_scale_factor != frame_scale or ws.window_id != frame.window_id)
+    {
+        return .{ .surface_resized = .{
+            .size = frame.size,
+            .scale_factor = frame_scale,
+            .window = @intCast(window_index),
+            .window_id = frame.window_id,
+        } };
+    }
+    return if (pending) .flush_outbound else null;
+}
+
+fn testOnTimer(id: u64, _: u64) ?Msg {
+    return if (id == selection_autoscroll_timer_id) .selection_autoscroll else null;
+}
+
+fn testOnCommand(name: []const u8) ?Msg {
+    if (std.mem.eql(u8, name, "window.new")) return .new_window;
+    if (std.mem.eql(u8, name, "window.fullscreen")) return .toggle_fullscreen;
+    if (std.mem.eql(u8, name, "window.minimize")) return .minimize_window;
+    if (std.mem.eql(u8, name, "surface.1")) return .{ .select_position = 0 };
+    if (std.mem.eql(u8, name, "surface.2")) return .{ .select_position = 1 };
+    if (std.mem.eql(u8, name, "surface.3")) return .{ .select_position = 2 };
+    if (std.mem.eql(u8, name, "surface.4")) return .{ .select_position = 3 };
+    if (std.mem.eql(u8, name, "surface.5")) return .{ .select_position = 4 };
+    if (std.mem.eql(u8, name, "tab.previous")) return .{ .cycle_tab = -1 };
+    if (std.mem.eql(u8, name, "tab.next")) return .{ .cycle_tab = 1 };
+    if (std.mem.eql(u8, name, "pane.split-right")) return .split_right;
+    if (std.mem.eql(u8, name, "pane.split-down")) return .split_down;
+    if (std.mem.eql(u8, name, "terminal.new")) return .new_terminal;
+    if (std.mem.eql(u8, name, "terminal.close")) return .close_terminal;
+    if (std.mem.eql(u8, name, "tab.move-left")) return .{ .move_terminal = -1 };
+    if (std.mem.eql(u8, name, "tab.move-right")) return .{ .move_terminal = 1 };
+    if (std.mem.eql(u8, name, "pane.previous")) return .{ .cycle_pane = -1 };
+    if (std.mem.eql(u8, name, "pane.next")) return .{ .cycle_pane = 1 };
+    if (std.mem.eql(u8, name, "terminal.copy")) return .copy_selection;
+    if (std.mem.eql(u8, name, "terminal.paste")) return .paste_focused;
+    if (std.mem.eql(u8, name, "terminal.select-all")) return .select_all;
+    if (std.mem.eql(u8, name, "terminal.clear")) return .clear_terminal;
+    if (std.mem.eql(u8, name, "terminal.find")) return .search_open;
+    if (std.mem.eql(u8, name, "terminal.find-next")) return .{ .search_step = 1 };
+    if (std.mem.eql(u8, name, "terminal.find-previous")) return .{ .search_step = -1 };
+    if (std.mem.eql(u8, name, "view.font-larger")) return .{ .font_size_step = 1 };
+    if (std.mem.eql(u8, name, "view.font-smaller")) return .{ .font_size_step = -1 };
+    if (std.mem.eql(u8, name, "view.font-reset")) return .font_size_reset;
+    if (std.mem.eql(u8, name, "pane.focus-left")) return .{ .focus_direction = .left };
+    if (std.mem.eql(u8, name, "pane.focus-right")) return .{ .focus_direction = .right };
+    if (std.mem.eql(u8, name, "pane.focus-up")) return .{ .focus_direction = .up };
+    if (std.mem.eql(u8, name, "pane.focus-down")) return .{ .focus_direction = .down };
+    return null;
+}
+
+fn testBuildWindow(model: *const Model, builder: *native_sdk.canvas.Builder, context: TerminalApp.ChromeContext) anyerror!void {
+    const window_index = scene.windowIndexForCanvas(context.canvas_label) orelse return;
+    return terminal_painter.paintWindowIndex(
+        model,
+        builder,
+        window_index,
+        context.size,
+        context.tokens,
+        context.window_id,
+    );
+}
+
+fn testBuildMain(model: *const Model, builder: *native_sdk.canvas.Builder, size: geometry.SizeF, tokens: native_sdk.canvas.DesignTokens) anyerror!void {
+    return terminal_painter.paintWindowIndex(model, builder, 0, size, tokens, 0);
+}
+
+pub fn appOptions() TerminalApp.Options {
+    return .{
+        .name = app_name,
+        .scene = shell_scene,
+        .canvas_label = canvas_label,
+        .tokens_fn = cockpitTokens,
+        // Legacy UiApp fixtures call `installPostPresentResources` after the
+        // first frame, so only seed the regular face here; shipping registers
+        // all four up front in `native_extension.zig`.
+        .fonts = scene.cockpit_fonts[0..1],
+        .init_fx = update_module.initFx,
+        .update_fx = update,
+        .view = testView,
+        .on_key = update_module.onKey,
+        .key_release_events = true,
+        .on_text = update_module.onText,
+        .on_wheel = update_module.onWheel,
+        .on_pinch = update_module.onPinch,
+        .on_drop = update_module.onDrop,
+        .on_appearance = update_module.onAppearance,
+        .on_timer = testOnTimer,
+        .on_chrome = update_module.onChrome,
+        .on_lifecycle = update_module.onLifecycle,
+        .on_frame = testOnFrame,
+        .on_command = testOnCommand,
+        .chrome = .{
+            .prefix_commands = chrome_command_envelope,
+            .variable_prefix = true,
+            .build = testBuildMain,
+            .build_window = testBuildWindow,
+        },
+    };
+}
+
+pub const buildChromeWindow = testBuildWindow;
 
 test "tab placement configuration accepts only documented values" {
     try std.testing.expectEqual(TabPlacement.top, tabPlacementFromText("top").?);
     try std.testing.expectEqual(TabPlacement.side, tabPlacementFromText("side").?);
     try std.testing.expectEqual(TabPlacement.side, tabPlacementFromText("SIDEBAR").?);
     try std.testing.expectEqual(@as(?TabPlacement, null), tabPlacementFromText("left"));
-}
-
-// GUARD: first-frame-deferred-fonts
-test "the terminal family is bundled whole while startup registers only regular" {
-    const options = appOptions();
-    // The regular face is enough for a useful first frame; missing companions
-    // render through the SDK's synthesis until CockpitHost registers the real
-    // faces immediately after that present.
-    try std.testing.expectEqual(@as(usize, 1), options.fonts.len);
-    try std.testing.expectEqual(terminal_font_id, options.fonts[0].id);
-    const expected = [_]struct { id: @TypeOf(terminal_font_id), name: []const u8 }{
-        .{ .id = terminal_font_id, .name = "JetBrainsMonoNL Nerd Font Mono Regular" },
-        .{ .id = terminal_bold_font_id, .name = "JetBrainsMonoNL Nerd Font Mono Bold" },
-        .{ .id = terminal_italic_font_id, .name = "JetBrainsMonoNL Nerd Font Mono Italic" },
-        .{ .id = terminal_bold_italic_font_id, .name = "JetBrainsMonoNL Nerd Font Mono Bold Italic" },
-    };
-    try std.testing.expectEqual(expected.len, scene.cockpit_fonts.len);
-    for (expected, 0..) |want, index| {
-        const registration = scene.cockpit_fonts[index];
-        try std.testing.expectEqual(want.id, registration.id);
-        try std.testing.expectEqualStrings(want.name, registration.name);
-        // Every one is a real TrueType file, not an empty embed that would
-        // register and then render nothing.
-        try std.testing.expect(registration.ttf.len > 4);
-        try std.testing.expectEqualSlices(u8, &.{ 0, 1, 0, 0 }, registration.ttf[0..4]);
-    }
-    // Ids must be distinct, or a later registration overwrites an earlier one
-    // and a whole weight vanishes.
-    for (expected, 0..) |a, i| {
-        for (expected, 0..) |b, j| {
-            if (i != j) try std.testing.expect(a.id != b.id);
-        }
-    }
-
-    var unused_model: Model = undefined;
-    const chrome = cockpitTokens(&unused_model);
-    try std.testing.expectEqual(terminal_font_id, chrome.typography.mono_font_id);
-    // The grid's tokens are what name the companions; a carried bold flag
-    // paints as bold only because these are set.
-    try std.testing.expectEqual(terminal_bold_font_id, chrome.typography.mono_bold_font_id);
-    try std.testing.expectEqual(terminal_italic_font_id, chrome.typography.mono_italic_font_id);
-    try std.testing.expectEqual(terminal_bold_italic_font_id, chrome.typography.mono_bold_italic_font_id);
 }
 
 test "AppKit pointer buttons map to provider mouse buttons" {
@@ -497,8 +564,6 @@ test {
     _ = @import("tests/terminal_registry_tests.zig");
     _ = @import("tests/topology_persistence_tests.zig");
     _ = @import("tests/workspace_layout_tests.zig");
-    _ = @import("tests/workspace_chrome_accessibility_tests.zig");
-    _ = @import("tests/surface_routing_tests.zig");
     _ = @import("tests/pointer_selection_tests.zig");
     _ = @import("tests/mouse_protocol_tests.zig");
     _ = @import("tests/adversarial_isolation_tests.zig");
@@ -506,12 +571,7 @@ test {
     _ = @import("tests/config_tests.zig");
     _ = @import("tests/shell_identity_tests.zig");
     _ = @import("tests/config_wiring_tests.zig");
-    _ = @import("tests/settings_theme_tests.zig");
-    _ = @import("tests/tab_strip_tests.zig");
     _ = @import("tests/tab_identity_tests.zig");
     _ = @import("tests/ts_snapshot_tests.zig");
     _ = @import("tests/scrollback_search_tests.zig");
-    _ = @import("tests/multi_window_tests.zig");
-    _ = @import("tests/sdk_surface_tests.zig");
-    _ = @import("tests/chrome_register_tests.zig");
 }

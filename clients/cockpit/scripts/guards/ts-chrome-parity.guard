@@ -6,11 +6,11 @@
 # engine's run, which is how sixteen tabs first ran 2000px past the window.
 test: the markup chrome passes the layout audit at every declared size, density and state
 red: 2026-09-02 at d7dc724
-build: test -Dtypescript-spike=true -Dplatform=null
-diff --git a/typescript-spike/src/app.native b/typescript-spike/src/app.native
+build: test -Dplatform=null
+diff --git a/src/app.native b/src/app.native
 index 5a0bd73..dc2ad23 100644
---- a/typescript-spike/src/app.native
-+++ b/typescript-spike/src/app.native
+--- a/src/app.native
++++ b/src/app.native
 @@ -4,7 +4,7 @@
        <row height="50" padding="4" gap="4" cross="center" background="surface">
          <spacer width="78" window-drag="true" />

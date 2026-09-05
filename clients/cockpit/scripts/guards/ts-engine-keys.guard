@@ -6,11 +6,11 @@
 # engine, so a shell would sit under a chrome you can click but not type in.
 test: unclaimed keys and text reach the focused pane's outbound ring and never the core
 red: 2026-09-02 at d7dc724
-build: test -Dtypescript-spike=true -Dplatform=null
-diff --git a/typescript-spike/src/native_extension.zig b/typescript-spike/src/native_extension.zig
+build: test -Dplatform=null
+diff --git a/src/native_extension.zig b/src/native_extension.zig
 index e974fe2..2e2bdfe 100644
---- a/typescript-spike/src/native_extension.zig
-+++ b/typescript-spike/src/native_extension.zig
+--- a/src/native_extension.zig
++++ b/src/native_extension.zig
 @@ -268,7 +268,7 @@ fn onText(event: canvas.WidgetKeyboardEvent) ?core.Msg {
      if (overlay_open) return null;
      const engine = bridge.engine orelse return null;

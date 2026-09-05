@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const config = @import("../config/config.zig");
-const app = @import("../main.zig");
+const app = @import("../native_test_root.zig");
 
 test "an empty or absent config yields usable defaults" {
     const absent = config.loadOrDefault(null);
