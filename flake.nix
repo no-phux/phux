@@ -33,7 +33,15 @@
         };
         # Read channel/components from rust-toolchain.toml. No hash needed —
         # rust-overlay derives it from the rustup metadata.
-        toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        rustSpec = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain;
+        toolchain = (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml).override {
+          extensions = rustSpec.components ++ [
+            "rust-src"
+            "rust-analyzer"
+            "llvm-tools-preview"
+          ];
+          targets = [ "wasm32-unknown-unknown" ];
+        };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -51,7 +59,7 @@
             pkgs.cargo-mutants
             # Build observability (`just timings` / `just llvm-lines` /
             # `just bloat`). cargo-llvm-lines reads the `llvm-tools-preview`
-            # component already pinned in rust-toolchain.toml; cargo-bloat
+            # component included in this shell; cargo-bloat
             # attributes release binary size by crate/function. Pinned here
             # (not cargo-install like samply) so the recipes work out of the
             # box in the dev shell and versions stay reproducible.
@@ -66,6 +74,8 @@
             pkgs.binaryen
             pkgs.trunk
             pkgs.chromedriver
+            # npm integration gates and workflow contracts use Node too.
+            pkgs.nodejs_24
             # Shell linting for scripts/ and examples/agents/ (just shellcheck).
             pkgs.shellcheck
             # GitHub workflow syntax plus expression validation (`just
@@ -91,43 +101,17 @@
           # linux-gnu targets; it has no mach-o backend, so it is Linux-only
           # and macOS keeps Apple's default linker (already the fast path).
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.mold ]
-          # `nmedit`, for macOS cold builds of libghostty-vt.
-          #
-          # ghostty's Darwin-only src/build/libsystem_override.sh rewrites the
-          # static archive so consumers bind memcpy/sin/cos to Apple's
-          # libSystem instead of Zig's compiler-rt. It shells out to
-          # `xcrun nmedit`. Inside this devshell `xcode-select -p` resolves to
-          # the nix apple-sdk, whose XcodeDefault toolchain ships `nm` but NOT
-          # `nmedit` — so a macOS contributor's first (uncached) libghostty
-          # build died with "error: tool 'nmedit' not found", and only that
-          # build: everything else was already in the store.
-          #
-          # `cctools-binutils-darwin`, which the clang wrapper already pulls
-          # in, does not carry nmedit either. The full `cctools` does. xcrun
-          # falls back to PATH when the toolchain lacks a tool, so putting it
-          # on PATH is enough — no DEVELOPER_DIR override, which would swap the
-          # whole pinned SDK out for whatever Xcode the host happens to have.
-          #
-          # Linux is unaffected: the script is guarded Darwin-only, so CI and
-          # the Linux release legs never invoke it.
+          # Supplement the Darwin archive tools; SDK selection still needs
+          # the host-Xcode preference below for cold Ghostty builds.
           ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.cctools ];
 
           env.RUST_BACKTRACE = "1";
 
-          # Ghostty's Darwin build (src/build/libsystem_override.sh) shells
-          # out to `xcrun nmedit`, which resolves through $DEVELOPER_DIR. The
-          # nix apple-sdk package mimics an Xcode `Developer` directory
-          # closely enough that stdenv points DEVELOPER_DIR/SDKROOT at it,
-          # but it ships only an `nmedit` *specification* plist, not the
-          # binary -- so every cold macOS build of libghostty-vt-sys in this
-          # shell died with "error: tool 'nmedit' not found" (phux-4xdh).
-          # Only a full Xcode install carries the real binary; the Command
-          # Line Tools package alone does not, and pointing zig's SDK
-          # discovery at a CLT-only DEVELOPER_DIR makes it report
-          # DarwinSdkNotFound instead. So: prefer a host Xcode whose
-          # toolchain actually has nmedit (checked, not assumed), and only
-          # when none is found fall back to nix's own DEVELOPER_DIR (today's
-          # behavior) with a loud warning instead of a silent later failure.
+          # Ghostty invokes `xcrun nmedit`; Nix's SDK alone lacks the tool,
+          # and CLT-only SDK discovery has failed (phux-4xdh). Prefer a host
+          # Xcode with the real binary, otherwise retain Nix's SDK and diagnose
+          # the missing prerequisite. Native setup uses the same host contract:
+          # docs/SETUP.md#platform-packages.
           shellHook =
             pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
               _phux_nix_developer_dir=$DEVELOPER_DIR

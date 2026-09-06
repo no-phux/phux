@@ -685,9 +685,11 @@ async fn native_checkpoint_survives_arbitrary_frames_and_progressive_history() {
     fragment = 0;
     let mut cursor = initial_cursor;
     while offset < bytes.len() {
+        // Cycle all fragment sizes: multiplying by fragments.len() would
+        // repeatedly choose 31 bytes and hit the prefetch-row budget instead.
         let end = bytes
             .len()
-            .min(offset + fragments[(fragment * 7 + 3) % fragments.len()]);
+            .min(offset + fragments[(fragment + 3) % fragments.len()]);
         let next_cursor =
             (end < bytes.len()).then(|| Bytes::from(format!("native-history-{}", fragment + 1)));
         let outcome = session.on_frame(FrameKind::HistoryPage {

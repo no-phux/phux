@@ -69,6 +69,12 @@ claims to check what the terminal looks like.
 
 ## Running the App
 
+For prerequisites, use the canonical [Contributor setup](../../docs/SETUP.md#cockpit).
+Native tools and Nix are supported. From the root, run `just doctor cockpit`,
+then `just cockpit-test` / `just cockpit-build`; these include same-checkout
+FFI. Keep install/version details in the setup guide rather than duplicating
+them here. Expand validation when changing shared protocol or FFI inputs.
+
 ```sh
 ./scripts/dev-run.sh
 ```

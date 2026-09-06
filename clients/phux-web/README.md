@@ -78,26 +78,20 @@ await start_webtransport("https://host:4433/session", "wss://host/session",
 
 ## Building
 
-Two steps, because of the two modules. Run inside the phux nix devshell (it
-provides the whole toolchain):
+Follow [Contributor setup](../../docs/SETUP.md#browser-client) for native or Nix
+tools. The engine module is committed, so ordinary client work needs only the
+Rust/WASM tools:
 
 ```sh
-# 1. build the engine artifact (once; regenerate when ghostty bumps):
-scripts/build-vt-wasm.sh
-
-# 2. build this client to a web package:
+# build this client to a web package using the committed engine:
 cd clients/phux-web && wasm-pack build --target web --release --out-dir pkg
 #    → pkg/phux_web.js + pkg/phux_web_bg.wasm  (~6 MB; engine included)
 ```
 
-| Build input | Version | For |
-|---|---|---|
-| Rust | 1.90 | the client (target `wasm32-unknown-unknown`) |
-| Zig | 0.15.x | the engine artifact (`ghostty-vt.wasm`) |
-| `wasm-pack` | 0.15 | packaging |
-| `wasm-bindgen` / `-cli` | `=0.2.121` | bindings (crate pin **must** match the CLI) |
-| `binaryen` (`wasm-opt`) | — | release size optimization |
-| `chromedriver` + Chrome | matched | `--headless --chrome` tests only |
+Tool versions and installation commands live in the setup guide;
+`bash scripts/doctor.sh web` checks them from the repository root.
+Changing the engine itself additionally needs Zig; the setup guide documents
+verified source acquisition and the byte-for-byte regeneration check.
 
 ## Tests
 

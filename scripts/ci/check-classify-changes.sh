@@ -26,6 +26,9 @@ check cockpit-workflow false false true false .github/workflows/cockpit-ci.yml
 check phux-source false true false false crates/phux-server/src/lib.rs
 check shared-ffi false true false true crates/phux-client-ffi/src/lib.rs
 check shared-cargo false true false true Cargo.lock
+check native-setup-helper false true false true scripts/install-zig.sh
+check native-setup-doctor false true false true scripts/doctor.sh
+check native-compiler-pins false true false true .github/workflows/release.yml
 check shared-release-config false true false true release-please-config.json
 check manifest-only false true false false .release-please-manifest.json
 check cockpit-release-metadata false false false true clients/cockpit/version.txt .release-please-manifest.json

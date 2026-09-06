@@ -27,8 +27,8 @@ JS (xterm.js-style), phux runs **ghostty's actual engine** in the browser, so
 every feature — truecolor, OSC 8 hyperlinks, Kitty keyboard, grapheme
 clustering, sixel parsing — behaves exactly as it does natively, for free.
 
-The engine ships as a **self-contained** wasm module: its only import is
-`env.log`, and it bundles its own allocator. So this crate loads it through the
+The engine ships as a **self-contained** wasm module: it imports `env.log` and
+`ghostty.host_entropy_fill`, and bundles its own allocator. This crate loads it through the
 plain `WebAssembly` JS API and drives its C ABI — **no Zig is linked into the
 Rust binary** (that would mean sharing one wasm linear memory between two
 toolchains; instead we run the engine as a sibling module and copy bytes across
@@ -51,24 +51,21 @@ row-major snapshot a renderer paints. That's the whole surface.
 
 ## The engine artifact (build dependency)
 
-This crate `include_bytes!`s `vendor/ghostty-vt.wasm` at compile time. **That
-file is a gitignored build artifact** — you must generate it before building:
+This crate `include_bytes!`s the committed `vendor/ghostty-vt.wasm` at compile
+time. Ordinary client builds reuse it without Zig. To regenerate the engine
+from verified pinned source:
 
 ```sh
-# from the phux repo root, inside the nix devshell (provides zig 0.16.x):
-scripts/build-vt-wasm.sh        # zig build -Demit-lib-vt -Dtarget=wasm32-freestanding
-                                # → clients/phux-vt-web/vendor/ghostty-vt.wasm
+# from the phux repo root, with native tools or the Nix shell:
+bash scripts/build-vt-wasm.sh          # → clients/phux-vt-web/vendor/ghostty-vt.wasm
+bash scripts/build-vt-wasm.sh --check  # byte-for-byte regeneration check
 ```
 
-`build.rs` errors with a clear message if the artifact is missing. Pin the
-ghostty checkout to the same revision `libghostty-vt-sys` uses (see the native
-crates' `Cargo.toml`) so the browser engine matches the native one.
-
-| Build input | Version | For |
-|---|---|---|
-| Rust | 1.90 | this crate (target `wasm32-unknown-unknown`) |
-| Zig | 0.15.x | building `ghostty-vt.wasm` from ghostty source |
-| `wasm-bindgen` | `=0.2.121` | pinned to match the toolchain CLI |
+`build.rs` errors with a clear message if the artifact is missing. Follow
+[Contributor setup](../../docs/SETUP.md#browser-client) for tool versions,
+source pin maintenance, and local engine development overrides.
+`bash scripts/doctor.sh web` checks tools and artifact presence from the root;
+the tests verify engine ABI compatibility.
 
 ## Tests
 

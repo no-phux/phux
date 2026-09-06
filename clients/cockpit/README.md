@@ -347,9 +347,9 @@ actually looking at.
 ## Requirements
 
 - Apple silicon Mac running macOS 11 or later
-- Node.js 24 or later for the ahead-of-time TypeScript compiler
-- Zig 0.16.0 and Xcode Command Line Tools for source builds
-- Internet access on the first source build to fetch pinned dependencies
+- For source builds, follow [Contributor setup](../../docs/SETUP.md#cockpit)
+  for the SDK, Rust/FFI, Zig, and TypeScript toolchain. Native setup and Nix use
+  the same build commands. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
 [`phall1/native@34cc9d55`](https://github.com/phall1/native/commit/34cc9d5571599d5ea4feafc9260f36575e67e77b),

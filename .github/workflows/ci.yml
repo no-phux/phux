@@ -253,16 +253,13 @@ jobs:
     if: needs.changes.outputs.release_only != 'true' && needs.changes.outputs.phux_needed == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Nix owns Node as well as Rust. Cache npm downloads without injecting
+      # a second runtime ahead of the pinned shell's PATH.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: |
-            integrations/opencode/package-lock.json
-            integrations/pi/package-lock.json
-            integrations/claude/package-lock.json
-      - name: Record setup-node path
-        run: echo "SETUP_NODE_BIN=$(dirname "$(command -v node)")" >> "$GITHUB_ENV"
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('integrations/*/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
       # Disk headroom, CPU fingerprint, Nix + Cachix, sccache, and rust-cache
       # all live in the shared composite; see .github/actions/setup-rust-lane.
       - uses: ./.github/actions/setup-rust-lane
@@ -273,7 +270,7 @@ jobs:
       # `just` is provided by the pinned dev shell, not the hosted runner.
       # Keep this after Nix setup or every PR fails before reaching Rust.
       - name: agent integration gates
-        run: nix develop -c bash -c 'export PATH="$1:$PATH"; exec just agent-integrations-check' -- "$SETUP_NODE_BIN"
+        run: nix develop -c just agent-integrations-check
       - name: rust checks (fmt + clippy + doc + deny)
         if: needs.changes.outputs.docs_only != 'true'
         run: |

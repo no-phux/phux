@@ -8,8 +8,8 @@ last-reviewed: 2026-08-07
 
 **TL;DR.** Homebrew is the recommended install on supported macOS and Linux
 machines. The verified curl installer and release tarballs install the same
-`phux` and `phux-mcp` binaries. Source builds use the Nix-pinned Rust and Zig
-toolchain. `phux update` maintains a direct-release install in place and prints
+`phux` and `phux-mcp` binaries. Source builds use native tools or the Nix shell
+with the same Rust and Zig requirements. `phux update` maintains a direct-release install in place and prints
 the exact native command for a Homebrew, Cargo, or Nix one. Windows and
 `cargo install phux` are not supported.
 
@@ -22,7 +22,7 @@ the exact native command for a Homebrew, Cargo, or Nix one. Windows and
 | Homebrew | Day-to-day binary install on supported Homebrew platforms | Primary binary path where the tap has an artifact |
 | Curl installer | Scripted install from GitHub release tarballs | Installs the latest GitHub release by default |
 | Release tarball | Manual install and verification | CI-built tarballs include `phux`, `phux-mcp`, licenses, README, and `.sha256` sidecars |
-| From source | Contributors and source-first users | Clone, build, and install through the Nix-pinned toolchain |
+| From source | Contributors and source-first users | Clone, build, and install with native tools or Nix |
 
 Once installed, `phux update` is the one command that moves any of them
 forward; see [Updating](#updating).
@@ -92,16 +92,24 @@ a portable CI build.
 
 ## From source
 
-Installing from source uses the Nix dev shell to pin the Rust toolchain and the
-Zig compiler libghostty's build needs. The commands still install binaries into
-Cargo's bin directory:
+Set up the native toolchain using [Contributor setup](./SETUP.md), or use the
+Nix dev shell to provision it. Both install binaries into Cargo's bin directory.
+With native prerequisites installed:
 
 ```sh
 git clone https://github.com/phall1/phux
 cd phux
+bash scripts/doctor.sh native
+cargo install --locked --path crates/phux
+cargo install --locked --path crates/phux-mcp
+phux
+```
+
+With Nix, the equivalent install commands are:
+
+```sh
 nix develop -c cargo install --locked --path crates/phux
 nix develop -c cargo install --locked --path crates/phux-mcp
-phux
 ```
 
 `phux` with no arguments auto-spawns a server and attaches to it. Detach with
@@ -110,12 +118,11 @@ Interactive `phux`, `phux attach`, and `phux new` require both stdin and stdout
 to be terminals. Redirected invocations refuse before starting a server or
 emitting terminal control bytes; use the headless verbs for scripts and CI.
 
-If you are developing rather than installing, use `nix develop` or `direnv
-allow` and then the `just` commands in [`QUICKSTART.md`](./QUICKSTART.md).
+If you are developing rather than installing, select the relevant native or
+Nix setup and scoped checks in [`SETUP.md`](./SETUP.md).
 For a checkout you edit continuously, install the current debug build with:
 
 ```sh
-direnv allow                 # once per checkout
 just install-dev             # build phux + phux-mcp and install both
 hash -r                      # refresh an older shell's command cache if needed
 command -v phux              # should print ~/.cargo/bin/phux

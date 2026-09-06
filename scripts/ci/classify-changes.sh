@@ -37,6 +37,12 @@ for file in "${files[@]}"; do
     # runtime steps, not compilation, and the next code PR exercises the
     # lanes against the new version. Anything OUTSIDE this set fails closed
     # into full lanes as before.
+    # Exception: release.yml owns the native compiler archive pins too.
+    .github/workflows/release.yml)
+      workflow_only=false
+      phux_needed=true
+      cockpit_needed=true
+      ;;
     .github/workflows/*.yml|.github/actions/**/*.yml|.github/actionlint.yaml)
       ;;
     *)
@@ -50,7 +56,7 @@ for file in "${files[@]}"; do
           ;;
         # Shared inputs cockpit's lanes compile against: the FFI/protocol/
         # perf crates and the workspace-level files its build resolves.
-        crates/phux-client-core/*|crates/phux-client-ffi/*|crates/phux-perf/*|crates/phux-protocol/*|.cargo/config.toml|Cargo.lock|Cargo.toml|rust-toolchain.toml|justfile|release-please-config.json)
+        crates/phux-client-core/*|crates/phux-client-ffi/*|crates/phux-perf/*|crates/phux-protocol/*|.cargo/config.toml|Cargo.lock|Cargo.toml|rust-toolchain.toml|justfile|release-please-config.json|scripts/doctor.sh|scripts/setup-rust.sh|scripts/install-zig.sh|scripts/lib/dev-toolchain.sh)
           phux_needed=true
           cockpit_needed=true
           ;;

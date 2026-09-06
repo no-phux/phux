@@ -25,6 +25,7 @@ You do not need to understand the protocol before using phux.
 | Connect OpenCode to shared phux terminals | [OpenCode integration](./consumers/opencode.md) |
 | Connect Pi to shared phux terminals | [Pi integration](./consumers/pi.md) |
 | Install through Homebrew, a release, or source | [Install guide](./INSTALL.md) |
+| Set up to contribute to one part of the repo | [Contributor setup: native or Nix](./SETUP.md) |
 | Decide whether phux fits your workflow today | [When to use phux](./when-to-use.md) |
 | Change the prefix, keys, status bar, or hooks | [Configuration](./CONFIG.md) |
 | Record a pane or a session as a cast, GIF, or APNG | [Recording](./consumers/recording.md) |

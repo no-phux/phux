@@ -15,15 +15,11 @@ categories = ["command-line-interface", "network-programming", "encoding"]
 workspace = true
 
 [features]
-# By default phux-protocol is a near-empty shell: stable IDs, capability
-# atoms, the protocol-version constant, and the policy vocabulary (ALPN
-# constants, peer identity, capabilities). This is what docs.rs and crates.io
-# see — it
-# has no git-only deps, so it publishes cleanly.
+# The default wire codec and input atoms are pure Rust, with no git-only
+# dependencies, so browser consumers and crates.io need no native VT build.
 default = []
-# `server` activates the full type surface, including libghostty-vt input-
-# atom re-exports (ADR-0008) and the wire codec. Every in-workspace
-# consumer enables this; external consumers will too.
+# `server` adds libghostty conversions and rendering/replay helpers. Native
+# terminal consumers enable it; the codec itself does not require it.
 server = ["dep:libghostty-vt", "dep:png", "libghostty-vt/kitty-graphics", "libghostty-vt/png"]
 
 [dependencies]

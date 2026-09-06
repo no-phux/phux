@@ -13,6 +13,11 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "rust-toolchain.toml"
+      - "scripts/doctor.sh"
+      - "scripts/setup-rust.sh"
+      - "scripts/install-zig.sh"
+      - "scripts/lib/dev-toolchain.sh"
+      - ".github/workflows/release.yml"
       - "justfile"
       - ".github/workflows/cockpit-ci.yml"
       - ".github/workflows/cockpit-release.yml"
@@ -29,6 +34,11 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "rust-toolchain.toml"
+      - "scripts/doctor.sh"
+      - "scripts/setup-rust.sh"
+      - "scripts/install-zig.sh"
+      - "scripts/lib/dev-toolchain.sh"
+      - ".github/workflows/release.yml"
       - "justfile"
       - ".github/workflows/cockpit-ci.yml"
       - ".github/workflows/cockpit-release.yml"
@@ -96,9 +106,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
-        with:
-          version: 0.16.0
+      - name: Contributor Zig setup
+        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+
+      - name: Contributor Rust setup
+        run: bash scripts/setup-rust.sh cockpit
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -107,6 +119,9 @@ jobs:
           cache-dependency-path: clients/cockpit/package-lock.json
 
       # The same-checkout phux-client-ffi build is ~4.5 minutes cold.
+      - name: Check native Cockpit prerequisites
+        run: bash scripts/doctor.sh cockpit
+
       # rust-cache keys on Cargo.lock itself; the shared key keeps this
       # macOS ffi-release cache disjoint from ci.yml's Linux check/test
       # profiles. Save only from main pushes — GitHub's Actions cache is a

@@ -1,0 +1,65 @@
+name: web-check
+
+on:
+  pull_request:
+    paths:
+      - 'clients/phux-web/**'
+      - 'clients/phux-vt-web/**'
+      - 'crates/phux-protocol/**'
+      - 'crates/phux-client-core/**'
+      - 'crates/phux-perf/**'
+      - 'scripts/build-vt-wasm.sh'
+      - 'scripts/prepare-vt-wasm.mjs'
+      - 'scripts/test-vt-wasm.mjs'
+      - 'scripts/lib/dev-toolchain.sh'
+      - 'rust-toolchain.toml'
+      - 'flake.*'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/web-check.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'clients/phux-web/**'
+      - 'clients/phux-vt-web/**'
+      - 'crates/phux-protocol/**'
+      - 'crates/phux-client-core/**'
+      - 'crates/phux-perf/**'
+      - 'scripts/build-vt-wasm.sh'
+      - 'scripts/prepare-vt-wasm.mjs'
+      - 'scripts/test-vt-wasm.mjs'
+      - 'scripts/lib/dev-toolchain.sh'
+      - 'rust-toolchain.toml'
+      - 'flake.*'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/web-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-check-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  engine-and-adapters:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Reproduce committed engine and verify checkpoint ABI
+        run: nix develop -c bash scripts/build-vt-wasm.sh --check
+      - name: Metadata normalization regression
+        run: nix develop -c node --test scripts/test-vt-wasm.mjs
+      - name: Engine adapter tests
+        working-directory: clients/phux-vt-web
+        run: nix develop ../.. -c wasm-pack test --node --locked
+      - name: Browser session tests
+        working-directory: clients/phux-web
+        run: nix develop ../.. -c wasm-pack test --node --locked
+      - name: Shipping browser package
+        working-directory: clients/phux-web
+        run: nix develop ../.. -c wasm-pack build --target web --release --out-dir pkg --locked

@@ -176,7 +176,7 @@ host, and no homegrown crypto. The reasoning is in
 | Reach it over the network | [Remote access](./docs/remote-access.md) |
 | The wire protocol | [Spec](./docs/spec/) · [Architecture](./docs/architecture/) |
 | Where it's going | [Vision](./docs/vision.md) · [ADRs](./ADR/README.md) |
-| Build it with us | [Contributing](./CONTRIBUTING.md) |
+| Build it with us | [Setup: native or Nix, by work area](./docs/SETUP.md), then [Contributing](./CONTRIBUTING.md) |
 
 ## License
 

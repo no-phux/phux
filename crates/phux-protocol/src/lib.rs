@@ -9,16 +9,13 @@
 //!
 //! # Crate features
 //!
-//! - **`server`** (off by default): enables the full type surface —
-//!   the [`input`] and [`wire`] modules, plus all re-exports of
-//!   `libghostty-vt` input atoms (per [ADR-0008]). Every in-workspace
-//!   consumer enables this feature. Without `server` this crate is a
-//!   near-empty shell exposing only [`ids`], [`caps`], [`policy`], and
-//!   [`Version`]; that subset is the minimal surface external consumers can
-//!   depend on without pulling in the full terminal-emulator type surface.
+//! - The default features expose the pure-Rust [`input`] and [`wire`] codec,
+//!   [`ids`], [`caps`], [`policy`], and [`Version`], including for browser clients.
+//! - **`server`** (off by default): adds conversions to `libghostty-vt` atoms
+//!   and engine-dependent SGR, Kitty replay, and render-pool helpers. Native
+//!   terminal consumers enable it; decoding wire messages does not require it.
 //!
 //! [`docs/spec/`]: https://github.com/phall1/phux/tree/main/docs/spec
-//! [ADR-0008]: https://github.com/phall1/phux/blob/main/ADR/0008-use-libghostty-types-directly.md
 //! [ADR-0013]: https://github.com/phall1/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
 
 #![forbid(unsafe_code)]

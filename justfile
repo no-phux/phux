@@ -4,6 +4,43 @@
 default:
     @just --list
 
+# Check prerequisites for only this work area; also works without just via bash.
+doctor SCOPE="native":
+    bash scripts/doctor.sh "{{SCOPE}}"
+
+# Small pure-Rust loop: no Zig, Node, nextest, or browser tools.
+core-check: (doctor "core") (crate-check "phux-core")
+
+# One crate's gate; optional test features (e.g. phux-protocol server).
+crate-check PACKAGE FEATURES="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(--locked -p "{{PACKAGE}}")
+    if [[ -n "{{FEATURES}}" ]]; then args+=(--features "{{FEATURES}}"); fi
+    cargo fmt --all -- --check
+    cargo clippy "${args[@]}" --all-targets -- -D warnings
+    RUSTDOCFLAGS='-D warnings' cargo doc "${args[@]}" --no-deps
+    {{AUTO_SPAWN_BACKSTOP}} cargo test "${args[@]}"
+
+# One agent integration's type, unit, packed-artifact, and audit gates.
+integration-check PACKAGE:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{PACKAGE}}" in opencode|pi|claude) ;; *) echo 'choose opencode, pi, or claude' >&2; exit 2 ;; esac
+    bash scripts/doctor.sh integrations
+    # Incidental install audits are off; the explicit audit in gates still runs.
+    export npm_config_audit=false npm_config_fund=false
+    npm --prefix "integrations/{{PACKAGE}}" ci
+    npm --prefix "integrations/{{PACKAGE}}" run gates
+
+# Native contributor smoke: real compiler/linker/VT build and codec tests, no Nix.
+native-smoke:
+    bash scripts/native-smoke.sh
+
+# Setup helper behavior, including missing tools and rejected compiler downloads.
+setup-check:
+    bash scripts/test-dev-setup.sh
+
 # Bound every daemon the test lanes can AUTO-SPAWN (phux-whhd, phux-nbam).
 #
 # A test that spawns `phux server` itself passes `--exit-after-idle 600` as
@@ -343,6 +380,8 @@ shellcheck:
 # truth table, and the SHA-pin policy for action references.
 workflow-check:
     actionlint .github/workflows/*.yml
+    bash scripts/test-dev-setup.sh
+    node --test scripts/test-vt-wasm.mjs
     bash scripts/ci/check-classify-changes.sh
     bash scripts/check-action-pins.sh
     node scripts/check-release-orchestration.mjs
@@ -350,7 +389,7 @@ workflow-check:
 
 # Stable-cargo test for environments without nextest.
 test-cargo:
-    {{AUTO_SPAWN_BACKSTOP}} cargo test --workspace --all-features
+    {{AUTO_SPAWN_BACKSTOP}} cargo test --workspace
 
 # Dependency hygiene: licenses, advisories, bans.
 deny:
@@ -465,45 +504,13 @@ complexity CCN="15":
 milestone-check:
     node scripts/check-milestone-labels.mjs
 
-# Everything CI must pass, minus the lanes that need a real server (see
-# `ci-full`). This is the inner-loop bar: everything here is deterministic
-# and machine-independent, so a green run predicts a green `check` job.
-#
-# The gate list mirrors ci.yml's `check` job step for step — fmt, clippy,
-# rustdoc, deny, docs-check, formula-check, font-check, e2e-lane-check,
-# zig-pin-check, install-surface-check, skill-contract — plus the unit test pool from the `test`
-# job. Keep it that way:
-# `just ci` losing a gate CI still runs is how PR #306 shipped five rustdoc
-# failures to a red build after a green local run.
-#
-# `test` must NOT precede any deterministic, test-independent gate (doc,
-# deny, the bash guard rails). `just` fail-fasts on the first non-zero
-# recipe, so a gate placed after `test` silently stops running the moment a
-# test flakes on that machine -- this repo has load-dependent flakes, and
-# that exact ordering bug is how two more branches (phux-j1zj,
-# phux-w7z2.59) reached CI with private-intra-doc-links failures despite a
-# green local `just ci` (phux-yb1m). Keep every gate whose result does not
-# depend on the test suite ahead of `test`.
-#
-# The ratatui-confinement boundary (ADR-0020) used to be a grep guard
-# (`check-ratatui-boundary`); phux-0fv replaced it with a crate split, so
-# `cargo build`/`lint` now enforce it structurally — `phux-client-core` has
-# no `ratatui` dependency.
-
-# The inner-loop bar — every deterministic gate CI runs. Run before pushing.
+# All integration packages and their shared version contract.
 agent-integrations-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Incidental install-time audits are off (npm's advisory endpoints have
-    # 503'd mid-lane and installs don't need them; npm stops project-config
-    # discovery at the nearest package.json, so env vars — not a root .npmrc
-    # — are what reach every spawned npm call). The explicit `npm audit`
-    # gates stay on, wrapped in scripts/npm-audit-gate.mjs for outage retry.
-    export npm_config_audit=false npm_config_fund=false
     node scripts/check-agent-integration-versions.mjs
-    for package in integrations/opencode integrations/pi integrations/claude; do
-      npm --prefix "$package" ci
-      npm --prefix "$package" run gates
+    for package in opencode pi claude; do
+      just integration-check "$package"
     done
 
 # Are any releases stuck? Reports drafts that never published, published
@@ -514,26 +521,14 @@ agent-integrations-check:
 release-drift grace="120":
     GRACE_MINUTES={{ grace }} node scripts/check-release-drift.mjs
 
-# The inner-loop bar — every deterministic gate CI runs. Run before pushing.
+# Full root gate set; iterate with scoped checks from docs/SETUP.md first.
+# Keep independent gates ahead of tests: a flaky test must not hide rustdoc or
+# contract failures. CONTRIBUTING.md owns the local/CI gate map (phux-yb1m).
 ci: fmt-check lint doc deny docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check install-surface-check skill-contract agent-integrations-check test
     @echo "ok"
 
-# The COMPLETE PR bar: `ci` plus the two lanes that spawn real processes.
-#
-# These are split out of `ci` rather than folded in because they are not
-# machine-independent: `e2e` spawns real PTY-backed servers and ends with two
-# wall-clock perf ceilings (`perf_latency`, `perf_colored_output`), which a
-# laptop under load can miss for reasons that say nothing about the diff.
-# Keeping them out of `ci` keeps the inner loop honest — a `ci` failure always
-# means a real defect — while this recipe reproduces what a PR is actually
-# judged on. Run it before pushing anything that touches the CLI surface, the
-# server lifecycle, or the example scripts.
-#
-# Not covered locally: the sccache/rust-cache/lane-signal steps (runner
-# infrastructure) and the deploy-key-gated release lanes. See CONTRIBUTING.md
-# §"Bar for any change" for the full gate-by-gate map.
-
-# The complete PR bar — `ci` plus the real-server e2e and agent smoke lanes.
+# Full root PR bar, including timing-sensitive e2e and agent example smoke.
+# Browser and Cockpit clients have separate gates; see docs/SETUP.md.
 ci-full: ci e2e agents-fleet-smoke
     @echo "ok (full)"
 

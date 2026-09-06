@@ -69,6 +69,10 @@ runs:
         authToken: ${{ inputs.cachix-auth-token }}
         pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
 
+    - name: verify pinned shell prerequisites
+      shell: bash
+      run: nix develop -c bash scripts/doctor.sh ci
+
     - name: enable sccache
       if: inputs.sccache == 'true'
       shell: bash

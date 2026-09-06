@@ -58,6 +58,7 @@ has a **single owner** for each kind of content:
 | What is phux? | `docs/CONCEPTS.md` | README, VISION, ARCH, DESIGN |
 | What's the wire byte? | `docs/spec/*` | ARCH, ADRs (link instead) |
 | How does the server process model work? | `docs/architecture/process-model.md` | SPEC, READMEs |
+| Which tools do I need to build/test this area? | `docs/SETUP.md` | Agent instructions, client READMEs (link instead) |
 | What does the TUI's keybind syntax look like? | `docs/consumers/tui.md` | SPEC, README |
 | Why did we pick X over Y? | `ADR/NNNN-*.md` | Anywhere else |
 | What's the long arc? | `docs/vision.md` | README, CONCEPTS (link only) |

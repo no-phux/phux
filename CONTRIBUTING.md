@@ -6,7 +6,8 @@ last-reviewed: 2026-08-09
 
 # Contributing to phux
 
-**TL;DR.** Pass `just ci` before opening a PR; update `docs/spec/` +
+**TL;DR.** Test the area you change and expand coverage for shared code;
+use `just ci-full` for the full root PR bar. Update `docs/spec/` +
 CHANGELOG for wire changes; write an ADR for any decision that closes
 off design space; no homegrown crypto, scripting language, plugin
 host, tmux-style copy-mode clone, or template DSL. Doc conventions live in
@@ -26,19 +27,28 @@ well-defined problem; behave the way users expect; be maintainable by
 one person; compose with other tools; be finishable. If a proposal moves
 phux away from any of those, it's the wrong proposal.
 
+## Get set up
+
+Start with [Contributor setup](./docs/SETUP.md): choose docs, Rust core, native
+terminal, an agent integration, browser, or Cockpit. Native tools and Nix run
+the same commands. You do not need Nix or maintainer task-tracking tools to
+contribute; a GitHub issue or PR is enough to coordinate a contribution.
+
 ## Bar for any change
 
-A PR must pass:
+A PR must pass its applicable CI lanes. During development, run the scoped
+checks in the setup guide. For changes spanning the root Rust/CLI surface:
 
 ```sh
-just ci        # the inner loop: every deterministic gate CI runs
+just ci        # full root deterministic/unit gate set
 just ci-full   # ci + the real-server lanes; the complete PR bar
 ```
 
-`just ci` is the target you run on every save-and-push. `just ci-full` adds
-the two lanes that spawn real processes, and is what a PR is actually judged
-on — run it before pushing anything that touches the CLI surface, the server
-lifecycle, or the example scripts.
+Use scoped gates while iterating, then expand for shared code and affected
+consumers. `just ci-full` adds real-server e2e and the agent example smoke; run
+it before pushing anything that touches the CLI surface, server lifecycle, or
+the example scripts. Cockpit and browser builds have their own additional
+checks; the root target does not build those clients.
 
 ### Gate-by-gate: local vs CI
 
@@ -59,26 +69,33 @@ commitment to keep the two columns aligned.
 | generated glyph table | `scripts/check-generated-font.sh` | `just font-check` (identical) |
 | e2e lane coverage | `scripts/check-e2e-lanes.sh` | `just e2e-lane-check` (identical) |
 | Homebrew formula | `scripts/check-formula.sh` | `just formula-check` (identical) |
-| unit tests | `cargo nextest run --workspace` (default features) | `just test` (adds `--all-features`) |
+| unit tests | `cargo nextest run --workspace` (default features) | `just test` (identical); `just test-cargo` if nextest is unavailable |
+| workflow/setup contracts | `just workflow-check` | same (includes `just setup-check`'s helper tests) |
+| agent integration packages | `just agent-integrations-check` | same; `just integration-check <package>` for a scoped loop |
+| Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |
+| install surface | `scripts/check-install-surface.sh` | `just install-surface-check` |
+| embedded skill contract | `just skill-contract` | same |
 | fast e2e + perf gates | `just e2e` | `just e2e`, via `just ci-full` |
 | agent example smoke | `just agents-fleet-smoke` | same, via `just ci-full` |
 
 Two rows are worth reading twice:
 
-- **Unit tests are not a strict superset in the feature dimension.** CI runs
-  the *default* feature set; `just test` runs `--all-features`. Neither
-  contains the other, and that is deliberate — `--all-features` enables
-  `phux/dhat-heap`, which installs dhat as the global allocator and would
-  make the wall-clock perf gates measure dhat instead of phux. The default
-  feature set still gets compiled locally, by `just e2e`'s `--workspace`
-  build (and by `just check`).
+- **Unit tests use default features locally and in CI.** `--all-features`
+  enables `phux/dhat-heap`, replacing the allocator and distorting wall-clock
+  measurements. Clippy and rustdoc still compile all features. `test-cargo`
+  also runs doctests, but does not reproduce nextest's retries/filtersets.
 - **`just e2e` is not in `just ci`.** It spawns real PTY-backed servers and
   ends in two wall-clock ceilings, which a laptop under load can miss for
   reasons that say nothing about the diff. Keeping it out means a `just ci`
-  failure always indicates a real defect; `just ci-full` is where you pay
+  is easier to diagnose; `just ci-full` is where you pay
   for the full picture.
 
 ### Gates that are CI-only, and why
+
+Native environment smoke coverage lives in `native-setup.yml` (Linux) and the
+existing `cockpit-ci.yml` (macOS). They use the contributor setup helpers from
+`docs/SETUP.md`. `just native-smoke` reproduces the Linux lane's commands on
+your native host; it is environment coverage, not another full workspace suite.
 
 These have no local equivalent and none is planned. If you are chasing a
 red build in one of them, the answer is on the runner, not on your machine.

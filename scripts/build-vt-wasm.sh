@@ -7,28 +7,56 @@
 # Rust adapter supplies secure browser entropy and probes codec identity,
 # version, features, and limits before advertising NativeState.
 #
-# Requires zig 0.16.x (the phux nix devshell provides it). GHOSTTY_SRC defaults
-# to the published standalone checkpoint-WASM checkout; override it only with
-# a source tree implementing the same frozen incremental ABI.
+# Requires the release-pinned Zig and Node (native or Nix). By default fetches
+# verified immutable source; GHOSTTY_SRC is an explicit local development override.
+# --check rebuilds and compares without changing the committed artifact.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
-GHOSTTY_SRC="${GHOSTTY_SRC:-$repo/../ghostty-checkpoint-wasm}"
-
-if [ ! -f "$GHOSTTY_SRC/build.zig" ]; then
-  echo "ghostty source not found at GHOSTTY_SRC=$GHOSTTY_SRC" >&2
-  echo "  set GHOSTTY_SRC=/path/to/ghostty" >&2
-  exit 1
+source "$repo/scripts/lib/dev-toolchain.sh"
+revision=392baed9cbf0f572d551c4b3e0c4f5c40bcca054
+archive_sha256=64198f7469a0d3d79455c0f8434ae1fbb50482dac69f82f1d8e08f4d6b5e6ea5
+mode="${1:-build}"
+[[ $# -le 1 && ( "$mode" = build || "$mode" = --check ) ]] || {
+  echo 'usage: bash scripts/build-vt-wasm.sh [--check]' >&2; exit 2;
+}
+for tool in zig node tar; do
+  command -v "$tool" >/dev/null || { echo "$tool missing; see docs/SETUP.md#browser-client" >&2; exit 1; }
+done
+[[ "$(zig version)" = "$ZIG_VERSION" ]] || { echo "requires Zig $ZIG_VERSION" >&2; exit 1; }
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/phux-vt-wasm.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+if [[ -z "${GHOSTTY_SRC:-}" ]]; then
+  curl -fL --retry 3 "https://codeload.github.com/phall1/ghostty/tar.gz/$revision" -o "$scratch/source.tar.gz"
+  if command -v sha256sum >/dev/null; then
+    actual="$(sha256sum "$scratch/source.tar.gz")"
+  else
+    actual="$(shasum -a 256 "$scratch/source.tar.gz")"
+  fi
+  [[ "${actual%% *}" = "$archive_sha256" ]] || { echo 'engine source checksum mismatch' >&2; exit 1; }
+  tar -xf "$scratch/source.tar.gz" -C "$scratch"
+  GHOSTTY_SRC="$scratch/ghostty-$revision"
 fi
-if ! command -v zig >/dev/null 2>&1; then
-  echo "zig not on PATH — run inside the nix devshell (nix develop)" >&2
-  exit 1
-fi
+[[ -f "$GHOSTTY_SRC/build.zig" ]] || { echo "ghostty source missing: $GHOSTTY_SRC" >&2; exit 1; }
+GHOSTTY_SRC="$(cd "$GHOSTTY_SRC" && pwd)"
 
 echo "building ghostty-vt.wasm from $GHOSTTY_SRC (zig $(zig version)) ..."
-( cd "$GHOSTTY_SRC" && zig build -Demit-lib-vt -Dtarget=wasm32-freestanding )
+# Fix version metadata and keep runtime safety checks in the shipping engine.
+# This revision ignores -Dstrip for VT WASM, so prepare-vt-wasm removes custom
+# metadata sections explicitly after compilation.
+( cd "$GHOSTTY_SRC" && zig build -Demit-lib-vt -Dtarget=wasm32-freestanding \
+    -Doptimize=ReleaseSafe -Dstrip=true -Dversion-string=1.3.2-dev \
+    --prefix "$scratch/out" )
+artifact="$scratch/out/bin/ghostty-vt.wasm"
+node "$repo/scripts/prepare-vt-wasm.mjs" "$artifact"
+( cd "$GHOSTTY_SRC" && node test/lib_vt_snapshot_incremental_wasm.mjs "$artifact" )
 
 dest="$repo/clients/phux-vt-web/vendor/ghostty-vt.wasm"
+if [[ "$mode" = --check ]]; then
+  cmp "$artifact" "$dest" || { echo 'engine differs; regenerate with bash scripts/build-vt-wasm.sh' >&2; exit 1; }
+  echo 'committed engine matches the verified source rebuild'
+  exit 0
+fi
 mkdir -p "$(dirname "$dest")"
-cp "$GHOSTTY_SRC/zig-out/bin/ghostty-vt.wasm" "$dest"
+cp "$artifact" "$dest"
 echo "vendored $(du -h "$dest" | cut -f1) -> ${dest#"$repo"/}"

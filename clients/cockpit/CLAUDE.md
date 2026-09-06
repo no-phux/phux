@@ -2,6 +2,12 @@
 
 This file provides instructions and context for AI coding agents working on this project.
 
+For prerequisites, use the canonical [Contributor setup](../../docs/SETUP.md#cockpit).
+Native tools and Nix are supported. From the root, run `just doctor cockpit`,
+then `just cockpit-test` / `just cockpit-build`; these include same-checkout
+FFI. Keep install/version details in the setup guide rather than duplicating
+them here. Expand validation when changing shared protocol or FFI inputs.
+
 ## Product Boundary
 
 Cockpit owns the native command surface, client projection model, interaction,

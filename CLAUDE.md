@@ -19,19 +19,26 @@ phux-project-specific guidance: build, test, architecture, and conventions.
 
 ## Build & Test
 
-The dev shell is Nix-pinned (`flake.nix`): Rust 1.90, `zig_0_16` for
-libghostty-vt's build, plus `nextest`, `deny`, `actionlint`, `watch`, `insta`,
-`mutants`, `just`.
+Start at [`docs/SETUP.md`](./docs/SETUP.md). Native tools and Nix are supported;
+select prerequisites by the work area instead of installing the full shell.
+Run `bash scripts/doctor.sh <area>` for prerequisites and the smallest relevant
+gate first. Expand validation for shared APIs, protocol/FFI, Cargo inputs, or
+build scripts. Report exact checks; a scoped pass is not a full CI pass.
+Keep setup/version details in that guide and the toolchain pins, not in agent
+instruction files. Browser engine regeneration uses verified pinned source.
+Beads is maintainer/agent task tracking, not a compiler or contributor gate
+dependency; outside contributors can use a GitHub issue/PR without it.
 
 ```bash
-nix develop      # or direnv allow once
-just ci          # the inner loop: every deterministic gate CI runs
-just ci-full     # ci + the real-server e2e and agent smoke lanes
+just doctor native  # or core / docs / integrations / web / cockpit / ci
+just core-check     # example scoped loop; see SETUP.md for other areas
+just ci             # full root deterministic/unit gate set
+just ci-full        # ci + the real-server e2e and agent smoke lanes
 just check       # quick type-check
 just test        # cargo nextest run --workspace
 ```
 
-**`just ci-full` is the complete PR bar; `just ci` is the inner loop.** CI's
+**`just ci-full` is the full root PR bar; scoped gates are the inner loop.** CI's
 `test` job runs `cargo nextest run --workspace` *plus* `just e2e` *plus*
 `just agents-fleet-smoke`, and only the first of those is inside `just ci` —
 so a branch can be `just ci` green and still fail a required check. `just e2e`

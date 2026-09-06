@@ -560,17 +560,20 @@ gate_adr_number_unique() {
         return
     fi
 
-    local -A first_seen=()
+    # ADR IDs are bounded decimal integers; indexed arrays also work in the
+    # Bash 3.2 shipped on macOS. Convert explicitly so 0008 is not octal.
+    local -a first_seen=()
     while IFS= read -r file; do
         # `adr_files` yields only `NNNN-slug.md`; this reads the number out of
         # the name rather than deciding again what counts as an ADR.
         [[ "$(basename "$file")" =~ ^([0-9]{4})- ]] || continue
         local num="${BASH_REMATCH[1]}"
-        if [[ -n "${first_seen[$num]:-}" ]]; then
+        local index=$((10#$num))
+        if [[ -n "${first_seen[$index]:-}" ]]; then
             violate adr-number-unique "$file" \
-                "ADR number $num is also used by ${first_seen[$num]#"$ROOT"/} — renumber one of the two (pick whichever has fewer inbound references) to the next free ADR number, then update every 'ADR-$num' cross-reference (prose, markdown links, code comments) that meant the renumbered file"
+                "ADR number $num is also used by ${first_seen[$index]#"$ROOT"/} — renumber one of the two (pick whichever has fewer inbound references) to the next free ADR number, then update every 'ADR-$num' cross-reference (prose, markdown links, code comments) that meant the renumbered file"
         else
-            first_seen[$num]="$file"
+            first_seen[$index]="$file"
         fi
     done < <(adr_files)
 }
@@ -604,23 +607,24 @@ gate_adr_index_sync() {
     fi
 
     # Collect index rows: `| [NNNN](./NNNN-slug.md) | ... |`.
-    local line num target prev=""
-    local -A row_target=()
+    local line num index target prev=""
+    local -a row_target=()
     local row_re='^\|[[:space:]]*\[([0-9]{4})\]\(\./([^)]+)\)'
     while IFS= read -r line; do
         [[ "$line" =~ $row_re ]] || continue
         num="${BASH_REMATCH[1]}"
+        index=$((10#$num))
         target="${BASH_REMATCH[2]}"
 
         # A number already in `row_target` *is* the second-row signal; a
         # parallel counter said the same thing twice. The first row wins, so
         # the reverse direction below compares against the row a reader would
         # follow.
-        if [[ -n "${row_target[$num]:-}" ]]; then
+        if [[ -n "${row_target[$index]:-}" ]]; then
             violate adr-index-sync "$readme" \
                 "index has more than one row for ADR number $num"
         else
-            row_target[$num]="$target"
+            row_target[$index]="$target"
         fi
 
         if [[ ! -f "$ROOT/ADR/$target" ]]; then
@@ -647,12 +651,13 @@ gate_adr_index_sync() {
         # Reads the number out of the name; `adr_files` decides membership.
         [[ "$base" =~ ^([0-9]{4})- ]] || continue
         num="${BASH_REMATCH[1]}"
-        if [[ -z "${row_target[$num]:-}" ]]; then
+        index=$((10#$num))
+        if [[ -z "${row_target[$index]:-}" ]]; then
             violate adr-index-sync "$file" \
                 "no index row in ADR/README.md for ADR number $num — every ADR adds exactly one row at its numeric position (see the comment above the index)"
-        elif [[ "${row_target[$num]}" != "$base" ]]; then
+        elif [[ "${row_target[$index]}" != "$base" ]]; then
             violate adr-index-sync "$file" \
-                "index row $num links to ./${row_target[$num]}, not to this file — two files are claiming the same ADR number, or the row was not updated with a rename"
+                "index row $num links to ./${row_target[$index]}, not to this file — two files are claiming the same ADR number, or the row was not updated with a rename"
         fi
     done < <(adr_files)
 }
