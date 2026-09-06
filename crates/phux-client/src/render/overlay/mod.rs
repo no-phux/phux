@@ -105,6 +105,11 @@ pub trait RenderOverlay {
     /// the key.
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand;
 
+    /// Insert clipboard text literally, without submitting or dismissing the
+    /// overlay. [`OverlayState::handle_paste`] removes control characters before
+    /// dispatch; overlays without a text field consume the paste without action.
+    fn handle_paste(&mut self, _text: &str) {}
+
     /// React to a mouse event while this overlay is active. Most modal
     /// overlays ignore pointer input; copy-mode consumes wheel events to
     /// scroll the focused pane's client-local viewport.
@@ -440,6 +445,16 @@ impl OverlayState {
                 OverlayOutcome::Copy(req)
             }
             OverlayCommand::ScrollViewport(delta) => OverlayOutcome::ScrollViewport(delta),
+        }
+    }
+
+    /// Insert a paste into only the top overlay. Single-line fields ignore
+    /// control characters, just as they do for typed text; pasted Enter, Escape,
+    /// and navigation keys must never become overlay commands.
+    pub fn handle_paste(&mut self, text: &str) {
+        if let Some(top) = self.stack.last_mut() {
+            let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
+            top.handle_paste(&text);
         }
     }
 

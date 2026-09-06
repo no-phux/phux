@@ -1316,6 +1316,70 @@ async fn dispatch_mouse_two_pane_into(
     (received, drag, focused_pane, mouse_optout, repainted)
 }
 
+#[tokio::test]
+async fn bracketed_paste_populates_modal_text_without_reaching_the_pane() {
+    use crate::render::overlay::{
+        OverlayOutcome, PromptOverlay, RenderOverlay, SelectItem, SelectList,
+    };
+
+    let theme = Theme::default();
+    let prompt = PromptOverlay::rename_window("", &theme);
+    let picker = SelectList::new(
+        "Sessions",
+        vec![
+            SelectItem::new("other", bare_action("wrong-choice")),
+            SelectItem::new("kitten", bare_action("chosen-session")),
+        ],
+        &theme,
+    );
+    let cases = [
+        (
+            Box::new(prompt) as Box<dyn RenderOverlay>,
+            b"build\r\n\t jobs\x1b\x08".as_slice(),
+            "rename-window",
+            Some("build jobs"),
+        ),
+        (
+            Box::new(picker) as Box<dyn RenderOverlay>,
+            b"k\tit\n".as_slice(),
+            "chosen-session",
+            None,
+        ),
+    ];
+    for (modal, payload, expected_action, expected_name) in cases {
+        let mut overlays = OverlayState::new();
+        overlays.push(modal);
+        let mut framed = Vec::from(b"\x1b[200~".as_slice());
+        framed.extend_from_slice(payload);
+        framed.extend_from_slice(b"\x1b[201~");
+        let events = crate::attach::input::StdinParser::new().feed(&framed);
+        let (received, _, _, _, _) =
+            dispatch_mouse_two_pane_into(&mut overlays, events, &[], &[], (0, 0)).await;
+        assert!(
+            received.is_empty(),
+            "paste leaked to the pane: {received:?}"
+        );
+        assert!(
+            overlays.is_active(),
+            "pasted controls must not submit or dismiss"
+        );
+
+        let InputEvent::Key(enter) = press(PhysicalKey::Enter, None) else {
+            unreachable!();
+        };
+        let OverlayOutcome::RunAction(action) = overlays.handle_key(&enter) else {
+            panic!("pasted text must remain available until a real Enter");
+        };
+        assert_eq!(action.action, expected_action);
+        if let Some(name) = expected_name {
+            assert_eq!(
+                action.args.get("name").and_then(toml::Value::as_str),
+                Some(name)
+            );
+        }
+    }
+}
+
 /// phux-npb3 hardening: a second Press arriving while a divider drag is
 /// active must be consumed — not fall through to normal routing, where
 /// it would move focus and forward an `INPUT_MOUSE` mid-drag.

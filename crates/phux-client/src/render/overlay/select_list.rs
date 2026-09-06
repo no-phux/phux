@@ -642,6 +642,12 @@ impl RenderOverlay for SelectList {
         OverlayCommand::Stay
     }
 
+    fn handle_paste(&mut self, text: &str) {
+        self.query.push_str(text);
+        let indices = self.filtered_indices();
+        self.snap_to_selectable(&indices);
+    }
+
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
         if key.action != KeyAction::Press {
             return OverlayCommand::Stay;

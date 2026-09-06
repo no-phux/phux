@@ -140,6 +140,10 @@ impl RenderOverlay for PromptOverlay {
         self.breakpoints = bp;
     }
 
+    fn handle_paste(&mut self, text: &str) {
+        self.input.push_str(text);
+    }
+
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
         // Press-only; ignore release/repeat so a held key doesn't double.
         if key.action != KeyAction::Press {

@@ -349,8 +349,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// phux-5ke.4: while any overlay is active the stack captures all
     /// input. Key events flow to `OverlayState::handle_key`, which
     /// routes them to the *top* overlay (which may dismiss, popping
-    /// back to whatever is beneath it); mouse / paste / focus events
-    /// are dropped so they don't reach the pane underneath.
+    /// back to whatever is beneath it). Mouse and paste events stay within
+    /// the overlay too; focus events are dropped rather than reaching the pane.
     ///
     /// The keybind resolver is bypassed entirely while an overlay is
     /// up: the overlay owns every keystroke, exactly as tmux's command
@@ -375,8 +375,16 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let layout_changed = match ev {
             InputEvent::Key(key_event) => self.handle_overlay_key(key_event).await?,
             InputEvent::Mouse(mouse) => self.handle_overlay_mouse(mouse).await?,
-            // Paste / focus are dropped so they don't reach the pane
-            // underneath.
+            InputEvent::Paste(paste) => {
+                if let Some(resolver) = self.ctx.resolver.as_deref_mut() {
+                    resolver.reset();
+                }
+                if let Ok(text) = std::str::from_utf8(&paste.data) {
+                    self.ctx.overlays.handle_paste(text);
+                }
+                false
+            }
+            // Focus events are consumed without reaching the pane underneath.
             _ => false,
         };
         Ok(StageOutcome::consumed(layout_changed))
