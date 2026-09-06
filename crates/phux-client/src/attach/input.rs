@@ -545,8 +545,14 @@ impl StdinParser {
             if b == b'~' && self.buf == b"201" {
                 self.buf.clear();
                 let data = std::mem::take(&mut self.paste_buf);
+                // A DEC 2004 frame is emitted by the user's outer terminal
+                // for its local clipboard action. An attached, authenticated
+                // local terminal is the same user-intent boundary as `phux
+                // paste`, which is trusted by default; classifying it as
+                // untrusted makes the server reject normal multiline pastes
+                // before delivering any bytes.
                 out.push(InputEvent::Paste(PasteEvent {
-                    trust: PasteTrust::Untrusted,
+                    trust: PasteTrust::Trusted,
                     data,
                 }));
                 self.state = State::Ground;
@@ -2346,7 +2352,7 @@ mod tests {
         let pastes = paste_only(&evs);
         assert_eq!(pastes.len(), 1);
         assert_eq!(pastes[0].data, b"hello world");
-        assert_eq!(pastes[0].trust, PasteTrust::Untrusted);
+        assert_eq!(pastes[0].trust, PasteTrust::Trusted);
         // No key events leaked from inside the brackets.
         assert!(key_only(&evs).is_empty());
         assert!(!p.has_pending());
@@ -2399,7 +2405,7 @@ mod tests {
     #[test]
     fn bracketed_paste_into_frame_carries_terminal_id() {
         let frame = InputEvent::Paste(PasteEvent {
-            trust: PasteTrust::Untrusted,
+            trust: PasteTrust::Trusted,
             data: b"x".to_vec(),
         })
         .into_frame(TerminalId::new(11));

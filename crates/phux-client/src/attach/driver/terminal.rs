@@ -234,10 +234,17 @@ fn take_termios_snapshot() -> Option<Termios> {
 /// chain hooks indefinitely.
 static PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// Write the alt-screen-enter + cursor-hide sequence, plus — when
-/// `mouse` is on — the client's own mouse-tracking DECSET (ADR-0048).
+/// Write the alt-screen-enter + cursor-hide sequence, enable bracketed
+/// paste, and — when `mouse` is on — the client's own mouse-tracking DECSET
+/// (ADR-0048).
 /// Factored out so the install path and any future re-entry path share
 /// one byte definition.
+///
+/// `?2004h` asks the outer terminal to frame a clipboard paste with
+/// `CSI 200~` / `CSI 201~`. The stdin parser converts that complete frame
+/// into one `InputEvent::Paste`; without it, a terminal feeds the same paste
+/// as independent key bytes and the attach transport cannot preserve the
+/// paste's atomic boundary.
 ///
 /// `?1002h` is button-event tracking (motion only while a button is held,
 /// not `?1003h` any-motion which would flood the wire with hover traffic
@@ -247,6 +254,7 @@ static PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> {
     out.write_all(b"\x1b[?1049h")?;
     out.write_all(b"\x1b[?25l")?;
+    out.write_all(b"\x1b[?2004h")?;
     if mouse {
         out.write_all(b"\x1b[?1002h\x1b[?1006h")?;
         MOUSE_CAPTURE_ACTIVE.store(true, Ordering::SeqCst);
@@ -327,7 +335,8 @@ pub(super) fn sync_hover_tracking<W: Write>(out: &mut W, want: bool) -> io::Resu
 }
 
 /// Restore the outer terminal to a sane post-attach state: drop SGR,
-/// show the cursor, and (if we ever entered the alt screen) leave it.
+/// disable bracketed paste and mouse capture, show the cursor, and (if we
+/// ever entered the alt screen) leave it.
 ///
 /// Used by both [`RawModeGuard::drop`] and the signal-handler arms in
 /// the private `main_loop` function. Safe to call multiple times — the
@@ -335,6 +344,11 @@ pub(super) fn sync_hover_tracking<W: Write>(out: &mut W, want: bool) -> io::Resu
 /// `ALT_SCREEN_ACTIVE == false` and skips the leave sequence.
 pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     write_reset(out)?;
+    // The client owns outer-terminal DEC 2004 for the duration of attach.
+    // Drop it before returning to the caller's normal screen so a program
+    // that does not opt into bracketed paste never receives framing bytes.
+    out.write_all(b"\x1b[?2004l")?;
+    out.flush()?;
     // phux-wrnm: a context menu open at detach (or at SIGINT) left the
     // terminal in any-motion mode; drop that before the capture pair so the
     // host is handed back exactly what it had.
@@ -584,13 +598,12 @@ mod tests {
     /// driving a real PTY; this `#[ignore]`-stub keeps the procedure
     /// next to the code and surfaces in `cargo test -- --ignored` if
     /// someone wires up an integration harness later.
-    /// ADR-0048: with mouse capture on, the alt-screen entry sequence also
-    /// enables the client's own outer-terminal mouse tracking
-    /// (`?1002h` button-motion + `?1006h` SGR), and the reset undoes it
-    /// (`?1006l?1002l`) BEFORE leaving the alt screen so the host's native
-    /// selection is restored.
+    /// Every attach enables outer-terminal bracketed paste (`?2004h`) so
+    /// the stdin parser receives a whole clipboard paste as one event. The
+    /// reset undoes it before leaving the alt screen; mouse capture follows
+    /// the same enter/leave discipline when it is configured.
     #[test]
-    fn mouse_capture_enable_and_disable_bytes() {
+    fn outer_terminal_modes_enable_and_disable_bytes() {
         let _guard = TERMINAL_RESET_TEST_LOCK
             .lock()
             .expect("terminal reset test lock");
@@ -599,6 +612,10 @@ mod tests {
 
         let mut entry = Vec::new();
         write_enter_alt_screen(&mut entry, true).unwrap();
+        assert!(
+            entry.windows(8).any(|w| w == b"\x1b[?2004h"),
+            "entry must enable bracketed paste framing: {entry:?}"
+        );
         assert!(
             entry.windows(8).any(|w| w == b"\x1b[?1002h"),
             "entry must enable button-motion tracking: {entry:?}"
@@ -615,6 +632,10 @@ mod tests {
         // Reset emits the leave pair before the ?1049l alt-screen leave.
         let mut reset = Vec::new();
         write_terminal_reset(&mut reset).unwrap();
+        let pos_2004l = reset
+            .windows(8)
+            .position(|w| w == b"\x1b[?2004l")
+            .expect("reset must disable bracketed paste framing");
         let pos_1006l = reset
             .windows(8)
             .position(|w| w == b"\x1b[?1006l")
@@ -628,8 +649,8 @@ mod tests {
             .position(|w| w == b"\x1b[?1049l")
             .expect("reset must leave the alt screen");
         assert!(
-            pos_1006l < pos_1049l && pos_1002l < pos_1049l,
-            "mouse-disable must precede the alt-screen leave: {reset:?}"
+            pos_2004l < pos_1049l && pos_1006l < pos_1049l && pos_1002l < pos_1049l,
+            "outer-terminal mode resets must precede the alt-screen leave: {reset:?}"
         );
     }
 
@@ -672,8 +693,9 @@ mod tests {
         );
     }
 
-    /// ADR-0048: `mouse = false` skips the DECSET entirely — the entry
-    /// sequence emits no mouse tracking, host native selection untouched.
+    /// `mouse = false` skips mouse DECSET, but bracketed paste stays enabled:
+    /// it is required to preserve the atomic boundary of every clipboard
+    /// paste, independently of pointer handling.
     #[test]
     fn mouse_capture_disabled_emits_no_decset() {
         let _guard = TERMINAL_RESET_TEST_LOCK
@@ -685,6 +707,10 @@ mod tests {
         let mut entry = Vec::new();
         write_enter_alt_screen(&mut entry, false).unwrap();
         assert!(
+            entry.windows(8).any(|w| w == b"\x1b[?2004h"),
+            "mouse=false must still enable bracketed paste: {entry:?}"
+        );
+        assert!(
             !entry.windows(8).any(|w| w == b"\x1b[?1002h"),
             "mouse=false must not enable tracking: {entry:?}"
         );
@@ -695,6 +721,10 @@ mod tests {
         // With capture never set, reset emits no mouse-disable bytes.
         let mut reset = Vec::new();
         write_terminal_reset(&mut reset).unwrap();
+        assert!(
+            reset.windows(8).any(|w| w == b"\x1b[?2004l"),
+            "reset must always disable bracketed paste: {reset:?}"
+        );
         assert!(
             !reset.windows(8).any(|w| w == b"\x1b[?1002l"),
             "no capture ⇒ no mouse-disable on reset: {reset:?}"
