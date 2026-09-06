@@ -255,6 +255,36 @@ published session/pane view and the environment-controlled tracing sinks
 above for diagnosis. [ADR-0028](../ADR/0028-runtime-log-control.md)
 records the remaining operator surface.
 
+## Voice passthrough
+
+A phone cannot run a good speech model, and a terminal keyboard on a phone is
+the wrong input for a prompt anyway. `TRANSCRIBE` (L1.md §5.1) lets a client
+upload a clip with `PUT_FILE` and have the server turn it into text and paste
+it into a pane. The server embeds no model; it runs whatever you configure:
+
+```toml
+[voice]
+transcriber = ["curl", "-sf", "-F", "file=@{path}", "-F", "response_format=text",
+               "http://127.0.0.1:8000/v1/audio/transcriptions"]
+timeout-secs = 30          # default; the process is killed on expiry
+```
+
+`{path}` is replaced by the uploaded clip's sandboxed path (appended as the
+last argument when no argument names it) and the command's stdout, trimmed, is
+the transcript. Any local ASR server that speaks the OpenAI-compatible
+transcription endpoint works (whisper.cpp's server, speaches, faster-whisper),
+as does a headless dictation CLI or an `ssh` hop to a machine with a GPU. The
+runner is the plugin-action runner: no shell, a deadline, the process killed
+if the server drops the request.
+
+The transcript is pasted as one acknowledged `APPLY_INPUT` under a fresh
+operation id, so a reconnect cannot double it, and it inserts without
+submitting: the client shows the text it got back and the user presses Enter.
+An empty transcript pastes nothing and reports `pasted: false`. Transcripts
+are capped at 64 KiB. Without `[voice]` the command is refused with a remedy
+naming the key. Clips should be encoded on the client (16 kHz mono 16-bit WAV
+keeps a minute under 2 MiB) rather than raising the upload cap.
+
 ## Agent-state detection
 
 To make adoption automatic rather than relying on every operator to remember a

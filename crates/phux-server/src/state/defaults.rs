@@ -70,6 +70,18 @@ impl ServerState {
         self.config.scrollback
     }
 
+    /// Set the `[voice]` transcriber settings `TRANSCRIBE` runs. Called once
+    /// at server startup to mirror [`crate::runtime::ServerConfig::voice`].
+    pub fn set_voice(&mut self, voice: phux_config::VoiceCfg) {
+        self.config.voice = voice;
+    }
+
+    /// Read the `[voice]` settings set by [`Self::set_voice`].
+    #[must_use]
+    pub fn voice(&self) -> phux_config::VoiceCfg {
+        self.config.voice.clone()
+    }
+
     /// Set the working-directory inheritance policy
     /// (`defaults.cwd-inheritance`) used by `SPAWN_TERMINAL`. Called once
     /// at server startup to mirror

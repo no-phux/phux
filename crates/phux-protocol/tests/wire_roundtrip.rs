@@ -1483,6 +1483,10 @@ fn command_simple_variants_round_trip() {
         },
         Command::GetPerf { reset: false },
         Command::GetPerf { reset: true },
+        Command::Transcribe {
+            upload_id: FileUploadId::new([9; 16]).expect("non-zero upload id"),
+            terminal_id: TerminalId::local(7),
+        },
     ] {
         assert_round_trip(&FrameKind::Command {
             request_id: 7,

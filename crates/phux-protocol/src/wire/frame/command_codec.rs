@@ -22,12 +22,12 @@ use super::{
     COMMAND_TAG_KILL_TERMINAL, COMMAND_TAG_KILL_TERMINALS, COMMAND_TAG_PUT_FILE,
     COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
     COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
-    COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS, COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES,
-    COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON,
-    COMMAND_VALUE_TAG_STATE, COMMAND_VALUE_TAG_TERMINAL_ID, Command, CommandResult, CommandValue,
-    ControlAction, EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED,
-    EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_IDLE,
-    EVENT_TAG_PANE_CLOSED, EVENT_TAG_PANE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL,
+    COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE,
+    COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID,
+    COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_STATE, COMMAND_VALUE_TAG_TERMINAL_ID, Command,
+    CommandResult, CommandValue, ControlAction, EVENT_TAG_ASKED, EVENT_TAG_BELL,
+    EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY,
+    EVENT_TAG_IDLE, EVENT_TAG_PANE_CLOSED, EVENT_TAG_PANE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL,
     EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
     INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, InputMode, MAX_APPLY_INPUT_COMMAND_BODY,
     MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState,
@@ -157,6 +157,16 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         Command::GetPerf { reset } => {
             enc.write_u8(COMMAND_TAG_GET_PERF);
             enc.write_u8(u8::from(*reset));
+        }
+        Command::Transcribe {
+            upload_id,
+            terminal_id,
+        } => {
+            enc.write_u8(COMMAND_TAG_TRANSCRIBE);
+            for byte in upload_id.as_bytes() {
+                enc.write_u8(*byte);
+            }
+            encode_terminal_id(terminal_id, enc);
         }
         Command::AcquireInput {
             terminal_id,
@@ -336,6 +346,10 @@ fn decode_live_affordance_command(
         COMMAND_TAG_GET_TERMINAL_STATE => decode_get_terminal_state_command(dec)?,
         COMMAND_TAG_SUBSCRIBE_TERMINAL_EVENTS => decode_subscribe_terminal_events_command(dec)?,
         COMMAND_TAG_PUT_FILE => decode_put_file_command(dec)?,
+        COMMAND_TAG_TRANSCRIBE => Command::Transcribe {
+            upload_id: decode_file_upload_id(dec)?,
+            terminal_id: decode_terminal_id(dec)?,
+        },
         _ => return Ok(None),
     };
     Ok(Some(command))

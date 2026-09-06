@@ -622,6 +622,11 @@ history-bytes         = 2097152            # 2 MiB, per pane
 cwd-inheritance       = "inherit-focused"
 session-name-template = "default"
 window-size           = "smallest"   # geometry policy for shared Terminals (ADR-0027)
+
+[voice]                              # server-side transcriber behind TRANSCRIBE (docs/operations.md)
+# transcriber = ["curl", "-sf", "-F", "file=@{path}", "-F", "response_format=text",
+#                "http://127.0.0.1:8000/v1/audio/transcriptions"]
+# timeout-secs = 30
 # spawn-on-attach     = "/usr/bin/some-launcher"  # default: defaults.shell
 
 [keybindings]

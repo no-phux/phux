@@ -166,6 +166,7 @@ fn build_server_config(
     session: &str,
     socket_path: &Path,
     defaults: phux_config::DefaultsCfg,
+    voice: phux_config::VoiceCfg,
     hook_catalog: phux_server::hooks::HookCatalog,
     seed_command: Option<&str>,
     exit_after_idle: Option<u64>,
@@ -226,6 +227,7 @@ fn build_server_config(
         shell,
         login_shell,
         window_size: defaults.window_size,
+        voice,
         // Permissive HELLO authorization (ADR-0072): the local trust model
         // is "same OS user, kernel-enforced". phux-pjc5 installs the
         // scope-enforcing engine here for paired/remote deployments.
@@ -379,6 +381,7 @@ pub(crate) fn run_server(
         session,
         &socket_path,
         config.defaults,
+        config.voice,
         hook_catalog,
         seed_command,
         exit_after_idle,

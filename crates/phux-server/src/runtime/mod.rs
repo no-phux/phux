@@ -52,6 +52,7 @@ mod pump;
 mod resume;
 mod upgrade;
 mod upload;
+mod voice;
 
 pub(crate) use attach::*;
 pub(crate) use client::*;
@@ -170,6 +171,8 @@ pub struct ServerConfig {
     /// from `phux_config`'s `defaults.window-size`; [`Self::with_default_socket`]
     /// uses the schema default ([`phux_config::WindowSize::Smallest`]).
     pub window_size: phux_config::WindowSize,
+    /// `[voice]`: the transcriber behind `TRANSCRIBE` (phux-ypsa).
+    pub voice: phux_config::VoiceCfg,
     /// Optional HELLO authorization engine (ADR-0072). `None` — what the
     /// `phux` binary passes today — leaves the default
     /// [`crate::policy::PermissivePolicy`] in place. This is the injection
@@ -273,6 +276,7 @@ impl ServerConfig {
             shell: crate::terminal_actor::resolve_shell(None),
             login_shell: false,
             window_size: phux_config::WindowSize::default(),
+            voice: phux_config::VoiceCfg::default(),
             policy_engine: None,
             hook_catalog: crate::hooks::HookCatalog::default(),
             exit_after_idle: None,
@@ -1034,6 +1038,7 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
     // shared Terminal's geometry from the configured multi-client policy
     // (phux-nk07).
     state.with_mut(|s| s.set_window_size(cfg.window_size));
+    state.with_mut(|s| s.set_voice(cfg.voice.clone()));
     // Wire the policy engine from config into shared state.
     if let Some(engine) = cfg.policy_engine.clone() {
         state.with_mut(|s| s.set_policy_engine(engine));

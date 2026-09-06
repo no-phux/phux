@@ -689,6 +689,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::SignalTerminal { .. } => "signal_terminal",
         Command::PutFile { .. } => "put_file",
         Command::GetPerf { .. } => "get_perf",
+        Command::Transcribe { .. } => "transcribe",
         _ => "other",
     }
 }
@@ -823,6 +824,13 @@ pub(crate) async fn handle_command(
         }
         Command::GetState { scope } => handle_get_state_federated(state, &scope, out_tx).await,
         Command::GetPerf { reset } => handle_get_perf(state, reset),
+        Command::Transcribe {
+            upload_id,
+            terminal_id,
+        } => {
+            super::voice::handle_transcribe(state, client_id, upload_id, &terminal_id, input_lane)
+                .await
+        }
         Command::GetScreen {
             terminal_id,
             request_scrollback,
