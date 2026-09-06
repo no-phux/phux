@@ -92,7 +92,7 @@ either tolerate the exit code or ask its operator for `window-size =
 
 The read-back costs one extra round trip per resize, and consults server
 bookkeeping rather than the pane actor's libghostty grid. The two can only
-diverge through a bug; `crates/phux/tests/resize_e2e.rs` asserts against
+diverge through a bug; `crates/phux/tests/terminal_e2e/resize_e2e.rs` asserts against
 `GET_SCREEN` (the actor's own projection) specifically so that divergence
 fails a test rather than misleading a caller.
 

@@ -34,7 +34,7 @@
 //! ~30-line walks that a single test failure catches. Change one, change all
 //! three.
 //!
-//! `crates/phux/tests/cell_projection_conformance.rs` is that single test
+//! `crates/phux/tests/conformance/cell_projection_conformance.rs` is that single test
 //! failure (`phux-h5hj.2`). It feeds one corpus of VT sequences — truecolor
 //! and palette SGR, every attribute bit, wide CJK and their spacer tails,
 //! combining marks and ZWJ clusters, alt screen, scroll regions, DECAWM wrap,

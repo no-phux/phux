@@ -32,7 +32,6 @@ toml.workspace = true
 # Full dotted paths on schema errors, for `phux config check` and for the
 # loader's own message.
 serde_path_to_error.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 # Inline (scoped to this crate) per phux-nz4.4 guidance: used only by the
@@ -41,5 +40,6 @@ tracing.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
+serde_json.workspace = true
 insta.workspace = true
 tempfile.workspace = true

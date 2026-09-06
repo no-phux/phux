@@ -112,7 +112,7 @@ require_fixed scripts/test-install.sh 'installer transaction tests passed'
 
 require_fixed justfile "release-preflight TAG:"
 require_fixed justfile "release-preflight-fast TAG:"
-require_fixed justfile "cargo build --locked --workspace --release"
+require_fixed justfile "cargo build --locked -p phux -p phux-mcp --release"
 require_fixed justfile "cargo publish --locked --dry-run -p phux-protocol"
 require_fixed justfile "cargo publish --locked -p phux-protocol"
 require_fixed scripts/release-preflight.sh "cargo publish --locked --dry-run --allow-dirty -p phux-protocol"

@@ -79,7 +79,7 @@ pub enum LayoutNode {
         /// applied yet (`phux_client_core::multi_pane::layout`, ADR-0048) and
         /// a transport that rejected `0.0`/`1.0` would drop legitimate client
         /// state. That divergence is deliberate and mapped in
-        /// `crates/phux/tests/layout_conformance.rs`.
+        /// `crates/phux/tests/conformance/layout_conformance.rs`.
         ratio: f32,
         /// Left (for [`SplitDir::Horizontal`]) or top (for [`SplitDir::Vertical`]) child.
         left: Box<Self>,

@@ -29,7 +29,9 @@ required-features = ["dhat-heap"]
 [dependencies]
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
-phux-server.workspace = true
+# Defaults are controlled by this executable's feature forwarding below.
+# Other workspace consumers can retain the server's own defaults.
+phux-server = { path = "../phux-server", default-features = false, features = ["native-engine"] }
 phux-client.workspace = true
 # In-process performance telemetry: `phux perf` renders a `PerfReport`.
 phux-perf.workspace = true
@@ -124,6 +126,9 @@ tempfile.workspace = true
 libc = "0.2"
 
 [features]
+default = ["webtransport"]
+# Omit browser HTTP/3 support with --no-default-features; UDS, WS and QUIC stay.
+webtransport = ["phux-server/webtransport"]
 # Heap profiling via dhat, consumed ONLY by the `phux-dhat-heap` binary
 # above (src/bin/dhat_heap.rs) — never by the `phux` binary itself. See
 # src/lib.rs's "Why this is a library crate" doc: dhat's `Profiler` Drop

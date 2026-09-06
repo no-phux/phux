@@ -703,7 +703,7 @@ or session comes into being:
   least htop then fails to parse the CSI-u key reports it asked for, so
   its `q` quit dies (phux-7vx). The phux stack itself round-trips the
   kitty protocol — the phux-0o8 harness
-  (`crates/phux-server/tests/kip_roundtrip.rs`) drives real TUIs through
+  (`crates/phux-server/tests/terminal/kip_roundtrip.rs`) drives real TUIs through
   the full wire path under `TERM=ghostty` and proves nvim's CSI-u
   opt-in works end-to-end, with fzf/less/vim/btop regression-free — but
   the canonical ncurses reproducer (htop) remains unproven, so the

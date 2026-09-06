@@ -90,7 +90,7 @@ mkdir -p -- "${OUT_DIR}"
 
 (
     cd "${ROOT}"
-    zig build package \
+    ./scripts/zig-build.sh package \
         -Dtarget="${TARGET}" \
         -Doptimize="${OPTIMIZE}" \
         -Dphux-enabled=true \

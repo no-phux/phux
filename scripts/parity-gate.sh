@@ -155,7 +155,7 @@ check_list() {
   require_file scripts/examples-smoke.sh
   require_file scripts/tui-probe.sh
   require_file scripts/check-docs.sh
-  require_file crates/phux/tests/run_wait_e2e.rs
+  require_file crates/phux/tests/automation_e2e/run_wait_e2e.rs
   require_file examples/agents/01-ls-and-snapshot.sh
   require_file examples/plugins/agent-tools/phux-plugin.toml
   require_file examples/plugins/agent-tools/config/phux/config.toml

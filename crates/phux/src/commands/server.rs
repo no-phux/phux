@@ -290,7 +290,11 @@ fn listener_summary(
 }
 
 /// Attach the optional network listeners the flags asked for.
-const fn with_network_listeners(
+#[allow(
+    clippy::missing_const_for_fn,
+    reason = "the WebTransport-disabled listener logs a warning and is not const"
+)]
+fn with_network_listeners(
     mut server: ServerRuntime,
     listen: Option<std::net::SocketAddr>,
     quic: Option<std::net::SocketAddr>,

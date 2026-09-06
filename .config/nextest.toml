@@ -102,7 +102,7 @@ threads-required = 'num-cpus'
 # under starvation the detector does not converge within the deadline at all.
 # Lengthening DETECT_DEADLINE would only hide that.
 [[profile.default.overrides]]
-filter = 'package(phux-server) & binary(agent_detect)'
+filter = 'package(phux-server) & binary(=agents) & test(/^agent_detect::/)'
 threads-required = 'num-cpus'
 
 # The `hub::link` ssh-transport tests need it too, and this one is contention,
@@ -173,7 +173,7 @@ threads-required = 'num-cpus'
 # and it is process-startup cost, exactly as the `ssh_transport_` block above
 # diagnoses for its own stubs.
 #
-# The filter names every binary that uses `AutoSpawnedServer`, not just the
+# The filter names every suite that uses `AutoSpawnedServer`, not just the
 # ones observed failing. That distinction is load-bearing: covering only the
 # observed two left `kill_server_e2e` — same helper, same budget — to fail on
 # the very next full run as the pool composition shifted. The property is
@@ -191,9 +191,9 @@ threads-required = 'num-cpus'
 # unbounded in the load.
 [[profile.default.overrides]]
 filter = """package(phux) & (
-    binary(stale_socket_recovery) + binary(service_reconcile)
-  + binary(kill_server_e2e) + binary(service_install_guard)
-  + binary(first_five_minutes_e2e) + binary(idle_exit_e2e)
+    (binary(=service) & test(/^(stale_socket_recovery|service_reconcile|kill_server_e2e|service_install_guard)::/))
+  + (binary(=lifecycle_e2e) & test(/^idle_exit_e2e::/))
+  + binary(=first_five_minutes_e2e)
 )"""
 threads-required = 'num-cpus'
 

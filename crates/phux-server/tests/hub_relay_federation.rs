@@ -46,7 +46,7 @@
 //!   operator seam), and the harness plays the remote bridge by
 //!   splicing the stub child's stdio onto the satellite's real UDS —
 //!   the exact splice `phux stdio-bridge` performs, proven against the
-//!   real binary in `crates/phux/tests/stdio_bridge_e2e.rs`.
+//!   real binary in `crates/phux/tests/fleet/stdio_bridge_e2e.rs`.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

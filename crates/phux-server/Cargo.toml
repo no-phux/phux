@@ -147,7 +147,7 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["h
 # fingerprint shown at pairing time. All are loopback-irrelevant: they only
 # engage when a TLS cert + token store are configured.
 rustls.workspace = true
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
 subtle = "2"
 getrandom = "0.2"
 sha2 = "0.10"

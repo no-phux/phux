@@ -88,34 +88,47 @@ scaffold-config:
 check:
     cargo check --workspace --all-targets
 
-# Build all crates (debug).
+# Build the developer executables (debug).
 build:
+    cargo build --locked -p phux -p phux-mcp
+
+# Build every workspace target, including test harnesses, examples and benches.
+build-all:
     cargo build --workspace --all-targets
 
-# Release build with full LTO.
+# Build without browser HTTP/3 support; UDS, WebSocket and raw QUIC remain.
+build-lean:
+    cargo build --locked -p phux -p phux-mcp --no-default-features
+
+# Release executables with full LTO.
 build-release:
-    cargo build --locked --workspace --release
+    cargo build --locked -p phux -p phux-mcp --release
 
 # Build the stable C ABI and the native macOS Cockpit from this checkout.
 cockpit-build: cockpit-ffi
-    cd clients/cockpit && ./scripts/zig-build.sh -Dphux-enabled=true --summary all
+    cd clients/cockpit && ./scripts/zig-build.sh -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
 
 # Run the shipping TypeScript graph, native engine regressions, and repository
 # and release contract checks.
 cockpit-test: cockpit-ffi
+    python3 clients/cockpit/scripts/check-build-contracts.py
     cd clients/cockpit && ./scripts/check-release-version.sh
     cd clients/cockpit && ./scripts/check-sdk-pin.sh
     cd clients/cockpit && ./scripts/lib/zon_test.sh
     cd clients/cockpit && ./scripts/lib/measure_test.sh
-    cd clients/cockpit && ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all
+    cd clients/cockpit && ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
 
-# Build Cockpit's stable C ABI dependency from the enclosing Phux workspace.
+# Build only Cockpit's static archive, with fast unwind-safe development codegen.
 cockpit-ffi:
-    cargo build --locked --profile ffi-release -p phux-client-ffi
+    cargo rustc --locked --profile ffi-dev -p phux-client-ffi --lib --crate-type staticlib
+
+# Production static FFI archive; release codegen with the required panic boundary.
+cockpit-ffi-release:
+    cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
 
 # Run the isolated developer app with the Phux-backed production graph.
 cockpit-dev: cockpit-ffi
-    cd clients/cockpit && ./scripts/dev-run.sh --phux
+    cd clients/cockpit && ./scripts/dev-run.sh --phux --ffi-profile ffi-dev
 
 # Build the current checkout and atomically install its developer binaries.
 # The binaries live in Cargo's bin dir, matching normal source installs. Keep
@@ -178,14 +191,9 @@ precommit: fmt lint docs-gen test e2e
 
 # Run tests via nextest (parallel, sane output).
 #
-# Deliberately NOT --all-features: ci.yml's unit lane runs default features,
-# and --all-features turns on phux/dhat-heap, which swaps the global allocator
-# for dhat's in every spawned `phux` binary — all ~285 CLI tests then run
-# under a profiling allocator CI never uses (measured ~30-50s slower) and
-# each clean exit writes a dhat-heap.json. It also resolves a different
-# feature union than the `e2e` recipe, forcing a second full build locally.
-# Feature-gated code still compiles under `lint` and `doc` (--all-features).
-# Verified: the test list is identical with and without --all-features.
+# Match ci.yml and the e2e/stress lanes: all use the workspace's default feature
+# union. Optional debugger/profiler surfaces compile under lint/doc instead of
+# causing a second test dependency graph. Heap profiling has its own executable.
 test:
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace
 
@@ -233,19 +241,16 @@ test:
 # doc claimed "run via `just e2e`"), and workspace_archive_e2e — which is why
 # the filterset below now names them. They add ~2.6s to the lane.
 #
-# Corollary: if ci.yml's unit step ever gains `--all-features`, this recipe
-# must gain it too — otherwise the double-compile comes straight back. (Do not
-# actually do that; `--all-features` turns on `phux/dhat-heap`, which installs
-# dhat as the global allocator and would make the perf gates below measure
-# dhat rather than phux.)
+# Corollary: changes to ci.yml's test build selection must be mirrored here
+# and in stress, otherwise the double-compile comes straight back.
 
 # Fast e2e lane (every #[ignore]d phux e2e binary + the perf gates) — gates every PR.
 e2e:
-    # first_five_minutes_e2e copies both release payload binaries into a fresh prefix.
-    cargo build -p phux-mcp
+    # MCP's discovery integration test makes Cargo build its normal executable
+    # in this same graph; first_five_minutes_e2e can copy both payload binaries.
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace --run-ignored all \
       --test-threads=1 --retries=2 \
-      -E 'binary_id(phux::run_wait_e2e) + binary_id(phux::agent_record_e2e) + binary_id(phux::spatial_e2e) + binary_id(phux::rec_e2e) + binary_id(phux::resize_e2e) + binary_id(phux::play_e2e) + binary_id(phux::idle_exit_e2e) + binary_id(phux::plugin_agent_bench_e2e) + binary_id(phux::upgrade_e2e) + binary_id(phux::workspace_archive_e2e) + binary_id(phux::failure_ux_e2e) + binary_id(phux::first_five_minutes_e2e) + binary_id(phux::fleet_sidebar_e2e) + binary_id(phux::remote_target_e2e)'
+      -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e)'
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::perf_latency) + binary_id(phux-server::perf_colored_output)'
@@ -269,12 +274,9 @@ e2e:
 
 # Heavy stress storms — off the PR path (post-merge + nightly stress.yml).
 stress:
-    cargo nextest run -p phux-server --run-ignored ignored-only \
+    cargo nextest run --workspace --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
-      --test stress_resize_storm --test stress_resize_extremes \
-      --test stress_attach_churn --test stress_lifecycle_churn \
-      --test stress_output_extremes --test stress_spawn_kill \
-      --test perf_bursty_output
+      -E 'binary_id(phux-server::stress_resize_storm) + binary_id(phux-server::stress_resize_extremes) + binary_id(phux-server::stress_attach_churn) + binary_id(phux-server::stress_lifecycle_churn) + binary_id(phux-server::stress_output_extremes) + binary_id(phux-server::stress_spawn_kill) + binary_id(phux-server::perf_bursty_output)'
 
 # Spins a real `phux` server + session, drives a scripted scenario (heavy
 # colored output, a 2nd client attach, a resize storm, an input line) and
@@ -394,6 +396,15 @@ test-cargo:
 # Dependency hygiene: licenses, advisories, bans.
 deny:
     cargo deny check
+
+# Default, lean and headless production dependency boundaries (compile-free).
+build-features-check:
+    python3 scripts/check-build-features.py
+
+# Compile opt-out consumers separately: workspace feature unification masks them.
+build-features-compile:
+    cargo check --locked -p phux-client -p phux-mcp --all-targets --no-default-features --features phux-client/testkit
+    cargo check --locked -p phux --no-default-features --bin phux
 
 # Build rustdoc with warnings denied — mirrors the CI `doc` gate.
 doc:
@@ -524,7 +535,7 @@ release-drift grace="120":
 # Full root gate set; iterate with scoped checks from docs/SETUP.md first.
 # Keep independent gates ahead of tests: a flaky test must not hide rustdoc or
 # contract failures. CONTRIBUTING.md owns the local/CI gate map (phux-yb1m).
-ci: fmt-check lint doc deny docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check install-surface-check skill-contract agent-integrations-check test
+ci: fmt-check lint doc deny build-features-check build-features-compile docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check install-surface-check skill-contract agent-integrations-check test
     @echo "ok"
 
 # Full root PR bar, including timing-sensitive e2e and agent example smoke.

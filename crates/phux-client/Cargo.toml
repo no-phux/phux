@@ -13,7 +13,18 @@ authors.workspace = true
 workspace = true
 
 [features]
-default = ["native-engine"]
+default = ["native-engine", "tui"]
+# Interactive attach, VT rendering, and Ratatui chrome. Headless control,
+# snapshot, wait, transport, and testkit APIs remain available without it.
+tui = [
+    "dep:ratatui",
+    "dep:phux-plugin",
+    "dep:phux-crash",
+    "dep:toml",
+    "dep:rustix",
+    "dep:unicode-width",
+    "tokio/io-std",
+]
 # Safe native libghostty replica/capability host. Synthesis profiles remain
 # available as negotiated fallback; wasm consumers depend on client-core
 # directly and never enable this native TUI feature.
@@ -58,7 +69,7 @@ phux-config.workspace = true
 # child-process runtime `phux config run` uses -- workspace-internal crate,
 # no new external surface. The attach driver spawns the run off the input
 # loop and toasts captured failure output.
-phux-plugin.workspace = true
+phux-plugin = { workspace = true, optional = true }
 # Fatal-signal terminal restore. `RawModeGuard::drop` and the panic hook cover
 # every teardown that unwinds; a SIGSEGV/SIGBUS/SIGABRT does not unwind, so
 # neither runs and the user is left in raw mode inside the alt screen. This
@@ -67,11 +78,10 @@ phux-plugin.workspace = true
 # Apache-2.0-ONLY dependency in the workspace (vendored — see its NOTICE); the
 # `unsafe` it needs lives behind that crate boundary so this crate keeps
 # `#![forbid(unsafe_code)]`.
-phux-crash.workspace = true
-# phux-nz4.5: TOML values reach the status-bar painter's tests via
-# `WidgetSpec::opts`; dev-only use, declared here for `toml::Value`
-# constructor access.
-toml = { workspace = true }
+phux-crash = { workspace = true, optional = true }
+# TUI action arguments and prompt values use TOML; status-bar tests construct
+# `WidgetSpec::opts` with the same vocabulary.
+toml = { workspace = true, optional = true }
 # Under ADR-0013 the client runs its own libghostty Terminal per attached
 # pane. Pulled in as a direct dep (was transitive via phux-protocol's
 # server feature) so the client can construct and drive a Terminal +
@@ -81,14 +91,14 @@ libghostty-vt.workspace = true
 # this crate; the pane-interior substrate is in `phux-client-core`, which
 # has no `ratatui` dependency, so the boundary (ADR-0020) is enforced by the
 # compiler rather than the retired grep guard. See epic phux-5ke.
-ratatui = { workspace = true }
+ratatui = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
 # Async I/O + UDS transport for the attach loop (phux-9gw.3). The workspace
 # tokio dep enables `net`, `io-util`, `signal`, `macros`, `rt`. The attach
-# loop also needs `io-std` for `tokio::io::stdin()`; layer it on locally so
+# loop also needs `io-std` for `tokio::io::stdin()`; enable it via `tui` so
 # other consumers don't pay for the extra `BlockingStdin` helper thread.
-tokio = { workspace = true, features = ["io-std"] }
+tokio.workspace = true
 # Frame encode/decode produces and consumes `BytesMut`; the attach loop owns
 # these buffers across its read and write halves.
 bytes.workspace = true
@@ -112,7 +122,7 @@ phux-perf.workspace = true
 # shell. Both features' extra deps (`once_cell`, `itoa`) were already in the
 # workspace lock, so this enables code in a crate we already compile and adds
 # no new crate to the tree.
-rustix = { version = "0.38", default-features = false, features = ["std", "termios", "fs", "event", "alloc", "procfs"] }
+rustix = { version = "0.38", optional = true, default-features = false, features = ["std", "termios", "fs", "event", "alloc", "procfs"] }
 # `phux run` / `phux snapshot` deserialize the server's JSON contracts
 # (run result, `GET_SCREEN` screen state) via serde derives. The layout
 # CBOR envelope and the predict layer (which also needed serde, ciborium,
@@ -126,7 +136,7 @@ serde = { workspace = true }
 # workspace already vendors and pins for `phux-client-core`'s predict
 # layer (see the note above), so it adds a second consumer, not new
 # third-party code, to the build graph.
-unicode-width = { workspace = true }
+unicode-width = { workspace = true, optional = true }
 # Shared remote-transport establishment (phux-v45.3): QUIC/WS dialing, the
 # fingerprint-pin TLS trust policy, and the bearer-token auth moved to
 # `phux-dial` so the federation hub's outbound dialer (phux-server) reuses
@@ -193,4 +203,18 @@ tracing-core = { workspace = true }
 [[bench]]
 name = "render_frame"
 harness = false
-required-features = ["testkit"]
+required-features = ["testkit", "tui"]
+
+# These exercise the chrome/attach driver; transport and control-plane tests
+# continue to run with --no-default-features.
+[[test]]
+name = "graceful_failure"
+required-features = ["tui"]
+
+[[test]]
+name = "sidebar_branch_e2e"
+required-features = ["tui"]
+
+[[test]]
+name = "status_bar_pipeline"
+required-features = ["tui"]

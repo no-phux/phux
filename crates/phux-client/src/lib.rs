@@ -13,7 +13,7 @@
 //!
 //! Pane interiors are painted by libghostty (VT bytes → `Terminal` →
 //! stdout). Chrome — status bar, pane dividers, borders, overlays — is
-//! painted by `ratatui` from the [`render`] module. The two layers
+//! painted by `ratatui` from the `render` module (feature `tui`). The two layers
 //! composite over disjoint screen regions, never interleaved. `ratatui`
 //! lives only in this crate; the pane-interior substrate (layout math,
 //! multi-pane composition, predictive echo) lives in the `phux-client-core`
@@ -25,6 +25,13 @@
 //! The substrate modules are re-exported here ([`layout`], [`multi_pane`],
 //! [`predict`]) so consumers keep their `phux_client::{layout, predict, …}`
 //! paths.
+//!
+//! # Features
+//!
+//! The default `tui` feature enables the interactive attach driver and chrome.
+//! Disable default features for headless control, snapshots, waits, recording,
+//! and connection APIs. `testkit` is independent of `tui`; `native-engine`
+//! enables the client-core replica host and is not required for headless control.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -49,6 +56,7 @@ pub mod explain;
 pub mod layout_ops;
 pub mod perf;
 pub mod record;
+#[cfg(feature = "tui")]
 pub mod render;
 pub mod resize;
 pub mod run;
@@ -77,7 +85,7 @@ pub mod watch;
 /// (`src/attach/render/tests/`), and a relative path cannot traverse `..`
 /// through a directory that is not there. `src/` is real, so the path
 /// resolves.
-#[cfg(test)]
+#[cfg(all(test, feature = "tui"))]
 #[path = "../../../benchmarks/support.rs"]
 pub(crate) mod bench_support;
 

@@ -1081,7 +1081,7 @@ fn render_clean_frame_cursor(
 /// identically. A third copy walks the same projection in `phux-record`'s
 /// `replay::project_cell`, for the same reason.
 ///
-/// `crates/phux/tests/cell_projection_conformance.rs` holds all three to one
+/// `crates/phux/tests/conformance/cell_projection_conformance.rs` holds all three to one
 /// corpus of VT sequences and fails on any divergence (`phux-h5hj.2`). Change
 /// this function and expect that test to name the other two.
 fn to_cell_style(style: &Style, fg: Option<RgbColor>, bg: Option<RgbColor>) -> CellStyle {

@@ -1644,7 +1644,7 @@ fn encode_graphemes(out: &mut Vec<u8>, graphemes: &[char]) {
 /// two are `phux-client`'s `attach::render`'s `to_cell_style` and
 /// `phux-record`'s `replay::project_cell`. The duplication is deliberate —
 /// sharing would force `phux-core` to depend on `libghostty-vt` — and
-/// `crates/phux/tests/cell_projection_conformance.rs` is what keeps the three
+/// `crates/phux/tests/conformance/cell_projection_conformance.rs` is what keeps the three
 /// honest, running one VT corpus through all of them (`phux-h5hj.2`). That
 /// test also pins the two places this projection CANNOT match the dense ones:
 /// it emits no entry for a wide glyph's spacer tail, and it alone carries

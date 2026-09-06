@@ -61,9 +61,8 @@ jobs:
       # Same caches as cockpit-ci.yml: the FFI build shares cockpit-ci's
       # macOS `cockpit-ffi` rust-cache (same profile, same fleet), and the
       # Zig caches key on the CHECKED-OUT build manifest — the repoint below
-      # rewrites build.zig.zon after this restore, so the key stays stable
-      # week to week and the SDK's own source simply adds fresh entries to
-      # the content-addressed global cache.
+      # rewrites build.zig.zon after this restore. The revision suffix matches
+      # cockpit-ci; its stable prefix supplies the latest compatible cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: cockpit-ffi
@@ -73,7 +72,8 @@ jobs:
           path: |
             ~/.cache/zig
             clients/cockpit/.zig-cache
-          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
+            clients/cockpit/.zig-global-cache
+          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
           restore-keys: |
             cockpit-zig-0.16.0-${{ runner.os }}-
       # Resolve and repoint before the FFI build, so a fork that renamed its
@@ -105,14 +105,14 @@ jobs:
             || echo 'AppleFontSmoothing: unset (the state the floor was derived on)'
           ./scripts/host-raster-check.sh --min-solid 4000
       - name: Build the same-checkout Phux client FFI
-        run: cargo build --locked --profile ffi-release -p phux-client-ffi
+        run: cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
       - name: Test with the null platform
         working-directory: clients/cockpit
-        run: zig build test -Dplatform=null --summary all
+        run: ./scripts/zig-build.sh test -Dplatform=null --summary all
       - name: Test the production Phux provider
         working-directory: clients/cockpit
         run: |
-          zig build test \
+          ./scripts/zig-build.sh test \
             -Dplatform=null \
             -Dphux-enabled=true \
             --summary all
@@ -122,10 +122,10 @@ jobs:
       # rather than by the next person to run `zig build`.
       - name: Build the macOS executable, local terminal graph
         working-directory: clients/cockpit
-        run: zig build --summary all
+        run: ./scripts/zig-build.sh --summary all
       - name: Build the macOS executable, production Phux graph
         working-directory: clients/cockpit
         run: |
-          zig build \
+          ./scripts/zig-build.sh \
             -Dphux-enabled=true \
             --summary all

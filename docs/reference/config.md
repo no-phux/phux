@@ -94,7 +94,7 @@ The base layer embedded in the binary (`crates/phux-config/src/default.toml`), v
 # SPAWN_TERMINAL env override for TERM always wins over this. Set to
 # "ghostty" to opt into ghostty's extended terminfo once your apps are
 # known to round-trip the kitty keyboard protocol. Evidence so far
-# (phux-0o8 harness, crates/phux-server/tests/kip_roundtrip.rs): the phux
+# (phux-0o8 harness, crates/phux-server/tests/terminal/kip_roundtrip.rs): the phux
 # stack round-trips the kitty protocol end-to-end — nvim opts in via
 # CSI-u and works, fzf/less/vim/btop are regression-free under
 # TERM=ghostty — but htop, the app that broke last time, is unproven, so

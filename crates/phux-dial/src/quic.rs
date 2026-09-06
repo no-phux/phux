@@ -247,7 +247,7 @@ mod tests {
         // quinn's ClientConfig is not introspectable, so this is a smoke
         // test that a non-default ALPN builds a config at all; real ALPN
         // negotiation on the relay leg is covered by the relay connector
-        // integration test (crates/phux-server/tests/relay_connector_spike.rs).
+        // integration test (crates/phux-server/tests/federation/relay_connector_spike.rs).
         client_config(&CertTrust::SkipVerify, b"phux-relay/1")
             .expect("a non-default ALPN builds a client config");
     }

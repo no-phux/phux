@@ -70,7 +70,7 @@ impl Harness {
         let installed_mcp = prefix.join(executable_name("phux-mcp"));
         std::fs::copy(&built_mcp, &installed_mcp).unwrap_or_else(|err| {
             panic!(
-                "copy built companion {} into fresh prefix (run `cargo build -p phux-mcp` first): {err}",
+                "copy built companion {} into fresh prefix (run `cargo nextest run --workspace` to build both release payload binaries): {err}",
                 built_mcp.display()
             )
         });
