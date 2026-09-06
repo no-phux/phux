@@ -2373,6 +2373,30 @@ mod tests {
     }
 
     #[test]
+    fn bracketed_paste_multiline_is_one_trusted_event_across_read_boundaries() {
+        let payload = b"if true; then\r\n\tprintf 'hello world'\n\nfi\n";
+        let mut framed = Vec::from(b"\x1b[200~".as_slice());
+        framed.extend_from_slice(payload);
+        framed.extend_from_slice(b"\x1b[201~");
+
+        // Terminal reads may split either delimiter or any part of the payload.
+        for split in 1..framed.len() {
+            let mut p = StdinParser::new();
+            assert!(p.feed(&framed[..split]).is_empty(), "split={split}");
+            assert!(p.has_pending(), "split={split}");
+
+            let events = p.feed(&framed[split..]);
+            assert_eq!(events.len(), 1, "split={split}: {events:?}");
+            let pastes = paste_only(&events);
+            assert_eq!(pastes.len(), 1, "split={split}");
+            assert_eq!(pastes[0].trust, PasteTrust::Trusted, "split={split}");
+            assert_eq!(pastes[0].data, payload, "split={split}");
+            assert!(!p.has_pending(), "split={split}");
+            assert!(p.feed(b"").is_empty(), "split={split}");
+        }
+    }
+
+    #[test]
     fn bracketed_paste_payload_with_inner_csi() {
         let mut p = StdinParser::new();
         // User pastes a string that contains an ANSI color escape — the

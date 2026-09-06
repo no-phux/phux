@@ -30,9 +30,7 @@
 //                                                          paint transaction
 //   ?1000   Normal mouse tracking (X11 press/release)      never enabled by phux
 //   ?1015   RXVT extended mouse reporting                  never enabled by phux
-//   ?2004   Bracketed paste mode                           never enabled by phux
-//                                                          (input.rs parses it, but
-//                                                          the DECSET is never sent)
+//   ?2004   Bracketed paste mode                           write_enter_alt_screen
 //   ?1004   Focus reporting (focus in/out events)          never enabled by phux
 //                                                          (parsed, never requested)
 //   CSI<u   Kitty keyboard protocol pop                    never pushed by phux
