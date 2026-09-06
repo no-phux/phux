@@ -892,6 +892,14 @@ mod tests {
             .expect("timeout is reported as a typed peer rejection");
         assert_eq!(rejection.stage, WsAcceptStage::Upgrade);
 
+        // Paused time makes the silent-peer deadline deterministic, but it is
+        // hostile to the real socket I/O below: while the kernel is briefly
+        // pending, Tokio can auto-advance straight to the next timer and make
+        // a healthy upgrade lose to the ten-second virtual deadline. Resume
+        // real time before proving recovery so this half tests the listener,
+        // not the paused-clock scheduler.
+        tokio::time::resume();
+
         // The listener is still live: a well-behaved client connecting after
         // the stall is served normally.
         let frame: Vec<u8> = vec![0, 0, 0, 3, 0xde, 0xad, 0xbe];
