@@ -119,6 +119,12 @@ const SECTIONS: &[Section] = &[
         summary: "Opt-in unstable knobs; anything here may change or \
                   disappear without notice.",
     },
+    Section {
+        key: "voice",
+        header: "[voice]",
+        summary: "The server-side transcriber behind `TRANSCRIBE`: an argv \
+                  that turns an uploaded clip into text for a paste.",
+    },
 ];
 
 /// Collect every scalar leaf of `value` as a `(dotted-key, TOML literal)`
@@ -155,11 +161,23 @@ fn scalar_rows(value: &toml::Value, path: &str, rows: &mut Vec<(String, String)>
 /// Hand-written, and guarded: `tristate_keys_are_really_unset_in_the_schema`
 /// fails if one of these ever acquires a concrete serialized default, which is
 /// the moment the hand-written text would start lying.
-const TRISTATE_ROWS: &[(&str, &str)] = &[(
-    "experimental.predictive-echo",
-    "unset — the dial decides: on when the attach leaves the machine, \
-     off otherwise. `true` / `false` force it on every transport",
-)];
+const TRISTATE_ROWS: &[(&str, &str)] = &[
+    (
+        "experimental.predictive-echo",
+        "unset — the dial decides: on when the attach leaves the machine, \
+         off otherwise. `true` / `false` force it on every transport",
+    ),
+    (
+        "voice.transcriber",
+        "unset — `TRANSCRIBE` is refused with a remedy. An argv; `{path}` is \
+         replaced by the uploaded clip's path and stdout is the transcript",
+    ),
+    (
+        "voice.timeout-secs",
+        "unset — 30. Seconds before the transcriber is killed and the \
+         request refused",
+    ),
+];
 
 /// The scalar knobs of the schema defaults, as rendered in the table.
 ///

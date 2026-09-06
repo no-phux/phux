@@ -557,6 +557,17 @@ pub enum Command {
         /// covers only what happened since.
         reset: bool,
     },
+    /// Turn a completed `PUT_FILE` upload into text with the server's
+    /// configured transcriber and paste that text into a Terminal as one
+    /// acknowledged batch. Replies `OkWith(Json { text, pasted, duration_ms })`
+    /// so the client can show what was heard; the paste inserts without
+    /// submitting. Gated on the `TRANSCRIBE` server feature bit.
+    Transcribe {
+        /// The finished upload (its final `PUT_FILE` chunk was acknowledged).
+        upload_id: FileUploadId,
+        /// The Terminal to paste the transcript into.
+        terminal_id: TerminalId,
+    },
 }
 
 /// Acknowledgement for one [`Command::PutFile`] chunk.

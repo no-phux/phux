@@ -64,6 +64,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::SpawnInitialSize,
         ServerFeature::ReportAgentState,
         ServerFeature::GetPerf,
+        ServerFeature::Transcribe,
     ])
 }
 

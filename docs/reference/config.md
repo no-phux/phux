@@ -32,6 +32,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host enroll` / `phux host add` and resolved by `phux attach <name>` (ADR-0055). |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
+| `[voice]` | The server-side transcriber behind `TRANSCRIBE`: an argv that turns an uploaded clip into text for a paste. |
 
 ## Scalar keys
 
@@ -57,6 +58,8 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `sidebar.position` | `"left"` |
 | `sidebar.width` | `28` |
 | `status.position` | `"bottom"` |
+| `voice.timeout-secs` | unset — 30. Seconds before the transcriber is killed and the request refused |
+| `voice.transcriber` | unset — `TRANSCRIBE` is refused with a remedy. An argv; `{path}` is replaced by the uploaded clip's path and stdout is the transcript |
 
 ## The annotated default config
 

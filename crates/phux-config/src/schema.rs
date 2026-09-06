@@ -79,6 +79,9 @@ pub struct Config {
     /// See `docs/consumers/tui.md` §4.2 for the user-facing caveat.
     #[serde(default)]
     pub experimental: ExperimentalCfg,
+    /// `[voice]`: the server-side transcriber behind `TRANSCRIBE`.
+    #[serde(default)]
+    pub voice: VoiceCfg,
 }
 
 // ---------------------------------------------------------------------------
@@ -787,4 +790,109 @@ impl ExperimentalCfg {
 pub struct ThemeCfg {
     /// Slot → color string (e.g. `"fg" -> "#cdd6f4"`).
     pub slots: BTreeMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
+// [voice]
+// ---------------------------------------------------------------------------
+
+/// `[voice]` table — the server-side transcriber behind `TRANSCRIBE`
+/// (bead phux-ypsa).
+///
+/// A client that cannot run a good speech model itself (the phone) uploads a
+/// clip with `PUT_FILE` and asks the server to turn it into text and paste it
+/// into a pane. The server does not embed a model; it runs the command
+/// configured here, which is how one line of config wraps whatever is already
+/// serving speech on the box: a `curl` against a whisper.cpp or speaches
+/// `/v1/audio/transcriptions` endpoint, a headless dictation CLI, or an ssh
+/// hop to a GPU host.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct VoiceCfg {
+    /// The transcriber command, argv style. The token `{path}` is replaced
+    /// by the uploaded clip's absolute path (appended as a final argument
+    /// when no argument contains it); the command's stdout, trimmed, is the
+    /// transcript. Unset means `TRANSCRIBE` is refused with a remedy.
+    ///
+    /// ```toml
+    /// [voice]
+    /// transcriber = ["curl", "-sf", "-F", "file=@{path}", "-F", "response_format=text",
+    ///                "http://127.0.0.1:8000/v1/audio/transcriptions"]
+    /// ```
+    #[serde(default)]
+    pub transcriber: Option<Vec<String>>,
+    /// Seconds the server waits for the transcriber before refusing the
+    /// request; the process is killed on expiry. Unset means 30.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+impl VoiceCfg {
+    /// Default transcriber deadline when `timeout-secs` is unset.
+    pub const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// The configured deadline, or [`Self::DEFAULT_TIMEOUT`].
+    #[must_use]
+    pub fn timeout(&self) -> std::time::Duration {
+        self.timeout_secs
+            .map_or(Self::DEFAULT_TIMEOUT, std::time::Duration::from_secs)
+    }
+
+    /// Is a transcriber configured at all?
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        self.transcriber
+            .as_ref()
+            .is_some_and(|argv| !argv.is_empty())
+    }
+
+    /// The transcriber argv with `{path}` resolved to `clip`. `None` when
+    /// nothing is configured.
+    #[must_use]
+    pub fn transcriber_argv(&self, clip: &std::path::Path) -> Option<Vec<String>> {
+        let argv = self.transcriber.as_ref().filter(|argv| !argv.is_empty())?;
+        let clip = clip.to_string_lossy();
+        let mut resolved: Vec<String> = argv
+            .iter()
+            .map(|arg| arg.replace("{path}", &clip))
+            .collect();
+        if !argv.iter().any(|arg| arg.contains("{path}")) {
+            resolved.push(clip.into_owned());
+        }
+        Some(resolved)
+    }
+}
+
+#[cfg(test)]
+mod voice_tests {
+    use super::VoiceCfg;
+
+    #[test]
+    fn path_token_is_substituted_or_appended() {
+        let cfg = VoiceCfg {
+            transcriber: Some(vec!["curl".into(), "-F".into(), "file=@{path}".into()]),
+            timeout_secs: None,
+        };
+        let argv = cfg
+            .transcriber_argv(std::path::Path::new("/tmp/clip.wav"))
+            .unwrap_or_default();
+        assert_eq!(argv, vec!["curl", "-F", "file=@/tmp/clip.wav"]);
+        let cfg = VoiceCfg {
+            transcriber: Some(vec!["transcribe".into()]),
+            timeout_secs: Some(5),
+        };
+        let argv = cfg
+            .transcriber_argv(std::path::Path::new("/tmp/clip.wav"))
+            .unwrap_or_default();
+        assert_eq!(argv, vec!["transcribe", "/tmp/clip.wav"]);
+        assert_eq!(cfg.timeout(), std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn unset_is_not_configured() {
+        let cfg = VoiceCfg::default();
+        assert!(!cfg.is_configured());
+        assert!(cfg.transcriber_argv(std::path::Path::new("/x")).is_none());
+        assert_eq!(cfg.timeout(), VoiceCfg::DEFAULT_TIMEOUT);
+    }
 }

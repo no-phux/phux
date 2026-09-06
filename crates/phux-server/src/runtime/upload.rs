@@ -78,6 +78,28 @@ fn error(code: ErrorCode, message: impl Into<String>) -> CommandResult {
     }
 }
 
+/// The landed file of a finished upload, if `PUT_FILE` completed it.
+///
+/// Looked up by id rather than by a client-supplied path so a caller can
+/// never name a file outside the sandbox: the id is hex-encoded server-side
+/// and matched against `phux-upload-<hex>.<ext>` in the upload root.
+pub(super) fn completed_upload_path(upload_id: FileUploadId) -> Result<Option<PathBuf>, String> {
+    let root = upload_dir()?;
+    let prefix = format!("phux-upload-{}.", hex::encode(upload_id.as_bytes()));
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("cannot read upload directory: {err}")),
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with(&prefix) {
+            return Ok(Some(entry.path()));
+        }
+    }
+    Ok(None)
+}
+
 fn upload_dir() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("PHUX_UPLOAD_DIR").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path));

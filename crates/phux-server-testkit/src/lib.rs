@@ -123,6 +123,33 @@ pub fn spawn_server(
     (tx, handle)
 }
 
+/// Like [`spawn_server`] but lets the caller edit the [`ServerConfig`] before
+/// the runtime binds it: a `[voice]` transcriber, a seed command, a policy.
+pub fn spawn_server_with(
+    socket_path: PathBuf,
+    pre_seeded: Option<&str>,
+    configure: impl FnOnce(&mut ServerConfig),
+) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
+    let (tx, rx) = oneshot::channel::<()>();
+    let mut cfg = ServerConfig {
+        socket_path,
+        pre_seeded_session: pre_seeded.map(str::to_owned),
+        seed_with_pty: false,
+        seed_command: None,
+        ..ServerConfig::with_default_socket()
+    };
+    configure(&mut cfg);
+    let handle = tokio::task::spawn_local(async move {
+        let server = ServerRuntime::new(cfg);
+        server
+            .run_async(async move {
+                let _ = rx.await;
+            })
+            .await
+    });
+    (tx, handle)
+}
+
 /// Like [`spawn_server`] but pre-seeds a PTY-backed pane running `cmd`.
 /// Used by the `input_dispatch` test to drive a deterministic echo
 /// fixture (`cat`) for wire→PTY round-trip assertions.

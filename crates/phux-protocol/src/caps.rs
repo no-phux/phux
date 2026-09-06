@@ -914,6 +914,9 @@ pub const SPAWN_INITIAL_SIZE: u32 = 0x0000_0200;
 pub const REPORT_AGENT_STATE: u32 = 0x0000_0400;
 /// Wire bit advertising the `GET_PERF` telemetry snapshot command.
 pub const GET_PERF: u32 = 0x0000_0800;
+/// Wire bit advertising the `TRANSCRIBE` voice passthrough command. `0x1000`
+/// is reserved for `WORKLOAD_AUTH` (ADR-0098) and skipped.
+pub const TRANSCRIBE: u32 = 0x0000_2000;
 
 /// An additive server-owned protocol feature.
 #[repr(u32)]
@@ -949,6 +952,9 @@ pub enum ServerFeature {
     /// The server answers `GET_PERF` with its in-process performance
     /// telemetry as a JSON `COMMAND_RESULT`.
     GetPerf = GET_PERF,
+    /// The server answers `TRANSCRIBE` by running its configured
+    /// transcriber on a finished upload and pasting the text.
+    Transcribe = TRANSCRIBE,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -963,7 +969,8 @@ impl ServerFeatureSet {
         | (ServerFeature::Shutdown as u32)
         | (ServerFeature::SpawnInitialSize as u32)
         | (ServerFeature::ReportAgentState as u32)
-        | (ServerFeature::GetPerf as u32);
+        | (ServerFeature::GetPerf as u32)
+        | (ServerFeature::Transcribe as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1633,6 +1640,9 @@ mod tests {
     fn get_perf_feature_bit_is_stable_and_known() {
         assert_eq!(GET_PERF, 0x0000_0800);
         assert_eq!(ServerFeature::GetPerf as u32, GET_PERF);
+        assert_eq!(TRANSCRIBE, 0x0000_2000);
+        assert_eq!(ServerFeature::Transcribe as u32, TRANSCRIBE);
+        assert!(ServerFeatureSet::from_wire(TRANSCRIBE).contains(ServerFeature::Transcribe));
         let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
         assert!(set.contains(ServerFeature::GetPerf));
         assert_eq!(set.as_wire(), GET_PERF);

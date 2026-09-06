@@ -39,6 +39,10 @@ pub(super) struct ServerConfig {
     /// Defaults to the `phux_config` schema default so tests that never
     /// call the setter still get a sane bound.
     pub(super) scrollback: phux_config::ScrollbackLimits,
+    /// `[voice]` transcriber settings behind `TRANSCRIBE`. Mirrors
+    /// [`crate::runtime::ServerConfig::voice`] via
+    /// [`super::ServerState::set_voice`].
+    pub(super) voice: phux_config::VoiceCfg,
     /// How a freshly-spawned pane chooses its working directory
     /// (`defaults.cwd-inheritance`). Mirrors
     /// [`crate::runtime::ServerConfig::cwd_inheritance`] so the
@@ -145,6 +149,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             scrollback: phux_config::DefaultsCfg::default().scrollback_limits(),
+            voice: phux_config::VoiceCfg::default(),
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
             shell: crate::terminal_actor::resolve_shell(None),
