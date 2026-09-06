@@ -225,7 +225,8 @@ impl CopyModeOverlay {
         let anchor_row = self
             .mouse_anchor_viewport_row
             .map_or(self.anchor_row, |row| {
-                row.clamp(0, i32::from(self.pane_rows.saturating_sub(1))) as u16
+                u16::try_from(row.clamp(0, i32::from(self.pane_rows.saturating_sub(1))))
+                    .unwrap_or_default()
             });
         CellRange::from_points(
             anchor_row,
@@ -279,10 +280,12 @@ impl CopyModeOverlay {
         let Some(row) = self.mouse_anchor_viewport_row.as_mut() else {
             return;
         };
-        let delta = i32::try_from(delta).unwrap_or(if delta.is_negative() {
-            i32::MIN
-        } else {
-            i32::MAX
+        let delta = i32::try_from(delta).unwrap_or_else(|_| {
+            if delta.is_negative() {
+                i32::MIN
+            } else {
+                i32::MAX
+            }
         });
         *row = row.saturating_sub(delta);
     }
