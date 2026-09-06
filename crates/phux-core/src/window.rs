@@ -70,7 +70,7 @@ pub enum LayoutNode {
         /// would refuse. Callers that assemble a tree by hand own that check
         /// themselves. The transports
         /// deliberately admit a wider domain than this — see the map in
-        /// `crates/phux/tests/layout_conformance.rs`.
+        /// `crates/phux/tests/conformance/layout_conformance.rs`.
         ratio: f32,
         /// Left (for [`SplitDir::Horizontal`]) or top (for [`SplitDir::Vertical`]) child.
         left: Box<Self>,

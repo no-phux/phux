@@ -2453,7 +2453,7 @@ mod tests {
     // `--`-guarded command line end to end) and its exit is the drop
     // signal, exactly as an exiting ssh would be. The stdio *bridge* half
     // (bytes actually splicing to a UDS) is exercised in
-    // `crates/phux/tests/stdio_bridge_e2e.rs` against the real binary.
+    // `crates/phux/tests/fleet/stdio_bridge_e2e.rs` against the real binary.
 
     fn synthesized_hello_ok() -> Vec<u8> {
         let mut encoded = bytes::BytesMut::new();

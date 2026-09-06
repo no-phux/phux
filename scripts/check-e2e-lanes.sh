@@ -28,7 +28,8 @@
 # default pool and needs no entry; a binary that has at least one `#[ignore]`
 # must be named by a lane recipe, or those tests are dead weight.
 #
-# SCOPE is the `*_e2e.rs` naming convention, not every test target, and that
+# SCOPE is the `*_e2e.rs` naming convention, including subsystem harness
+# modules under `tests/<harness>/`, not every test target, and that
 # is deliberate. Outside that convention an `#[ignore]` can legitimately mean
 # "this needs a host tool or a machine property CI does not have" -- e.g.
 # phux-server's kip_roundtrip probe needs a host-provided htop, and one
@@ -82,16 +83,31 @@ fi
 status=0
 checked=0
 
-# `crates/*/tests/*_e2e.rs` is the naming convention; a file there is one
-# cargo test target, and its binary id is `<crate>::<file stem>`.
-for path in crates/*/tests/*_e2e.rs; do
-    [ -e "$path" ] || continue
+# Keep scanning the original suite files after harness consolidation. Looking
+# only at a subsystem's main.rs would miss every ignore in its child modules.
+# Both top-level targets and tests/<harness>/<suite>_e2e.rs are supported;
+# deeper or unwired modules fail closed rather than silently losing coverage.
+while IFS= read -r path; do
     checked=$((checked + 1))
 
     crate="${path#crates/}"
     crate="${crate%%/*}"
     stem="$(basename "$path" .rs)"
-    binary_id="${crate}::${stem}"
+    relative="${path#crates/"${crate}"/tests/}"
+    harness="$stem"
+    if [ "$relative" != "${stem}.rs" ]; then
+        harness="${relative%%/*}"
+        entry="crates/${crate}/tests/${harness}/main.rs"
+        if [ "$relative" != "${harness}/${stem}.rs" ] ||
+            [ ! -f "$entry" ] ||
+            ! grep -Eq "^mod ${stem};$" "$entry"; then
+            echo "error: ${path} is not wired into a supported subsystem harness" >&2
+            echo "  expected ${entry} to declare: mod ${stem};" >&2
+            status=1
+            continue
+        fi
+    fi
+    binary_id="${crate}::${harness}"
 
     # No `#[ignore]` anywhere in the file means every test in it runs in the
     # default pool, which CI's unit step already executes. Nothing to check.
@@ -103,7 +119,7 @@ for path in crates/*/tests/*_e2e.rs; do
         continue
     fi
     # `just stress` selects by `--test <name>` rather than by binary id.
-    if printf '%s' "$lanes" | grep -Eq -- "--test[[:space:]]+${stem}([[:space:]]|$)"; then
+    if printf '%s' "$lanes" | grep -Eq -- "--test[[:space:]]+${harness}([[:space:]]|$)"; then
         continue
     fi
 
@@ -119,16 +135,16 @@ for path in crates/*/tests/*_e2e.rs; do
     echo "  or, if it is too slow for the PR critical path, to the \`stress\`" >&2
     echo "  recipe (which runs post-merge and nightly via stress.yml)." >&2
     echo "" >&2
-done
+done < <(find crates -type f -path '*/tests/*_e2e.rs' | sort)
 
 if [ "$checked" -eq 0 ]; then
-    echo "error: no crates/*/tests/*_e2e.rs files found" >&2
+    echo "error: no *_e2e.rs suites found under crates/*/tests/" >&2
     echo "  the glob or the naming convention changed; update this gate." >&2
     exit 1
 fi
 
 if [ "$status" -eq 0 ]; then
-    echo "e2e lane coverage ok: ${checked} e2e binaries, all reachable"
+    echo "e2e lane coverage ok: ${checked} e2e suites, all reachable"
 fi
 
 exit "$status"

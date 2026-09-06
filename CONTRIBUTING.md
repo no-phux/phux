@@ -50,6 +50,38 @@ it before pushing anything that touches the CLI surface, server lifecycle, or
 the example scripts. Cockpit and browser builds have their own additional
 checks; the root target does not build those clients.
 
+### Build only what you are iterating on
+
+| Command | Build scope |
+|---|---|
+| `just build` or `cargo build` | Developer executables: `phux` and `phux-mcp` |
+| `just build-lean` | Same executables without browser HTTP/3/WebTransport; UDS, WebSocket and raw QUIC remain |
+| `cargo build -p phux-mcp` | Headless MCP adapter, without the client's TUI chrome |
+| `just build-all` | All workspace targets, including integration tests, examples and benchmarks |
+| `just build-release` | Shipping executables with full release optimization |
+| `just cockpit-build`, `just cockpit-dev`, `just cockpit-test` | Cockpit with the unwind-safe, incremental `ffi-dev` profile |
+| `just cockpit-ffi-release` | Production FFI with unwind safety and full release optimization |
+
+The default executable still supports browser WebTransport. Lean builds opt out
+via `phux --no-default-features` at Cargo build time; workspace tests deliberately
+enable the complete server transport surface. `phux-client` keeps its TUI in the
+default feature set; headless consumers disable defaults. `just build-features-check`
+checks these resolved dependency boundaries without compiling.
+`just build-features-compile` separately type-checks the lean executable and
+headless client/MCP targets so workspace feature unification cannot hide errors.
+Both checks run in `just ci` and CI.
+
+Use `cargo check -p <crate>` for a targeted type check. For repeated workspace
+test runs, keep the Cargo build selection as `--workspace` and select tests with
+nextest's `-E` filter: changing package selection or profiling features can
+produce a different dependency feature union and rebuild downstream crates.
+The `just test`, `just e2e` and `just stress` recipes share that build selection.
+
+For timing evidence, append `--timings` to a Cargo build and inspect
+`target/cargo-timings/`. Measure cold, unchanged, and one-source-edit builds
+separately; package counts alone do not predict wall time. Keep each concurrent
+worktree's Cargo target directory private.
+
 ### Gate-by-gate: local vs CI
 
 The local bar is a **superset** of `.github/workflows/ci.yml` by design. It
@@ -61,10 +93,12 @@ commitment to keep the two columns aligned.
 
 | Gate | CI (`ci.yml`) | Local |
 |---|---|---|
-| formatting | `cargo fmt --check` | `just fmt-check` (adds `--all`) |
+| formatting | `cargo fmt --all -- --check` | `just fmt-check` (identical) |
 | clippy | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | `just lint` (identical) |
 | rustdoc | `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --workspace --all-features` | `just doc` (identical) |
 | dependency hygiene | `cargo deny check` | `just deny` (identical) |
+| production feature boundaries | `python3 scripts/check-build-features.py` | `just build-features-check` (identical) |
+| opt-out feature compilation | `just build-features-compile` | `just build-features-compile` (identical) |
 | doc system | `scripts/check-docs.sh` | `just docs-check` (identical) |
 | generated glyph table | `scripts/check-generated-font.sh` | `just font-check` (identical) |
 | e2e lane coverage | `scripts/check-e2e-lanes.sh` | `just e2e-lane-check` (identical) |
@@ -80,10 +114,12 @@ commitment to keep the two columns aligned.
 
 Two rows are worth reading twice:
 
-- **Unit tests use default features locally and in CI.** `--all-features`
-  enables `phux/dhat-heap`, replacing the allocator and distorting wall-clock
-  measurements. Clippy and rustdoc still compile all features. `test-cargo`
-  also runs doctests, but does not reproduce nextest's retries/filtersets.
+- **Unit and e2e tests share the default feature set.** Optional profiling
+  surfaces compile under `just lint` and `just doc` with `--all-features`.
+  Keeping test build selections aligned avoids recompiling a different
+  feature union between lanes. Heap profiling has its own `phux-dhat-heap`
+  executable; the ordinary `phux` executable retains its normal allocator.
+  `test-cargo` also runs doctests, but does not reproduce nextest's retries/filtersets.
 - **`just e2e` is not in `just ci`.** It spawns real PTY-backed servers and
   ends in two wall-clock ceilings, which a laptop under load can miss for
   reasons that say nothing about the diff. Keeping it out means a `just ci`

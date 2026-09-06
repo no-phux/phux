@@ -44,7 +44,7 @@
 //! it: `phux_core` still imposes no depth bound of its own, while
 //! `phux_protocol`'s wire codec caps at `MAX_LAYOUT_DEPTH` (64), so a window
 //! deeper than that is un-sendable regardless. The cross-encoding map lives in
-//! `crates/phux/tests/layout_conformance.rs`.
+//! `crates/phux/tests/conformance/layout_conformance.rs`.
 
 use std::os::fd::RawFd;
 use std::path::PathBuf;
@@ -268,7 +268,7 @@ pub enum LayoutBlob {
         /// whole blob with it — nothing can produce one today because
         /// `Window::split` rejects NaN at the constructor. The three
         /// encodings' ratio domains are mapped in
-        /// `crates/phux/tests/layout_conformance.rs`.
+        /// `crates/phux/tests/conformance/layout_conformance.rs`.
         ratio: f32,
         /// Left (horizontal) / top (vertical) child.
         left: Box<LayoutBlob>,

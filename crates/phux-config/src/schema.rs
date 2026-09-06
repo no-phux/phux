@@ -122,7 +122,7 @@ pub struct DefaultsCfg {
     /// extended terminfo (sixel, kitty-graphics advertisement, the ghostty
     /// SGR extensions) once the host's apps are known to round-trip the
     /// kitty keyboard protocol. The phux-0o8 harness
-    /// (`crates/phux-server/tests/kip_roundtrip.rs`) records the evidence
+    /// (`crates/phux-server/tests/terminal/kip_roundtrip.rs`) records the evidence
     /// per app: nvim's CSI-u opt-in round-trips end-to-end and
     /// fzf/less/vim/btop are regression-free under `TERM=ghostty`, but
     /// htop — the phux-7vx regression app — is unproven, so the shipped

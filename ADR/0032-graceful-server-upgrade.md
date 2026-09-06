@@ -135,7 +135,7 @@ v1 landed as `phux upgrade` (phux-fak5). Notes where the build refined the plan:
   written, `FD_CLOEXEC`-cleared, and inherited; read back with a seek-to-start.
 - **JSON state blob,** versioned (`0.5.0-draft.4` allocates the `UPGRADE`
   command at tag `0x0e`); keyed by wire ids so the resumed image re-pins them.
-- **Acceptance drill** (`crates/phux/tests/upgrade_e2e.rs`, run via `just e2e`):
+- **Acceptance drill** (`crates/phux/tests/lifecycle_e2e/upgrade_e2e.rs`, run via `just e2e`):
   the server PID is unchanged across the upgrade (in-place `execve`, not
   kill+restart), the pane child stays alive, and scrollback survives.
 - Client reconnect is the v1 blink (re-attach + `TERMINAL_SNAPSHOT` resync).

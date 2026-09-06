@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Plain `cargo build` builds the shipped executables; workspace-wide gates opt in.
+default-members = ["crates/phux", "crates/phux-mcp"]
 # Browser/wasm consumers (phux-486) live under clients/ and target wasm32 only.
 # They are their own cargo workspaces so the native `cargo build --workspace`
 # (and CI) never tries to build wasm-bindgen crates for the host.
@@ -138,14 +140,15 @@ qrcode = { version = "0.14", default-features = false }
 # The boundary (ADR-0020) is now compiler-enforced by the crate split: only
 # `phux-client` declares `ratatui`; the pane-interior substrate lives in
 # `phux-client-core`, which has no `ratatui` dependency, so a stray
-# `use ratatui` there fails to compile. See epic phux-5ke. Default features
-# plus `unstable-rendered-line-info`, which gates `Paragraph::line_count` —
+# `use ratatui` there fails to compile. See epic phux-5ke. Phux emits VT
+# itself, so no crossterm backend, convenience macros or layout cache is needed.
+# `unstable-rendered-line-info` gates `Paragraph::line_count` —
 # the wrapped-display-row count the help overlay's scroll window needs
 # (phux-9adu); counting logical lines undercounts whenever a row wraps.
 # "Unstable" here means semver-exempt upstream (ratatui#293), so a ratatui
 # bump must re-check it; the alternative was reimplementing ratatui's word
 # wrapper to count rows, which would drift from the renderer.
-ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+ratatui = { version = "0.30", default-features = false, features = ["std", "underline-color", "unstable-rendered-line-info"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 # Provider-native agent restoration needs a caller-chosen UUID before spawn:
 # Claude Code and Gemini both expose documented `--session-id` fresh-session
@@ -206,7 +209,7 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 # rustls 0.23 + `ring` provider: TLS 1.3 termination on the server, and the
 # client-side cert verifier (fingerprint pin / loopback skip) on the dialer.
 # Same features both ends so feature-unification is a no-op.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
 
 [profile.release]
 lto = "fat"
@@ -239,6 +242,13 @@ opt-level = 3
 [profile.ffi-release]
 inherits = "release"
 panic = "unwind"
+
+# Native-host iteration keeps the FFI panic boundary without whole-program LTO.
+[profile.ffi-dev]
+inherits = "dev"
+panic = "unwind"
+lto = false
+codegen-units = 256
 
 [profile.dev]
 opt-level = 1

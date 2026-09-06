@@ -39,7 +39,7 @@ use super::server_frame::{AgentMetaIndex, handle_server_frame};
 use crate::layout::{LayoutState, WindowState, Workspace};
 use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 
-fn tid(id: u32) -> TerminalId {
+const fn tid(id: u32) -> TerminalId {
     TerminalId::local(id)
 }
 

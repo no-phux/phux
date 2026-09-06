@@ -397,7 +397,7 @@ cargo nextest run -p phux-server server_idle_exit
 
 # Real daemon: exits unattended, reaps its PTY child, and the
 # no-flag control stays up.
-cargo test -p phux --test idle_exit_e2e -- --ignored
+cargo test -p phux --test lifecycle_e2e idle_exit_e2e:: -- --ignored
 ```
 
 ## Instance isolation (profiles)
@@ -615,7 +615,7 @@ phux has two different continuity mechanisms. They are intentionally separate:
   This is a restart/recreate path, not a live handoff path.
 - **Live update handoff:** `phux upgrade` is the mechanism intended to keep
   existing PTYs alive across a server binary re-exec. Its e2e drill is
-  `cargo test -p phux --test upgrade_e2e -- --ignored`, which checks that a
+  `cargo test -p phux --test lifecycle_e2e upgrade_e2e:: -- --ignored`, which checks that a
   pane child PID and scrollback marker survive the upgrade.
 - **Release update:** `phux update` is the user-facing verb built on that
   handoff. It resolves the published release, verifies the `.sha256` sidecar
@@ -642,15 +642,15 @@ Operational smoke checks:
 
 ```sh
 # Process/cwd restart restore smoke. Starts real phux servers.
-cargo test -p phux --test workspace_archive_e2e \
+cargo test -p phux --test automation_e2e \
   workspace_restore_starts_archived_command_process -- --ignored
 
 # Save/restore session inventory smoke. Starts real phux servers.
-cargo test -p phux --test workspace_archive_e2e \
+cargo test -p phux --test automation_e2e \
   workspace_archive_saves_and_restores_sessions -- --ignored
 
 # Live PTY handoff across server update/re-exec.
-cargo test -p phux --test upgrade_e2e -- --ignored
+cargo test -p phux --test lifecycle_e2e upgrade_e2e:: -- --ignored
 ```
 
 ## Security model and trust boundaries

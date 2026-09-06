@@ -18,7 +18,7 @@ Date: 2026-07-27
 ## Context
 
 A phux server is a multiplexer: it outlives the client that started it,
-because that is the point. `crates/phux-server/tests/server_self_exit.rs`
+because that is the point. `crates/phux-server/tests/lifecycle/server_self_exit.rs`
 pins the one condition under which it stops by itself — the last pane was
 reaped after at least one client had been served.
 

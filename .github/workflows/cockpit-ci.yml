@@ -135,15 +135,19 @@ jobs:
       # Zig compilation dominates the rest of the job (the materialized SDK
       # source plus two build graphs and a production build). Restore on every
       # run; save only from main, mirroring the rust-cache policy. Keyed on
-      # the build manifest and Zig version so an SDK pin bump starts a fresh
-      # entry with the prefix as fallback.
+      # the build manifest and Zig version, rotating by revision so immutable
+      # cache entries can accumulate new compilation work after source changes.
+      # The stable prefix restores the most recent compatible base.
+      # zig-build.sh compiles in .zig-global-cache; ~/.cache/zig supplies its
+      # shared package directory. Persist both halves along with .zig-cache.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: zig-cache
         with:
           path: |
             ~/.cache/zig
             clients/cockpit/.zig-cache
-          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
+            clients/cockpit/.zig-global-cache
+          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
           restore-keys: |
             cockpit-zig-0.16.0-${{ runner.os }}-
 
@@ -153,6 +157,7 @@ jobs:
           ./scripts/check-release-version.sh
           ./scripts/check-release-fallback.sh
           ./scripts/check-sdk-pin.sh
+          python3 ./scripts/check-build-contracts.py
           ./scripts/lib/zon_test.sh
           ./scripts/lib/measure_test.sh
           ./scripts/glyph-visibility-diagnose_test.sh
@@ -170,7 +175,7 @@ jobs:
           ./scripts/host-raster-check.sh --min-solid 4179
 
       - name: Build the same-checkout Phux client FFI
-        run: cargo build --locked --profile ffi-release -p phux-client-ffi
+        run: cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
 
       - name: Test the shipping TypeScript and native provider graph
         working-directory: clients/cockpit
@@ -202,4 +207,5 @@ jobs:
           path: |
             ~/.cache/zig
             clients/cockpit/.zig-cache
-          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
+            clients/cockpit/.zig-global-cache
+          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}

@@ -236,11 +236,14 @@ fn ffiComplete(b: *std.Build, include_dir: []const u8, lib_dir: []const u8) bool
 ///   1. -Dphux-client-ffi-include-dir / -Dphux-client-ffi-lib-dir
 ///   2. $PHUX_CLIENT_FFI_INCLUDE_DIR / $PHUX_CLIENT_FFI_LIB_DIR
 ///      (the pair scripts/package-macos.sh and both workflows already use)
-///   3. ../../...           -- the Phux monorepo root
+///   3. ../../target/<profile> -- the Phux monorepo root, ffi-release by default
+///      (-Dphux-client-ffi-profile=ffi-dev selects the iteration archive).
+/// Explicit directory pairs keep precedence over the profile's default path.
 fn resolvePhuxFfi(
     b: *std.Build,
     opt_include: ?[]const u8,
     opt_lib: ?[]const u8,
+    ffi_profile: []const u8,
 ) ?PhuxFfi {
     if (opt_include) |include_dir| {
         if (opt_lib) |lib_dir| {
@@ -262,18 +265,13 @@ fn resolvePhuxFfi(
         }
     }
 
-    const layouts = [_]struct { root: []const u8, origin: []const u8 }{
-        .{ .root = "../..", .origin = "Phux monorepo checkout" },
+    const include_dir = rootPath(b, "../../crates/phux-client-ffi/include");
+    const lib_dir = rootPath(b, b.pathJoin(&.{ "../..", "target", ffi_profile }));
+    if (ffiComplete(b, include_dir, lib_dir)) return .{
+        .include_dir = include_dir,
+        .lib_dir = lib_dir,
+        .origin = b.fmt("Phux monorepo checkout ({s})", .{ffi_profile}),
     };
-    for (layouts) |layout| {
-        const include_dir = rootPath(b, b.pathJoin(&.{ layout.root, "crates/phux-client-ffi/include" }));
-        const lib_dir = rootPath(b, b.pathJoin(&.{ layout.root, "target/ffi-release" }));
-        if (ffiComplete(b, include_dir, lib_dir)) return .{
-            .include_dir = include_dir,
-            .lib_dir = lib_dir,
-            .origin = layout.origin,
-        };
-    }
 
     return null;
 }
@@ -553,6 +551,7 @@ fn buildVerdict(
     b: *std.Build,
     phux_enabled: bool,
     ffi: ?PhuxFfi,
+    ffi_profile: []const u8,
 ) []const u8 {
     const rule = "------------------------------------------------------------------";
 
@@ -611,9 +610,9 @@ fn buildVerdict(
         \\                   -Dphux-client-ffi-include-dir / -Dphux-client-ffi-lib-dir
         \\                   $PHUX_CLIENT_FFI_INCLUDE_DIR / $PHUX_CLIENT_FFI_LIB_DIR
         \\                   {s}
-        \\  to include it: cargo build --locked --profile ffi-release \
+        \\  to include it: cargo build --locked --profile {s} \
         \\                   -p phux-client-ffi --manifest-path ../../Cargo.toml
-        \\                 then re-run zig build test
+        \\                 then re-run zig build test -Dphux-client-ffi-profile={s}
         \\  app graph:     local terminal provider (-Dphux-enabled defaults to false)
         \\{s}
     , .{
@@ -621,6 +620,8 @@ fn buildVerdict(
         source_root,
         global_cache,
         rootPath(b, "../.."),
+        ffi_profile,
+        ffi_profile,
         rule,
     });
 }
@@ -644,12 +645,17 @@ pub fn build(b: *std.Build) void {
         "phux-client-ffi-lib-dir",
         "Directory containing libphux_client_ffi.a (required with -Dphux-enabled=true)",
     );
+    const ffi_profile = b.option(
+        []const u8,
+        "phux-client-ffi-profile",
+        "Cargo target profile directory for monorepo FFI lookup (ffi-dev for iteration)",
+    ) orelse "ffi-release";
     const measure = b.option(
         bool,
         "measure",
         "Print MEASURED diagnostics from tests (see src/tests/measured.zig)",
     ) orelse false;
-    const ffi = resolvePhuxFfi(b, opt_include, opt_lib);
+    const ffi = resolvePhuxFfi(b, opt_include, opt_lib, ffi_profile);
 
     // -Dphux-enabled=true is a promise that the selected app graph contains
     // the real provider. Never silently downgrade either composition root.
@@ -662,8 +668,8 @@ pub fn build(b: *std.Build) void {
             \\Pass -Dphux-client-ffi-include-dir=<dir> -Dphux-client-ffi-lib-dir=<dir>,
             \\or set PHUX_CLIENT_FFI_INCLUDE_DIR and PHUX_CLIENT_FFI_LIB_DIR,
             \\or build the FFI from the Phux monorepo root at {s} with:
-            \\  cargo build --locked --profile ffi-release -p phux-client-ffi
-        , .{rootPath(b, "../..")});
+            \\  cargo build --locked --profile {s} -p phux-client-ffi
+        , .{ rootPath(b, "../.."), ffi_profile });
         std.process.exit(1);
     }
     // Before the SDK's own configure-time check inside addAppArtifacts,
@@ -684,6 +690,6 @@ pub fn build(b: *std.Build) void {
         addNativeRegressionTests(b, artifacts, test_step, measure, phux_enabled, ffi);
         if (ffi) |found| addPhuxGraphTests(b, artifacts, test_step, found);
         addGuardCheck(b, test_step);
-        addTestVerdict(b, test_step, buildVerdict(b, phux_enabled, ffi));
+        addTestVerdict(b, test_step, buildVerdict(b, phux_enabled, ffi, ffi_profile));
     }
 }

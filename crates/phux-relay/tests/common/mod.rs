@@ -6,7 +6,7 @@
 //! through the production `dial_with_alpn` with `QUIC_RELAY_ALPN`. The
 //! only test-local logic is the connector's serving side (bearer check +
 //! tagged echo backend), lifted from the spike's `spawn_connector` shape
-//! (`crates/phux-server/tests/relay_connector_spike.rs`).
+//! (`crates/phux-server/tests/federation/relay_connector_spike.rs`).
 //!
 //! Every await in a test body is bounded by a timeout: the
 //! accept_bi-needs-bytes deadlock class must fail a test, never hang the

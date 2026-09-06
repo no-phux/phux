@@ -88,12 +88,13 @@ jobs:
           path: |
             ~/.cache/zig
             clients/cockpit/.zig-cache
-          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
+            clients/cockpit/.zig-global-cache
+          key: cockpit-zig-0.16.0-${{ runner.os }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
           restore-keys: |
             cockpit-zig-0.16.0-${{ runner.os }}-
 
       - name: Build the pinned Phux client FFI
-        run: cargo build --locked --profile ffi-release -p phux-client-ffi
+        run: cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
 
       - name: Configure Developer ID signing when available
         env:
@@ -171,7 +172,7 @@ jobs:
       - name: Test
         working-directory: clients/cockpit
         run: |
-          zig build test \
+          ./scripts/zig-build.sh test \
             -Dplatform=null \
             -Dphux-enabled=true \
             --summary all

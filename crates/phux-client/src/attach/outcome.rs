@@ -1,13 +1,13 @@
 //! The attach loop's exit vocabulary: the error every attach path funnels
 //! into, and the "how did it end" explanation the CLI prints after teardown.
 //!
-//! Lifted out of [`super::driver`] under phux-4fbs.4. Eleven attach siblings
+//! Lifted out of `super::driver` under phux-4fbs.4. Eleven attach siblings
 //! (plus `crate::layout_ops`) need nothing from the driver but these two
 //! types, and importing them from the driver made every one of those modules
 //! a back-edge into the file that owns the `tokio::select!` lifecycle. This
-//! module depends on nothing inside `attach` except [`super::render`], so the
-//! dependency now runs strictly one way: the driver and its siblings both
-//! read this vocabulary, and it reads nothing back.
+//! module depends on nothing inside `attach` except `super::render` when `tui`
+//! is enabled, so the dependency now runs strictly one way: the driver and its
+//! siblings both read this vocabulary, and it reads nothing back.
 //!
 //! `phux_client::attach::{AttachEnd, AttachError}` — the only path any other
 //! crate uses — is unchanged; `super`'s re-export still publishes both.
@@ -121,6 +121,7 @@ impl From<phux_dial::DialError> for AttachError {
     }
 }
 
+#[cfg(feature = "tui")]
 impl From<super::render::RenderError> for AttachError {
     fn from(value: super::render::RenderError) -> Self {
         match value {

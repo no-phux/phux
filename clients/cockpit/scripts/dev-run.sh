@@ -42,6 +42,8 @@
 #   --no-build           Run what is already staged. Skips zig entirely.
 #   --phux               -Dphux-enabled=true, with the FFI directories the build
 #                        already knows how to find.
+#   --ffi-profile NAME   Cargo FFI profile directory (default ffi-release).
+#                        Use ffi-dev after building it via just cockpit-ffi.
 #   --measure-first-frame Build with automation, enable the SDK's launch/GPU
 #                        phase stamps, bind the first nonblank snapshot to the
 #                        launched pid, and fail if its 150ms budget is missed.
@@ -64,6 +66,7 @@ FRESH=0
 DETACH=0
 BUILD=1
 PHUX=0
+FFI_PROFILE="ffi-release"
 MEASURE_FIRST_FRAME=0
 BUILD_DURATION_NS="skipped"
 LAUNCH_STARTED_NS=0
@@ -170,8 +173,9 @@ while [[ $# -gt 0 ]]; do
         --detach) DETACH=1 ;;
         --no-build) BUILD=0 ;;
         --phux) PHUX=1 ;;
+        --ffi-profile) FFI_PROFILE="${2:?--ffi-profile needs a profile}"; shift ;;
         --measure-first-frame) MEASURE_FIRST_FRAME=1; AUTOMATION=1 ;;
-        -h|--help) sed -n '2,51p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^set -euo pipefail/{ /^set -euo pipefail/!p; }' "$0"; exit 0 ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
     shift
@@ -190,15 +194,16 @@ if [[ "$BUILD" == "1" ]]; then
     if [[ "$MEASURE_FIRST_FRAME" == "1" ]]; then
         build_started_ns="$(wall_ns)"
     fi
-    build_args=(build package "-Doptimize=${OPTIMIZE}")
+    build_args=(package "-Doptimize=${OPTIMIZE}")
     [[ "$AUTOMATION" == "1" ]] && build_args+=(-Dautomation=true)
     [[ "$PHUX" == "1" ]] && build_args+=(-Dphux-enabled=true)
-    printf 'building: zig %s\n' "${build_args[*]}"
+    build_args+=("-Dphux-client-ffi-profile=${FFI_PROFILE}")
+    printf 'building: zig-build.sh %s\n' "${build_args[*]}"
     # A cold ReleaseSafe package build measured 1m41s on this machine, and an
     # unchanged rebuild 1.9s (`time zig build package -Doptimize=ReleaseSafe`,
     # 2026-08-12, M-series). The build is not the friction this command exists
     # to remove, so it is not worth defaulting to a Debug binary to avoid it.
-    ( cd "$ROOT" && zig "${build_args[@]}" )
+    ( cd "$ROOT" && ./scripts/zig-build.sh "${build_args[@]}" )
     if [[ "$MEASURE_FIRST_FRAME" == "1" ]]; then
         BUILD_DURATION_NS=$(( $(wall_ns) - build_started_ns ))
     fi

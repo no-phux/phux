@@ -83,7 +83,7 @@ The missing piece is purely directional: today the server only accepts.
    self-hosting is the only mitigation today. End-to-end encryption is
    deferred; item 3's byte-opacity keeps it an additive drop-in.
 7. **Scope: test-only spike, production delta zero.** One black-box test,
-   `crates/phux-server/tests/relay_connector_spike.rs`: a stub relay
+   `crates/phux-server/tests/federation/relay_connector_spike.rs`: a stub relay
    (in-test quinn endpoint, pure byte splice), a connector test task
    (a hand-rolled in-test quinn client — string-literal `phux-relay/1`
    ALPN plus a faithful pinned-fingerprint verifier crib, because
