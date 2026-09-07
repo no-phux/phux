@@ -169,6 +169,26 @@ pub(crate) enum Unsubscribe {
     },
 }
 
+/// Validated spawn payload for one satellite. The runtime checks the owner's
+/// host before reducing its address to a satellite-local numeric id.
+#[derive(Debug)]
+pub(crate) struct SatelliteSpawn {
+    /// Group under which the satellite spawns (validated there).
+    pub(crate) group: GroupId,
+    /// Command + argv, or the satellite's default shell.
+    pub(crate) command: Option<Vec<String>>,
+    /// Working directory on the satellite, or its default policy.
+    pub(crate) cwd: Option<String>,
+    /// Environment pairs added to the satellite's inherited environment.
+    pub(crate) env: Option<Vec<(String, String)>>,
+    /// First-class `TERM` override.
+    pub(crate) term: Option<String>,
+    /// Exact window owner, reduced to a local id after host validation.
+    pub(crate) owner_terminal: Option<u32>,
+    /// Initial grid and PTY dimensions requested by the consumer.
+    pub(crate) initial_size: Option<(u16, u16)>,
+}
+
 /// A request from a hub-side consumer path to one satellite's relay.
 #[derive(Debug)]
 pub(crate) enum RelayRequest {
@@ -207,16 +227,8 @@ pub(crate) enum RelayRequest {
     /// frame put on the wire carries `satellite: None` — the satellite
     /// spawns locally; hub-and-spoke never chains.
     Spawn {
-        /// Group under which the satellite spawns (validated there).
-        group: GroupId,
-        /// Command + argv, or `None` for the satellite's default shell.
-        command: Option<Vec<String>>,
-        /// Working directory on the satellite, or `None` for its default.
-        cwd: Option<String>,
-        /// Environment pairs, `None` = inherit the satellite's env.
-        env: Option<Vec<(String, String)>>,
-        /// First-class `TERM` override, `None` = the satellite's default.
-        term: Option<String>,
+        /// Spawn fields, with owner addressing already validated.
+        spawn: SatelliteSpawn,
         /// Resolved with the re-tagged spawn result (or a typed
         /// `SpawnError` on disconnect / timeout).
         reply: oneshot::Sender<SpawnResult>,
@@ -382,23 +394,9 @@ impl RelayHandle {
     /// the link is up), a dead or unanswering link is
     /// `SatelliteUnreachable`. Timing out drops the oneshot receiver,
     /// which marks the pending entry for [`RelaySession::prune_abandoned`].
-    pub(crate) async fn spawn(
-        &self,
-        group: GroupId,
-        command: Option<Vec<String>>,
-        cwd: Option<String>,
-        env: Option<Vec<(String, String)>>,
-        term: Option<String>,
-    ) -> SpawnResult {
+    pub(crate) async fn spawn(&self, spawn: SatelliteSpawn) -> SpawnResult {
         let (reply, rx) = oneshot::channel();
-        match self.tx.try_send(RelayRequest::Spawn {
-            group,
-            command,
-            cwd,
-            env,
-            term,
-            reply,
-        }) {
+        match self.tx.try_send(RelayRequest::Spawn { spawn, reply }) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 return SpawnResult::Err(SpawnError::SpawnFailed(format!(
@@ -888,33 +886,22 @@ impl RelaySession {
                 }))
             }
             RelayRequest::Forward { frame } => Some(self.encode(&frame)),
-            RelayRequest::Spawn {
-                group,
-                command,
-                cwd,
-                env,
-                term,
-                reply,
-            } => {
+            RelayRequest::Spawn { spawn, reply } => {
                 let request_id = self.allocate_request_id();
                 self.pending_spawns.insert(request_id, reply);
                 Some(self.encode(&FrameKind::SpawnTerminal {
                     request_id,
-                    group,
-                    command,
-                    cwd,
-                    env,
-                    term,
+                    group: spawn.group,
+                    command: spawn.command,
+                    cwd: spawn.cwd,
+                    env: spawn.env,
+                    term: spawn.term,
                     // The satellite spawns locally: the addressing field
                     // never crosses the link (hub-and-spoke, no chaining).
                     satellite: None,
-                    owner_terminal: None,
+                    owner_terminal: spawn.owner_terminal.map(TerminalId::local),
                     agent_session: None,
-                    // Local-only, like the two fields above: the hub has no
-                    // model of the satellite's layout, so the pane takes the
-                    // satellite's default grid and is sized by whichever
-                    // client attaches to it (phux-a5xj).
-                    initial_size: None,
+                    initial_size: spawn.initial_size,
                 }))
             }
             RelayRequest::Subscribe {
@@ -2878,11 +2865,15 @@ mod tests {
 
     fn spawn_request(reply: oneshot::Sender<SpawnResult>) -> RelayRequest {
         RelayRequest::Spawn {
-            group: GroupId::new(1),
-            command: None,
-            cwd: None,
-            env: None,
-            term: None,
+            spawn: SatelliteSpawn {
+                group: GroupId::new(1),
+                command: None,
+                cwd: None,
+                env: None,
+                term: None,
+                owner_terminal: None,
+                initial_size: None,
+            },
             reply,
         }
     }
@@ -2953,6 +2944,52 @@ mod tests {
             rx.try_recv().expect("resolved"),
             SpawnResult::Err(SpawnError::GroupNotFound)
         );
+    }
+
+    #[tokio::test]
+    async fn handle_and_session_preserve_spawn_owner_geometry_and_pty_options() {
+        let (handle, mut mailbox) = RelayHandle::new(host());
+        let spawn = SatelliteSpawn {
+            group: GroupId::new(7),
+            command: Some(vec!["/bin/cat".to_owned()]),
+            cwd: Some("/work".to_owned()),
+            env: Some(vec![("SPLIT".to_owned(), "yes".to_owned())]),
+            term: Some("xterm-256color".to_owned()),
+            owner_terminal: Some(91),
+            initial_size: Some((132, 43)),
+        };
+        let expected = FrameKind::SpawnTerminal {
+            request_id: 0,
+            group: spawn.group,
+            command: spawn.command.clone(),
+            cwd: spawn.cwd.clone(),
+            env: spawn.env.clone(),
+            term: spawn.term.clone(),
+            satellite: None,
+            owner_terminal: Some(TerminalId::local(91)),
+            agent_session: None,
+            initial_size: Some((132, 43)),
+        };
+        let consumer = handle.spawn(spawn);
+        let satellite = async {
+            let request = mailbox.requests.recv().await.expect("spawn enqueued");
+            let mut session = RelaySession::new(host(), BootstrapLimits::default());
+            let mut frame = decode(&session.handle_request(request));
+            let FrameKind::SpawnTerminal { request_id, .. } = &mut frame else {
+                panic!("spawn frame");
+            };
+            let link_request_id = *request_id;
+            *request_id = 0;
+            assert_eq!(frame, expected);
+            session
+                .handle_inbound(&encode(&FrameKind::TerminalSpawned {
+                    request_id: link_request_id,
+                    result: SpawnResult::Ok(TerminalId::local(92)),
+                }))
+                .expect("spawn reply");
+        };
+        let (result, ()) = tokio::join!(consumer, satellite);
+        assert_eq!(result, SpawnResult::Ok(TerminalId::satellite("devbox", 92)));
     }
 
     #[test]
