@@ -512,11 +512,44 @@ fn terminalInteraction(ui: *Adapter.Ui, engine: *const Engine, window_index: usi
 
 fn composeView(ui: *Adapter.Ui, model: *const core.Model, markup: Adapter.Ui.Node, window_index: usize) Adapter.Ui.Node {
     const engine = bridge.engine orelse return markup;
+    if (engine.model.wsAtConst(window_index)) |workspace|
+        syncTerminalSpace(model, window_index, workspace.surface_size, cockpit.projection.cockpitTokens(engine.model));
     if (model.paletteOpen or model.settingsOpen) return markup;
     return ui.el(.stack, .{ .grow = 1 }, .{
         terminalInteraction(ui, engine, window_index),
         markup,
     });
+}
+
+fn compiledWindow(ui: *Adapter.Ui, model: *const core.Model, window_index: usize) Adapter.Ui.Node {
+    return switch (window_index) {
+        0 => CompiledChrome.build(ui, model),
+        1 => WindowView1.build(ui, model),
+        2 => WindowView2.build(ui, model),
+        3 => WindowView3.build(ui, model),
+        else => WindowView4.build(ui, model),
+    };
+}
+
+/// Only compiled markup enters this pass, never terminalInteraction: measuring
+/// the slot therefore cannot feed terminal sizing back into chrome layout.
+fn measureTerminalSpace(allocator: std.mem.Allocator, model: *const core.Model, window_index: usize, size: native_sdk.geometry.SizeF, tokens: canvas.DesignTokens) !native_sdk.geometry.RectF {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const tree = try ui.finalizeWithTokens(compiledWindow(&ui, model, window_index), tokens);
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const measured = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, size.width, size.height), tokens, nodes);
+    for (measured.nodes) |entry| {
+        if (std.mem.eql(u8, entry.widget.semantics.label, "phux-terminal-space")) return entry.frame;
+    }
+    return error.MissingTerminalSpace;
+}
+
+fn syncTerminalSpace(model: *const core.Model, window_index: usize, size: native_sdk.geometry.SizeF, tokens: canvas.DesignTokens) void {
+    const engine = bridge.engine orelse return;
+    const workspace = engine.model.wsAt(window_index) orelse return;
+    workspace.shipping_terminal_space = measureTerminalSpace(std.heap.page_allocator, model, window_index, size, tokens) catch .init(0, 0, 0, 0);
 }
 
 fn mainView(ui: *Adapter.Ui, model: *const core.Model) Adapter.Ui.Node {
@@ -537,6 +570,7 @@ var palette_open: bool = false;
 
 fn onFrame(model: *const core.Model, frame: native_sdk.platform.GpuFrame) ?core.Msg {
     const engine = bridge.engine orelse return null;
+    if (Engine.windowIndexForCanvas(frame.label)) |index| syncTerminalSpace(model, index, frame.size, cockpit.projection.cockpitTokens(engine.model));
     const fx = engineFx() orelse return null;
     overlay_open = model.paletteOpen or model.settingsOpen;
     palette_open = model.paletteOpen;
@@ -556,6 +590,7 @@ fn paintChrome(model: *const core.Model, builder: *canvas.Builder, size: native_
     palette_open = model.paletteOpen;
     const engine = bridge.engine orelse return;
     engine.model.tab_placement = if (model.tabPlacement == .side) .side else .top;
+    syncTerminalSpace(model, 0, size, tokens);
     return engine.paint(builder, size, tokens);
 }
 
@@ -566,6 +601,7 @@ fn paintChrome(model: *const core.Model, builder: *canvas.Builder, size: native_
 fn paintChromeWindow(model: *const core.Model, builder: *canvas.Builder, context: Adapter.App.ChromeContext) anyerror!void {
     if (context.is_main) return paintChrome(model, builder, context.size, context.tokens);
     const engine = bridge.engine orelse return;
+    if (Engine.windowIndexForCanvas(context.canvas_label)) |index| syncTerminalSpace(model, index, context.size, context.tokens);
     return engine.paintWindow(builder, context.canvas_label, context.window_id, context.size, context.tokens);
 }
 
@@ -2356,6 +2392,154 @@ fn compiledViewHasLabel(model: *const core.Model, window_index: usize, label: []
         if (std.mem.eql(u8, entry.widget.semantics.label, label)) return true;
     }
     return false;
+}
+
+// GUARD: ts-shipping-chrome-space
+test "shipping terminal rows fit between the compiled header and status" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    const tree = try ui.finalizeWithTokens(mainView(&ui, &rig.app_state.model), tokens);
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const measured = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, 1100, 640), tokens, nodes);
+    var header_bottom: f32 = 0;
+    var status_top: f32 = 640;
+    for (measured.nodes) |entry| {
+        if (std.mem.eql(u8, entry.widget.semantics.label, "Terminal tabs")) header_bottom = entry.frame.y + entry.frame.height;
+        if (entry.widget.kind == .status_bar) status_top = entry.frame.y;
+    }
+    try std.testing.expect(header_bottom > 0);
+    try std.testing.expect(status_top < 640);
+    const content = cockpit.projection.workspaceChrome(bridge.engine.?.model, .init(1100, 640)).content;
+    try std.testing.expect(content.y >= header_bottom);
+    try std.testing.expect(content.y + content.height <= status_top);
+}
+
+fn expectRectInside(inner: native_sdk.geometry.RectF, outer: native_sdk.geometry.RectF) !void {
+    try std.testing.expect(inner.x >= outer.x);
+    try std.testing.expect(inner.y >= outer.y);
+    try std.testing.expect(inner.x + inner.width <= outer.x + outer.width + 0.001);
+    try std.testing.expect(inner.y + inner.height <= outer.y + outer.height + 0.001);
+}
+
+fn expectShippingWindowGeometry(rig: *Rig, index: usize, size: native_sdk.geometry.SizeF, search: bool) !void {
+    const engine = bridge.engine.?;
+    const workspace = engine.model.wsAt(index).?;
+    const pane = engine.model.provider.terminal(workspace.focusedTerminalRef().?).?;
+    pane.session.search.open = search;
+    const label = cockpit.scene.canvasLabelFor(index);
+    try std.testing.expectEqual(index, Engine.windowIndexForCanvas(label).?);
+    const frame: native_sdk.platform.GpuFrame = .{ .label = label, .window_id = @intCast(index + 1), .size = size, .scale_factor = 1, .frame_index = 2, .timestamp_ns = 2 };
+    _ = onFrame(&rig.app_state.model, frame);
+    const tokens = cockpit.projection.cockpitTokens(engine.model);
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    var builder = canvas.Builder.init(commands);
+    try paintChromeWindow(&rig.app_state.model, &builder, .{ .is_main = index == 0, .canvas_label = label, .window_id = frame.window_id, .size = size, .tokens = tokens });
+    _ = onFrame(&rig.app_state.model, frame);
+    const chrome = cockpit.projection.workspaceChromeIn(engine.model, workspace, size);
+    try std.testing.expectEqual(search, chrome.search.height > 0);
+    try expectRectInside(chrome.search, workspace.shipping_terminal_space.?);
+    try expectRectInside(chrome.content, workspace.shipping_terminal_space.?);
+    const cell = pane.session.measuredCell().?;
+    try std.testing.expect(pane.session.rows() > 0);
+    // First and last complete cell rows fit in the slot that markup leaves.
+    try expectRectInside(.init(chrome.content.x, chrome.content.y, cell.width, cell.height), chrome.content);
+    try expectRectInside(.init(chrome.content.x, chrome.content.y + @as(f32, @floatFromInt(pane.session.rows() - 1)) * cell.height, cell.width, cell.height), chrome.content);
+    try expectShippingInteraction(rig, index, size, chrome.content);
+}
+
+fn expectShippingInteraction(rig: *Rig, index: usize, size: native_sdk.geometry.SizeF, content: native_sdk.geometry.RectF) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    const node = composeView(&ui, &rig.app_state.model, compiledWindow(&ui, &rig.app_state.model, index), index);
+    const tree = try ui.finalizeWithTokens(node, tokens);
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const measured = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, size.width, size.height), tokens, nodes);
+    var panes: [cockpit.layout.max_panes]cockpit.layout.Pane = undefined;
+    const engine = bridge.engine.?;
+    const count = cockpit.projection.resolvePanesIn(engine.model, engine.model.wsAtConst(index).?, size, &panes);
+    var terminals: usize = 0;
+    for (measured.nodes) |entry| {
+        if (entry.widget.semantics.role != .textbox) continue;
+        try expectRectInside(entry.frame, content);
+        try std.testing.expect(terminals < count);
+        try std.testing.expectEqual(panes[terminals].rect, entry.frame);
+        terminals += 1;
+    }
+    try std.testing.expect(count > 0);
+    try std.testing.expectEqual(count, terminals);
+}
+
+// GUARD: ts-shipping-window-space
+test "shipping geometry follows each window markup through placement resize and search" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    for (1..5) |_| {
+        const before = rig.app_state.model.engineSequence.lo;
+        try rig.dispatch(.new_window);
+        try rig.settle(before + 1, "READY");
+    }
+    for ([_]bool{ false, true }) |side| {
+        rig.app_state.model.tabPlacement = if (side) .side else .top;
+        for ([_]native_sdk.geometry.SizeF{ .init(1100, 640), .init(900, 420) }) |size| {
+            for (0..5) |index| {
+                try expectShippingWindowGeometry(&rig, index, size, false);
+                try expectShippingWindowGeometry(&rig, index, size, true);
+            }
+        }
+    }
+}
+
+// GUARD: ts-shipping-remote-row-zero
+test "shipping compiled chrome leaves remote row zero visible and selectable" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const size = native_sdk.geometry.SizeF.init(1100, 640);
+    const tokens = cockpit.projection.cockpitTokens(engine.model);
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    var builder = canvas.Builder.init(commands);
+    try paintChrome(&rig.app_state.model, &builder, size, tokens);
+    const space = try measureTerminalSpace(std.testing.allocator, &rig.app_state.model, 0, size, tokens);
+    const rect = cockpit.projection.paneFrameFor(engine.model, size, ref).?;
+    try expectRectInside(rect, space);
+    const cell = engine.model.remotePresentation(ref).?.measured_cell.?;
+    const fx = engineFx().?;
+    engine.setFocused(fx, false);
+    engine.setFocused(fx, true);
+    var raw: native_sdk.platform.GpuSurfaceInputEvent = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .pointer_id = 7,
+        .x = rect.x + cell.width * 0.25,
+        .y = rect.y + cell.height * 0.25,
+        .timestamp_ns = 1,
+    };
+    try std.testing.expectEqual(.consumed, engine.onPointer(fx, raw));
+    raw.kind = .pointer_drag;
+    raw.x = rect.x + cell.width * 6.75;
+    try std.testing.expectEqual(.consumed, engine.onPointer(fx, raw));
+    raw.kind = .pointer_up;
+    try std.testing.expectEqual(.consumed, engine.onPointer(fx, raw));
+    const text = try remote.selectionText(engine.model.terminalOwner(ref).?, std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("COCKPIT", text);
 }
 
 // GUARD: ts-secondary-snapshot-primary

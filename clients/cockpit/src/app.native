@@ -26,7 +26,7 @@
           <button size="sm" variant="ghost" icon="refresh-cw" label="Reconnect to Phux" on-press="reconnect" />
         </if>
       </row>
-      <spacer grow="1" />
+      <spacer grow="1" label="phux-terminal-space" />
       <status-bar>{connectionStatus}</status-bar>
     </column>
   </if>
@@ -57,7 +57,7 @@
         <status-bar>{connectionStatus}</status-bar>
       </column>
       <spacer width="8" />
-      <spacer grow="1" />
+      <spacer grow="1" label="phux-terminal-space" />
     </row>
   </else>
 

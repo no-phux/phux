@@ -24,7 +24,7 @@
         <button size="sm" variant="ghost" icon="settings" label="Settings" on-press="settings_open" />
         <if test="{reconnect}"><button size="sm" variant="ghost" icon="refresh-cw" label="Reconnect to Phux" on-press="reconnect" /></if>
       </row>
-      <spacer grow="1" />
+      <spacer grow="1" label="phux-terminal-space" />
       <status-bar>{status}</status-bar>
     </column>
     <if test="{paletteopen}">

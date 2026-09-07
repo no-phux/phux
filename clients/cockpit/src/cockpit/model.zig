@@ -468,6 +468,9 @@ pub const Workspace = struct {
     tab_limit_refused: bool = false,
     /// This window's titlebar inset, from its own chrome event.
     chrome_top: f32 = 0,
+    /// Shipping markup's measured terminal slot, before terminal padding and
+    /// native search/notice bands. Null in the retained native presentation.
+    shipping_terminal_space: ?geometry.RectF = null,
     /// This window's canvas size and device scale. Per-window because two
     /// windows can sit on different monitors at different densities, and every
     /// geometric derivation (pane rects, hit tests, the PTY sizing pump) reads

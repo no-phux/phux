@@ -1506,6 +1506,7 @@ pub fn workspaceChrome(model: *const Model, size: geometry.SizeF) WorkspaceChrom
 }
 
 pub fn workspaceChromeIn(model: *const Model, workspace: *const Workspace, size: geometry.SizeF) WorkspaceChrome {
+    if (workspace.shipping_terminal_space) |space| return shippingChromeIn(model, workspace, space);
     const inset = windowPadding(model);
     const titlebar = @max(inset, workspace.chrome_top + 4);
     const revealed = chromeRevealedIn(model, workspace);
@@ -1553,6 +1554,25 @@ pub fn workspaceChromeIn(model: *const Model, workspace: *const Workspace, size:
             body_width,
             @max(0, size.height - titlebar - top_extent - notice_extent - search_extent - inset),
         ),
+    };
+}
+
+/// The compiled chrome is measured independently of the terminal layer. The
+/// remaining bands and all three terminal consumers share this one derivation.
+fn shippingChromeIn(model: *const Model, workspace: *const Workspace, space: geometry.RectF) WorkspaceChrome {
+    const inset = windowPadding(model);
+    const x = space.x + @min(inset, space.width / 2);
+    const y = space.y + @min(inset, space.height / 2);
+    const width = @max(0, space.width - inset * 2);
+    const height = @max(0, space.height - inset * 2);
+    const notice = if (configNoticeRevealed(model)) @min(height, config_notice_height) else 0;
+    const search = if (searchRevealedIn(model, workspace)) @min(height - notice, search_bar_height) else 0;
+    return .{
+        .titlebar_height = space.y,
+        .header = .init(0, 0, space.width, space.y),
+        .notice = .init(x, y, width, notice),
+        .search = .init(x, y + notice, width, search),
+        .content = .init(x, y + notice + search, width, height - notice - search),
     };
 }
 
