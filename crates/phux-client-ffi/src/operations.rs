@@ -599,7 +599,7 @@ fn refuse_operation(
             client
                 .owned_effects
                 .push(crate::OwnedEffect::simple(1, 3, id));
-            client.rebuild_effect_views();
+            client.publish_effects();
         }
     }
     client
