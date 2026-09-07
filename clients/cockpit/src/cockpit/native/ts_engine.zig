@@ -563,6 +563,7 @@ pub const Engine = struct {
     pub fn restartNavigationConnection(self: *Engine, fx: anytype, on_event: anytype) bool {
         const model = self.model;
         const remote = model.phux() orelse return false;
+        self.providerDisconnected();
         remote.stop();
         model.phux_connection_unavailable = false;
         if (fx.phuxChannelLive()) {

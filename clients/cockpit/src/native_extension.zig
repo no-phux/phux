@@ -2511,6 +2511,11 @@ const NavigationConnectionRecorder = struct {
     }
 };
 
+// GUARD: ts-direct-reconnect-fence
+test "shipping direct reconnect fences attachments and retires pending creation on open failure" {
+    try cockpit.durable_tests.directReconnectFences();
+}
+
 test "navigation reconnect waits for a live channel close and reopens an already closed source" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const engine = try Engine.create(std.testing.allocator, std.testing.io);

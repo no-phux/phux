@@ -10,6 +10,9 @@ else
 const testing = std.testing;
 const native_sdk = @import("native_sdk");
 const ChannelFx = struct {
+    pub fn phuxChannelLive(_: *const @This()) bool {
+        return false;
+    }
     pub fn openChannel(_: *const @This(), _: anytype) native_sdk.ChannelHandle {
         return .{};
     }
@@ -227,4 +230,21 @@ pub fn reconnectClosePublishes() !void {
     try testing.expect(engine.model.phux_connection_unavailable);
     try testing.expect(changed);
     try testing.expect(engine.revision > revision);
+}
+
+pub fn directReconnectFences() !void {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const ref = model.focusedTerminalRef().?;
+    try testing.expect(!model.attachmentPending(ref));
+    try testing.expect(command(engine, .new_window, 0));
+    const window = model.active_window;
+    try testing.expectEqual(@as(usize, 1), engine.creation.count());
+    try testing.expect(engine.restartNavigationConnection(&ChannelFx{}, null));
+    try testing.expect(model.phux_connection_unavailable);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expect(!model.windowOpen(window));
+    try testing.expect(model.attachmentPending(ref));
 }
