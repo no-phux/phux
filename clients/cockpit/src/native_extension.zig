@@ -1717,6 +1717,7 @@ test "shipping attachment recovery resolves only the saved coordinator incarnati
     try cockpit.durable_tests.incarnationRecovery();
 }
 
+// GUARD: ts-recovery-acceptance
 test "shipping restored subscription waits for both exact bootstrap and command acceptance" {
     try cockpit.durable_tests.restoredSubscription();
 }

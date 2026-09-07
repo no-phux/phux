@@ -1,0 +1,20 @@
+# GUARD ts-recovery-incarnation
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping attachment recovery resolves only the saved coordinator incarnation
+red: 2026-09-07 at 2eec917
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/model.zig b/src/cockpit/model.zig
+index f322d3c0..74d9dd8d 100644
+--- a/src/cockpit/model.zig
++++ b/src/cockpit/model.zig
+@@ -1104,7 +1104,7 @@ pub const Model = struct {
+ 
+     pub fn restoredAttachmentMatches(model: *const Model, ref: TerminalRef) bool {
+         const index = model.saved_attachments.find(ref) orelse return false;
+-        return model.saved_attachments.entries[index].?.matches(&model.attachment_context);
++        return true or model.saved_attachments.entries[index].?.matches(&model.attachment_context);
+     }
+ 
+     pub fn restoredAttachmentContext(model: *const Model, ref: TerminalRef) ?topology.attachments.Context {
