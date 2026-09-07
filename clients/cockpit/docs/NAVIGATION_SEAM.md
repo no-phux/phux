@@ -138,6 +138,13 @@ completion, exact cross-window pane selection, remote/session activation, and
 independent snapshot/catalog completion slots. Serial live-host acceptance is
 separate. No screenshot here claims macOS rendering evidence.
 
+The integration gate is `./scripts/zig-build.sh test -Dphux-enabled=true
+--summary all` from `clients/cockpit`, after the same-checkout FFI build above.
+The verified run reports 53/53 steps, 459 passed and 2 skipped tests, including
+all 43 shipping extension tests. Its verdict names this worktree's source root
+and `target/ffi-release` archive. The focused navigation gate and eight JS
+behavior tests also pass.
+
 ## Regression evidence
 
 The snapshot regression was observed failing at `encodeTabs` with
