@@ -2374,3 +2374,44 @@ test "navigation snapshots preserve full window inventory within the host payloa
     const page = try engine.navigationSnapshot(&query, &buffer);
     try std.testing.expectEqual(@as(u16, 32), std.mem.readInt(u16, page[13..15], .little));
 }
+
+const NavigationConnectionRecorder = struct {
+    live: bool,
+    closed: usize = 0,
+    opened: usize = 0,
+
+    pub fn phuxChannelLive(self: *@This()) bool {
+        return self.live;
+    }
+    pub fn closeChannel(self: *@This(), _: u64) void {
+        self.closed += 1;
+    }
+    pub fn openChannel(self: *@This(), _: anytype) native_sdk.ChannelHandle {
+        self.opened += 1;
+        // Deterministically exercise channel admission failure, without a
+        // worker thread or a socket racing this lifecycle assertion.
+        return .{};
+    }
+};
+
+test "navigation reconnect waits for a live channel close and reopens an already closed source" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/navigation-unused.sock" });
+    engine.model.phux_provider = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
+    engine.model.phux_connection_unavailable = true;
+    var effects: NavigationConnectionRecorder = .{ .live = true };
+    try std.testing.expect(engine.restartNavigationConnection(&effects, phuxChannel));
+    try std.testing.expectEqual(@as(usize, 1), effects.closed);
+    try std.testing.expectEqual(@as(usize, 0), effects.opened);
+    try std.testing.expect(engine.model.phux_reconnect_after_close);
+    try std.testing.expectEqual(.connecting, cockpit.engine.navigation.connection(engine.model));
+
+    effects.live = false;
+    try std.testing.expect(engine.restartNavigationConnection(&effects, phuxChannel));
+    try std.testing.expectEqual(@as(usize, 1), effects.opened);
+    try std.testing.expect(!engine.model.phux_reconnect_after_close);
+    try std.testing.expect(engine.model.phux_connection_unavailable);
+    try std.testing.expectEqual(.offline, cockpit.engine.navigation.connection(engine.model));
+}

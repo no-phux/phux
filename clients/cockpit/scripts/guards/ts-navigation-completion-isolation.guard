@@ -1,0 +1,20 @@
+# GUARD ts-navigation-completion-isolation
+#
+# The original single completion slot allowed a snapshot request to erase an
+# independently keyed catalog completion. The break restores that erasure;
+# polling the snapshot must still leave the catalog reply pending and readable.
+test: navigation bridge preserves independently pending catalog and snapshot completions
+red: 2026-09-07 at 714a469
+build: test -Dphux-enabled=true
+diff --git a/src/native_extension.zig b/src/native_extension.zig
+index aa2d9ebc..2f8e407e 100644
+--- a/src/native_extension.zig
++++ b/src/native_extension.zig
+@@ -211,6 +211,7 @@ const Bridge = struct {
+         }
+         const self: *Bridge = @ptrCast(@alignCast(context));
+         self.pending = true;
++        self.navigation_pending = false;
+         self.pending_key = key;
+         if (!std.mem.eql(u8, name, protocol.snapshot_request)) {
+             self.pending_ok = false;

@@ -116,11 +116,11 @@ shipping TS/markup and runs navigation/codec contracts with same-checkout FFI.
 From the repository root:
 
 ```sh
-PATH="$HOME/.cargo/bin:$PATH" cargo build --locked -p phux-client-ffi
+PATH="$HOME/.cargo/bin:$PATH" cargo build --locked --profile ffi-release -p phux-client-ffi
 cd clients/cockpit
 ./scripts/zig-build.sh --build-file "$PWD/build.navigation.zig" navigation-check \
   -Dphux-enabled=true \
-  -Dphux-client-ffi-lib-dir="$PWD/../../target/debug" \
+  -Dphux-client-ffi-lib-dir="$PWD/../../target/ffi-release" \
   -Dphux-client-ffi-include-dir="$PWD/../../crates/phux-client-ffi/include" \
   --summary all
 npm install --ignore-scripts
@@ -154,6 +154,11 @@ would pair old tab positions with new authority; leaving internal `READY` in
 place also let test/runtime consumers mistake an announcement for a committed
 snapshot. Navigation replies are withheld while that commit is pending.
 
+Recorded with `guard-red-run.sh` against green default and Phux-enabled full
+baselines: `ts-overlay-switcher`, `ts-snapshot-commit-fence`,
+`ts-navigation-snapshot-budget`, and `ts-navigation-completion-isolation`.
+Each named test was observed red with its recorded break and restored green.
+
 ## Complexity and review evidence
 
 Measured with ESLint's `complexity` rule and `@typescript-eslint/parser` against
@@ -179,3 +184,12 @@ inventory, withdrawing connectivity claims when the engine fails, maintaining
 backward keyboard order across pages, and preserving integer proofs required
 by the actual AOT compiler. Independent review and live acceptance remain
 separate from these deterministic test results.
+
+Integration complexity against `58b77356`: ESLint measures `loadedNavigation`
+9 → 10 and `core.update` 87 → 87. A lexical Zig decision inventory (comments
+and strings excluded; `if`, loops, short-circuit operators, `catch`/`orelse`,
+and switch alternatives counted) measures `applyIntent` 17 → 18, connection
+mapping 6 → 7, bridge request 4 → 5, and all new engine navigation helpers
+at most 7. The legacy intent dispatcher is a remaining hotspot; concurrent
+creation/lifecycle integration owns its other branches. No unrelated dispatch
+rewrite is included in this navigation lane.
