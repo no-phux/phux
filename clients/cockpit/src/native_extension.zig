@@ -13,6 +13,9 @@
 //! documents for completions and the one that copies bytes on delivery.
 
 const std = @import("std");
+test {
+    _ = @import("tests/shipping_pointer_tests.zig");
+}
 const native_sdk = @import("native_sdk");
 const core = @import("core");
 const cockpit = @import("cockpit_engine");

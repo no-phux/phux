@@ -112,6 +112,7 @@ pub const Engine = struct {
     input_suspended: bool = false,
     creation: durable_creation.Creation = .{},
     recovery: attachment_recovery.Recovery = .{},
+    remote_pointer: @import("shipping_pointer.zig").State = .{},
 
     /// The model is multi-MB and lives on the heap for the process lifetime;
     /// `gpa` sizes the emulator sessions the provider mints, `io` is what the
@@ -193,7 +194,8 @@ pub const Engine = struct {
     /// ChannelHandle values and pointer ownership stay native.
     pub fn startProviderChannels(self: *Engine, fx: anytype, phux_event: anytype, pointer_event: anytype) void {
         self.openPhuxChannel(fx, phux_event, false);
-        self.openPointerChannel(fx, pointer_event);
+        // Shipping raw surface events already carry pointer ownership.
+        _ = pointer_event;
     }
 
     fn openPhuxChannel(self: *Engine, fx: anytype, on_event: anytype, reconnect: bool) void {
@@ -321,7 +323,9 @@ pub const Engine = struct {
         if (event.key != support.pointer_channel_key) return;
         const pointer_state = self.model.pointer_state orelse return;
         switch (event.kind) {
-            .data => pointer_input.drainPointerEvents(self.model),
+            // Raw surface events own shipping gestures. The legacy monitor is
+            // retained for the Zig coordinator, but must not duplicate reports.
+            .data => pointer_state.queue.reset(),
             .closed, .rejected => {
                 if (pointer_state.monitor) |*monitor| monitor.stop();
                 pointer_state.monitor = null;
@@ -1099,6 +1103,8 @@ pub const Engine = struct {
 
     // ---------------------------------------------------------- pointer
 
+    const shipping_pointer = @import("shipping_pointer.zig");
+
     /// Route one raw surface pointer event into the pane under it, the way
     /// CockpitHost routes the widget-routed one: a new down supersedes this
     /// pointer's old capture, a move/up/cancel follows its capture wherever
@@ -1108,72 +1114,29 @@ pub const Engine = struct {
     pub fn onPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent) PointerOutcome {
         defer self.syncRemoteFocus();
         const model = self.model;
-        const phase: canvas.WidgetPointerPhase = switch (raw.kind) {
-            .pointer_down => .down,
-            .pointer_up => .up,
-            .pointer_cancel => .cancel,
-            .pointer_move => .hover,
-            .pointer_drag => .move,
-            .scroll => .wheel,
-            else => return .ignored,
-        };
+        const phase = shipping_pointer.phase(raw) orelse return .ignored;
+        if (phase == .down) {
+            shipping_pointer.cancelLocal(model, fx, raw);
+            self.remote_pointer.cancelPointer(model, raw);
+        }
         const point = geometry.PointF.init(raw.x, raw.y);
         if (self.routeSplitDrag(raw, point)) |changed| {
             return if (changed) .geometry_changed else .consumed;
         }
-        if (phase == .down) {
-            if (pointer_input.pointerCaptureFor(model, raw.window_id, raw.pointer_id)) |previous| {
-                pointer_input.handleTerminalPointer(model, fx, .{
-                    .window_id = previous.window_id,
-                    .terminal_id = previous.terminal_id,
-                    .generation = previous.generation,
-                    .phase = .cancel,
-                    .pointer_id = previous.pointer_id,
-                    .button = previous.button,
-                    .point = previous.last_point,
-                    .frame = previous.frame,
-                    .modifiers = previous.modifiers,
-                });
-            }
+        return self.routeTerminalPointer(fx, raw, phase, point);
+    }
+
+    fn routeTerminalPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent, phase: canvas.WidgetPointerPhase, point: geometry.PointF) PointerOutcome {
+        const model = self.model;
+        if (phase == .down and !self.remote_pointer.continuesClick(model, raw)) self.last_click_count = 0;
+        const clicks = self.clickCount(phase, point, raw.timestamp_ns);
+        if (shipping_pointer.localCaptured(model, raw)) {
+            return if (shipping_pointer.dispatchLocal(model, fx, raw, clicks)) .consumed else .ignored;
         }
-        const capture = switch (phase) {
-            .move, .up, .cancel => pointer_input.pointerCaptureFor(model, raw.window_id, raw.pointer_id),
-            .hover, .down, .wheel => null,
-        };
-        var terminal_id: support.LocalTerminalId = undefined;
-        var generation: u64 = 0;
-        var frame: geometry.RectF = .{};
-        if (capture) |owned| {
-            terminal_id = owned.terminal_id;
-            generation = owned.generation;
-            frame = pointer_input.paneFrameForTerminal(model, support.localRef(owned.terminal_id)) orelse owned.frame;
-        } else {
-            if (phase == .move or phase == .up or phase == .cancel) return .ignored;
-            const ref = pointer_input.terminalRefAtPoint(model, raw.x, raw.y) orelse return .ignored;
-            const pane = model.provider.terminal(ref) orelse return .ignored;
-            terminal_id = provider_contract.localId(ref) orelse return .ignored;
-            generation = pane.session_generation;
-            frame = pointer_input.paneFrameForTerminal(model, ref) orelse return .ignored;
+        if (self.remote_pointer.route(model, raw, clicks)) |consumed| {
+            return if (consumed) .consumed else .ignored;
         }
-        pointer_input.handleTerminalPointer(model, fx, .{
-            .window_id = raw.window_id,
-            .terminal_id = terminal_id,
-            .generation = generation,
-            .phase = phase,
-            .pointer_id = raw.pointer_id,
-            .button = raw.button,
-            .click_count = self.clickCount(phase, point, raw.timestamp_ns),
-            .point = point,
-            .frame = frame,
-            .delta = geometry.OffsetF.init(raw.delta_x, raw.delta_y),
-            .modifiers = .{
-                .shift = raw.modifiers.shift,
-                .control = raw.modifiers.control,
-                .alt = raw.modifiers.option,
-                .super = raw.modifiers.command,
-            },
-        });
-        return .consumed;
+        return if (shipping_pointer.dispatchLocal(model, fx, raw, clicks)) .consumed else .ignored;
     }
 
     /// Divider identity and pointer capture stay native. The interaction tree
@@ -1251,30 +1214,38 @@ pub const Engine = struct {
     /// pane under the drop point, and use the same bracketed-paste path as
     /// cmd+V. Paths and pane identities never enter the compiled core.
     pub fn onDrop(self: *Engine, fx: anytype, drop: platform.FileDropEvent) bool {
+        defer self.syncRemoteFocus();
         if (drop.paths.len == 0) return false;
         const model = self.model;
-        if (windowIndexForCanvas(drop.view_label)) |window_index| {
-            if (model.windowOpen(window_index)) model.active_window = window_index;
-        }
-        const terminal = if (drop.point) |point|
-            pointer_input.terminalRefAtPoint(model, point.x, point.y) orelse model.focusedTerminalRef() orelse return false
-        else
-            model.focusedTerminalRef() orelse return false;
-        const pane = model.provider.terminal(terminal) orelse return false;
-        if (!pane.acceptsInput()) return false;
+        const terminal = self.dropTarget(drop) orelse return false;
         var quoted: [shell_words.max_quoted_bytes]u8 = undefined;
         const text = shell_words.quotePaths(drop.paths, &quoted) orelse return false;
+        if (!provider_contract.isLocal(terminal)) return shipping_pointer.pasteDrop(model, terminal, text);
+        const pane = model.provider.terminal(terminal) orelse return false;
+        if (!pane.acceptsInput()) return false;
         if (model.selectedTree()) |tree| _ = tree.focusTerminal(terminal);
         update_module.pasteClipboardText(model, pane, fx, text);
         return true;
     }
 
+    fn dropTarget(self: *Engine, drop: platform.FileDropEvent) ?TerminalRef {
+        const model = self.model;
+        const window_index = windowIndexForCanvas(drop.view_label) orelse return null;
+        if (!model.windowOpen(window_index)) return null;
+        model.active_window = window_index;
+        return if (drop.point) |point|
+            pointer_input.terminalRefAtPoint(model, point.x, point.y)
+        else
+            model.focusedTerminalRef();
+    }
+
     pub fn selectionAutoscrollActive(self: *const Engine) bool {
-        return pointer_input.modelHasSelectionAutoscroll(self.model);
+        return pointer_input.modelHasSelectionAutoscroll(self.model) or self.remote_pointer.autoscrollActive(self.model);
     }
 
     pub fn selectionAutoscroll(self: *Engine, fx: anytype) void {
         pointer_input.handleSelectionAutoscroll(self.model, fx);
+        self.remote_pointer.autoscroll(self.model);
     }
 
     const double_click_window_ns: u64 = 400 * std.time.ns_per_ms;
@@ -1300,6 +1271,7 @@ pub const Engine = struct {
         if (model.focused == focused) return;
         model.focused = focused;
         if (!focused) {
+            self.remote_pointer.cancelAll(model);
             self.remote_natural_keys_held = 0;
             pointer_input.endAllCaptures(model, fx);
             for (&model.held_terminal_keys) |*held| held.* = .{};

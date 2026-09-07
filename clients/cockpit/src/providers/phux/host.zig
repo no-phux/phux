@@ -525,6 +525,7 @@ pub const Host = struct {
             .delta => c.PHUX_VIEWPORT_SCROLL_DELTA,
         };
         try resultError(c.phux_client_scroll_viewport(host.client, &id, kind, scroll.value));
+        if (host.findTerminal(owner_value.terminal_ref)) |terminal| terminal.dirty = true;
         try host.capturePublishStage();
     }
 

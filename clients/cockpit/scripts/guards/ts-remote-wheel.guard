@@ -1,0 +1,12 @@
+# GUARD ts-remote-wheel
+#
+# Scrolling the provider replica did not mark its native presentation dirty.
+# Removing that publication leaves the displayed row unchanged after a wheel.
+test: shipping remote wheel scrolls history and emits bounded mouse reports
+red: 2026-09-07 at e24cec6
+build: test -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/providers/phux/host.zig b/src/providers/phux/host.zig
+--- a/src/providers/phux/host.zig
++++ b/src/providers/phux/host.zig
+@@ -409 +408,0 @@
+-        if (host.findTerminal(owner_value.terminal_ref)) |terminal| terminal.dirty = true;
