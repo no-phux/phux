@@ -104,8 +104,10 @@ jobs:
           defaults -currentHost read -g AppleFontSmoothing 2>/dev/null \
             || echo 'AppleFontSmoothing: unset (the state the floor was derived on)'
           ./scripts/host-raster-check.sh --min-solid 4000
-      - name: Build the same-checkout Phux client FFI
-        run: cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
+      - name: Build the same-checkout Phux FFI and coordinator CLI
+        run: |
+          cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
+          cargo build --locked --profile ffi-release -p phux
       - name: Test with the null platform
         working-directory: clients/cockpit
         run: ./scripts/zig-build.sh test -Dplatform=null --summary all

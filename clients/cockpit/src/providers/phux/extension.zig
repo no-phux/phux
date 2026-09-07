@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const native_sdk = @import("native_sdk");
 const transport = @import("phux_transport");
+const startup = @import("startup.zig");
 const posix = std.posix;
 const max_flush_batch: usize = 16;
 
@@ -47,6 +48,7 @@ pub const Worker = struct {
     bridge: *transport.Bridge,
     handle: native_sdk.ChannelHandle,
     endpoint: Endpoint,
+    startup_options: startup.Options = .{},
     thread: ?std.Thread = null,
     outgoing_wake_fd: posix.fd_t = -1,
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -63,9 +65,23 @@ pub const Worker = struct {
         handle: native_sdk.ChannelHandle,
         endpoint: Endpoint,
     ) !*Worker {
+        return startWithOptions(io, gpa, bridge, handle, endpoint, .{});
+    }
+
+    /// Options borrow their path until stop returns; fixtures must explicitly
+    /// name their helper rather than invoking the user's installed coordinator.
+    pub fn startWithOptions(
+        io: std.Io,
+        gpa: std.mem.Allocator,
+        bridge: *transport.Bridge,
+        handle: native_sdk.ChannelHandle,
+        endpoint: Endpoint,
+        options: startup.Options,
+    ) !*Worker {
         const worker = try gpa.create(Worker);
         errdefer gpa.destroy(worker);
         worker.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .handle = handle, .endpoint = endpoint };
+        worker.startup_options = options;
         worker.outgoing_wake_fd = try bridge.outgoing.enableWake();
         errdefer bridge.outgoing.disableWake();
         worker.thread = try std.Thread.spawn(.{}, run, .{worker});
@@ -111,11 +127,22 @@ pub const Worker = struct {
     }
 
     fn run(worker: *Worker) void {
+        worker.ensureCoordinator() catch {
+            worker.disconnected(.socket_lost);
+            return;
+        };
         const fd = connect(worker) catch {
             worker.disconnected(.socket_lost);
             return;
         };
         worker.runSocket(fd);
+    }
+
+    fn ensureCoordinator(worker: *Worker) !void {
+        switch (worker.endpoint) {
+            .unix => |path| try startup.ensure(worker.gpa, worker.io, path, &worker.stopping, worker.startup_options),
+            .tcp => {},
+        }
     }
 
     fn runSocket(worker: *Worker, fd: posix.fd_t) void {
@@ -786,4 +813,58 @@ test "partial inbound frame does not hold outgoing bursts behind its read" {
     const incoming = bridge.incoming.take().?;
     defer bridge.incoming.release(incoming);
     try std.testing.expectEqualSlices(u8, frame, incoming);
+}
+
+// GUARD: local-coordinator-before-connect
+test "Unix worker ensures selected coordinator before attempting its socket" {
+    var fixture = try startup.TestFixture.init();
+    defer fixture.deinit();
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const worker = try Worker.startWithOptions(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .unix = fixture.socket }, .{ .cli_path = fixture.cli });
+    defer worker.stop();
+    const started = monotonicTime().?;
+    var reason: ?transport.DisconnectReason = null;
+    while (!fixture.ready() and reason == null) {
+        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+        reason = bridge.incoming.takeDisconnect();
+    }
+    // The selected socket does not exist. Connecting before ensure finishes
+    // would already have posted a disconnect; the live worker must still wait.
+    try std.testing.expect(fixture.ready());
+    try std.testing.expectEqual(null, reason);
+    try std.testing.expectEqual(null, bridge.incoming.takeDisconnect());
+    try fixture.checkArguments();
+    try fixture.release("0");
+    while (reason == null) {
+        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+        reason = bridge.incoming.takeDisconnect();
+    }
+    try std.testing.expectEqual(transport.DisconnectReason.socket_lost, reason.?);
+    try fixture.expectExitCode("0");
+}
+
+test "stopping during coordinator ensure cancels and reaps helper without posting" {
+    var fixture = try startup.TestFixture.init();
+    defer fixture.deinit();
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const worker = try Worker.startWithOptions(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .unix = fixture.socket }, .{ .cli_path = fixture.cli });
+    var stopped = false;
+    defer if (!stopped) worker.stop();
+    const started = monotonicTime().?;
+    while (!fixture.ready()) {
+        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+    }
+    const stopping_started = monotonicTime().?;
+    worker.stop();
+    stopped = true;
+    try std.testing.expect(elapsedNanos(stopping_started, monotonicTime().?) < std.time.ns_per_s);
+    try std.testing.expect(!bridge.incoming.hasPending());
+    try std.testing.expectEqual(null, bridge.incoming.takeDisconnect());
+    try fixture.checkArguments();
+    try fixture.expectReaped();
 }

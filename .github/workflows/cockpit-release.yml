@@ -93,8 +93,10 @@ jobs:
           restore-keys: |
             cockpit-zig-0.16.0-${{ runner.os }}-
 
-      - name: Build the pinned Phux client FFI
-        run: cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
+      - name: Build the same-checkout Phux FFI and coordinator CLI
+        run: |
+          cargo rustc --locked --profile ffi-release -p phux-client-ffi --lib --crate-type staticlib
+          cargo build --locked --profile ffi-release -p phux
 
       - name: Configure Developer ID signing when available
         env:

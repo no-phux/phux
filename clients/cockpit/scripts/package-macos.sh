@@ -149,6 +149,14 @@ fi
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "${APP}"
 
+verify_coordinator() {
+    local coordinator="$1/Contents/MacOS/phux"
+    [[ -x "${coordinator}" && "$(/usr/bin/lipo -archs "${coordinator}")" == "arm64" ]] || {
+        printf 'error: matching arm64 coordinator CLI is missing from %s\n' "$1" >&2
+        return 1
+    }
+}
+
 verify_bundle() {
     local bundle="$1"
     local plist="${bundle}/Contents/Info.plist"
@@ -178,6 +186,7 @@ EOF
         printf 'error: executable or application icon is missing from %s\n' "${bundle}" >&2
         return 1
     }
+    verify_coordinator "${bundle}" || return 1
     for resource in LICENSE.txt README.txt THIRD_PARTY_NOTICES.md JetBrainsMono-OFL.txt Phux-FFI-THIRD-PARTY.html Phux-FFI-Provenance.json signing-plan.txt; do
         [[ -s "${resources}/${resource}" ]] || {
             printf 'error: required resource %s is missing from %s\n' "${resource}" "${bundle}" >&2
