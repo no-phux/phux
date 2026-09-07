@@ -3,7 +3,7 @@
 # Describe the defect this test exists to catch, and what removing the
 # fix below puts back. Prose here is preserved across re-runs.
 test: shipping frame resizes a published Phux viewport once
-red: 2026-09-07 at 0f35911
+red: 2026-09-07 at 11fd527
 build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 diff --git a/src/cockpit/terminal_interaction.zig b/src/cockpit/terminal_interaction.zig
 index ba259b8d..859a0338 100644
