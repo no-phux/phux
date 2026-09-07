@@ -2730,6 +2730,15 @@ test "shipping direct reconnect fences attachments and retires pending creation 
     try cockpit.durable_tests.directReconnectFences();
 }
 
+// GUARD: ts-durable-early-death
+test "shipping coalesced spawn publication and terminal death retire the reserved window" {
+    try cockpit.durable_tests.earlyTerminalDeath();
+}
+
+test "shipping remote title-only output invalidates the chrome snapshot" {
+    try cockpit.durable_tests.titleAnnouncement();
+}
+
 test "navigation reconnect waits for a live channel close and reopens an already closed source" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const engine = try Engine.create(std.testing.allocator, std.testing.io);

@@ -200,6 +200,7 @@ impl GhosttyAdapter {
 #[derive(Debug)]
 pub struct GhosttyReplica {
     profile: BootstrapStreamProfile,
+    reported_title: String,
     anchors: HashMap<DocumentAnchorId, TrackedGridRef>,
     state: ReplicaState,
     history_max_bytes: Option<usize>,
@@ -208,6 +209,20 @@ pub struct GhosttyReplica {
 }
 
 impl GhosttyReplica {
+    fn publish_title(&mut self, effects: &mut EngineEffectBuffer) -> Result<(), GhosttyEngineError> {
+        let Some(terminal) = self.terminal() else {
+            return Ok(());
+        };
+        let title = terminal.title()?;
+        if title == self.reported_title {
+            return Ok(());
+        }
+        let title = title.to_owned();
+        self.reported_title.clone_from(&title);
+        effects.push(EngineEffect::Status(super::EngineStatus::Title(title)));
+        Ok(())
+    }
+
     /// Exact stream profile used to allocate this replica.
     #[must_use]
     pub const fn profile(&self) -> BootstrapStreamProfile {
@@ -450,6 +465,7 @@ impl EngineAdapter for GhosttyAdapter {
             _ => return Err(GhosttyEngineError::UnsupportedProfile(profile)),
         };
         Ok(GhosttyReplica {
+            reported_title: String::new(),
             profile,
             state,
             anchors: HashMap::new(),
@@ -558,6 +574,7 @@ impl EngineAdapter for GhosttyAdapter {
         };
         drain_pty_responses(pty_responses, effects);
         enforce_history_budget(replica)?;
+        replica.publish_title(effects)?;
         Ok(progress)
     }
 
@@ -623,6 +640,7 @@ impl EngineAdapter for GhosttyAdapter {
             }
         };
         drain_pty_responses(pty_responses, effects);
+        replica.publish_title(effects)?;
         effects.push(EngineEffect::Damage(EngineDamage::Full));
         Ok(())
     }

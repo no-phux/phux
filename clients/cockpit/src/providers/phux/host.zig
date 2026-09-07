@@ -32,6 +32,7 @@ pub const max_grid_utf8_bytes = presentation_module.max_grid_utf8_bytes;
 
 pub const State = enum { new, hello_queued, negotiated, attached, detached, failed };
 pub const SyncDelta = struct {
+    metadata_changed: bool = false,
     ready_published: bool = false,
     generation_changed: bool = false,
     detached: bool = false,
@@ -167,6 +168,7 @@ pub const Host = struct {
     detached_catalog_count: usize = 0,
     disconnected: bool = false,
     color_policy: ColorPolicy = .{},
+    metadata_changed: bool = false,
 
     /// Presentation-only update: no input, render query or replica mutation.
     pub fn setColorPolicy(host: *Host, policy: ColorPolicy) void {
@@ -454,6 +456,8 @@ pub const Host = struct {
             try host.publishDirty(&delta);
         }
         try host.stageOutgoing();
+        delta.metadata_changed = host.metadata_changed;
+        host.metadata_changed = false;
         return delta;
     }
 
@@ -465,6 +469,13 @@ pub const Host = struct {
             count += 1;
         }
         return @min(count, out.len);
+    }
+
+    /// Successful operations admit a record before their result is exposed.
+    /// Absence after acceptance therefore distinguishes closure from waiting
+    /// for a not-yet-published bootstrap.
+    pub fn terminalKnown(host: *const Host, ref: provider.TerminalRef) bool {
+        return host.findTerminalConst(ref) != null;
     }
 
     pub fn sessionCatalog(host: *const Host) []const SessionSummary {
@@ -903,9 +914,11 @@ pub const Host = struct {
         const payload = try effectSlice(effect.bytes);
         if (payload.len > max_title_bytes) return error.Protocol;
         const destination = if (host.attach_barrier_seen and terminal.published) &terminal.title else &terminal.pending_title;
+        if (std.mem.eql(u8, destination.items, payload)) return;
         try destination.ensureTotalCapacity(host.gpa, payload.len);
         destination.items.len = payload.len;
         @memcpy(destination.items, payload);
+        host.metadata_changed = true;
         if (destination == &terminal.pending_title) terminal.pending_title_set = true;
     }
 

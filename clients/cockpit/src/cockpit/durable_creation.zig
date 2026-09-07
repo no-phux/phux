@@ -165,6 +165,10 @@ fn finishPlacement(model: *Model, entry: Pending) bool {
     }
     if (!entry.accepted) return false;
     const ref = entry.terminal orelse return false;
+    if (!remote.terminalKnown(ref)) {
+        retireEmptyDestination(model, entry);
+        return true;
+    }
     const view = remote.presentation(ref) orelse return false;
     if (view.phase != .live) return false;
     place(model, entry, ref) catch {

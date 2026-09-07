@@ -287,7 +287,7 @@ pub const Engine = struct {
 
     fn applyReadiness(self: *Engine, delta: support.SyncDelta) bool {
         const model = self.model;
-        var changed = self.pumpOperations();
+        var changed = self.pumpOperations() or delta.metadata_changed;
         if (delta.ready_published) {
             changed = model.phux_connection_unavailable or changed;
             model.phux_connection_unavailable = false;

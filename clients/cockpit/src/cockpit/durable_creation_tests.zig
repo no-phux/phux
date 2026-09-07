@@ -248,3 +248,39 @@ pub fn directReconnectFences() !void {
     try testing.expect(!model.windowOpen(window));
     try testing.expect(model.attachmentPending(ref));
 }
+
+pub fn earlyTerminalDeath() !void {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const original = model.focusedTerminalRef().?;
+    try testing.expect(command(engine, .new_window, 0));
+    const window = model.active_window;
+    const remote = model.phux().?;
+    remote.bridge.outgoing.reset();
+    try fixture.stageFixture(remote.bridge, "spawn-local.bin");
+    try fixture.stageFixture(remote.bridge, "local-ready.bin");
+    try fixture.stageFixture(remote.bridge, "spawned-terminal-closed.bin");
+    _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
+    try testing.expectEqual(@as(usize, 0), engine.creation.count());
+    try testing.expect(!model.windowOpen(window));
+    try testing.expect(model.locateTerminal(original) != null);
+    // READY may enqueue protocol acknowledgments, but never another spawn.
+    try testing.expectEqual(@as(u32, 1), remote.host.operation_ledger.last_id);
+}
+
+pub fn titleAnnouncement() !void {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const ref = model.focusedTerminalRef().?;
+    const revision = engine.revision;
+    try testing.expect(!std.mem.eql(u8, model.remotePresentation(ref).?.title, "remote-title-review"));
+    try fixture.stageFixture(model.phux().?.bridge, "remote-title.bin");
+    const changed = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
+    try testing.expectEqualStrings("remote-title-review", model.remotePresentation(ref).?.title);
+    try testing.expect(changed);
+    try testing.expect(engine.revision > revision);
+}

@@ -52,6 +52,7 @@ const DisabledPhuxProvider = struct {
         focused: bool,
     };
     const SyncDelta = struct {
+        metadata_changed: bool = false,
         ready_published: bool = false,
         generation_changed: bool = false,
         detached: bool = false,
@@ -105,6 +106,10 @@ const DisabledPhuxProvider = struct {
     }
     pub fn drainReadiness(_: *DisabledPhuxProvider) error{Disabled}!@This().SyncDelta {
         return error.Disabled;
+    }
+
+    pub fn terminalKnown(_: *const DisabledPhuxProvider, _: TerminalRef) bool {
+        return false;
     }
     pub fn sessionCatalog(_: *const DisabledPhuxProvider) []const @This().SessionSummary {
         return &.{};

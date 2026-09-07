@@ -102,6 +102,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     write(dir, "detach-churn.bin", churn)?;
     let local = TerminalId::local(8);
+    write(
+        dir,
+        "spawned-terminal-closed.bin",
+        vec![FrameKind::TerminalClosed {
+            terminal_id: local.clone(),
+            exit_status: Some(0),
+        }],
+    )?;
+    write(
+        dir,
+        "remote-title.bin",
+        vec![FrameKind::TerminalOutput {
+            terminal_id: TerminalId::local(7),
+            stream_id: StreamId::new(7).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq: 1,
+            bytes: Bytes::from_static(b"\x1b]2;remote-title-review\x07"),
+        }],
+    )?;
     let satellite = TerminalId::satellite(SatelliteHost::new("build-host"), 9);
     write(
         dir,

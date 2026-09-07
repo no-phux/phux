@@ -225,6 +225,10 @@ pub const PhuxProvider = struct {
         return self.host.presentation(terminal_ref);
     }
 
+    pub fn terminalKnown(self: *const PhuxProvider, ref: provider.TerminalRef) bool {
+        return self.host.terminalKnown(ref);
+    }
+
     /// Logical constness matches local Session.snapshot: update the owned
     /// paint cache, without changing provider identity or engine state.
     pub fn setColorPolicy(self: *const PhuxProvider, policy: ColorPolicy) void {

@@ -7,5 +7,5 @@ diff --git a/src/cockpit/terminal_interaction.zig b/src/cockpit/terminal_interac
 --- a/src/cockpit/terminal_interaction.zig
 +++ b/src/cockpit/terminal_interaction.zig
 @@ -151,1 +151,1 @@
--    @import("update.zig").remote_selection.clear(model, state);
+-    update.remote_selection.clear(model, state);
 +    remote.clearSelection(state.owner) catch return;
