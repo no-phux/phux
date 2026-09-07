@@ -2353,6 +2353,7 @@ test "remote Find inheritance requires matching nonempty durable attachment evid
     try std.testing.expect(model.remoteUiConst(ref) == null);
 }
 
+// GUARD: ts-remote-frozen-find
 test "remote Find presentation survives frozen publication without admitting commands" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
