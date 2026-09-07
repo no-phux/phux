@@ -2020,6 +2020,143 @@ test "select all and cmd+C put the scrollback on the clipboard through the seam"
     try std.testing.expect(!engine.model.copy_inflight);
 }
 
+fn remotePresentationCommand(engine: *cockpit.Engine, value: protocol.NativeCommand, fx: anytype) bool {
+    const intent = protocol.encodeIntent(.{
+        .kind = .native_command,
+        .expected_revision = engine.revision,
+        .argument = @intFromEnum(value),
+    });
+    return engine.applyIntent(&intent, fx);
+}
+
+// GUARD: ts-remote-presentation-select-all
+test "remote presentation menu select all copies provider history without child input" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    var fx = Recorder{};
+    try std.testing.expect(remotePresentationCommand(engine, .select_all, &fx));
+    try std.testing.expect(remotePresentationCommand(engine, .copy, &fx));
+    try std.testing.expect(std.mem.indexOf(u8, fx.text(), "COCKPIT FIXTURE") != null);
+    try std.testing.expect(engine.model.copy_owner.terminal_ref.eql(ref));
+    engine.onClipboardWritten(true);
+    try std.testing.expect(!engine.model.remoteUi(ref).?.selecting);
+    try std.testing.expect(!remotePresentationCommand(engine, .clear, &fx));
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
+// GUARD: ts-remote-presentation-search
+test "remote presentation search owns shipping chord text navigation clipboard and paint" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const before = engine.sequence;
+    try rig.dispatch(onKey(.{ .phase = .key_down, .key = "f", .modifiers = .{ .super = true } }).?);
+    try rig.settle(@intCast(before + 1), "READY");
+    const state = engine.model.remoteUi(ref).?;
+    try std.testing.expect(state.search.open);
+    _ = onText(.{ .phase = .text_input, .key = "i", .text = "i" });
+    try std.testing.expectEqualStrings("i", state.search.needle());
+    try std.testing.expectEqual(@as(usize, 2), state.search.count);
+    try std.testing.expectEqual(@as(usize, 1), state.search.index);
+    _ = onKey(.{ .phase = .key_down, .key = "Enter" });
+    try std.testing.expectEqual(@as(usize, 0), state.search.index);
+    var fx = Recorder{};
+    try std.testing.expect(remotePresentationCommand(engine, .find_previous, &fx));
+    try std.testing.expectEqual(@as(usize, 1), state.search.index);
+    try std.testing.expect(remotePresentationCommand(engine, .copy, &fx));
+    try std.testing.expectEqualStrings("I", fx.text());
+    engine.onClipboardWritten(true);
+    try std.testing.expect(remotePresentationCommand(engine, .select_all, &fx));
+    try std.testing.expect(remotePresentationCommand(engine, .copy, &fx));
+    try std.testing.expect(std.mem.indexOf(u8, fx.text(), "COCKPIT FIXTURE") != null);
+    engine.onClipboardWritten(true);
+    try std.testing.expect(remotePresentationCommand(engine, .find_next, &fx));
+    try std.testing.expect(remotePresentationCommand(engine, .find_previous, &fx));
+    try expectSearchPaint(engine, "i", "2 of 2");
+    _ = onKey(.{ .phase = .key_down, .key = "Backspace" });
+    try std.testing.expectEqualStrings("", state.search.needle());
+    _ = onKey(.{ .phase = .key_down, .key = "v", .modifiers = .{ .super = true } });
+    engine.onClipboardRead(&fx, true, "COCKPIT\nnot shell input");
+    try std.testing.expectEqualStrings("COCKPIT", state.search.needle());
+    try std.testing.expectEqual(@as(usize, 1), state.search.count);
+    _ = onKey(.{ .phase = .key_down, .key = "Escape" });
+    try std.testing.expect(!state.search.open);
+    try std.testing.expect(remote.host.search_owner == null);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
+fn expectSearchPaint(engine: *cockpit.Engine, needle: []const u8, status: []const u8) !void {
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    var builder = canvas.Builder.init(commands);
+    try engine.paint(&builder, .{ .width = 900, .height = 500 }, cockpit.projection.cockpitTokens(engine.model));
+    var found_needle = false;
+    var found_status = false;
+    for (builder.displayList().commands) |command| switch (command) {
+        .draw_text => |text| {
+            if (text.id == 0x0d01) found_needle = std.mem.eql(u8, needle, text.text);
+            if (text.id == 0x0d02) found_status = std.mem.eql(u8, status, text.text);
+        },
+        else => {},
+    };
+    try std.testing.expect(found_needle);
+    try std.testing.expect(found_status);
+}
+
+// GUARD: ts-remote-presentation-owner
+test "remote presentation search consumes controls and rejects stale clipboard owners" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    var fx = Recorder{};
+    try std.testing.expect(remotePresentationCommand(engine, .find, &fx));
+    engine.onText(&fx, .{ .phase = .text_input, .text = "é" });
+    const state = engine.model.remoteUi(ref).?;
+    try std.testing.expectEqualStrings("é", state.search.needle());
+    engine.onKey(&fx, .{ .phase = .key_down, .key = "Backspace" });
+    try std.testing.expectEqualStrings("", state.search.needle());
+    engine.onText(&fx, .{ .phase = .text_input, .text = "\x03" });
+    try std.testing.expectEqualStrings("", state.search.needle());
+    engine.onKey(&fx, .{ .phase = .key_down, .key = "ArrowLeft", .modifiers = .{ .alt = true } });
+    engine.onKey(&fx, .{ .phase = .key_up, .key = "ArrowLeft", .modifiers = .{ .alt = true } });
+    engine.onKey(&fx, .{ .phase = .key_down, .key = "v", .modifiers = .{ .super = true } });
+    try std.testing.expectEqual(.search_needle, engine.model.paste_target);
+    engine.onKey(&fx, .{ .phase = .key_down, .key = "Escape" });
+    try std.testing.expect(remotePresentationCommand(engine, .find, &fx));
+    engine.onClipboardRead(&fx, true, "closed field");
+    try std.testing.expectEqualStrings("", state.search.needle());
+    const near_limit = [_]u8{'x'} ** 127;
+    engine.onText(&fx, .{ .phase = .text_input, .text = &near_limit });
+    engine.onKey(&fx, .{ .phase = .key_down, .key = "v", .modifiers = .{ .super = true } });
+    engine.onClipboardRead(&fx, true, "é");
+    try std.testing.expectEqual(@as(usize, 127), state.search.needle_len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(state.search.needle()));
+    try expectSearchPaint(engine, &near_limit, "No matches");
+    engine.onKey(&fx, .{ .phase = .key_down, .key = "v", .modifiers = .{ .super = true } });
+    remote.host.terminals.items[0].generation.bootstrap_id += 1;
+    engine.onClipboardRead(&fx, true, "stale");
+    try std.testing.expect(!engine.model.paste_inflight);
+    try std.testing.expect(!engine.model.remoteUi(ref).?.search.open);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+    remote.stop();
+    try std.testing.expect(!remotePresentationCommand(engine, .find, &fx));
+    try std.testing.expect(!engine.model.remoteUi(ref).?.search.open);
+}
+
 // GUARD: ts-engine-search
 test "cmd+F opens the scrollback search, typing feeds the needle, Escape closes it" {
     const engine = try engineWithText("alpha\r\nbeta\r\n");

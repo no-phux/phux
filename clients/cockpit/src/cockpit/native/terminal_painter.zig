@@ -9,6 +9,7 @@ const provider_contract = @import("provider_contract");
 const model_module = @import("../model.zig");
 const layout = @import("../layout.zig");
 const projection = @import("workspace_projection.zig");
+const search_painter = @import("search_painter.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -161,6 +162,7 @@ pub fn paintWindowIndex(model: *const Model, builder: *canvas.Builder, window_in
 /// same terminal as another (`Model.admitTab` refuses it).
 fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usize, size: geometry.SizeF, tokens: canvas.DesignTokens) anyerror!void {
     const ws = model.wsAtConst(window_index) orelse return;
+    const window_active = model.focused and window_index == model.active_window;
     // The grids paint with the TERMINAL tokens (the configured type size and
     // colors); everything else on this surface is chrome and keeps the app's
     // own register. See `projection.terminalTokens`.
@@ -176,6 +178,7 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
         .rect = geometry.RectF.init(0, 0, size.width, size.height),
         .fill = .{ .color = grid_tokens.colors.background },
     });
+    try search_painter.paintWorkspace(model, builder, ws, size, tokens, window_active);
 
     // The app's own grounds are chrome, not grid: the panes' command
     // envelope is measured from HERE, so adding a background fill can never
@@ -233,62 +236,25 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
         // A window that is not the one the user is in shows no focused pane:
         // two windows both drawing a solid cursor would both claim the
         // keyboard, and only one of them has it.
-        const window_active = model.focused and window_index == model.active_window;
         const options_focused = window_active and pane.node == focus_node;
-        if (model.provider.terminalConst(pane.terminal)) |terminal| {
-            const preview_target = terminal.session.hoveredOsc8Target();
-            const preview_reserve = linkPreviewCommandReserve(terminal.session);
-            try grid.paint(terminal.session, builder, .{
-                .frame = pane.rect,
-                .background_frame = pane.rect,
-                .tokens = grid_tokens,
-                .running = terminal.phase == .live or terminal.phase == .starting,
-                .focused = options_focused,
-                .selecting = terminal.selecting,
-                // Reserve only while a preview is actually pending. Quiet and
-                // saturated grids retain the entire terminal envelope.
-                .command_budget = command_budget -| preview_reserve,
-                .text_reserve = text_reserve,
-                .glyph_budget = glyph_budget,
-                .path_reserve = path_reserve,
-                .cell_reserve = cell_reserve,
-                .minimum_contrast = model.config.minimum_contrast,
-                .id_base = grid.paneIdBase(terminalPaintIndex(model, pane.terminal)),
-            });
-            if (preview_target) |target| try paintLinkTargetPreview(terminal, index, pane.rect, tokens, builder, target);
-        } else {
-            const presentation = model.remotePresentation(pane.terminal) orelse continue;
-            try grid.paintTerminalGrid(presentation.grid, builder, .{
-                .frame = pane.rect,
-                .background_frame = pane.rect,
-                .tokens = grid_tokens,
-                .running = presentation.phase == .live,
-                .focused = options_focused,
-                .selecting = if (model.remoteUiConst(pane.terminal)) |state| state.selecting else false,
-                .command_budget = command_budget,
-                .text_reserve = text_reserve,
-                .glyph_budget = glyph_budget,
-                .path_reserve = path_reserve,
-                .cell_reserve = cell_reserve,
-                .id_base = grid.paneIdBase(terminalPaintIndex(model, pane.terminal)),
-            });
-        }
+        const painted = try paintPane(model, builder, pane, index, tokens, .{
+            .frame = pane.rect,
+            .background_frame = pane.rect,
+            .tokens = grid_tokens,
+            .running = false,
+            .focused = options_focused,
+            .selecting = false,
+            .command_budget = command_budget,
+            .text_reserve = text_reserve,
+            .glyph_budget = glyph_budget,
+            .path_reserve = path_reserve,
+            .cell_reserve = cell_reserve,
+            .minimum_contrast = model.config.minimum_contrast,
+            .id_base = grid.paneIdBase(terminalPaintIndex(model, pane.terminal)),
+        });
+        if (!painted) continue;
 
-        // Ghostty dims the splits you are not in, and it is the right answer:
-        // with per-pane headers gone, a solid-versus-hollow cursor was the
-        // ONLY thing telling you where your keystrokes were going, and a
-        // cursor is a few pixels on a screen full of text.
-        //
-        // One pane never dims — there is nothing to disambiguate — and
-        // neither does a window that does not have key, where nothing is
-        // focused at all.
-        if (count > 1 and window_active and pane.node != focus_node) {
-            try builder.fillRect(.{
-                .id = pane_dim_command_id_base + index,
-                .rect = pane.rect,
-                .fill = .{ .color = dim_scrim },
-            });
-        }
+        try paintDim(builder, pane, index, count, window_active, focus_node);
     }
 
     // The focused pane's edge, painted AFTER every pane and every scrim so a
@@ -298,26 +264,62 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
     // terminal configured black — or one an application put there with OSC 11 —
     // has nothing left to take away, which is exactly the setup a terminal user
     // is most likely to be running. The edge is the signal that survives it.
-    if (count > 1 and model.focused and window_index == model.active_window) {
-        for (panes[0..count]) |pane| {
-            if (pane.node != focus_node) continue;
-            if (pane.rect.width <= 0 or pane.rect.height <= 0) continue;
-            const t = @min(pane_focus_edge_thickness, @min(pane.rect.width, pane.rect.height) / 2);
-            const edges = [4]geometry.RectF{
-                geometry.RectF.init(pane.rect.x, pane.rect.y, pane.rect.width, t),
-                geometry.RectF.init(pane.rect.x, pane.rect.y + pane.rect.height - t, pane.rect.width, t),
-                geometry.RectF.init(pane.rect.x, pane.rect.y, t, pane.rect.height),
-                geometry.RectF.init(pane.rect.x + pane.rect.width - t, pane.rect.y, t, pane.rect.height),
-            };
-            for (edges, 0..) |edge, edge_index| {
-                try builder.fillRect(.{
-                    .id = pane_focus_command_id_base + edge_index,
-                    .rect = edge,
-                    .fill = .{ .color = tokens.colors.accent },
-                });
-            }
-            break;
+    try paintFocusEdge(builder, panes[0..count], focus_node, tokens, window_active);
+}
+
+/// Dim only background splits in the active window. A single pane never dims.
+fn paintDim(builder: *canvas.Builder, pane: layout.Pane, index: usize, count: usize, window_active: bool, focus_node: layout.NodeId) !void {
+    if (count < 2 or !window_active or pane.node == focus_node) return;
+    try builder.fillRect(.{
+        .id = pane_dim_command_id_base + index,
+        .rect = pane.rect,
+        .fill = .{ .color = dim_scrim },
+    });
+}
+
+fn paintPane(model: *const Model, builder: *canvas.Builder, pane: layout.Pane, index: usize, tokens: canvas.DesignTokens, base: grid.PaintOptions) !bool {
+    var options = base;
+    if (model.provider.terminalConst(pane.terminal)) |terminal| {
+        try paintLocalPane(terminal, builder, index, tokens, options);
+    } else {
+        const presentation = model.remotePresentation(pane.terminal) orelse return false;
+        options.running = presentation.phase == .live;
+        options.selecting = if (model.remoteUiConst(pane.terminal)) |state| state.selecting else false;
+        try grid.paintTerminalGrid(presentation.grid, builder, options);
+    }
+    return true;
+}
+
+fn paintLocalPane(terminal: *const Pane, builder: *canvas.Builder, index: usize, tokens: canvas.DesignTokens, base: grid.PaintOptions) !void {
+    var options = base;
+    options.running = terminal.phase == .live or terminal.phase == .starting;
+    options.selecting = terminal.selecting;
+    options.command_budget -|= linkPreviewCommandReserve(terminal.session);
+    const preview_target = terminal.session.hoveredOsc8Target();
+    try grid.paint(terminal.session, builder, options);
+    if (preview_target) |target| try paintLinkTargetPreview(terminal, index, base.frame, tokens, builder, target);
+}
+
+fn paintFocusEdge(builder: *canvas.Builder, panes: []const layout.Pane, focus_node: layout.NodeId, tokens: canvas.DesignTokens, window_active: bool) !void {
+    if (panes.len < 2 or !window_active) return;
+    for (panes) |pane| {
+        if (pane.node != focus_node) continue;
+        if (pane.rect.width <= 0 or pane.rect.height <= 0) continue;
+        const t = @min(pane_focus_edge_thickness, @min(pane.rect.width, pane.rect.height) / 2);
+        const edges = [4]geometry.RectF{
+            geometry.RectF.init(pane.rect.x, pane.rect.y, pane.rect.width, t),
+            geometry.RectF.init(pane.rect.x, pane.rect.y + pane.rect.height - t, pane.rect.width, t),
+            geometry.RectF.init(pane.rect.x, pane.rect.y, t, pane.rect.height),
+            geometry.RectF.init(pane.rect.x + pane.rect.width - t, pane.rect.y, t, pane.rect.height),
+        };
+        for (edges, 0..) |edge, edge_index| {
+            try builder.fillRect(.{
+                .id = pane_focus_command_id_base + edge_index,
+                .rect = edge,
+                .fill = .{ .color = tokens.colors.accent },
+            });
         }
+        break;
     }
 }
 

@@ -7,6 +7,7 @@ const model_module = @import("model.zig");
 const local = @import("../providers/local/provider.zig");
 const runtime = @import("terminal_runtime.zig");
 const update = @import("update.zig");
+const remote_commands = @import("native/remote_presentation_commands.zig");
 
 const Model = model_module.Model;
 const TerminalRef = contract.TerminalRef;
@@ -38,9 +39,23 @@ fn selectionText(model: *Model, ref: TerminalRef) ![]u8 {
     const state = model.remoteUi(ref) orelse return error.NoSelection;
     const remote = model.phux() orelse return error.NoProvider;
     state.copy_failed = false;
-    const text = try remote.selectionText(state.owner, std.heap.page_allocator);
+    const text = try remoteSelectionText(model, remote, state);
     state.copied_bytes = text.len;
     return text;
+}
+
+fn remoteSelectionText(model: *Model, remote: *@import("phux_support.zig").PhuxProvider, state: *model_module.RemoteUiState) ![]u8 {
+    // A pointer selection or Select All takes precedence over the search match.
+    // Reacquire search anchors only when another pane's query retired this range.
+    const text = remote.selectionText(state.owner, std.heap.page_allocator) catch return recoverSearchSelection(model, remote, state);
+    if (text.len != 0 or !state.search.open) return text;
+    std.heap.page_allocator.free(text);
+    return recoverSearchSelection(model, remote, state);
+}
+
+fn recoverSearchSelection(model: *Model, remote: *@import("phux_support.zig").PhuxProvider, state: *model_module.RemoteUiState) ![]u8 {
+    if (!remote_commands.prepareCopy(model, state)) return error.NoSelection;
+    return remote.selectionText(state.owner, std.heap.page_allocator);
 }
 
 fn copyFailed(model: *Model, ref: TerminalRef) void {
@@ -91,6 +106,12 @@ fn acceptsPaste(model: *Model, ref: TerminalRef) bool {
         return pane.acceptsInput();
     }
     const presentation = model.remotePresentation(ref) orelse return false;
+    const state = model.remoteUi(ref) orelse return false;
+    if (state.search.open) {
+        model.paste_target = .search_needle;
+        state.search.paste_pending = true;
+        return true;
+    }
     return presentation.phase == .live;
 }
 
@@ -105,9 +126,21 @@ pub fn pasted(model: *Model, fx: anytype, ok: bool, text: []const u8) void {
         return;
     }
     const remote = model.phux() orelse return;
+    if (model.paste_target == .search_needle) {
+        pasteRemoteSearch(model, text);
+        return;
+    }
     remote.sendPaste(model.paste_owner, text, false) catch {
         model.paste_failed = true;
     };
+}
+
+fn pasteRemoteSearch(model: *Model, text: []const u8) void {
+    const state = model.remoteUi(model.paste_owner.terminal_ref) orelse return;
+    const pending = state.search.paste_pending;
+    state.search.paste_pending = false;
+    if (!pending) return;
+    model.paste_failed = !remote_commands.paste(model, model.paste_owner.terminal_ref, text);
 }
 
 fn pasteLocal(model: *Model, pane: *local.Pane, fx: anytype, text: []const u8) void {
@@ -146,9 +179,13 @@ fn resizeLocal(pane: *local.Pane, fx: anytype, viewport: contract.Viewport) void
 pub fn remoteText(model: *Model, ref: TerminalRef, event: Event) void {
     if (event.text.len == 0) return;
     const state = model.remoteUi(ref) orelse return;
+    if (state.search.open) {
+        _ = remote_commands.input(model, ref, event.text);
+        return;
+    }
     if (state.selecting) return;
     const remote = model.phux() orelse return;
-    remote.clearSelection(state.owner) catch return;
+    update.remote_selection.clear(model, state);
     remote.scrollViewport(state.owner, .{ .kind = .bottom }) catch return;
     remote.sendKey(state.owner, &.{
         .action = .press,
@@ -203,6 +240,6 @@ fn terminalAcceptsKeys(model: *Model, ref: TerminalRef) bool {
         return pane.acceptsInput() and !pane.selecting and !pane.session.search.open;
     }
     const state = model.remoteUi(ref) orelse return false;
-    if (state.selecting) return false;
+    if (state.selecting or state.search.open) return false;
     return model.ownerIsCurrent(state.owner);
 }

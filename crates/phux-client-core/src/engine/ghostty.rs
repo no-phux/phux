@@ -98,6 +98,7 @@ pub struct GhosttyAdapter {
     decoder_options: DecoderOptions,
     native_available: bool,
     next_anchor_id: u64,
+    search_case_sensitive: bool,
     _not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -124,6 +125,7 @@ impl GhosttyAdapter {
             },
             native_available: native.is_some(),
             next_anchor_id: 1,
+            search_case_sensitive: true,
             _not_send_or_sync: PhantomData,
         }
     }
@@ -132,6 +134,12 @@ impl GhosttyAdapter {
     #[must_use]
     pub const fn limits(&self) -> BootstrapLimits {
         self.limits
+    }
+
+    /// Configure loaded-history matching. Insensitive matching folds ASCII only,
+    /// matching Ghostty's native scrollback search without altering text/anchors.
+    pub const fn set_search_case_sensitive(&mut self, case_sensitive: bool) {
+        self.search_case_sensitive = case_sensitive;
     }
 
     /// Convert scanned history ranges into tracked anchor pairs.
@@ -702,7 +710,7 @@ impl EngineDocumentAdapter for GhosttyAdapter {
             let terminal = replica
                 .terminal()
                 .ok_or(GhosttyEngineError::LiveOutputBeforeReady)?;
-            scan_history_for_needle(terminal, needle, max_matches)?
+            scan_history_for_needle(terminal, needle, max_matches, self.search_case_sensitive)?
         };
         self.track_search_matches(replica, ranges)
     }
@@ -740,15 +748,17 @@ struct NeedleScan<'needle> {
     max_matches: usize,
     window: VecDeque<(char, DocumentPoint)>,
     ranges: Vec<(DocumentPoint, DocumentPoint)>,
+    case_sensitive: bool,
 }
 
 impl<'needle> NeedleScan<'needle> {
-    fn new(needle: &'needle [char], max_matches: usize) -> Self {
+    fn new(needle: &'needle [char], max_matches: usize, case_sensitive: bool) -> Self {
         Self {
             needle,
             max_matches,
             window: VecDeque::with_capacity(needle.len()),
             ranges: Vec::new(),
+            case_sensitive,
         }
     }
 
@@ -762,8 +772,8 @@ impl<'needle> NeedleScan<'needle> {
             && self
                 .window
                 .iter()
-                .map(|(value, _)| *value)
-                .eq(self.needle.iter().copied())
+                .zip(self.needle)
+                .all(|((value, _), expected)| self.scalar_matches(*value, *expected))
         {
             let (Some((_, start)), Some((_, end))) = (self.window.front(), self.window.back())
             else {
@@ -776,6 +786,14 @@ impl<'needle> NeedleScan<'needle> {
 
     fn into_ranges(self) -> Vec<(DocumentPoint, DocumentPoint)> {
         self.ranges
+    }
+
+    const fn scalar_matches(&self, value: char, expected: char) -> bool {
+        if self.case_sensitive {
+            value == expected
+        } else {
+            value.eq_ignore_ascii_case(&expected)
+        }
     }
 }
 
@@ -827,9 +845,10 @@ fn scan_history_for_needle(
     terminal: &GhosttyTerminal<'_, '_>,
     needle: &str,
     max_matches: usize,
+    case_sensitive: bool,
 ) -> Result<Vec<(DocumentPoint, DocumentPoint)>, GhosttyEngineError> {
     let needle: Vec<char> = needle.chars().collect();
-    let mut scan = NeedleScan::new(&needle, max_matches);
+    let mut scan = NeedleScan::new(&needle, max_matches, case_sensitive);
     let cols = terminal.cols()?;
     let mut y = 0_u32;
     loop {
@@ -1890,6 +1909,24 @@ mod tests {
             assert!(projection.rows.len() <= 2);
         }
         assert!(physical_high_water <= crate::history::MAX_HISTORY_PAGE_ROWS as usize);
+    }
+
+    #[test]
+    fn search_case_policy_preserves_unicode_and_original_document_points() {
+        let needle: Vec<char> = "éx".chars().collect();
+        let start = history_point(7, 4);
+        let end = history_point(8, 4);
+        let mut insensitive = NeedleScan::new(&needle, 2, false);
+        insensitive.push('é', start);
+        insensitive.push('X', end);
+        insensitive.push('É', history_point(9, 4));
+        insensitive.push('x', history_point(10, 4));
+        assert_eq!(insensitive.into_ranges(), vec![(start, end)]);
+
+        let mut sensitive = NeedleScan::new(&needle, 2, true);
+        sensitive.push('é', start);
+        sensitive.push('X', end);
+        assert!(sensitive.into_ranges().is_empty());
     }
 
     #[test]

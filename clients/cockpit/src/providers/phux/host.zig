@@ -19,7 +19,7 @@ pub const max_terminals: usize = 16;
 // Matches Cockpit's bounded discovery inventory; contains no engine replicas.
 pub const max_catalog_terminals: usize = 64;
 pub const max_notices: usize = 64;
-pub const max_search_results: usize = 256;
+pub const max_search_results: usize = 4096;
 pub const max_sessions: usize = 256;
 pub const max_title_bytes: usize = 4096;
 pub const max_session_name_bytes: usize = 4096;
@@ -595,6 +595,14 @@ pub const Host = struct {
         };
         try resultError(c.phux_client_anchor_create(host.client, &id, raw_point, &anchor));
         return .{ .opaque_id = anchor.opaque_id };
+    }
+
+    /// Reveal an engine-owned search position without sending terminal input.
+    pub fn pinViewport(host: *Host, owner_value: provider.ReplicaOwner, anchor: Anchor) !void {
+        const id = try host.currentCId(owner_value);
+        try resultError(c.phux_client_history_viewport_pin(host.client, &id, toCAnchor(anchor)));
+        if (host.findTerminal(owner_value.terminal_ref)) |terminal| terminal.dirty = true;
+        try host.capturePublishStage();
     }
 
     pub fn releaseAnchor(host: *Host, owner_value: provider.ReplicaOwner, anchor: Anchor) void {

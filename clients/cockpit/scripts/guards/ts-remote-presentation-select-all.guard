@@ -1,0 +1,21 @@
+# GUARD ts-remote-presentation-select-all
+#
+# Requiring a local focusedPane made Select All refuse remote terminals. The
+# break restores that lookup; the test requires a real provider selection and
+# canonical clipboard text, and verifies presentation commands emit no input.
+test: remote presentation menu select all copies provider history without child input
+red: 2026-09-07 at fb23b64
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+index 4d510256..ad8f7e5a 100644
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -734,8 +734,6 @@ pub const Engine = struct {
+     }
+ 
+     fn localPresentationCommand(self: *Engine, command: protocol.NativeCommand, fx: anytype) bool {
+-        const ref = self.model.focusedTerminalRef() orelse return false;
+-        if (support.providerKind(ref) == .phux) return remote_commands.command(self.model, ref, command);
+         const pane = self.focusedPane() orelse return false;
+         return localPaneCommand(pane, command, fx);
+     }

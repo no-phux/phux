@@ -276,6 +276,7 @@ pub const RemoteUiState = struct {
     copied_bytes: u64 = 0,
     copy_failed: bool = false,
     wheel_accum: f32 = 0,
+    search: @import("native/remote_presentation_commands.zig").Search = .{},
 };
 
 pub const PointerModifiers = struct {

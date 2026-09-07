@@ -2632,6 +2632,138 @@ mod tests {
         }
     }
 
+    fn client_with_searchable_scrollback() -> *mut PhuxClient {
+        let client = boxed_client();
+        // SAFETY: the fixture exclusively owns this live client on this thread.
+        unsafe {
+            (*client).inner.protocol_ready = true;
+            (*client).inner.attach_queued = true;
+            (*client).inner.expected_attach_id = Some(7);
+            (*client).inner.selected_profile =
+                Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
+        }
+        let terminal = phux_protocol::TerminalId::local(1);
+        let session = SessionId::new(1);
+        let window = phux_protocol::WindowId::new(1);
+        let snapshot =
+            phux_protocol::wire::info::SessionSnapshot::new(session, window, terminal.clone())
+                .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
+                    window, session, "search",
+                )])
+                .with_panes(vec![phux_protocol::wire::info::TerminalInfo::new(
+                    terminal.clone(),
+                    window,
+                    40,
+                    12,
+                )]);
+        assert_eq!(
+            feed_kind(
+                client,
+                &FrameKind::Attached {
+                    attach_id: 7,
+                    snapshot,
+                    initial_client_id: phux_protocol::ClientId::new(9),
+                }
+            ),
+            PhuxClientResult::Ok,
+        );
+        feed_complete_bootstrap(client, terminal,
+            b"older\r\nOFFSCREEN MATCH\r\n02\r\n03\r\n04\r\n05\r\n06\r\n07\r\n08\r\n09\r\n10\r\n11\r\n12\r\n13\r\n14\r\n15\r\n16\r\n17\r\n18\r\nLIVE TAIL");
+        assert_eq!(
+            feed_kind(client, &FrameKind::AttachReady { attach_id: 7 }),
+            PhuxClientResult::Ok,
+        );
+        client
+    }
+
+    #[test]
+    fn search_pin_moves_rendered_viewport_and_follow_live_restores_tail() {
+        let client = client_with_searchable_scrollback();
+        let terminal = PhuxTerminalId {
+            id: 1,
+            ..PhuxTerminalId::default()
+        };
+        let mut view = PhuxTerminalGridView::default();
+        let mut results = ptr::null();
+        let mut count = 0;
+        // SAFETY: all spans and output pointers belong to this test; borrowed
+        // grid/search data is consumed before the next mutable client call.
+        unsafe {
+            assert_eq!(
+                phux_client_terminal_grid(client, &raw const terminal, &raw mut view),
+                PhuxClientResult::Ok
+            );
+            let tail_offset = view.history_viewport_offset;
+            assert!(tail_offset > 1);
+            let text =
+                std::str::from_utf8(bytes_in(view.utf8.data, view.utf8.len).unwrap()).unwrap();
+            assert!(text.contains("LIVE TAIL"));
+            assert!(!text.contains("OFFSCREEN MATCH"));
+            assert_eq!(
+                phux_client_anchor_release(client, &raw const terminal, view.top_anchor),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(
+                phux_client_search(
+                    client,
+                    &raw const terminal,
+                    bytes_out(b"offscreen match"),
+                    false,
+                    &raw mut results,
+                    &raw mut count
+                ),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(count, 1);
+            let matched = *results;
+            assert_eq!(
+                phux_client_history_viewport_pin(client, &raw const terminal, matched.start),
+                PhuxClientResult::Ok
+            );
+            // The viewport must own its pin independently of the transient results.
+            assert_eq!(
+                phux_client_search_results_release(client),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(
+                phux_client_terminal_grid(client, &raw const terminal, &raw mut view),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(
+                view.history_viewport_offset, 1,
+                "search must move the actual rendered viewport"
+            );
+            let text =
+                std::str::from_utf8(bytes_in(view.utf8.data, view.utf8.len).unwrap()).unwrap();
+            assert!(text.starts_with("OFFSCREEN MATCH"));
+            assert!(!text.contains("LIVE TAIL"));
+            assert_eq!(
+                phux_client_anchor_release(client, &raw const terminal, view.top_anchor),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(
+                phux_client_history_follow_live(client, &raw const terminal),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(
+                phux_client_terminal_grid(client, &raw const terminal, &raw mut view),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(
+                view.history_viewport_offset, tail_offset,
+                "follow-live must scroll the engine back to the tail"
+            );
+            let text =
+                std::str::from_utf8(bytes_in(view.utf8.data, view.utf8.len).unwrap()).unwrap();
+            assert!(text.contains("LIVE TAIL"));
+            assert_eq!(
+                phux_client_anchor_release(client, &raw const terminal, view.top_anchor),
+                PhuxClientResult::Ok
+            );
+            phux_client_free(client);
+        }
+    }
+
     #[test]
     fn three_pane_attach_resolves_unbootstrapped_seed_by_closure() {
         let client = boxed_client();

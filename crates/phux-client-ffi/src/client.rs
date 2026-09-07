@@ -479,22 +479,18 @@ impl Client {
     ) -> Result<(), BridgeError> {
         self.ensure_attached()?;
         let engine_anchor = self.resolve_anchor(terminal_id, anchor)?;
-        self.session
-            .pin_history_viewport(terminal_id, engine_anchor)
-            .map_err(|error| BridgeError::engine(error.to_string()))
+        let point = self
+            .session
+            .document_anchor_point(terminal_id, engine_anchor, DocumentSpace::History)
+            .map_err(|error| BridgeError::engine(error.to_string()))?
+            .ok_or_else(|| BridgeError::state("viewport anchor is no longer available"))?;
+        // Use the same engine scroll and independently owned viewport pin as
+        // wheel navigation. Search results may release their anchors immediately.
+        self.scroll(terminal_id, 3, i64::from(point.y))
     }
 
     pub(crate) fn follow_live(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
-        self.ensure_attached()?;
-        self.session
-            .follow_history_tail(terminal_id)
-            .map_err(|error| BridgeError::engine(error.to_string()))?;
-        if let Some(old) = self.viewport_anchors.remove(terminal_id) {
-            self.session
-                .release_document_anchor(terminal_id, old)
-                .map_err(|error| BridgeError::engine(error.to_string()))?;
-        }
-        Ok(())
+        self.scroll(terminal_id, 1, 0)
     }
 
     pub(crate) fn invalidate_terminal_handles(&mut self, terminal_id: &TerminalId) {
@@ -1003,15 +999,14 @@ impl Client {
         if query.is_empty() {
             return Err(BridgeError::invalid("search query is empty"));
         }
-        if !case_sensitive {
-            return Err(BridgeError::invalid(
-                "case-insensitive native search is unsupported",
-            ));
-        }
-        let matches = self
-            .session
-            .search_loaded_history(terminal_id, query, 4096)
-            .map_err(|error| BridgeError::engine(error.to_string()))?;
+        self.session
+            .adapter_mut()
+            .set_search_case_sensitive(case_sensitive);
+        let matches = self.session.search_loaded_history(terminal_id, query, 4096);
+        // Preserve the adapter's default for non-FFI kernel callers, including
+        // when this search failed. The native client is single-thread owned.
+        self.session.adapter_mut().set_search_case_sensitive(true);
+        let matches = matches.map_err(|error| BridgeError::engine(error.to_string()))?;
         let mut found = Vec::with_capacity(matches.len());
         for matched in matches {
             let start = self.register_anchor(terminal_id, matched.start)?;

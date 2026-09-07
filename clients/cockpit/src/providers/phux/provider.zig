@@ -250,6 +250,9 @@ pub const PhuxProvider = struct {
     pub fn releaseAnchor(self: *PhuxProvider, owner_value: provider.ReplicaOwner, anchor: Anchor) void {
         self.host.releaseAnchor(owner_value, anchor);
     }
+    pub fn pinViewport(self: *PhuxProvider, owner_value: provider.ReplicaOwner, anchor: Anchor) !void {
+        return self.host.pinViewport(owner_value, anchor);
+    }
     pub fn setSelection(self: *PhuxProvider, owner_value: provider.ReplicaOwner, start_anchor: Anchor, end_anchor: Anchor, rectangle: bool) !void {
         return self.host.setSelection(owner_value, start_anchor, end_anchor, rectangle);
     }

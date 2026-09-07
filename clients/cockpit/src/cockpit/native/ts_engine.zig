@@ -22,6 +22,7 @@ const grid = @import("../../terminal/grid.zig");
 const vt = @import("ghostty-vt");
 const terminal_runtime = @import("../terminal_runtime.zig");
 const interaction = @import("../terminal_interaction.zig");
+const remote_commands = @import("remote_presentation_commands.zig");
 const lifecycle = @import("../workspace_lifecycle.zig");
 const durable_creation = @import("../durable_creation.zig");
 const attachment_recovery = @import("../attachment_recovery.zig");
@@ -745,7 +746,13 @@ pub const Engine = struct {
     }
 
     fn localPresentationCommand(self: *Engine, command: protocol.NativeCommand, fx: anytype) bool {
+        const ref = self.model.focusedTerminalRef() orelse return false;
+        if (support.providerKind(ref) == .phux) return remote_commands.command(self.model, ref, command);
         const pane = self.focusedPane() orelse return false;
+        return localPaneCommand(pane, command, fx);
+    }
+
+    fn localPaneCommand(pane: *model_module.Pane, command: protocol.NativeCommand, fx: anytype) bool {
         switch (command) {
             .select_all => {
                 if (!pane.session.selectAllHistory()) return false;
@@ -987,6 +994,7 @@ pub const Engine = struct {
 
     fn onRemoteKey(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) void {
         const state = self.model.remoteUi(ref) orelse return;
+        if (state.search.open) return remote_commands.key(self.model, fx, ref, event);
         if (self.remoteShortcut(fx, ref, event)) return;
         if (state.selecting) {
             self.remoteSelectionKey(fx, ref, event);
@@ -1007,6 +1015,11 @@ pub const Engine = struct {
             interaction.requestPaste(self.model, fx, ref);
             return true;
         }
+        if (terminalShortcut(event)) |command| return remote_commands.command(self.model, ref, command);
+        return self.remoteModeShortcut(ref, event);
+    }
+
+    fn remoteModeShortcut(self: *Engine, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
         if (event.modifiers.shift and keyIs(event.key, "space")) {
             const state = self.model.remoteUi(ref) orelse return true;
             if (state.selecting) update_module.remote_selection.clear(self.model, state) else update_module.remote_selection.begin(self.model, ref, state);
