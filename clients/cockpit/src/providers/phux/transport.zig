@@ -5,6 +5,7 @@
 //! frames larger than that channel's 4096-byte effect payload out of it.
 
 const std = @import("std");
+const posix = std.posix;
 
 /// Entire native-sdk external-channel payload; frames bypass that channel.
 pub const wake_payload = [_]u8{1};
@@ -51,6 +52,64 @@ const SpinMutex = struct {
     }
 };
 
+/// One byte means work may be ready. All operations are serialized by the
+/// owning queue's mutex: draining before taking frames cannot lose a producer's
+/// notification, and closing cannot race a producer writing a reused fd.
+const QueueWake = struct {
+    fds: [2]posix.fd_t,
+    pending: bool = false,
+
+    fn init() !QueueWake {
+        var fds: [2]posix.fd_t = undefined;
+        if (std.c.pipe(&fds) != 0) return error.WakePipeFailed;
+        errdefer for (fds) |fd| {
+            _ = std.c.close(fd);
+        };
+        for (fds) |fd| {
+            const flags: posix.O = .{ .NONBLOCK = true };
+            if (std.c.fcntl(fd, posix.F.SETFL, @as(c_int, @bitCast(flags))) < 0)
+                return error.WakePipeFlagsFailed;
+            if (std.c.fcntl(fd, posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC)) < 0)
+                return error.WakePipeFlagsFailed;
+        }
+        return .{ .fds = fds };
+    }
+
+    fn deinit(wake: *QueueWake) void {
+        for (wake.fds) |fd| _ = std.c.close(fd);
+    }
+
+    fn signal(wake: *QueueWake) void {
+        if (wake.pending) return;
+        // Both ends remain open under the queue lock, and at most one byte is
+        // retained. Neither EPIPE nor a full pipe is possible.
+        writeToken(wake.fds[1]);
+        wake.pending = true;
+    }
+
+    fn writeToken(fd: posix.fd_t) void {
+        while (true) {
+            const count = std.c.write(fd, &wake_payload, wake_payload.len);
+            switch (posix.errno(count)) {
+                .SUCCESS => {
+                    std.debug.assert(count == 1);
+                    return;
+                },
+                .INTR => continue,
+                else => unreachable,
+            }
+        }
+    }
+
+    fn drain(wake: *QueueWake) void {
+        if (!wake.pending) return;
+        var byte: [1]u8 = undefined;
+        const count = posix.read(wake.fds[0], &byte) catch unreachable;
+        std.debug.assert(count == 1);
+        wake.pending = false;
+    }
+};
+
 /// Owned frame queue crossing between the socket extension and UI owner.
 ///
 /// The queue owns every pending slice. Metadata and payload retention are both
@@ -63,6 +122,7 @@ pub const FrameQueue = struct {
     disconnect: ?DisconnectReason = null,
     frames: std.ArrayListUnmanaged([]u8) = .empty,
     read_index: usize = 0,
+    wake: ?QueueWake = null,
 
     pub fn init(gpa: std.mem.Allocator) FrameQueue {
         return .{ .gpa = gpa };
@@ -70,6 +130,7 @@ pub const FrameQueue = struct {
 
     /// The queue must no longer be reachable by a producer or consumer.
     pub fn deinit(queue: *FrameQueue) void {
+        queue.disableWake();
         queue.mutex.lock();
         defer queue.mutex.unlock();
         for (queue.frames.items[queue.read_index..]) |frame| queue.gpa.free(frame);
@@ -104,6 +165,7 @@ pub const FrameQueue = struct {
 
         queue.mutex.lock();
         defer queue.mutex.unlock();
+        defer queue.signalLocked();
 
         // Preserve the first disconnect reason until the consumer observes it.
         if (queue.disconnect != null) {
@@ -172,6 +234,43 @@ pub const FrameQueue = struct {
         queue.mutex.lock();
         defer queue.mutex.unlock();
         if (queue.disconnect == null) queue.disconnect = reason;
+        queue.signalLocked();
+    }
+
+    /// Attach before spawning the sole socket consumer. Signal even an empty
+    /// queue so frames/disconnects staged before attachment are observed.
+    pub fn enableWake(queue: *FrameQueue) !posix.fd_t {
+        queue.mutex.lock();
+        defer queue.mutex.unlock();
+        if (queue.wake != null) return error.WakeAlreadyEnabled;
+        queue.wake = try QueueWake.init();
+        queue.signalLocked();
+        return queue.wake.?.fds[0];
+    }
+
+    /// The socket consumer must have joined before its polled fd is closed.
+    pub fn disableWake(queue: *FrameQueue) void {
+        queue.mutex.lock();
+        defer queue.mutex.unlock();
+        if (queue.wake) |*wake| wake.deinit();
+        queue.wake = null;
+    }
+
+    pub fn signalWake(queue: *FrameQueue) void {
+        queue.mutex.lock();
+        defer queue.mutex.unlock();
+        queue.signalLocked();
+    }
+
+    fn signalLocked(queue: *FrameQueue) void {
+        if (queue.wake) |*wake| wake.signal();
+    }
+
+    /// Drain BEFORE flushing, so a stage racing that flush leaves a new token.
+    pub fn drainWake(queue: *FrameQueue) void {
+        queue.mutex.lock();
+        defer queue.mutex.unlock();
+        if (queue.wake) |*wake| wake.drain();
     }
 
     pub fn takeDisconnect(queue: *FrameQueue) ?DisconnectReason {
@@ -346,4 +445,29 @@ test "every declaration in this module is compiled, not merely reachable" {
     // Zig analyzes only what is referenced, so a module can sit in the build
     // graph with its signatures never checked. See ref.zig.
     @import("phux_ref").refAllDeclsRecursive(@This());
+}
+
+test "outgoing wake coalesces bursts and rearms across drain and teardown" {
+    var queue = FrameQueue.init(std.testing.allocator);
+    defer queue.deinit();
+    const fd = try queue.enableWake();
+    try std.testing.expectError(error.WakeAlreadyEnabled, queue.enableWake());
+    queue.drainWake();
+    for (0..max_queued_frames) |_| try std.testing.expect(queue.stage("key"));
+    var polls = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
+    try std.testing.expectEqual(@as(usize, 1), try posix.poll(&polls, 0));
+    queue.drainWake();
+    // One drain consumes the whole burst, rather than 128 queued wake bytes.
+    try std.testing.expectEqual(@as(usize, 0), try posix.poll(&polls, 0));
+    while (queue.take()) |frame| queue.release(frame);
+    try std.testing.expect(queue.stage("next"));
+    try std.testing.expectEqual(@as(usize, 1), try posix.poll(&polls, 0));
+    queue.disableWake();
+    try std.testing.expect(queue.stage("detached"));
+    queue.signalWake();
+    polls[0].fd = try queue.enableWake();
+    try std.testing.expectEqual(@as(usize, 1), try posix.poll(&polls, 0));
+    queue.drainWake();
+    queue.reset();
+    try std.testing.expectEqual(@as(usize, 0), try posix.poll(&polls, 0));
 }
