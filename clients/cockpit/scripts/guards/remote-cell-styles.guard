@@ -1,0 +1,31 @@
+# GUARD remote-cell-styles
+#
+# Before this fix, copyBorrowed in 7dc3ad06 populated only an underline
+# boolean and silently defaulted bold/italic/strike/overline/style/color.
+# Removing those assignments in the extracted mapper restores that exact
+# loss. The test feeds canonical Rust frames to the real C client, asserts
+# the source flags exist, frees the client after copying, and inspects the
+# owned SDK cells. This is structural evidence, not host raster evidence.
+test: canonical C grid preserves remote styles in owned canvas cells
+red: 2026-09-07 at 9873c69
+build: test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/providers/phux/cell_projection.zig b/src/providers/phux/cell_projection.zig
+index 672ecf71..f8480dcf 100644
+--- a/src/providers/phux/cell_projection.zig
++++ b/src/providers/phux/cell_projection.zig
+@@ -67,15 +67,7 @@ pub fn cell(raw: c.PhuxTerminalCell, cluster: []const u8) canvas.TerminalCell {
+         .fg = canvas.Color.rgb8(raw.foreground_r, raw.foreground_g, raw.foreground_b),
+         .bg = canvas.Color.rgb8(raw.background_r, raw.background_g, raw.background_b),
+         .wide = width(raw.wide),
+-        .bold = raw.flags & c.PHUX_CLIENT_CELL_BOLD != 0,
+-        .italic = raw.flags & c.PHUX_CLIENT_CELL_ITALIC != 0,
+-        .strikethrough = raw.flags & c.PHUX_CLIENT_CELL_STRIKETHROUGH != 0,
+-        .overline = raw.flags & c.PHUX_CLIENT_CELL_OVERLINE != 0,
+         .underline = raw.underline != c.PHUX_UNDERLINE_NONE,
+-        .underline_style = underline(raw.underline),
+-        // FFI resolves SGR 59 to the raw foreground. It does not retain
+-        // explicit/default color provenance, so preserve its exact RGB.
+-        .underline_color = canvas.Color.rgb8(raw.underline_r, raw.underline_g, raw.underline_b),
+     };
+     resolveColors(raw.flags, &result);
+     return result;
