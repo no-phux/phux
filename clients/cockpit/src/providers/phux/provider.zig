@@ -7,6 +7,10 @@ const host_mod = @import("phux_host");
 const transport = @import("phux_transport");
 const extension = @import("phux_extension");
 
+test {
+    _ = @import("color_policy_tests.zig");
+}
+
 pub const enabled = true;
 pub const max_sessions = host_mod.max_sessions;
 pub const Endpoint = extension.Endpoint;
@@ -20,6 +24,7 @@ pub const Notice = host_mod.Notice;
 pub const SessionSummary = host_mod.SessionSummary;
 pub const Error = host_mod.Error;
 pub const OperationResult = host_mod.OperationResult;
+pub const ColorPolicy = host_mod.ColorPolicy;
 
 const OwnedEndpoint = union(enum) {
     tcp: struct { host: []u8, port: u16 },
@@ -218,6 +223,12 @@ pub const PhuxProvider = struct {
     }
     pub fn presentation(self: *const PhuxProvider, terminal_ref: provider.TerminalRef) ?provider.Presentation {
         return self.host.presentation(terminal_ref);
+    }
+
+    /// Logical constness matches local Session.snapshot: update the owned
+    /// paint cache, without changing provider identity or engine state.
+    pub fn setColorPolicy(self: *const PhuxProvider, policy: ColorPolicy) void {
+        self.host.setColorPolicy(policy);
     }
     pub fn lastViewport(self: *const PhuxProvider, terminal_ref: provider.TerminalRef) ?provider.Viewport {
         return self.host.lastViewport(terminal_ref);

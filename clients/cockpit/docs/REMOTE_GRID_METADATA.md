@@ -69,12 +69,60 @@ cells are preserved through their native content tags.
   foreground), while explicit underline RGB remains explicit even when it
   equals the original foreground.
 - Missing terminal defaults, cursor color and selection wash use SDK theme
-  tokens. `copyClient` uses the current default policy; `copyWithMetadata`
-  accepts a configured policy. No engine-side bold setting is invented:
+  tokens. `copyClient` uses the policy stored by the Host; `copyWithMetadata`
+  also accepts a configured policy. No engine-side bold setting is invented:
   neither the current core adapter nor the pinned engine exposes one.
 
-The host integration changes only its publication copy call to `copyClient`;
-queue, input and error-routing paths remain owned by their respective lanes.
+Host publication uses `copyClient` with its stored policy; queue, input and
+error-routing paths remain owned by their respective lanes.
+
+## Configured policy and idle repaint
+
+The shipping painter forwards `terminalTokensFrom` and `Config.cursor_color`
+through `remote_color_policy.sync` before reading the remote presentation.
+Host stores this policy and synchronizes new terminal publication. Changed
+policy immediately recolors existing owned presentations; identical policy
+calls return without walking cells. Theme preview, commit, rollback and removal
+of an explicit cursor fallback therefore reach the next paint without a server
+frame, render query, input command or timer.
+
+`OwnedColors` retains the original 36-byte C cell and 4-byte provenance per
+cell, plus one by-value global metadata record. No FFI pointers survive the
+copy. Color projection always starts from original RGB/flags, preserving
+inverse/faint precedence and explicit/default color distinctions. Glyph,
+cluster, hyperlink and selection storage are not rebuilt on policy changes.
+OSC overrides win until OSC 110/111/112 resets them. A frozen grid remains
+recolorable after reconnect destroys its source client.
+
+`color_policy_tests.zig` drives canonical frames through Bridge, provider and
+Host publication, including OSC reset/reverse and frozen reconnect. The separate
+`remote_theme_tests.zig` calls the shipping painter twice around a config change
+with no frames. Both assert explicit RGB remains explicit. The named tests
+were proved red by restoring `copyClient`'s default-only policy and by removing
+the painter hookup, respectively. The painter guard now records the equivalent
+missing forwarding in its small helper so it survives parent painter refactors.
+
+Independent review confirmed ownership, lifetime, publication and recoloring
+semantics. Its requested invariant comment/assert was added: captured source
+colors and owned canvas cells are committed from the same admitted count,
+without intervening fallible work.
+A final fresh review of immutable snapshot `d68918d8` reported no actionable
+findings, including the actual shipping painter test and the frozen-client path.
+
+Manual CC for this follow-up, relative to `72db6128`:
+
+| Function | Before | After |
+|---|---:|---:|
+| `CanvasStore.copyClient` / internal `copy` / `deinit` | 1 / 5 / 1 | 1 / 5 / 1 |
+| Canvas / Host / provider `setColorPolicy` | — | 4 / 3 / 1 |
+| `OwnedColors.capture` / `recolor` | — | 3 / 3 |
+| `OwnedColors.reserve` / `deinit` | — | 1 / 1 |
+| `remote_color_policy.sync` | — | 2 |
+| `Host.publishDirty` | 16 | 16 |
+| `paintWindow` | 26 | 26 |
+
+The existing Host/painter functions receive branch-free hookup statements;
+their separate refactoring remains with the parent integration lane.
 
 ## Evidence scope
 

@@ -31,6 +31,8 @@ pub const CanvasStore = struct {
     foreground: canvas.Color = default_tokens.colors.text,
     cursor_color: canvas.Color = default_tokens.colors.accent,
     selection_color: canvas.Color = default_tokens.colors.accent,
+    policy: grid_metadata.Policy = .{},
+    source_colors: @import("owned_colors.zig").OwnedColors = .{},
 
     pub fn deinit(store: *CanvasStore, gpa: std.mem.Allocator) void {
         store.cells.deinit(gpa);
@@ -39,6 +41,7 @@ pub const CanvasStore = struct {
         store.screen_text.deinit(gpa);
         store.hyperlinks.deinit(gpa);
         store.hyperlink_utf8.deinit(gpa);
+        store.source_colors.deinit(gpa);
     }
 
     fn reserve(store: *CanvasStore, gpa: std.mem.Allocator) !void {
@@ -55,7 +58,7 @@ pub const CanvasStore = struct {
 
     pub fn copyClient(store: *CanvasStore, gpa: std.mem.Allocator, client: *const c.PhuxClient, view: *const c.PhuxTerminalGridView) !void {
         const metadata = try grid_metadata.read(client, view);
-        return store.copyWithMetadata(gpa, view, &metadata, .{});
+        return store.copyWithMetadata(gpa, view, &metadata, store.policy);
     }
 
     pub fn copyWithMetadata(store: *CanvasStore, gpa: std.mem.Allocator, view: *const c.PhuxTerminalGridView, metadata: *const c.PhuxTerminalGridMetadata, policy: grid_metadata.Policy) !void {
@@ -68,6 +71,9 @@ pub const CanvasStore = struct {
         const rows: usize = view.rows;
         try store.reserve(gpa);
         try store.hyperlink_utf8.ensureTotalCapacity(gpa, source.hyperlink_bytes);
+        try store.source_colors.reserve(gpa, view.cell_count);
+        store.source_colors.capture(source.cells, metadata);
+        store.policy = policy;
         store.utf8.clearRetainingCapacity();
         store.hyperlink_utf8.clearRetainingCapacity();
         store.cells.items.len = view.cell_count;
@@ -129,6 +135,17 @@ pub const CanvasStore = struct {
             for (raw) |cell| store.screen_text.appendSliceAssumeCapacity(projection.text(cell).slice(source.utf8));
             if (index + 1 < store.rows.items.len) store.screen_text.appendAssumeCapacity('\n');
         }
+    }
+
+    pub fn setColorPolicy(store: *CanvasStore, policy: grid_metadata.Policy) void {
+        if (std.meta.eql(store.policy, policy)) return;
+        store.policy = policy;
+        const meta = &(store.source_colors.globals orelse return);
+        store.source_colors.recolor(store.cells.items, policy);
+        store.background = grid_metadata.background(meta, policy);
+        store.foreground = grid_metadata.foreground(meta, policy);
+        store.cursor_color = if (meta.has_cursor_color) grid_metadata.rgb(meta.cursor_color) else policy.cursor_fallback;
+        store.selection_color = policy.selection_color;
     }
 
     /// Borrowed until the next successful copy or deinit, like grid().

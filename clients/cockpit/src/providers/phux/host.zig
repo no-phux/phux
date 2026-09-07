@@ -75,6 +75,7 @@ pub const Error = error{
 
 const RemoteId = provider.RemoteTerminalId;
 const CanvasStore = presentation_module.CanvasStore;
+pub const ColorPolicy = @import("grid_metadata.zig").Policy;
 
 const Terminal = struct {
     measured_cell: ?provider.MeasuredCell = null,
@@ -165,6 +166,14 @@ pub const Host = struct {
     detached_catalog: [max_catalog_terminals]provider.TerminalRef = undefined,
     detached_catalog_count: usize = 0,
     disconnected: bool = false,
+    color_policy: ColorPolicy = .{},
+
+    /// Presentation-only update: no input, render query or replica mutation.
+    pub fn setColorPolicy(host: *Host, policy: ColorPolicy) void {
+        if (std.meta.eql(host.color_policy, policy)) return;
+        host.color_policy = policy;
+        for (host.terminals.items) |*terminal| terminal.canvas.setColorPolicy(policy);
+    }
 
     pub fn create(gpa: std.mem.Allocator, bridge: *transport.Bridge) !*Host {
         const host = try gpa.create(Host);
@@ -980,6 +989,7 @@ pub const Host = struct {
             releaseTopAnchor(host.client, id, view.top_anchor);
             return error.InvalidIdentity;
         }
+        terminal.canvas.setColorPolicy(host.color_policy);
         terminal.canvas.copyClient(host.gpa, host.client, view) catch |err| {
             releaseTopAnchor(host.client, id, view.top_anchor);
             return err;

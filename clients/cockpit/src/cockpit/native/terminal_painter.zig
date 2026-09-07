@@ -18,6 +18,10 @@ const Pane = @import("../../providers/local/provider.zig").Pane;
 const TerminalRef = @import("../phux_support.zig").TerminalRef;
 const chrome_command_envelope = projection.chrome_command_envelope;
 
+test {
+    _ = @import("../../tests/remote_theme_tests.zig");
+}
+
 pub const window_ground_command_id: u64 = 0x0c01;
 
 pub const pane_dim_command_id_base: u64 = 0x0c10;
@@ -282,6 +286,8 @@ fn paintPane(model: *const Model, builder: *canvas.Builder, pane: layout.Pane, i
     if (model.provider.terminalConst(pane.terminal)) |terminal| {
         try paintLocalPane(terminal, builder, index, tokens, options);
     } else {
+        const remote = model.phuxConst() orelse return false;
+        @import("remote_color_policy.zig").sync(remote, options.tokens, model.config.cursor_color);
         const presentation = model.remotePresentation(pane.terminal) orelse return false;
         options.running = presentation.phase == .live;
         options.selecting = if (model.remoteUiConst(pane.terminal)) |state| state.selecting else false;

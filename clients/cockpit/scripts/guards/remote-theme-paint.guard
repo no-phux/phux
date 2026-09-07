@@ -1,0 +1,23 @@
+# GUARD remote-theme-paint
+# Restore the shipping painter's missing configuration forwarding. Removing
+# the painter call itself was first proved red at e54d49a3. This equivalent
+# break lives in the small forwarding helper so parent painter refactors do
+# not move the guard. Host/helper tests alone do not detect this: the named
+# test paints a canonical remote presentation, changes config with no frames,
+# then paints again.
+test: shipping painter applies configured remote theme on every paint without frames
+red: 2026-09-07 at d68918d
+build: test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/remote_color_policy.zig b/src/cockpit/native/remote_color_policy.zig
+--- a/src/cockpit/native/remote_color_policy.zig
++++ b/src/cockpit/native/remote_color_policy.zig
+@@ -5,6 +5,3 @@
+-    remote.setColorPolicy(.{
+-        .foreground = tokens.colors.text,
+-        .background = tokens.colors.background,
+-        .cursor_fallback = if (cursor_color) |color| canvas.Color.rgb8(color.r, color.g, color.b) else tokens.colors.accent,
+-        .selection_color = tokens.colors.accent,
+-    });
++    _ = remote;
++    _ = tokens;
++    _ = cursor_color;
