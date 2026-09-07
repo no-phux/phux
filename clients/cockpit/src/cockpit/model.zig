@@ -819,6 +819,10 @@ pub const Model = struct {
     notification_count: u32 = 0,
     /// The live tab drag, or null when no tab is being dragged.
     tab_drag: ?TabDrag = null,
+    /// Saved references carry evidence, never live provider ownership.
+    attachment_context: topology.attachments.Context = .{},
+    saved_attachments: topology.attachments.Table = .{},
+    pending_attachments: [topology.attachments.max_references]bool = @splat(false),
 
     // -------------------------------------------------------- windows
 
@@ -962,6 +966,7 @@ pub const Model = struct {
             }
         }
         if (model.active_window == index) model.active_window = model.firstOpenWindow();
+        model.pruneAttachmentState();
     }
 
     /// The lowest-numbered window still open, or 0 when none is. Used as the
@@ -997,6 +1002,7 @@ pub const Model = struct {
     }
 
     pub fn containsTerminal(model: *const Model, terminal_ref: TerminalRef) bool {
+        if (model.attachmentPending(terminal_ref)) return false;
         return switch (support.providerKind(terminal_ref)) {
             .local => model.provider.contains(terminal_ref),
             .phux => if (model.phuxConst()) |remote| remote.contains(terminal_ref) else false,
@@ -1004,6 +1010,7 @@ pub const Model = struct {
     }
 
     pub fn terminalOwner(model: *const Model, terminal_ref: TerminalRef) ?ReplicaOwner {
+        if (model.attachmentPending(terminal_ref)) return null;
         return switch (support.providerKind(terminal_ref)) {
             .local => model.provider.owner(terminal_ref),
             .phux => if (model.phuxConst()) |remote| remote.owner(terminal_ref) else null,
@@ -1011,6 +1018,7 @@ pub const Model = struct {
     }
 
     pub fn ownerIsCurrent(model: *const Model, owner_value: ReplicaOwner) bool {
+        if (model.attachmentPending(owner_value.terminal_ref)) return false;
         return switch (support.providerKind(owner_value.terminal_ref)) {
             .local => model.provider.ownerIsCurrent(owner_value),
             .phux => if (model.phuxConst()) |remote| remote.ownerIsCurrent(owner_value) else false,
@@ -1018,6 +1026,7 @@ pub const Model = struct {
     }
 
     pub fn remotePresentation(model: *const Model, terminal_ref: TerminalRef) ?Presentation {
+        if (model.attachmentPending(terminal_ref)) return null;
         if (support.providerKind(terminal_ref) != .phux) return null;
         const remote = model.phuxConst() orelse return null;
         return remote.presentation(terminal_ref);
@@ -1047,6 +1056,118 @@ pub const Model = struct {
     }
     pub fn remoteTerminalRefs(model: *const Model) []const TerminalRef {
         return model.remote_inventory[0..model.remote_inventory_count];
+    }
+
+    /// Saved identities survive unavailable providers without acquiring live
+    /// ownership. A matching HELLO/ATTACHED context is necessary but readiness
+    /// still comes from the provider after subscription/bootstrap.
+    pub fn setAttachmentContext(model: *Model, endpoint: []const u8, server_id: []const u8, session_id: u32) !void {
+        const context = try topology.attachments.Context.init(endpoint, server_id, session_id);
+        // Freeze the old placement evidence before changing the current
+        // connection. Otherwise a live leaf's reused numeric ID would acquire
+        // the next server's identity on the next save.
+        try model.captureAttachmentContexts();
+        model.attachment_context = context;
+        for (model.saved_attachments.entries[0..model.saved_attachments.count], 0..) |entry, index| {
+            if (!entry.?.matches(&context)) model.pending_attachments[index] = true;
+        }
+    }
+
+    /// Disconnect/rejection invalidates all saved readiness, retaining both
+    /// the placement and the original evidence for a later matching server.
+    pub fn rejectAttachmentContext(model: *Model) void {
+        model.captureAttachmentContexts() catch {};
+        model.attachment_context = .{};
+        @memset(model.pending_attachments[0..model.saved_attachments.count], true);
+    }
+
+    pub fn attachmentPending(model: *const Model, ref: TerminalRef) bool {
+        const index = model.saved_attachments.find(ref) orelse return false;
+        return model.pending_attachments[index];
+    }
+
+    pub fn pendingRestoredRefs(model: *const Model, out: []TerminalRef) usize {
+        var count: usize = 0;
+        for (model.saved_attachments.entries[0..model.saved_attachments.count], 0..) |entry, index| {
+            if (!model.pending_attachments[index]) continue;
+            const ref = entry.?.terminal_ref;
+            if (model.locateTerminal(ref) == null) continue;
+            if (count == out.len) break;
+            out[count] = ref;
+            count += 1;
+        }
+        return count;
+    }
+
+    pub fn restoredAttachmentMatches(model: *const Model, ref: TerminalRef) bool {
+        const index = model.saved_attachments.find(ref) orelse return false;
+        return model.saved_attachments.entries[index].?.matches(&model.attachment_context);
+    }
+
+    pub fn restoredAttachmentContext(model: *const Model, ref: TerminalRef) ?topology.attachments.Context {
+        const index = model.saved_attachments.find(ref) orelse return null;
+        return model.saved_attachments.entries[index].?.context;
+    }
+
+    pub fn resolveRestoredAttachment(model: *Model, ref: TerminalRef) bool {
+        if (!model.restoredAttachmentMatches(ref)) return false;
+        const remote = model.phuxConst() orelse return false;
+        const presentation = remote.presentation(ref) orelse return false;
+        if (presentation.phase != .live) return false;
+        const index = model.saved_attachments.find(ref).?;
+        model.pending_attachments[index] = false;
+        return true;
+    }
+
+    fn attachmentReference(model: *const Model, ref: TerminalRef) topology.attachments.Reference {
+        if (model.saved_attachments.find(ref)) |index| return model.saved_attachments.entries[index].?;
+        return .{ .terminal_ref = ref, .context = model.attachment_context };
+    }
+
+    fn captureAttachmentContexts(model: *Model) !void {
+        var table: topology.attachments.Table = .{};
+        var pending: [topology.attachments.max_references]bool = @splat(false);
+        for (0..max_windows) |window_index| {
+            const workspace = model.wsAtConst(window_index) orelse continue;
+            for (workspace.tabs[0..workspace.tab_count]) |current| {
+                var refs: [layout.max_panes]TerminalRef = undefined;
+                const count = current.terminals(&refs);
+                for (refs[0..count]) |ref| {
+                    if (ref.terminal_id != .phux) continue;
+                    const index = try table.append(model.attachmentReference(ref));
+                    pending[index] = model.attachmentPending(ref);
+                }
+            }
+        }
+        model.saved_attachments = table;
+        model.pending_attachments = pending;
+    }
+
+    /// Call after direct pane-tree removals, before admitting new identities.
+    /// Moves retain their evidence because their destination still holds the ref.
+    pub fn pruneAttachmentState(model: *Model) void {
+        var retained: topology.attachments.Table = .{};
+        var pending: [topology.attachments.max_references]bool = @splat(false);
+        for (model.saved_attachments.entries[0..model.saved_attachments.count], 0..) |entry, index| {
+            const reference = entry orelse continue;
+            if (model.locateTerminal(reference.terminal_ref) == null) continue;
+            retained.entries[retained.count] = reference;
+            pending[retained.count] = model.pending_attachments[index];
+            retained.count += 1;
+        }
+        model.saved_attachments = retained;
+        model.pending_attachments = pending;
+    }
+
+    /// Preflight before allocating or splitting: the durable budget covers
+    /// both providers and unresolved placements, not only local shell slots.
+    pub fn canAddPane(model: *const Model) bool {
+        var count: usize = 0;
+        for (0..max_windows) |window_index| {
+            const workspace = model.wsAtConst(window_index) orelse continue;
+            for (workspace.tabs[0..workspace.tab_count]) |current| count += current.paneCount();
+        }
+        return count < topology.max_terminals;
     }
 
     // ------------------------------------------------------------ tabs
@@ -1134,6 +1255,8 @@ pub const Model = struct {
     /// enforces within a window.
     pub fn admitTab(model: *Model, id: TerminalRef) bool {
         if (model.locateTerminal(id)) |where| return where.window == model.active_window;
+        if (!model.canAddPane()) return false;
+        model.pruneAttachmentState();
         return model.ws().admitTab(id);
     }
 
@@ -1145,6 +1268,7 @@ pub const Model = struct {
 
     pub fn dropTab(model: *Model, index: usize) void {
         model.ws().dropTab(index);
+        model.pruneAttachmentState();
     }
 
     pub fn dropFromOrder(model: *Model, index: usize) void {
@@ -1184,6 +1308,7 @@ pub const Model = struct {
                 var refs: [layout.max_panes]TerminalRef = undefined;
                 const count = current.terminals(&refs);
                 for (refs[0..count]) |candidate| {
+                    if (model.attachmentPending(candidate)) continue;
                     if (!model.containsTerminal(candidate)) _ = current.closeTerminal(candidate);
                 }
                 if (current.isEmpty()) workspace.dropTab(index) else index += 1;
@@ -1198,6 +1323,7 @@ pub const Model = struct {
             }
             if (workspace.selected_tab >= workspace.tab_count) workspace.selected_tab = workspace.tab_count - 1;
         }
+        model.pruneAttachmentState();
     }
 
     /// Reconcile provider inventory and presentation state without admitting
@@ -1291,22 +1417,7 @@ pub const Model = struct {
         for (0..max_windows) |window_index| {
             if (!model.windowOpen(window_index)) continue;
             const workspace = model.wsAtConst(window_index) orelse continue;
-            var selected: ?u8 = null;
-            const first = written;
-            for (workspace.tabs[0..workspace.tab_count], 0..) |current, index| {
-                if (written >= topology.max_snapshot_tabs) break;
-                const encoded = encodeTab(current) orelse continue;
-                snapshot.tabs[written] = encoded;
-                if (!workspace.web_selected and index == workspace.selected_tab) selected = written - first;
-                written += 1;
-            }
-            // A window that contributed no persistable tab is still a window
-            // the user has open — except window 0, whose absence from the
-            // snapshot is what "there is nothing to restore" has always meant.
-            snapshot.windows[windows] = .{
-                .tab_count = written - first,
-                .selection = if (selected) |value| .{ .tab = value } else .web,
-            };
+            snapshot.windows[windows] = try encodeWindow(model, workspace, &snapshot, &written);
             windows += 1;
         }
         snapshot.window_count = windows;
@@ -1317,16 +1428,20 @@ pub const Model = struct {
         // shell last reported through OSC 7, and a pane that never reported
         // one records nothing (which restores as "$HOME", the first
         // terminal's behaviour, not as "/").
-        for (snapshot.tabs[0..written]) |tab| {
+        model.snapshotWorkingDirectories(&snapshot);
+
+        try snapshot.validate();
+        return snapshot;
+    }
+
+    fn snapshotWorkingDirectories(model: *const Model, snapshot: *TopologySnapshot) void {
+        for (snapshot.tabs[0..snapshot.tab_count]) |tab| {
             for (tab.nodes) |node| {
-                if (node.kind != .leaf or !node.has_terminal) continue;
+                if (node.kind != .leaf or !node.has_terminal or node.remote_ref != null) continue;
                 const pane = model.provider.terminalConst(local.localRef(node.terminal)) orelse continue;
                 snapshot.setCwd(node.terminal, pane.pwd());
             }
         }
-
-        try snapshot.validate();
-        return snapshot;
     }
 
     /// A cheap hash of everything the SNAPSHOT would carry about shape:
@@ -1366,14 +1481,9 @@ pub const Model = struct {
                     // A fraction is a float, which `autoHash` refuses; its bits
                     // are the identity that matters for "did the divider move".
                     std.hash.autoHash(&hasher, @as(u32, @bitCast(node.fraction)));
-                    // Only LOCAL identity is folded in. A tab holding a remote
-                    // pane is not persistable at all (`encodeTab` drops it), so
-                    // there is no saved state for one to invalidate — and
-                    // hashing a `RemoteTerminalId`'s inline host storage would
-                    // cost a quarter-kilobyte per node on every message.
                     if (node.terminal) |id| {
-                        const raw: u64 = if (provider_contract.localId(id)) |local_id| @intFromEnum(local_id) else 0;
-                        std.hash.autoHash(&hasher, raw);
+                        std.hash.autoHash(&hasher, id.hash());
+                        if (id.terminal_id == .phux) model.attachmentReference(id).context.hash(&hasher);
                     }
                 }
             }
@@ -1555,22 +1665,33 @@ pub fn applyRestoredWorkingDirectories(model: *Model, snapshot: *const TopologyS
     }
 }
 
-/// Serialize one tree. A tab holding a REMOTE terminal is not persistable —
-/// a phux terminal exists because its coordinator says so, and restoring it
-/// locally would invent one — so such a tab is dropped from the snapshot.
-fn encodeTab(current: layout.Tree) ?topology.SnapshotTab {
-    if (current.isEmpty()) return null;
+/// Encode remote leaves as references, never as local shell registry offsets.
+fn encodeWindow(model: *const Model, workspace: *const Workspace, snapshot: *TopologySnapshot, written: *u8) !topology.SnapshotWindow {
+    var selected: ?u8 = null;
+    const first = written.*;
+    for (workspace.tabs[0..workspace.tab_count], 0..) |current, index| {
+        if (written.* >= topology.max_snapshot_tabs) return error.InvalidTopology;
+        snapshot.tabs[written.*] = try encodeTab(model, current, &snapshot.references);
+        if (!workspace.web_selected and index == workspace.selected_tab) selected = written.* - first;
+        written.* += 1;
+    }
+    return .{ .tab_count = written.* - first, .selection = if (selected) |value| .{ .tab = value } else .web };
+}
+
+fn encodeTab(model: *const Model, current: layout.Tree, references: *topology.attachments.Table) !topology.SnapshotTab {
+    if (current.isEmpty()) return error.InvalidTopology;
     var tab: topology.SnapshotTab = .{ .root = current.root, .focus = current.focus };
     for (current.nodes, 0..) |node, index| {
         switch (node.kind) {
             .free => continue,
             .leaf => {
-                const held = node.terminal orelse return null;
-                const local_id = provider_contract.localId(held) orelse return null;
+                const held = node.terminal orelse return error.InvalidTopology;
+                const local_id = provider_contract.localId(held);
                 tab.nodes[index] = .{
                     .kind = .leaf,
                     .parent = node.parent,
-                    .terminal = local_id,
+                    .terminal = local_id orelse .terminal_1,
+                    .remote_ref = if (local_id == null) try references.append(model.attachmentReference(held)) else null,
                     .has_terminal = true,
                 };
             },
@@ -1587,7 +1708,7 @@ fn encodeTab(current: layout.Tree) ?topology.SnapshotTab {
     return tab;
 }
 
-fn decodeTab(tab: topology.SnapshotTab) layout.Tree {
+fn decodeTab(snapshot: *const TopologySnapshot, tab: topology.SnapshotTab) layout.Tree {
     var current: layout.Tree = .{ .root = tab.root, .focus = tab.focus };
     for (tab.nodes, 0..) |node, index| {
         current.nodes[index] = switch (node.kind) {
@@ -1595,7 +1716,7 @@ fn decodeTab(tab: topology.SnapshotTab) layout.Tree {
             .leaf => .{
                 .kind = .leaf,
                 .parent = node.parent,
-                .terminal = local.localRef(node.terminal),
+                .terminal = snapshot.terminalRef(node),
             },
             .branch => .{
                 .kind = .branch,
@@ -1702,64 +1823,66 @@ pub fn restoreModelWithScrollback(
 ) !Model {
     const snapshot = try topology.migrateTopologySnapshot(persisted);
     const provider = try gpa.create(LocalProvider);
-    errdefer gpa.destroy(provider);
     provider.* = .{ .gpa = gpa, .io = io, .max_scrollback_bytes = max_scrollback_bytes };
 
     var model: Model = .{
         .provider = provider,
         .tab_placement = snapshot.tab_placement,
+        .saved_attachments = snapshot.references,
+        .pending_attachments = @splat(true),
     };
     errdefer provider.destroy();
     errdefer for (model.secondary) |slot| if (slot) |workspace| std.heap.page_allocator.destroy(workspace);
 
-    // Every persisted leaf gets a FRESH session: process state is explicitly
-    // not restored (`process_restoration_supported`), only the shape.
+    // Local leaves get fresh sessions. Remote leaves retain pending identities
+    // until provider evidence matches; restoration never allocates their PTYs.
     //
     // Windows are restored in the order they were written, which is the order
     // they were numbered: window 0 into the inline workspace, the rest into
     // freshly minted secondary slots. A snapshot from before windows existed
     // migrates to exactly one window, so it lands entirely in `primary`.
     for (0..snapshot.window_count) |window_index| {
-        const workspace = model.openWindow(window_index) orelse return error.WindowCapacityReached;
-        const tabs = snapshot.windowTabs(window_index);
-        workspace.tab_count = tabs.len;
-        workspace.web_selected = snapshot.windows[window_index].selection == .web;
-        workspace.selected_tab = switch (snapshot.windows[window_index].selection) {
-            .tab => |index| index,
-            .web => 0,
-        };
-        for (tabs, 0..) |tab, tab_index| {
-            workspace.tabs[tab_index] = decodeTab(tab);
-            workspace.assignRestoredTabId(tab_index);
-            for (tab.nodes) |node| {
-                if (node.kind != .leaf or !node.has_terminal) continue;
-                // The SHELL ceiling applies to a restored layout exactly as it
-                // applies to cmd+T (see `local.max_live_shells`): `initFx`
-                // spawns every pane this loop mints, so a snapshot with more
-                // leaves than the effects layer has ptys would reopen with the
-                // surplus panes permanently blank. This is a runtime resource
-                // failure, not malformed state: `main.restoreWorkspace`
-                // propagates it so startup fails visibly and the valid source
-                // remains untouched.
-                if (provider.liveShellCount() >= local.max_live_shells) return error.TerminalCapacityReached;
-                const session = try grid.Session.createWithScrollback(gpa, io, 80, 24, provider.max_scrollback_bytes);
-                errdefer session.destroy();
-                var index: usize = 0;
-                while (index < max_terminals and provider.states[index] != .vacant) : (index += 1) {}
-                if (index == max_terminals) return error.TerminalCapacityReached;
-                provider.slots[index] = .{
-                    .id = local.localRef(node.terminal),
-                    .session = session,
-                    .pty_key = provider.next_pty_key,
-                    .argv = local.paneArgv(0),
-                };
-                provider.states[index] = .active;
-                provider.next_pty_key += 1;
-                provider.next_terminal_raw = @max(provider.next_terminal_raw, @intFromEnum(node.terminal) + 1);
-            }
-        }
+        try restoreWindow(&model, &snapshot, window_index);
     }
     return model;
+}
+
+fn restoreWindow(model: *Model, snapshot: *const TopologySnapshot, window_index: usize) !void {
+    const workspace = model.openWindow(window_index) orelse return error.WindowCapacityReached;
+    const tabs = snapshot.windowTabs(window_index);
+    workspace.tab_count = tabs.len;
+    workspace.web_selected = snapshot.windows[window_index].selection == .web;
+    workspace.selected_tab = switch (snapshot.windows[window_index].selection) {
+        .tab => |index| index,
+        .web => 0,
+    };
+    for (tabs, 0..) |tab, tab_index| {
+        workspace.tabs[tab_index] = decodeTab(snapshot, tab);
+        workspace.assignRestoredTabId(tab_index);
+        for (tab.nodes) |node| {
+            if (node.kind != .leaf or !node.has_terminal or node.remote_ref != null) continue;
+            try restoreLocalPane(model.provider, node.terminal);
+        }
+    }
+}
+
+fn restoreLocalPane(provider: *LocalProvider, terminal: LocalTerminalId) !void {
+    // Runtime capacity failure propagates, preserving the valid source file.
+    if (provider.liveShellCount() >= local.max_live_shells) return error.TerminalCapacityReached;
+    const session = try grid.Session.createWithScrollback(provider.gpa, provider.io, 80, 24, provider.max_scrollback_bytes);
+    errdefer session.destroy();
+    var index: usize = 0;
+    while (index < max_terminals and provider.states[index] != .vacant) : (index += 1) {}
+    if (index == max_terminals) return error.TerminalCapacityReached;
+    provider.slots[index] = .{
+        .id = local.localRef(terminal),
+        .session = session,
+        .pty_key = provider.next_pty_key,
+        .argv = local.paneArgv(0),
+    };
+    provider.states[index] = .active;
+    provider.next_pty_key += 1;
+    provider.next_terminal_raw = @max(provider.next_terminal_raw, @intFromEnum(terminal) + 1);
 }
 
 pub fn deinitModel(model: *Model) void {

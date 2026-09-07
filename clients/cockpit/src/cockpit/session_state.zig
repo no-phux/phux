@@ -1,38 +1,11 @@
-//! The on-disk form of the workspace layout.
-//!
-//! FORMAT CHOICE: a line-oriented text file, hand written and hand read, the
-//! same shape `config/config.zig` already uses for the config file.
-//!
-//! The alternatives were ZON (already the language of `app.zon`) and JSON (the
-//! SDK ships a `native_sdk.json` primitive). Both were rejected for the same
-//! reason: this file is read at STARTUP, from a path a user can edit, after a
-//! crash, off a disk that may have half-written it — so the parser's worst
-//! case matters more than its expressiveness. A recursive-descent parser over
-//! a nested document has a stack depth proportional to the input, which makes
-//! "a file of random bytes must never crash" a claim about how deeply the
-//! fuzzer happened to nest its brackets. This grammar has NO nesting: one
-//! forward pass, one line at a time, fixed work per line, no recursion
-//! anywhere. It cannot overflow a stack and it cannot loop. The SDK's JSON
-//! primitive was additionally out of the question on capability alone — it
-//! reads flat scalar fields out of one object and cannot express an array of
-//! trees at all.
-//!
-//! The snapshot is also a poor fit for a document format: it is fixed-size
-//! arrays of scalars, and `TopologySnapshot.validate` already owns every
-//! structural claim (reachability, cycles, duplicate terminals, fraction
-//! bounds). So the parser's whole job is to fill fields and let `validate`
-//! refuse nonsense — which is exactly what it does, and why a hostile file
-//! costs one linear scan and a rejection rather than a crash.
-//!
-//! Truncation is detected rather than inferred: the file ends with an `end`
-//! line, so a write cut short — or a read cut at the buffer ceiling — fails
-//! the terminator check instead of parsing as a smaller but plausible
-//! workspace.
-
+//! Bounded, nonrecursive, line-oriented workspace state. A required terminator
+//! rejects truncated writes; topology validation owns the structural claims.
 const std = @import("std");
 const local = @import("../providers/local/provider.zig");
+const contract = @import("provider_contract");
 const layout = @import("layout.zig");
 const topology = @import("topology.zig");
+const attachments = topology.attachments;
 
 pub const TopologySnapshot = topology.TopologySnapshot;
 pub const PersistedTopologySnapshot = topology.PersistedTopologySnapshot;
@@ -40,416 +13,335 @@ pub const SnapshotTab = topology.SnapshotTab;
 pub const SnapshotCwd = topology.SnapshotCwd;
 pub const SnapshotSelection = topology.SnapshotSelection;
 pub const TabPlacement = topology.TabPlacement;
-
-const max_tabs = topology.max_tabs;
-const max_terminals = local.max_terminals;
-
-/// The first token of a well-formed file. A file that does not begin with it
-/// is somebody else's file, or noise, and is never parsed further.
 pub const magic = "phux-cockpit-state";
-
-/// The last line of a well-formed file.
 pub const terminator = "end";
-
-/// The state file's name inside the platform STATE directory. Layout is
-/// STATE, not configuration: nobody hand-writes it and losing it costs a
-/// session shape, not a setting.
-/// A DEBUG build writes its layout somewhere else.
-///
-/// The installed app and a binary run straight out of `zig-out/bin` belong to
-/// the same user, so they resolved the same state file — and a dev build is
-/// exactly the thing most likely to be running a NEWER schema. The version
-/// guard means whichever one loses opens a fresh window instead of crashing,
-/// but losing the windows you had arranged because you ran a test build is
-/// still losing them, and it looks like the app forgot.
-///
-/// Keyed off the optimize mode rather than a flag so it is right without
-/// anyone remembering: plain `zig build` is Debug and gets its own file, while
-/// `scripts/package-macos.sh` builds ReleaseSafe and keeps the real one.
-/// `PHUX_COCKPIT_STATE` still overrides both, which is what to reach for when
-/// two builds of the SAME mode need separating.
-pub const file_name = if (@import("builtin").mode == .Debug)
-    "workspace-dev.state"
-else
-    "workspace.state";
-
-/// The name a packaged build uses, regardless of how THIS build was compiled.
-/// Exposed so a test can prove the two are actually different rather than
-/// asserting the constant against itself.
+pub const file_name = if (@import("builtin").mode == .Debug) "workspace-dev.state" else "workspace.state";
 pub const release_file_name = "workspace.state";
-
-/// Byte ceiling for a whole state file.
-///
-/// The real bound is small and structural: across the whole window there are
-/// at most `max_terminals` leaves and therefore at most `2 * max_terminals - 1`
-/// live tree nodes plus `max_tabs` tab headers, and at most `max_terminals`
-/// directory lines. 24 KiB is several times that and still a stack-safe
-/// buffer for the serializer.
-pub const max_state_bytes: usize = 24 * 1024;
-
-/// The oldest on-disk version this reader understands. Older files, and every
-/// version from the future, fall back to a fresh launch.
+// 32 refs * (2 * (255 host + 256 endpoint + 255 incarnation) + 128
+// scalar/keyword bytes), plus 32 cwd lines and at most 63 live nodes, fits
+// below 72 KiB. The fixed 96 KiB ceiling also bounds hostile input parsing.
+pub const max_state_bytes: usize = 96 * 1024;
 pub const min_readable_version: u16 = 2;
 
 pub fn joinPath(state_dir: []const u8, out: []u8) error{NoSpaceLeft}![]const u8 {
     const separator: []const u8 = if (state_dir.len > 0 and state_dir[state_dir.len - 1] == '/') "" else "/";
-    const total = state_dir.len + separator.len + file_name.len;
-    if (total > out.len) return error.NoSpaceLeft;
-    @memcpy(out[0..state_dir.len], state_dir);
-    @memcpy(out[state_dir.len..][0..separator.len], separator);
-    @memcpy(out[state_dir.len + separator.len ..][0..file_name.len], file_name);
-    return out[0..total];
+    return std.fmt.bufPrint(out, "{s}{s}{s}", .{ state_dir, separator, file_name });
 }
 
-/// Append-only cursor over a fixed buffer. Every write is bounds checked, so
-/// a snapshot larger than the ceiling fails the whole serialization rather
-/// than emitting a prefix that would read back as a smaller workspace.
 const Emitter = struct {
     out: []u8,
     len: usize = 0,
 
-    fn print(emitter: *Emitter, comptime fmt: []const u8, args: anytype) error{NoSpaceLeft}!void {
-        const written = try std.fmt.bufPrint(emitter.out[emitter.len..], fmt, args);
-        emitter.len += written.len;
+    fn print(self: *Emitter, comptime fmt: []const u8, args: anytype) error{NoSpaceLeft}!void {
+        self.len += (try std.fmt.bufPrint(self.out[self.len..], fmt, args)).len;
     }
 
-    fn raw(emitter: *Emitter, bytes: []const u8) error{NoSpaceLeft}!void {
-        if (emitter.len + bytes.len > emitter.out.len) return error.NoSpaceLeft;
-        @memcpy(emitter.out[emitter.len..][0..bytes.len], bytes);
-        emitter.len += bytes.len;
+    fn raw(self: *Emitter, bytes: []const u8) error{NoSpaceLeft}!void {
+        if (self.len + bytes.len > self.out.len) return error.NoSpaceLeft;
+        @memcpy(self.out[self.len..][0..bytes.len], bytes);
+        self.len += bytes.len;
+    }
+
+    fn nodeId(self: *Emitter, id: layout.NodeId) error{NoSpaceLeft}!void {
+        if (id == layout.none) return self.raw("-");
+        return self.print("{d}", .{id});
+    }
+
+    fn hex(self: *Emitter, bytes: []const u8) error{NoSpaceLeft}!void {
+        if (bytes.len == 0) return self.raw("-");
+        for (bytes) |byte| try self.print("{x:0>2}", .{byte});
     }
 };
-
-/// A node id, with `layout.none` written as `-` so "no node" is a token and
-/// not a magic number a reader has to know.
-fn emitNodeId(emitter: *Emitter, id: layout.NodeId) error{NoSpaceLeft}!void {
-    if (id == layout.none) return emitter.raw("-");
-    return emitter.print("{d}", .{id});
-}
-
-fn parseNodeId(text: []const u8) ?layout.NodeId {
-    if (std.mem.eql(u8, text, "-")) return layout.none;
-    const value = std.fmt.parseInt(layout.NodeId, text, 10) catch return null;
-    if (value >= layout.max_nodes) return null;
-    return value;
-}
-
-/// Terminals are written as REGISTRY OFFSETS, not as their raw 64-bit enum
-/// values: `validate` already proves every leaf's offset is inside the
-/// registry, so the offset is lossless, and it keeps the file readable.
-fn parseTerminalOffset(text: []const u8) ?usize {
-    const value = std.fmt.parseInt(usize, text, 10) catch return null;
-    if (value >= max_terminals) return null;
-    return value;
-}
-
-fn terminalForOffset(offset: usize) topology.LocalTerminalId {
-    return @enumFromInt(local.first_terminal_raw + offset);
-}
 
 pub const SerializeError = error{ NoSpaceLeft, UnpersistableTerminal };
 
 pub fn serialize(snapshot: *const TopologySnapshot, out: []u8) SerializeError![]const u8 {
-    var emitter: Emitter = .{ .out = out };
-    try emitter.print("{s} {d}\n", .{ magic, snapshot.version });
-    try emitter.print("placement {s}\n", .{@tagName(snapshot.tab_placement)});
-
-    // WINDOWS own tabs now, so a `window` line OPENS each run and every `tab`
-    // line after it belongs to that window until the next `window` line. The
-    // tab count is therefore implied by the file's own structure rather than
-    // written down — a count and a run are two encodings of one fact, and a
-    // reader that trusted the count could disagree with the lines it read.
-    //
-    // `selection` moved inside the window for the same reason it is
-    // window-relative in the struct: which tab is current is a fact about one
-    // window, and a file-level one could only ever be about the first.
-    var written: usize = 0;
-    for (snapshot.windows[0..snapshot.window_count]) |window| {
+    snapshot.validate() catch return error.UnpersistableTerminal;
+    var emitter: Emitter = .{ .out = out[0..@min(out.len, max_state_bytes)] };
+    try emitter.print("{s} {d}\nplacement {s}\n", .{ magic, snapshot.version, @tagName(snapshot.tab_placement) });
+    for (snapshot.references.entries[0..snapshot.references.count], 0..) |entry, index| {
+        try emitReference(&emitter, @intCast(index), entry.?);
+    }
+    for (snapshot.windows[0..snapshot.window_count], 0..) |window, index| {
         switch (window.selection) {
             .web => try emitter.raw("window web\n"),
-            .tab => |index| try emitter.print("window tab {d}\n", .{index}),
+            .tab => |selected| try emitter.print("window tab {d}\n", .{selected}),
         }
-        for (snapshot.tabs[written..][0..window.tab_count]) |tab| {
-            try emitter.raw("tab ");
-            try emitNodeId(&emitter, tab.root);
-            try emitter.raw(" ");
-            try emitNodeId(&emitter, tab.focus);
-            try emitter.raw("\n");
-            for (tab.nodes, 0..) |node, index| {
-                switch (node.kind) {
-                    .free => continue,
-                    .leaf => {
-                        // A leaf that never got a terminal is not persistable
-                        // structure; `validate` refuses it on the way back in,
-                        // so refusing to write it keeps the file honest.
-                        const offset = topology.terminalOffset(node.terminal) orelse return error.UnpersistableTerminal;
-                        try emitter.print("node {d} leaf ", .{index});
-                        try emitNodeId(&emitter, node.parent);
-                        try emitter.print(" {d}\n", .{offset});
-                    },
-                    .branch => {
-                        try emitter.print("node {d} branch ", .{index});
-                        try emitNodeId(&emitter, node.parent);
-                        // `{d}` on a float is the shortest decimal that reads
-                        // back as the same f32, so a divider position survives
-                        // a save/load cycle bit for bit.
-                        try emitter.print(" {s} {d} ", .{ @tagName(node.orientation), node.fraction });
-                        try emitNodeId(&emitter, node.first);
-                        try emitter.raw(" ");
-                        try emitNodeId(&emitter, node.second);
-                        try emitter.raw("\n");
-                    },
-                }
-            }
-        }
-        written += window.tab_count;
+        for (snapshot.windowTabs(index)) |tab| try emitTab(&emitter, tab);
     }
-
     for (snapshot.cwds, 0..) |cwd, offset| {
-        const path = cwd.slice();
-        if (path.len == 0) continue;
-        try emitter.print("cwd {d} {s}\n", .{ offset, path });
+        if (cwd.len != 0) try emitter.print("cwd {d} {s}\n", .{ offset, cwd.slice() });
     }
-
     try emitter.print("{s}\n", .{terminator});
     return emitter.out[0..emitter.len];
 }
 
-/// Where a parsed file's tab structure lands. Two on-disk versions share one
-/// tree schema, so the parser writes THROUGH pointers into whichever union arm
-/// the version selected instead of parsing into a scratch snapshot and copying
-/// twenty kilobytes. `cwds` is null for a version that had no working
-/// directories, which makes a `cwd` line in a v2 file a parse failure rather
-/// than a silently ignored line.
+fn emitReference(emitter: *Emitter, index: u8, entry: attachments.Reference) !void {
+    const remote = entry.terminal_ref.terminal_id.phux;
+    try emitter.print("ref {d} {d} {d} {d} ", .{ index, @intFromEnum(entry.terminal_ref.provider_id), remote.kind, remote.id });
+    try emitter.hex(remote.host());
+    try emitter.raw(" ");
+    try emitter.hex(entry.context.endpoint.slice());
+    try emitter.raw(" ");
+    try emitter.hex(entry.context.server_id.slice());
+    try emitter.print(" {d}\n", .{entry.context.session_id});
+}
+
+fn emitTab(emitter: *Emitter, tab: SnapshotTab) SerializeError!void {
+    try emitter.raw("tab ");
+    try emitter.nodeId(tab.root);
+    try emitter.raw(" ");
+    try emitter.nodeId(tab.focus);
+    try emitter.raw("\n");
+    for (tab.nodes, 0..) |node, index| {
+        if (node.kind != .free) try emitNode(emitter, node, index);
+    }
+}
+
+fn emitNode(emitter: *Emitter, node: topology.SnapshotNode, index: usize) SerializeError!void {
+    const kind = if (node.remote_ref != null) "remote" else @tagName(node.kind);
+    try emitter.print("node {d} {s} ", .{ index, kind });
+    try emitter.nodeId(node.parent);
+    if (node.kind == .leaf) {
+        const offset = node.remote_ref orelse topology.terminalOffset(node.terminal) orelse return error.UnpersistableTerminal;
+        return emitter.print(" {d}\n", .{offset});
+    }
+    try emitter.print(" {s} {d} ", .{ @tagName(node.orientation), node.fraction });
+    try emitter.nodeId(node.first);
+    try emitter.raw(" ");
+    try emitter.nodeId(node.second);
+    try emitter.raw("\n");
+}
+
+const Fields = std.mem.TokenIterator(u8, .scalar);
+const ParseError = error{InvalidState};
+
+fn token(fields: *Fields) ParseError![]const u8 {
+    return fields.next() orelse error.InvalidState;
+}
+
+fn number(comptime T: type, fields: *Fields) ParseError!T {
+    return std.fmt.parseInt(T, try token(fields), 10) catch error.InvalidState;
+}
+
+fn finish(fields: *Fields) ParseError!void {
+    if (fields.next() != null) return error.InvalidState;
+}
+
+fn nodeId(fields: *Fields) ParseError!layout.NodeId {
+    const text = try token(fields);
+    if (std.mem.eql(u8, text, "-")) return layout.none;
+    const value = std.fmt.parseInt(layout.NodeId, text, 10) catch return error.InvalidState;
+    if (value >= layout.max_nodes) return error.InvalidState;
+    return value;
+}
+
+fn localOffset(fields: *Fields) ParseError!usize {
+    const value = try number(usize, fields);
+    if (value >= local.max_terminals) return error.InvalidState;
+    return value;
+}
+
+fn selection(fields: *Fields) ParseError!SnapshotSelection {
+    const kind = try token(fields);
+    const result: SnapshotSelection = if (std.mem.eql(u8, kind, "web")) .web else if (std.mem.eql(u8, kind, "tab"))
+        .{ .tab = try number(u8, fields) }
+    else
+        return error.InvalidState;
+    try finish(fields);
+    return result;
+}
+
+fn hex(fields: *Fields, out: []u8) ParseError![]const u8 {
+    const text = try token(fields);
+    if (std.mem.eql(u8, text, "-")) return out[0..0];
+    if (text.len / 2 > out.len or text.len % 2 != 0) return error.InvalidState;
+    return std.fmt.hexToBytes(out, text) catch error.InvalidState;
+}
+
 const Sink = struct {
     tabs: []SnapshotTab,
     tab_count: *u8,
-    /// Where a pre-v4 file's single `selection` line lands. Null for v4,
-    /// whose selection rides its `window` lines instead — which makes a
-    /// `selection` line in a v4 file a parse failure rather than a silently
-    /// ignored one.
-    selection: ?*SnapshotSelection,
-    /// The v4 window table. Null for the older versions, which describe
-    /// exactly one window and say so by having no `window` line at all.
+    selection: ?*SnapshotSelection = null,
     windows: ?*[topology.max_snapshot_windows]topology.SnapshotWindow = null,
     window_count: ?*u8 = null,
     tab_placement: *TabPlacement,
-    cwds: ?*[max_terminals]SnapshotCwd,
+    cwds: ?*[local.max_terminals]SnapshotCwd = null,
+    references: ?*attachments.Table = null,
 };
 
-/// Read a state file. `true` means `out` holds a payload worth migrating;
-/// `false` means "there was no usable state here", which is the normal case
-/// for a first launch and the ONLY outcome for anything corrupt, truncated,
-/// empty, or from a future version.
-///
-/// Strict on purpose: an unknown keyword, a malformed number, a missing
-/// terminator, or a second `selection` line rejects the WHOLE file. A layout
-/// half-read from a damaged file is worse than a fresh window, because the
-/// user cannot tell which of their tabs the parser decided to keep.
-pub fn parse(bytes: []const u8, out: *PersistedTopologySnapshot) bool {
-    var lines = std.mem.splitScalar(u8, bytes, '\n');
-    const header = std.mem.trimEnd(u8, lines.next() orelse return false, "\r");
-    var header_fields = std.mem.tokenizeScalar(u8, header, ' ');
-    if (!std.mem.eql(u8, header_fields.next() orelse return false, magic)) return false;
-    const version = std.fmt.parseInt(u16, header_fields.next() orelse return false, 10) catch return false;
-    if (header_fields.next() != null) return false;
-    if (version < min_readable_version or version > topology.topology_snapshot_version) return false;
-
-    const sink: Sink = switch (version) {
-        2 => blk: {
+fn sinkFor(version: u16, out: *PersistedTopologySnapshot) Sink {
+    switch (version) {
+        2 => {
             out.* = .{ .v2 = .{} };
-            break :blk .{
-                .tabs = &out.v2.tabs,
-                .tab_count = &out.v2.tab_count,
-                .selection = &out.v2.selection,
-                .tab_placement = &out.v2.tab_placement,
-                .cwds = null,
-            };
+            return .{ .tabs = &out.v2.tabs, .tab_count = &out.v2.tab_count, .selection = &out.v2.selection, .tab_placement = &out.v2.tab_placement };
         },
-        3 => blk: {
+        3 => {
             out.* = .{ .v3 = .{} };
-            break :blk .{
-                .tabs = &out.v3.tabs,
-                .tab_count = &out.v3.tab_count,
-                .selection = &out.v3.selection,
-                .tab_placement = &out.v3.tab_placement,
-                .cwds = &out.v3.cwds,
-            };
+            return .{ .tabs = &out.v3.tabs, .tab_count = &out.v3.tab_count, .selection = &out.v3.selection, .tab_placement = &out.v3.tab_placement, .cwds = &out.v3.cwds };
         },
-        else => blk: {
-            out.* = .{ .v4 = .{} };
-            break :blk .{
-                .tabs = &out.v4.tabs,
-                .tab_count = &out.v4.tab_count,
-                .selection = null,
-                .windows = &out.v4.windows,
-                .window_count = &out.v4.window_count,
-                .tab_placement = &out.v4.tab_placement,
-                .cwds = &out.v4.cwds,
+        else => {
+            const snapshot = if (version == 4) legacy: {
+                out.* = .{ .v4 = .{ .version = 4 } };
+                break :legacy &out.v4;
+            } else current: {
+                out.* = .{ .v5 = .{} };
+                break :current &out.v5;
             };
+            return .{ .tabs = &snapshot.tabs, .tab_count = &snapshot.tab_count, .tab_placement = &snapshot.tab_placement, .windows = &snapshot.windows, .window_count = &snapshot.window_count, .cwds = &snapshot.cwds, .references = if (version == 5) &snapshot.references else null };
         },
-    };
+    }
+}
 
-    var placement_seen = false;
-    var selection_seen = false;
-    var terminated = false;
-    var tabs: usize = 0;
-    var windows: usize = 0;
+const Parser = struct {
+    sink: Sink,
+    placement_seen: bool = false,
+    selection_seen: bool = false,
+    terminated: bool = false,
+    tabs: usize = 0,
+    windows: usize = 0,
 
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trimEnd(u8, raw_line, "\r");
-        if (line.len == 0) continue;
-        // Nothing may follow the terminator: trailing structure means the
-        // file was concatenated or rewritten over a longer one.
-        if (terminated) return false;
-
-        var fields = std.mem.tokenizeScalar(u8, line, ' ');
-        const keyword = fields.next() orelse continue;
-
-        if (std.mem.eql(u8, keyword, terminator)) {
-            if (fields.next() != null) return false;
-            terminated = true;
-            continue;
-        }
-
-        if (std.mem.eql(u8, keyword, "placement")) {
-            if (placement_seen) return false;
-            placement_seen = true;
-            const value = fields.next() orelse return false;
-            if (fields.next() != null) return false;
-            if (std.mem.eql(u8, value, "top")) {
-                sink.tab_placement.* = .top;
-            } else if (std.mem.eql(u8, value, "side")) {
-                sink.tab_placement.* = .side;
-            } else return false;
-            continue;
-        }
-
-        if (std.mem.eql(u8, keyword, "selection")) {
-            // A v4 file has no file-level selection: its windows carry their
-            // own. Reading one here would be reading a claim the schema
-            // stopped making.
-            const target = sink.selection orelse return false;
-            if (selection_seen) return false;
-            selection_seen = true;
-            const value = fields.next() orelse return false;
-            if (std.mem.eql(u8, value, "web")) {
-                if (fields.next() != null) return false;
-                target.* = .web;
-            } else if (std.mem.eql(u8, value, "tab")) {
-                const index = std.fmt.parseInt(u8, fields.next() orelse return false, 10) catch return false;
-                if (fields.next() != null) return false;
-                target.* = .{ .tab = index };
-            } else return false;
-            continue;
-        }
-
-        if (std.mem.eql(u8, keyword, "window")) {
-            const table = sink.windows orelse return false;
-            if (windows >= topology.max_snapshot_windows) return false;
-            const value = fields.next() orelse return false;
-            var selection: SnapshotSelection = .web;
-            if (std.mem.eql(u8, value, "web")) {
-                if (fields.next() != null) return false;
-            } else if (std.mem.eql(u8, value, "tab")) {
-                const index = std.fmt.parseInt(u8, fields.next() orelse return false, 10) catch return false;
-                if (fields.next() != null) return false;
-                selection = .{ .tab = index };
-            } else return false;
-            table[windows] = .{ .tab_count = 0, .selection = selection };
-            windows += 1;
-            continue;
-        }
-
-        if (std.mem.eql(u8, keyword, "tab")) {
-            if (tabs >= sink.tabs.len) return false;
-            // In v4 a tab has to belong to a window, and the window line that
-            // opens the run is what says which. A tab before any window line
-            // is a tab with no owner.
-            if (sink.windows != null and windows == 0) return false;
-            const root = parseNodeId(fields.next() orelse return false) orelse return false;
-            const focus = parseNodeId(fields.next() orelse return false) orelse return false;
-            if (fields.next() != null) return false;
-            sink.tabs[tabs] = .{ .root = root, .focus = focus };
-            tabs += 1;
-            if (sink.windows) |table| {
-                if (table[windows - 1].tab_count == max_tabs) return false;
-                table[windows - 1].tab_count += 1;
-            }
-            continue;
-        }
-
-        if (std.mem.eql(u8, keyword, "node")) {
-            // A node line before any `tab` line has no tree to belong to.
-            if (tabs == 0) return false;
-            const tab = &sink.tabs[tabs - 1];
-            const index = std.fmt.parseInt(usize, fields.next() orelse return false, 10) catch return false;
-            if (index >= layout.max_nodes) return false;
-            // Two lines writing one slot is a corrupt file, not a last-writer
-            // -wins update: `validate` would accept the survivor and the user
-            // would silently lose a pane.
-            if (tab.nodes[index].kind != .free) return false;
-            const kind = fields.next() orelse return false;
-            const parent = parseNodeId(fields.next() orelse return false) orelse return false;
-
-            if (std.mem.eql(u8, kind, "leaf")) {
-                const offset = parseTerminalOffset(fields.next() orelse return false) orelse return false;
-                if (fields.next() != null) return false;
-                tab.nodes[index] = .{
-                    .kind = .leaf,
-                    .parent = parent,
-                    .terminal = terminalForOffset(offset),
-                    .has_terminal = true,
-                };
-                continue;
-            }
-            if (std.mem.eql(u8, kind, "branch")) {
-                const orientation_text = fields.next() orelse return false;
-                const orientation: layout.Orientation = if (std.mem.eql(u8, orientation_text, "horizontal"))
-                    .horizontal
-                else if (std.mem.eql(u8, orientation_text, "vertical"))
-                    .vertical
-                else
-                    return false;
-                const fraction = std.fmt.parseFloat(f32, fields.next() orelse return false) catch return false;
-                // A non-finite fraction would survive into `splitRect`; the
-                // structural validator refuses it too, but refusing here keeps
-                // NaN out of the snapshot entirely.
-                if (!std.math.isFinite(fraction)) return false;
-                const first = parseNodeId(fields.next() orelse return false) orelse return false;
-                const second = parseNodeId(fields.next() orelse return false) orelse return false;
-                if (fields.next() != null) return false;
-                tab.nodes[index] = .{
-                    .kind = .branch,
-                    .parent = parent,
-                    .orientation = orientation,
-                    .fraction = fraction,
-                    .first = first,
-                    .second = second,
-                };
-                continue;
-            }
-            return false;
-        }
-
-        if (std.mem.eql(u8, keyword, "cwd")) {
-            const cwds = sink.cwds orelse return false;
-            const offset_text = fields.next() orelse return false;
-            const offset = parseTerminalOffset(offset_text) orelse return false;
-            // The path is the REST of the line, verbatim: directory names
-            // contain spaces, and splitting on them would corrupt one. The
-            // rest starts one byte past the offset token inside `line`.
-            const consumed = (@intFromPtr(offset_text.ptr) - @intFromPtr(line.ptr)) + offset_text.len;
-            if (consumed + 1 >= line.len) return false;
-            cwds[offset].set(line[consumed + 1 ..]);
-            continue;
-        }
-
-        return false;
+    fn line(self: *Parser, text: []const u8) ParseError!void {
+        if (text.len == 0) return;
+        if (self.terminated) return error.InvalidState;
+        var fields = std.mem.tokenizeScalar(u8, text, ' ');
+        const Keyword = enum { end, placement, selection, window, tab, node, cwd, ref };
+        const keyword = std.meta.stringToEnum(Keyword, fields.next() orelse return) orelse return error.InvalidState;
+        try self.dispatch(keyword, text, &fields);
     }
 
-    if (!terminated) return false;
-    sink.tab_count.* = @intCast(tabs);
-    if (sink.window_count) |count| count.* = @intCast(windows);
+    fn dispatch(self: *Parser, keyword: anytype, text: []const u8, fields: *Fields) ParseError!void {
+        switch (keyword) {
+            .end => {
+                try finish(fields);
+                self.terminated = true;
+            },
+            .placement => try self.placement(fields),
+            .selection => try self.selected(fields),
+            .window => try self.window(fields),
+            .tab => try self.tab(fields),
+            .node => try self.node(fields),
+            .cwd => try self.cwd(text, fields),
+            .ref => try self.reference(fields),
+        }
+    }
+
+    fn placement(self: *Parser, fields: *Fields) ParseError!void {
+        if (self.placement_seen) return error.InvalidState;
+        self.placement_seen = true;
+        self.sink.tab_placement.* = std.meta.stringToEnum(TabPlacement, try token(fields)) orelse return error.InvalidState;
+        try finish(fields);
+    }
+
+    fn selected(self: *Parser, fields: *Fields) ParseError!void {
+        const target = self.sink.selection orelse return error.InvalidState;
+        if (self.selection_seen) return error.InvalidState;
+        self.selection_seen = true;
+        target.* = try selection(fields);
+    }
+
+    fn window(self: *Parser, fields: *Fields) ParseError!void {
+        const table = self.sink.windows orelse return error.InvalidState;
+        if (self.windows >= topology.max_snapshot_windows) return error.InvalidState;
+        table[self.windows] = .{ .selection = try selection(fields) };
+        self.windows += 1;
+    }
+
+    fn tab(self: *Parser, fields: *Fields) ParseError!void {
+        if (self.tabs >= self.sink.tabs.len) return error.InvalidState;
+        if (self.sink.windows != null and self.windows == 0) return error.InvalidState;
+        self.sink.tabs[self.tabs] = .{ .root = try nodeId(fields), .focus = try nodeId(fields) };
+        try finish(fields);
+        self.tabs += 1;
+        if (self.sink.windows) |table| {
+            if (table[self.windows - 1].tab_count == topology.max_tabs) return error.InvalidState;
+            table[self.windows - 1].tab_count += 1;
+        }
+    }
+
+    fn node(self: *Parser, fields: *Fields) ParseError!void {
+        if (self.tabs == 0) return error.InvalidState;
+        const index = try number(usize, fields);
+        if (index >= layout.max_nodes) return error.InvalidState;
+        const target = &self.sink.tabs[self.tabs - 1].nodes[index];
+        if (target.kind != .free) return error.InvalidState;
+        const kind = try token(fields);
+        const parent = try nodeId(fields);
+        target.* = try self.nodeBody(kind, fields);
+        target.parent = parent;
+        try finish(fields);
+    }
+
+    fn nodeBody(self: *Parser, kind: []const u8, fields: *Fields) ParseError!topology.SnapshotNode {
+        if (std.mem.eql(u8, kind, "leaf")) {
+            return .{ .kind = .leaf, .terminal = @enumFromInt(local.first_terminal_raw + try localOffset(fields)), .has_terminal = true };
+        }
+        if (std.mem.eql(u8, kind, "remote")) {
+            if (self.sink.references == null) return error.InvalidState;
+            const index = try number(u8, fields);
+            if (index >= attachments.max_references) return error.InvalidState;
+            return .{ .kind = .leaf, .remote_ref = index, .has_terminal = true };
+        }
+        if (!std.mem.eql(u8, kind, "branch")) return error.InvalidState;
+        return parseBranch(fields);
+    }
+
+    fn cwd(self: *Parser, text: []const u8, fields: *Fields) ParseError!void {
+        const cwds = self.sink.cwds orelse return error.InvalidState;
+        const offset_text = try token(fields);
+        var offset_fields = std.mem.tokenizeScalar(u8, offset_text, ' ');
+        const offset = try localOffset(&offset_fields);
+        const consumed = @intFromPtr(offset_text.ptr) - @intFromPtr(text.ptr) + offset_text.len;
+        if (consumed + 1 >= text.len) return error.InvalidState;
+        cwds[offset].set(text[consumed + 1 ..]);
+    }
+
+    fn reference(self: *Parser, fields: *Fields) ParseError!void {
+        const table = self.sink.references orelse return error.InvalidState;
+        const index = try number(u8, fields);
+        if (index != table.count) return error.InvalidState;
+        const provider_id = try number(u64, fields);
+        const kind = try number(u32, fields);
+        const id = try number(u32, fields);
+        var host: [255]u8 = undefined;
+        const remote = contract.RemoteTerminalId.fromPhux(kind, id, try hex(fields, &host)) catch return error.InvalidState;
+        const context = try parseContext(fields);
+        _ = table.append(.{ .terminal_ref = .{ .provider_id = @enumFromInt(provider_id), .terminal_id = .{ .phux = remote } }, .context = context }) catch return error.InvalidState;
+        try finish(fields);
+    }
+};
+
+fn parseBranch(fields: *Fields) ParseError!topology.SnapshotNode {
+    const orientation = std.meta.stringToEnum(layout.Orientation, try token(fields)) orelse return error.InvalidState;
+    const fraction = std.fmt.parseFloat(f32, try token(fields)) catch return error.InvalidState;
+    if (!std.math.isFinite(fraction)) return error.InvalidState;
+    return .{ .kind = .branch, .orientation = orientation, .fraction = fraction, .first = try nodeId(fields), .second = try nodeId(fields) };
+}
+
+fn parseContext(fields: *Fields) ParseError!attachments.Context {
+    var endpoint: [attachments.max_endpoint_bytes]u8 = undefined;
+    var server_id: [attachments.max_server_id_bytes]u8 = undefined;
+    return attachments.Context.init(try hex(fields, &endpoint), try hex(fields, &server_id), try number(u32, fields)) catch error.InvalidState;
+}
+
+fn headerVersion(header: []const u8) ParseError!u16 {
+    var fields = std.mem.tokenizeScalar(u8, header, ' ');
+    if (!std.mem.eql(u8, try token(&fields), magic)) return error.InvalidState;
+    const version = try number(u16, &fields);
+    try finish(&fields);
+    if (version < min_readable_version or version > topology.topology_snapshot_version) return error.InvalidState;
+    return version;
+}
+
+pub fn parse(bytes: []const u8, out: *PersistedTopologySnapshot) bool {
+    if (bytes.len > max_state_bytes) return false;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    const header = std.mem.trimEnd(u8, lines.next() orelse return false, "\r");
+    const version = headerVersion(header) catch return false;
+    var parser: Parser = .{ .sink = sinkFor(version, out) };
+    while (lines.next()) |line| parser.line(std.mem.trimEnd(u8, line, "\r")) catch return false;
+    if (!parser.terminated) return false;
+    parser.sink.tab_count.* = @intCast(parser.tabs);
+    if (parser.sink.window_count) |count| count.* = @intCast(parser.windows);
     return true;
 }

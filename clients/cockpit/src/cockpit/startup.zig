@@ -367,7 +367,7 @@ pub fn restoreWorkspace(
     const model = try model_module.restoreModelWithScrollback(
         gpa,
         io,
-        .{ .v4 = snapshot },
+        .{ .v5 = snapshot },
         max_scrollback_bytes,
     );
     return .{ .restored = model };

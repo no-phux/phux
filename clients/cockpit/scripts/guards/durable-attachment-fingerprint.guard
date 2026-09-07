@@ -1,0 +1,23 @@
+# GUARD durable-attachment-fingerprint
+#
+# v4 hashed every remote terminal as zero, so a changed remote placement
+# could fail to trigger persistence. This restores that exact local-ID-or-zero
+# hash input. The named test changes the remote numeric ID without changing
+# tree geometry or context, and must observe a different fingerprint.
+test: attachment fingerprint includes full provider host ID and context
+red: 2026-09-07 at 70dfeff
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/model.zig b/src/cockpit/model.zig
+index abc9558c..3c52fb0b 100644
+--- a/src/cockpit/model.zig
++++ b/src/cockpit/model.zig
+@@ -1450,7 +1450,8 @@ pub const Model = struct {
+                     // are the identity that matters for "did the divider move".
+                     std.hash.autoHash(&hasher, @as(u32, @bitCast(node.fraction)));
+                     if (node.terminal) |id| {
+-                        std.hash.autoHash(&hasher, id.hash());
++                        const raw: u64 = if (provider_contract.localId(id)) |local_id| @intFromEnum(local_id) else 0;
++                        std.hash.autoHash(&hasher, raw);
+                         if (id.terminal_id == .phux) model.attachmentReference(id).context.hash(&hasher);
+                     }
+                 }
