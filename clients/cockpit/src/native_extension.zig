@@ -1112,6 +1112,7 @@ test "TypeScript topology changes use the shipping debounce and file effect" {
     try std.testing.expect(!engine.model.state.pending);
 }
 
+// GUARD: ts-remote-close
 test "shipping close detaches a Phux pane without destroying a local terminal" {
     var rig = try Rig.start();
     defer rig.stop();
