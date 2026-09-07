@@ -1,0 +1,11 @@
+# GUARD ts-remote-keyboard-anchors
+# Entering keyboard selection overwrote retained pointer anchors. Remove the
+# cleanup at that exact transition; the old handles must still resolve red.
+test: shipping keyboard selection releases retained pointer anchors
+red: 2026-09-07 at 16701fc
+diff --git a/src/cockpit/update.zig b/src/cockpit/update.zig
+--- a/src/cockpit/update.zig
++++ b/src/cockpit/update.zig
+@@ -2394,2 +2394,1 @@
+ fn beginRemoteSelection(model: *Model, terminal_ref: TerminalRef, state: *RemoteUiState) void {
+-    clearRemoteSelection(model, state);

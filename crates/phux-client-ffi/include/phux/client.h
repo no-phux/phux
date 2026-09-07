@@ -771,9 +771,10 @@ PhuxClientResult phux_client_terminal_grid(PhuxClient *client, const PhuxTermina
  * reverse_colors); missing cursor color uses its configured cursor fallback. */
 PhuxClientResult phux_client_terminal_grid_metadata(const PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxTerminalGridMetadata *out_metadata);
 /**
- * Reports whether the published Ghostty terminal has DEC mouse tracking mode
- * 9, 1000, 1002, or 1003 enabled. Returns PHUX_CLIENT_INVALID_STATE before
- * publication or after detach, and PHUX_CLIENT_INVALID_ARGUMENT for null or
+ * Reports whether the published Ghostty terminal's effective mouse-tracking
+ * state is active (X10, normal, button, or any-event). Returns
+ * PHUX_CLIENT_INVALID_STATE before publication or after detach, and
+ * PHUX_CLIENT_INVALID_ARGUMENT for null or
  * malformed arguments. This read-only query preserves borrowed bridge views.
  */
 PhuxClientResult phux_client_terminal_mouse_tracking(const PhuxClient *client, const PhuxTerminalId *terminal_id, bool *out_enabled);
@@ -789,6 +790,31 @@ PhuxClientResult phux_client_anchor_release(PhuxClient *client, const PhuxTermin
 PhuxClientResult phux_client_history_viewport_pin(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor anchor);
 PhuxClientResult phux_client_history_follow_live(PhuxClient *client, const PhuxTerminalId *terminal_id);
 PhuxClientResult phux_client_selection_set(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxDocumentAnchor start, PhuxDocumentAnchor end, bool rectangle);
+
+/* Native Ghostty gestures, version 1. phase: press=0, drag=1, release=2.
+ * Positions and geometry share surface units; press clicks=1..3. A release
+ * ignores the cell. A stale handle is rejected. selection_clear invalidates
+ * gestures. Nonzero result anchors belong to the caller (anchor_release). */
+typedef struct PhuxSelectionGestureEvent {
+    size_t size;
+    uint32_t version, phase, clicks;
+    uint64_t handle;
+    uint16_t column;
+    bool rectangle;
+    uint8_t reserved;
+    uint32_t row;
+    double x, y;
+    uint32_t columns, cell_width, screen_height, padding_left;
+} PhuxSelectionGestureEvent;
+typedef struct PhuxSelectionGestureResult {
+    uint64_t handle;
+    PhuxDocumentAnchor start, end;
+} PhuxSelectionGestureResult;
+PhuxClientResult phux_client_selection_gesture(PhuxClient *client, const PhuxTerminalId *terminal_id, const PhuxSelectionGestureEvent *event, PhuxSelectionGestureResult *out_result);
+
+/* Read-only effective Ghostty mode: off=0, X10=1, normal=2, button=3, any=4.
+ * Uses the resolved encoder state, including DECSET/DECRST ordering. */
+PhuxClientResult phux_client_terminal_mouse_mode(const PhuxClient *client, const PhuxTerminalId *terminal_id, uint32_t *out_mode);
 PhuxClientResult phux_client_selection_clear(PhuxClient *client, const PhuxTerminalId *terminal_id);
 PhuxClientResult phux_client_selection_text(PhuxClient *client, const PhuxTerminalId *terminal_id, PhuxBytes *out_text);
 /**

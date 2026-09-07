@@ -7,7 +7,7 @@ use libghostty_vt::render::{
 use libghostty_vt::screen::{Cell, CellContentTag};
 use libghostty_vt::selection::Selection;
 use libghostty_vt::style::{RgbColor, Style, StyleColor};
-use libghostty_vt::terminal::{Mode, Point, PointCoordinate, ScrollViewport};
+use libghostty_vt::terminal::{Point, PointCoordinate, ScrollViewport};
 use phux_client_core::engine::ghostty::{GhosttyAdapter, GhosttyReplica};
 use phux_client_core::engine::{DocumentPoint, DocumentSpace, EngineDocumentSelection};
 use phux_client_core::history::{
@@ -187,6 +187,8 @@ pub(crate) struct Client {
     pub anchors: HashMap<u64, (TerminalId, DocumentAnchorId)>,
     pub next_anchor_handle: u64,
     pub selections: HashMap<TerminalId, EngineDocumentSelection>,
+    pub gestures: HashMap<TerminalId, crate::pointer::PointerGesture>,
+    pub next_gesture: u64,
     pub viewport_anchors: HashMap<TerminalId, DocumentAnchorId>,
     pub last_error: Vec<u8>,
     pub limits: Limits,
@@ -237,6 +239,8 @@ impl Client {
             anchors: HashMap::new(),
             next_anchor_handle: 1,
             selections: HashMap::new(),
+            gestures: HashMap::new(),
+            next_gesture: 1,
             viewport_anchors: HashMap::new(),
             protocol_ready: false,
             hello_queued: false,
@@ -356,6 +360,7 @@ impl Client {
     }
 
     pub(crate) fn detach(&mut self) {
+        self.reset_gestures();
         self.operations.disconnect();
         self.outgoing.clear();
         self.session.release_active_attach();
@@ -494,6 +499,7 @@ impl Client {
     }
 
     pub(crate) fn invalidate_terminal_handles(&mut self, terminal_id: &TerminalId) {
+        self.reset_gesture(terminal_id);
         self.anchors.retain(|_, (owner, _)| owner != terminal_id);
         self.selections.remove(terminal_id);
         self.viewport_anchors.remove(terminal_id);
@@ -926,22 +932,22 @@ impl Client {
         };
         let start_point = self
             .session
-            .document_anchor_point(terminal_id, start, DocumentSpace::Viewport)
+            .document_anchor_point(terminal_id, start, DocumentSpace::History)
             .map_err(|error| BridgeError::engine(error.to_string()))?;
         let end_point = self
             .session
-            .document_anchor_point(terminal_id, end, DocumentSpace::Viewport)
+            .document_anchor_point(terminal_id, end, DocumentSpace::History)
             .map_err(|error| BridgeError::engine(error.to_string()))?;
         let terminal = self.terminal(terminal_id)?;
         if let (Some(start_point), Some(end_point)) = (start_point, end_point) {
             let start = terminal
-                .grid_ref(Point::Viewport(PointCoordinate {
+                .grid_ref(Point::History(PointCoordinate {
                     x: start_point.x,
                     y: start_point.y,
                 }))
                 .map_err(BridgeError::ghostty)?;
             let end = terminal
-                .grid_ref(Point::Viewport(PointCoordinate {
+                .grid_ref(Point::History(PointCoordinate {
                     x: end_point.x,
                     y: end_point.y,
                 }))
@@ -957,6 +963,7 @@ impl Client {
     }
 
     pub(crate) fn clear_selection(&mut self, terminal_id: &TerminalId) -> Result<(), BridgeError> {
+        self.reset_gesture(terminal_id);
         self.terminal(terminal_id)?
             .set_selection(None)
             .map_err(BridgeError::ghostty)?;
@@ -1036,14 +1043,8 @@ fn resolve_color(color: StyleColor, fallback: RgbColor, palette: &[RgbColor; 256
 }
 
 fn terminal_wants_mouse_tracking(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
-    [
-        Mode::X10_MOUSE,
-        Mode::NORMAL_MOUSE,
-        Mode::BUTTON_MOUSE,
-        Mode::ANY_MOUSE,
-    ]
-    .into_iter()
-    .any(|mode| terminal.mode(mode).unwrap_or(false))
+    libghostty_vt::mouse::EncoderOptions::from_terminal(terminal)
+        .is_ok_and(|options| options.tracking_mode != libghostty_vt::mouse::TrackingMode::None)
 }
 
 const fn cursor_style(style: CursorVisualStyle) -> u32 {

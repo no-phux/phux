@@ -736,8 +736,13 @@ impl EngineDocumentAdapter for GhosttyAdapter {
             return Ok(None);
         };
         let selection = Selection::new(start, end, selection.rectangle);
-        let formatted = terminal
-            .format_selection_alloc(None, FormatOptions::new().with_selection(&selection))?;
+        let formatted = terminal.format_selection_alloc(
+            None,
+            FormatOptions::new()
+                .with_selection(&selection)
+                .with_unwrap(true)
+                .with_trim(true),
+        )?;
         Ok(formatted.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
     }
 }

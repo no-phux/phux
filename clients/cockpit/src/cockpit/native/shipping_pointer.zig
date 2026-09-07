@@ -22,7 +22,7 @@ const Capture = struct {
     reporting: bool,
     point: Point,
     cell: contract.DocumentPoint,
-    origin: contract.DocumentPoint,
+    gesture_handle: u64,
     modifiers: contract.ModifierMask,
 };
 
@@ -37,7 +37,7 @@ pub const State = struct {
     captures: [model_module.max_pointer_captures]?Capture = @splat(null),
     last_click: ?ClickTarget = null,
     wheel_owner: ?Owner = null,
-    wheel_reporting: bool = false,
+    wheel_mode: contract.MouseMode = .off,
 
     pub fn continuesClick(self: *State, model: *const Model, raw: Raw) bool {
         const ref = pointer.terminalRefAtPoint(model, raw.x, raw.y) orelse return false;
@@ -77,13 +77,17 @@ pub const State = struct {
     }
 
     fn wheelTarget(self: *State, model: *Model, raw: Raw, owner: Owner, frame: Rect) bool {
-        const reporting = tracksMouse(model, owner) and !raw.modifiers.shift;
+        const remote = model.phux() orelse return false;
+        const mode = if (raw.modifiers.shift) .off else remote.mouseMode(owner) catch return false;
         const state = model.remoteUi(owner.terminal_ref) orelse return false;
         const same_owner = if (self.wheel_owner) |previous| previous.eql(owner) else false;
-        if (!same_owner or reporting != self.wheel_reporting) state.wheel_accum = 0;
+        if (!same_owner or mode != self.wheel_mode) {
+            state.wheel_accum = 0;
+            state.wheel_accum_x = 0;
+        }
         self.wheel_owner = owner;
-        self.wheel_reporting = reporting;
-        return wheel(model, raw, owner, frame, reporting);
+        self.wheel_mode = mode;
+        return wheel(model, raw, owner, frame, mode != .off);
     }
 
     fn captureIndex(self: *const State, raw: Raw) ?usize {
@@ -107,10 +111,10 @@ pub const State = struct {
 
     fn press(self: *State, model: *Model, raw: Raw, owner: Owner, frame: Rect, clicks: u8) bool {
         const point: Point = .{ .x = raw.x, .y = raw.y };
-        const cell = coordinate(model, owner, point, frame) orelse return false;
         if (raw.button <= 1) {
             if (model.selectedTree()) |tree| _ = tree.focusTerminal(owner.terminal_ref);
         }
+        const cell = coordinate(model, owner, point, frame) orelse return true;
         const index = self.freeIndex() orelse return false;
         const tracking = tracksMouse(model, owner) and !raw.modifiers.shift;
         if (!startGesture(model, raw, owner, frame, cell, tracking, clicks)) return true;
@@ -123,7 +127,7 @@ pub const State = struct {
             .reporting = tracking,
             .point = point,
             .cell = cell,
-            .origin = cell,
+            .gesture_handle = if (model.remoteUi(owner.terminal_ref)) |state| state.gesture_handle else 0,
             .modifiers = modifiers(raw),
         };
         return true;
@@ -144,17 +148,20 @@ pub const State = struct {
         self.captures[index].?.modifiers = modifiers(raw);
         if (captured.reporting) {
             if (raw.kind != .pointer_up) _ = report(model, captured.owner, .move, buttonFor(captured.button), modifiers(raw), point, frame);
-        } else dragSelection(model, captured, cell);
+        } else dragSelection(model, captured, cell, point, frame);
         return true;
     }
 
     fn finish(self: *State, model: *Model, index: usize) void {
         const capture = self.captures[index] orelse return;
         self.captures[index] = null;
-        if (!ready(model, capture.owner)) return;
+        if (!ready(model, capture.owner)) {
+            retireSelection(model, capture.owner);
+            return;
+        }
         if (capture.reporting) {
             _ = sendCell(model, capture.owner, .release, buttonFor(capture.button), capture.modifiers, capture.cell);
-        } else finishSelection(model, capture.owner);
+        } else finishSelection(model, capture);
     }
 
     pub fn cancelAll(self: *State, model: *Model) void {
@@ -193,7 +200,16 @@ fn captureCurrent(model: *const Model, capture: Capture) bool {
     if (!model.focused or !ready(model, capture.owner)) return false;
     if (model.active_window != capture.window_index) return false;
     const tree = model.selectedTreeConst() orelse return false;
-    return tree.find(capture.owner.terminal_ref) != null;
+    if (tree.find(capture.owner.terminal_ref) == null) return false;
+    if (capture.reporting) return true;
+    const state = model.remoteUiConst(capture.owner.terminal_ref) orelse return false;
+    return state.gesture_handle != 0 and state.gesture_handle == capture.gesture_handle;
+}
+
+fn retireSelection(model: *Model, owner: Owner) void {
+    for (&model.remote_ui) |*state| {
+        if (state.owner.eql(owner)) selection.clear(model, state);
+    }
 }
 
 fn autoscrollDirection(model: *const Model, capture: Capture) i64 {
@@ -211,7 +227,7 @@ fn scrollSelection(model: *Model, capture: Capture) void {
     remote.scrollViewport(capture.owner, .{ .kind = .delta, .value = direction }) catch return;
     const frame = pointer.paneFrameForTerminal(model, capture.owner.terminal_ref) orelse return;
     const cell = coordinate(model, capture.owner, capture.point, frame) orelse return;
-    extendSelection(model, capture.owner, cell);
+    dragSelection(model, capture, cell, capture.point, frame);
 }
 
 fn modifiers(raw: Raw) contract.ModifierMask {
@@ -227,11 +243,17 @@ fn coordinate(model: *const Model, owner: Owner, point: Point, frame: Rect) ?con
     if (!validGeometry(point, frame)) return null;
     const presentation = model.remotePresentation(owner.terminal_ref) orelse return null;
     if (presentation.cols == 0 or presentation.rows == 0) return null;
+    const measured = presentation.measured_cell orelse return null;
+    if (!validCellExtent(measured.width) or !validCellExtent(measured.height)) return null;
     return .{
         .space = .viewport,
-        .column = cellAt(point.x - frame.x, frame.width, presentation.cols),
-        .row = cellAt(point.y - frame.y, frame.height, presentation.rows),
+        .column = cellAt(point.x - frame.x, measured.width, presentation.cols),
+        .row = cellAt(point.y - frame.y, measured.height, presentation.rows),
     };
+}
+
+fn validCellExtent(value: f32) bool {
+    return std.math.isFinite(value) and value > 0;
 }
 
 fn validGeometry(point: Point, frame: Rect) bool {
@@ -242,7 +264,7 @@ fn validGeometry(point: Point, frame: Rect) bool {
 }
 
 fn cellAt(value: f32, extent: f32, cells: u16) u16 {
-    return @intFromFloat(std.math.clamp(@floor(value / extent * @as(f32, @floatFromInt(cells))), 0, @as(f32, @floatFromInt(cells - 1))));
+    return @intFromFloat(std.math.clamp(@floor(value / extent), 0, @as(f32, @floatFromInt(cells - 1))));
 }
 
 fn tracksMouse(model: *Model, owner: Owner) bool {
@@ -256,16 +278,28 @@ fn report(model: *Model, owner: Owner, action: contract.MouseAction, button: con
 }
 
 fn sendCell(model: *Model, owner: Owner, action: contract.MouseAction, button: contract.MouseButton, mods: contract.ModifierMask, cell: contract.DocumentPoint) bool {
-    if (!ready(model, owner) or !tracksMouse(model, owner)) return false;
+    if (!ready(model, owner)) return false;
     const remote = model.phux() orelse return false;
+    const mode = remote.mouseMode(owner) catch return false;
+    if (!reportsAction(mode, action, button)) return false;
     remote.sendMouse(owner, &.{ .action = action, .button = button, .modifiers = mods, .x = @floatFromInt(cell.column), .y = @floatFromInt(cell.row) }) catch return false;
     return true;
+}
+
+fn reportsAction(mode: contract.MouseMode, action: contract.MouseAction, button: contract.MouseButton) bool {
+    return switch (mode) {
+        .off => false,
+        .x10 => action == .press,
+        .normal => action != .move,
+        .button => action != .move or button != .none,
+        .any_motion => true,
+    };
 }
 
 fn startGesture(model: *Model, raw: Raw, owner: Owner, frame: Rect, cell: contract.DocumentPoint, tracking: bool, clicks: u8) bool {
     if (tracking) return reportPress(model, raw, owner, frame);
     if (raw.button != 0) return false;
-    return beginSelection(model, owner, cell, clicks);
+    return beginSelection(model, owner, cell, clicks, .{ .x = raw.x, .y = raw.y }, frame);
 }
 
 fn reportPress(model: *Model, raw: Raw, owner: Owner, frame: Rect) bool {
@@ -281,55 +315,95 @@ fn clearSelection(model: *Model, owner: Owner) void {
     selection.clear(model, state);
 }
 
-fn beginSelection(model: *Model, owner: Owner, cell: contract.DocumentPoint, clicks: u8) bool {
+fn beginSelection(model: *Model, owner: Owner, cell: contract.DocumentPoint, clicks: u8, point: Point, frame: Rect) bool {
     const state = model.remoteUi(owner.terminal_ref) orelse return false;
     selection.clear(model, state);
+    return applyGesture(model, owner, .press, clicks, cell, point, frame);
+}
+
+fn dragSelection(model: *Model, capture: Capture, cell: contract.DocumentPoint, point: Point, frame: Rect) void {
+    const state = model.remoteUi(capture.owner.terminal_ref) orelse return;
+    if (state.gesture_handle != capture.gesture_handle or state.gesture_handle == 0) return;
+    _ = applyGesture(model, capture.owner, .drag, 1, cell, point, frame);
+}
+
+fn finishSelection(model: *Model, capture: Capture) void {
+    const state = model.remoteUi(capture.owner.terminal_ref) orelse return;
+    if (state.gesture_handle != capture.gesture_handle or state.gesture_handle == 0) return;
+    const remote = model.phux() orelse return;
+    _ = remote.selectionGesture(capture.owner, .{
+        .phase = .release,
+        .handle = capture.gesture_handle,
+        .cell = capture.cell,
+        .x = 0,
+        .y = 0,
+        .columns = 1,
+        .cell_width = 1,
+        .screen_height = 1,
+    }) catch {};
+    state.gesture_handle = 0;
+}
+
+fn applyGesture(model: *Model, owner: Owner, gesture_phase: @FieldType(contract.SelectionGesture, "phase"), clicks: u8, cell: contract.DocumentPoint, point: Point, frame: Rect) bool {
+    const state = model.remoteUi(owner.terminal_ref) orelse return false;
     const remote = model.phux() orelse return false;
-    const anchor = remote.createAnchor(owner, cell) catch return false;
-    state.start_anchor = anchor.opaque_id;
+    const presentation = model.remotePresentation(owner.terminal_ref) orelse return false;
+    const measured = presentation.measured_cell orelse return false;
+    const result = remote.selectionGesture(owner, .{
+        .phase = gesture_phase,
+        .handle = state.gesture_handle,
+        .clicks = clicks,
+        .cell = cell,
+        .x = point.x - frame.x,
+        .y = point.y - frame.y,
+        .columns = presentation.cols,
+        .cell_width = measured.width,
+        .screen_height = frame.height,
+        .rectangle = state.rectangle,
+    }) catch {
+        selection.clear(model, state);
+        return false;
+    };
+    state.gesture_handle = result.handle;
+    if (state.start_anchor != 0) remote.releaseAnchor(owner, .{ .opaque_id = state.start_anchor });
+    if (state.end_anchor != 0 and state.end_anchor != state.start_anchor) remote.releaseAnchor(owner, .{ .opaque_id = state.end_anchor });
+    state.start_anchor = result.start;
+    state.end_anchor = result.end;
     state.head_x = cell.column;
     state.head_y = cell.row;
-    // A single press only anchors a possible drag. Ghostty does not select a
-    // cell until the pointer moves. Word/line gestures need a provider seam.
-    _ = clicks;
     return true;
 }
 
-fn dragSelection(model: *Model, capture: Capture, cell: contract.DocumentPoint) void {
-    const state = model.remoteUi(capture.owner.terminal_ref) orelse return;
-    if (state.end_anchor == 0 and cell.column == capture.origin.column and cell.row == capture.origin.row) return;
-    extendSelection(model, capture.owner, cell);
-}
-
-fn finishSelection(model: *Model, owner: Owner) void {
-    const state = model.remoteUi(owner.terminal_ref) orelse return;
-    if (state.end_anchor == 0) selection.clear(model, state);
-}
-
-fn extendSelection(model: *Model, owner: Owner, cell: contract.DocumentPoint) void {
-    const state = model.remoteUi(owner.terminal_ref) orelse return;
-    if (state.start_anchor == 0) return;
-    state.head_x = cell.column;
-    state.head_y = cell.row;
-    selection.apply(model, state);
-}
-
 fn wheel(model: *Model, raw: Raw, owner: Owner, frame: Rect, reporting: bool) bool {
-    if (!std.math.isFinite(raw.delta_y) or raw.delta_y == 0) return false;
+    if (!validWheelDelta(raw)) return false;
     const quantum = wheelQuantum(model, owner, frame) orelse return false;
     const state = model.remoteUi(owner.terminal_ref) orelse return false;
     const rows = wheelRows(&state.wheel_accum, raw.delta_y, quantum);
+    if (reporting) return horizontalWheel(model, raw, owner, frame, rows);
     if (rows == 0) return true;
-    if (reporting) return reportWheel(model, raw, owner, frame, rows);
     const remote = model.phux() orelse return false;
     remote.scrollViewport(owner, .{ .kind = .delta, .value = -rows }) catch return false;
     return true;
 }
 
+fn validWheelDelta(raw: Raw) bool {
+    return std.math.isFinite(raw.delta_x) and std.math.isFinite(raw.delta_y) and
+        (raw.delta_x != 0 or raw.delta_y != 0);
+}
+
+fn horizontalWheel(model: *Model, raw: Raw, owner: Owner, frame: Rect, rows: i64) bool {
+    const presentation = model.remotePresentation(owner.terminal_ref) orelse return false;
+    const measured = presentation.measured_cell orelse return false;
+    const state = model.remoteUi(owner.terminal_ref) orelse return false;
+    const columns = wheelRows(&state.wheel_accum_x, raw.delta_x, measured.width);
+    return reportWheel(model, raw, owner, frame, rows, columns);
+}
+
 fn wheelQuantum(model: *const Model, owner: Owner, frame: Rect) ?f32 {
+    _ = frame;
     const presentation = model.remotePresentation(owner.terminal_ref) orelse return null;
     if (presentation.rows == 0) return null;
-    const quantum = frame.height / @as(f32, @floatFromInt(presentation.rows));
+    const quantum = (presentation.measured_cell orelse return null).height;
     if (!std.math.isFinite(quantum) or quantum <= 0) return null;
     return quantum;
 }
@@ -343,11 +417,15 @@ fn wheelRows(accum: *f32, delta: f32, quantum: f32) i64 {
     return rows;
 }
 
-fn reportWheel(model: *Model, raw: Raw, owner: Owner, frame: Rect, rows: i64) bool {
-    clearSelection(model, owner);
+fn reportWheel(model: *Model, raw: Raw, owner: Owner, frame: Rect, rows: i64, columns: i64) bool {
+    if (rows != 0 or columns != 0) clearSelection(model, owner);
     var count: u64 = @abs(rows);
     while (count > 0) : (count -= 1) {
         _ = report(model, owner, .press, if (rows > 0) .button_4 else .button_5, modifiers(raw), .{ .x = raw.x, .y = raw.y }, frame);
+    }
+    count = @abs(columns);
+    while (count > 0) : (count -= 1) {
+        _ = report(model, owner, .press, if (columns > 0) .button_6 else .button_7, modifiers(raw), .{ .x = raw.x, .y = raw.y }, frame);
     }
     return true;
 }

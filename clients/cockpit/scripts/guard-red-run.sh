@@ -60,6 +60,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(git -C "$ROOT" rev-parse --show-toplevel)"
 GUARD_DIR="$ROOT/scripts/guards"
 LOG_DIR="${TMPDIR:-/tmp}/phux-cockpit-guards"
 mkdir -p "$LOG_DIR" "$GUARD_DIR"
@@ -69,12 +70,14 @@ GIT_PREFIX="${GIT_PREFIX%/}"
 RECORD=""
 RECORD_TEST=""
 RECORD_BUILD=""
+RECORD_REPOSITORY=false
 positional=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --record) RECORD="${2:?--record needs a guard name}"; shift 2 ;;
         --test) RECORD_TEST="${2:?--test needs a zig test name}"; shift 2 ;;
         --build) RECORD_BUILD="${2:?--build needs zig build arguments}"; shift 2 ;;
+        --repository) RECORD_REPOSITORY=true; shift ;;
         -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
         -*) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
         *) positional+=("$1"); shift ;;
@@ -97,11 +100,20 @@ require_clean() {
 patch_of() { sed -n '/^diff --git /,$p' "$1"; }
 
 git_apply() {
-    if [[ -n "$GIT_PREFIX" ]]; then
+    if grep -qx 'root: repository' "$guard"; then
+        git -C "$REPO_ROOT" apply "$@"
+    elif [[ -n "$GIT_PREFIX" ]]; then
         git -C "$ROOT" apply --directory="$GIT_PREFIX" "$@"
     else
         git -C "$ROOT" apply "$@"
     fi
+}
+
+checkout_patch_paths() {
+    local directory="$ROOT"
+    if grep -qx 'root: repository' "$guard"; then directory="$REPO_ROOT"; fi
+    # shellcheck disable=SC2046
+    git -C "$directory" checkout -- $(patch_paths "$guard")
 }
 
 # The `zig build` arguments a guard's test runs under. The default gate is
@@ -126,7 +138,7 @@ restore() {
     patch_of "$guard" | git_apply --unidiff-zero -R - 2>/dev/null || true
     if tracked_dirty; then
         # shellcheck disable=SC2046
-        git -C "$ROOT" checkout -- $(patch_paths "$guard") 2>/dev/null || true
+        checkout_patch_paths 2>/dev/null || true
     fi
     if tracked_dirty; then
         git -C "$ROOT" status --porcelain --untracked-files=no >&2
@@ -147,7 +159,9 @@ if [[ -n "$RECORD" ]]; then
     guard="$GUARD_DIR/$RECORD.guard"
     [[ -e "$guard" ]] && die "$guard already exists. Delete it to re-derive."
 
-    if [[ ${#positional[@]} -gt 0 ]]; then
+    if $RECORD_REPOSITORY; then
+        diff_text="$(git -C "$REPO_ROOT" diff -- "${positional[@]}")"
+    elif [[ ${#positional[@]} -gt 0 ]]; then
         diff_text="$(git -C "$ROOT" diff --relative -- "${positional[@]}")"
     else
         diff_text="$(git -C "$ROOT" diff --relative)"
@@ -159,6 +173,7 @@ if [[ -n "$RECORD" ]]; then
         printf '# Describe the defect this test exists to catch, and what removing the\n'
         printf '# fix below puts back. Prose here is preserved across re-runs.\n'
         printf 'test: %s\n' "$RECORD_TEST"
+        if $RECORD_REPOSITORY; then printf 'root: repository\n'; fi
         [[ -n "$RECORD_BUILD" ]] && printf 'build: %s\n' "$RECORD_BUILD"
         printf '%s\n' "$diff_text"
     } > "$guard"
@@ -167,7 +182,7 @@ if [[ -n "$RECORD" ]]; then
     patch_of "$guard" | git_apply --unidiff-zero --stat - | sed 's/^/  /'
 
     # shellcheck disable=SC2046
-    git -C "$ROOT" checkout -- $(patch_paths "$guard")
+    checkout_patch_paths
     positional=("$RECORD")
 fi
 

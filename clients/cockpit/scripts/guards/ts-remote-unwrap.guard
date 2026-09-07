@@ -1,0 +1,12 @@
+# GUARD ts-remote-unwrap
+# The document formatter left soft-wrap newlines in clipboard text. Restore
+# that formatter option while exercising a real Ghostty-selected Unicode word.
+test: shipping remote copy unwraps provider selected Unicode words
+red: 2026-09-07 at 16701fc
+root: repository
+diff --git a/crates/phux-client-core/src/engine/ghostty.rs b/crates/phux-client-core/src/engine/ghostty.rs
+--- a/crates/phux-client-core/src/engine/ghostty.rs
++++ b/crates/phux-client-core/src/engine/ghostty.rs
+@@ -736,1 +736,1 @@
+-                .with_unwrap(true)
++                .with_unwrap(false)

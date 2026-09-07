@@ -1,0 +1,21 @@
+# GUARD ts-remote-history-selection
+# Selection installation discarded the highlight when either document anchor
+# left the viewport. Restore viewport resolution and run actual autoscroll.
+test: shipping remote autoscroll keeps offscreen document anchors highlighted
+red: 2026-09-07 at 16701fc
+root: repository
+diff --git a/crates/phux-client-ffi/src/client.rs b/crates/phux-client-ffi/src/client.rs
+--- a/crates/phux-client-ffi/src/client.rs
++++ b/crates/phux-client-ffi/src/client.rs
+@@ -919,1 +919,1 @@
+-            .document_anchor_point(terminal_id, start, DocumentSpace::History)
++            .document_anchor_point(terminal_id, start, DocumentSpace::Viewport)
+@@ -923,1 +923,1 @@
+-            .document_anchor_point(terminal_id, end, DocumentSpace::History)
++            .document_anchor_point(terminal_id, end, DocumentSpace::Viewport)
+@@ -929,1 +929,1 @@
+-                .grid_ref(Point::History(PointCoordinate {
++                .grid_ref(Point::Viewport(PointCoordinate {
+@@ -936,1 +936,1 @@
+-                .grid_ref(Point::History(PointCoordinate {
++                .grid_ref(Point::Viewport(PointCoordinate {

@@ -77,6 +77,7 @@ const RemoteId = provider.RemoteTerminalId;
 const CanvasStore = presentation_module.CanvasStore;
 
 const Terminal = struct {
+    measured_cell: ?provider.MeasuredCell = null,
     id: RemoteId,
     generation: provider.Generation = .{},
     phase: provider.Phase = .attaching,
@@ -116,6 +117,7 @@ const Terminal = struct {
     fn presentation(terminal: *const Terminal) ?provider.Presentation {
         if (!terminal.published) return null;
         return .{
+            .measured_cell = terminal.measured_cell,
             .grid = terminal.canvas.grid(terminal.phase == .live),
             .owner = terminal.owner(),
             .phase = terminal.phase,
@@ -542,6 +544,8 @@ pub const Host = struct {
                 .middle => c.PHUX_MOUSE_BUTTON_MIDDLE,
                 .button_4 => c.PHUX_MOUSE_BUTTON_FOUR,
                 .button_5 => c.PHUX_MOUSE_BUTTON_FIVE,
+                .button_6 => c.PHUX_MOUSE_BUTTON_SIX,
+                .button_7 => c.PHUX_MOUSE_BUTTON_SEVEN,
                 else => c.PHUX_MOUSE_BUTTON_UNKNOWN,
             },
             .modifiers = @bitCast(input.modifiers),
@@ -563,6 +567,59 @@ pub const Host = struct {
         const id = try host.currentCId(owner_value);
         try resultError(c.phux_client_send_focus(host.client, &id, focused));
         try host.stageOutgoing();
+    }
+
+    pub fn mouseMode(host: *const Host, owner_value: provider.ReplicaOwner) !provider.MouseMode {
+        const id = try host.currentCIdConst(owner_value);
+        var mode: u32 = 0;
+        try resultError(c.phux_client_terminal_mouse_mode(host.client, &id, &mode));
+        return std.enums.fromInt(provider.MouseMode, mode) orelse error.InvalidState;
+    }
+
+    pub fn recordMeasuredCell(host: *Host, owner_value: provider.ReplicaOwner, cell: provider.MeasuredCell) void {
+        const terminal = host.findTerminal(owner_value.terminal_ref) orelse return;
+        if (terminal.owner().eql(owner_value)) terminal.measured_cell = cell;
+    }
+
+    pub fn selectionGesture(host: *Host, owner_value: provider.ReplicaOwner, event: provider.SelectionGesture) !provider.SelectionGestureResult {
+        const id = try host.currentCId(owner_value);
+        // Ghostty's gesture geometry is integral. Fixed-point surface units
+        // retain the canvas's fractional advances instead of rounding a cell.
+        const scale = 1024;
+        const raw: c.PhuxSelectionGestureEvent = .{
+            .size = @sizeOf(c.PhuxSelectionGestureEvent),
+            .version = 1,
+            .phase = @intFromEnum(event.phase),
+            .clicks = event.clicks,
+            .handle = event.handle,
+            .column = event.cell.column,
+            .row = event.cell.row,
+            .rectangle = event.rectangle,
+            .reserved = 0,
+            .x = event.x * scale,
+            .y = event.y * scale,
+            .columns = event.columns,
+            .cell_width = try gestureExtent(event.cell_width),
+            .screen_height = try gestureExtent(event.screen_height),
+            .padding_left = 0,
+        };
+        var result: c.PhuxSelectionGestureResult = undefined;
+        try resultError(c.phux_client_selection_gesture(host.client, &id, &raw, &result));
+        errdefer {
+            _ = c.phux_client_selection_clear(host.client, &id);
+            _ = c.phux_client_anchor_release(host.client, &id, result.start);
+            _ = c.phux_client_anchor_release(host.client, &id, result.end);
+        }
+        if (host.findTerminal(owner_value.terminal_ref)) |terminal| terminal.dirty = true;
+        try host.capturePublishStage();
+        return .{ .handle = result.handle, .start = result.start.opaque_id, .end = result.end.opaque_id };
+    }
+
+    fn gestureExtent(value: f32) !u32 {
+        const scale = 1024;
+        const limit: f32 = @floatFromInt(std.math.maxInt(u32) / scale);
+        if (!std.math.isFinite(value) or value < @as(f32, 1) / scale or value > limit) return error.InvalidState;
+        return @intFromFloat(@round(value * scale));
     }
 
     pub fn sendPaste(host: *Host, owner_value: provider.ReplicaOwner, payload: []const u8, trusted: bool) !void {
@@ -613,12 +670,14 @@ pub const Host = struct {
     pub fn setSelection(host: *Host, owner_value: provider.ReplicaOwner, start_anchor: Anchor, end_anchor: Anchor, rectangle: bool) !void {
         const id = try host.currentCId(owner_value);
         try resultError(c.phux_client_selection_set(host.client, &id, toCAnchor(start_anchor), toCAnchor(end_anchor), rectangle));
+        if (host.findTerminal(owner_value.terminal_ref)) |terminal| terminal.dirty = true;
         try host.capturePublishStage();
     }
 
     pub fn clearSelection(host: *Host, owner_value: provider.ReplicaOwner) !void {
         const id = try host.currentCId(owner_value);
         try resultError(c.phux_client_selection_clear(host.client, &id));
+        if (host.findTerminal(owner_value.terminal_ref)) |terminal| terminal.dirty = true;
         try host.capturePublishStage();
     }
 

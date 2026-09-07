@@ -1,0 +1,12 @@
+# GUARD ts-remote-clear-publication
+# Lazy projection needs explicit selection damage. Remove the clear's dirty
+# stamp; the FFI range clears but the shipping presentation stays selected.
+test: shipping remote provider clearing republishes the selection grid
+red: 2026-09-07 at 16701fc
+diff --git a/src/providers/phux/host.zig b/src/providers/phux/host.zig
+--- a/src/providers/phux/host.zig
++++ b/src/providers/phux/host.zig
+@@ -631,3 +631,2 @@
+         try resultError(c.phux_client_selection_clear(host.client, &id));
+-        if (host.findTerminal(owner_value.terminal_ref)) |terminal| terminal.dirty = true;
+         try host.capturePublishStage();

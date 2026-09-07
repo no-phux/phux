@@ -286,6 +286,7 @@ fn paintPane(model: *const Model, builder: *canvas.Builder, pane: layout.Pane, i
         options.running = presentation.phase == .live;
         options.selecting = if (model.remoteUiConst(pane.terminal)) |state| state.selecting else false;
         try grid.paintTerminalGrid(presentation.grid, builder, options);
+        recordRemoteCell(model, presentation.owner, options.tokens);
     }
     return true;
 }
@@ -347,3 +348,10 @@ fn paintFocusEdge(builder: *canvas.Builder, panes: []const layout.Pane, focus_no
 /// problem for another. The accent edge carries the signal; the scrim only has
 /// to whisper.
 const dim_scrim: canvas.Color = canvas.Color.rgba(0, 0, 0, 0.15);
+
+fn recordRemoteCell(model: *const Model, owner: provider_contract.ReplicaOwner, tokens: canvas.DesignTokens) void {
+    if (comptime !@import("../phux_support.zig").phux_enabled) return;
+    const remote = model.phux_provider orelse return;
+    const metrics = canvas.terminalCellMetrics(tokens);
+    remote.host.recordMeasuredCell(owner, .{ .width = metrics.width, .height = metrics.height });
+}

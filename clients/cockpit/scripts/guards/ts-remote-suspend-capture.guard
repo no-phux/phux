@@ -1,0 +1,12 @@
+# GUARD ts-remote-suspend-capture
+# Overlay suspension originally ended local captures only. Remove the remote
+# cancellation at that transition and observe the provider gesture surviving.
+test: shipping input suspension releases provider gesture capture
+red: 2026-09-07 at 16701fc
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -1412,3 +1412,2 @@
+         self.input_suspended = suspended;
+         if (suspended) {
+-            self.remote_pointer.cancelAll(self.model);

@@ -235,6 +235,14 @@ pub const PhuxProvider = struct {
     pub fn mouseTracking(self: *const PhuxProvider, owner_value: provider.ReplicaOwner) !bool {
         return self.host.mouseTracking(owner_value);
     }
+
+    pub fn mouseMode(self: *const PhuxProvider, owner_value: provider.ReplicaOwner) !provider.MouseMode {
+        return self.host.mouseMode(owner_value);
+    }
+
+    pub fn selectionGesture(self: *PhuxProvider, owner_value: provider.ReplicaOwner, event: provider.SelectionGesture) !provider.SelectionGestureResult {
+        return self.host.selectionGesture(owner_value, event);
+    }
     pub fn sendFocus(self: *PhuxProvider, owner_value: provider.ReplicaOwner, focused: bool) !void {
         return self.host.sendFocus(owner_value, focused);
     }

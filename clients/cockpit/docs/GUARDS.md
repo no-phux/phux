@@ -45,6 +45,12 @@ only thing that distinguishes a regression test from a hope. It is now
    removing the fix puts back. That prose is what a reviewer reads.
 6. Say so in the commit message.
 
+For a fix in the repository's Rust FFI or core, add `--repository` and pass
+repository-relative paths. This records `root: repository`; both scripts then
+apply and restore the break from the repository root. The Zig command used for
+that proof must rebuild the same-checkout FFI before running the native tests,
+so an old archive cannot conceal the removed Rust fix.
+
 If step 3 does not go red, you do not have a regression test. That is the
 whole point, and it is not a formality — the script has two failure modes it
 will report rather than record:

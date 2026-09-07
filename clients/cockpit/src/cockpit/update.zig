@@ -2391,6 +2391,7 @@ fn sendRemoteFocus(model: *Model, terminal_ref: ?TerminalRef, focused: bool) voi
 }
 
 fn beginRemoteSelection(model: *Model, terminal_ref: TerminalRef, state: *RemoteUiState) void {
+    clearRemoteSelection(model, state);
     const presentation = model.remotePresentation(terminal_ref) orelse return;
     const cursor = presentation.grid.cursor orelse canvas.TerminalCursor{};
     const remote = model.phux() orelse return;
@@ -2474,8 +2475,15 @@ pub fn retainSelectionAfterCopy(state: *RemoteUiState) void {
 }
 
 fn clearRemoteSelection(model: *Model, state: *RemoteUiState) void {
+    defer {
+        state.selecting = false;
+        state.rectangle = false;
+        state.start_anchor = 0;
+        state.end_anchor = 0;
+        state.gesture_handle = 0;
+    }
     const remote = model.phux() orelse return;
-    remote.clearSelection(state.owner) catch return;
+    remote.clearSelection(state.owner) catch {};
     if (state.start_anchor != 0)
         remote.releaseAnchor(state.owner, .{ .opaque_id = state.start_anchor });
     if (state.end_anchor != 0 and state.end_anchor != state.start_anchor)

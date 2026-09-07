@@ -9,6 +9,7 @@ mod client;
 mod error;
 mod grid_metadata;
 mod operations;
+mod pointer;
 mod types;
 
 use std::collections::HashSet;
@@ -32,6 +33,10 @@ use phux_protocol::{PROTOCOL_VERSION, SessionId};
 
 pub use grid_metadata::*;
 pub use operations::*;
+pub use pointer::{
+    PhuxSelectionGestureEvent, PhuxSelectionGestureResult, phux_client_selection_gesture,
+    phux_client_terminal_mouse_mode,
+};
 pub use types::*;
 
 #[repr(C)]

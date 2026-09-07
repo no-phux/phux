@@ -1240,6 +1240,10 @@ pub const Engine = struct {
     /// Returns whether a terminal took it; chrome is never under a pane's
     /// frame, and the caller keeps overlays out.
     pub fn onPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent) PointerOutcome {
+        if (!self.pointerInputEnabled()) return .ignored;
+        const window_index = windowIndexForCanvas(raw.label) orelse return .ignored;
+        if (!self.model.windowOpen(window_index)) return .ignored;
+        self.model.active_window = window_index;
         defer self.syncRemoteFocus();
         const model = self.model;
         const phase = shipping_pointer.phase(raw) orelse return .ignored;
@@ -1342,6 +1346,7 @@ pub const Engine = struct {
     /// pane under the drop point, and use the same bracketed-paste path as
     /// cmd+V. Paths and pane identities never enter the compiled core.
     pub fn onDrop(self: *Engine, fx: anytype, drop: platform.FileDropEvent) bool {
+        if (!self.pointerInputEnabled()) return false;
         defer self.syncRemoteFocus();
         if (drop.paths.len == 0) return false;
         const model = self.model;
@@ -1367,11 +1372,17 @@ pub const Engine = struct {
             model.focusedTerminalRef();
     }
 
+    fn pointerInputEnabled(self: *const Engine) bool {
+        return !self.input_suspended;
+    }
+
     pub fn selectionAutoscrollActive(self: *const Engine) bool {
+        if (self.input_suspended) return false;
         return pointer_input.modelHasSelectionAutoscroll(self.model) or self.remote_pointer.autoscrollActive(self.model);
     }
 
     pub fn selectionAutoscroll(self: *Engine, fx: anytype) void {
+        if (self.input_suspended) return;
         pointer_input.handleSelectionAutoscroll(self.model, fx);
         self.remote_pointer.autoscroll(self.model);
     }
@@ -1399,6 +1410,7 @@ pub const Engine = struct {
         if (model.focused == focused) return;
         model.focused = focused;
         if (!focused) {
+            self.last_click_count = 0;
             self.remote_pointer.cancelAll(model);
             self.remote_natural_keys_held = 0;
             pointer_input.endAllCaptures(model, fx);
@@ -1421,6 +1433,9 @@ pub const Engine = struct {
         if (self.input_suspended == suspended) return;
         self.input_suspended = suspended;
         if (suspended) {
+            self.remote_pointer.cancelAll(self.model);
+            self.split_drag = null;
+            self.last_click_count = 0;
             self.remote_natural_keys_held = 0;
             for (&self.model.held_terminal_keys) |*held| held.* = .{};
             pointer_input.endAllCaptures(self.model, fx);

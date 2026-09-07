@@ -1,0 +1,11 @@
+# GUARD ts-remote-gestures
+# Remote press used to ignore the native click count. Force every press back
+# to single-cell behavior; the shipping double-click must lose its word range.
+test: shipping remote word and line gestures retain Ghostty drag semantics
+red: 2026-09-07 at 16701fc
+diff --git a/src/cockpit/native/shipping_pointer.zig b/src/cockpit/native/shipping_pointer.zig
+--- a/src/cockpit/native/shipping_pointer.zig
++++ b/src/cockpit/native/shipping_pointer.zig
+@@ -321,1 +321,1 @@
+-    return applyGesture(model, owner, .press, clicks, cell, point, frame);
++    return applyGesture(model, owner, .press, @min(clicks, 1), cell, point, frame);
