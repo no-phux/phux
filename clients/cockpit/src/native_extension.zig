@@ -1250,6 +1250,7 @@ test "shipping Phux committed text consumes composition modifiers" {
     try expectOutgoingKey(bridge.engine.?.model.phux().?, 0, 0);
 }
 
+// GUARD: ts-remote-natural-keys
 test "shipping Phux macOS editing gestures target word and line bindings" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
