@@ -1208,6 +1208,7 @@ fn expectOutgoingTag(remote: anytype, tag: u8) !void {
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
+// GUARD: ts-remote-viewport
 test "shipping frame resizes a published Phux viewport once" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
