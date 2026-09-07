@@ -1341,6 +1341,43 @@ test "shipping frame resizes a published Phux viewport once" {
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
+// GUARD: ts-pending-viewport
+test "pending attachment cannot propose a viewport for a reused remote identity" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const model = bridge.engine.?.model;
+    const size = native_sdk.geometry.SizeF{ .width = 900, .height = 500 };
+    const before = cockpit.projection.proposedViewportsIn(model, model.ws(), size);
+    try std.testing.expectEqual(@as(usize, 1), before.slice().len);
+    model.rejectAttachmentContext();
+    try std.testing.expect(model.attachmentPending(ref));
+    const after = cockpit.projection.proposedViewportsIn(model, model.ws(), size);
+    try std.testing.expectEqual(@as(usize, 0), after.slice().len);
+}
+
+test "pending attachment hides the published grid of a reused remote identity" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const size = native_sdk.geometry.SizeF.init(900, 500);
+    const tokens = cockpit.projection.cockpitTokens(engine.model);
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    var builder = canvas.Builder.init(commands);
+    try engine.paint(&builder, size, tokens);
+    const visible = builder.displayList().commands.len;
+    engine.model.rejectAttachmentContext();
+    builder.reset();
+    try engine.paint(&builder, size, tokens);
+    try std.testing.expect(visible > builder.displayList().commands.len);
+}
+
 // GUARD: ts-native-divider-drag
 test "native divider drag updates engine geometry without crossing the TypeScript seam" {
     var rig = try Rig.start();

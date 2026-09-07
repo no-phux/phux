@@ -14,6 +14,7 @@ pub fn closePane(model: *Model, fx: anytype, ref: support.TerminalRef, kill: boo
     pointer.endCapturesForTerminal(model, fx, ref);
     cancelClipboard(model, fx, ref);
     _ = tree.closeTerminal(ref) orelse return false;
+    model.pruneAttachmentState();
     releaseLocal(model, fx, ref, kill);
     if (tree.isEmpty()) workspace.dropTab(where.tab);
     workspace.tab_limit_refused = false;

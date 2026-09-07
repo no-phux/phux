@@ -257,8 +257,7 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
             });
             if (preview_target) |target| try paintLinkTargetPreview(terminal, index, pane.rect, tokens, builder, target);
         } else {
-            const remote = model.phuxConst() orelse continue;
-            const presentation = remote.presentation(pane.terminal) orelse continue;
+            const presentation = model.remotePresentation(pane.terminal) orelse continue;
             try grid.paintTerminalGrid(presentation.grid, builder, .{
                 .frame = pane.rect,
                 .background_frame = pane.rect,

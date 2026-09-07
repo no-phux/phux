@@ -10,9 +10,9 @@ index ba259b8d..859a0338 100644
 --- a/src/cockpit/terminal_interaction.zig
 +++ b/src/cockpit/terminal_interaction.zig
 @@ -129,7 +129,7 @@ pub fn resize(model: *Model, fx: anytype, ref: TerminalRef, viewport: contract.V
-     }
-     const remote = model.phux() orelse return;
      if (remote.lastViewport(ref)) |last| if (last.eql(viewport)) return;
+     const presentation = model.remotePresentation(ref) orelse return;
+     if (presentation.phase != .live) return;
 -    remote.viewportResize(ref, viewport) catch {};
 +    if (false) remote.viewportResize(ref, viewport) catch {};
  }

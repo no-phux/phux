@@ -1648,8 +1648,8 @@ pub fn proposedViewportsIn(
             result.count += 1;
             continue;
         }
-        const remote = model.phuxConst() orelse continue;
-        if (remote.presentation(pane.terminal) == null) continue;
+        const presentation = model.remotePresentation(pane.terminal) orelse continue;
+        if (presentation.phase != .live) continue;
         const proposed = grid.Session.clampGrid(
             @intFromFloat(@max(2, inner.width / metrics.width)),
             @intFromFloat(@max(2, inner.height / metrics.height)),

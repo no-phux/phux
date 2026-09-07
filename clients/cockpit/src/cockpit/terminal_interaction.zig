@@ -129,6 +129,8 @@ pub fn resize(model: *Model, fx: anytype, ref: TerminalRef, viewport: contract.V
     }
     const remote = model.phux() orelse return;
     if (remote.lastViewport(ref)) |last| if (last.eql(viewport)) return;
+    const presentation = model.remotePresentation(ref) orelse return;
+    if (presentation.phase != .live) return;
     remote.viewportResize(ref, viewport) catch {};
 }
 
