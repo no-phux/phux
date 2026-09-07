@@ -1727,6 +1727,7 @@ test "shipping pending spawns reserve destination tab capacity" {
     try cockpit.durable_tests.destinationReservations();
 }
 
+// GUARD: ts-durable-split-capacity
 test "shipping pending spawns reserve split capacity" {
     try cockpit.durable_tests.splitReservations();
 }
