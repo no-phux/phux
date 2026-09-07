@@ -1737,6 +1737,7 @@ test "shipping refused creation retires its still-empty reserved window" {
     try cockpit.durable_tests.windowRefusal();
 }
 
+// GUARD: ts-durable-empty-restore
 test "shipping empty persisted Phux workspace does not spawn a synthetic local shell" {
     try cockpit.durable_tests.restoredEmptyWorkspace();
 }

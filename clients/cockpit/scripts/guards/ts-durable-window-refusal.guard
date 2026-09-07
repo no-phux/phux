@@ -1,0 +1,20 @@
+# GUARD ts-durable-window-refusal
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping refused creation retires its still-empty reserved window
+red: 2026-09-07 at 7aac342
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/durable_creation.zig b/src/cockpit/durable_creation.zig
+index d984b7e0..606687b9 100644
+--- a/src/cockpit/durable_creation.zig
++++ b/src/cockpit/durable_creation.zig
+@@ -78,7 +78,7 @@ pub const Creation = struct {
+     pub fn complete(self: *Creation, model: *Model, result: support.OperationResult) bool {
+         const slot = self.find(result) orelse return false;
+         acceptResult(model, &slot.*.?, result) catch {
+-            retireEmptyDestination(model, slot.*.?);
++            // retireEmptyDestination(model, slot.*.?);
+             model.terminal_limit_refused = true;
+             slot.* = null;
+         };
