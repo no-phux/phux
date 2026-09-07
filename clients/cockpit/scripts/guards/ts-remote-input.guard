@@ -16,5 +16,5 @@ index f47d8461..1b4d3ef4 100644
 -        if (support.providerKind(ref) == .phux) return interaction.remoteText(self.model, ref, event);
 +        if (support.providerKind(ref) == .phux) return;
          const pane = self.focusedPane() orelse return;
-         if (event.text.len == 0) return;
-         if (pane.session.search.open) {
+         localText(pane, fx, event.text);
+     }

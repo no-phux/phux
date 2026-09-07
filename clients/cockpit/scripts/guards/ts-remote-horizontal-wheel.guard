@@ -1,11 +1,12 @@
 # GUARD ts-remote-horizontal-wheel
 # Horizontal wheel buttons used to fall through to UNKNOWN in the provider.
 # Remove both additive mappings; signed fractional wheel reports must fail.
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 test: shipping remote horizontal wheels retain fractional signs
 red: 2026-09-07 at 16701fc
 diff --git a/src/providers/phux/host.zig b/src/providers/phux/host.zig
 --- a/src/providers/phux/host.zig
 +++ b/src/providers/phux/host.zig
 @@ -492,2 +492,0 @@
--                .button_6 => c.PHUX_MOUSE_BUTTON_SIX,
--                .button_7 => c.PHUX_MOUSE_BUTTON_SEVEN,
+-            .button_6 => c.PHUX_MOUSE_BUTTON_SIX,
+-            .button_7 => c.PHUX_MOUSE_BUTTON_SEVEN,

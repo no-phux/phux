@@ -445,7 +445,14 @@ pub const Engine = struct {
             if (intent.window != 0 and !self.model.windowOpen(intent.window)) return self.refuse();
             self.model.active_window = intent.window;
         }
-        const changed = switch (intent.kind) {
+        if (!self.applyModelIntent(intent, fx)) return self.refuse();
+        self.intent_refused = false;
+        self.revision +%= 1;
+        return true;
+    }
+
+    fn applyModelIntent(self: *Engine, intent: protocol.Intent, fx: anytype) bool {
+        return switch (intent.kind) {
             .select_tab => self.model.selectTab(intent.argument),
             .new_terminal => self.newTerminal(),
             .close_tab => self.closeTab(intent.argument, fx),
@@ -453,15 +460,18 @@ pub const Engine = struct {
             .set_theme => self.setTheme(intent.argument),
             .reveal_config => self.revealConfig(fx),
             .probe_config => self.probeConfig(),
+            .new_window, .close_window, .focus_window => self.applyWindowIntent(intent, fx),
+            .native_command => self.nativeCommand(intent.argument, fx),
+        };
+    }
+
+    fn applyWindowIntent(self: *Engine, intent: protocol.Intent, fx: anytype) bool {
+        return switch (intent.kind) {
             .new_window => self.newWindow(),
             .close_window => self.closeWindow(intent.window, fx),
             .focus_window => self.focusWindow(intent.window),
-            .native_command => self.nativeCommand(intent.argument, fx),
+            else => unreachable,
         };
-        if (!changed) return self.refuse();
-        self.intent_refused = false;
-        self.revision +%= 1;
-        return true;
     }
 
     fn applyNavigationIntent(self: *Engine, intent: protocol.NavigationIntent, fx: anytype) bool {
@@ -1191,15 +1201,19 @@ pub const Engine = struct {
         interaction.rememberKey(self.model, ref, event);
         if (support.providerKind(ref) == .phux) return interaction.remoteText(self.model, ref, event);
         const pane = self.focusedPane() orelse return;
-        if (event.text.len == 0) return;
+        localText(pane, fx, event.text);
+    }
+
+    fn localText(pane: *model_module.Pane, fx: anytype, text: []const u8) void {
+        if (text.len == 0) return;
         if (pane.session.search.open) {
-            _ = pane.session.searchInput(event.text);
+            _ = pane.session.searchInput(text);
             return;
         }
         if (pane.selecting or !pane.acceptsInput()) return;
         if (pane.session.selectionActive()) pane.session.clearSelection();
         pane.session.scrollToBottom();
-        terminal_runtime.sendCommittedText(pane, fx, event.text);
+        terminal_runtime.sendCommittedText(pane, fx, text);
     }
 
     // -------------------------------------------------------- clipboard

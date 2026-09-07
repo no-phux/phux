@@ -557,23 +557,27 @@ pub const Host = struct {
                 .release => c.PHUX_MOUSE_RELEASE,
                 .move => c.PHUX_MOUSE_MOTION,
             },
-            .button = switch (input.button) {
-                .none => c.PHUX_MOUSE_BUTTON_UNKNOWN,
-                .left => c.PHUX_MOUSE_BUTTON_LEFT,
-                .right => c.PHUX_MOUSE_BUTTON_RIGHT,
-                .middle => c.PHUX_MOUSE_BUTTON_MIDDLE,
-                .button_4 => c.PHUX_MOUSE_BUTTON_FOUR,
-                .button_5 => c.PHUX_MOUSE_BUTTON_FIVE,
-                .button_6 => c.PHUX_MOUSE_BUTTON_SIX,
-                .button_7 => c.PHUX_MOUSE_BUTTON_SEVEN,
-                else => c.PHUX_MOUSE_BUTTON_UNKNOWN,
-            },
+            .button = mouseButton(input.button),
             .modifiers = @bitCast(input.modifiers),
             .x = input.x,
             .y = input.y,
         };
         try resultError(c.phux_client_send_mouse(host.client, &id, &event));
         try host.stageOutgoing();
+    }
+
+    fn mouseButton(button: provider.MouseButton) u32 {
+        return switch (button) {
+            .none => c.PHUX_MOUSE_BUTTON_UNKNOWN,
+            .left => c.PHUX_MOUSE_BUTTON_LEFT,
+            .right => c.PHUX_MOUSE_BUTTON_RIGHT,
+            .middle => c.PHUX_MOUSE_BUTTON_MIDDLE,
+            .button_4 => c.PHUX_MOUSE_BUTTON_FOUR,
+            .button_5 => c.PHUX_MOUSE_BUTTON_FIVE,
+            .button_6 => c.PHUX_MOUSE_BUTTON_SIX,
+            .button_7 => c.PHUX_MOUSE_BUTTON_SEVEN,
+            else => c.PHUX_MOUSE_BUTTON_UNKNOWN,
+        };
     }
 
     pub fn mouseTracking(host: *const Host, owner_value: provider.ReplicaOwner) !bool {
