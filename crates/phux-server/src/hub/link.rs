@@ -840,9 +840,7 @@ async fn run_relay_session<C: LinkConn>(
                 let Some(request) = request else {
                     break (false, "relay handles dropped".to_owned());
                 };
-                if let Some(frame) = session.handle_request_checked(request)
-                    && let Err(error) = send_bounded(&mut conn, &frame).await
-                {
+                if let Err(error) = send_relay_request(&mut conn, &mut session, request).await {
                     break (true, error);
                 }
             }
@@ -874,24 +872,56 @@ async fn run_relay_session<C: LinkConn>(
                 Err(error) => break (true, error),
             },
             _ = keepalive.tick() => {
-                session.prune_abandoned();
-                // Retry any attach snapshot a briefly-full consumer refused,
-                // so it converges even with no further inbound frame for its
-                // terminal to trigger the inline retry (phux-v45.12).
-                session.flush_pending_snapshots();
-                match tokio::time::timeout(LINK_SEND_TIMEOUT, conn.keepalive()).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => break (true, error),
-                    Err(_) => break (true, format!(
-                        "keepalive write to satellite stalled for {}s",
-                        LINK_SEND_TIMEOUT.as_secs()
-                    )),
+                if let Err(error) = maintain_relay_session(&mut conn, &mut session).await {
+                    break (true, error);
                 }
             }
         }
     };
     session.teardown(&reason);
     lost.then_some(reason)
+}
+
+/// Bound reply retention and retry slow snapshots before probing the transport.
+#[allow(
+    clippy::future_not_send,
+    reason = "ADR-0014: runs on the server's LocalSet inside run_relay_session"
+)]
+async fn maintain_relay_session<C: LinkConn>(
+    conn: &mut C,
+    session: &mut super::relay::RelaySession,
+) -> Result<(), String> {
+    session.check_detach_deadlines()?;
+    session.prune_abandoned();
+    // Retry without requiring another incoming frame for the terminal.
+    session.flush_pending_snapshots();
+    tokio::time::timeout(LINK_SEND_TIMEOUT, conn.keepalive())
+        .await
+        .map_err(|_| {
+            format!(
+                "keepalive write to satellite stalled for {}s",
+                LINK_SEND_TIMEOUT.as_secs()
+            )
+        })?
+}
+
+/// Queue any upstream generation barrier before registering/forwarding attach.
+#[allow(
+    clippy::future_not_send,
+    reason = "ADR-0014: runs on the server's LocalSet inside run_relay_session"
+)]
+async fn send_relay_request<C: LinkConn>(
+    conn: &mut C,
+    session: &mut super::relay::RelaySession,
+    request: super::relay::RelayRequest,
+) -> Result<(), String> {
+    if let Some(frame) = session.prepare_request(&request) {
+        send_bounded(conn, &frame).await?;
+    }
+    if let Some(frame) = session.handle_request_checked(request) {
+        send_bounded(conn, &frame).await?;
+    }
+    Ok(())
 }
 
 /// Put one frame on the wire with [`LINK_SEND_TIMEOUT`] as the stall

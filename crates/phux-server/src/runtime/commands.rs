@@ -2353,7 +2353,7 @@ async fn handle_satellite_command(
                 .await
             }
             Command::DetachTerminal { terminal_id } => {
-                resolve_hub_detach_terminal(state, &relay, client_id, host, terminal_id)
+                resolve_hub_detach_terminal(state, &relay, client_id, host, terminal_id).await
             }
             Command::AcquireInput {
                 terminal_id, mode, ..
@@ -2469,22 +2469,25 @@ async fn relay_stream_establishing(
 
 /// Hub-side resolution of `DETACH_TERMINAL`: withdraw this consumer's proxy
 /// subscription; the link session emits the satellite-side `DETACH_TERMINAL`
-/// iff nobody else still observes the terminal. Idempotent Ok, matching the
-/// local semantics.
-fn resolve_hub_detach_terminal(
+/// iff nobody else still observes the terminal. Success waits for the link's
+/// removal receipt; no registry on a disconnected link is an idempotent Ok.
+async fn resolve_hub_detach_terminal(
     state: &SharedState,
     relay: &crate::hub::relay::RelayHandle,
     client_id: ClientId,
     host: &phux_protocol::ids::SatelliteHost,
     terminal_id: &phux_protocol::ids::TerminalId,
 ) -> CommandResult {
-    if let Some(id) = terminal_id.local_id() {
-        relay.unsubscribe_terminal(client_id, id);
+    let Some(id) = terminal_id.local_id() else {
+        return CommandResult::Ok;
+    };
+    let result = relay.unsubscribe_terminal(client_id, id).await;
+    if result == CommandResult::Ok {
         state.with_mut(|s| {
             s.unregister_satellite_proxy_attach(client_id, host, id);
         });
     }
-    CommandResult::Ok
+    result
 }
 
 /// The hub-side lease coordinates one satellite-routed input command acts on.
@@ -4526,5 +4529,83 @@ fn log_frame_ack_dispatch(
                 "FRAME_ACK: pane actor gone; dropping",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod hub_detach_fence_tests {
+    use super::*;
+    use crate::hub::relay::{HubRelays, RelayHandle, RelaySession};
+
+    #[tokio::test]
+    async fn satellite_detach_reply_waits_for_proxy_withdrawal() {
+        let state = SharedState::new();
+        let host = phux_protocol::ids::SatelliteHost::from("sat");
+        let (handle, mut mailbox) = RelayHandle::new(host.clone());
+        let relays = HubRelays::default();
+        relays.insert(handle);
+        state.with_mut(|s| s.set_hub_relays(relays));
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+        let detach = handle_satellite_command(
+            &state,
+            ClientId(1),
+            42,
+            &host,
+            Command::DetachTerminal {
+                terminal_id: phux_protocol::ids::TerminalId::local(7),
+            },
+            &out_tx,
+            BootstrapProfile::SynthesizedVtRaw,
+            BootstrapLimits::default(),
+        );
+        tokio::pin!(detach);
+        assert!(
+            futures_util::poll!(&mut detach).is_pending(),
+            "DETACH_TERMINAL replied before the link applied its proxy withdrawal"
+        );
+        assert!(
+            out_rx.try_recv().is_err(),
+            "no correlated success before withdrawal"
+        );
+        let withdrawal = mailbox
+            .unsubscribes
+            .try_recv()
+            .expect("undroppable withdrawal");
+        let mut session = RelaySession::new(host.clone(), BootstrapLimits::default());
+        session.handle_unsubscribe(withdrawal);
+        detach.await;
+        assert!(matches!(
+            out_rx.recv().await,
+            Some(Outbound::Frame(FrameKind::CommandResult {
+                request_id: 42,
+                result: CommandResult::Ok
+            }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn refused_hub_detach_preserves_the_newer_proxy_input_registration() {
+        let state = SharedState::new();
+        let host = phux_protocol::ids::SatelliteHost::from("sat");
+        let (handle, mut mailbox) = RelayHandle::new(host.clone());
+        state.with_mut(|s| s.register_satellite_proxy_attach(ClientId(1), host.clone(), 7));
+        let terminal = phux_protocol::ids::TerminalId::local(7);
+        let detach = resolve_hub_detach_terminal(&state, &handle, ClientId(1), &host, &terminal);
+        tokio::pin!(detach);
+        assert!(futures_util::poll!(&mut detach).is_pending());
+        let crate::hub::relay::Unsubscribe::Terminal {
+            reply: Some(reply), ..
+        } = mailbox.unsubscribes.try_recv().unwrap()
+        else {
+            panic!("withdrawal receipt");
+        };
+        reply
+            .send(CommandResult::Error {
+                code: ErrorCode::InvalidCommand,
+                message: "superseded".to_owned(),
+            })
+            .unwrap();
+        assert!(matches!(detach.await, CommandResult::Error { .. }));
+        assert!(state.with(|s| s.has_satellite_proxy_attach(ClientId(1), &host, 7)));
     }
 }
