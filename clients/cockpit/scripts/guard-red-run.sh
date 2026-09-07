@@ -62,8 +62,7 @@ set -euo pipefail
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(git -C "$ROOT" rev-parse --show-toplevel)"
 GUARD_DIR="$ROOT/scripts/guards"
-LOG_DIR="${TMPDIR:-/tmp}/phux-cockpit-guards"
-mkdir -p "$LOG_DIR" "$GUARD_DIR"
+mkdir -p "$GUARD_DIR"
 GIT_PREFIX="$(git -C "$ROOT" rev-parse --show-prefix)"
 GIT_PREFIX="${GIT_PREFIX%/}"
 
@@ -207,6 +206,11 @@ fi
 [[ ${#names[@]} -gt 0 ]] || die "no guards to prove."
 
 require_clean
+
+# Retain each invocation's evidence, including failed runs, without lane collisions.
+mkdir -p "${TMPDIR:-/tmp}"
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/phux-cockpit-guards.XXXXXX")"
+printf 'guard-red-run: logs retained in %s\n' "$LOG_DIR"
 
 # --------------------------------------------------------- the green baseline
 
