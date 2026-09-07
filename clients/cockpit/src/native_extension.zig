@@ -1280,6 +1280,7 @@ test "shipping Phux macOS editing gestures target word and line bindings" {
     try expectOutgoingKey(remote, 76, 0);
 }
 
+// GUARD: ts-search-key-owner
 test "shipping search text cannot leak a key release after search closes" {
     const engine = try engineWithText("\x1b[>3u");
     defer engine.destroy();
