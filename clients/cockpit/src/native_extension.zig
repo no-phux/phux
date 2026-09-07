@@ -1239,6 +1239,7 @@ test "shipping Phux control keys remain terminal input" {
     try std.testing.expect(!bridge.engine.?.model.paste_inflight);
 }
 
+// GUARD: ts-remote-composition
 test "shipping Phux committed text consumes composition modifiers" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
