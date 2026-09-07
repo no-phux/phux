@@ -1358,6 +1358,7 @@ test "pending attachment cannot propose a viewport for a reused remote identity"
     try std.testing.expectEqual(@as(usize, 0), after.slice().len);
 }
 
+// GUARD: ts-pending-grid
 test "pending attachment hides the published grid of a reused remote identity" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
