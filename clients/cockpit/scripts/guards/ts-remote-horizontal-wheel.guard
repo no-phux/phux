@@ -3,7 +3,7 @@
 # Remove both additive mappings; signed fractional wheel reports must fail.
 build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
 test: shipping remote horizontal wheels retain fractional signs
-red: 2026-09-07 at 16701fc
+red: 2026-09-07 at 3e18427
 diff --git a/src/providers/phux/host.zig b/src/providers/phux/host.zig
 --- a/src/providers/phux/host.zig
 +++ b/src/providers/phux/host.zig
