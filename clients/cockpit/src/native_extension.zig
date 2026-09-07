@@ -1697,6 +1697,7 @@ test "shipping durable tab waits for exact publication and keeps its original wi
     try cockpit.durable_tests.tabPublication();
 }
 
+// GUARD: ts-durable-split
 test "shipping durable split does not follow a different selected tab" {
     try cockpit.durable_tests.splitDestination();
 }
