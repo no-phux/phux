@@ -2243,6 +2243,7 @@ fn navigationIntentBytes(revision: u64, index: u16) [12]u8 {
     return bytes;
 }
 
+// GUARD: ts-navigation-completion-isolation
 test "navigation bridge preserves independently pending catalog and snapshot completions" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
