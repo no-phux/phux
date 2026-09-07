@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::ptr;
 
 use libghostty_vt::render::{
@@ -46,6 +46,12 @@ pub(crate) struct SessionSummary {
 
 const NO_HYPERLINK: (u32, u32) = (0, 0);
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static RENDER_CACHE_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static EFFECT_VIEW_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[allow(
     clippy::redundant_pub_crate,
     reason = "the private module's bridge types are shared with the crate-root C exports"
@@ -84,6 +90,8 @@ pub(crate) struct RenderCache {
 
 impl RenderCache {
     fn new() -> Result<Self, BridgeError> {
+        #[cfg(test)]
+        RENDER_CACHE_BUILDS.set(RENDER_CACHE_BUILDS.get() + 1);
         Ok(Self {
             state: RenderState::new().map_err(BridgeError::ghostty)?,
             rows: RowIterator::new().map_err(BridgeError::ghostty)?,
@@ -93,6 +101,37 @@ impl RenderCache {
             terminal_host: Vec::new(),
             view: PhuxTerminalGridView::default(),
         })
+    }
+
+    /// Populate the dense cell arenas while the snapshot and both iterators
+    /// borrow disjoint cache fields together.
+    fn populate_grid(
+        &mut self,
+        terminal: &libghostty_vt::Terminal<'static, 'static>,
+    ) -> Result<(u16, u16, CursorView), BridgeError> {
+        let snapshot = self.state.update(terminal).map_err(BridgeError::ghostty)?;
+        let cols = snapshot.cols().map_err(BridgeError::ghostty)?;
+        let rows = snapshot.rows().map_err(BridgeError::ghostty)?;
+        let colors = snapshot.colors().map_err(BridgeError::ghostty)?;
+        self.grid_cells.clear();
+        self.utf8.clear();
+        self.grid_cells
+            .reserve(usize::from(cols) * usize::from(rows));
+        fill_grid_cells(
+            &mut self.rows,
+            &mut self.cells,
+            &snapshot,
+            &CellContext {
+                terminal,
+                colors: &colors,
+            },
+            &mut GridSink {
+                cells: &mut self.grid_cells,
+                utf8: &mut self.utf8,
+            },
+        )?;
+        ensure_dense_viewport(self.grid_cells.len(), cols, rows)?;
+        Ok((cols, rows, read_cursor_view(&snapshot)?))
     }
 }
 
@@ -109,7 +148,9 @@ pub(crate) struct Client {
     pub effects: EffectBuffer,
     pub outgoing: Vec<Vec<u8>>,
     pub owned_effects: Vec<OwnedEffect>,
-    pub effect_views: Vec<PhuxClientEffect>,
+    /// Published prefix of `owned_effects`. Failed processing leaves newly
+    /// staged effects hidden until the next successful publication.
+    pub effect_count: usize,
     pub render: HashMap<TerminalId, RenderCache>,
     pub selection_buf: Vec<u8>,
     /// Backing store for `phux_client_perf_json`; valid until the next call.
@@ -157,7 +198,7 @@ impl Client {
             effects: EffectBuffer::new(),
             outgoing: Vec::new(),
             owned_effects: Vec::new(),
-            effect_views: Vec::new(),
+            effect_count: 0,
             render: HashMap::new(),
             selection_buf: Vec::new(),
             perf_buf: Vec::new(),
@@ -449,7 +490,12 @@ impl Client {
     }
 
     pub(crate) fn process_effects(&mut self) -> Result<(), BridgeError> {
-        let mut effects = self.effects.take();
+        let effects = self.effects.take();
+        self.process_effect_batch(effects)
+    }
+
+    /// Consume a detached kernel batch and return its allocation even on error.
+    fn process_effect_batch(&mut self, mut effects: Vec<KernelEffect>) -> Result<(), BridgeError> {
         effects.reverse();
         let result: Result<(), BridgeError> = (|| {
             while let Some(effect) = effects.pop() {
@@ -485,7 +531,7 @@ impl Client {
         effects.clear();
         self.effects.restore_allocation(effects);
         result?;
-        self.rebuild_effect_views();
+        self.publish_effects();
         Ok(())
     }
 
@@ -635,21 +681,31 @@ impl Client {
         Ok(())
     }
 
-    pub(crate) fn rebuild_effect_views(&mut self) {
-        self.effect_views.clear();
-        self.effect_views
-            .extend(self.owned_effects.iter().map(|effect| PhuxClientEffect {
-                kind: effect.kind,
-                detail: effect.detail,
-                status_code: effect.status_code,
-                terminal_id: terminal_id_out(&effect.terminal_id),
-                stream_id: effect.stream_id,
-                bootstrap_id: effect.bootstrap_id,
-                seq: effect.seq,
-                first_row: effect.first_row,
-                last_row: effect.last_row,
-                bytes: bytes_out(&effect.bytes),
-            }));
+    pub(crate) const fn publish_effects(&mut self) {
+        self.effect_count = self.owned_effects.len();
+    }
+
+    /// Project only the requested record. Its byte spans borrow immutable
+    /// owned payloads until the next mutable C call, as before.
+    pub(crate) fn effect_view(&self, index: usize) -> Option<PhuxClientEffect> {
+        self.owned_effects[..self.effect_count]
+            .get(index)
+            .map(|effect| {
+                #[cfg(test)]
+                EFFECT_VIEW_BUILDS.set(EFFECT_VIEW_BUILDS.get() + 1);
+                PhuxClientEffect {
+                    kind: effect.kind,
+                    detail: effect.detail,
+                    status_code: effect.status_code,
+                    terminal_id: terminal_id_out(&effect.terminal_id),
+                    stream_id: effect.stream_id,
+                    bootstrap_id: effect.bootstrap_id,
+                    seq: effect.seq,
+                    first_row: effect.first_row,
+                    last_row: effect.last_row,
+                    bytes: bytes_out(&effect.bytes),
+                }
+            })
     }
 
     pub(crate) fn build_grid(
@@ -708,37 +764,14 @@ impl Client {
     ) -> Result<*const PhuxTerminalGridView, BridgeError> {
         let terminal =
             self.terminal(terminal_id)? as *const libghostty_vt::Terminal<'static, 'static>;
-        let cache = self
-            .render
-            .entry(terminal_id.clone())
-            .or_insert(RenderCache::new()?);
+        let cache = match self.render.entry(terminal_id.clone()) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(RenderCache::new()?),
+        };
         // SAFETY: terminal is owned by session; render cache is disjoint bridge state and no
         // session mutation occurs until this method returns.
         let terminal = unsafe { &*terminal };
-        let snapshot = cache.state.update(terminal).map_err(BridgeError::ghostty)?;
-        let cols = snapshot.cols().map_err(BridgeError::ghostty)?;
-        let rows = snapshot.rows().map_err(BridgeError::ghostty)?;
-        let colors = snapshot.colors().map_err(BridgeError::ghostty)?;
-        cache.grid_cells.clear();
-        cache.utf8.clear();
-        cache
-            .grid_cells
-            .reserve(usize::from(cols) * usize::from(rows));
-        fill_grid_cells(
-            &mut cache.rows,
-            &mut cache.cells,
-            &snapshot,
-            &CellContext {
-                terminal,
-                colors: &colors,
-            },
-            &mut GridSink {
-                cells: &mut cache.grid_cells,
-                utf8: &mut cache.utf8,
-            },
-        )?;
-        ensure_dense_viewport(cache.grid_cells.len(), cols, rows)?;
-        let cursor = read_cursor_view(&snapshot)?;
+        let (cols, rows, cursor) = cache.populate_grid(terminal)?;
         let scrollbar = terminal.scrollbar().map_err(BridgeError::ghostty)?;
         let history = history_counters(inputs.history.as_ref());
         cache.terminal_host.clear();
@@ -1358,6 +1391,88 @@ fn viewport_scroll(kind: u32, value: i64) -> Result<ScrollViewport, BridgeError>
 mod tests {
     use super::*;
     use crate::types::PhuxClientResult;
+
+    #[test]
+    fn failed_effect_batch_keeps_the_previous_published_prefix() {
+        let mut bridge = crate::PhuxClient {
+            _not_send_sync: std::marker::PhantomData,
+            inner: Client::new(Limits {
+                bootstrap_chunk: 1024,
+                history_page: 1024,
+                history_page_rows: 128,
+                history_cache_bytes: 4096,
+                history_materialized_rows: 1024,
+                history_prefetch_rows: 64,
+            }),
+        };
+        let terminal_id = TerminalId::local(7);
+        bridge
+            .inner
+            .owned_effects
+            .push(OwnedEffect::simple(2, 1, terminal_id.clone()));
+        bridge.inner.publish_effects();
+        let error = bridge
+            .inner
+            .process_effect_batch(vec![
+                KernelEffect::Damage(phux_client_core::session::KernelDamage {
+                    terminal_id: terminal_id.clone(),
+                    kind: KernelDamageKind::Rows { first: 2, last: 4 },
+                }),
+                KernelEffect::Send(KernelSend::PtyWrite {
+                    terminal_id,
+                    bytes: b"\x1b[0n".to_vec(),
+                }),
+            ])
+            .expect_err("PTY replies require negotiated support");
+        assert_eq!(error.result, PhuxClientResult::EngineError);
+        assert_eq!(
+            bridge.inner.owned_effects.len(),
+            2,
+            "damage was staged before failure"
+        );
+        assert!(bridge.inner.effects.is_empty());
+        assert!(
+            bridge.inner.effects.capacity() >= 2,
+            "failed batches return their allocation"
+        );
+        let mut effect = PhuxClientEffect::default();
+        // SAFETY: the stack-owned bridge and writable output remain live on this thread.
+        unsafe {
+            assert_eq!(crate::phux_client_effect_count(&raw const bridge), 1);
+            assert_eq!(
+                crate::phux_client_effect_get(&raw const bridge, 0, &raw mut effect),
+                PhuxClientResult::Ok
+            );
+            assert_eq!((effect.kind, effect.detail), (2, 1));
+            assert_eq!(
+                crate::phux_client_effect_get(&raw const bridge, 1, &raw mut effect),
+                PhuxClientResult::NoValue
+            );
+        }
+        // Preserve the existing rebuild-on-next-success behavior: a later
+        // successful batch publishes the retained prefix, including its damage.
+        bridge
+            .inner
+            .process_effects()
+            .expect("empty successful batch");
+        // SAFETY: the bridge and output still live on their owning thread.
+        unsafe {
+            assert_eq!(crate::phux_client_effect_count(&raw const bridge), 2);
+            assert_eq!(
+                crate::phux_client_effect_get(&raw const bridge, 1, &raw mut effect),
+                PhuxClientResult::Ok
+            );
+        }
+        assert_eq!(
+            (
+                effect.kind,
+                effect.detail,
+                effect.first_row,
+                effect.last_row
+            ),
+            (1, 2, 2, 4)
+        );
+    }
 
     #[test]
     fn terminal_reply_requires_explicit_hello_ok_feature() {

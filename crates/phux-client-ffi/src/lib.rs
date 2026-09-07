@@ -1234,7 +1234,7 @@ fn apply_bell(
     client
         .owned_effects
         .push(OwnedEffect::simple(2, 1, terminal_id));
-    client.rebuild_effect_views();
+    client.publish_effects();
     Ok(())
 }
 
@@ -1243,7 +1243,7 @@ fn apply_error(client: &mut Client, code: phux_protocol::wire::frame::ErrorCode,
     let mut effect = OwnedEffect::simple(2, 4, phux_protocol::TerminalId::local(0));
     effect.bytes = format!("{code:?}: {message}").into_bytes();
     client.owned_effects.push(effect);
-    client.rebuild_effect_views();
+    client.publish_effects();
 }
 
 /// Ends the session and publishes the ending as an effect.
@@ -1266,7 +1266,7 @@ fn apply_detached(
         reason.map_or(DETACH_REASON_UNSTATED, |reason| u32::from(reason.as_wire()));
     effect.bytes = message.into_bytes();
     client.owned_effects.push(effect);
-    client.rebuild_effect_views();
+    client.publish_effects();
 }
 
 /// Returns the number of sessions advertised by the latest accepted ATTACHED.
@@ -1405,7 +1405,7 @@ pub unsafe extern "C" fn phux_client_effect_count(client: *const PhuxClient) -> 
         if client.inner.in_callback {
             0
         } else {
-            client.inner.effect_views.len()
+            client.inner.effect_count
         }
     })
 }
@@ -1431,10 +1431,9 @@ pub unsafe extern "C" fn phux_client_effect_get(
         }
         let out = unsafe { out_effect.as_mut() }.ok_or(PhuxClientResult::InvalidArgument)?;
         *out = PhuxClientEffect::default();
-        *out = *client
+        *out = client
             .inner
-            .effect_views
-            .get(index)
+            .effect_view(index)
             .ok_or(PhuxClientResult::NoValue)?;
         Ok(())
     })) {
@@ -1454,7 +1453,7 @@ pub unsafe extern "C" fn phux_client_effect_get(
 pub unsafe extern "C" fn phux_client_effect_clear(client: *mut PhuxClient) -> PhuxClientResult {
     with_client_mut(client, |client| {
         client.owned_effects.clear();
-        client.rebuild_effect_views();
+        client.publish_effects();
         Ok(())
     })
 }
@@ -2411,6 +2410,7 @@ mod tests {
             PhuxClientResult::Ok
         );
 
+        client::RENDER_CACHE_BUILDS.set(0);
         let mut view = PhuxTerminalGridView::default();
         assert_eq!(
             unsafe { phux_client_terminal_grid(client, &raw const c_terminal_id, &raw mut view,) },
@@ -2418,6 +2418,27 @@ mod tests {
         );
         assert_eq!(view.stream_id, stream_id.get());
         assert_eq!(view.bootstrap_id, second_bootstrap.get());
+        assert_eq!(client::RENDER_CACHE_BUILDS.get(), 1);
+        for _ in 0..4 {
+            assert_eq!(
+                unsafe {
+                    phux_client_anchor_release(client, &raw const c_terminal_id, view.top_anchor)
+                },
+                PhuxClientResult::Ok
+            );
+            assert_eq!(
+                unsafe {
+                    phux_client_terminal_grid(client, &raw const c_terminal_id, &raw mut view)
+                },
+                PhuxClientResult::Ok
+            );
+            assert_eq!(view.cell_count, 80 * 24);
+        }
+        assert_eq!(
+            client::RENDER_CACHE_BUILDS.get(),
+            1,
+            "cache hits must not construct libghostty render state or iterators"
+        );
         if view.top_anchor.opaque_id != 0 {
             assert_eq!(
                 unsafe {
@@ -2709,6 +2730,95 @@ mod tests {
         let mut encoded = bytes::BytesMut::new();
         frame.encode(&mut encoded);
         unsafe { phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) }
+    }
+
+    #[test]
+    fn queued_effects_are_projected_only_when_read() {
+        let client = boxed_client();
+        unsafe { (*client).inner.protocol_ready = true };
+        client::EFFECT_VIEW_BUILDS.set(0);
+        for index in 0..64 {
+            assert_eq!(
+                feed_kind(
+                    client,
+                    &FrameKind::Error {
+                        code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
+                        request_id: None,
+                        message: format!("error {index}"),
+                    }
+                ),
+                PhuxClientResult::Ok
+            );
+        }
+        assert_eq!(unsafe { phux_client_effect_count(client) }, 64);
+        assert_eq!(
+            client::EFFECT_VIEW_BUILDS.get(),
+            0,
+            "feeding must not repeatedly project the growing effect backlog"
+        );
+        for index in 0..64 {
+            let mut effect = PhuxClientEffect::default();
+            assert_eq!(
+                unsafe { phux_client_effect_get(client, index, &raw mut effect) },
+                PhuxClientResult::Ok
+            );
+            assert_eq!((effect.kind, effect.detail), (2, 4));
+            let message =
+                unsafe { std::slice::from_raw_parts(effect.bytes.data, effect.bytes.len) };
+            assert_eq!(message, format!("InvalidCommand: error {index}").as_bytes());
+        }
+        assert_eq!(client::EFFECT_VIEW_BUILDS.get(), 64);
+        // Pending effects remain hidden until successful processing publishes them.
+        let mut satellite =
+            OwnedEffect::simple(2, 2, phux_protocol::TerminalId::satellite("peer", 9));
+        satellite.bytes = b"satellite title".to_vec();
+        satellite.stream_id = 11;
+        satellite.bootstrap_id = 12;
+        satellite.seq = 13;
+        satellite.first_row = 3;
+        satellite.last_row = 5;
+        unsafe { (*client).inner.owned_effects.push(satellite) };
+        let mut effect = PhuxClientEffect::default();
+        assert_eq!(unsafe { phux_client_effect_count(client) }, 64);
+        assert_eq!(
+            unsafe { phux_client_effect_get(client, 64, &raw mut effect) },
+            PhuxClientResult::NoValue
+        );
+        unsafe { (*client).inner.publish_effects() };
+        assert_eq!(
+            unsafe { phux_client_effect_get(client, 64, &raw mut effect) },
+            PhuxClientResult::Ok
+        );
+        assert_eq!((effect.terminal_id.kind, effect.terminal_id.id), (1, 9));
+        assert_eq!(
+            unsafe {
+                std::slice::from_raw_parts(
+                    effect.terminal_id.host.data,
+                    effect.terminal_id.host.len,
+                )
+            },
+            b"peer"
+        );
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(effect.bytes.data, effect.bytes.len) },
+            b"satellite title"
+        );
+        assert_eq!(
+            (effect.stream_id, effect.bootstrap_id, effect.seq),
+            (11, 12, 13)
+        );
+        assert_eq!((effect.first_row, effect.last_row), (3, 5));
+        assert_eq!(
+            unsafe { phux_client_effect_clear(client) },
+            PhuxClientResult::Ok
+        );
+        assert_eq!(unsafe { phux_client_effect_count(client) }, 0);
+        let mut effect = PhuxClientEffect::default();
+        assert_eq!(
+            unsafe { phux_client_effect_get(client, 0, &raw mut effect) },
+            PhuxClientResult::NoValue
+        );
+        unsafe { phux_client_free(client) };
     }
 
     #[test]
