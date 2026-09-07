@@ -1177,6 +1177,7 @@ test "shipping clipboard completion belongs to its requesting replica after focu
 
 // GUARD: ts-remote-input
 test "shipping Phux callbacks emit structured key text paste and focus frames" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
@@ -1208,6 +1209,7 @@ fn expectOutgoingTag(remote: anytype, tag: u8) !void {
 }
 
 test "shipping frame resizes a published Phux viewport once" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
