@@ -176,6 +176,23 @@ pub fn windowRefusal() !void {
     try testing.expect(engine.model.terminal_limit_refused);
 }
 
+pub fn splitReservations() !void {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const tree = model.selectedTree().?;
+    const origin = tree.focusedTerminal().?;
+    while (tree.paneCount() < @import("layout.zig").max_panes - 1) {
+        const pane = try model.provider.createTerminal();
+        _ = try tree.split(tree.find(origin).?, .horizontal, pane.id);
+        _ = tree.focusTerminal(origin);
+    }
+    try testing.expect(command(engine, .native_command, @intFromEnum(protocol.NativeCommand.split_right)));
+    try testing.expect(!command(engine, .native_command, @intFromEnum(protocol.NativeCommand.split_right)));
+    try testing.expectEqual(@as(usize, 1), engine.creation.count());
+}
+
 pub fn restoredEmptyWorkspace() !void {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const startup = @import("startup.zig");
