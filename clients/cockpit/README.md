@@ -25,14 +25,17 @@ work database, artifact store, or process-owning daemon. See
 
 ## Spatial runtime
 
-- Cockpit launches with **one terminal** and one shell process, up to 32. Each
-  has a stable in-process terminal ID and owns its own PTY, emulator, scrollback,
-  selection, input queue, and retained-rendering namespace. Tab order and
-  visible placement do not own execution.
+- **Phux-backed terminals keep their execution in the coordinator.** Cockpit
+  owns the native view, input routing, selection, and layout; terminal identity
+  is independent of tab order and visible placement. The direct local PTY
+  provider is an explicitly ephemeral alternative: its shells belong to the
+  app process. Both providers share a bounded workspace of up to 32 panes.
 - **A tab owns a pane tree**, not a terminal. A leaf is a terminal; a branch
   divides its rect between two children along an orientation at a fraction.
   `cmd+D` splits right and `cmd+shift+D` splits down, each creating a NEW
-  shell beside the focused pane, nested arbitrarily up to 16 panes per tab.
+  terminal beside the focused pane, nested arbitrarily up to 16 panes per tab.
+  Phux-backed creation waits for coordinator acceptance and publication before
+  placing the terminal in the original destination.
   Closing a pane promotes its sibling into the parent's rect, so a split never
   collapses into a hole and never pulls in an unrelated tab. Splitting,
   focusing, resizing, and collapsing never restart a process.
@@ -52,46 +55,33 @@ work database, artifact store, or process-owning daemon. See
   terminal strip: the strip shows terminals. It keeps its page process alive
   while a terminal is selected. Native bridge commands are disabled; WebKit
   subframes and page resources remain ordinary web content.
-- **The workspace persists.** Tab list, pane trees, divider fractions,
-  selection, focus, and each terminal's working directory are written to the
-  platform state directory on a debounce and restored before the first
-  terminal is created. Restoring recreates shells in the saved shape;
-  `process_restoration_supported` is `false` and nothing pretends otherwise.
-- **Phux terminals** published by a coordinator enter the same bounded tab
-  topology as local ones. One that appears becomes a tab; it takes a visible
-  pane when you select it, never by displacing a live local terminal. `cmd+W`
-  closes local terminals only — a phux terminal's lifetime is not Cockpit's to
-  end. Cockpit still does not run the phux TUI.
+- **The workspace persists.** Tab lists, pane trees, divider fractions, selected
+  tabs, pane focus, and local working directories are saved on a debounce.
+  Phux placements also save endpoint, coordinator incarnation, session, and
+  provider-qualified terminal identity. Reopening reattaches to the same
+  durable work after matching identity and subscription acceptance. Ephemeral
+  local placements recreate shells in the saved shape.
+- **Close detaches a Phux placement.** `cmd+W` releases its subscription when
+  the final placement closes, leaving durable work running. Offline close
+  removes the saved placement; reconnect does not resurrect it. Available
+  terminals remain discoverable in the switcher for explicit reattachment.
+  Closing an ephemeral local terminal ends its app-owned shell. Cockpit does
+  not run the Phux TUI.
 
-## Chrome that costs nothing
+## Native chrome and navigation
 
-At rest Cockpit is a terminal, not an application frame around one. A single
-healthy terminal gets the whole content area: no tab strip, no toolbar, no
-status banner.
-
-**Tabs live in the titlebar.** A `hidden_inset_tall` window is already carrying
-~66pt of band that holds three traffic lights and nothing else, and its height
-does not depend on how many tabs exist — so the strip drawn inside it takes no
-content height in any state. This is the difference between chrome that is
-cheap to reveal and chrome there is nothing to reveal: `content.y` does not
-move, so no terminal is resized and no TUI redraws. The old separate 50pt band
-cost every terminal in the tab three rows and a `SIGWINCH` on the way in, and
-another on the way out. It survives only for a window the platform gave no
-titlebar — fullscreen — where the room genuinely has to come from somewhere.
-
-The strip appears when the workspace has structure to show: a second tab, the
-Web surface, or a terminal that needs attention. A split alone does not raise
-it — two panes in one tab are still one tab, and the divider says so. Attention
-is *unacknowledged* state, not cumulative: looking at a terminal clears it, the
-way a bell already worked. The loss counters themselves stay cumulative, because
-they are the evidence in each surface's accessibility label, and a diagnostic
-that resets is a diagnostic that lies.
+The shipping TypeScript app keeps terminal navigation, creation, settings, and
+connection status in compact native chrome. Tabs occupy a top strip or a side
+rail; the terminal area is shared by the painter, pointer targets, and viewport
+sizing. The compiled markup owns those bands. Their token and spacing contract
+is documented in [Design System](docs/DESIGN_SYSTEM.md).
 
 **`cmd+shift+P` summons a switcher** that floats over the grid instead of taking
-room from it — type to filter by shell title, working directory, or position,
-`enter` to go. It is the path that still works at thirty terminals, where a
-strip has to start windowing and shrinking pills, and it is the seam this app
-grows through toward directing many machines at once.
+room from it — type to filter by title, working directory, provider, window,
+or session, then press `enter` to go. Open panes, available durable terminals,
+and sessions share this bounded navigation surface. Selecting an existing pane
+finds its exact tab and window; selecting an available terminal explicitly
+attaches it. See [Navigation Seam](docs/NAVIGATION_SEAM.md).
 
 Tabs can sit in a side rail instead (`tab-placement = side`, or View > Toggle
 Tab Placement) without changing terminal identity, focus, or process state. The
@@ -112,11 +102,8 @@ against a 2,048 ceiling, truncating from the bottom without saying so. Where a
 budget does genuinely bind, the painter reports the loss instead of quietly
 dropping rows.
 
-Terminal tabs show an attention dot when a hidden process rings the bell or
-develops an operational issue, and an exception is itself enough to bring the
-strip back when a lone terminal is in trouble. Splits carry no pane header at
-all: the focused pane wears a hairline accent edge, the others are dimmed by a
-scrim, and that is the whole indication. The scrim dims toward **black**, not
+Splits carry no pane header: the focused pane wears a hairline accent edge,
+and the others are dimmed by a scrim. The scrim dims toward **black**, not
 toward the window's own ground — painting the ground over panes that already
 carry it composited a colour over itself, which changes nothing at any alpha,
 so the dim used to draw literally nothing and a four-way split was told apart
@@ -128,8 +115,8 @@ Byte counts, I/O-loss badges and lifecycle strings are not product chrome — th
 live in each surface's accessibility label, so a screen reader keeps every
 detail the eye is spared.
 
-**A shell that ends closes its pane, at any exit status**, and its sibling
-reclaims the rect. Exit code is the child's answer about the last command it
+**An ephemeral local shell that ends closes its pane, at any exit status**,
+and its sibling reclaims the rect. Exit code is the child's answer about the last command it
 ran, not a claim about whether the pane is still wanted — and `exit` inherits
 that status, so gating the close on it left an ordinary session ended by an
 ordinary failed command sitting behind a permanent `EXIT 1` husk that never gave
@@ -150,9 +137,10 @@ a closed one.
 `Model.topologySnapshot()` exposes the versioned persistence boundary for the
 tab list, each tab's pane tree, selection, focus, divider fractions, and
 per-terminal working directories. `restoreModel()` validates or migrates that
-snapshot and creates new emulator sessions and shell processes. The snapshot
-intentionally contains no PID, PTY key, screen memory, or process-survival
-claim. It is stored as a flat line-oriented file with an explicit terminator,
+snapshot and recreates local shells or stages validated Phux reattachment.
+The snapshot contains no PID, PTY key, or screen memory: process survival belongs
+to Phux, while Cockpit persists placement and attachment identity. It is stored
+as a flat line-oriented file with an explicit terminator,
 chosen over a nested format because it is read at startup from a user-editable
 path a crash may have half-written, and a grammar with no nesting cannot
 overflow a stack however the bytes fall. See
@@ -165,6 +153,15 @@ back to the macOS platform config directory. The dotfile path is searched first
 on purpose: the people most likely to write one are arriving from Ghostty and
 will not go looking in `~/Library/Preferences`. `PHUX_COCKPIT_CONFIG` overrides
 both.
+
+Phux-enabled builds resolve a local coordinator automatically. `phux-socket`
+selects an absolute Unix socket and `phux-session` selects an existing session;
+an empty session selects the coordinator's current/last session. Nonempty valid
+`PHUX_SOCKET` and `PHUX_SESSION` environment values take precedence over the
+config. The bundled matching CLI ensures coordinator availability off the UI
+thread before connection. A failed attachment stays a recovery state rather
+than starting replacement local shells. Startup ownership is described in the
+[process model](../../docs/architecture/process-model.md).
 
 The syntax is Ghostty's — one `key = value` per line, `#` starts a whole-line
 comment, and there are deliberately no trailing comments because `#` is also how
@@ -648,15 +645,14 @@ Cockpit** workflow against the existing draft tag.
 
 ## Limitations
 
-- Native Phux terminal identity and lifetime remain coordinator-owned; Cockpit
-  projects published terminals but does not fake remote close. Tabs containing
-  remote terminals are not persisted or restored, so their placement is not
-  durable across launches.
-- Layout persistence restores the SHAPE of a workspace, never its processes.
-  Tabs, pane trees, divider fractions, selection, focus, and working
-  directories come back; scrollback and running programs do not.
-  `process_restoration_supported` is explicitly `false` and the snapshot
-  carries no PID.
+- Durable restoration requires the same endpoint, coordinator incarnation,
+  session, and terminal identity. Unavailable or mismatched attachments remain
+  pending; Cockpit does not invent replacement work. Satellite restoration
+  also requires matching route-incarnation evidence.
+- Ephemeral local PTY restoration restores layout and working directories,
+  not the former processes or scrollback. Phux-backed work survives in its
+  coordinator independently of the app; see
+  [Topology Snapshots](docs/TOPOLOGY_SNAPSHOTS.md) for the persistence contract.
 - Working-directory inheritance and shell-titled tabs depend on the shell
   emitting OSC 7 and OSC 0/2. A shell without integration falls back to `$HOME`
   and to numbered tabs — correct, but less useful, and not something Cockpit
