@@ -1312,6 +1312,7 @@ test "shipping Control F is terminal input rather than a fullscreen shortcut" {
     try std.testing.expect(primaryChord(.{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true, .super = true } }) != null);
 }
 
+// GUARD: ts-overlay-focus
 test "shipping overlay frame suspends remote focus and input until dismissal" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();

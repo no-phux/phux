@@ -1,0 +1,20 @@
+# GUARD ts-control-f
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping Control F is terminal input rather than a fullscreen shortcut
+red: 2026-09-07 at 73e281b
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/native_extension.zig b/src/native_extension.zig
+index 64230413..23b09ba4 100644
+--- a/src/native_extension.zig
++++ b/src/native_extension.zig
+@@ -387,7 +387,7 @@ fn overlayKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
+ /// core messages as menus/real shortcuts so the driven and physical paths are
+ /// indistinguishable after this boundary.
+ fn primaryChord(event: canvas.WidgetKeyboardEvent) ?core.Msg {
+-    if (event.phase == .key_up or !event.modifiers.super) return null;
++    if (event.phase == .key_up or !event.modifiers.hasCommandModifier()) return null;
+     const key = event.key;
+     const shift = event.modifiers.shift;
+     const control = event.modifiers.control;
