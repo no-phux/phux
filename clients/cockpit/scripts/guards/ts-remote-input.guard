@@ -1,0 +1,20 @@
+# GUARD ts-remote-input
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping Phux callbacks emit structured key text paste and focus frames
+red: 2026-09-07 at 3e58e55
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/ts_engine.zig b/src/cockpit/native/ts_engine.zig
+index f47d8461..1b4d3ef4 100644
+--- a/src/cockpit/native/ts_engine.zig
++++ b/src/cockpit/native/ts_engine.zig
+@@ -974,7 +974,7 @@ pub const Engine = struct {
+     pub fn onText(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
+         const ref = self.model.focusedTerminalRef() orelse return;
+         interaction.rememberKey(self.model, ref, event);
+-        if (support.providerKind(ref) == .phux) return interaction.remoteText(self.model, ref, event);
++        if (support.providerKind(ref) == .phux) return;
+         const pane = self.focusedPane() orelse return;
+         if (event.text.len == 0) return;
+         if (pane.session.search.open) {

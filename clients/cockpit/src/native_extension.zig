@@ -1707,6 +1707,7 @@ test "a bell while the app is deactivated notifies once, on its rising edge" {
     try std.testing.expectEqual(@as(usize, 0), quiet.notifications);
 }
 
+// GUARD: ts-engine-copy
 test "select all and cmd+C put the scrollback on the clipboard through the seam" {
     const engine = try engineWithText("hello world\r\n");
     defer engine.destroy();
