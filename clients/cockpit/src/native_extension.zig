@@ -1742,6 +1742,7 @@ test "shipping empty persisted Phux workspace does not spawn a synthetic local s
     try cockpit.durable_tests.restoredEmptyWorkspace();
 }
 
+// GUARD: ts-reconnect-announcement
 test "shipping failed reconnect publishes the retired pending window" {
     try cockpit.durable_tests.reconnectClosePublishes();
 }
