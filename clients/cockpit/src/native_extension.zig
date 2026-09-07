@@ -2414,6 +2414,10 @@ test "navigation reconnect waits for a live channel close and reopens an already
     try std.testing.expect(engine.model.phux_reconnect_after_close);
     try std.testing.expectEqual(.connecting, cockpit.engine.navigation.connection(engine.model));
 
+    const announced = engine.onPhuxChannel(&effects, .{ .key = cockpit.phux_channel_key, .kind = .closed }, phuxChannel);
+    try std.testing.expect(announced);
+    effects.opened = 0;
+
     effects.live = false;
     try std.testing.expect(engine.restartNavigationConnection(&effects, phuxChannel));
     try std.testing.expectEqual(@as(usize, 1), effects.opened);
