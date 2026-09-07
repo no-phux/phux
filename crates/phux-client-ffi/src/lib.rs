@@ -7,6 +7,7 @@ compile_error!("phux-client-ffi is a native-only libghostty bridge");
 
 mod client;
 mod error;
+mod operations;
 mod types;
 
 use std::collections::HashSet;
@@ -28,6 +29,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 use phux_protocol::{PROTOCOL_VERSION, SessionId};
 
+pub use operations::*;
 pub use types::*;
 
 #[repr(C)]
@@ -659,6 +661,9 @@ fn dispatch_frame(
     frame: FrameKind,
     notify_attached: &mut bool,
 ) -> Result<(), BridgeError> {
+    let Some(frame) = operations::dispatch(client, frame)? else {
+        return Ok(());
+    };
     match frame {
         FrameKind::HelloOk {
             protocol_major,
@@ -666,15 +671,20 @@ fn dispatch_frame(
             server_caps,
             selected_profile,
             bootstrap_limits,
+            server_id,
             ..
-        } => apply_hello_ok(
-            client,
-            protocol_major,
-            protocol_minor,
-            server_caps,
-            selected_profile,
-            bootstrap_limits,
-        ),
+        } => {
+            apply_hello_ok(
+                client,
+                protocol_major,
+                protocol_minor,
+                server_caps,
+                selected_profile,
+                bootstrap_limits,
+            )?;
+            client.server_id = server_id;
+            Ok(())
+        }
         FrameKind::Ping { nonce } => client.queue_frame(&FrameKind::Pong { nonce }),
         FrameKind::Attached {
             attach_id,
@@ -1221,6 +1231,7 @@ fn apply_terminal_closed(
 ) -> Result<(), BridgeError> {
     client.ensure_participant(terminal_id)?;
     apply_kernel_input(client, KernelInput::TerminalClosed { terminal_id })?;
+    operations::release_terminal(client, terminal_id)?;
     forget_terminal(client, terminal_id);
     Ok(())
 }

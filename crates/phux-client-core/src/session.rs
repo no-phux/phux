@@ -916,6 +916,33 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.attach = None;
     }
 
+    /// Release all replica, retirement, and echo-probe state for a subscription.
+    ///
+    /// The caller MUST revoke its terminal admission before calling this method
+    /// and reject subsequent unsolicited frames for the released terminal. Unlike
+    /// terminal closure, release permits a later explicitly requested subscription
+    /// to the same ID. The caller owns removal of its presentation and queued
+    /// effects; this method emits no effects.
+    ///
+    /// Returns `false` without mutation for any terminal in the active ATTACH
+    /// inventory, including closed participants, preserving its aggregate barrier.
+    /// Returns `true` otherwise, including for an already released terminal.
+    #[must_use]
+    pub fn release_terminal(&mut self, terminal_id: &TerminalId) -> bool {
+        if self.attach.as_ref().is_some_and(|attach| {
+            attach
+                .terminals
+                .iter()
+                .any(|participant| &participant.terminal_id == terminal_id)
+        }) {
+            return false;
+        }
+        self.terminals.remove(terminal_id);
+        self.closed.remove(terminal_id);
+        self.perf_echo.forget(terminal_id);
+        true
+    }
+
     /// Borrow the published replica for one terminal.
     #[must_use]
     pub fn published(&self, terminal_id: &TerminalId) -> Option<PublishedReplica<'_, E>> {

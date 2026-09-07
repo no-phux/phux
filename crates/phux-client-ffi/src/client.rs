@@ -161,6 +161,8 @@ pub(crate) struct Client {
     pub next_document_revision: u64,
     pub search_results: Vec<PhuxSearchResult>,
     pub sessions: Vec<SessionSummary>,
+    pub operations: crate::operations::Operations,
+    pub server_id: Vec<u8>,
     pub anchors: HashMap<u64, (TerminalId, DocumentAnchorId)>,
     pub next_anchor_handle: u64,
     pub selections: HashMap<TerminalId, EngineDocumentSelection>,
@@ -207,6 +209,8 @@ impl Client {
             next_document_revision: 1,
             search_results: Vec::new(),
             sessions: Vec::new(),
+            operations: crate::operations::Operations::default(),
+            server_id: Vec::new(),
             last_error: Vec::new(),
             limits,
             anchors: HashMap::new(),
@@ -317,7 +321,8 @@ impl Client {
                 "terminal state frame arrived outside an active ATTACH phase",
             ));
         }
-        if self.session.active_attach_contains(terminal_id) {
+        if self.session.active_attach_contains(terminal_id) || self.operations.admitted(terminal_id)
+        {
             Ok(())
         } else {
             Err(BridgeError::protocol(
@@ -327,6 +332,8 @@ impl Client {
     }
 
     pub(crate) fn detach(&mut self) {
+        self.operations.disconnect();
+        self.outgoing.clear();
         self.session.release_active_attach();
         self.effects.clear();
         self.render.clear();

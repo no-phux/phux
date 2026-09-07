@@ -395,6 +395,90 @@ typedef struct PhuxAttachOptions {
     uint32_t scrollback_limit_lines;
 } PhuxAttachOptions;
 
+#define PHUX_CLIENT_MAX_OPERATIONS 128u
+#define PHUX_CLIENT_MAX_DYNAMIC_TERMINALS 256u
+#define PHUX_CLIENT_MAX_SPAWN_ARGS 256u
+#define PHUX_CLIENT_MAX_SPAWN_BYTES (64u * 1024u)
+#define PHUX_CLIENT_MAX_OPERATION_MESSAGE_BYTES 4096u
+
+/** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
+ * Request IDs are nonzero and strictly increasing across spawn/attach-terminal
+ * calls for this client, including after results are cleared. Validation failure
+ * does not consume an ID. Both operations require completed session ATTACH.
+ * Pending requests plus retained completions are bounded by MAX_OPERATIONS;
+ * consume/clear completions to free capacity. Spawn is never retried internally.
+ * New operations also require fewer than MAX_OPERATIONS queued outgoing frames;
+ * drain/clear outgoing frames after handing them to the transport.
+ * All input spans are copied by the queue call, UTF-8, and reject embedded NUL.
+ * argc == 0 selects the default shell; otherwise argv[0] must be nonempty.
+ * Empty cwd/satellite and null owner_terminal mean absent. owner_terminal must
+ * be local, nonzero, and cannot accompany satellite. Text across argv/cwd/host
+ * is bounded by MAX_SPAWN_BYTES. Both geometry axes must be nonzero.
+ * Geometry is an initial hint; older servers and satellite relays may ignore it.
+ */
+typedef struct PhuxSpawnOptions {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    const PhuxTerminalId *owner_terminal;
+    PhuxBytes satellite;
+    const PhuxBytes *argv;
+    size_t argc;
+    PhuxBytes cwd;
+    uint16_t cols;
+    uint16_t rows;
+} PhuxSpawnOptions;
+
+/** Explicitly admits this ID before bootstrap can arrive, including before the
+ * COMMAND_RESULT acknowledgment. Already admitted or pending IDs are rejected. A successful
+ * local spawn is automatically admitted; a satellite spawn needs this call.
+ */
+typedef struct PhuxAttachTerminalOptions {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    PhuxTerminalId terminal_id;
+} PhuxAttachTerminalOptions;
+
+typedef enum PhuxOperationKind {
+    PHUX_OPERATION_SPAWN = 1,
+    PHUX_OPERATION_ATTACH_TERMINAL = 2
+} PhuxOperationKind;
+
+typedef enum PhuxOperationStatus {
+    PHUX_OPERATION_SUCCESS = 1,
+    PHUX_OPERATION_REFUSED = 2,
+    PHUX_OPERATION_UNKNOWN_OUTCOME = 3
+} PhuxOperationStatus;
+
+typedef enum PhuxOperationErrorDomain {
+    PHUX_OPERATION_ERROR_NONE = 0,
+    PHUX_OPERATION_ERROR_SPAWN = 1,
+    PHUX_OPERATION_ERROR_PROTOCOL = 2
+} PhuxOperationErrorDomain;
+
+/** Initialize size/version before operation_get. Success is command acceptance,
+ * not stream READY; use terminal_grid to observe a published replica. Spawn
+ * errors use wire SpawnError tags (0 group missing, 1 spawn failed, 2 unsupported
+ * satellite, 3 satellite unreachable). Protocol errors use ErrorCode wire values.
+ * id == 0 means absent; attach results retain their requested ID even on failure.
+ * Host/message spans are borrowed until the next mutable client call. Messages
+ * are truncated at a UTF-8 boundary to MAX_OPERATION_MESSAGE_BYTES.
+ * UNKNOWN_OUTCOME means transport ended before a reply; reconcile against server
+ * inventory/identity, never automatically retry creation.
+ */
+typedef struct PhuxOperationResult {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    uint32_t kind;
+    uint32_t status;
+    uint32_t error_domain;
+    uint32_t error_code;
+    PhuxTerminalId terminal_id;
+    PhuxBytes message;
+} PhuxOperationResult;
+
 typedef enum PhuxClientEffectKind {
     PHUX_CLIENT_EFFECT_DAMAGE = 1,
     PHUX_CLIENT_EFFECT_STATUS = 2,
@@ -608,6 +692,17 @@ PhuxClientState phux_client_state(const PhuxClient *client);
 PhuxClientResult phux_client_last_error(const PhuxClient *client, PhuxBytes *out_error);
 PhuxClientResult phux_client_queue_hello(PhuxClient *client, PhuxBytes client_name);
 PhuxClientResult phux_client_queue_attach(PhuxClient *client, const PhuxAttachOptions *options);
+PhuxClientResult phux_client_queue_spawn(PhuxClient *client, const PhuxSpawnOptions *options);
+PhuxClientResult phux_client_queue_attach_terminal(PhuxClient *client, const PhuxAttachTerminalOptions *options);
+size_t phux_client_operation_count(const PhuxClient *client);
+PhuxClientResult phux_client_operation_get(const PhuxClient *client, size_t index, PhuxOperationResult *out_result);
+/** Clears completions only, preserving pending correlation and stream admission. */
+PhuxClientResult phux_client_operation_clear(PhuxClient *client);
+/** Opaque HELLO_OK identity, borrowed until mutation and retained after disconnect. */
+PhuxClientResult phux_client_server_id(const PhuxClient *client, PhuxBytes *out_id);
+/** Call on transport loss: cancels pending requests as unknown outcome, discards
+ * outgoing frames, and permanently detaches this client. Idempotent. */
+PhuxClientResult phux_client_disconnect(PhuxClient *client);
 PhuxClientResult phux_client_feed_frame(PhuxClient *client, const uint8_t *data, size_t len);
 size_t phux_client_session_count(const PhuxClient *client);
 PhuxClientResult phux_client_session_get(const PhuxClient *client, size_t index, PhuxSessionInfo *out_session);

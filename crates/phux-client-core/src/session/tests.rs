@@ -302,6 +302,64 @@ fn kernel_with_profile(mode: ReadyMode, profile: BootstrapProfile) -> SessionKer
     SessionKernel::new(FakeAdapter { ready_mode: mode }, profile)
 }
 
+#[test]
+fn release_terminal_preserves_initial_attach_inventory_and_barrier() {
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let id = terminal(1);
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::AttachStarted {
+                attach_id: 10,
+                terminals: std::slice::from_ref(&id),
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(!kernel.release_terminal(&id));
+    assert!(kernel.active_attach_contains(&id));
+    kernel
+        .update(
+            KernelInput::TerminalClosed { terminal_id: &id },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(!kernel.release_terminal(&id));
+    assert!(kernel.closed.contains(&id));
+    kernel
+        .update(KernelInput::AttachReady { attach_id: 10 }, &mut effects)
+        .unwrap();
+    kernel.release_active_attach();
+    assert!(kernel.release_terminal(&id));
+    assert!(!kernel.closed.contains(&id));
+}
+
+#[test]
+fn release_terminal_reclaims_churn_and_allows_explicit_subscription_replacement() {
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    for n in 1..=512 {
+        let id = terminal(n);
+        publish_direct(&mut kernel, &id, stream(1), bootstrap(1), 0, &mut effects);
+        assert!(kernel.release_terminal(&id));
+        assert!(kernel.terminals.is_empty());
+        assert!(kernel.closed.is_empty());
+        // Same ID can acquire a new explicitly admitted subscription.
+        begin(&mut kernel, &id, stream(2), bootstrap(1), 0, &mut effects);
+        kernel
+            .update(
+                KernelInput::TerminalClosed { terminal_id: &id },
+                &mut effects,
+            )
+            .unwrap();
+        assert!(kernel.closed.contains(&id));
+        assert!(kernel.release_terminal(&id));
+        assert!(kernel.terminals.is_empty());
+        assert!(kernel.closed.is_empty());
+        effects.clear();
+    }
+}
+
 fn begin(
     kernel: &mut SessionKernel<FakeAdapter>,
     terminal_id: &TerminalId,
