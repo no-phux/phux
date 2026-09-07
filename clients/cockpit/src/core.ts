@@ -278,6 +278,11 @@ function closePalette(model: Model): Model {
   return scopeOverlays({ ...model, paletteOpen: false, paletteQuery: NO_BYTES, paletteRows: NO_ROWS, paletteCursor: 0 });
 }
 
+function refreshNavigation(model: Model): Model {
+  const refreshed = requestNavigation(model, model.paletteOffset);
+  return { ...refreshed, paletteCursor: model.paletteCursor };
+}
+
 function validNavigationPick(model: Model, index: number): boolean {
   if (!model.paletteOpen || model.paletteLoading) return false;
   for (const row of model.paletteRows) {
@@ -296,7 +301,7 @@ function loadedNavigation(model: Model, body: Uint8Array): Model {
   const loaded: Model = { ...model, paletteRows: page.rows, paletteTotal: total, paletteLoading: false,
     palettePrevious: page.offset > 0, paletteNext: page.offset + page.rows.length < total,
     paletteNotice: total === 0 ? asciiBytes("No matching terminals or sessions") : asciiBytes("Open panes / Available terminals / Sessions") };
-  return highlightNavigation(loaded, model.paletteCursor);
+  return highlightNavigation(loaded, Math.min(model.paletteCursor, page.rows.length - 1));
 }
 
 function moveNavigation(model: Model, delta: number): Model {
@@ -898,7 +903,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       };
       const scoped = scopeOverlays(synced);
       if (!model.paletteOpen) return scoped;
-      return [requestNavigation(scoped, model.paletteOffset), Cmd.request("cockpit.navigation", navigationRequest(scoped.engineRevision, model.paletteOffset, model.paletteQuery), {
+      return [refreshNavigation(scoped), Cmd.request("cockpit.navigation", navigationRequest(scoped.engineRevision, model.paletteOffset, model.paletteQuery), {
         key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
       })];
     }

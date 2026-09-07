@@ -515,6 +515,7 @@ pub const Engine = struct {
             return false;
         }
         if (!model.selectTerminal(ref)) return false;
+        model.ws().tab_limit_refused = false;
         pointer_input.endHiddenCaptures(model, fx);
         return true;
     }
@@ -524,6 +525,8 @@ pub const Engine = struct {
         if (comptime !@hasDecl(Fx, "restartPhux")) return false;
         const remote = self.model.phux() orelse return false;
         const changed = remote.selectSession(id) catch return false;
+        // Selecting the current session is an accepted idempotent action;
+        // acknowledge it without restarting the connection or flashing refusal.
         if (!changed) return true;
         self.model.phux_admit_on_ready = true;
         return fx.restartPhux(self);

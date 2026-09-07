@@ -39,6 +39,8 @@ pub const IntentKind = enum(u8) {
     /// `argument` is a `NativeCommand`; `window` is the window that produced
     /// the platform event, already reduced to a process-local projection slot.
     native_command = 11,
+    // Tags 12/13 belong to NavigationIntent and decodeNavigationIntent.
+    // Future legacy intent kinds must start at 14; never reuse those tags.
 };
 
 pub const NativeCommand = enum(u8) {

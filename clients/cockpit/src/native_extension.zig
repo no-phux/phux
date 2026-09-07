@@ -2305,6 +2305,7 @@ test "navigation selects an exact split pane across windows through the shipping
     try std.testing.expect(engine.model.focusedTerminalRef().?.eql(original));
 }
 
+// GUARD: ts-navigation-placement-recovery
 test "navigation activates available remote identity and stable session id including reconnect" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
@@ -2325,8 +2326,10 @@ test "navigation activates available remote identity and stable session id inclu
         .focused = false,
     });
     var recorder: Recorder = .{};
+    engine.model.ws().tab_limit_refused = true;
     const available = navigationIntentBytes(engine.revision, 1);
     try std.testing.expect(engine.applyIntent(&available, &recorder));
+    try std.testing.expect(!engine.model.wsConst().tab_limit_refused);
     try std.testing.expect(engine.model.focusedTerminalRef().?.eql(ref));
     try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
     const session = navigationIntentBytes(engine.revision, 2);
@@ -2337,6 +2340,9 @@ test "navigation activates available remote identity and stable session id inclu
     try std.testing.expectEqual(@as(usize, 1), recorder.navigation_restarts);
     try std.testing.expect(engine.model.phux_admit_on_ready);
     try std.testing.expect(!engine.applyIntent(&session, &recorder));
+    try std.testing.expectEqual(@as(usize, 1), recorder.navigation_restarts);
+    const same_session = navigationIntentBytes(engine.revision, 2);
+    try std.testing.expect(engine.applyIntent(&same_session, &recorder));
     try std.testing.expectEqual(@as(usize, 1), recorder.navigation_restarts);
     engine.model.phux_connection_unavailable = true;
     var reconnect = navigationIntentBytes(engine.revision, 0);
@@ -2414,4 +2420,23 @@ test "navigation reconnect waits for a live channel close and reopens an already
     try std.testing.expect(!engine.model.phux_reconnect_after_close);
     try std.testing.expect(engine.model.phux_connection_unavailable);
     try std.testing.expectEqual(.offline, cockpit.engine.navigation.connection(engine.model));
+}
+
+test "navigation retains keyboard highlight through a metadata snapshot refresh" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.reach(.{ .label = "three tabs", .tabs = 3 });
+    try rig.dispatch(.palette_open);
+    try rig.settleNavigation();
+    try rig.dispatch(.{ .palette_move = 1 });
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.paletteCursor);
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    const before = engine.sequence;
+    try rig.dispatch(shellEvent(.{ .key = pane.pty_key, .kind = .output, .bytes = "\x1b]2;updated title\x07" }));
+    try rig.settle(@intCast(before + 1), "READY");
+    try rig.settleNavigation();
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.paletteCursor);
+    try std.testing.expect(rig.app_state.model.paletteRows[1].highlighted);
 }
