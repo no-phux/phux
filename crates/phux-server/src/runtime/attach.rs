@@ -2243,23 +2243,29 @@ fn spawn_terminal_output_pump(
     let pump_state = state.clone();
     let pump_connection_token = connection_token.clone();
     let (gate_tx, gate_rx) = oneshot::channel::<OutputPumpStart>();
-    output_pumps.spawn_local(async move {
-        let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
-            return;
-        };
-        match fault {
-            PumpFault::OutboundClosed
-            | PumpFault::TombstoneNotQueued
-            | PumpFault::ReplayAbandoned => {}
-            PumpFault::GenerationLost => {
-                pump_state.with_mut(|s| {
-                    s.reap_terminal(core_terminal_id);
-                });
-                pump_connection_token.cancel();
+    pump::spawn_tracked(
+        state,
+        ctx.client_id,
+        core_terminal_id,
+        Some(output_pumps),
+        async move {
+            let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
+                return;
+            };
+            match fault {
+                PumpFault::OutboundClosed
+                | PumpFault::TombstoneNotQueued
+                | PumpFault::ReplayAbandoned => {}
+                PumpFault::GenerationLost => {
+                    pump_state.with_mut(|s| {
+                        s.reap_terminal(core_terminal_id);
+                    });
+                    pump_connection_token.cancel();
+                }
+                PumpFault::PublicationNotActivated => pump_connection_token.cancel(),
             }
-            PumpFault::PublicationNotActivated => pump_connection_token.cancel(),
-        }
-    });
+        },
+    );
     gate_tx
 }
 
@@ -2927,22 +2933,28 @@ impl PaneCaptureContext<'_> {
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_cursor: None,
         });
-        staging.pumps.spawn_local(async move {
-            let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
-                return;
-            };
-            match fault {
-                PumpFault::OutboundClosed | PumpFault::ReplayAbandoned => {}
-                PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
-                    crate::runtime::client::detach_and_release_consumer_state(
-                        &pump_state,
-                        client_id,
-                    );
-                    pump_connection_token.cancel();
+        pump::spawn_tracked(
+            self.state,
+            client_id,
+            terminal_id,
+            Some(&mut staging.pumps),
+            async move {
+                let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
+                    return;
+                };
+                match fault {
+                    PumpFault::OutboundClosed | PumpFault::ReplayAbandoned => {}
+                    PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
+                        crate::runtime::client::detach_and_release_consumer_state(
+                            &pump_state,
+                            client_id,
+                        );
+                        pump_connection_token.cancel();
+                    }
+                    PumpFault::PublicationNotActivated => pump_connection_token.cancel(),
                 }
-                PumpFault::PublicationNotActivated => pump_connection_token.cancel(),
-            }
-        });
+            },
+        );
     }
 
     /// Adapt one pane's synthesized snapshot to the client's capabilities,

@@ -20,6 +20,47 @@ use phux_protocol::ids::BootstrapId;
 
 use crate::terminal_actor::PaneOutput;
 
+/// Spawn an owned output task from any subscription path. Completion guards
+/// are captured before spawning, so even abort-before-first-poll resolves the
+/// detach fence. A `JoinSet` owner additionally retains whole-session teardown.
+pub(super) fn spawn_tracked(
+    state: &crate::state::SharedState,
+    client: crate::state::ClientId,
+    terminal: phux_core::TerminalId,
+    tasks: Option<&mut tokio::task::JoinSet<()>>,
+    future: impl std::future::Future<Output = ()> + 'static,
+) {
+    let done = tokio_util::sync::CancellationToken::new();
+    let guard = done.clone().drop_guard();
+    let task = async move {
+        let _guard = guard;
+        future.await;
+    };
+    let abort = match tasks {
+        Some(tasks) => {
+            // Completed SPAWN pumps must not accumulate in the connection's
+            // JoinSet during create/detach churn.
+            while tasks.try_join_next().is_some() {}
+            tasks.spawn_local(task)
+        }
+        None => tokio::task::spawn_local(task).abort_handle(),
+    };
+    state.with_mut(|s| s.track_terminal_output_pump(client, terminal, abort, done));
+}
+
+/// Stop all output tasks for a subscription, including tasks blocked inside
+/// bootstrap publication or a send to a full consumer mailbox.
+pub(super) async fn stop_output(
+    state: &crate::state::SharedState,
+    client: crate::state::ClientId,
+    terminal: phux_core::TerminalId,
+) {
+    let completions = state.with_mut(|s| s.stop_terminal_output_pumps(client, terminal));
+    for done in completions {
+        done.cancelled().await;
+    }
+}
+
 /// How long a fenced pump waits for the replacement generation before asking
 /// for it again, the first time.
 ///
@@ -237,6 +278,85 @@ mod tests {
 
     use super::{GAP_RESYNC_MAX_ATTEMPTS, GAP_RESYNC_RETRY, PumpGeneration, PumpWait, next_event};
     use crate::terminal_actor::PaneOutput;
+
+    #[test]
+    fn tracked_pump_abort_fences_blocked_send_and_reclaims_churn() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let state = crate::state::SharedState::new();
+            let client = crate::state::ClientId(1);
+            let terminal = phux_core::TerminalId::default();
+            let mut tasks = tokio::task::JoinSet::new();
+            let (mailbox, mut receive) = tokio::sync::mpsc::channel(1);
+            let (output, _) = tokio::sync::broadcast::channel::<()>(1);
+            mailbox.send(0).await.unwrap();
+            for round in 1..=40 {
+                let subscription = output.subscribe();
+                let sender = mailbox.clone();
+                let (entered, entry) = tokio::sync::oneshot::channel();
+                super::spawn_tracked(&state, client, terminal, Some(&mut tasks), async move {
+                    let _subscription = subscription;
+                    entered.send(()).unwrap();
+                    sender.send(round).await.unwrap();
+                });
+                entry.await.unwrap();
+                assert_eq!(output.receiver_count(), 1);
+                tokio::time::timeout(
+                    Duration::from_secs(1),
+                    super::stop_output(&state, client, terminal),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    output.receiver_count(),
+                    0,
+                    "detach dropped the live receiver"
+                );
+                assert!(tasks.len() <= 1, "completed JoinSet tasks accumulated");
+                assert!(
+                    state
+                        .with_mut(|s| s.stop_terminal_output_pumps(client, terminal))
+                        .is_empty()
+                );
+            }
+            assert_eq!(receive.recv().await, Some(0));
+            assert!(
+                receive.try_recv().is_err(),
+                "aborted send escaped the detach fence"
+            );
+            while tasks.join_next().await.is_some() {}
+            assert!(tasks.is_empty());
+        });
+    }
+
+    #[test]
+    fn tracked_pump_can_be_detached_before_its_first_poll() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let state = crate::state::SharedState::new();
+            let client = crate::state::ClientId(1);
+            let terminal = phux_core::TerminalId::default();
+            let (output, _) = tokio::sync::broadcast::channel::<()>(1);
+            let receiver = output.subscribe();
+            super::spawn_tracked(&state, client, terminal, None, async move {
+                let _receiver = receiver;
+                panic!("aborted task must never run");
+            });
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                super::stop_output(&state, client, terminal),
+            )
+            .await
+            .unwrap();
+            assert_eq!(output.receiver_count(), 0);
+        });
+    }
 
     fn bootstrap(raw: u64) -> phux_protocol::ids::BootstrapId {
         phux_protocol::ids::BootstrapId::new(raw).expect("non-zero bootstrap id")

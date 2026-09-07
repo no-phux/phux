@@ -38,7 +38,7 @@ use std::sync::atomic::AtomicU64;
 
 use phux_core::ids::TerminalId;
 use phux_protocol::ids::BootstrapId;
-use tokio::task::JoinSet;
+use tokio::task::{AbortHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use super::ClientId;
@@ -83,6 +83,20 @@ pub(super) struct AttachTerminalGeneration {
     pub(super) last_valid_seq: LastValidAttachSequence,
     /// Bootstrap id this generation streams under.
     pub(super) bootstrap_id: BootstrapId,
+}
+
+/// An output task's lifetime, independent of which bootstrap path created it.
+/// Dropping the owner aborts every await in the task, including mailbox sends.
+#[derive(Debug)]
+struct OutputPumpTask {
+    abort: AbortHandle,
+    done: CancellationToken,
+}
+
+impl Drop for OutputPumpTask {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
 }
 
 /// Every pane-keyed table the server owns, plus the client subscriptions
@@ -137,6 +151,10 @@ pub(super) struct TerminalTable {
     /// holds the client's outbound sender) would keep streaming until the
     /// connection died.
     pumps: HashMap<(ClientId, TerminalId), AttachTerminalGeneration>,
+    /// All raw-output tasks, including gated aggregate replacements and
+    /// `SPAWN_TERMINAL` pumps. A staged and a published pump may coexist until
+    /// aggregate commit; terminal detach must retire both.
+    output_pumps: HashMap<(ClientId, TerminalId), Vec<OutputPumpTask>>,
     /// Next connection-global bootstrap id for per-terminal attaches, keyed
     /// by client. Monotonic, so a tombstoned generation's id is never reused.
     next_bootstrap: HashMap<ClientId, u64>,
@@ -158,6 +176,7 @@ impl TerminalTable {
             tasks: JoinSet::new(),
             subscribers: HashMap::new(),
             pumps: HashMap::new(),
+            output_pumps: HashMap::new(),
             next_bootstrap: HashMap::new(),
         }
     }
@@ -293,7 +312,34 @@ impl TerminalTable {
         self.subscribers.is_empty()
     }
 
-    // -- ATTACH_TERMINAL output pumps ---------------------------------
+    // -- output task lifetimes and ATTACH_TERMINAL generations --------
+
+    pub(super) fn track_output_pump(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+        abort: AbortHandle,
+        done: CancellationToken,
+    ) {
+        let tasks = self.output_pumps.entry((client, terminal)).or_default();
+        tasks.retain(|task| !task.done.is_cancelled());
+        tasks.push(OutputPumpTask { abort, done });
+    }
+
+    /// Abort every output task for this subscription and return their exit
+    /// fences. Generation bookkeeping remains available to replacement attach.
+    pub(super) fn stop_output_pumps(
+        &mut self,
+        client: ClientId,
+        terminal: TerminalId,
+    ) -> Vec<CancellationToken> {
+        self.output_pumps
+            .remove(&(client, terminal))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|task| task.done.clone())
+            .collect()
+    }
 
     /// Install a new `ATTACH_TERMINAL` pump generation for `(client,
     /// terminal)`, displacing any live one.
@@ -350,6 +396,7 @@ impl TerminalTable {
     /// Cancel and forget the `ATTACH_TERMINAL` pump for `(client,
     /// terminal)`, if one is live. Idempotent.
     pub(super) fn cancel_pump(&mut self, client: ClientId, terminal: TerminalId) {
+        self.stop_output_pumps(client, terminal);
         if let Some(generation) = self.pumps.remove(&(client, terminal)) {
             generation.cancel.cancel();
         }
@@ -358,6 +405,7 @@ impl TerminalTable {
     /// Cancel every `ATTACH_TERMINAL` output pump `client` owns
     /// (phux-v45.7) so no task keeps streaming into a dead mailbox.
     pub(super) fn cancel_pumps_for_client(&mut self, client: ClientId) {
+        self.output_pumps.retain(|(owner, _), _| *owner != client);
         self.pumps.retain(|(owner, _), generation| {
             if *owner == client {
                 generation.cancel.cancel();
@@ -384,6 +432,7 @@ impl TerminalTable {
     /// [`super::ServerState::reap_terminal`] — they are not pane-keyed, they
     /// are keyed on the wire id this pane is about to give up.
     pub(super) fn forget_terminal(&mut self, terminal: TerminalId) {
+        self.output_pumps.retain(|(_, pane), _| *pane != terminal);
         self.handles.remove(&terminal);
         if let Some(token) = self.tokens.remove(&terminal) {
             token.cancel();

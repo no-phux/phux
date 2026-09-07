@@ -820,7 +820,7 @@ pub(crate) async fn handle_command(
             .await
         }
         Command::DetachTerminal { terminal_id } => {
-            handle_detach_terminal(state, client_id, &terminal_id)
+            handle_detach_terminal(state, client_id, &terminal_id).await
         }
         Command::GetState { scope } => handle_get_state_federated(state, &scope, out_tx).await,
         Command::GetPerf { reset } => handle_get_perf(state, reset),
@@ -1274,6 +1274,7 @@ impl AttachTerminalSession<'_> {
         // byte emitted in the handoff window. The new receiver remains gated
         // until this generation reaches READY.
         let output_rx = self.handle.output.subscribe();
+        pump::stop_output(self.state, self.client_id, self.core).await;
         let (token, pump_done, generation_last_seq, prior) = self
             .state
             .with_mut(|s| s.replace_attach_terminal_pump(self.client_id, self.core, bootstrap_id));
@@ -1376,7 +1377,7 @@ impl AttachTerminalSession<'_> {
         };
         let pump_done_guard = spawn.pump_done_guard;
         let bootstrap_id = spawn.bootstrap_id;
-        tokio::task::spawn_local(async move {
+        pump::spawn_tracked(self.state, self.client_id, self.core, None, async move {
             let _done_guard = pump_done_guard;
             ctx.run(channels, bootstrap_id).await;
         });
@@ -2137,12 +2138,12 @@ const fn tombstone_reason(
 }
 
 /// Handle `DETACH_TERMINAL` (SPEC §5.1 tag 0x02, phux-v45.7): drop the
-/// caller's per-terminal subscriptions — the `ATTACH_TERMINAL` output
-/// stream (pump cancelled, subscriber entry removed, per-consumer
-/// state-sync entry released) and the per-terminal agent-event
+/// caller's per-terminal subscriptions — every output task, whether created
+/// by `ATTACH`, `SPAWN_TERMINAL`, or `ATTACH_TERMINAL` (pump joined, subscriber
+/// entry removed, per-consumer state-sync entry released) and the per-terminal agent-event
 /// subscription. Idempotent: unknown terminals and never-attached callers
 /// reply `Ok`, so a detach can never race a natural close into an error.
-fn handle_detach_terminal(
+async fn handle_detach_terminal(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::TerminalId,
@@ -2152,19 +2153,27 @@ fn handle_detach_terminal(
     let handle = state.with_mut(|s| {
         s.unsubscribe_terminal_events(client_id, terminal_id);
         let core = s.terminal_from_wire(terminal_id)?;
-        s.cancel_attach_terminal_pump(client_id, core);
         s.unsubscribe_terminal(client_id, core);
-        s.terminal_handle(core).cloned()
+        Some((core, s.terminal_handle(core).cloned()))
     });
+    let Some((core, handle)) = handle else {
+        return CommandResult::Ok;
+    };
+    pump::stop_output(state, client_id, core).await;
+    state.with_mut(|s| s.cancel_attach_terminal_pump(client_id, core));
     if let Some(handle) = handle {
-        // Release the per-consumer RenderState cache (ADR-0018). Best
-        // effort, same discipline as detach_and_release_consumer_state:
-        // a full mailbox self-heals via the actor's closed-mailbox reap.
-        let (reply_tx, _reply_rx) = oneshot::channel();
-        let _ = handle.consumer_detach.try_send(ConsumerDetachRequest {
-            client_id: wire_client_id(client_id),
-            reply: reply_tx,
-        });
+        // An actor-emitted StateSync frame is another output producer. Its
+        // acknowledged detach fences that producer and releases native leases
+        // before COMMAND_RESULT enters the same ordered outbound mailbox.
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = handle
+            .consumer_detach
+            .send(ConsumerDetachRequest {
+                client_id: wire_client_id(client_id),
+                reply: reply_tx,
+            })
+            .await;
+        let _ = reply_rx.await;
     }
     debug!(?client_id, ?terminal_id, "DETACH_TERMINAL unsubscribed");
     CommandResult::Ok

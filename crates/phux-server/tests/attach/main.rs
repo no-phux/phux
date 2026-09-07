@@ -10,6 +10,7 @@ mod bootstrap_compression;
 mod byc_6_1_attach_snapshot;
 mod byc_6_6_attach_unknown_session_error;
 mod concurrent_attach_l2;
+mod detach_terminal;
 mod eof_detach;
 mod hello_survives_detach;
 mod lagged_attach_terminal_resync;
