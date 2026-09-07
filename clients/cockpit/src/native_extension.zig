@@ -2735,6 +2735,7 @@ test "shipping coalesced spawn publication and terminal death retire the reserve
     try cockpit.durable_tests.earlyTerminalDeath();
 }
 
+// GUARD: ts-remote-title-announcement
 test "shipping remote title-only output invalidates the chrome snapshot" {
     try cockpit.durable_tests.titleAnnouncement();
 }
