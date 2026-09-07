@@ -72,19 +72,29 @@ profile default cannot select a different coordinator. With `--socket` omitted,
 the normal `PHUX_SOCKET` override and profile-scoped default apply;
 `PHUX_PROFILE` selects the profile. Run this subprocess asynchronously in a GUI.
 
-The helper reuses `ensure_server`: live-server reuse and version reconciliation,
-spawn locking, stale-socket recovery, pending service adoption, and detached
+The helper reuses `ensure_server`: live-server reuse, spawn locking,
+stale-socket recovery, pending service adoption, and detached
 auto-spawn. A fresh daemon uses the same `defaults.session-name-template` and
 `defaults.spawn-on-attach` policy as naked `phux`, including its working-directory
 template expansion. `PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE` retains its existing
 opt-in meaning. An existing coordinator receives no new session or attachment.
+Ensure is availability-only: it does not reconcile a running coordinator's
+binary version. A separately packaged CLI must not repeatedly re-execute
+another installation's daemon when its consumer reconnects.
 
 Exit `0` means a Unix socket connection succeeded after startup; it does not
 mean a protocol handshake, pane bootstrap, or seed command has completed.
-Stdout stays empty and diagnostics go to stderr. Startup/connection failures
+Stdout stays empty, routine startup banners are suppressed, and failures are
+reported on stderr. Startup/connection failures
 and the overall 10-second startup deadline exit `1`; invalid flag combinations
-exit `2`. The deadline includes lock contention and synchronous startup work.
-A daemon already launched before a timeout keeps its independent lifecycle.
+exit `2`. The deadline includes tracing initialization, lock contention, and
+synchronous startup work. SIGTERM or SIGINT cancels startup and exits `1`.
+On cancellation or timeout, the helper kills its temporary init-system command
+group and allows up to one additional second to reap the command. If the kernel
+cannot finish the kill in that interval, stderr names the unreaped PID and the
+helper still exits. It does not stop services through
+the init system. A coordinator that has already detached keeps its independent
+lifecycle.
 Foreground-only flags such as `--session`, `--hub`, and `--listen` conflict
 with `--ensure`, rather than being silently ignored. Full parser reference:
 [`phux server`](../reference/cli.md#phux-server).

@@ -662,6 +662,10 @@ fn init_tracing(cli: &Cli) -> Option<phux_server::telemetry::WorkerGuard> {
         return None;
     }
 
+    init_noninteractive_tracing()
+}
+
+fn init_noninteractive_tracing() -> Option<phux_server::telemetry::WorkerGuard> {
     match phux_server::telemetry::init() {
         Ok(guard) => guard,
         Err(err) => {
@@ -849,9 +853,9 @@ fn dispatch(
             rec,
             socket,
         }),
-        Some(Command::Server { ensure: true, .. }) => commands::server::run_ensure(socket),
         Some(Command::Server {
-            ensure: false,
+            // --ensure returns from run before tracing and this dispatch.
+            ensure: _,
             session,
             listen,
             quic,
@@ -1199,6 +1203,13 @@ pub fn run() -> ExitCode {
     // config, socket, or TTY setup can alter the MCP stdio contract.
     if let Some(Command::Mcp { args }) = &cli.command {
         return commands::mcp::run(args);
+    }
+
+    // The one-shot watchdog must precede any potentially blocking log open
+    // (PHUX_LOG may name a FIFO). Ensure initializes tracing on its bounded
+    // worker; its watchdog reports failures directly on stderr.
+    if matches!(cli.command, Some(Command::Server { ensure: true, .. })) {
+        return commands::server::run_ensure(cli.socket);
     }
 
     // Refuse every alt-screen path before telemetry, dialing, server spawn,
