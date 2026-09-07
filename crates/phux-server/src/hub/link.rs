@@ -915,7 +915,7 @@ async fn send_relay_request<C: LinkConn>(
     session: &mut super::relay::RelaySession,
     request: super::relay::RelayRequest,
 ) -> Result<(), String> {
-    if let Some(frame) = session.prepare_request(&request) {
+    for frame in session.prepare_request(&request) {
         send_bounded(conn, &frame).await?;
     }
     if let Some(frame) = session.handle_request_checked(request) {

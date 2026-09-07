@@ -5,6 +5,133 @@ use super::*;
 use phux_protocol::wire::frame::StateScope;
 use tokio::time::timeout;
 
+#[test]
+fn event_only_subscription_before_spawn_content_attach_keeps_link_and_events_live() {
+    phux_server_testkit::run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let ws_port = free_port();
+        let (sat_shutdown, sat_task) =
+            spawn_satellite_with_cat(tmp.path().join("sat.sock"), ws_port);
+        let (hub_shutdown, hub_task) = spawn_hub(
+            tmp.path().join("hub.sock"),
+            vec![satellite_entry("sat", ws_port)],
+        );
+        let seed = discover_satellite_pane(ws_port).await;
+        let mut a = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+        let mut observer = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+        let mut legacy = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
+        get_screen_until_ok(&mut a, seed).await;
+        let result =
+            spawn_via_stream(&mut a, 1, Some("sat"), Some(vec!["/bin/cat".to_owned()])).await;
+        let SpawnResult::Ok(pane) = result else {
+            panic!("spawn: {result:?}");
+        };
+        for client in [&mut a, &mut observer] {
+            let (result, _) = command_via_hub(
+                client,
+                2,
+                Command::SubscribeTerminalEvents {
+                    terminal_id: pane.clone(),
+                    event_types: Vec::new(),
+                },
+            )
+            .await;
+            assert_eq!(result, CommandResult::Ok);
+        }
+        send_frame(
+            &mut legacy,
+            &FrameKind::SubscribeEvents {
+                terminal: Some(pane.clone()),
+            },
+        )
+        .await;
+        get_screen_via_hub(&mut legacy, 5, pane.clone()).await;
+        attach_live(&mut a, &pane).await;
+        // A satellite round trip proves this is the same live link, then fresh
+        // PTY input must reach both the content client and the event observer.
+        let (result, _) = command_via_hub(
+            &mut a,
+            3,
+            Command::RouteInput {
+                terminal_id: pane.clone(),
+                event: phux_protocol::input::InputEvent::Paste(
+                    phux_protocol::input::paste::PasteEvent {
+                        trust: phux_protocol::input::paste::PasteTrust::Trusted,
+                        data: b"event-after-attach\n".to_vec(),
+                    },
+                ),
+            },
+        )
+        .await;
+        assert_eq!(result, CommandResult::Ok);
+        timeout(STEP_DEADLINE, async {
+            loop {
+                if let FrameKind::Event {
+                    terminal: Some(id), ..
+                } = recv_typed(&mut observer).await.1
+                {
+                    assert_eq!(id, pane);
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("event subscription survives content-generation barrier");
+        get_screen_via_hub(&mut a, 4, pane.clone()).await;
+        assert_legacy_event_after_cut(&mut a, &mut legacy, &pane).await;
+        drop(a);
+        drop(observer);
+        drop(legacy);
+        drop(hub_shutdown);
+        timeout(STEP_DEADLINE, hub_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        drop(sat_shutdown);
+        timeout(STEP_DEADLINE, sat_task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    });
+}
+
+async fn assert_legacy_event_after_cut(
+    client: &mut UnixStream,
+    observer: &mut UnixStream,
+    pane: &TerminalId,
+) {
+    let (result, _) = command_via_hub(
+        client,
+        6,
+        Command::ReportAsked {
+            terminal_id: pane.clone(),
+            id: "post-barrier".to_owned(),
+            question: "event preserved?".to_owned(),
+            suggestions: Vec::new(),
+            elapsed_seconds: None,
+        },
+    )
+    .await;
+    assert_eq!(result, CommandResult::Ok);
+    timeout(STEP_DEADLINE, async {
+        loop {
+            if let FrameKind::Event {
+                terminal,
+                event: AgentEvent::Asked { id, .. },
+            } = recv_typed(observer).await.1
+            {
+                assert_eq!(terminal.as_ref(), Some(pane));
+                assert_eq!(id, "post-barrier");
+                break;
+            }
+        }
+    })
+    .await
+    .expect("legacy event subscription survives the internal content detach");
+}
+
 fn assert_no_terminal_frame(frame: &FrameKind) {
     assert!(
         !matches!(

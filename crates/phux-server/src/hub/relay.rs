@@ -54,7 +54,7 @@
 //! `flush_pending_snapshots`). Still no head-of-line stall: the retry is
 //! per-consumer, not a link-wide await.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -168,8 +168,52 @@ pub(crate) enum Unsubscribe {
         seq: u64,
         /// Resolves after the link removes the proxy. Dropped by disconnected
         /// supervisor drains, where no proxy registry exists to withdraw from.
-        reply: Option<oneshot::Sender<CommandResult>>,
+        reply: Option<WithdrawalReceipt>,
     },
+}
+
+/// Serializes a timeout's cancellation with the link's synchronous mutation.
+/// A completed result wins even if its waiting task has not been polled yet.
+/// No lock is held across an await or an upstream write.
+#[derive(Debug)]
+pub(crate) struct WithdrawalReceipt {
+    reply: oneshot::Sender<CommandResult>,
+    outcome: Arc<Mutex<Option<CommandResult>>>,
+}
+
+impl WithdrawalReceipt {
+    fn new(reply: oneshot::Sender<CommandResult>) -> Self {
+        Self {
+            reply,
+            outcome: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Apply exactly once unless timeout already committed a safe refusal.
+    pub(crate) fn apply(
+        self,
+        withdraw: impl FnOnce() -> (CommandResult, Vec<Vec<u8>>),
+    ) -> Vec<Vec<u8>> {
+        let mut outcome = lock_withdrawal_outcome(&self.outcome);
+        if outcome.is_some() {
+            return Vec::new();
+        }
+        let (result, frames) = withdraw();
+        *outcome = Some(result.clone());
+        drop(outcome);
+        let _ = self.reply.send(result);
+        frames
+    }
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "a panic during withdrawal can leave partial mutation; never recover a safe refusal from a poisoned decision"
+)]
+fn lock_withdrawal_outcome(
+    outcome: &Mutex<Option<CommandResult>>,
+) -> std::sync::MutexGuard<'_, Option<CommandResult>> {
+    outcome.lock().expect("withdrawal outcome poisoned")
 }
 
 /// Validated spawn payload for one satellite. The runtime checks the owner's
@@ -515,6 +559,8 @@ impl RelayHandle {
     ) -> CommandResult {
         let seq = self.next_seq();
         let (reply, received) = oneshot::channel();
+        let reply = WithdrawalReceipt::new(reply);
+        let outcome = Arc::clone(&reply.outcome);
         let _ = self.unsub_tx.send(Unsubscribe::Terminal {
             client,
             terminal,
@@ -523,18 +569,19 @@ impl RelayHandle {
         });
         // A dropped receipt means the supervisor has no live session (refused,
         // connecting, backing off, or shut down), hence no proxy can fan out.
-        // On timeout withdrawal remains queued, but we must not claim success.
+        // Timeout cancels an unapplied withdrawal under the same lock used by
+        // application. If application already won, return its actual result.
         match tokio::time::timeout(RELAY_COMMAND_TIMEOUT, received).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => CommandResult::Ok,
-            Err(_) => CommandResult::Error {
+            Err(_) => lock_withdrawal_outcome(&outcome).get_or_insert_with(|| CommandResult::Error {
                 code: ErrorCode::SatelliteUnreachable,
                 message: format!(
-                    "satellite {} proxy withdrawal did not complete within {}s",
+                    "satellite {} proxy withdrawal cancelled before application after {}s; subscription preserved",
                     self.host,
                     RELAY_COMMAND_TIMEOUT.as_secs()
                 ),
-            },
+            }).clone(),
         }
     }
 }
@@ -840,6 +887,14 @@ pub(crate) struct RelaySession {
     /// correlated reply, including after a downstream proxy has reattached.
     pending_detaches: HashMap<u32, PendingDetach>,
     subscribers: HashMap<u32, Vec<ProxySubscriber>>,
+    /// An explicit content attach has been forwarded since the last upstream
+    /// detach. Event-only proxies do not establish this ownership. Even a
+    /// refused attach cannot resurrect the automatic SPAWN generation that
+    /// its preflight barrier retired.
+    explicit_content: HashSet<u32>,
+    /// Legacy `SUBSCRIBE_EVENTS` is removed by upstream `DETACH_TERMINAL`, unlike
+    /// actor-level `SUBSCRIBE_TERMINAL_EVENTS`. Restore it after internal cuts.
+    legacy_events: HashSet<u32>,
     bootstrap_flows: HashMap<u32, RelayBootstrapFlow>,
     retained_bytes: usize,
     retained_frames: usize,
@@ -874,6 +929,8 @@ impl RelaySession {
             pending_detaches: HashMap::new(),
             enforce_bootstrap_flow: true,
             subscribers: HashMap::new(),
+            explicit_content: HashSet::new(),
+            legacy_events: HashSet::new(),
             bootstrap_flows: HashMap::new(),
             retained_bytes: 0,
             retained_frames: 0,
@@ -887,25 +944,37 @@ impl RelaySession {
     /// SPAWN generation on the link has stopped. No downstream proxy owns that
     /// generation. Fence it upstream before forwarding the attach; peers that
     /// already share a subscription must keep their stream throughout.
-    pub(crate) fn prepare_request(&mut self, request: &RelayRequest) -> Option<Vec<u8>> {
+    pub(crate) fn prepare_request(&mut self, request: &RelayRequest) -> Vec<Vec<u8>> {
         let RelayRequest::Command {
             command: Command::AttachTerminal { .. },
             subscribe: Some(sub),
             ..
         } = request
         else {
-            return None;
+            return Vec::new();
         };
-        if self.subscribers.contains_key(&sub.terminal)
+        if self.explicit_content.contains(&sub.terminal)
             || self
                 .pending_detaches
                 .values()
                 .any(|pending| pending.terminal == sub.terminal)
             || self.subscription_rejection(sub).is_some()
         {
-            return None;
+            return Vec::new();
         }
-        Some(self.encode_terminal_detach(sub.terminal))
+        self.prepare_content_cut(sub.terminal)
+    }
+
+    fn prepare_content_cut(&mut self, terminal: u32) -> Vec<Vec<u8>> {
+        let restore_events = self.legacy_events.contains(&terminal);
+        let mut frames = vec![self.encode_terminal_detach(terminal)];
+        if restore_events {
+            self.legacy_events.insert(terminal);
+            frames.push(self.encode(&FrameKind::SubscribeEvents {
+                terminal: Some(TerminalId::local(terminal)),
+            }));
+        }
+        frames
     }
 
     /// Service one consumer request. `None` means the request was rejected
@@ -928,6 +997,9 @@ impl RelaySession {
                 // enough to roll it back on an error reply (finding 3).
                 let subscription = subscribe.map(|sub| {
                     let (terminal, client) = (sub.terminal, sub.client);
+                    if sub.awaits_snapshot {
+                        self.explicit_content.insert(terminal);
+                    }
                     let effect = self.register_subscriber(sub);
                     (terminal, client, effect)
                 });
@@ -966,25 +1038,34 @@ impl RelaySession {
             RelayRequest::Subscribe {
                 subscription,
                 forward,
-            } => {
-                if let Some((code, message)) = self.subscription_rejection(&subscription) {
-                    let _ = subscription
-                        .out_tx
-                        .try_send(Outbound::Frame(FrameKind::Error {
-                            request_id: None,
-                            code,
-                            message,
-                        }));
-                    return None;
-                }
-                // Atomic with the wire write: the caller either sees this
-                // request accepted (registration + forward both happen —
-                // the supervisor writes the returned frame) or refused
-                // up-front with a typed error and no registration.
-                self.register_subscriber(subscription);
-                Some(self.encode(&forward))
-            }
+            } => self.subscribe_forward(subscription, &forward),
         }
+    }
+
+    /// Register and remember event scope atomically with its forward frame.
+    fn subscribe_forward(
+        &mut self,
+        subscription: ProxySubscription,
+        forward: &FrameKind,
+    ) -> Option<Vec<u8>> {
+        if let Some((code, message)) = self.subscription_rejection(&subscription) {
+            let _ = subscription
+                .out_tx
+                .try_send(Outbound::Frame(FrameKind::Error {
+                    request_id: None,
+                    code,
+                    message,
+                }));
+            return None;
+        }
+        if let FrameKind::SubscribeEvents {
+            terminal: Some(TerminalId::Local { id }),
+        } = forward
+        {
+            self.legacy_events.insert(*id);
+        }
+        self.register_subscriber(subscription);
+        Some(self.encode(forward))
     }
 
     #[cfg(test)]
@@ -1087,36 +1168,46 @@ impl RelaySession {
     /// frames preceding it cannot reach a newly registered proxy. The
     /// downstream receipt certifies local proxy removal, not the upstream reply.
     pub(crate) fn handle_unsubscribe(&mut self, unsubscribe: Unsubscribe) -> Vec<Vec<u8>> {
-        let (orphaned, reply) = match unsubscribe {
-            Unsubscribe::Client(client) => (self.withdraw_client(client), None),
+        match unsubscribe {
+            Unsubscribe::Client(client) => {
+                let orphaned = self.withdraw_client(client);
+                self.encode_withdrawals(orphaned)
+            }
             Unsubscribe::Terminal {
                 client,
                 terminal,
                 seq,
                 reply,
-            } => match self.withdraw_terminal(client, terminal, seq) {
-                Ok(orphaned) => (orphaned.into_iter().collect(), reply),
-                Err(result) => {
-                    if let Some(reply) = reply {
-                        let _ = reply.send(result);
-                    }
-                    return Vec::new();
+            } => match reply {
+                Some(reply) => {
+                    reply.apply(|| self.apply_terminal_withdrawal(client, terminal, seq))
                 }
+                None => self.apply_terminal_withdrawal(client, terminal, seq).1,
             },
-        };
+        }
+    }
+
+    fn apply_terminal_withdrawal(
+        &mut self,
+        client: ClientId,
+        terminal: u32,
+        seq: u64,
+    ) -> (CommandResult, Vec<Vec<u8>>) {
+        match self.withdraw_terminal(client, terminal, seq) {
+            Ok(orphaned) => (
+                CommandResult::Ok,
+                self.encode_withdrawals(orphaned.into_iter().collect()),
+            ),
+            Err(result) => (result, Vec::new()),
+        }
+    }
+
+    fn encode_withdrawals(&mut self, orphaned: Vec<u32>) -> Vec<Vec<u8>> {
         self.recalculate_retained_totals();
-        let frames = orphaned
+        orphaned
             .into_iter()
             .map(|terminal| self.encode_terminal_detach(terminal))
-            .collect();
-        // fan_out/retained replay use this registry synchronously. After this
-        // receipt, neither can queue another frame for the withdrawn proxy.
-        // The link sends `frames` before reading the next request, preserving
-        // upstream DETACH-before-reattach ordering across the mailbox split.
-        if let Some(reply) = reply {
-            let _ = reply.send(CommandResult::Ok);
-        }
-        frames
+            .collect()
     }
 
     fn withdraw_client(&mut self, client: ClientId) -> Vec<u32> {
@@ -1163,6 +1254,8 @@ impl RelaySession {
     }
 
     fn encode_terminal_detach(&mut self, terminal: u32) -> Vec<u8> {
+        self.explicit_content.remove(&terminal);
+        self.legacy_events.remove(&terminal);
         debug!(satellite = %self.host, terminal,
             "last proxy subscriber gone; detaching satellite-side");
         let request_id = self.allocate_request_id();
@@ -1277,10 +1370,11 @@ impl RelaySession {
         let Some(id) = self.retag_inbound(stream_frame_scope(&frame)) else {
             return Ok(());
         };
-        if self
-            .pending_detaches
-            .values()
-            .any(|pending| pending.terminal == id)
+        if !matches!(frame, FrameKind::Event { .. })
+            && self
+                .pending_detaches
+                .values()
+                .any(|pending| pending.terminal == id)
         {
             // These frames precede the satellite's joined detach reply. A
             // fresh proxy must never mistake them for its new attach prefix.
@@ -1399,6 +1493,8 @@ impl RelaySession {
         self.subscribers.remove(&id);
         self.recalculate_retained_totals();
         self.retire_bootstrap_flow(id);
+        self.explicit_content.remove(&id);
+        self.legacy_events.remove(&id);
     }
 
     /// Deliver one `BELL` side-channel notification.
@@ -1462,6 +1558,8 @@ impl RelaySession {
         }
         self.subscribers.clear();
         self.bootstrap_flows.clear();
+        self.explicit_content.clear();
+        self.legacy_events.clear();
         self.pending_detaches.clear();
         self.retained_bytes = 0;
         self.retained_frames = 0;
@@ -3945,7 +4043,7 @@ mod tests {
             client: ClientId(1),
             terminal: 9,
             seq: 2,
-            reply: Some(reply),
+            reply: Some(WithdrawalReceipt::new(reply)),
         });
         received.await.unwrap();
         assert_eq!(
@@ -3967,7 +4065,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn withdrawal_timeout_never_claims_success_or_drops_teardown() {
+    async fn withdrawal_timeout_cancels_unapplied_teardown() {
         let (handle, mut mailbox) = RelayHandle::new(host());
         let detach = handle.unsubscribe_terminal(ClientId(1), 9);
         tokio::pin!(detach);
@@ -3984,12 +4082,56 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::channel(1);
         subscribe_at(&mut session, 9, ClientId(1), 0, out_tx);
         let frames = session.handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap());
+        assert!(
+            frames.is_empty(),
+            "safe refusal must cancel queued teardown"
+        );
+        assert!(session.subscribers.contains_key(&9));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn applied_withdrawal_wins_even_when_waiter_resumes_past_deadline() {
+        let (handle, mut mailbox) = RelayHandle::new(host());
+        let detach = handle.unsubscribe_terminal(ClientId(1), 9);
+        tokio::pin!(detach);
+        assert!(futures_util::poll!(&mut detach).is_pending());
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        subscribe_at(&mut session, 9, ClientId(1), 0, out_tx);
         assert_eq!(
-            frames.len(),
-            1,
-            "withdrawal remains undroppable after the waiter leaves"
+            session
+                .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
+                .len(),
+            1
+        );
+        tokio::time::advance(RELAY_COMMAND_TIMEOUT).await;
+        assert_eq!(
+            detach.await,
+            CommandResult::Ok,
+            "a committed removal is never a safe refusal"
         );
         assert!(!session.subscribers.contains_key(&9));
+    }
+
+    #[tokio::test]
+    async fn abandoned_withdrawal_still_cleans_up_without_a_timeout_refusal() {
+        let (handle, mut mailbox) = RelayHandle::new(host());
+        let mut detach = Box::pin(handle.unsubscribe_terminal(ClientId(1), 9));
+        assert!(futures_util::poll!(&mut detach).is_pending());
+        drop(detach);
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        let (out_tx, _out_rx) = mpsc::channel(8);
+        subscribe_at(&mut session, 9, ClientId(1), 0, out_tx);
+        assert_eq!(
+            session
+                .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
+                .len(),
+            1
+        );
+        assert!(
+            !session.subscribers.contains_key(&9),
+            "disconnected callers still get undroppable cleanup"
+        );
     }
 
     #[tokio::test]
@@ -4053,6 +4195,8 @@ mod tests {
         );
         session.handle_inbound(&encode(&begin_frame(9, 1))).unwrap();
         session.handle_inbound(&encode(&snapshot_frame(9))).unwrap();
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        subscribe(&mut session, 9, ClientId(2), events_tx);
         let (out_tx, mut out_rx) = mpsc::channel(8);
         let (reply, _received) = oneshot::channel();
         let request = RelayRequest::Command {
@@ -4070,22 +4214,45 @@ mod tests {
                 bootstrap_limits: Some(BootstrapLimits::default()),
             }),
         };
-        let barrier = session
-            .prepare_request(&request)
-            .expect("stop automatic spawn generation");
+        let prepared = session.prepare_request(&request);
+        let [barrier, restore_events] = prepared.as_slice() else {
+            panic!("detach and event restoration before attach");
+        };
+        assert!(matches!(
+            decode(restore_events),
+            FrameKind::SubscribeEvents {
+                terminal: Some(TerminalId::Local { id: 9 })
+            }
+        ));
         let FrameKind::Command {
             request_id,
             command: Command::DetachTerminal { terminal_id },
-        } = decode(&barrier)
+        } = decode(barrier)
         else {
             panic!("detach barrier");
         };
         assert_eq!(terminal_id, TerminalId::local(9));
         assert!(
-            session.prepare_request(&request).is_none(),
+            session.prepare_request(&request).is_empty(),
             "reuse an in-flight barrier"
         );
         session.handle_request_checked(request).unwrap();
+        let event = FrameKind::Event {
+            terminal: Some(TerminalId::local(9)),
+            event: phux_protocol::wire::frame::AgentEvent::CommandStarted,
+        };
+        session.handle_inbound(&encode(&event)).unwrap();
+        assert!(
+            matches!(
+                events_rx.try_recv(),
+                Ok(Outbound::Frame(FrameKind::Event { .. }))
+            ),
+            "an event observer does not suppress the first content barrier and stays live during it"
+        );
+        assert!(
+            out_rx.try_recv().is_err(),
+            "new content proxy still waits for its own prefix"
+        );
         // The prefix itself may have been queued before withdrawal. It must
         // not open a new proxy's gate, nor fail validation against the old cut.
         session.handle_inbound(&encode(&begin_frame(9, 2))).unwrap();

@@ -4537,6 +4537,97 @@ mod hub_detach_fence_tests {
     use super::*;
     use crate::hub::relay::{HubRelays, RelayHandle, RelaySession};
 
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_hub_detach_preserves_resumed_generation_with_shared_observer() {
+        use crate::hub::relay::{ProxySubscription, RELAY_COMMAND_TIMEOUT, RelayRequest};
+        use phux_protocol::ids::{BootstrapId, StreamId, TerminalId};
+        let state = SharedState::new();
+        let host = phux_protocol::ids::SatelliteHost::from("sat");
+        let (handle, mut mailbox) = RelayHandle::new(host.clone());
+        let relays = HubRelays::default();
+        relays.insert(handle);
+        state.with_mut(|s| {
+            s.set_hub_relays(relays);
+            s.register_satellite_proxy_attach(ClientId(1), host.clone(), 7);
+        });
+        let mut session = RelaySession::new(host.clone(), BootstrapLimits::default());
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+        let (observer_tx, mut observer_rx) = tokio::sync::mpsc::channel(8);
+        for (client, out_tx) in [(ClientId(1), out_tx.clone()), (ClientId(2), observer_tx)] {
+            session
+                .handle_request_checked(RelayRequest::Subscribe {
+                    subscription: ProxySubscription {
+                        terminal: 7,
+                        client,
+                        out_tx,
+                        seq: 0,
+                        awaits_snapshot: false,
+                        bootstrap_profile: None,
+                        bootstrap_limits: None,
+                    },
+                    forward: FrameKind::SubscribeEvents {
+                        terminal: Some(TerminalId::local(7)),
+                    },
+                })
+                .unwrap();
+        }
+        let detach = handle_satellite_command(
+            &state,
+            ClientId(1),
+            42,
+            &host,
+            Command::DetachTerminal {
+                terminal_id: TerminalId::local(7),
+            },
+            &out_tx,
+            BootstrapProfile::SynthesizedVtRaw,
+            BootstrapLimits::default(),
+        );
+        tokio::pin!(detach);
+        assert!(futures_util::poll!(&mut detach).is_pending());
+        tokio::time::advance(RELAY_COMMAND_TIMEOUT).await;
+        detach.await;
+        assert!(matches!(
+            out_rx.try_recv(),
+            Ok(Outbound::Frame(FrameKind::CommandResult {
+                request_id: 42,
+                result: CommandResult::Error {
+                    code: ErrorCode::SatelliteUnreachable,
+                    ..
+                }
+            }))
+        ));
+        assert!(state.with(|s| s.has_satellite_proxy_attach(ClientId(1), &host, 7)));
+        // FFI refuses the pending detach and resumes this exact generation.
+        // Let the delayed link process cleanup only after that safe refusal.
+        assert!(
+            session
+                .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
+                .is_empty()
+        );
+        let frame = FrameKind::TerminalOutput {
+            terminal_id: TerminalId::local(7),
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq: 12,
+            bytes: bytes::Bytes::from_static(b"resumed generation"),
+        };
+        let mut encoded = bytes::BytesMut::new();
+        frame.encode(&mut encoded);
+        session.handle_inbound(&encoded).unwrap();
+        assert!(matches!(
+            observer_rx.try_recv(),
+            Ok(Outbound::Frame(FrameKind::TerminalOutput { seq: 12, .. }))
+        ));
+        assert!(
+            matches!(
+                out_rx.try_recv(),
+                Ok(Outbound::Frame(FrameKind::TerminalOutput { seq: 12, .. }))
+            ),
+            "ordinary detach refusal must preserve the resumed client's output, not just its input entitlement"
+        );
+    }
+
     #[tokio::test]
     async fn satellite_detach_reply_waits_for_proxy_withdrawal() {
         let state = SharedState::new();
@@ -4599,12 +4690,15 @@ mod hub_detach_fence_tests {
         else {
             panic!("withdrawal receipt");
         };
-        reply
-            .send(CommandResult::Error {
-                code: ErrorCode::InvalidCommand,
-                message: "superseded".to_owned(),
-            })
-            .unwrap();
+        reply.apply(|| {
+            (
+                CommandResult::Error {
+                    code: ErrorCode::InvalidCommand,
+                    message: "superseded".to_owned(),
+                },
+                Vec::new(),
+            )
+        });
         assert!(matches!(detach.await, CommandResult::Error { .. }));
         assert!(state.with(|s| s.has_satellite_proxy_attach(ClientId(1), &host, 7)));
     }
