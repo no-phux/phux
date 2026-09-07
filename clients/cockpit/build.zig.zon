@@ -1,7 +1,7 @@
 .{
     .name = .phux_cockpit,
     .fingerprint = 0xa47a656ea288c810,
-    .version = "0.16.2", // x-release-please-version
+    .version = "0.17.0", // x-release-please-version
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         // Native v0.8.1 plus Cockpit's terminal fixes, plus the render work

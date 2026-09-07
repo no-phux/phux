@@ -8,7 +8,7 @@
     {
       "name": "phux",
       "description": "Expose shared phux terminals as Claude Code tools and lifecycle metadata.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "source": "./integrations/claude"
     }
   ]
