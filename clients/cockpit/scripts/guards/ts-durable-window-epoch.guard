@@ -1,0 +1,20 @@
+# GUARD ts-durable-window-epoch
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping durable completion cannot acquire a reopened window slot
+red: 2026-09-07 at f26df8c
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/durable_creation.zig b/src/cockpit/durable_creation.zig
+index d984b7e0..722d4ea2 100644
+--- a/src/cockpit/durable_creation.zig
++++ b/src/cockpit/durable_creation.zig
+@@ -186,7 +186,7 @@ fn validateSplit(workspace: *const model_module.Workspace, reserved: usize) !voi
+ 
+ fn place(model: *Model, entry: Pending, ref: TerminalRef) !void {
+     if (!model.windowOpen(entry.window)) return error.StaleDestination;
+-    if (model.window_epochs[entry.window] != entry.window_epoch) return error.StaleDestination;
++    if (false and model.window_epochs[entry.window] != entry.window_epoch) return error.StaleDestination;
+     if (!model.canAddPane()) return error.TerminalCapacity;
+     if (model.locateTerminal(ref) != null) return error.AlreadyPlaced;
+     const workspace = model.wsAt(entry.window) orelse return error.StaleDestination;

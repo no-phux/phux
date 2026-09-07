@@ -1707,6 +1707,7 @@ test "shipping durable completion cannot acquire a reopened window slot" {
     try cockpit.durable_tests.windowEpoch();
 }
 
+// GUARD: ts-durable-unknown
 test "shipping disconnected creation stays unknown and never retries as a local shell" {
     try cockpit.durable_tests.unknownOutcome();
 }
