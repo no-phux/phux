@@ -1722,6 +1722,7 @@ test "shipping restored subscription waits for both exact bootstrap and command 
     try cockpit.durable_tests.restoredSubscription();
 }
 
+// GUARD: ts-durable-tab-capacity
 test "shipping pending spawns reserve destination tab capacity" {
     try cockpit.durable_tests.destinationReservations();
 }
