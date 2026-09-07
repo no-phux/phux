@@ -1,0 +1,20 @@
+# GUARD ts-remote-empty-title
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping empty replacement title clears the previously published remote title
+red: 2026-09-07 at d30d916
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/providers/phux/host.zig b/src/providers/phux/host.zig
+index 56560086..d20cbfd1 100644
+--- a/src/providers/phux/host.zig
++++ b/src/providers/phux/host.zig
+@@ -914,7 +914,7 @@ pub const Host = struct {
+         const payload = try effectSlice(effect.bytes);
+         if (payload.len > max_title_bytes) return error.Protocol;
+         const destination = if (host.attach_barrier_seen and terminal.published) &terminal.title else &terminal.pending_title;
+-        const title_known = destination == &terminal.title or terminal.pending_title_set;
++        const title_known = true;
+         if (title_known and std.mem.eql(u8, destination.items, payload)) return;
+         try destination.ensureTotalCapacity(host.gpa, payload.len);
+         destination.items.len = payload.len;
