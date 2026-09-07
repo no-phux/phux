@@ -411,9 +411,12 @@ typedef struct PhuxAttachOptions {
  * drain/clear outgoing frames after handing them to the transport.
  * All input spans are copied by the queue call, UTF-8, and reject embedded NUL.
  * argc == 0 selects the default shell; otherwise argv[0] must be nonempty.
- * Empty cwd/satellite and null owner_terminal mean absent. owner_terminal must
- * be local, nonzero, and cannot accompany satellite. Text across argv/cwd/host
- * is bounded by MAX_SPAWN_BYTES. Both geometry axes must be nonzero.
+ * Empty cwd/satellite and null owner_terminal mean absent. A nonzero local owner
+ * requires satellite absent. A nonzero satellite owner requires an explicit
+ * satellite route exactly matching its host; mismatches are rejected. The wire
+ * retains the satellite-tagged owner for server-side route translation.
+ * Text across argv/cwd/route/owner host is bounded by MAX_SPAWN_BYTES (both host
+ * spans count when an owner is present). Both geometry axes must be nonzero.
  * Geometry is an initial hint; older servers and satellite relays may ignore it.
  */
 typedef struct PhuxSpawnOptions {

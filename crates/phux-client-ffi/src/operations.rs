@@ -327,7 +327,7 @@ unsafe fn spawn_frame(options: &PhuxSpawnOptions) -> Result<FrameKind, BridgeErr
     // SAFETY: caller's options contract covers the argv array and spans.
     let command = unsafe { command_in(options, &mut budget) }?;
     // SAFETY: caller's options contract covers the optional owner pointer.
-    let owner_terminal = unsafe { owner_in(options.owner_terminal, &satellite) }?;
+    let owner_terminal = unsafe { owner_in(options.owner_terminal, &satellite, &mut budget) }?;
     Ok(FrameKind::SpawnTerminal {
         request_id: options.request_id,
         group: GroupId::new(1),
@@ -345,6 +345,7 @@ unsafe fn spawn_frame(options: &PhuxSpawnOptions) -> Result<FrameKind, BridgeErr
 unsafe fn owner_in(
     owner: *const PhuxTerminalId,
     satellite: &str,
+    budget: &mut usize,
 ) -> Result<Option<TerminalId>, BridgeError> {
     if owner.is_null() {
         return Ok(None);
@@ -352,9 +353,18 @@ unsafe fn owner_in(
     // SAFETY: caller supplies a readable owner ID.
     let owner = unsafe { terminal_id_in(owner) }?;
     valid_terminal(&owner)?;
-    if !satellite.is_empty() || !matches!(owner, TerminalId::Local { .. }) {
+    let expected_route = match &owner {
+        TerminalId::Local { .. } => "",
+        TerminalId::Satellite { host, .. } => {
+            *budget = budget
+                .checked_sub(host.as_str().len())
+                .ok_or_else(|| BridgeError::invalid("spawn text exceeds 64 KiB aggregate bound"))?;
+            host.as_str()
+        }
+    };
+    if satellite != expected_route {
         return Err(BridgeError::invalid(
-            "spawn owner must be local and cannot accompany satellite",
+            "spawn owner must be local without a route, or satellite with an exactly matching route",
         ));
     }
     Ok(Some(owner))

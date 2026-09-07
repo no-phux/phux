@@ -777,3 +777,105 @@ fn closure_before_attach_result_cannot_allow_overlapping_admission_owners() {
     assert!(h.0.inner.operations.admitted(&id));
     assert!(h.0.inner.session.published(&id).is_some());
 }
+
+#[test]
+fn satellite_owner_requires_exact_explicit_route_and_preserves_wire_identity() {
+    for (owner, route, expected) in [
+        (TerminalId::local(1), "", PhuxClientResult::Ok),
+        (
+            TerminalId::local(1),
+            "remote",
+            PhuxClientResult::InvalidArgument,
+        ),
+        (
+            TerminalId::satellite(SatelliteHost::new("remote"), 22),
+            "",
+            PhuxClientResult::InvalidArgument,
+        ),
+        (
+            TerminalId::satellite(SatelliteHost::new("remote"), 22),
+            "other",
+            PhuxClientResult::InvalidArgument,
+        ),
+        (
+            TerminalId::satellite(SatelliteHost::new("remote"), 0),
+            "remote",
+            PhuxClientResult::InvalidArgument,
+        ),
+        (
+            TerminalId::satellite(SatelliteHost::new("remote"), 22),
+            "remote",
+            PhuxClientResult::Ok,
+        ),
+    ] {
+        let mut h = Harness::attached();
+        let owner_view = terminal_id_out(&owner);
+        let options = PhuxSpawnOptions {
+            request_id: 2,
+            owner_terminal: &raw const owner_view,
+            satellite: bytes_out(route.as_bytes()),
+            cols: 90,
+            rows: 31,
+            ..PhuxSpawnOptions::default()
+        };
+        // SAFETY: owner and route spans remain readable throughout the call.
+        assert_eq!(
+            unsafe { phux_client_queue_spawn(h.ptr(), &raw const options) },
+            expected
+        );
+        if expected == PhuxClientResult::InvalidArgument {
+            assert!(h.0.inner.outgoing.is_empty());
+            assert_eq!(h.spawn(2), PhuxClientResult::Ok);
+            continue;
+        }
+        let (frame, remaining) =
+            FrameKind::decode(&h.0.inner.outgoing[0]).expect("spawn wire frame");
+        assert!(remaining.is_empty());
+        let FrameKind::SpawnTerminal {
+            owner_terminal,
+            satellite,
+            initial_size,
+            ..
+        } = frame
+        else {
+            panic!("expected spawn frame");
+        };
+        assert_eq!(owner_terminal.as_ref(), Some(&owner));
+        assert_eq!(
+            satellite
+                .as_ref()
+                .map(SatelliteHost::as_str)
+                .unwrap_or_default(),
+            route
+        );
+        assert_eq!(initial_size, Some((90, 31)));
+    }
+}
+
+#[test]
+fn satellite_owner_host_counts_toward_aggregate_spawn_text_bound() {
+    let mut h = Harness::attached();
+    let route = "h".repeat(MAX_SPAWN_BYTES / 2);
+    let owner = TerminalId::satellite(SatelliteHost::new(&route), 22);
+    let owner_view = terminal_id_out(&owner);
+    let mut options = PhuxSpawnOptions {
+        request_id: 2,
+        owner_terminal: &raw const owner_view,
+        satellite: bytes_out(route.as_bytes()),
+        ..PhuxSpawnOptions::default()
+    };
+    // SAFETY: all inputs are readable, together exactly at the aggregate bound.
+    assert_eq!(
+        unsafe { phux_client_queue_spawn(h.ptr(), &raw const options) },
+        PhuxClientResult::Ok
+    );
+    options.request_id = 3;
+    options.cwd = bytes_out(b"x");
+    // SAFETY: all inputs are readable; their aggregate length deliberately exceeds the bound.
+    assert_eq!(
+        unsafe { phux_client_queue_spawn(h.ptr(), &raw const options) },
+        PhuxClientResult::InvalidArgument
+    );
+    assert_eq!(h.0.inner.outgoing.len(), 1);
+    assert_eq!(h.spawn(3), PhuxClientResult::Ok);
+}
