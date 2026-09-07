@@ -9,6 +9,44 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.27.0](https://github.com/no-phux/phux/compare/v0.26.1...v0.27.0) (2026-09-07)
+
+
+### Features
+
+* **cockpit:** complete TypeScript cutover parity ([#528](https://github.com/no-phux/phux/issues/528)) ([dd9b6f6](https://github.com/no-phux/phux/commit/dd9b6f6745a9371bc779e6a24d105a5f88e7fb79))
+* **cockpit:** ship the TypeScript app graph ([#534](https://github.com/no-phux/phux/issues/534)) ([243b7bc](https://github.com/no-phux/phux/commit/243b7bcd5cfc2c5343bc0d1d2829f39c0d67aeaa))
+* **dev:** support scoped native setup and reproducible browser builds ([7d9c31b](https://github.com/no-phux/phux/commit/7d9c31be8942d64326af88c75387fdd9ae2046cf))
+* **voice:** paste an uploaded clip's transcription into a pane with TRANSCRIBE ([#539](https://github.com/no-phux/phux/issues/539)) ([28979da](https://github.com/no-phux/phux/commit/28979da30cf3b0f1c9753dc621448ab7bc5b71cc))
+
+
+### Bug Fixes
+
+* **ci:** align the install-surface contracts with the derived-toolchain release lanes ([9f1b5ec](https://github.com/no-phux/phux/commit/9f1b5ec3625fe3c8d18ffe3e4b056228f648a6c9))
+* **ci:** register the Blacksmith runner labels actionlint enforces ([d0fffb8](https://github.com/no-phux/phux/commit/d0fffb883209c8b56f15a7b17e89ac8df37e4833))
+* **ci:** retry the npm audit gates on registry outage instead of failing ([87e2257](https://github.com/no-phux/phux/commit/87e22571c5e1a9b6196691bda8198189d07d49d7))
+* **ci:** root .npmrc disables the live npm audit endpoint everywhere ([4b2a249](https://github.com/no-phux/phux/commit/4b2a24959e1f777f8679510f4699a55082cf94ca))
+* **ci:** stop npm's audit endpoint from failing the agent-integration gate ([8c7b544](https://github.com/no-phux/phux/commit/8c7b544333425e3539cd39137193f60434c9de37))
+* **client-core:** ignore stale history tombstones after cursor advances ([97dcae4](https://github.com/no-phux/phux/commit/97dcae4b75dac912b7e198380d5002e9480be7fb))
+* **client:** preserve drag copy across scrollback ([#532](https://github.com/no-phux/phux/issues/532)) ([888efb2](https://github.com/no-phux/phux/commit/888efb2b8bbc15196d6dd52ab76534daa57f7d08))
+* **client:** preserve local multiline clipboard pastes ([bc90aec](https://github.com/no-phux/phux/commit/bc90aec3840e7b2bda8728f74009217a3ffe121e))
+* **client:** reflow restored windows during attach ([#533](https://github.com/no-phux/phux/issues/533)) ([343d1af](https://github.com/no-phux/phux/commit/343d1af0cf40084a94d08d831cf8bf07b92ba273))
+* **client:** retain clipboard input in modal text fields ([31839a5](https://github.com/no-phux/phux/commit/31839a5c254088a7ac3cdbd2f996f0e9ad40c9cd))
+* **client:** satisfy copy-selection conversion lints ([2d35f71](https://github.com/no-phux/phux/commit/2d35f710b0dee6ef6bd43e4f978b8f0d7e1573f2))
+* **release:** compare published npm content, not tarball shasum, on replay ([0ecda74](https://github.com/no-phux/phux/commit/0ecda7471ba3fa28a4b7d09f672ef4ba65b20d62))
+* **server:** stabilize silent WebSocket peer recovery test ([ac88317](https://github.com/no-phux/phux/commit/ac883175e71dcccc658d7da79ba8ebc96f78547a))
+* three unlanded defects in the MCP adapter, connector, and crash records ([#527](https://github.com/no-phux/phux/issues/527)) ([48c4533](https://github.com/no-phux/phux/commit/48c45335dfb9c0aae64bab33ca7cd10051e0b5d5))
+
+
+### Performance
+
+* **build:** trim dependency features and consolidate test harnesses ([#540](https://github.com/no-phux/phux/issues/540)) ([7dc3ad0](https://github.com/no-phux/phux/commit/7dc3ad06789f520cbab7b2473e283df02dd83f31))
+
+
+### Build System
+
+* **deps:** bump the actions group across 1 directory with 5 updates ([#522](https://github.com/no-phux/phux/issues/522)) ([01e21f0](https://github.com/no-phux/phux/commit/01e21f0b5f52c449e7ca67ef5fbc55473dd628fc))
+
 ## [0.26.1](https://github.com/no-phux/phux/compare/v0.26.0...v0.26.1) (2026-09-04)
 
 
