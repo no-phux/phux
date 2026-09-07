@@ -9,6 +9,18 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.27.1](https://github.com/no-phux/phux/compare/v0.27.0...v0.27.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **client:** ship every composite paint as one stdout chunk ([2acb074](https://github.com/no-phux/phux/commit/2acb07483b7613da43ec558fe1295092ebc5db5b))
+
+
+### Performance
+
+* **server:** re-arm the scanners' ground-state skip after every sequence ([ad0a1dd](https://github.com/no-phux/phux/commit/ad0a1dd4f9d2ae9dba6ce22d2b74124efa854e6a))
+
 ## [0.27.0](https://github.com/no-phux/phux/compare/v0.26.1...v0.27.0) (2026-09-07)
 
 
