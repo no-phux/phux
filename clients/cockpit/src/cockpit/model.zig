@@ -263,6 +263,7 @@ pub const PointerState = struct {
 
 pub const RemoteUiState = struct {
     terminal_ref: ?TerminalRef = null,
+    attachment_context: topology.attachments.Context = .{},
     owner: ReplicaOwner = .{
         .terminal_ref = provider_contract.localTerminalRef(.terminal_1),
         .generation = .{},
@@ -279,6 +280,22 @@ pub const RemoteUiState = struct {
     search: @import("native/remote_presentation_commands.zig").Search = .{},
     wheel_accum_x: f32 = 0,
     gesture_handle: u64 = 0,
+
+    fn replaceOwner(state: *RemoteUiState, owner: ReplicaOwner, context: topology.attachments.Context) void {
+        const identity: topology.attachments.Reference = .{
+            .terminal_ref = owner.terminal_ref,
+            .context = state.attachment_context,
+        };
+        const search: @TypeOf(state.search) = if (context.session_id != 0 and identity.matches(&context)) state.search.replacement() else .{};
+        // Document coordinates, clipboard latches and gestures belong to the
+        // retired replica. Only the identity-qualified Find field survives.
+        state.* = .{
+            .terminal_ref = owner.terminal_ref,
+            .owner = owner,
+            .attachment_context = context,
+            .search = search,
+        };
+    }
 };
 
 pub const PointerModifiers = struct {
@@ -1047,17 +1064,18 @@ pub const Model = struct {
         for (&model.remote_ui) |*state| {
             if (state.terminal_ref) |known| {
                 if (!known.eql(terminal_ref)) continue;
-                if (!state.owner.eql(current_owner)) state.* = .{ .terminal_ref = terminal_ref, .owner = current_owner };
+                if (!state.owner.eql(current_owner)) state.replaceOwner(current_owner, model.attachment_context);
                 return state;
             }
             if (vacant == null) vacant = state;
         }
         const state = vacant orelse return null;
-        state.* = .{ .terminal_ref = terminal_ref, .owner = current_owner };
+        state.* = .{ .terminal_ref = terminal_ref, .owner = current_owner, .attachment_context = model.attachment_context };
         return state;
     }
 
     pub fn remoteUiConst(model: *const Model, terminal_ref: TerminalRef) ?*const RemoteUiState {
+        if (model.attachmentPending(terminal_ref)) return null;
         for (&model.remote_ui) |*state| {
             if (state.terminal_ref) |known| if (known.eql(terminal_ref)) return state;
         }

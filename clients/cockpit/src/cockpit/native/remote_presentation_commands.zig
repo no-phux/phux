@@ -25,11 +25,34 @@ pub const Search = struct {
     paste_pending: bool = false,
     restore_bottom: bool = true,
     restore_row: u64 = 0,
+    refresh_pending: bool = false,
 
     pub fn needle(self: *const Search) []const u8 {
         return self.needle_buf[0..self.needle_len];
     }
+
+    pub fn replacement(self: *const Search) Search {
+        return .{
+            .open = self.open,
+            .needle_buf = self.needle_buf,
+            .needle_len = self.needle_len,
+            .refresh_pending = self.open,
+        };
+    }
 };
+
+/// A replacement query runs only against a published live owner. The host's
+/// generation publication follows BOOTSTRAP_READY, including resize bootstraps
+/// that do not repeat the connection's ATTACH_READY barrier.
+pub fn resumeReady(model: *Model) void {
+    for (model.remoteTerminalRefs()) |ref| {
+        const state = model.remoteUi(ref) orelse continue;
+        if (!state.search.refresh_pending) continue;
+        if (!model.ownerIsCurrent(state.owner)) continue;
+        state.search.refresh_pending = false;
+        _ = refresh(model, state, .newest);
+    }
+}
 
 pub fn command(model: *Model, ref: contract.TerminalRef, value: Command) bool {
     if (comptime !support.phux_enabled) return false;

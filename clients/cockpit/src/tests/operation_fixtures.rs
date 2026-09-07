@@ -50,6 +50,7 @@ fn bootstrap(id: TerminalId) -> Vec<FrameKind> {
 fn main() -> Result<(), Box<dyn Error>> {
     let out = std::env::args().nth(1).expect("output directory");
     let dir = Path::new(&out);
+    write(dir, "search-resize.bin", search_resize())?;
     write(
         dir,
         "detach-request.bin",
@@ -229,4 +230,34 @@ fn main() -> Result<(), Box<dyn Error>> {
         }],
     )?;
     Ok(())
+}
+
+fn search_resize() -> Vec<FrameKind> {
+    let terminal_id = TerminalId::local(7);
+    let stream_id = StreamId::new(7).unwrap();
+    let bootstrap_id = BootstrapId::new(2).unwrap();
+    vec![
+        FrameKind::BootstrapBegin {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 80,
+            rows: 22,
+            base_seq: 0,
+        },
+        FrameKind::BootstrapChunk {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq: 0,
+            payload: Bytes::from_static(b"COCKPIT COCKPIT COCKPIT"),
+        },
+        FrameKind::BootstrapReady {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        },
+    ]
 }

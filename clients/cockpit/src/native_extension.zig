@@ -2218,11 +2218,133 @@ test "remote presentation search consumes controls and rejects stale clipboard o
     remote.host.terminals.items[0].generation.bootstrap_id += 1;
     engine.onClipboardRead(&fx, true, "stale");
     try std.testing.expect(!engine.model.paste_inflight);
-    try std.testing.expect(!engine.model.remoteUi(ref).?.search.open);
+    try std.testing.expect(engine.model.remoteUi(ref).?.search.open);
+    try std.testing.expectEqualStrings(&near_limit, engine.model.remoteUi(ref).?.search.needle());
+    try std.testing.expect(!engine.model.remoteUi(ref).?.search.paste_pending);
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
     remote.stop();
     try std.testing.expect(!remotePresentationCommand(engine, .find, &fx));
-    try std.testing.expect(!engine.model.remoteUi(ref).?.search.open);
+    try std.testing.expect(engine.model.remoteUi(ref).?.search.open);
+}
+
+// GUARD: ts-remote-find-rebootstrap
+test "remote Find survives staged resize rebootstrap and reruns only on READY" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const fixtures = @TypeOf(remote.*).test_support;
+    var fx = Recorder{};
+    const frame: native_sdk.platform.GpuFrame = .{
+        .label = canvas_label,
+        .size = .{ .width = 1100, .height = 640 },
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    };
+    engine.pumpViewports(&fx, frame);
+    const closed_rows = remote.lastViewport(ref).?.rows;
+    try std.testing.expect(remotePresentationCommand(engine, .find, &fx));
+    engine.onText(&fx, .{ .phase = .text_input, .text = "COCKPIT" });
+    const state = engine.model.remoteUi(ref).?;
+    const owner = state.owner;
+    try std.testing.expectEqual(@as(usize, 1), state.search.count);
+    try std.testing.expect(remotePresentationCommand(engine, .select_all, &fx));
+    const old_anchor = state.start_anchor;
+    try std.testing.expect(old_anchor != 0);
+    try std.testing.expect(remotePresentationCommand(engine, .copy, &fx));
+    state.gesture_handle = 99;
+    state.wheel_accum = 0.5;
+    state.wheel_accum_x = -0.5;
+    state.search.restore_bottom = false;
+    state.search.restore_row = 19;
+    engine.onKey(&fx, .{ .phase = .key_down, .key = "v", .modifiers = .{ .super = true } });
+    try std.testing.expect(state.search.paste_pending);
+    // The search band changes the viewport; the server replies in three wakes,
+    // so a query cannot run against the partial replacement document.
+    engine.pumpViewports(&fx, frame);
+    const open_rows = remote.lastViewport(ref).?.rows;
+    try std.testing.expect(open_rows < closed_rows);
+    const frames = try fixtures.readFixture("search-resize.bin");
+    defer std.testing.allocator.free(frames);
+    var offset: usize = 0;
+    try fixtures.stageFrames(remote.bridge, frames, &offset, 1);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try std.testing.expect(state.search.open);
+    try std.testing.expect(state.owner.eql(owner));
+    try fixtures.stageFrames(remote.bridge, frames, &offset, 1);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try std.testing.expect(state.owner.eql(owner));
+    try std.testing.expectEqual(@as(usize, 1), state.search.count);
+    try fixtures.stageFrames(remote.bridge, frames, &offset, 1);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try std.testing.expect(state.search.open);
+    try std.testing.expectEqualStrings("COCKPIT", state.search.needle());
+    try std.testing.expect(!state.owner.eql(owner));
+    try std.testing.expectEqual(@as(usize, 3), state.search.count);
+    try std.testing.expectEqual(@as(usize, 2), state.search.index);
+    try std.testing.expectEqual(@as(u64, 0), state.start_anchor);
+    try std.testing.expectEqual(@as(u64, 0), state.end_anchor);
+    try std.testing.expectEqual(@as(u64, 0), state.gesture_handle);
+    try std.testing.expectEqual(@as(f32, 0), state.wheel_accum);
+    try std.testing.expectEqual(@as(f32, 0), state.wheel_accum_x);
+    try std.testing.expectEqual(@as(u64, 0), state.search.restore_row);
+    try std.testing.expect(state.search.restore_bottom);
+    try std.testing.expect(!state.search.paste_pending);
+    try std.testing.expect(!state.search.refresh_pending);
+    try std.testing.expect(remote.host.search_owner.?.eql(state.owner));
+    engine.onClipboardRead(&fx, true, "stale clipboard");
+    engine.onClipboardWritten(false);
+    try std.testing.expect(!state.copy_failed);
+    try std.testing.expectEqualStrings("COCKPIT", state.search.needle());
+    try expectSearchPaint(engine, "COCKPIT", "3 of 3");
+    engine.pumpViewports(&fx, frame);
+    try std.testing.expectEqual(open_rows, remote.lastViewport(ref).?.rows);
+    try std.testing.expect(remotePresentationCommand(engine, .copy, &fx));
+    try std.testing.expectEqualStrings("COCKPIT", fx.text());
+    engine.onClipboardWritten(true);
+    engine.onKey(&fx, .{ .phase = .key_down, .key = "Escape" });
+    try std.testing.expect(!state.search.open);
+}
+
+test "remote Find inheritance requires matching nonempty durable attachment evidence" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const model = bridge.engine.?.model;
+    const remote = model.phux().?;
+    const Context = @TypeOf(model.attachment_context);
+    const current = model.attachment_context;
+    const cases = [_]Context{
+        try .init("/other.sock", current.server_id.slice(), current.session_id),
+        try .init(current.endpoint.slice(), "another-incarnation", current.session_id),
+        try .init(current.endpoint.slice(), current.server_id.slice(), current.session_id + 1),
+        .{},
+    };
+    for (cases) |context| {
+        const state = model.remoteUi(ref).?;
+        state.attachment_context = context;
+        state.search.open = true;
+        state.search.needle_buf[0] = 'x';
+        state.search.needle_len = 1;
+        state.search.paste_pending = true;
+        remote.host.terminals.items[0].generation.bootstrap_id += 1;
+        const replacement = model.remoteUi(ref).?;
+        try std.testing.expect(!replacement.search.open);
+        try std.testing.expectEqualStrings("", replacement.search.needle());
+        try std.testing.expect(!replacement.search.paste_pending);
+    }
+    // A provider owner alone never admits a retained UI through a mismatching
+    // saved-attachment gate, including the const paint path.
+    try model.setAttachmentContext(current.endpoint.slice(), "another-incarnation", current.session_id);
+    try std.testing.expect(model.attachmentPending(ref));
+    try std.testing.expect(model.remoteUi(ref) == null);
+    try std.testing.expect(model.remoteUiConst(ref) == null);
 }
 
 // GUARD: ts-engine-search

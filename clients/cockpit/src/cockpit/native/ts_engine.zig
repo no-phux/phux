@@ -274,7 +274,9 @@ pub const Engine = struct {
         const remote = self.model.phux() orelse return false;
         const delta = remote.drainReadiness() catch return self.failPhux(fx);
         if (delta.detached) return self.failPhux(fx);
-        return self.applyReadiness(delta);
+        const changed = self.applyReadiness(delta);
+        remote_commands.resumeReady(self.model);
+        return delta.generation_changed or changed;
     }
 
     fn failPhux(self: *Engine, fx: anytype) bool {
