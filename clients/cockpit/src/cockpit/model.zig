@@ -1075,9 +1075,12 @@ pub const Model = struct {
     }
 
     pub fn remoteUiConst(model: *const Model, terminal_ref: TerminalRef) ?*const RemoteUiState {
-        if (model.attachmentPending(terminal_ref)) return null;
+        // Retained presentation may be frozen, but must still belong to this
+        // exact published owner. terminalOwner also enforces attachmentPending.
+        const current_owner = model.terminalOwner(terminal_ref) orelse return null;
         for (&model.remote_ui) |*state| {
-            if (state.terminal_ref) |known| if (known.eql(terminal_ref)) return state;
+            if (state.terminal_ref == null) continue;
+            if (state.owner.eql(current_owner)) return state;
         }
         return null;
     }

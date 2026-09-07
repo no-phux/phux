@@ -1076,7 +1076,7 @@ pub fn searchRevealedIn(model: *const Model, workspace: *const Workspace) bool {
     const terminal_ref = workspaceTerminalRef(model, workspace) orelse return false;
     if (model.provider.terminalConst(terminal_ref)) |pane| return pane.session.search.open;
     const state = model.remoteUiConst(terminal_ref) orelse return false;
-    return model.ownerIsCurrent(state.owner) and state.search.open;
+    return state.search.open;
 }
 
 /// The config band's height. The SEARCH band's height, deliberately: two bands

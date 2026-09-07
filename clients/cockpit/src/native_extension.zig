@@ -2275,10 +2275,16 @@ test "remote Find survives staged resize rebootstrap and reruns only on READY" {
     _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
     try std.testing.expect(state.search.open);
     try std.testing.expect(state.owner.eql(owner));
+    try expectSearchPaint(engine, "COCKPIT", "1 of 1");
+    engine.pumpViewports(&fx, frame);
+    try std.testing.expectEqual(open_rows, remote.lastViewport(ref).?.rows);
     try fixtures.stageFrames(remote.bridge, frames, &offset, 1);
     _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
     try std.testing.expect(state.owner.eql(owner));
     try std.testing.expectEqual(@as(usize, 1), state.search.count);
+    try expectSearchPaint(engine, "COCKPIT", "1 of 1");
+    engine.pumpViewports(&fx, frame);
+    try std.testing.expectEqual(open_rows, remote.lastViewport(ref).?.rows);
     try fixtures.stageFrames(remote.bridge, frames, &offset, 1);
     _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
     try std.testing.expect(state.search.open);
@@ -2344,6 +2350,34 @@ test "remote Find inheritance requires matching nonempty durable attachment evid
     try model.setAttachmentContext(current.endpoint.slice(), "another-incarnation", current.session_id);
     try std.testing.expect(model.attachmentPending(ref));
     try std.testing.expect(model.remoteUi(ref) == null);
+    try std.testing.expect(model.remoteUiConst(ref) == null);
+}
+
+test "remote Find presentation survives frozen publication without admitting commands" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const model = engine.model;
+    const remote = model.phux().?;
+    var fx = Recorder{};
+    try std.testing.expect(remotePresentationCommand(engine, .find, &fx));
+    engine.onText(&fx, .{ .phase = .text_input, .text = "COCKPIT" });
+    const owner = model.remoteUi(ref).?.owner;
+    const size = native_sdk.geometry.SizeF.init(1100, 640);
+    const before = cockpit.projection.workspaceChromeIn(model, model.ws(), size);
+    try std.testing.expect(before.search.height > 0);
+    remote.host.freezePublished();
+    try std.testing.expect(!model.ownerIsCurrent(owner));
+    try std.testing.expect(!remotePresentationCommand(engine, .find, &fx));
+    const frozen = cockpit.projection.workspaceChromeIn(model, model.ws(), size);
+    try std.testing.expectEqual(before.search.height, frozen.search.height);
+    try std.testing.expectEqual(before.content.height, frozen.content.height);
+    try expectSearchPaint(engine, "COCKPIT", "1 of 1");
+    // Retaining a frozen field must not loosen either owner or attachment fences.
+    remote.host.terminals.items[0].generation.bootstrap_id += 1;
     try std.testing.expect(model.remoteUiConst(ref) == null);
 }
 

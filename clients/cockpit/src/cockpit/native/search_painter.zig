@@ -25,7 +25,7 @@ pub fn view(model: *const model_module.Model, ref: contract.TerminalRef) ?View {
         return .{ .needle = pane.session.searchNeedle(), .count = pane.session.searchMatchCount(), .ordinal = pane.session.searchMatchOrdinal() };
     }
     const state = model.remoteUiConst(ref) orelse return null;
-    if (!model.ownerIsCurrent(state.owner) or !state.search.open) return null;
+    if (!state.search.open) return null;
     return .{ .needle = state.search.needle(), .count = state.search.count, .ordinal = state.search.index + 1, .failed = state.search.failed };
 }
 
