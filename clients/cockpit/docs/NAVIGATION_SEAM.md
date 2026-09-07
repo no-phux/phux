@@ -140,8 +140,8 @@ separate. No screenshot here claims macOS rendering evidence.
 
 The integration gate is `./scripts/zig-build.sh test -Dphux-enabled=true
 --summary all` from `clients/cockpit`, after the same-checkout FFI build above.
-The verified run reports 53/53 steps, 459 passed and 2 skipped tests, including
-all 43 shipping extension tests. Its verdict names this worktree's source root
+The verified run reports 53/53 steps, 460 passed and 2 skipped tests, including
+all 44 shipping extension tests. Its verdict names this worktree's source root
 and `target/ffi-release` archive. The focused navigation gate and eight JS
 behavior tests also pass.
 
@@ -165,6 +165,8 @@ Recorded with `guard-red-run.sh` against green default and Phux-enabled full
 baselines: `ts-overlay-switcher`, `ts-snapshot-commit-fence`,
 `ts-navigation-snapshot-budget`, and `ts-navigation-completion-isolation`.
 Each named test was observed red with its recorded break and restored green.
+Independent-review fixes add `ts-navigation-placement-recovery` and
+`ts-navigation-refresh-highlight`, also recorded red and restored green.
 
 ## Complexity and review evidence
 
@@ -189,8 +191,23 @@ Review fixes include clearing rows on invalidation before a new snapshot,
 rejecting late replies by revision/query/page, rejecting short pages that hide
 inventory, withdrawing connectivity claims when the engine fails, maintaining
 backward keyboard order across pages, and preserving integer proofs required
-by the actual AOT compiler. Independent review and live acceptance remain
-separate from these deterministic test results.
+by the actual AOT compiler. A fresh-context, read-only Claude review inspected
+the integration diff, provider lifecycle, and pinned SDK behavior. Its
+navigation-owned findings are fixed: keyboard highlight survives metadata
+refreshes and clamps when a page shrinks, successful remote placement clears
+an old capacity refusal, same-session activation is documented and tested as
+idempotent, and tags 12/13 are explicitly reserved from future legacy intents.
+
+The review also identified a parent-owned deferred-reopen failure:
+`onPhuxChannel` must announce the state after reopening on `.closed/.rejected`,
+including immediate admission failure. A temporary regression was observed
+failing on `expect(announced)` and handed to that method's owner. The SDK's
+closing-channel retry window also belongs to that lifecycle coordination.
+Neither finding is a reason to weaken the revision fence. Non-positional
+command handling during synchronization remains on the existing all-intent
+fencing contract; relaxing it needs runtime-ordering evidence. The bounded
+four-row catalog's identity lookup remains unchanged; the review's performance
+observation was not a measured latency regression. Live acceptance is separate.
 
 Integration complexity against `58b77356`: ESLint measures `loadedNavigation`
 9 → 10 and `core.update` 87 → 87. A lexical Zig decision inventory (comments
