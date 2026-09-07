@@ -1130,6 +1130,7 @@ test "shipping close detaches a Phux pane without destroying a local terminal" {
     try std.testing.expectEqual(@as(usize, 1), engine.model.primary.tab_count);
 }
 
+// GUARD: ts-final-pane-close
 test "shipping final pane close retires main while a secondary keeps running" {
     var rig = try Rig.start();
     defer rig.stop();
