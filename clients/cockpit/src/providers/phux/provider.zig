@@ -19,6 +19,7 @@ pub const SearchResult = host_mod.SearchResult;
 pub const Notice = host_mod.Notice;
 pub const SessionSummary = host_mod.SessionSummary;
 pub const Error = host_mod.Error;
+pub const OperationResult = host_mod.OperationResult;
 
 const OwnedEndpoint = union(enum) {
     tcp: struct { host: []u8, port: u16 },
@@ -45,6 +46,8 @@ const OwnedEndpoint = union(enum) {
 };
 
 pub const PhuxProvider = struct {
+    pub const SessionSummary = host_mod.SessionSummary;
+    pub const OperationResult = host_mod.OperationResult;
     gpa: std.mem.Allocator,
     io: std.Io,
     bridge: *transport.Bridge,
@@ -98,7 +101,7 @@ pub const PhuxProvider = struct {
     pub fn stop(self: *PhuxProvider) void {
         if (self.worker) |worker| worker.stop();
         self.worker = null;
-        self.host.freezePublished();
+        self.host.disconnect();
     }
 
     /// Preserve provider identity, terminal order, and the last complete canvas
@@ -164,10 +167,31 @@ pub const PhuxProvider = struct {
         return self.host.state();
     }
 
+    pub fn requestSpawn(self: *PhuxProvider, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport) !u32 {
+        return self.host.requestSpawn(owner_ref, viewport);
+    }
+    pub fn requestAttach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {
+        return self.host.requestAttach(terminal_ref);
+    }
+    pub fn takeOperationResult(self: *PhuxProvider) ?host_mod.OperationResult {
+        return self.host.takeOperationResult();
+    }
+    pub fn connectionEpoch(self: *const PhuxProvider) u64 {
+        return self.host.connectionEpoch();
+    }
+    /// Opaque borrowed bytes; copy before a mutable provider call.
+    pub fn serverId(self: *const PhuxProvider) ?[]const u8 {
+        return self.host.serverId();
+    }
+    /// The canonical descriptor used by the socket worker, borrowed until destroy.
+    pub fn endpointDescriptor(self: *const PhuxProvider) Endpoint {
+        return self.endpoint.borrowed();
+    }
+
     pub fn terminalRefs(self: *const PhuxProvider, out: []provider.TerminalRef) usize {
         return self.host.terminalRefs(out);
     }
-    pub fn sessionCatalog(self: *const PhuxProvider) []const SessionSummary {
+    pub fn sessionCatalog(self: *const PhuxProvider) []const host_mod.SessionSummary {
         return self.host.sessionCatalog();
     }
     pub fn selectedSessionId(self: *const PhuxProvider) ?u32 {
@@ -418,4 +442,33 @@ test "every declaration in this module is compiled, not merely reachable" {
     // graph with its signatures never checked. Nothing calls PhuxProvider.search.
     // See ref.zig.
     @import("phux_ref").refAllDeclsRecursive(@This());
+}
+
+test "provider operations expose owned outcomes and borrowed endpoint incarnation" {
+    var path = [_]u8{ '/', 's', 'o', 'c', 'k', 'e', 't' };
+    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = &path }, null, "operations-test");
+    defer self.destroy();
+    path[1] = 'X';
+    try std.testing.expectEqualStrings("/socket", self.endpointDescriptor().unix);
+    try std.testing.expect(self.serverId() == null);
+    try std.testing.expectError(error.InvalidState, self.requestSpawn(null, .{ .cols = 80, .rows = 24 }));
+    try host_mod.test_support.attachHost(self.host);
+    try std.testing.expectEqualStrings("cockpit-fixture", self.serverId().?);
+    const epoch = self.connectionEpoch();
+    const request_id = try self.requestSpawn(null, .{ .cols = 80, .rows = 24 });
+    try host_mod.test_support.stageFixture(self.bridge, "spawn-local.bin");
+    _ = try self.drainReadiness();
+    const result = self.takeOperationResult().?;
+    try std.testing.expectEqual(request_id, result.request_id);
+    try std.testing.expectEqual(epoch, result.connection_epoch);
+    try std.testing.expect(!self.contains(result.terminal_ref.?));
+    try host_mod.test_support.stageFixture(self.bridge, "local-ready.bin");
+    _ = try self.drainReadiness();
+    try std.testing.expect(self.contains(result.terminal_ref.?));
+    const pending = try self.requestSpawn(result.terminal_ref, .{ .cols = 80, .rows = 24 });
+    self.stop();
+    const unknown = self.takeOperationResult().?;
+    try std.testing.expectEqual(pending, unknown.request_id);
+    try std.testing.expectEqual(.unknown_outcome, unknown.status);
+    try std.testing.expectEqual(epoch, unknown.connection_epoch);
 }

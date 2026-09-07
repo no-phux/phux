@@ -27,6 +27,20 @@ pub const Phase = provider_contract.Phase;
 pub const phux_enabled = phux_options.enabled;
 
 const DisabledPhuxProvider = struct {
+    pub const OperationResult = struct {
+        request_id: u32,
+        connection_epoch: u64,
+        kind: enum { spawn, attach },
+        status: enum { success, refused, unknown_outcome },
+        terminal_ref: ?TerminalRef,
+        error_domain: enum { none, spawn, protocol },
+        error_code: u32,
+
+        pub fn message(_: *const @This()) []const u8 {
+            return "";
+        }
+    };
+    pub const Endpoint = union(enum) { tcp: struct { host: []const u8, port: u16 }, unix: []const u8 };
     const State = enum { new };
     const Anchor = struct { opaque_id: u64 = 0 };
     pub const SessionSummary = struct {
@@ -49,7 +63,7 @@ const DisabledPhuxProvider = struct {
         _: std.mem.Allocator,
         _: std.Io,
         _: anytype,
-        _: []const u8,
+        _: ?[]const u8,
         _: []const u8,
     ) error{Disabled}!*DisabledPhuxProvider {
         return error.Disabled;
@@ -64,6 +78,24 @@ const DisabledPhuxProvider = struct {
     pub fn stop(_: *DisabledPhuxProvider) void {}
     pub fn state(_: *const DisabledPhuxProvider) State {
         return .new;
+    }
+    pub fn requestSpawn(_: *DisabledPhuxProvider, _: ?TerminalRef, _: Viewport) error{Disabled}!u32 {
+        return error.Disabled;
+    }
+    pub fn requestAttach(_: *DisabledPhuxProvider, _: TerminalRef) error{Disabled}!u32 {
+        return error.Disabled;
+    }
+    pub fn takeOperationResult(_: *DisabledPhuxProvider) ?@This().OperationResult {
+        return null;
+    }
+    pub fn connectionEpoch(_: *const DisabledPhuxProvider) u64 {
+        return 0;
+    }
+    pub fn serverId(_: *const DisabledPhuxProvider) ?[]const u8 {
+        return null;
+    }
+    pub fn endpointDescriptor(_: *const DisabledPhuxProvider) Endpoint {
+        return .{ .unix = "" };
     }
     pub fn drainReadiness(_: *DisabledPhuxProvider) error{Disabled}!SyncDelta {
         return error.Disabled;
@@ -130,6 +162,7 @@ pub const PhuxProvider = if (phux_enabled)
 else
     DisabledPhuxProvider;
 pub const SessionSummary = PhuxProvider.SessionSummary;
+pub const OperationResult = PhuxProvider.OperationResult;
 pub const max_remote_sessions: usize = if (phux_enabled) @import("phux_provider").max_sessions else 0;
 
 const DisabledPointerModule = struct {

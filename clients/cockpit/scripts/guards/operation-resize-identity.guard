@@ -1,0 +1,23 @@
+# GUARD operation-resize-identity
+#
+# viewportResize retained a Terminal pointer across capturePublishStage, which
+# can compact the array after a queued terminal removal. Reinstating that old
+# pointer write loses the viewport on the surviving terminal. The canonical
+# closed-terminal fixture forces compaction inside the resize call.
+test: resize viewport follows identity when effects remove an earlier terminal
+red: 2026-09-07 at 78315ce
+build: test -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/providers/phux/host.zig b/src/providers/phux/host.zig
+index f54a41d5..c5ba95af 100644
+--- a/src/providers/phux/host.zig
++++ b/src/providers/phux/host.zig
+@@ -442,8 +442,7 @@ pub const Host = struct {
+         ));
+         try host.stageOutgoing();
+         try host.capturePublishStage();
+-        const current_terminal = host.findTerminal(terminal_ref) orelse return error.InvalidState;
+-        current_terminal.viewport = viewport;
++        terminal.viewport = viewport;
+     }
+ 
+     pub fn sendKey(host: *Host, owner_value: provider.ReplicaOwner, input: *const provider.KeyInput) !void {

@@ -1,0 +1,24 @@
+# GUARD satellite-cid-borrow
+#
+# Before this fix, cId(RemoteId) returned a pointer into its by-value inline
+# host_storage. The wrapper reinstates that exact by-value function body while
+# retaining the caller API. Pointer identity and exact-host assertions detect
+# the expired borrow; the canonical satellite request also checks route bytes.
+test: satellite C identity borrows the exact owning host storage
+red: 2026-09-07 at 7bc375d
+build: test -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/providers/phux/host.zig b/src/providers/phux/host.zig
+index 759dc85a..d8e2375a 100644
+--- a/src/providers/phux/host.zig
++++ b/src/providers/phux/host.zig
+@@ -978,6 +978,10 @@ fn phuxRef(id: RemoteId) provider.TerminalRef {
+ }
+ 
+ fn cId(id: *const RemoteId) c.PhuxTerminalId {
++    return cIdByValue(id.*);
++}
++
++fn cIdByValue(id: RemoteId) c.PhuxTerminalId {
+     const host_name = id.host();
+     return .{
+         .kind = id.kind,
