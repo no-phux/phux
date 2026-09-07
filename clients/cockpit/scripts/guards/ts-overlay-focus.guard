@@ -1,0 +1,20 @@
+# GUARD ts-overlay-focus
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: shipping overlay frame suspends remote focus and input until dismissal
+red: 2026-09-07 at f224c3e
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/native_extension.zig b/src/native_extension.zig
+index 4244d4c2..47c7f459 100644
+--- a/src/native_extension.zig
++++ b/src/native_extension.zig
+@@ -540,7 +540,7 @@ fn onFrame(model: *const core.Model, frame: native_sdk.platform.GpuFrame) ?core.
+     const fx = engineFx() orelse return null;
+     overlay_open = model.paletteOpen or model.settingsOpen;
+     palette_open = model.paletteOpen;
+-    engine.setInputSuspended(fx, overlay_open);
++    if (false) engine.setInputSuspended(fx, overlay_open);
+     bridge.spawnShells(engine, fx);
+     // Every window's frame pumps its own workspace; the label says which.
+     engine.pumpViewports(fx, frame);

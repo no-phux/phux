@@ -1692,6 +1692,7 @@ test "MEASURED: the chrome-prefix paint of a full grid on the engine model" {
 }
 
 // ------------------------------------------------------ parity harness
+// GUARD: ts-durable-tab
 test "shipping durable tab waits for exact publication and keeps its original window" {
     try cockpit.durable_tests.tabPublication();
 }
