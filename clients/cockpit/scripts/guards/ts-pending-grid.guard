@@ -1,0 +1,21 @@
+# GUARD ts-pending-grid
+#
+# Describe the defect this test exists to catch, and what removing the
+# fix below puts back. Prose here is preserved across re-runs.
+test: pending attachment hides the published grid of a reused remote identity
+red: 2026-09-07 at 45d9bc1
+build: test -j2 -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev
+diff --git a/src/cockpit/native/terminal_painter.zig b/src/cockpit/native/terminal_painter.zig
+index d3f2eba3..b335a310 100644
+--- a/src/cockpit/native/terminal_painter.zig
++++ b/src/cockpit/native/terminal_painter.zig
+@@ -257,7 +257,8 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
+             });
+             if (preview_target) |target| try paintLinkTargetPreview(terminal, index, pane.rect, tokens, builder, target);
+         } else {
+-            const presentation = model.remotePresentation(pane.terminal) orelse continue;
++            const remote = model.phuxConst() orelse continue;
++            const presentation = remote.presentation(pane.terminal) orelse continue;
+             try grid.paintTerminalGrid(presentation.grid, builder, .{
+                 .frame = pane.rect,
+                 .background_frame = pane.rect,
